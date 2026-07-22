@@ -1,7 +1,10 @@
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { WebSession } from './types.js';
-import type { AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  capAgentSessionTranscriptV2,
+  type AgentSessionV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import {
   normalizeControlStateSummary,
   type ControlStateSummary,
@@ -15,6 +18,40 @@ let upsertWebStmt: Database.Statement | null = null;
 let deleteWebStmt: Database.Statement | null = null;
 let markStatusStmt: Database.Statement | null = null;
 let loadAllWebStmt: Database.Statement | null = null;
+let reapCandidatesStmt: Database.Statement | null = null;
+let maintenanceTimer: NodeJS.Timeout | null = null;
+/**
+ * Resolver for session ids the reaper must never delete: those live in the
+ * in-memory session map AND those still bound to an open channel. Registered by
+ * the wiring layer (server/index.ts) which owns both the session map and the
+ * channel-binding store; relay-state-db cannot reach either directly. Until it
+ * is registered the timer-driven reap fails safe (no-op) rather than risk
+ * dropping a resume anchor. Reset on close for test isolation.
+ */
+let reapProtectedIdsProvider: (() => Iterable<string>) | null = null;
+let warnedNoReapProvider = false;
+
+// ── Storage-hygiene tunables (#1243) ──────────────────────────────────────
+/**
+ * Cap the WAL high-water mark. A single multi-MB blob transaction otherwise
+ * pins the WAL to its size until a full checkpoint runs; journal_size_limit
+ * makes SQLite truncate the WAL back to this bound after each checkpoint.
+ */
+const JOURNAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024;
+/**
+ * Age-reap window (#1248). A web_session whose `last_activity` predates this is
+ * evicted regardless of status EXCEPT `archived` (a deliberate user keep backing
+ * the archive browse/restore lane). The v2 reducer derives an idle session to
+ * status `active` — never `disconnected` — so a status-scoped reaper leaks idle
+ * rows forever; gating on age instead bounds total row count over time. This is
+ * what makes restoring ALL non-archived rows on boot safe (count stays bounded
+ * without a restore LIMIT). Live/connected and still-channel-bound sessions are
+ * excluded via {@link reapProtectedIdsProvider} even when old, so resume anchors
+ * are never dropped.
+ */
+const WEB_SESSION_IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Periodic checkpoint + freelist-reclaim + reap cadence. */
+const MAINTENANCE_INTERVAL_MS = 10 * 60 * 1000;
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS web_sessions (
@@ -106,6 +143,22 @@ export function initRelayStateDb(configDir: string): void {
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
+  // Reclaim the freelist to the OS instead of letting it grow unbounded
+  // (issue #1243: ~15MB of orphaned overflow pages never returned). A
+  // pre-existing db created with auto_vacuum=NONE (0) only adopts the new mode
+  // after a one-time VACUUM — gate that on the current mode so it runs at most
+  // once (VACUUM flips the pragma to 2), never on every boot.
+  try {
+    const autoVacuum = db.pragma('auto_vacuum', { simple: true }) as number;
+    if (autoVacuum !== 2) {
+      db.pragma('auto_vacuum = INCREMENTAL');
+      // Must run outside any transaction; nothing is open here yet.
+      db.exec('VACUUM');
+    }
+  } catch (err) {
+    logger.warn('auto_vacuum conversion failed: %s', err);
+  }
+  db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
 
   db.exec(
     `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`
@@ -138,6 +191,13 @@ export function initRelayStateDb(configDir: string): void {
   markStatusStmt = db.prepare(
     'UPDATE web_sessions SET status = ?, last_activity = ? WHERE id = ?'
   );
+  // Restore ALL non-archived rows on boot (#1248), oldest-first so display-name
+  // counter sync and ordering match historical behaviour. There is deliberately
+  // no LIMIT: a restore cap silently dropped older sessions from the in-memory
+  // map, which broke channel-agent resume (the binder respawned a fresh session
+  // with a new providerSession) and orphaned direct sessions past the cap. The
+  // per-session transcript cap already bounds each row's memory; total row count
+  // is bounded instead by the age-reaper below.
   loadAllWebStmt = db.prepare(
     `SELECT id, vendor, vendor_session_id, cwd, repo_path, worktree_path,
             branch_name, display_name, workspace_id, agent_session_v2_json,
@@ -146,18 +206,133 @@ export function initRelayStateDb(configDir: string): void {
      WHERE status != 'archived'
      ORDER BY last_activity ASC`
   );
+  reapCandidatesStmt = db.prepare(
+    `SELECT id FROM web_sessions
+      WHERE status != 'archived' AND last_activity < @cutoff`
+  );
+
+  // Boot-time reclaim keeps the WAL checkpointed + freelist returned. Reaping is
+  // deferred to the periodic timer, NOT run here: at boot the in-memory session
+  // map is empty and the protected-id provider is not yet registered, so an
+  // eager reap could delete a stale-but-wanted row that restore is about to
+  // bring back / rebind. By the first interval tick, restore and provider
+  // registration have completed and the reap consults the live protection set.
+  runRelayStateDbMaintenance();
+  maintenanceTimer = setInterval(() => {
+    reapStaleWebSessions();
+    runRelayStateDbMaintenance();
+  }, MAINTENANCE_INTERVAL_MS);
+  maintenanceTimer.unref();
+}
+
+/**
+ * Register (or clear with `null`) the resolver for session ids the reaper must
+ * never delete. Production supplies the union of live in-memory session ids and
+ * session ids still referenced by an open channel binding, so a recent OR still-
+ * bound session survives even when its `last_activity` is older than the window.
+ */
+export function setReapProtectedSessionIdsProvider(
+  provider: (() => Iterable<string>) | null
+): void {
+  reapProtectedIdsProvider = provider;
+}
+
+/**
+ * Delete web_session rows whose `last_activity` predates {@link
+ * WEB_SESSION_IDLE_TTL_MS}, regardless of status EXCEPT `archived`. Protected
+ * ids — live/connected sessions and sessions still bound to an open channel —
+ * are excluded so resume anchors are never dropped. Returns the count removed.
+ *
+ * Protection resolves from `options.protectedIds` when given (tests), otherwise
+ * from the registered provider (production). With neither available the reap is
+ * a no-op: failing safe beats risking deletion of a live or still-bound session.
+ */
+export function reapStaleWebSessions(options?: {
+  protectedIds?: Iterable<string>;
+  nowMs?: number;
+}): number {
+  if (!db || !reapCandidatesStmt || !deleteWebStmt) return 0;
+
+  let protectedIds: Set<string>;
+  if (options?.protectedIds !== undefined) {
+    protectedIds = new Set(options.protectedIds);
+  } else if (reapProtectedIdsProvider) {
+    try {
+      protectedIds = new Set(reapProtectedIdsProvider());
+    } catch (err) {
+      logger.warn('reap protected-id provider threw: %s', err);
+      return 0;
+    }
+  } else {
+    if (!warnedNoReapProvider) {
+      warnedNoReapProvider = true;
+      logger.warn('reap skipped: no protected-id provider registered');
+    }
+    return 0;
+  }
+
+  const cutoff = (options?.nowMs ?? Date.now()) - WEB_SESSION_IDLE_TTL_MS;
+  try {
+    const candidates = reapCandidatesStmt.all({ cutoff }) as Array<{
+      id: string;
+    }>;
+    const doomed = candidates
+      .map((row) => row.id)
+      .filter((id) => !protectedIds.has(id));
+    if (doomed.length === 0) return 0;
+    const reap = db.transaction((ids: string[]) => {
+      for (const id of ids) deleteWebStmt!.run(id);
+    });
+    reap(doomed);
+    logger.info('reaped %d stale web session(s) by age', doomed.length);
+    return doomed.length;
+  } catch (err) {
+    logger.warn('reap failed: %s', err);
+    return 0;
+  }
+}
+
+/**
+ * Truncate the WAL and return freed pages to the OS. Mirrors the
+ * `wal_checkpoint(TRUNCATE)` pattern in analytics.ts; `incremental_vacuum`
+ * reclaims the freelist that auto_vacuum=INCREMENTAL accumulates.
+ */
+export function runRelayStateDbMaintenance(): void {
+  if (!db) return;
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch {
+    /* best-effort */
+  }
+  try {
+    db.pragma('incremental_vacuum');
+  } catch {
+    /* best-effort */
+  }
 }
 
 export function closeRelayStateDb(): void {
   flushAllPendingWrites();
   archivedIds.clear();
+  if (maintenanceTimer) {
+    clearInterval(maintenanceTimer);
+    maintenanceTimer = null;
+  }
+  // Drop the reaper protection resolver so a re-init (and test isolation) starts
+  // from a clean slate rather than a provider closed over a stale session map.
+  reapProtectedIdsProvider = null;
+  warnedNoReapProvider = false;
   if (db) {
+    // Final reclaim so a clean shutdown leaves a truncated WAL + returned
+    // freelist rather than the ~15MB high-water marks issue #1243 documented.
+    runRelayStateDbMaintenance();
     db.close();
     db = null;
     upsertWebStmt = null;
     deleteWebStmt = null;
     markStatusStmt = null;
     loadAllWebStmt = null;
+    reapCandidatesStmt = null;
   }
 }
 
@@ -254,8 +429,21 @@ export function flushAllPendingWrites(): void {
 function writeUpsert(session: WebSession): void {
   if (!upsertWebStmt) return;
 
-  const vendor = session.agentSessionV2.provider;
-  const vendorSessionId = pickVendorSessionId(session.agentSessionV2);
+  // Bound the transcript before it hits disk (#1243). Capping at the persist
+  // boundary — the single ≤1/s sink both debounced and immediate writes flow
+  // through — bounds the on-disk blob AND, by writing the trimmed structure
+  // back into the live session, the in-memory transcript (and thus the
+  // boot-time restore rss). Doing it here rather than per-append also keeps the
+  // reducer's immutable `[...items, item]` rebuild off an ever-growing array.
+  const cappedAgentSessionV2 = capAgentSessionTranscriptV2(
+    session.agentSessionV2
+  );
+  if (cappedAgentSessionV2 !== session.agentSessionV2) {
+    session.agentSessionV2 = cappedAgentSessionV2;
+  }
+
+  const vendor = cappedAgentSessionV2.provider;
+  const vendorSessionId = pickVendorSessionId(cappedAgentSessionV2);
 
   const meta: WebSessionMeta = {
     type: session.type,
@@ -283,7 +471,7 @@ function writeUpsert(session: WebSession): void {
       branchName: session.branchName ?? null,
       displayName: session.displayName ?? null,
       workspaceId: session.workspaceId ?? null,
-      agentSessionV2Json: JSON.stringify(session.agentSessionV2),
+      agentSessionV2Json: JSON.stringify(cappedAgentSessionV2),
       metaJson: JSON.stringify(meta),
       createdAt: toEpochMs(session.createdAt),
       lastActivity: toEpochMs(session.lastActivity),
@@ -358,9 +546,14 @@ export function loadAllWebSessions(): LoadedWebSessionRow[] {
   const out: LoadedWebSessionRow[] = [];
   for (const row of rows) {
     try {
-      const agentSession = JSON.parse(
-        row.agent_session_v2_json
-      ) as AgentSessionV2;
+      // Cap the parsed blob before it is cloned into the live session (#1243).
+      // A row persisted before this fix landed can still be the observed 14.9MB
+      // blob; capping here bounds the restore-time JSON.parse + structuredClone
+      // burst, and the next persist rewrites the trimmed blob so disk
+      // self-heals.
+      const agentSession = capAgentSessionTranscriptV2(
+        JSON.parse(row.agent_session_v2_json) as AgentSessionV2
+      );
       const meta = JSON.parse(row.meta_json) as WebSessionMeta;
       out.push({
         id: row.id,

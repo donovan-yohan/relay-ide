@@ -90,6 +90,7 @@ import {
   initRelayStateDb,
   closeRelayStateDb,
   flushAllPendingWrites as flushRelayStateWrites,
+  setReapProtectedSessionIdsProvider,
 } from './relay-state-db.js';
 import {
   createWorkContextRouter,
@@ -2145,6 +2146,21 @@ async function main(): Promise<void> {
       channelAgentBinder.handleMessagePosted(message, mentions)
     );
   }
+
+  // Teach the relay-state-db age-reaper (#1248) which web_sessions must never be
+  // evicted: every session live in the in-memory map (including disconnected-
+  // but-retained ones a channel binding may rebind) plus every session still
+  // referenced by an open channel binding. Without this the reaper could drop a
+  // stale-but-still-wanted session's row and destroy its resume anchor.
+  setReapProtectedSessionIdsProvider(() => {
+    const protectedIds = new Set<string>(sessions.liveSessionIds());
+    if (channelMessageStore) {
+      for (const id of channelMessageStore.listBoundSessionIds()) {
+        protectedIds.add(id);
+      }
+    }
+    return protectedIds;
+  });
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {

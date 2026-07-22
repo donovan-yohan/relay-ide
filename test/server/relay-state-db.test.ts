@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   initRelayStateDb,
@@ -11,9 +12,17 @@ import {
   loadAllWebSessions,
   deleteWebSession,
   markWebSessionStatus,
+  reapStaleWebSessions,
+  setReapProtectedSessionIdsProvider,
+  runRelayStateDbMaintenance,
 } from '../../server/relay-state-db.js';
 import type { WebSession } from '../../server/types.js';
-import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
+import {
+  emptyAgentSessionV2,
+  MAX_TRANSCRIPT_BYTES,
+  type AgentItemV2,
+  type AgentTurnV2,
+} from '../../shared/agent-chat-protocol-v2.js';
 
 vi.mock('../../server/logger.js', () => ({
   createLogger: () => ({
@@ -187,5 +196,246 @@ describe('relay-state-db', () => {
 
     const rows = loadAllWebSessions();
     expect(rows[0]!.vendorSessionId).toBeNull();
+  });
+
+  it('caps an oversized transcript on persist and cold-resume (#1243)', () => {
+    const bigTurn = (id: string): AgentTurnV2 => ({
+      id,
+      status: 'completed',
+      inputMessageId: `${id}-input`,
+      startedAt: '2026-07-22T00:00:00.000Z',
+      completedAt: '2026-07-22T00:00:02.000Z',
+      items: [
+        {
+          type: 'commandExecution',
+          id: `${id}-cmd`,
+          command: 'echo',
+          output: 'x'.repeat(200_000),
+          status: 'completed',
+          startedAt: '2026-07-22T00:00:00.000Z',
+          completedAt: '2026-07-22T00:00:01.000Z',
+        } satisfies AgentItemV2,
+      ],
+    });
+
+    const session = fakeWebSession();
+    // ~1.6MB transcript across 8 turns — well over the 512KB budget.
+    session.agentSessionV2.turns = Array.from({ length: 8 }, (_, i) =>
+      bigTurn(`turn-${i}`)
+    );
+
+    upsertWebSessionNow(session);
+
+    // In-memory transcript is trimmed in place (bounds the live/boot rss).
+    expect(
+      Buffer.byteLength(JSON.stringify(session.agentSessionV2.turns), 'utf8')
+    ).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+
+    // Cold-resume: the persisted blob restores as a valid, bounded session that
+    // preserves the most-recent turn tail.
+    const rows = loadAllWebSessions();
+    expect(rows).toHaveLength(1);
+    const restored = rows[0]!.agentSessionV2;
+    expect(
+      Buffer.byteLength(JSON.stringify(restored.turns), 'utf8')
+    ).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+    expect(restored.turns.map((t) => t.id)).toContain('turn-7');
+    expect(restored.turns.map((t) => t.id)).not.toContain('turn-0');
+    for (const t of restored.turns) expect(t.items.length).toBeGreaterThan(0);
+  });
+
+  it('restores ALL non-archived rows on boot (no restore cap) (#1248)', () => {
+    // >50 rows: the removed MAX_RESTORE_SESSIONS cap used to drop the oldest,
+    // which broke channel-agent resume (binder respawned a fresh session) and
+    // orphaned direct sessions past the cap. All must restore, resume anchor
+    // (vendorSessionId) intact.
+    for (let i = 0; i < 60; i++) {
+      const session = fakeWebSession({
+        id: `sess-${i}`,
+        lastActivity: new Date(
+          Date.parse('2026-04-29T00:00:00Z') + i * 1000
+        ).toISOString(),
+      });
+      session.agentSessionV2 = emptyAgentSessionV2({
+        id: `sess-${i}`,
+        provider: 'claude',
+        cwd: '/repo',
+        capabilities: { resume: true },
+        providerSession: { claudeSessionId: `claude-${i}` },
+      });
+      upsertWebSessionNow(session);
+    }
+
+    const rows = loadAllWebSessions();
+    expect(rows).toHaveLength(60);
+    const ids = rows.map((r) => r.id);
+    // Oldest (sess-0) and newest (sess-59) both present — nothing dropped.
+    expect(ids).toContain('sess-0');
+    expect(ids).toContain('sess-59');
+    // Resume anchor survives for the oldest row.
+    const oldest = rows.find((r) => r.id === 'sess-0')!;
+    expect(oldest.vendorSessionId).toBe('claude-0');
+  });
+
+  it('age-reaps an old idle status=active row (v2 idle derives to active) (#1248)', () => {
+    const now = Date.now();
+    const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+
+    const activeOld = fakeWebSession({
+      id: 'active-old',
+      lastActivity: eightDaysAgo,
+    });
+    // live.status stays idle -> derived status 'active'. A status-scoped reaper
+    // would leak this forever; the age reaper evicts it.
+    upsertWebSessionNow(activeOld);
+
+    const removed = reapStaleWebSessions({ protectedIds: new Set() });
+    expect(removed).toBe(1);
+    expect(loadAllWebSessions().map((r) => r.id)).not.toContain('active-old');
+  });
+
+  it('age-reaps old rows regardless of status but keeps recent ones (#1248)', () => {
+    const now = Date.now();
+    const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+
+    const staleDisconnected = fakeWebSession({
+      id: 'stale-disc',
+      lastActivity: eightDaysAgo,
+    });
+    staleDisconnected.agentSessionV2.live.status = 'disconnected';
+
+    const staleActive = fakeWebSession({
+      id: 'stale-active',
+      lastActivity: eightDaysAgo,
+    });
+
+    const recent = fakeWebSession({ id: 'recent', lastActivity: oneHourAgo });
+
+    upsertWebSessionNow(staleDisconnected);
+    upsertWebSessionNow(staleActive);
+    upsertWebSessionNow(recent);
+
+    const removed = reapStaleWebSessions({ protectedIds: new Set() });
+    expect(removed).toBe(2);
+
+    const ids = loadAllWebSessions().map((r) => r.id);
+    expect(ids).not.toContain('stale-disc');
+    expect(ids).not.toContain('stale-active');
+    expect(ids).toContain('recent');
+  });
+
+  it('never reaps a live-in-memory or channel-bound session even when old (#1248)', () => {
+    const now = Date.now();
+    const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+
+    const liveOld = fakeWebSession({
+      id: 'live-old',
+      lastActivity: eightDaysAgo,
+    });
+    const boundOld = fakeWebSession({
+      id: 'bound-old',
+      lastActivity: eightDaysAgo,
+    });
+    boundOld.agentSessionV2.live.status = 'disconnected';
+    const unprotectedOld = fakeWebSession({
+      id: 'unprotected-old',
+      lastActivity: eightDaysAgo,
+    });
+
+    upsertWebSessionNow(liveOld);
+    upsertWebSessionNow(boundOld);
+    upsertWebSessionNow(unprotectedOld);
+
+    // Protection set = live map ids + channel-bound session ids.
+    const removed = reapStaleWebSessions({
+      protectedIds: new Set(['live-old', 'bound-old']),
+    });
+    expect(removed).toBe(1);
+
+    const ids = loadAllWebSessions().map((r) => r.id);
+    expect(ids).toContain('live-old');
+    expect(ids).toContain('bound-old');
+    expect(ids).not.toContain('unprotected-old');
+  });
+
+  it('reaper reads the registered protection provider (#1248)', () => {
+    const now = Date.now();
+    const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+
+    upsertWebSessionNow(
+      fakeWebSession({ id: 'protected-old', lastActivity: eightDaysAgo })
+    );
+    upsertWebSessionNow(
+      fakeWebSession({ id: 'doomed-old', lastActivity: eightDaysAgo })
+    );
+
+    setReapProtectedSessionIdsProvider(() => ['protected-old']);
+    try {
+      const removed = reapStaleWebSessions();
+      expect(removed).toBe(1);
+      const ids = loadAllWebSessions().map((r) => r.id);
+      expect(ids).toContain('protected-old');
+      expect(ids).not.toContain('doomed-old');
+    } finally {
+      setReapProtectedSessionIdsProvider(null);
+    }
+  });
+
+  it('reap is a no-op when no protection is resolvable (fail-safe) (#1248)', () => {
+    const eightDaysAgo = new Date(
+      Date.now() - 8 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    upsertWebSessionNow(
+      fakeWebSession({ id: 'old', lastActivity: eightDaysAgo })
+    );
+
+    // No explicit set, no provider registered -> skip rather than risk dropping
+    // a live/bound session's resume anchor.
+    expect(reapStaleWebSessions()).toBe(0);
+    expect(loadAllWebSessions().map((r) => r.id)).toContain('old');
+  });
+
+  it('enables incremental auto_vacuum and truncates the WAL on maintenance', () => {
+    const session = fakeWebSession();
+    session.agentSessionV2.turns = [
+      {
+        id: 'turn-0',
+        status: 'completed',
+        inputMessageId: 'in',
+        startedAt: '2026-07-22T00:00:00.000Z',
+        completedAt: '2026-07-22T00:00:01.000Z',
+        items: [
+          {
+            type: 'commandExecution',
+            id: 'c',
+            command: 'echo',
+            output: 'y'.repeat(50_000),
+            status: 'completed',
+            startedAt: '2026-07-22T00:00:00.000Z',
+            completedAt: '2026-07-22T00:00:01.000Z',
+          } satisfies AgentItemV2,
+        ],
+      },
+    ];
+    upsertWebSessionNow(session);
+    deleteWebSession(session.id); // orphan pages onto the freelist
+
+    runRelayStateDbMaintenance();
+
+    // Independent connection: auto_vacuum is INCREMENTAL (2) and the WAL was
+    // truncated back toward zero by wal_checkpoint(TRUNCATE).
+    const probe = new Database(path.join(dir, 'relay-state.db'), {
+      readonly: true,
+    });
+    try {
+      expect(probe.pragma('auto_vacuum', { simple: true })).toBe(2);
+    } finally {
+      probe.close();
+    }
+    const walPath = path.join(dir, 'relay-state.db-wal');
+    if (fs.existsSync(walPath)) {
+      expect(fs.statSync(walPath).size).toBeLessThan(1024 * 1024);
+    }
   });
 });

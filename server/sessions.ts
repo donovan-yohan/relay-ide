@@ -786,6 +786,16 @@ function get(id: string): Session | undefined {
   return sessions.get(id);
 }
 
+/**
+ * Ids of every session currently in the in-memory map — live/connected AND
+ * disconnected-but-retained. The relay-state-db age-reaper (#1248) treats these
+ * as protected so an idle-but-in-memory session (a channel binding still points
+ * at these to rebind) is never evicted from disk regardless of its age.
+ */
+function liveSessionIds(): string[] {
+  return [...sessions.keys()];
+}
+
 function sessionScrollbackCapacityMetadata(session: PtySession): {
   bytesDropped: number;
   capacityBytes: number;
@@ -2581,8 +2591,11 @@ async function restoreWebSessionsFromDb(
   reattachTimeoutMs: number
 ): Promise<number> {
   let restored = 0;
-  // Web sessions live in relay-state.db. No staleness wipe — DB rows persist
-  // until user archives or closes the session.
+  // Web sessions live in relay-state.db. Rows persist until the user archives or
+  // closes the session, OR until the relay-state-db age-reaper (#1248) evicts a
+  // row idle past its retention window — but never one that is live in-memory or
+  // still bound to an open channel, so resume anchors survive. loadAllWebSessions
+  // restores ALL non-archived rows (no restore cap); the reaper bounds count.
   for (const row of loadAllWebSessions()) {
     if (webSessionRestoreShutdown) break;
     try {
@@ -2796,6 +2809,7 @@ export {
   renew,
   createWeb,
   get,
+  liveSessionIds,
   list,
   kill,
   detachForRestart,

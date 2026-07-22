@@ -1023,6 +1023,225 @@ export function applyAgentPatchV2(
   }
 }
 
+// ── Transcript FIFO cap (#1243) ───────────────────────────────────────────
+//
+// `AgentSessionV2.turns` is otherwise unbounded: every streamed delta appends
+// to `turns[].items[]`, so a long-lived channel-agent web session grows the
+// persisted `agent_session_v2_json` blob (and the boot-time restore that
+// JSON.parses + structuredClones it) without limit. We bound the transcript to
+// a FIFO byte budget, mirroring the 256KB PTY scrollback / 256KB
+// MAX_IMPORT_TRANSCRIPT_BYTES import discipline: the most-recent tail (what
+// resume + rendering actually need — provider resume rides the resume id, not
+// this display transcript) is preserved, oldest turns/items are trimmed first,
+// and a single oversized item's output/card is truncated so one giant tool
+// result cannot blow the budget on its own.
+
+/** Total FIFO byte budget for a persisted/in-memory transcript. 512KB is 2x the
+ *  256KB scrollback/import discipline — a single channel-agent turn can be
+ *  large, and the tail is display-only — while still crushing the observed
+ *  14.9MB blob ~30x (and the boot rss it amplifies into) back to a bounded
+ *  size. */
+export const MAX_TRANSCRIPT_BYTES = 512_000;
+/** Byte budget for a single item. A 2MB tool output shouldn't consume the whole
+ *  transcript budget, so an oversized item's dominant text field(s) are
+ *  truncated in place before any FIFO turn/item eviction runs. */
+export const MAX_ITEM_BYTES = 128_000;
+
+function encodedByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function jsonByteLength(value: unknown): number {
+  return encodedByteLength(JSON.stringify(value) ?? '');
+}
+
+/** Truncate a string to fit `maxBytes` (UTF-8), appending an elision marker. */
+function truncateToBytes(input: string, maxBytes: number): string {
+  const enc = new TextEncoder();
+  const originalBytes = enc.encode(input).byteLength;
+  if (originalBytes <= maxBytes) return input;
+  // Reserve headroom for the marker, then binary-search the longest prefix that
+  // fits so we never emit a partial multi-byte code point.
+  const target = Math.max(0, maxBytes - 48);
+  let lo = 0;
+  let hi = input.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (enc.encode(input.slice(0, mid)).byteLength <= target) lo = mid;
+    else hi = mid - 1;
+  }
+  const kept = input.slice(0, lo);
+  const elided = originalBytes - enc.encode(kept).byteLength;
+  return `${kept}\n… [truncated ${elided} bytes]`;
+}
+
+function truncateUnknownToBytes(value: unknown, maxBytes: number): unknown {
+  const asString =
+    typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
+  if (encodedByteLength(asString) <= maxBytes) return value;
+  return truncateToBytes(asString, maxBytes);
+}
+
+/**
+ * Shrink a single item under `maxBytes` by truncating its dominant text-bearing
+ * field(s) and normalized card content. Structure-preserving: the item keeps
+ * its id/type/status so the reducer and renderer still accept it.
+ */
+function truncateItemToBudget(
+  item: AgentItemV2,
+  maxBytes: number
+): AgentItemV2 {
+  if (jsonByteLength(item) <= maxBytes) return item;
+
+  const fieldBudget = Math.max(1_000, Math.floor(maxBytes * 0.6));
+  const next = { ...item } as AgentItemV2;
+
+  if (next.card?.content !== undefined) {
+    next.card = {
+      ...next.card,
+      content: truncateToBytes(next.card.content, fieldBudget),
+    };
+  }
+
+  switch (next.type) {
+    case 'assistantMessage':
+      next.text = truncateToBytes(next.text, fieldBudget);
+      break;
+    case 'userMessage':
+      next.text = truncateToBytes(next.text, fieldBudget);
+      if (next.expandedText) {
+        next.expandedText = truncateToBytes(next.expandedText, fieldBudget);
+      }
+      break;
+    case 'reasoning':
+      next.summary = truncateToBytes(next.summary, fieldBudget);
+      if (next.detail) next.detail = truncateToBytes(next.detail, fieldBudget);
+      break;
+    case 'plan':
+      next.text = truncateToBytes(next.text, fieldBudget);
+      break;
+    case 'commandExecution':
+      next.output = truncateToBytes(next.output, fieldBudget);
+      break;
+    case 'fileChange':
+      if (next.patch) next.patch = truncateToBytes(next.patch, fieldBudget);
+      break;
+    case 'dynamicToolCall':
+      if (typeof next.content === 'string') {
+        next.content = truncateToBytes(next.content, fieldBudget);
+      }
+      if (next.result !== undefined) {
+        next.result = truncateUnknownToBytes(next.result, fieldBudget);
+      }
+      break;
+    case 'mcpToolCall':
+      if (next.result !== undefined) {
+        next.result = truncateUnknownToBytes(next.result, fieldBudget);
+      }
+      break;
+    case 'compaction':
+      next.summary = truncateToBytes(next.summary, fieldBudget);
+      break;
+    case 'errorMessage':
+      next.message = truncateToBytes(next.message, fieldBudget);
+      break;
+    case 'providerExtension':
+      next.payload = { truncated: true, namespace: next.namespace };
+      break;
+    default:
+      break;
+  }
+
+  // A pathological item may still be over budget through bulky structured
+  // fields (arguments / metadata). Drop those before giving up — they are the
+  // least resume-relevant part of a display item.
+  if (jsonByteLength(next) > maxBytes) {
+    if ('arguments' in next && next.arguments !== undefined) {
+      delete (next as { arguments?: unknown }).arguments;
+    }
+    if (next.metadata !== undefined) delete next.metadata;
+  }
+
+  return next;
+}
+
+function transcriptByteLength(turns: AgentTurnV2[]): number {
+  return jsonByteLength(turns);
+}
+
+/** FIFO-drop oldest items across turns until under budget, preserving the tail
+ *  and never leaving a retained turn with zero items. */
+function trimItemsFifo(turns: AgentTurnV2[], maxBytes: number): AgentTurnV2[] {
+  const result = turns.map((turn) => ({ ...turn, items: [...turn.items] }));
+  const totalItems = (): number =>
+    result.reduce((sum, turn) => sum + turn.items.length, 0);
+
+  while (totalItems() > 1 && transcriptByteLength(result) > maxBytes) {
+    const idx = result.findIndex((turn) => turn.items.length > 0);
+    if (idx === -1) break;
+    result[idx]!.items.shift();
+    // Drop a now-empty turn unless it is the only turn left (which must keep at
+    // least one item — the loop guard guarantees it does).
+    if (result[idx]!.items.length === 0 && result.length > 1) {
+      result.splice(idx, 1);
+    }
+  }
+  return result;
+}
+
+/**
+ * Bound an {@link AgentSessionV2} transcript to a FIFO byte budget (#1243).
+ *
+ * 1. Truncate any single oversized item's dominant text/card content.
+ * 2. FIFO-drop oldest whole turns while over budget (never the active turn).
+ * 3. If a single retained turn is still too big, FIFO-drop its oldest items,
+ *    preserving the most-recent tail.
+ *
+ * Returns the same reference when already within budget (cheap fast path).
+ */
+export function capAgentSessionTranscriptV2(
+  session: AgentSessionV2,
+  maxTranscriptBytes: number = MAX_TRANSCRIPT_BYTES,
+  maxItemBytes: number = MAX_ITEM_BYTES
+): AgentSessionV2 {
+  const activeTurnId = session.live.activeTurnId;
+
+  // Pass 1: truncate oversized single items (structure-preserving).
+  let itemsMutated = false;
+  const truncatedTurns = session.turns.map((turn) => {
+    let changed = false;
+    const items = turn.items.map((item) => {
+      const capped = truncateItemToBudget(item, maxItemBytes);
+      if (capped !== item) changed = true;
+      return capped;
+    });
+    if (!changed) return turn;
+    itemsMutated = true;
+    return { ...turn, items };
+  });
+
+  if (transcriptByteLength(truncatedTurns) <= maxTranscriptBytes) {
+    return itemsMutated ? { ...session, turns: truncatedTurns } : session;
+  }
+
+  // Pass 2: FIFO-drop oldest whole turns.
+  let working = [...truncatedTurns];
+  while (
+    working.length > 1 &&
+    transcriptByteLength(working) > maxTranscriptBytes
+  ) {
+    if (working[0]!.id === activeTurnId) break;
+    working.shift();
+  }
+
+  // Pass 3: single retained turn still too big → trim its oldest items.
+  if (transcriptByteLength(working) > maxTranscriptBytes) {
+    working = trimItemsFifo(working, maxTranscriptBytes);
+  }
+
+  return { ...session, turns: working };
+}
+
 function completeLiveStateForActiveTurn(
   session: AgentSessionV2,
   patch: AgentTurnCompletedPatchV2
