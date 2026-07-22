@@ -15,7 +15,10 @@
 // verbatim by the @mention palette, sidebar DM dot, and streaming/presence chip —
 // do not fork.
 import type { ChannelSenderRef } from '../../../../shared/channel-chat-protocol.js';
-import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
+import {
+  builtInAgentProfileId,
+  parseHistoricalAgentSenderProviderId,
+} from '../../../../shared/agent-profile.js';
 import { deriveColor } from '../colors.js';
 
 export type KnownAgentGlyph = 'claude' | 'codex' | 'hermes' | 'opencode';
@@ -48,6 +51,34 @@ function isKnownGlyph(value: string): value is KnownAgentGlyph {
   return (KNOWN_AGENT_GLYPHS as readonly string[]).includes(value);
 }
 
+/**
+ * Effective RENDER id for a sender (#1245). Channel rows persisted BEFORE the
+ * #1234 attribution re-key carry the bare `agent:<vendor>` sender id, while the
+ * re-key stamps new agent rows with the profile Actor id
+ * (`builtInAgentProfileId(vendor)` for a vendor's built-in default). Reading a
+ * legacy row back verbatim would drop it from its curated `var(--sender-<vendor>)`
+ * color (the default-profile check below keys on the profile id) and split it
+ * from new `agent-profile:<vendor>:default` rows in timeline grouping.
+ *
+ * Map a legacy `agent:<vendor>` id to that vendor's built-in default profile id
+ * for RENDER decisions only — color here and the grouping key in
+ * `channel-timeline-layout.ts`. This is deliberately NOT a store/wire mutation:
+ * the CLI-gateway actor lane (`channel-chat-router.ts` `deriveSender`) also
+ * emits `agent:<actorId>` on the wire and that attribution must stay byte-exact,
+ * so the heal lives at the render boundary instead of `rowToMessage`. Only
+ * re-maps when the parsed vendor equals the authoritative `providerId` (a true
+ * legacy vendor-default row); already-migrated `agent-profile:*`, human, and
+ * system ids pass through unchanged.
+ */
+export function resolveRenderSenderId(sender: ChannelSenderRef): string {
+  if (sender.kind !== 'agent') return sender.id;
+  const providerId = sender.providerId ?? '';
+  if (providerId === '') return sender.id;
+  const legacyVendor = parseHistoricalAgentSenderProviderId(sender.id);
+  if (legacyVendor === null || legacyVendor !== providerId) return sender.id;
+  return builtInAgentProfileId(providerId);
+}
+
 export function resolveSenderIdentity(
   sender: ChannelSenderRef
 ): SenderIdentity {
@@ -69,14 +100,17 @@ export function resolveSenderIdentity(
   }
   // providerId is authoritative from the explicit field — never from the id.
   const providerId = sender.providerId ?? '';
+  // Heal legacy `agent:<vendor>` rows to the vendor built-in default id for the
+  // color decision (#1245) without touching the wire id.
+  const renderId = resolveRenderSenderId(sender);
   // A DEFAULT (built-in) profile's id is exactly `agent-profile:<vendor>:default`.
   // Only then does it keep the curated vendor token; every non-default profile
   // hashes on its own Actor id so same-vendor profiles are visually distinct.
   const isDefaultProfile =
-    providerId !== '' && sender.id === builtInAgentProfileId(providerId);
+    providerId !== '' && renderId === builtInAgentProfileId(providerId);
   const knownVar = KNOWN_AGENT_COLOR_VAR[providerId];
   const colorVar =
-    isDefaultProfile && knownVar ? `var(${knownVar})` : deriveColor(sender.id);
+    isDefaultProfile && knownVar ? `var(${knownVar})` : deriveColor(renderId);
   // The vendor glyph is shared across all of a vendor's profiles (default or not).
   const glyph = isKnownGlyph(providerId) ? providerId : null;
   return {

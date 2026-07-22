@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSenderIdentity } from '../../../frontend/src/lib/chat/sender-identity.js';
+import {
+  resolveSenderIdentity,
+  resolveRenderSenderId,
+} from '../../../frontend/src/lib/chat/sender-identity.js';
 import { deriveColor } from '../../../frontend/src/lib/colors.js';
 import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 
@@ -109,5 +112,74 @@ describe('resolveSenderIdentity', () => {
     // No curated token for an unknown vendor — a concrete hex from the palette.
     expect(id.colorVar).toBe(deriveColor(builtInAgentProfileId('custom-acme')));
     expect(id.colorVar.startsWith('#')).toBe(true);
+  });
+
+  // #1245: rows persisted BEFORE the #1234 re-key carry the bare `agent:<vendor>`
+  // sender id. Heal the curated color at the render boundary WITHOUT mutating the
+  // wire id (the CLI-gateway lane also emits `agent:<actorId>` and must stay
+  // byte-exact — see test/channel-routes.test.ts).
+  it.each([
+    ['claude', 'var(--sender-claude)'],
+    ['codex', 'var(--sender-codex)'],
+    ['hermes', 'var(--sender-hermes)'],
+    ['opencode', 'var(--sender-opencode)'],
+  ] as const)(
+    'heals a legacy agent:%s row to the curated vendor token + glyph',
+    (providerId, colorVar) => {
+      const id = resolveSenderIdentity({
+        kind: 'agent',
+        id: `agent:${providerId}`,
+        providerId,
+      });
+      expect(id.colorVar).toBe(colorVar);
+      // NOT a hash of the legacy wire id (the exact P2 the re-key regressed).
+      expect(id.colorVar).not.toBe(deriveColor(`agent:${providerId}`));
+      expect(id.glyph).toBe(providerId);
+    }
+  );
+
+  it('heals a legacy custom-vendor row to its built-in default hash, no curated token', () => {
+    const id = resolveSenderIdentity({
+      kind: 'agent',
+      id: 'agent:acme',
+      providerId: 'acme',
+    });
+    expect(id.glyph).toBe(null);
+    // Hashes on the built-in default id (matching a new agent-profile:acme:default
+    // row), not on the legacy `agent:acme` wire id.
+    expect(id.colorVar).toBe(deriveColor(builtInAgentProfileId('acme')));
+    expect(id.colorVar).not.toBe(deriveColor('agent:acme'));
+  });
+
+  it('resolveRenderSenderId heals only legacy vendor-default ids, else passes through', () => {
+    // Legacy vendor-default row → the vendor built-in default profile id.
+    expect(
+      resolveRenderSenderId({
+        kind: 'agent',
+        id: 'agent:claude',
+        providerId: 'claude',
+      })
+    ).toBe(builtInAgentProfileId('claude'));
+    // Already-migrated non-default profile → unchanged.
+    expect(
+      resolveRenderSenderId({
+        kind: 'agent',
+        id: 'agent-profile:claude:backend-xyz',
+        providerId: 'claude',
+      })
+    ).toBe('agent-profile:claude:backend-xyz');
+    // Human sender → unchanged.
+    expect(resolveRenderSenderId({ kind: 'human', id: 'human:operator' })).toBe(
+      'human:operator'
+    );
+    // A row whose parsed vendor disagrees with the authoritative providerId is
+    // left alone (never seen from the bridge, but the guard stays precise).
+    expect(
+      resolveRenderSenderId({
+        kind: 'agent',
+        id: 'agent:codex',
+        providerId: 'claude',
+      })
+    ).toBe('agent:codex');
   });
 });
