@@ -173,6 +173,70 @@ export function resolveProfileForMention<T extends AgentProfileContact>(
   return best;
 }
 
+/**
+ * Delimiter separating a mention's display name from its short local
+ * disambiguator token in inserted mention text (e.g. `@Reviewer#ab12cd`). Kept
+ * as a shared const so the palette's insert-text writer and `parseMentions`
+ * reader never drift.
+ */
+export const MENTION_DISAMBIGUATOR_DELIMITER = '#';
+
+/** Alphanumeric-only, lowercased view of a local Actor id (for suffix slices). */
+function alnumId(id: string): string {
+  return id.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+/**
+ * Assign each DISPLAY-NAME-colliding profile a SHORT, STABLE, GROUP-UNIQUE token
+ * sliced from the TAIL of its local Actor id — never an npub / public key and
+ * never a team/community directory lookup (boundaryCheck #1231). Only contacts
+ * that share a normalized, NON-EMPTY display name get a token; unique names and
+ * empty-name vendor defaults (reachable only via their vendor alias) are left
+ * out. The slice length grows from 6 until every member of a collision group is
+ * distinguishable, so the token is always both a genuine id suffix and
+ * unambiguous within its group. Deterministic and input-order independent, so
+ * the palette writer and `parseMentions` reader compute identical tokens from
+ * the same contact set.
+ */
+export function computeMentionDisambiguators(
+  contacts: readonly Pick<AgentProfileContact, 'id' | 'displayName'>[]
+): Map<string, string> {
+  const groups = new Map<
+    string,
+    Pick<AgentProfileContact, 'id' | 'displayName'>[]
+  >();
+  for (const contact of contacts) {
+    const name = normalizeMentionToken(contact.displayName);
+    if (!name) continue;
+    const bucket = groups.get(name);
+    if (bucket) bucket.push(contact);
+    else groups.set(name, [contact]);
+  }
+  const tokens = new Map<string, string>();
+  for (const bucket of groups.values()) {
+    if (bucket.length < 2) continue;
+    const maxLen = Math.max(6, ...bucket.map((c) => alnumId(c.id).length));
+    let len = 6;
+    for (; len <= maxLen; len++) {
+      const seen = new Set<string>();
+      let unique = true;
+      for (const contact of bucket) {
+        const slice = alnumId(contact.id).slice(-len);
+        if (seen.has(slice)) {
+          unique = false;
+          break;
+        }
+        seen.add(slice);
+      }
+      if (unique) break;
+    }
+    for (const contact of bucket) {
+      tokens.set(contact.id, alnumId(contact.id).slice(-len));
+    }
+  }
+  return tokens;
+}
+
 const HISTORICAL_AGENT_SENDER_PREFIX = 'agent:';
 
 /**
