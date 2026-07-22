@@ -107,6 +107,10 @@ import {
   type AgentPresenceStore,
 } from './agent-presence-store.js';
 import {
+  initAgentProfileStore,
+  type AgentProfileStore,
+} from './agent-profile-store.js';
+import {
   initInterventionLog,
   closeInterventionLog,
 } from './intervention-log.js';
@@ -1633,6 +1637,29 @@ function presenceActorIdFromRequest(req: express.Request): string | undefined {
   return authenticatedCliGatewayActorCredential(req)?.actor?.id;
 }
 
+/**
+ * Boot the #1233 AgentProfile store and seed one built-in default profile per
+ * CONFIGURED framework, or `null` when init fails (agent-profile identity then
+ * simply has no rows this boot). Seeding is idempotent — safe every startup.
+ * Extracted from `main()` to keep that boot function under the complexity gate.
+ */
+function initAgentProfileStoreBestEffort(
+  configDir: string,
+  frameworks: readonly { id: string }[]
+): AgentProfileStore | null {
+  try {
+    const store = initAgentProfileStore(configDir);
+    store.seedBuiltIns(frameworks);
+    return store;
+  } catch (err) {
+    logger.warn(
+      'Agent profile store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initWorkflowRunStoreBestEffort(
   configDir: string
 ): WorkflowRunStore | null {
@@ -2034,6 +2061,15 @@ async function main(): Promise<void> {
   // overlay. Guarded so a DB error degrades to "no explicit presence" (the
   // roster falls back to the derived projection) rather than failing boot.
   const agentPresenceStore = initAgentPresenceStoreBestEffort(configDir);
+
+  // AgentProfile store (#1233, epic #1232). Own SQLite file (`agent-profiles.db`);
+  // new table only, non-destructive. Seeds one built-in default profile per
+  // configured framework at boot (idempotent). Guarded so a DB error degrades to
+  // "no profile rows" rather than failing boot. NO live-row re-key ships here.
+  const agentProfileStore = initAgentProfileStoreBestEffort(
+    configDir,
+    listConfiguredFrameworks(getConfig().frameworks)
+  );
 
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
   // degrade to typed 503 when initialization fails so hub startup stays useful.
@@ -5911,6 +5947,7 @@ async function main(): Promise<void> {
         iaStore?.close();
         contextPacketStore?.close();
         agentPresenceStore?.close();
+        agentProfileStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         automationRunStore?.close();
@@ -6003,6 +6040,7 @@ async function main(): Promise<void> {
     iaStore?.close();
     contextPacketStore?.close();
     agentPresenceStore?.close();
+    agentProfileStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     automationRunStore?.close();
