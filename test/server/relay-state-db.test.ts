@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   initRelayStateDb,
@@ -11,9 +12,16 @@ import {
   loadAllWebSessions,
   deleteWebSession,
   markWebSessionStatus,
+  reapStaleWebSessions,
+  runRelayStateDbMaintenance,
 } from '../../server/relay-state-db.js';
 import type { WebSession } from '../../server/types.js';
-import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
+import {
+  emptyAgentSessionV2,
+  MAX_TRANSCRIPT_BYTES,
+  type AgentItemV2,
+  type AgentTurnV2,
+} from '../../shared/agent-chat-protocol-v2.js';
 
 vi.mock('../../server/logger.js', () => ({
   createLogger: () => ({
@@ -187,5 +195,130 @@ describe('relay-state-db', () => {
 
     const rows = loadAllWebSessions();
     expect(rows[0]!.vendorSessionId).toBeNull();
+  });
+
+  it('caps an oversized transcript on persist and cold-resume (#1243)', () => {
+    const bigTurn = (id: string): AgentTurnV2 => ({
+      id,
+      status: 'completed',
+      inputMessageId: `${id}-input`,
+      startedAt: '2026-07-22T00:00:00.000Z',
+      completedAt: '2026-07-22T00:00:02.000Z',
+      items: [
+        {
+          type: 'commandExecution',
+          id: `${id}-cmd`,
+          command: 'echo',
+          output: 'x'.repeat(200_000),
+          status: 'completed',
+          startedAt: '2026-07-22T00:00:00.000Z',
+          completedAt: '2026-07-22T00:00:01.000Z',
+        } satisfies AgentItemV2,
+      ],
+    });
+
+    const session = fakeWebSession();
+    // ~1.6MB transcript across 8 turns — well over the 512KB budget.
+    session.agentSessionV2.turns = Array.from({ length: 8 }, (_, i) =>
+      bigTurn(`turn-${i}`)
+    );
+
+    upsertWebSessionNow(session);
+
+    // In-memory transcript is trimmed in place (bounds the live/boot rss).
+    expect(
+      Buffer.byteLength(JSON.stringify(session.agentSessionV2.turns), 'utf8')
+    ).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+
+    // Cold-resume: the persisted blob restores as a valid, bounded session that
+    // preserves the most-recent turn tail.
+    const rows = loadAllWebSessions();
+    expect(rows).toHaveLength(1);
+    const restored = rows[0]!.agentSessionV2;
+    expect(
+      Buffer.byteLength(JSON.stringify(restored.turns), 'utf8')
+    ).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+    expect(restored.turns.map((t) => t.id)).toContain('turn-7');
+    expect(restored.turns.map((t) => t.id)).not.toContain('turn-0');
+    for (const t of restored.turns) expect(t.items.length).toBeGreaterThan(0);
+  });
+
+  it('reaps stale disconnected rows but keeps recent and active ones', () => {
+    const now = Date.now();
+    const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+
+    const staleDisconnected = fakeWebSession({
+      id: 'stale',
+      lastActivity: eightDaysAgo,
+    });
+    staleDisconnected.agentSessionV2.live.status = 'disconnected';
+
+    const recentDisconnected = fakeWebSession({
+      id: 'recent',
+      lastActivity: oneHourAgo,
+    });
+    recentDisconnected.agentSessionV2.live.status = 'disconnected';
+
+    const activeOld = fakeWebSession({
+      id: 'active-old',
+      lastActivity: eightDaysAgo,
+    });
+    // live.status stays idle -> derived status 'active'.
+
+    upsertWebSessionNow(staleDisconnected);
+    upsertWebSessionNow(recentDisconnected);
+    upsertWebSessionNow(activeOld);
+
+    const removed = reapStaleWebSessions();
+    expect(removed).toBe(1);
+
+    const ids = loadAllWebSessions().map((r) => r.id);
+    expect(ids).not.toContain('stale');
+    expect(ids).toContain('recent');
+    expect(ids).toContain('active-old');
+  });
+
+  it('enables incremental auto_vacuum and truncates the WAL on maintenance', () => {
+    const session = fakeWebSession();
+    session.agentSessionV2.turns = [
+      {
+        id: 'turn-0',
+        status: 'completed',
+        inputMessageId: 'in',
+        startedAt: '2026-07-22T00:00:00.000Z',
+        completedAt: '2026-07-22T00:00:01.000Z',
+        items: [
+          {
+            type: 'commandExecution',
+            id: 'c',
+            command: 'echo',
+            output: 'y'.repeat(50_000),
+            status: 'completed',
+            startedAt: '2026-07-22T00:00:00.000Z',
+            completedAt: '2026-07-22T00:00:01.000Z',
+          } satisfies AgentItemV2,
+        ],
+      },
+    ];
+    upsertWebSessionNow(session);
+    deleteWebSession(session.id); // orphan pages onto the freelist
+
+    runRelayStateDbMaintenance();
+
+    // Independent connection: auto_vacuum is INCREMENTAL (2) and the WAL was
+    // truncated back toward zero by wal_checkpoint(TRUNCATE).
+    const probe = new Database(path.join(dir, 'relay-state.db'), {
+      readonly: true,
+    });
+    try {
+      expect(probe.pragma('auto_vacuum', { simple: true })).toBe(2);
+    } finally {
+      probe.close();
+    }
+    const walPath = path.join(dir, 'relay-state.db-wal');
+    if (fs.existsSync(walPath)) {
+      expect(fs.statSync(walPath).size).toBeLessThan(1024 * 1024);
+    }
   });
 });
