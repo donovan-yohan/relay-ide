@@ -1,0 +1,103 @@
+/* Relay-native agent avatar (#1235). Zero-radius TUI with the DESIGN.md badge
+   exception: 2px radius at ≤24px (set inline from `size`), outline treatment via
+   a single identity-tinted ring, presence as a 50% status dot. No animation,
+   no blur-up, no emoji. */
+.agent-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  /* Outline treatment: a 1px ring tinted from the identity color — no filled
+     chrome. Reads as an edge over the solid initials fill and outlines the
+     transparent glyph tier. */
+  box-shadow: inset 0 0 0 1px
+    color-mix(
+      in srgb,
+      var(--agent-avatar-color, var(--border)) 45%,
+      transparent
+    );
+  color: var(--agent-avatar-color, var(--text-muted));
+  font-family: var(--font-mono);
+  line-height: 1;
+  user-select: none;
+}
+
+/* Clips the image/initials/glyph to the badge radius while leaving the presence
+   dot free to sit on the corner (ring lives on the root, outside this clip). */
+.agent-avatar__frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.agent-avatar__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.agent-avatar__initials {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  /* Black glyph text on the bright palette fill — matches the repo-badge recipe. */
+  color: var(--bg);
+  font-weight: 700;
+  font-size: inherit;
+  letter-spacing: 0.02em;
+}
+
+.agent-avatar__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* Scale the reused AgentBadge glyph to the avatar box (it defaults to 10px). */
+.agent-avatar__glyph .agent-badge {
+  width: 64%;
+  height: 64%;
+}
+
+.agent-avatar__glyph .agent-badge--fallback {
+  width: auto;
+  height: auto;
+  font-size: 0.72em;
+  color: currentColor;
+}
+
+/* Presence: the only circular chrome (50%). A --bg ring lifts it off the fill. */
+.agent-avatar__presence {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 34%;
+  height: 34%;
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--bg);
+  background: var(--text-muted);
+}
+
+.agent-avatar__presence--online {
+  background: var(--status-success);
+}
+
+.agent-avatar__presence--busy {
+  background: var(--status-info);
+}
+
+.agent-avatar__presence--offline {
+  background: var(--text-muted);
+}

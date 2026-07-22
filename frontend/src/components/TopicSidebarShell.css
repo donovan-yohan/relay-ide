@@ -1367,26 +1367,11 @@
   padding: 0;
 }
 
-/* #1166: DM row badge — agent glyph in its sender color on a muted-variant
-   background. Override the default badge svg stroke/fill so the AgentBadge
-   currentColor glyph renders (default .topic-row__badge svg strokes with --bg). */
-.topic-row__badge--dm {
-  box-shadow: none;
-  color: var(--text);
-}
-
-.topic-row__dm-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
-.topic-row__badge--dm .topic-row__dm-glyph svg {
-  width: 12px;
-  height: 12px;
-  fill: currentColor;
-  stroke: none;
+/* #1235: DM row badge is the Relay-native AgentAvatar (initials on the vendor
+   sender color, #1234). It fills the fixed badge cell and self-centers in the
+   row grid; the avatar owns its own outline ring + radius. */
+.topic-row__dm-avatar {
+  align-self: center;
 }
 
 /* #1166: presence-only unread-activity dot (not a count badge). */
