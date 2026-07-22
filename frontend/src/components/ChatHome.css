@@ -9,3 +9,13 @@
   padding: 20px;
   overflow-y: auto;
 }
+
+/* #1224: archived-state tombstone shown when a retired `mode:'web'` session row
+   is selected — fills the pane and centers the EmptyState notice. */
+.chat-home__retired-session {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}

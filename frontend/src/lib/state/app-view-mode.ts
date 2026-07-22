@@ -33,9 +33,10 @@ export interface ResolveAppViewModeInput {
    */
   hasActiveChannel?: boolean;
   /**
-   * Transport mode of the active session. Web-mode chat sessions stay in the
-   * chat shell (`ChatView`); live PTY agent/terminal sessions surface their
-   * real terminal (viewMode 'session') so the user can watch and drive the
+   * Transport mode of the active session. Web-mode rows stay in the chat shell
+   * (#1224: the retired `ChatView` surface is replaced by an archived-state
+   * tombstone rendered by `ChatHome`); live PTY agent/terminal sessions surface
+   * their real terminal (viewMode 'session') so the user can watch and drive the
    * TUI it spawned. Undefined/legacy sessions are treated as PTY terminals,
    * matching ChatHome's own `mode === 'web'` gate.
    */
@@ -59,9 +60,9 @@ export function resolveAppViewMode({
   if (hasActiveSession) {
     // Explicit legacy cockpit escape hatch still wins.
     if (forceOrgCockpit) return 'session';
-    // Web chat sessions render inside the chat shell; a live PTY session
-    // (Claude/Codex/Hermes TUI, or a bare terminal) renders its terminal so
-    // it is actually reachable and watchable from the web UI.
+    // Web-mode rows render inside the chat shell (as a retired-session
+    // tombstone, #1224); a live PTY session (Claude/Codex/Hermes TUI, or a bare
+    // terminal) renders its terminal so it is reachable and watchable.
     return activeSessionMode === 'web' ? 'chat' : 'session';
   }
 

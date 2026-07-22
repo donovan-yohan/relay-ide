@@ -53,7 +53,7 @@ import {
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
-import { ChatView } from './chat/ChatView.js';
+import EmptyState from './EmptyState.js';
 import CodeMirrorFileEditor from './CodeMirrorFileEditor.js';
 import './WorkspaceArea.css';
 
@@ -494,9 +494,17 @@ function SessionContentMount({
   onFilePathClick,
 }: SessionContentMountProps) {
   if (session.mode === 'web') {
+    // #1224: the legacy per-session web-chat surface (ChatView/Turn) is
+    // retired. A `mode:'web'` row that reaches the WorkContext cockpit now
+    // renders an explicit archived-state tombstone instead of the deleted
+    // chat surface; the transcript row is preserved, not discarded.
     return (
       <div className="ws-session-mount ws-session-mount--web">
-        <ChatView sessionId={session.id} />
+        <EmptyState
+          icon="⌁"
+          heading="This chat session has been archived"
+          description="The legacy per-session web chat surface has been retired. New work happens in channels."
+        />
       </div>
     );
   }

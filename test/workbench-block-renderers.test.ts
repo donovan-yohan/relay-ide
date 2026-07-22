@@ -817,10 +817,12 @@ describe('agent renderer', () => {
     expect(src).toContain('descriptor.meta');
   });
 
-  it('uses existing ChatView component', () => {
+  it('does not embed the retired ChatView surface (#1224)', () => {
     const src = readBlock('agent.tsx');
-    expect(src).toContain('ChatView');
-    expect(src).toContain('../../components/chat/ChatView');
+    // The legacy web-session/ChatView subtree was deleted in #1224; the dormant
+    // AgentBlock now renders a bounded placeholder rather than the chat surface.
+    expect(src).not.toContain('ChatView');
+    expect(src).toContain('block-agent__placeholder');
   });
 
   it('CSS exists', () => {
