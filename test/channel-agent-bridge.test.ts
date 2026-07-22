@@ -412,6 +412,99 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(store.history('topic:detail-restart')[0]?.meta).toBeUndefined();
   });
 
+  // The adapter normalizes item cards from typed fields (commandExecution card
+  // content is derived from `output`), so these drive content through `output`
+  // and `delta.output` — the same lane real providers use.
+  function commandStarted(): AgentPatchV2 {
+    return {
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: {
+        type: 'commandExecution',
+        id: 'cmd',
+        command: 'run tests',
+        output: '',
+        status: 'running',
+      },
+    };
+  }
+  function commandDelta(output: string): AgentPatchV2 {
+    return {
+      type: 'agent-item-delta-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      itemId: 'cmd',
+      delta: { output },
+    };
+  }
+  function commandCompleted(output: string): AgentPatchV2 {
+    return {
+      type: 'agent-item-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: {
+        type: 'commandExecution',
+        id: 'cmd',
+        command: 'run tests',
+        output,
+        status: 'completed',
+        completedAt: 't',
+      },
+    };
+  }
+
+  it('falls back to delta-accumulated content when a terminal item card is empty', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:detail-terminal-fallback',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(commandStarted());
+    adapter.broadcastPatch(commandDelta('accumulated terminal output'));
+    // A non-backfilling provider: the terminal item card arrives empty. The
+    // bridge must keep the delta-accumulated content rather than persist a
+    // blank card (#1206 class).
+    adapter.broadcastPatch(commandCompleted(''));
+    expect(store.history('topic:detail-terminal-fallback')[0]).toMatchObject({
+      status: 'complete',
+      agentDetail: {
+        card: { status: 'completed', content: 'accumulated terminal output' },
+      },
+    });
+  });
+
+  it('lets a non-empty terminal item card win over accumulated content', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:detail-terminal-wins',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(commandStarted());
+    adapter.broadcastPatch(commandDelta('partial streamed output'));
+    adapter.broadcastPatch(commandCompleted('authoritative terminal output'));
+    expect(store.history('topic:detail-terminal-wins')[0]).toMatchObject({
+      status: 'complete',
+      agentDetail: {
+        card: {
+          status: 'completed',
+          content: 'authoritative terminal output',
+        },
+      },
+    });
+  });
+
   it('releases completed stream text and item ids after every turn', async () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });

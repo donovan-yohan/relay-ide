@@ -24,10 +24,22 @@ import { AgentDetailCard } from './AgentDetailCard.js';
 
 interface MarkdownCodeNode {
   position?: {
-    start?: { offset?: number; line?: number };
-    end?: { line?: number };
+    start?: { offset?: number };
   };
 }
+
+/** Reused across renders — allocating a TextEncoder per code card is wasteful. */
+const textEncoder = new TextEncoder();
+
+/**
+ * react-markdown renders block code (fenced — with or without a language — or
+ * 4-space-indented) inside a `<pre>`, but inline code spans are not wrapped.
+ * The `pre` renderer publishes this so the `code` renderer can classify block
+ * vs inline without leaning on source line positions: a CommonMark inline span
+ * may legally span source lines (its interior newline collapses to a space),
+ * which would otherwise be misread as a block card.
+ */
+const CodeBlockContext = React.createContext(false);
 
 function codeCard(
   code: string,
@@ -54,7 +66,7 @@ function codeCard(
       language: 'diff',
       additions,
       deletions,
-      sizeBytes: new TextEncoder().encode(code).byteLength,
+      sizeBytes: textEncoder.encode(code).byteLength,
     };
   }
   return {
@@ -80,51 +92,64 @@ function buildComponents(
     ),
     // Fenced code blocks render their own <pre> inside the `code` renderer
     // below (so shiki tokens can be laid out per-line); avoid double-wrapping.
-    pre: ({ children }) => <>{children}</>,
+    // The provider carries no DOM element — it only flags the nested `code`
+    // renderer that this is block-level code.
+    pre: ({ children }) => (
+      <CodeBlockContext.Provider value={true}>
+        {children}
+      </CodeBlockContext.Provider>
+    ),
     code: ({ className, children, node, ...rest }) => {
       const match = /language-(\S+)/.exec(className ?? '');
       const codeText = String(children).replace(/\n$/, '');
       const position = (node as MarkdownCodeNode | undefined)?.position;
-      // A fenced code block only carries a `language-*` class when a
-      // language is specified after the ```. Language-less fences and
-      // 4-space-indented blocks still render as block-level `<pre><code>`
-      // with no className, so fall back to a newline check: anything with
-      // an embedded newline is a block, not inline code, and must go
-      // through CodeBlock (which preserves whitespace) rather than the
-      // plain inline `<code>` path (which inherits `white-space: normal`
-      // from `.tl-markdown` and collapses newlines to spaces).
-      const isBlock =
-        Boolean(match) ||
-        codeText.includes('\n') ||
-        (position?.start?.line !== undefined &&
-          position.end?.line !== undefined &&
-          position.end.line > position.start.line);
-      if (!isBlock) {
-        return (
-          <code className="tl-md-code" {...rest}>
-            {children}
-          </code>
-        );
-      }
-      const language = match?.[1] ?? 'text';
-      const offset = position?.start?.offset ?? codeText.length;
-      if (codeBlockPresentation === 'card') {
-        return (
-          <AgentDetailCard
-            card={codeCard(codeText, language, codeBlockStatus)}
-            itemId={`${keyPrefix}:code:${offset}`}
-          />
-        );
-      }
+      const inlineCode = (
+        <code className="tl-md-code" {...rest}>
+          {children}
+        </code>
+      );
+      // Read the `pre` flag through a Consumer rather than `useContext` — this
+      // renderer is a plain function react-markdown invokes for each `code`
+      // node, not a component the hooks lint recognizes.
       return (
-        <div className="tl-md-pre">
-          <CodeBlock
-            code={codeText}
-            language={language}
-            showLineNumbers={false}
-            cacheKey={`${keyPrefix}:${offset}`}
-          />
-        </div>
+        <CodeBlockContext.Consumer>
+          {(insidePre) => {
+            // Block code (fenced with or without a language, or 4-space
+            // indented) is rendered inside a `<pre>` by react-markdown, so the
+            // `pre` provider is the authoritative discriminator. Inline spans
+            // are never wrapped in a `<pre>` — even when their CommonMark
+            // source spans multiple lines — so they must NOT be promoted to a
+            // block card. Block code routes through CodeBlock (which preserves
+            // whitespace) rather than the plain inline `<code>` path (which
+            // inherits `white-space: normal` from `.tl-markdown` and collapses
+            // newlines to spaces). The newline check is a defensive fallback:
+            // inline spans collapse interior newlines to spaces, so a residual
+            // newline can only mean block code.
+            const isBlock =
+              insidePre || Boolean(match) || codeText.includes('\n');
+            if (!isBlock) return inlineCode;
+            const language = match?.[1] ?? 'text';
+            const offset = position?.start?.offset ?? codeText.length;
+            if (codeBlockPresentation === 'card') {
+              return (
+                <AgentDetailCard
+                  card={codeCard(codeText, language, codeBlockStatus)}
+                  itemId={`${keyPrefix}:code:${offset}`}
+                />
+              );
+            }
+            return (
+              <div className="tl-md-pre">
+                <CodeBlock
+                  code={codeText}
+                  language={language}
+                  showLineNumbers={false}
+                  cacheKey={`${keyPrefix}:${offset}`}
+                />
+              </div>
+            );
+          }}
+        </CodeBlockContext.Consumer>
       );
     },
     // Markdown images auto-fetch their remote `src` the instant the message

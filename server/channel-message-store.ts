@@ -49,9 +49,13 @@ const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
 function replyCountSql(rootAlias: string): string {
+  // Detail cards (meta.agentDetail) carry a thread_id so cold-resume can render
+  // them inside the thread, but they are not conversational replies — exclude
+  // them from the root's reply count.
   return `(SELECT COUNT(*)
              FROM channel_messages replies
-            WHERE replies.thread_id = ${rootAlias}.id)`;
+            WHERE replies.thread_id = ${rootAlias}.id
+              AND json_extract(replies.meta_json, '$.agentDetail') IS NULL)`;
 }
 
 /** Production query builder exported so query-plan tests exercise exact SQL. */
@@ -1343,6 +1347,23 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
            ORDER BY last.updated_at DESC`
         )
         .all() as Array<ChannelMessageRow & { cnt?: number }>;
+      // Newest prose row per channel — the summary preview reads from this so a
+      // turn ending on a detail card (body_text='') does not blank the sidebar.
+      const previewRows = new Map<string, ChannelMessageRow>();
+      for (const row of db
+        .prepare(
+          `SELECT prose.* FROM (
+             SELECT channel_id, MAX(seq) AS max_seq
+             FROM channel_messages
+             WHERE json_extract(meta_json, '$.agentDetail') IS NULL
+             GROUP BY channel_id
+           ) agg
+           JOIN channel_messages prose
+             ON prose.channel_id = agg.channel_id AND prose.seq = agg.max_seq`
+        )
+        .all() as ChannelMessageRow[]) {
+        previewRows.set(row.channel_id, row);
+      }
       // Second pass for counts keyed by channel (kept explicit for clarity).
       const counts = new Map<string, number>();
       for (const c of db
@@ -1354,7 +1375,11 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         counts.set(c.channel_id, c.cnt);
       }
       return rows.map((row) =>
-        summaryFromLastRow(row, counts.get(row.channel_id) ?? 0)
+        summaryFromLastRow(
+          row.seq,
+          previewRows.get(row.channel_id) ?? row,
+          counts.get(row.channel_id) ?? 0
+        )
       );
     },
 
@@ -1376,7 +1401,16 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       if (!last) {
         return { channelId, latestSeq: 0, messageCount: 0, lastMessage: null };
       }
-      return summaryFromLastRow(last, count);
+      // Preview from the newest prose row; detail cards persist body_text=''.
+      const previewRow =
+        (db
+          .prepare(
+            `SELECT * FROM channel_messages WHERE channel_id = ?
+               AND json_extract(meta_json, '$.agentDetail') IS NULL
+             ORDER BY seq DESC LIMIT 1`
+          )
+          .get(channelId) as ChannelMessageRow | undefined) ?? last;
+      return summaryFromLastRow(last.seq, previewRow, count);
     },
 
     upsertMember(input) {
@@ -1550,22 +1584,30 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     },
   };
 
+  // `latestSeq` stays the true highest seq (drives reconnect head-checks and
+  // unread math), while the preview is drawn from `previewRow` — the newest row
+  // that carries prose. Detail cards persist body_text='', so previewing off the
+  // literal last row blanks the summary whenever a turn ends on a card.
   function summaryFromLastRow(
-    row: ChannelMessageRow,
+    latestSeq: number,
+    previewRow: ChannelMessageRow,
     messageCount: number
   ): ChannelSummary {
     return {
-      channelId: row.channel_id,
-      latestSeq: row.seq,
+      channelId: previewRow.channel_id,
+      latestSeq,
       messageCount,
       lastMessage: {
-        id: row.id as ChannelMessageId,
-        seq: row.seq,
-        preview: row.body_text.slice(0, CHANNEL_SUMMARY_PREVIEW_MAX_CHARS),
-        senderId: row.sender_id,
-        senderKind: row.sender_kind as ChannelSenderRef['kind'],
-        status: row.status as ChannelMessageStatus,
-        createdAt: row.created_at,
+        id: previewRow.id as ChannelMessageId,
+        seq: previewRow.seq,
+        preview: previewRow.body_text.slice(
+          0,
+          CHANNEL_SUMMARY_PREVIEW_MAX_CHARS
+        ),
+        senderId: previewRow.sender_id,
+        senderKind: previewRow.sender_kind as ChannelSenderRef['kind'],
+        status: previewRow.status as ChannelMessageStatus,
+        createdAt: previewRow.created_at,
       },
     };
   }

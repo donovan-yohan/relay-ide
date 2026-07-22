@@ -227,6 +227,8 @@ describe('channel thread mention round trip', () => {
         .map((message) => message.id)
     ).toEqual([root.message.id, trigger.message.id, agentReply!.id]);
     expect(thread.filter((message) => message.agentDetail)).toHaveLength(4);
-    expect(harness.store.getMessage(root.message.id)?.replyCount).toBe(6);
+    // The four detail cards persist in-thread (with a thread_id) but are not
+    // conversational replies — only the human trigger and the mock reply count.
+    expect(harness.store.getMessage(root.message.id)?.replyCount).toBe(2);
   });
 });

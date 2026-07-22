@@ -89,4 +89,39 @@ describe('channel thread timeline projections', () => {
     expect(displayedReplyCount(root, { count: 9 })).toBe(9);
     expect(displayedReplyCount(message('chm:fresh', 2), undefined)).toBe(0);
   });
+
+  it('excludes in-thread detail cards from live reply counts', () => {
+    const root = message('chm:root', 1);
+    const rows = [
+      root,
+      message('chm:reply', 2, {
+        threadId: root.id,
+        parentMessageId: root.id,
+        createdAt: '2026-07-18T12:02:00.000Z',
+      }),
+      // Detail cards carry a threadId (so cold-resume renders them in-thread)
+      // but must not count as replies nor advance the newest-reply timestamp.
+      message('chm:card', 3, {
+        threadId: root.id,
+        parentMessageId: root.id,
+        body: { text: '', format: 'markdown' },
+        agentDetail: {
+          itemId: 'reason-1',
+          card: {
+            kind: 'thought',
+            title: 'thinking',
+            status: 'completed',
+            content: 'card content',
+          },
+        },
+        createdAt: '2026-07-18T12:03:00.000Z',
+      }),
+    ];
+
+    expect(deriveReplyCounts(rows)).toEqual(
+      new Map([
+        [root.id, { count: 1, lastReplyAt: '2026-07-18T12:02:00.000Z' }],
+      ])
+    );
+  });
 });

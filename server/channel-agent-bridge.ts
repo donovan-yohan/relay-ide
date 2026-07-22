@@ -666,14 +666,23 @@ export function bindSessionToChannel(
     if (!sourceCard || sourceCard.kind === 'message') return false;
     const stream = openDetailStream(patch, sourceCard);
     if (!stream) return true;
+    const accumulated = stream.card; // capture BEFORE the terminal overwrite
     stream.card = boundChannelAgentDetail(stream.itemId, sourceCard).card;
     const itemStatus = sourceCard.status;
+    // Prefer delta-accumulated content when the terminal item card is empty,
+    // matching handleDetailDelta which finalizes from the accumulated card
+    // (#1206). Unreachable with today's codex/claude adapters (they backfill
+    // terminal content) but unguarded for other providers.
+    const terminalCard =
+      sourceCard.content || !accumulated.content
+        ? sourceCard
+        : { ...sourceCard, content: accumulated.content };
     if (itemStatus === 'completed') {
-      finalizeDetail(stream, 'complete', sourceCard, 'explicit');
+      finalizeDetail(stream, 'complete', terminalCard, 'explicit');
     } else if (itemStatus === 'failed') {
-      finalizeDetail(stream, 'failed', sourceCard, 'explicit');
+      finalizeDetail(stream, 'failed', terminalCard, 'explicit');
     } else if (itemStatus === 'cancelled') {
-      finalizeDetail(stream, 'interrupted', sourceCard, 'explicit');
+      finalizeDetail(stream, 'interrupted', terminalCard, 'explicit');
     } else {
       const updated = store.updateAgentDetail(
         stream.messageId,

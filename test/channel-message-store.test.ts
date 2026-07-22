@@ -864,6 +864,63 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(c?.messageCount).toBe(2);
     expect(c?.lastMessage?.preview).toBe('second');
   });
+
+  it('previews the newest prose row when a turn ends on a detail card', () => {
+    const s = store();
+    s.appendComplete({
+      channelId: 'topic:d',
+      sender: HUMAN,
+      text: 'first prose',
+    });
+    s.appendComplete({
+      channelId: 'topic:d',
+      sender: AGENT,
+      text: 'last prose message',
+    });
+    // A detail card ends the turn: it persists body_text='' and is the newest
+    // row, so previewing off the literal last row would blank the summary.
+    const begun = s.beginStream({
+      channelId: 'topic:d',
+      sender: AGENT,
+      source: { sessionId: 'sess-d', turnId: 't-d', itemId: 'reason-d' },
+      agentDetail: {
+        itemId: 'reason-d',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'inspect',
+        },
+      },
+    });
+    s.finalizeStream(begun.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason-d',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'completed',
+          content: 'inspect',
+        },
+      },
+    });
+
+    const viaGet = s.getChannelSummary('topic:d');
+    // latestSeq stays the true highest seq (the detail card) so reconnect
+    // head-checks and unread math are unaffected.
+    expect(viaGet?.latestSeq).toBe(begun.seq);
+    expect(viaGet?.messageCount).toBe(3);
+    expect(viaGet?.lastMessage?.preview).toBe('last prose message');
+
+    const viaList = s
+      .listChannelSummaries()
+      .find((x) => x.channelId === 'topic:d');
+    expect(viaList?.latestSeq).toBe(begun.seq);
+    expect(viaList?.messageCount).toBe(3);
+    expect(viaList?.lastMessage?.preview).toBe('last prose message');
+  });
 });
 
 describe('channel-message-store members and bindings', () => {
