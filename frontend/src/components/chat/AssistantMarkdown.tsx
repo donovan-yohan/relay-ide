@@ -75,7 +75,7 @@ function codeCard(
     status,
     content: code,
     language,
-    sizeBytes: new TextEncoder().encode(code).byteLength,
+    sizeBytes: textEncoder.encode(code).byteLength,
   };
 }
 

@@ -135,7 +135,11 @@ export function useLiveReplyGrowth(
     let latestSeq = previousLatestSeq;
     for (const message of messages) {
       latestSeq = Math.max(latestSeq, message.seq);
-      if (message.threadId === null || tracker.seenReplyIds.has(message.id)) {
+      if (
+        message.threadId === null ||
+        message.agentDetail ||
+        tracker.seenReplyIds.has(message.id)
+      ) {
         continue;
       }
       tracker.seenReplyIds.add(message.id);
