@@ -56,7 +56,12 @@ export const MentionPalette: React.FC<MentionPaletteProps> = ({
     <div
       className="mention-palette"
       role="listbox"
-      aria-label="mention contacts"
+      // Accessible name is the stable `agents` contract the composer e2e locates
+      // (`getByRole('listbox', { name: 'agents' })`). The set now also carries
+      // humans/custom profiles (#1236), but the palette's addressable-agents
+      // identity — and the test/a11y name — stays `agents`; renaming it silently
+      // broke the mention e2e once already.
+      aria-label="agents"
       style={{ display: visible ? undefined : 'none' }}
     >
       {contacts.map((contact, index) => {

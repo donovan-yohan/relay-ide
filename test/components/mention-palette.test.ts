@@ -217,6 +217,32 @@ describe('MentionPalette rendering', () => {
     expect(tokens[0]).not.toBe(tokens[1]);
   });
 
+  it('exposes the `agents` accessible name the composer e2e locates (regression #1246)', () => {
+    // The channel-thread mention e2e finds the palette via
+    // getByRole('listbox', { name: 'agents' }); a rename to "mention contacts"
+    // silently broke it while unit CI stayed green. Pin the name here so the
+    // contract has unit-level backpressure.
+    render(buildMentionContacts(roster));
+    const listbox = container.querySelector('[role="listbox"]') as HTMLElement;
+    expect(listbox.getAttribute('aria-label')).toBe('agents');
+  });
+
+  it('opens with only vendor defaults when members are empty (mirrors the thread e2e)', () => {
+    // The thread composer receives no `members`, yet typing `@` must still open
+    // the palette on the roster-derived vendor defaults — the paletteVisible
+    // gate keys on a non-empty contact set, so an empty members list must not
+    // collapse it to zero rows.
+    const contacts = buildMentionContacts(roster, []);
+    expect(contacts.length).toBeGreaterThan(0);
+    expect(filterMentionContacts(contacts, '')).toHaveLength(contacts.length);
+    render(contacts);
+    const listbox = container.querySelector('[role="listbox"]') as HTMLElement;
+    expect(listbox.style.display).not.toBe('none');
+    expect(
+      container.querySelectorAll('[role="option"]').length
+    ).toBeGreaterThan(0);
+  });
+
   it('hides the listbox when not visible', () => {
     act(() => {
       root.render(
