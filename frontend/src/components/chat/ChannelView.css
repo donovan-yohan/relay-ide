@@ -345,12 +345,9 @@
   margin-bottom: 2px;
 }
 
-.ch-group__badge {
-  display: inline-flex;
-  align-items: center;
+.ch-group__avatar {
+  /* baseline-aligned header row → pull the badge to optical center of the name */
   align-self: center;
-  width: 14px;
-  height: 14px;
 }
 
 .ch-group__name {

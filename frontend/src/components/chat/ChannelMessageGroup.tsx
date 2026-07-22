@@ -4,7 +4,7 @@ import type {
   ChannelMessageId,
   ChannelSenderRef,
 } from '../../../../shared/channel-chat-protocol.js';
-import { AgentBadge } from '../AgentBadge.js';
+import { AgentAvatar } from './AgentAvatar.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import {
   displayedReplyCount,
@@ -51,14 +51,16 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
     <div className="ch-group">
       {showHeader && first ? (
         <div className="ch-group__header">
-          {identity.glyph ? (
-            <span
-              className="ch-group__badge"
-              style={{ color: identity.colorVar }}
-              aria-hidden="true"
-            >
-              <AgentBadge agent={identity.glyph} />
-            </span>
+          {identity.kind === 'agent' ? (
+            // Author slot: the initials-avatar carries per-profile identity;
+            // color comes straight from `resolveSenderIdentity` so a default
+            // profile keeps its curated vendor token (#1234).
+            <AgentAvatar
+              className="ch-group__avatar"
+              identity={identity}
+              name={identity.label}
+              size={20}
+            />
           ) : null}
           <span className="ch-group__name" style={{ color: identity.colorVar }}>
             {identity.label}

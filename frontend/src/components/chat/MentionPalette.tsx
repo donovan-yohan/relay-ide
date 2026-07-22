@@ -7,7 +7,7 @@ import {
   mentionInsertText,
 } from '../../../../shared/mention-contacts.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
-import { AgentBadge } from '../AgentBadge.js';
+import { AgentAvatar } from './AgentAvatar.js';
 
 /** Human-facing kind label — FZF/`>`-palette vocabulary, lowercase, no badge chrome. */
 const KIND_LABEL: Record<MentionContactKind, string> = {
@@ -113,7 +113,14 @@ export const MentionPalette: React.FC<MentionPaletteProps> = ({
                 aria-hidden="true"
               >
                 {identity ? (
-                  <AgentBadge agent={identity.glyph ?? contact.providerId} />
+                  // #1235: profile rows carry the initials-avatar (color sourced
+                  // from the same `resolveSenderIdentity` — default profiles keep
+                  // their vendor token). Humans keep the flat line glyph.
+                  <AgentAvatar
+                    identity={identity}
+                    name={contact.displayName}
+                    size={16}
+                  />
                 ) : (
                   <HumanGlyph />
                 )}

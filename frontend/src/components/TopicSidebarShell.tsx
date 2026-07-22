@@ -64,7 +64,7 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../lib/stores/channel-activity.js';
-import { AgentBadge } from './AgentBadge.js';
+import { AgentAvatar } from './chat/AgentAvatar.js';
 import { openTopicTaskRoom } from '../lib/topic-task-room.js';
 import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
@@ -322,26 +322,13 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
       providerId: item.dmProviderId,
     });
     return (
-      <span
-        className="topic-row__badge topic-row__badge--dm"
-        style={{
-          background: `color-mix(in srgb, ${identity.colorVar} 15%, transparent)`,
-        }}
-        aria-label={`direct message with ${identity.label}`}
+      <AgentAvatar
+        className="topic-row__dm-avatar"
+        identity={identity}
+        name={identity.label}
+        size={22}
         title={`direct message with ${identity.label}`}
-      >
-        {identity.glyph ? (
-          <span
-            className="topic-row__dm-glyph"
-            style={{ color: identity.colorVar }}
-            aria-hidden="true"
-          >
-            <AgentBadge agent={identity.glyph} />
-          </span>
-        ) : (
-          <TopicKindIcon kind={item.kind} />
-        )}
-      </span>
+      />
     );
   }
   const background = item.color ?? deriveColor(item.badgeSeed);
