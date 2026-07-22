@@ -539,6 +539,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           <ChannelComposer
             channelId={channelId}
             channelTitle={title}
+            {...(channel?.members ? { members: channel.members } : {})}
             onSend={handleSend}
             postPending={postPending}
             storeDown={storeDown}

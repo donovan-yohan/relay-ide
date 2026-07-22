@@ -10,6 +10,12 @@
 // impossible because no reducer field is shared between senders.
 
 import type { AgentDetailCardV2 } from './agent-chat-protocol-v2.js';
+import {
+  computeMentionDisambiguators,
+  normalizeMentionToken,
+  resolveProfileForMention,
+  type AgentProfileContact,
+} from './agent-profile.js';
 
 export const CHANNEL_CHAT_PROTOCOL_VERSION = 1 as const;
 export const CHANNEL_MESSAGE_MAX_IMAGE_PARTS = 4;
@@ -82,6 +88,13 @@ export interface ChannelMemberRef {
 export interface ChannelMention {
   raw: string;
   providerId?: string;
+  /**
+   * Resolved profile Actor id (`AgentProfile.id`) when `parseMentions` is given
+   * a contact set (#1236). Additive + optional: rows parsed without a contact
+   * set — every current server caller — leave this absent, and `providerId`
+   * stays populated for the legacy vendor-alias path.
+   */
+  profileId?: string;
 }
 
 export interface ChannelMessageSource {
@@ -652,15 +665,28 @@ export function mergeHistoryPage(
  * `providerId`. Both are persisted so alias policy (`@Claude` vs `@claude`,
  * custom providers) can change later without a data migration. #1167 inherits
  * this hardened tokenizer.
+ *
+ * When a profile `contacts` set is supplied (#1236) each mention additionally
+ * resolves to a profile Actor id: multi-word display names match
+ * LONGEST-MATCH-FIRST, `@<vendor>` resolves to that vendor's default profile,
+ * and a trailing `#<token>` disambiguates same-name collisions. Resolution
+ * delegates to the keystone `resolveProfileForMention` (vendor alias + tiebreak
+ * are NOT reimplemented here). Callers that pass no contacts — every current
+ * server caller — keep the exact single-token behavior above.
  */
 export function parseMentions(
   text: string,
-  knownProviderIds: readonly string[] = []
+  knownProviderIds: readonly string[] = [],
+  contacts?: readonly AgentProfileContact[]
 ): ChannelMention[] {
   const known = new Map<string, string>();
   for (const id of knownProviderIds) known.set(id.toLowerCase(), id);
 
   const masked = maskCodeSpans(text);
+  if (contacts && contacts.length > 0) {
+    return parseMentionsWithContacts(text, masked, known, contacts);
+  }
+
   const mentionPattern = /(^|[^A-Za-z0-9_.])@([A-Za-z][A-Za-z0-9_-]*)/g;
   const seen = new Set<string>();
   const mentions: ChannelMention[] = [];
@@ -675,6 +701,129 @@ export function parseMentions(
     mentions.push({
       raw: `@${name}`,
       ...(providerId ? { providerId } : {}),
+    });
+  }
+  return mentions;
+}
+
+/** Word count of a normalized display name (empty name → 0). */
+function nameWordCount(displayName: string): number {
+  const norm = normalizeMentionToken(displayName);
+  return norm ? norm.split(' ').length : 0;
+}
+
+/**
+ * Profile-aware mention scan. Reads a greedy run of words after each `@`, then
+ * resolves LONGEST-EXACT-FIRST: for k words down to 1 it asks
+ * `resolveProfileForMention` for the k-word phrase and keeps the match only when
+ * the resolved name consumes exactly k words (a shorter name matched by prefix
+ * is rejected so trailing prose is never swallowed). A `#<token>` immediately
+ * following the consumed name selects a specific member of a same-name group.
+ */
+function parseMentionsWithContacts(
+  text: string,
+  masked: string,
+  known: Map<string, string>,
+  contacts: readonly AgentProfileContact[]
+): ChannelMention[] {
+  const disambTokens = computeMentionDisambiguators(contacts);
+  const maxWords = Math.min(
+    8,
+    Math.max(1, ...contacts.map((c) => nameWordCount(c.displayName)))
+  );
+  const boundary = /(^|[^A-Za-z0-9_.])@/g;
+  const firstWord = /^[A-Za-z][A-Za-z0-9_-]*/;
+  const contWord = /^ ([A-Za-z0-9_-]+)/;
+  const disambPattern = /^#([A-Za-z0-9]+)/;
+
+  const seen = new Set<string>();
+  const mentions: ChannelMention[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = boundary.exec(masked)) !== null) {
+    const atIndex = match.index + match[0].length - 1;
+    let cursor = atIndex + 1;
+    const first = firstWord.exec(masked.slice(cursor));
+    if (!first) continue;
+
+    const words: Array<{ text: string; end: number }> = [
+      { text: first[0], end: cursor + first[0].length },
+    ];
+    cursor += first[0].length;
+    while (words.length < maxWords) {
+      const cont = contWord.exec(masked.slice(cursor));
+      if (!cont) break;
+      cursor += cont[0].length;
+      words.push({ text: cont[1]!, end: cursor });
+    }
+
+    let disamb: string | null = null;
+    let disambEnd = -1;
+    const dm = disambPattern.exec(masked.slice(cursor));
+    if (dm) {
+      disamb = dm[1]!.toLowerCase();
+      disambEnd = cursor + dm[0].length;
+    }
+
+    // Longest-exact-first resolution over the greedy word run.
+    let winner: AgentProfileContact | null = null;
+    let consumed = 0;
+    for (let k = words.length; k >= 1; k--) {
+      const candidate = words
+        .slice(0, k)
+        .map((w) => w.text)
+        .join(' ');
+      const resolved = resolveProfileForMention(candidate, contacts);
+      if (!resolved) continue;
+      const matchedLen = nameWordCount(resolved.displayName) || 1;
+      if (matchedLen !== k) continue; // prefix-matched a shorter name — back off
+      winner = resolved;
+      consumed = k;
+      break;
+    }
+
+    let rawEnd: number;
+    let providerId: string | undefined;
+    let profileId: string | undefined;
+    if (winner) {
+      consumed = consumed || 1;
+      rawEnd = words[consumed - 1]!.end;
+      providerId = winner.providerId;
+      profileId = winner.id;
+      // A `#token` right after the consumed name picks a same-name collision peer.
+      if (disamb && consumed === words.length && disambEnd > 0) {
+        const nameNorm = normalizeMentionToken(
+          words
+            .slice(0, consumed)
+            .map((w) => w.text)
+            .join(' ')
+        );
+        const target = contacts.find(
+          (c) =>
+            normalizeMentionToken(c.displayName) === nameNorm &&
+            disambTokens.get(c.id) === disamb
+        );
+        if (target) {
+          providerId = target.providerId;
+          profileId = target.id;
+          rawEnd = disambEnd;
+        }
+      }
+    } else {
+      // Unresolved: keep the single leading token, provider-tagged if known.
+      rawEnd = words[0]!.end;
+      providerId = known.get(words[0]!.text.toLowerCase());
+      profileId = undefined;
+    }
+
+    const raw = text.slice(atIndex, rawEnd);
+    const dedupeKey = profileId ?? raw.toLowerCase();
+    boundary.lastIndex = rawEnd;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    mentions.push({
+      raw,
+      ...(providerId ? { providerId } : {}),
+      ...(profileId ? { profileId } : {}),
     });
   }
   return mentions;

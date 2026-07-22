@@ -9,12 +9,19 @@ import './ChannelComposer.css';
 import { useQuery } from '@tanstack/react-query';
 import type {
   ChannelImagePart,
+  ChannelMemberRef,
   ChannelMessagePart,
 } from '../../../../shared/channel-chat-protocol.js';
+import {
+  filterMentionContacts,
+  isMentionContactSelectable,
+  mentionInsertText,
+} from '../../../../shared/mention-contacts.js';
 import { createBrowserId } from '../../lib/browserId.js';
 import { fetchChannelRoster, uploadChannelImages } from '../../lib/api.js';
+import { buildMentionContacts } from '../../lib/chat/mention-contacts.js';
 import { detectTrigger } from './slashTrigger.js';
-import { MentionPalette, filterRoster } from './MentionPalette.js';
+import { MentionPalette } from './MentionPalette.js';
 
 const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
 const LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS = 500;
@@ -41,6 +48,8 @@ interface ChannelComposerProps {
   channelId: string;
   channelTitle: string;
   placeholder?: string;
+  /** Human channel members, folded into the @mention contact set (#1236). */
+  members?: readonly ChannelMemberRef[];
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
   onSend: (
     text: string,
@@ -60,6 +69,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   channelId,
   channelTitle,
   placeholder,
+  members,
   onSend,
   postPending,
   storeDown,
@@ -207,14 +217,20 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     enabled: trigger !== null,
     retry: false,
   });
-  // Memoize on the query string + roster data (stable primitives) so palette
-  // navigation callbacks don't churn on every keystroke that leaves both intact.
+  // Memoize on the query string + roster data + members so palette navigation
+  // callbacks don't churn on every keystroke that leaves them intact.
   const triggerQuery = trigger?.query ?? null;
   const rosterData = rosterQuery.data;
+  const contacts = useMemo(
+    () => buildMentionContacts(rosterData ?? [], members ?? []),
+    [rosterData, members]
+  );
   const entries = useMemo(
     () =>
-      triggerQuery === null ? [] : filterRoster(rosterData ?? [], triggerQuery),
-    [triggerQuery, rosterData]
+      triggerQuery === null
+        ? []
+        : filterMentionContacts(contacts, triggerQuery),
+    [triggerQuery, contacts]
   );
   const paletteVisible =
     trigger !== null && !paletteDismissed && entries.length > 0;
@@ -290,13 +306,14 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       });
   }, [draft, images, onSend, revokePreview, updateImages]);
 
-  // Splice the selected AVAILABLE agent into the draft as plain `@<id> ` text
-  // (no rich pill), replacing the active trigger span.
+  // Splice the selected SELECTABLE contact into the draft as plain mention text
+  // (no rich pill), replacing the active trigger span. The inserted text
+  // round-trips through parseMentions back to this contact's profile Actor id.
   const applyMention = useCallback(() => {
     if (!trigger) return;
     const entry = entries[activeIndex];
-    if (!entry || !entry.available) return;
-    const replacement = `@${entry.id} `;
+    if (!entry || !isMentionContactSelectable(entry)) return;
+    const replacement = `${mentionInsertText(entry)} `;
     const newDraft =
       draft.slice(0, trigger.span[0]) +
       replacement +
@@ -340,8 +357,8 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
           e.preventDefault();
           const entry = entries[activeIndex];
-          if (entry && entry.available) applyMention();
-          // Unavailable/none → no-op: swallow the key so Enter neither sends
+          if (entry && isMentionContactSelectable(entry)) applyMention();
+          // Unselectable/none → no-op: swallow the key so Enter neither sends
           // nor inserts and Tab does not move focus out of the composer.
           return;
         }
@@ -379,7 +396,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       inputEvent.preventDefault();
       if (paletteVisible) {
         const entry = entries[activeIndex];
-        if (entry && entry.available) applyMention();
+        if (entry && isMentionContactSelectable(entry)) applyMention();
         return;
       }
       submit();
@@ -453,7 +470,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       ) : null}
       <div className="ch-composer__mention-anchor">
         <MentionPalette
-          entries={entries}
+          contacts={entries}
           activeIndex={activeIndex}
           visible={paletteVisible}
         />
