@@ -344,6 +344,13 @@ export interface ChannelMessageStore {
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(channelId: string, agentFramework: string): ChannelBinding | null;
+  /**
+   * Distinct non-null `session_id`s across every channel binding. Feeds the
+   * relay-state-db age-reaper's protection set (#1248) so a web_session still
+   * bound as an open channel's agent is never reaped, preserving its resume
+   * anchor even when its `last_activity` is older than the retention window.
+   */
+  listBoundSessionIds(): string[];
   upsertBinding(input: {
     channelId: string;
     agentFramework: string;
@@ -1458,6 +1465,15 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
     getBinding(channelId, agentFramework) {
       return getBindingImpl(channelId, agentFramework);
+    },
+
+    listBoundSessionIds() {
+      const rows = db
+        .prepare(
+          'SELECT DISTINCT session_id FROM channel_agent_bindings WHERE session_id IS NOT NULL'
+        )
+        .all() as Array<{ session_id: string }>;
+      return rows.map((row) => row.session_id);
     },
 
     upsertBinding(input) {

@@ -962,6 +962,29 @@ describe('channel-message-store members and bindings', () => {
     expect(updated.sessionId).toBe('sess-9');
     expect(updated.providerSession).toEqual({ claudeSessionId: 'abc' });
   });
+
+  it('lists distinct non-null bound session ids (reaper protection) (#1248)', () => {
+    const s = store();
+    // Bound sessions across two channels; one binding has no session yet.
+    s.upsertBinding({
+      channelId: 'topic:a',
+      agentFramework: 'claude',
+      sessionId: 'sess-a',
+    });
+    s.upsertBinding({
+      channelId: 'topic:b',
+      agentFramework: 'codex',
+      sessionId: 'sess-b',
+    });
+    s.upsertBinding({
+      channelId: 'topic:c',
+      agentFramework: 'claude',
+      providerSession: { claudeSessionId: 'no-session-yet' },
+    });
+
+    const bound = s.listBoundSessionIds().sort();
+    expect(bound).toEqual(['sess-a', 'sess-b']);
+  });
 });
 
 describe('channel-message-store boot sweeps', () => {
