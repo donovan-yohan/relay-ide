@@ -3,7 +3,9 @@ import type {
   ChannelMessage,
   ChannelMessageId,
 } from '../../../../shared/channel-chat-protocol.js';
+import type { AgentDetailCardStatusV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
+import { AgentDetailCard } from './AgentDetailCard.js';
 import { ChannelImagePart } from './ChannelImagePart.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import { respondChannelApproval } from '../../lib/api.js';
@@ -22,6 +24,28 @@ function useIdleBlink(signal: string, active: boolean): boolean {
     return () => clearTimeout(timer);
   }, [signal, active]);
   return blinking;
+}
+
+function detailStatusForMessage(
+  status: ChannelMessage['status']
+): AgentDetailCardStatusV2 {
+  if (status === 'streaming') return 'running';
+  if (status === 'failed') return 'failed';
+  if (status === 'interrupted' || status === 'truncated') return 'cancelled';
+  return 'completed';
+}
+
+function truncationLabelForMessage(message: ChannelMessage): string | null {
+  const reason =
+    message.status === 'truncated'
+      ? message.meta?.['truncationReason']
+      : message.truncated
+        ? 'size-limit'
+        : undefined;
+  if (reason === 'missing-terminal') return 'truncated · missing terminal';
+  if (reason === 'restart') return 'truncated · restart';
+  if (reason === 'size-limit') return 'truncated · 256kb limit';
+  return message.status === 'truncated' ? 'truncated' : null;
 }
 
 interface ChannelMessageRowProps {
@@ -94,22 +118,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   }
 
   const isHuman = message.sender.kind === 'human';
-  const truncationReason =
-    message.status === 'truncated'
-      ? message.meta?.['truncationReason']
-      : message.truncated
-        ? 'size-limit'
-        : undefined;
-  const truncationLabel =
-    truncationReason === 'missing-terminal'
-      ? 'truncated · missing terminal'
-      : truncationReason === 'restart'
-        ? 'truncated · restart'
-        : truncationReason === 'size-limit'
-          ? 'truncated · 256kb limit'
-          : message.status === 'truncated'
-            ? 'truncated'
-            : null;
+  const truncationLabel = truncationLabelForMessage(message);
   const rowClasses = [
     'ch-msg',
     isHuman ? 'ch-msg--user' : null,
@@ -129,10 +138,16 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       : undefined;
 
   const hasText = message.body.text.length > 0;
+  const detailStatus = detailStatusForMessage(message.status);
   const body = hasText ? (
     message.body.format === 'markdown' ? (
       <div className="ch-msg__body">
-        <AssistantMarkdown text={message.body.text} keyPrefix={message.id} />
+        <AssistantMarkdown
+          text={message.body.text}
+          keyPrefix={message.id}
+          codeBlockPresentation={isHuman ? 'plain' : 'card'}
+          codeBlockStatus={detailStatus}
+        />
       </div>
     ) : (
       <pre className="ch-msg__text ch-msg__body">{message.body.text}</pre>
@@ -145,7 +160,14 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       style={streamStyle}
       data-channel-message-seq={message.seq}
     >
-      {message.body.format === 'markdown' && (hasText || streaming) ? (
+      {message.agentDetail ? (
+        <AgentDetailCard
+          card={message.agentDetail.card}
+          itemId={message.agentDetail.itemId}
+        />
+      ) : null}
+      {message.body.format === 'markdown' &&
+      (hasText || (streaming && !message.agentDetail)) ? (
         <div className="ch-msg__body-wrap">
           {body}
           {streaming ? (

@@ -133,7 +133,7 @@ async function replayToRows(lines: unknown[]) {
   await new Promise((r) => setTimeout(r, 50));
   const rows = store
     .history('topic:general')
-    .filter((m) => m.sender.kind === 'agent');
+    .filter((m) => m.sender.kind === 'agent' && !m.agentDetail);
   unbind();
   hub.close();
   store.close();

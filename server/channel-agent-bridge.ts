@@ -1,9 +1,15 @@
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { createLogger } from './logger.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  agentDetailCardForItem,
+  type AgentDetailCardStatusV2,
+  type AgentDetailCardV2,
+  type AgentPatchV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import type { ChannelHub } from './channel-hub.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
@@ -13,6 +19,8 @@ import {
 import { PACKET_IMAGE_DEGRADATION_META_KEY } from './channel-context-packet.js';
 import {
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
+  CHANNEL_AGENT_DETAIL_MAX_BYTES,
+  type ChannelAgentDetail,
   type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
@@ -43,6 +51,157 @@ const FLUSH_MAX_WAIT_MS = 2000;
 export const CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX = 256;
 /** Bound agent-produced image ingestion and durable rows per provider turn. */
 export const CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN = 8;
+/** Frontend renders at most 64KiB; keep duplicated durable card payloads aligned. */
+export const CHANNEL_BRIDGE_DETAIL_MAX_CHARS = 64 * 1024;
+/** Metadata scalars are display hints, not unbounded provider payload lanes. */
+export const CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS = 1024;
+export const CHANNEL_BRIDGE_DETAIL_TITLE_MAX_CHARS = 1024;
+export const CHANNEL_BRIDGE_DETAIL_LANGUAGE_MAX_CHARS = 128;
+export const CHANNEL_BRIDGE_DETAIL_COMMAND_MAX_CHARS = 4096;
+export const CHANNEL_BRIDGE_DETAIL_PATH_MAX_CHARS = 4096;
+
+function diffCounts(content: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of content.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+/** Provider-boundary sanitizer shared by the bridge and its invariant tests. */
+export function boundChannelAgentDetail(
+  itemId: string,
+  sourceCard: AgentDetailCardV2
+): ChannelAgentDetail {
+  const boundScalar = (
+    value: string | undefined,
+    maxChars: number,
+    keepTail = false
+  ): string | undefined => {
+    if (value === undefined || value.length <= maxChars) return value;
+    return keepTail ? value.slice(-maxChars) : value.slice(0, maxChars);
+  };
+  const boundedItemId = (() => {
+    if (itemId.length <= CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS) return itemId;
+    const suffix = `#${crypto
+      .createHash('sha256')
+      .update(itemId)
+      .digest('hex')
+      .slice(0, 24)}`;
+    return `${itemId.slice(
+      0,
+      CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS - suffix.length
+    )}${suffix}`;
+  })();
+  const originalContent = sourceCard.content;
+  const keepTail =
+    sourceCard.kind === 'output' || sourceCard.kind === 'tool_call';
+  const content = boundScalar(
+    originalContent,
+    CHANNEL_BRIDGE_DETAIL_MAX_CHARS,
+    keepTail
+  );
+  const originalBytes =
+    originalContent === undefined
+      ? undefined
+      : Buffer.byteLength(originalContent, 'utf8');
+  let card: AgentDetailCardV2 = {
+    // Project the protocol contract explicitly. Provider extensions and other
+    // validator-permitted unknown keys never enter durable row metadata.
+    kind: sourceCard.kind,
+    title:
+      boundScalar(sourceCard.title, CHANNEL_BRIDGE_DETAIL_TITLE_MAX_CHARS) ??
+      '',
+    status: sourceCard.status,
+    ...(sourceCard.language !== undefined
+      ? {
+          language: boundScalar(
+            sourceCard.language,
+            CHANNEL_BRIDGE_DETAIL_LANGUAGE_MAX_CHARS
+          )!,
+        }
+      : {}),
+    ...(sourceCard.command !== undefined
+      ? {
+          command: boundScalar(
+            sourceCard.command,
+            CHANNEL_BRIDGE_DETAIL_COMMAND_MAX_CHARS,
+            true
+          )!,
+        }
+      : {}),
+    ...(sourceCard.path !== undefined
+      ? {
+          path: boundScalar(
+            sourceCard.path,
+            CHANNEL_BRIDGE_DETAIL_PATH_MAX_CHARS,
+            true
+          )!,
+        }
+      : {}),
+    ...(content !== undefined ? { content } : {}),
+    ...(sourceCard.additions !== undefined
+      ? { additions: sourceCard.additions }
+      : {}),
+    ...(sourceCard.deletions !== undefined
+      ? { deletions: sourceCard.deletions }
+      : {}),
+    ...(originalBytes !== undefined
+      ? { sizeBytes: originalBytes }
+      : sourceCard.sizeBytes !== undefined
+        ? { sizeBytes: sourceCard.sizeBytes }
+        : {}),
+    ...(sourceCard.kind === 'diff' && content
+      ? {
+          additions: sourceCard.additions ?? diffCounts(content).additions,
+          deletions: sourceCard.deletions ?? diffCounts(content).deletions,
+        }
+      : {}),
+  };
+  let detail: ChannelAgentDetail = { itemId: boundedItemId, card };
+  // JSON escaping can make a 64KiB string larger than its source bytes.
+  // Tighten deterministically until the complete typed payload fits the cap.
+  while (
+    (card.content?.length ?? 0) > 0 &&
+    Buffer.byteLength(JSON.stringify(detail), 'utf8') >
+      CHANNEL_AGENT_DETAIL_MAX_BYTES
+  ) {
+    const previousLength = card.content!.length;
+    // Always remove at least one code unit. This cannot stall at a tiny
+    // length under an escaping-heavy payload.
+    const nextLength = Math.max(
+      0,
+      Math.min(previousLength - 1, Math.floor(previousLength * 0.8))
+    );
+    const nextContent = keepTail
+      ? nextLength === 0
+        ? ''
+        : card.content!.slice(-nextLength)
+      : card.content!.slice(0, nextLength);
+    card = {
+      ...card,
+      content: nextContent,
+      ...(card.kind === 'diff'
+        ? {
+            additions: card.additions ?? diffCounts(nextContent).additions,
+            deletions: card.deletions ?? diffCounts(nextContent).deletions,
+          }
+        : {}),
+    };
+    detail = { itemId: boundedItemId, card };
+  }
+  if (
+    Buffer.byteLength(JSON.stringify(detail), 'utf8') >
+    CHANNEL_AGENT_DETAIL_MAX_BYTES
+  ) {
+    // With the scalar caps above this is unreachable even for worst-case JSON
+    // escaping. Keep the invariant fail-closed if fields are added later.
+    throw new Error('bounded channel agent detail still exceeds payload cap');
+  }
+  return detail;
+}
 
 interface BridgeStream {
   streamKey: string;
@@ -56,6 +215,18 @@ interface BridgeStream {
   state: 'open' | 'terminal-observed' | 'released';
   flushTimer: NodeJS.Timeout | null;
   firstScheduledAt: number | null;
+}
+
+interface DetailStream {
+  streamKey: string;
+  sourceKey: string;
+  messageId: string;
+  turnId: string;
+  itemId: string;
+  card: AgentDetailCardV2;
+  reasoningSummary: string;
+  reasoningDetail: string;
+  state: 'open' | 'released';
 }
 
 interface AssistantItemAlias {
@@ -99,9 +270,12 @@ export interface BindSessionToChannelInput {
 
 export interface ChannelBridgeRetentionSnapshot {
   openStreams: number;
+  openDetailStreams: number;
   assistantItemIds: number;
+  detailItemIds: number;
   turnsWithRows: number;
   retainedTextBytes: number;
+  retainedDetailBytes: number;
 }
 
 /**
@@ -114,10 +288,10 @@ export function bindSessionToChannel(
 ): () => void {
   const { channelId, agentFramework, adapter, store, hub } = input;
   const streams = new Map<string, BridgeStream>();
-  // Item ids started as `assistantMessage`. Only these may open/mirror a channel
-  // stream. Plan/reasoning/tool items also carry `delta.text` on real adapters
-  // (e.g. the codex-native plan item `plan-<turnId>`), and §6.3 mirrors ONLY
-  // assistantMessage text — so a delta for any other item type is dropped.
+  const detailStreams = new Map<string, DetailStream>();
+  const detailItemAliases = new Map<string, string>();
+  // Assistant item aliases keep prose streams stable across provider echo ids;
+  // detail items use the same canonical source identity in their own rows.
   const assistantItemAliases = new Map<string, AssistantItemAlias>();
   // Turn ids that opened at least one channel-message stream. A `turn-completed`
   // for a turn absent here produced ZERO message rows — a silent finalization
@@ -150,6 +324,120 @@ export function bindSessionToChannel(
     return `${turnId}\u0000${canonicalItemId}`;
   }
 
+  function detailStreamKey(turnId: string, itemId: string): string {
+    return `${turnId}\u0000detail\u0000${itemId}`;
+  }
+
+  function detailStatus(
+    status: 'complete' | 'truncated' | 'interrupted' | 'failed'
+  ): AgentDetailCardStatusV2 {
+    if (status === 'failed') return 'failed';
+    if (status === 'truncated' || status === 'interrupted') return 'cancelled';
+    return 'completed';
+  }
+
+  function explicitDetailStatus(
+    status: AgentDetailCardStatusV2
+  ): status is 'completed' | 'failed' | 'cancelled' {
+    return (
+      status === 'completed' || status === 'failed' || status === 'cancelled'
+    );
+  }
+
+  function detailRowStatus(
+    status: 'completed' | 'failed' | 'cancelled'
+  ): 'complete' | 'failed' | 'interrupted' {
+    if (status === 'failed') return 'failed';
+    if (status === 'cancelled') return 'interrupted';
+    return 'complete';
+  }
+
+  function appendCardDelta(
+    stream: DetailStream,
+    patch: Extract<AgentPatchV2, { type: 'agent-item-delta-v2' }>
+  ): AgentDetailCardV2 {
+    const accumulate = (
+      current: string,
+      fragment: string,
+      mode: 'append' | 'replace' | undefined,
+      keepTail = false
+    ): string => {
+      if (mode === 'replace') {
+        return keepTail
+          ? fragment.slice(-CHANNEL_BRIDGE_DETAIL_MAX_CHARS)
+          : fragment.slice(0, CHANNEL_BRIDGE_DETAIL_MAX_CHARS);
+      }
+      if (keepTail) {
+        return `${current.slice(-CHANNEL_BRIDGE_DETAIL_MAX_CHARS)}${fragment.slice(
+          -CHANNEL_BRIDGE_DETAIL_MAX_CHARS
+        )}`.slice(-CHANNEL_BRIDGE_DETAIL_MAX_CHARS);
+      }
+      const remaining = Math.max(
+        0,
+        CHANNEL_BRIDGE_DETAIL_MAX_CHARS - current.length
+      );
+      return `${current.slice(0, CHANNEL_BRIDGE_DETAIL_MAX_CHARS)}${fragment.slice(
+        0,
+        remaining
+      )}`;
+    };
+    const card = stream.card;
+    if (card.kind === 'thought') {
+      if (typeof patch.delta.summary === 'string') {
+        stream.reasoningSummary = accumulate(
+          stream.reasoningSummary,
+          patch.delta.summary,
+          patch.mode
+        );
+      }
+      if (typeof patch.delta.detail === 'string') {
+        stream.reasoningDetail = accumulate(
+          stream.reasoningDetail,
+          patch.delta.detail,
+          patch.mode
+        );
+      }
+      if (
+        typeof patch.delta.text === 'string' &&
+        patch.delta.summary === undefined &&
+        patch.delta.detail === undefined
+      ) {
+        stream.reasoningSummary = accumulate(
+          stream.reasoningSummary,
+          patch.delta.text,
+          patch.mode
+        );
+      }
+      return {
+        ...card,
+        content: stream.reasoningDetail || stream.reasoningSummary,
+        ...(patch.delta.status ? { status: patch.delta.status } : {}),
+        ...(patch.delta.card ?? {}),
+      };
+    }
+    const fragment =
+      card.kind === 'output'
+        ? (patch.delta.output ?? patch.delta.text)
+        : card.kind === 'diff'
+          ? (patch.delta.patch ?? patch.delta.text)
+          : (patch.delta.content ?? patch.delta.output ?? patch.delta.text);
+    const content =
+      typeof fragment !== 'string'
+        ? card.content
+        : accumulate(
+            card.content ?? '',
+            fragment,
+            patch.mode,
+            card.kind === 'output' || card.kind === 'tool_call'
+          );
+    return {
+      ...card,
+      ...(content !== undefined ? { content } : {}),
+      ...(patch.delta.status ? { status: patch.delta.status } : {}),
+      ...(patch.delta.card ?? {}),
+    };
+  }
+
   function forgetAliasesForStream(streamKey: string): void {
     for (const [aliasId, alias] of assistantItemAliases) {
       if (alias.streamKey === streamKey) assistantItemAliases.delete(aliasId);
@@ -171,11 +459,23 @@ export function bindSessionToChannel(
     for (const stream of streams.values()) {
       retainedTextBytes += stream.byteLength;
     }
+    let retainedDetailBytes = 0;
+    for (const stream of detailStreams.values()) {
+      retainedDetailBytes += Buffer.byteLength(
+        JSON.stringify(stream.card),
+        'utf8'
+      );
+      retainedDetailBytes += Buffer.byteLength(stream.reasoningSummary, 'utf8');
+      retainedDetailBytes += Buffer.byteLength(stream.reasoningDetail, 'utf8');
+    }
     input.onRetentionSnapshot({
       openStreams: streams.size,
+      openDetailStreams: detailStreams.size,
       assistantItemIds: assistantItemAliases.size,
+      detailItemIds: detailItemAliases.size,
       turnsWithRows: turnsWithRows.size,
       retainedTextBytes,
+      retainedDetailBytes,
     });
   }
 
@@ -235,6 +535,192 @@ export function bindSessionToChannel(
     hub.beginStreamBroadcast(message);
     reportRetention();
     return stream;
+  }
+
+  function openDetailStream(
+    patch: Extract<
+      AgentPatchV2,
+      { type: 'agent-item-started-v2' | 'agent-item-updated-v2' }
+    >,
+    sourceCard: AgentDetailCardV2
+  ): DetailStream | null {
+    const itemId = canonicalAssistantItemId(patch.item);
+    const streamKey = detailStreamKey(patch.turnId, itemId);
+    detailItemAliases.set(patch.item.id, streamKey);
+    const existing = detailStreams.get(streamKey);
+    if (existing) return existing;
+    const sourceKey = itemSourceKey(patch.sessionId, patch.turnId, itemId);
+    if (recentFinalizedItemKeys.has(sourceKey)) {
+      if (
+        sourceCard.status !== 'completed' &&
+        sourceCard.status !== 'failed' &&
+        sourceCard.status !== 'cancelled'
+      ) {
+        detailItemAliases.delete(patch.item.id);
+        return null;
+      }
+    }
+    const agentDetail = boundChannelAgentDetail(itemId, sourceCard);
+    const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
+    const message = store.beginStream({
+      channelId,
+      sender,
+      source: { sessionId: patch.sessionId, turnId: patch.turnId, itemId },
+      agentDetail,
+      ...(parentMessageId ? { parentMessageId } : {}),
+    });
+    if (message.status !== 'streaming') {
+      rememberFinalizedItem(sourceKey);
+      detailItemAliases.delete(patch.item.id);
+      if (explicitDetailStatus(sourceCard.status)) {
+        // Durable per-detail state machine:
+        //   provisional turn/restart terminal -> first explicit item terminal
+        //   explicit terminal -> absorbing (duplicates/conflicts are no-ops)
+        const resolved = store.resolveProvisionalAgentDetailTerminal(
+          message.id,
+          {
+            text: message.body.text,
+            status: detailRowStatus(sourceCard.status),
+            agentDetail: boundChannelAgentDetail(itemId, sourceCard),
+          }
+        );
+        if (resolved.transitioned && resolved.message) {
+          hub.completeStreamBroadcast(resolved.message);
+        }
+      }
+      reportRetention();
+      return null;
+    }
+    const stream: DetailStream = {
+      streamKey,
+      sourceKey,
+      messageId: message.id,
+      turnId: patch.turnId,
+      itemId,
+      card: agentDetail.card,
+      reasoningSummary:
+        patch.item.type === 'reasoning'
+          ? patch.item.summary.slice(0, CHANNEL_BRIDGE_DETAIL_MAX_CHARS)
+          : '',
+      reasoningDetail:
+        patch.item.type === 'reasoning'
+          ? (patch.item.detail ?? '').slice(0, CHANNEL_BRIDGE_DETAIL_MAX_CHARS)
+          : '',
+      state: 'open',
+    };
+    detailStreams.set(streamKey, stream);
+    turnsWithRows.add(patch.turnId);
+    hub.beginStreamBroadcast(message);
+    reportRetention();
+    return stream;
+  }
+
+  function finalizeDetail(
+    stream: DetailStream,
+    status: 'complete' | 'truncated' | 'interrupted' | 'failed',
+    sourceCard: AgentDetailCardV2 = stream.card,
+    authority: 'provisional' | 'explicit' = 'provisional'
+  ): void {
+    if (stream.state === 'released') return;
+    const agentDetail = boundChannelAgentDetail(stream.itemId, {
+      ...sourceCard,
+      status: detailStatus(status),
+    });
+    const message = store.finalizeStream(stream.messageId, {
+      text: '',
+      status,
+      agentDetail,
+      agentDetailTerminalAuthority: authority,
+      ...(status === 'truncated'
+        ? { truncationReason: 'missing-terminal' as const }
+        : {}),
+    });
+    stream.state = 'released';
+    detailStreams.delete(stream.streamKey);
+    for (const [aliasId, streamKey] of detailItemAliases) {
+      if (streamKey === stream.streamKey) detailItemAliases.delete(aliasId);
+    }
+    rememberFinalizedItem(stream.sourceKey);
+    reportRetention();
+    if (!message) return;
+    hub.completeStreamBroadcast(message);
+    try {
+      store.upsertMember({ channelId, kind: 'agent', id: sender.id });
+    } catch (err) {
+      logger.warn('channel bridge detail member upsert failed:', err);
+    }
+  }
+
+  function handleDetailItem(
+    patch: Extract<
+      AgentPatchV2,
+      { type: 'agent-item-started-v2' | 'agent-item-updated-v2' }
+    >
+  ): boolean {
+    // Assistant messages are the channel's prose stream. Some adapters attach
+    // a generic output card to them, but treating that hint as a detail item
+    // would consume the message before the text path and persist an empty card
+    // row. Structured cards are reserved for non-message provider items.
+    if (patch.item.type === 'assistantMessage') return false;
+    const sourceCard = patch.item.card ?? agentDetailCardForItem(patch.item);
+    if (!sourceCard || sourceCard.kind === 'message') return false;
+    const stream = openDetailStream(patch, sourceCard);
+    if (!stream) return true;
+    const accumulated = stream.card; // capture BEFORE the terminal overwrite
+    stream.card = boundChannelAgentDetail(stream.itemId, sourceCard).card;
+    const itemStatus = sourceCard.status;
+    // Prefer delta-accumulated content when the terminal item card is empty,
+    // matching handleDetailDelta which finalizes from the accumulated card
+    // (#1206). Unreachable with today's codex/claude adapters (they backfill
+    // terminal content) but unguarded for other providers.
+    const terminalCard =
+      sourceCard.content || !accumulated.content
+        ? sourceCard
+        : { ...sourceCard, content: accumulated.content };
+    if (itemStatus === 'completed') {
+      finalizeDetail(stream, 'complete', terminalCard, 'explicit');
+    } else if (itemStatus === 'failed') {
+      finalizeDetail(stream, 'failed', terminalCard, 'explicit');
+    } else if (itemStatus === 'cancelled') {
+      finalizeDetail(stream, 'interrupted', terminalCard, 'explicit');
+    } else {
+      const updated = store.updateAgentDetail(
+        stream.messageId,
+        boundChannelAgentDetail(stream.itemId, stream.card)
+      );
+      if (updated) hub.updateStreamBroadcast(updated);
+      reportRetention();
+    }
+    return true;
+  }
+
+  function handleDetailDelta(
+    patch: Extract<AgentPatchV2, { type: 'agent-item-delta-v2' }>
+  ): boolean {
+    const detail = detailStreams.get(
+      detailItemAliases.get(patch.itemId) ??
+        detailStreamKey(patch.turnId, patch.itemId)
+    );
+    if (!detail) return false;
+    detail.card = boundChannelAgentDetail(
+      detail.itemId,
+      appendCardDelta(detail, patch)
+    ).card;
+    if (patch.delta.status === 'completed') {
+      finalizeDetail(detail, 'complete', detail.card, 'explicit');
+    } else if (patch.delta.status === 'failed') {
+      finalizeDetail(detail, 'failed', detail.card, 'explicit');
+    } else if (patch.delta.status === 'cancelled') {
+      finalizeDetail(detail, 'interrupted', detail.card, 'explicit');
+    } else {
+      const updated = store.updateAgentDetail(
+        detail.messageId,
+        boundChannelAgentDetail(detail.itemId, detail.card)
+      );
+      if (updated) hub.updateStreamBroadcast(updated);
+      reportRetention();
+    }
+    return true;
   }
 
   function scheduleFlush(stream: BridgeStream): void {
@@ -528,6 +1014,11 @@ export function bindSessionToChannel(
       if (turnId !== undefined && stream.turnId !== turnId) continue;
       finalize(stream, status, stream.text);
     }
+    for (const stream of [...detailStreams.values()]) {
+      if (stream.state === 'released') continue;
+      if (turnId !== undefined && stream.turnId !== turnId) continue;
+      finalizeDetail(stream, status);
+    }
     markTurnImagesTerminal(turnId);
     // #1181 defect 4: a cleanly-completed bound-agent turn that produced no
     // channel message row is a silent failure (the reply never reached the
@@ -548,11 +1039,17 @@ export function bindSessionToChannel(
     if (turnId === undefined) {
       turnsWithRows.clear();
       assistantItemAliases.clear();
+      detailItemAliases.clear();
       reportRetention();
     } else {
       turnsWithRows.delete(turnId);
       for (const [itemId, alias] of assistantItemAliases) {
         if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
+      }
+      for (const [itemId, streamKey] of detailItemAliases) {
+        if (streamKey.startsWith(`${turnId}\u0000`)) {
+          detailItemAliases.delete(itemId);
+        }
       }
       reportRetention();
     }
@@ -580,6 +1077,7 @@ export function bindSessionToChannel(
           void mirrorAgentImage(patch, parentMessageId);
           break;
         }
+        if (handleDetailItem(patch)) break;
         if (patch.item.type === 'assistantMessage') {
           const canonicalItemId = canonicalAssistantItemId(patch.item);
           const streamKey = bridgeStreamKey(patch.turnId, canonicalItemId);
@@ -603,6 +1101,7 @@ export function bindSessionToChannel(
         break;
       }
       case 'agent-item-delta-v2': {
+        if (handleDetailDelta(patch)) break;
         if (typeof patch.delta.text !== 'string') break;
         if (patch.delta.text.length === 0) break;
         const alias = assistantItemAliases.get(patch.itemId);
@@ -627,6 +1126,7 @@ export function bindSessionToChannel(
         break;
       }
       case 'agent-item-updated-v2': {
+        if (handleDetailItem(patch)) break;
         if (patch.item.type !== 'assistantMessage') break;
         const canonicalItemId = canonicalAssistantItemId(patch.item);
         const streamKey = bridgeStreamKey(patch.turnId, canonicalItemId);
@@ -696,8 +1196,7 @@ export function bindSessionToChannel(
         break;
       }
       default:
-        // Non-text items (commandExecution/fileChange/approvals/reasoning),
-        // Session snapshots and non-text items are not mirrored.
+        // Session snapshots and non-card control items are not mirrored.
         break;
     }
   }
@@ -712,7 +1211,12 @@ export function bindSessionToChannel(
         finalize(stream, 'truncated', stream.text);
       }
     }
+    for (const stream of [...detailStreams.values()]) {
+      if (stream.state !== 'released') finalizeDetail(stream, 'truncated');
+    }
     streams.clear();
+    detailStreams.clear();
+    detailItemAliases.clear();
     assistantItemAliases.clear();
     turnsWithRows.clear();
     turnImages.clear();

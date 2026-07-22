@@ -332,6 +332,145 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(final?.completedAt).toBeTruthy();
   });
 
+  it('persists one typed agent card in place across reopen and snapshot reads', () => {
+    const file = dbPath();
+    const first = createChannelMessageStore(file);
+    const begun = first.beginStream({
+      channelId: 'topic:cards',
+      sender: AGENT,
+      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'reason-1' },
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'inspect',
+        },
+      },
+    });
+    const updated = first.updateAgentDetail(begun.id, {
+      itemId: 'reason-1',
+      card: {
+        kind: 'thought',
+        title: 'inspect the channel',
+        status: 'running',
+        content: 'inspect the channel bridge',
+      },
+    });
+    expect(updated?.id).toBe(begun.id);
+    const finalized = first.finalizeStream(begun.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'inspect the channel',
+          status: 'completed',
+          content: 'inspect the channel bridge',
+          sizeBytes: 26,
+        },
+      },
+    });
+    expect(finalized).toMatchObject({
+      id: begun.id,
+      seq: begun.seq,
+      agentDetail: {
+        itemId: 'reason-1',
+        card: { status: 'completed', content: 'inspect the channel bridge' },
+      },
+    });
+    first.close();
+
+    const reopened = store(file);
+    expect(reopened.history('topic:cards')).toEqual([
+      expect.objectContaining({
+        id: begun.id,
+        seq: begun.seq,
+        agentDetail: expect.objectContaining({
+          itemId: 'reason-1',
+          card: expect.objectContaining({
+            kind: 'thought',
+            status: 'completed',
+            content: 'inspect the channel bridge',
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it('atomically resolves a provisional detail terminal once and makes explicit terminal absorbing', () => {
+    const s = store();
+    const begun = s.beginStream({
+      channelId: 'topic:detail-fsm',
+      sender: AGENT,
+      source: { sessionId: 'sess', turnId: 'turn', itemId: 'reason' },
+      agentDetail: {
+        itemId: 'reason',
+        card: { kind: 'thought', title: 'thinking', status: 'running' },
+      },
+    });
+    s.finalizeStream(begun.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason',
+        card: { kind: 'thought', title: 'thinking', status: 'completed' },
+      },
+      agentDetailTerminalAuthority: 'provisional',
+    });
+    const first = s.resolveProvisionalAgentDetailTerminal(begun.id, {
+      text: '',
+      status: 'failed',
+      agentDetail: {
+        itemId: 'reason',
+        card: {
+          kind: 'thought',
+          title: 'provider failure',
+          status: 'failed',
+          content: 'explicit failure',
+        },
+      },
+    });
+    expect(first.transitioned).toBe(true);
+    expect(first.message).toMatchObject({
+      status: 'failed',
+      agentDetail: { card: { status: 'failed', content: 'explicit failure' } },
+    });
+
+    const replay = s.resolveProvisionalAgentDetailTerminal(begun.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason',
+        card: {
+          kind: 'thought',
+          title: 'late replay',
+          status: 'completed',
+          content: 'must not win',
+        },
+      },
+    });
+    expect(replay.transitioned).toBe(false);
+    expect(replay.message).toMatchObject({
+      status: 'failed',
+      agentDetail: { card: { status: 'failed', content: 'explicit failure' } },
+    });
+    s.updateAgentDetail(begun.id, {
+      itemId: 'reason',
+      card: {
+        kind: 'thought',
+        title: 'late streaming mutation',
+        status: 'running',
+      },
+    });
+    expect(s.getMessage(begun.id)).toMatchObject({
+      status: 'failed',
+      agentDetail: { card: { status: 'failed', content: 'explicit failure' } },
+    });
+  });
+
   it('finalizing an already-final row is an idempotent no-op', () => {
     const s = store();
     const begun = s.beginStream({
@@ -409,6 +548,29 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(final?.truncated).toBe(true);
     expect(final?.meta).toMatchObject({ truncationReason: 'size-limit' });
     expect(s.getMessage(begun.id)?.truncated).toBe(true);
+  });
+
+  it('enforces the existing 256KB cap across body plus typed card metadata', () => {
+    const s = store();
+    expect(() =>
+      s.beginStream({
+        channelId: 'topic:bounded-card',
+        sender: AGENT,
+        source: { sessionId: 'sess', turnId: 'turn', itemId: 'detail' },
+        text: 'x'.repeat(200 * 1024),
+        agentDetail: {
+          itemId: 'detail',
+          card: {
+            kind: 'output',
+            title: 'large output',
+            status: 'running',
+            content: 'y'.repeat(100 * 1024),
+          },
+        },
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_payload_too_large' })
+    );
   });
 
   it('listResyncRows returns agent-origin rows at/below the cursor in current state', () => {
@@ -702,6 +864,63 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(c?.messageCount).toBe(2);
     expect(c?.lastMessage?.preview).toBe('second');
   });
+
+  it('previews the newest prose row when a turn ends on a detail card', () => {
+    const s = store();
+    s.appendComplete({
+      channelId: 'topic:d',
+      sender: HUMAN,
+      text: 'first prose',
+    });
+    s.appendComplete({
+      channelId: 'topic:d',
+      sender: AGENT,
+      text: 'last prose message',
+    });
+    // A detail card ends the turn: it persists body_text='' and is the newest
+    // row, so previewing off the literal last row would blank the summary.
+    const begun = s.beginStream({
+      channelId: 'topic:d',
+      sender: AGENT,
+      source: { sessionId: 'sess-d', turnId: 't-d', itemId: 'reason-d' },
+      agentDetail: {
+        itemId: 'reason-d',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'inspect',
+        },
+      },
+    });
+    s.finalizeStream(begun.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason-d',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'completed',
+          content: 'inspect',
+        },
+      },
+    });
+
+    const viaGet = s.getChannelSummary('topic:d');
+    // latestSeq stays the true highest seq (the detail card) so reconnect
+    // head-checks and unread math are unaffected.
+    expect(viaGet?.latestSeq).toBe(begun.seq);
+    expect(viaGet?.messageCount).toBe(3);
+    expect(viaGet?.lastMessage?.preview).toBe('last prose message');
+
+    const viaList = s
+      .listChannelSummaries()
+      .find((x) => x.channelId === 'topic:d');
+    expect(viaList?.latestSeq).toBe(begun.seq);
+    expect(viaList?.messageCount).toBe(3);
+    expect(viaList?.lastMessage?.preview).toBe('last prose message');
+  });
 });
 
 describe('channel-message-store members and bindings', () => {
@@ -765,6 +984,32 @@ describe('channel-message-store boot sweeps', () => {
     expect(system?.kind).toBe('system');
     expect(system?.sender.kind).toBe('system');
     expect(system?.body.text).toContain('restarted before terminal output');
+  });
+
+  it('atomically marks a stale detail row and its card restart-provisional', () => {
+    const s = store();
+    const stuck = s.beginStream({
+      channelId: 'topic:restart-detail',
+      sender: AGENT,
+      source: { sessionId: 'sess', turnId: 'turn', itemId: 'reason' },
+      agentDetail: {
+        itemId: 'reason',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'partial thought',
+        },
+      },
+    });
+    s.sweepStaleStreaming();
+    expect(s.getMessage(stuck.id)).toMatchObject({
+      status: 'truncated',
+      meta: { truncationReason: 'restart' },
+      agentDetail: {
+        card: { status: 'cancelled', content: 'partial thought' },
+      },
+    });
   });
 
   it('sweeps orphaned rows for channel ids not in the persisted topic set', () => {

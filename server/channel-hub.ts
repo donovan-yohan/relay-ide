@@ -87,6 +87,9 @@ interface Accumulator {
   /** last emitted deltaIndex (−1 before the first flush). */
   deltaIndex: number;
   coalesceTimer: NodeJS.Timeout | null;
+  /** Latest persisted full-row refresh waiting for one debounced broadcast. */
+  pendingUpdate: ChannelMessage | null;
+  updateTimer: NodeJS.Timeout | null;
 }
 
 export type ChannelMessagePostedHandler = (
@@ -121,6 +124,8 @@ export interface ChannelHub {
   broadcastCreated(message: ChannelMessage, mentions?: ChannelMention[]): void;
   beginStreamBroadcast(message: ChannelMessage): void;
   pushDelta(messageId: string, text: string): void;
+  /** Debounced authoritative full-row refresh for streaming card state. */
+  updateStreamBroadcast(message: ChannelMessage): void;
   completeStreamBroadcast(message: ChannelMessage): void;
   onMessagePosted(handler: ChannelMessagePostedHandler): () => void;
   setBadgeBroadcaster(broadcaster: ChannelBadgeBroadcaster): void;
@@ -401,6 +406,21 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     });
   }
 
+  function flushRowUpdate(messageId: string): void {
+    const acc = accumulators.get(messageId);
+    if (!acc) return;
+    acc.updateTimer = null;
+    const message = acc.pendingUpdate;
+    acc.pendingUpdate = null;
+    if (!message) return;
+    broadcast(message.channelId, {
+      type: 'channel-message-updated-v1',
+      channelId: message.channelId,
+      timestamp: nowIso(),
+      message,
+    });
+  }
+
   /**
    * Flush any pending (accumulated-but-unemitted) delta text for a channel's
    * streaming rows synchronously, before a connecting socket reads its snapshot.
@@ -517,6 +537,8 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         pendingText: '',
         deltaIndex: -1,
         coalesceTimer: null,
+        pendingUpdate: null,
+        updateTimer: null,
       });
       broadcast(message.channelId, {
         type: 'channel-message-created-v1',
@@ -541,9 +563,23 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       }
     },
 
+    updateStreamBroadcast(message) {
+      const acc = accumulators.get(message.id);
+      if (!acc || message.status !== 'streaming') return;
+      acc.pendingUpdate = message;
+      if (!acc.updateTimer) {
+        acc.updateTimer = setTimeout(
+          () => flushRowUpdate(message.id),
+          coalesceMs
+        );
+        acc.updateTimer.unref?.();
+      }
+    },
+
     completeStreamBroadcast(message) {
       const acc = accumulators.get(message.id);
       if (acc?.coalesceTimer) clearTimeout(acc.coalesceTimer);
+      if (acc?.updateTimer) clearTimeout(acc.updateTimer);
       accumulators.delete(message.id);
       broadcast(message.channelId, {
         type: 'channel-message-completed-v1',
@@ -588,6 +624,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     close() {
       for (const acc of accumulators.values()) {
         if (acc.coalesceTimer) clearTimeout(acc.coalesceTimer);
+        if (acc.updateTimer) clearTimeout(acc.updateTimer);
       }
       accumulators.clear();
       subscribers.clear();

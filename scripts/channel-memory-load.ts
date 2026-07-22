@@ -73,9 +73,12 @@ async function main(): Promise<void> {
   let socket = new SinkSocket();
   let retention: ChannelBridgeRetentionSnapshot = {
     openStreams: 0,
+    openDetailStreams: 0,
     assistantItemIds: 0,
+    detailItemIds: 0,
     turnsWithRows: 0,
     retainedTextBytes: 0,
+    retainedDetailBytes: 0,
   };
   let durableTranscriptBytes = 0;
   const heapSamples: number[] = [];

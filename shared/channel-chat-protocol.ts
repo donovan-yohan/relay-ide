@@ -9,12 +9,16 @@
 // and distinct (already-assigned) seqs — cross-sender corruption is structurally
 // impossible because no reducer field is shared between senders.
 
+import type { AgentDetailCardV2 } from './agent-chat-protocol-v2.js';
+
 export const CHANNEL_CHAT_PROTOCOL_VERSION = 1 as const;
 export const CHANNEL_MESSAGE_MAX_IMAGE_PARTS = 4;
 export const CHANNEL_IMAGE_ALT_MAX_LENGTH = 500;
 
 /** 256KB per-message body cap, parity with WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_BYTES. */
 export const CHANNEL_MESSAGE_BODY_MAX_BYTES = 256 * 1024;
+/** Card metadata shares the message-row budget and is bounded independently. */
+export const CHANNEL_AGENT_DETAIL_MAX_BYTES = 256 * 1024;
 
 export type ChannelMessageId = `chm:${string}`;
 export type ChannelAttachmentId = `cha:${string}`;
@@ -80,6 +84,15 @@ export interface ChannelMessageSource {
   itemId?: string;
 }
 
+/**
+ * One provider-neutral agent operation attached to one durable channel row.
+ * `itemId` is the adapter-stable entity key used for in-place updates.
+ */
+export interface ChannelAgentDetail {
+  itemId: string;
+  card: AgentDetailCardV2;
+}
+
 export interface ChannelMessage {
   schemaVersion: 1;
   id: ChannelMessageId;
@@ -97,6 +110,8 @@ export interface ChannelMessage {
   replyCount?: number;
   mentions?: ChannelMention[];
   source?: ChannelMessageSource;
+  /** Present on agent activity rows; prose rows leave this absent. */
+  agentDetail?: ChannelAgentDetail;
   /**
    * Opaque row metadata surfaced to clients (#1167). System rows carry actionable
    * payloads here — e.g. an approval request `{ approvalRequestId, agentId,
@@ -148,6 +163,12 @@ export interface ChannelMessageDeltaEventV1 extends ChannelEventBaseV1 {
   delta: { text: string };
 }
 
+export interface ChannelMessageUpdatedEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-message-updated-v1';
+  /** Authoritative full streaming row; clients replace the entity by id. */
+  message: ChannelMessage;
+}
+
 export interface ChannelMessageCompletedEventV1 extends ChannelEventBaseV1 {
   type: 'channel-message-completed-v1';
   /** authoritative full row; status complete|truncated|interrupted|failed */
@@ -163,6 +184,7 @@ export type ChannelEventV1 =
   | ChannelSnapshotEventV1
   | ChannelMessageCreatedEventV1
   | ChannelMessageDeltaEventV1
+  | ChannelMessageUpdatedEventV1
   | ChannelMessageCompletedEventV1
   | ChannelResyncRequiredEventV1;
 
@@ -227,6 +249,52 @@ function isSenderRef(value: unknown): value is ChannelSenderRef {
   );
 }
 
+const AGENT_DETAIL_KINDS = new Set<string>([
+  'message',
+  'thought',
+  'tool_call',
+  'output',
+  'diff',
+]);
+const AGENT_DETAIL_STATUSES = new Set<string>([
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+export function isChannelAgentDetail(
+  value: unknown
+): value is ChannelAgentDetail {
+  if (!isRecord(value) || typeof value.itemId !== 'string') return false;
+  const card = value.card;
+  if (!isRecord(card)) return false;
+  return (
+    typeof card.kind === 'string' &&
+    AGENT_DETAIL_KINDS.has(card.kind) &&
+    typeof card.title === 'string' &&
+    typeof card.status === 'string' &&
+    AGENT_DETAIL_STATUSES.has(card.status) &&
+    (card.content === undefined || typeof card.content === 'string') &&
+    (card.language === undefined || typeof card.language === 'string') &&
+    (card.command === undefined || typeof card.command === 'string') &&
+    (card.path === undefined || typeof card.path === 'string') &&
+    (card.additions === undefined ||
+      (typeof card.additions === 'number' &&
+        Number.isSafeInteger(card.additions) &&
+        card.additions >= 0)) &&
+    (card.deletions === undefined ||
+      (typeof card.deletions === 'number' &&
+        Number.isSafeInteger(card.deletions) &&
+        card.deletions >= 0)) &&
+    (card.sizeBytes === undefined ||
+      (typeof card.sizeBytes === 'number' &&
+        Number.isSafeInteger(card.sizeBytes) &&
+        card.sizeBytes >= 0))
+  );
+}
+
 function isMemberRef(value: unknown): value is ChannelMemberRef {
   return (
     isRecord(value) &&
@@ -262,6 +330,12 @@ export function isChannelMessage(value: unknown): value is ChannelMessage {
     (!Array.isArray(value.parts) ||
       value.parts.length > CHANNEL_MESSAGE_MAX_IMAGE_PARTS ||
       !value.parts.every(isChannelMessagePart))
+  ) {
+    return false;
+  }
+  if (
+    value.agentDetail !== undefined &&
+    !isChannelAgentDetail(value.agentDetail)
   ) {
     return false;
   }
@@ -327,6 +401,10 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
         typeof value.deltaIndex === 'number' &&
         isRecord(value.delta) &&
         typeof value.delta.text === 'string'
+      );
+    case 'channel-message-updated-v1':
+      return (
+        isChannelMessage(value.message) && value.message.status === 'streaming'
       );
     case 'channel-message-completed-v1':
       return isChannelMessage(value.message);
@@ -481,6 +559,26 @@ export function applyChannelEventV1(
           ...state.inFlightDelta,
           [event.messageId]: event.deltaIndex,
         },
+      };
+    }
+
+    case 'channel-message-updated-v1': {
+      const message = event.message;
+      const existing = state.byId[message.id];
+      if (!existing) return { ...state, needsCatchup: true };
+      if (existing.status !== 'streaming' || message.status !== 'streaming') {
+        return state;
+      }
+      if (message.seq !== existing.seq) {
+        return { ...state, needsCatchup: true };
+      }
+      const messages = state.messages.map((row) =>
+        row.id === message.id ? message : row
+      );
+      return {
+        ...state,
+        messages,
+        byId: { ...state.byId, [message.id]: message },
       };
     }
 

@@ -61,6 +61,14 @@ function completed(m: ChannelMessage): ChannelEventV1 {
     message: m,
   };
 }
+function updated(m: ChannelMessage): ChannelEventV1 {
+  return {
+    type: 'channel-message-updated-v1',
+    channelId: CHANNEL,
+    timestamp: 't',
+    message: m,
+  };
+}
 
 function reduce(
   state: ChannelReducerState,
@@ -85,6 +93,12 @@ describe('isChannelEventV1 validator matrix', () => {
     expect(isChannelEventV1(snapshot)).toBe(true);
     expect(isChannelEventV1(created(message()))).toBe(true);
     expect(isChannelEventV1(delta('chm:1', 0, 'x'))).toBe(true);
+    expect(isChannelEventV1(updated(message({ status: 'streaming' })))).toBe(
+      true
+    );
+    expect(isChannelEventV1(updated(message({ status: 'complete' })))).toBe(
+      false
+    );
     expect(isChannelEventV1(completed(message()))).toBe(true);
     expect(
       isChannelEventV1(
@@ -188,6 +202,46 @@ describe('isChannelEventV1 validator matrix', () => {
       )
     ).toBe(false);
   });
+
+  it('validates the typed durable agent-detail contract', () => {
+    const valid = message({
+      sender: { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
+      body: { text: '', format: 'markdown' },
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'inspect the channel',
+          status: 'completed',
+          content: 'reasoning content',
+          sizeBytes: 17,
+        },
+      },
+    });
+    expect(isChannelEventV1(created(valid))).toBe(true);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          agentDetail: {
+            ...valid.agentDetail!,
+            card: { ...valid.agentDetail!.card, kind: 'provider-secret' },
+          } as never,
+        })
+      )
+    ).toBe(false);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          agentDetail: {
+            ...valid.agentDetail!,
+            card: { ...valid.agentDetail!.card, additions: -1 },
+          },
+        })
+      )
+    ).toBe(false);
+  });
 });
 
 describe('applyChannelEventV1 reducer', () => {
@@ -246,6 +300,89 @@ describe('applyChannelEventV1 reducer', () => {
     ]);
     expect(state.byId['chm:a']?.body.text).toBe('a1a2');
     expect(state.byId['chm:b']?.body.text).toBe('b1b2');
+  });
+
+  it('replaces an authoritative streaming row by id and rejects seq drift', () => {
+    const initial = message({
+      status: 'streaming',
+      sender: { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
+      body: { text: '', format: 'markdown' },
+      agentDetail: {
+        itemId: 'reason-1',
+        card: { kind: 'thought', title: 'thinking', status: 'running' },
+      },
+    });
+    let state = reduce(initialChannelReducerState(CHANNEL), [created(initial)]);
+    state = applyChannelEventV1(
+      state,
+      updated({
+        ...initial,
+        updatedAt: 'later',
+        agentDetail: {
+          itemId: 'reason-1',
+          card: {
+            kind: 'thought',
+            title: 'thinking',
+            status: 'running',
+            content: 'sanitized Codex reasoning delta',
+          },
+        },
+      })
+    );
+    expect(state.byId[initial.id]?.agentDetail?.card.content).toBe(
+      'sanitized Codex reasoning delta'
+    );
+    const drifted = applyChannelEventV1(
+      state,
+      updated({ ...initial, seq: 99 })
+    );
+    expect(drifted.needsCatchup).toBe(true);
+    expect(drifted.byId[initial.id]?.seq).toBe(1);
+  });
+
+  it('ignores a late streaming update after the row failed', () => {
+    const streaming = message({
+      status: 'streaming',
+      sender: { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
+      body: { text: '', format: 'markdown' },
+      agentDetail: {
+        itemId: 'reason-1',
+        card: { kind: 'thought', title: 'thinking', status: 'running' },
+      },
+    });
+    const failed = {
+      ...streaming,
+      status: 'failed' as const,
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought' as const,
+          title: 'thinking',
+          status: 'failed' as const,
+          content: 'provider failed',
+        },
+      },
+    };
+    const lateStreaming = {
+      ...streaming,
+      updatedAt: 'late',
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought' as const,
+          title: 'thinking',
+          status: 'running' as const,
+          content: 'late stale content',
+        },
+      },
+    };
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(streaming),
+      completed(failed),
+      updated(lateStreaming),
+    ]);
+    expect(state.byId[streaming.id]).toEqual(failed);
+    expect(state.needsCatchup).toBe(false);
   });
 
   it('quarantines only the out-of-order stream and heals it on completed', () => {

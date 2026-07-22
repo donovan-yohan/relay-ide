@@ -346,7 +346,9 @@ function agentReply(store: ChannelMessageStore, channelId: string) {
     .history(channelId, { limit: 200 })
     .filter(
       (m: ChannelMessage) =>
-        m.sender.id === 'agent:mock' && m.status === 'complete'
+        m.sender.id === 'agent:mock' &&
+        m.status === 'complete' &&
+        !m.agentDetail
     );
 }
 

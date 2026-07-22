@@ -90,6 +90,7 @@ function agentReplies(store: ChannelMessageStore, providerId?: string) {
     (m) =>
       m.sender.kind === 'agent' &&
       m.status === 'complete' &&
+      !m.agentDetail &&
       (!providerId || m.sender.providerId === providerId)
   );
 }

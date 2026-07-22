@@ -36,6 +36,10 @@ export function deriveReplyCounts(
   const counts = new Map<ChannelMessageId, DerivedReplyCount>();
   for (const message of messages) {
     if (message.threadId === null) continue;
+    // Detail cards live in the thread (with a thread_id) for cold-resume
+    // rendering but are not conversational replies — mirror the store's
+    // reply-count SQL so live growth does not re-inflate the root count.
+    if (message.agentDetail) continue;
     const current = counts.get(message.threadId);
     const count = (current?.count ?? 0) + 1;
     let lastReplyAt = current?.lastReplyAt;
