@@ -892,7 +892,7 @@ describe('channel-agent-binder — lifecycle', () => {
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(sessions.spawns()).toBe(1);
     const reply = agentReplies(store, 'mock')[0]!;
-    expect(reply.sender.id).toBe('agent:mock');
+    expect(reply.sender.id).toBe('agent-profile:mock:default');
     expect(reply.body.text).toBe('Mock v2 response complete.');
     expect(reply.threadId).toBeNull();
     expect(reply.parentMessageId).toBeNull();

@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react';
 import type { ChannelMessagePart } from '../../../../shared/channel-chat-protocol.js';
+import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
 import './ChannelView.css';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
@@ -82,7 +83,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const dmIdentity = dmProviderId
     ? resolveSenderIdentity({
         kind: 'agent',
-        id: `agent:${dmProviderId}`,
+        // A DM targets a vendor, i.e. its DEFAULT profile — key on the profile
+        // Actor id so it keeps the curated vendor token (#1234).
+        id: builtInAgentProfileId(dmProviderId),
         providerId: dmProviderId,
       })
     : null;
@@ -310,8 +313,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     for (const message of reducer.messages) {
       if (message.status !== 'streaming' || message.sender.kind !== 'agent')
         continue;
-      const providerId =
-        message.sender.providerId ?? message.sender.id.replace(/^agent:/, '');
+      // providerId is authoritative from the explicit field — the id is now a
+      // profile Actor id, not `agent:<framework>`, so never strip it (#1234).
+      const providerId = message.sender.providerId;
       if (providerId) ids.add(providerId);
     }
     return ids;
@@ -353,7 +357,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       if (entry?.binding == null && status === 'idle' && !streaming) continue;
       const identity = resolveSenderIdentity({
         kind: 'agent',
-        id: `agent:${agentId}`,
+        // Roster/presence chips represent a vendor's DEFAULT profile — key on the
+        // profile Actor id so the chip keeps the curated vendor token (#1234).
+        id: builtInAgentProfileId(agentId),
         providerId: agentId,
         ...(entry?.displayName ? { displayName: entry.displayName } : {}),
       });

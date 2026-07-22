@@ -13,6 +13,7 @@ import type {
   ChannelMessageId,
   ChannelSenderRef,
 } from '../../../../shared/channel-chat-protocol.js';
+import { resolveRenderSenderId } from './sender-identity.js';
 
 /** Slack-standard grouping window: same-sender messages within 5 minutes group. */
 export const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -184,9 +185,13 @@ export function buildTimelineNodes(
     }
 
     if (group) {
+      // Key on the RENDER id so a legacy `agent:<vendor>` row coalesces with a
+      // new `agent-profile:<vendor>:default` row instead of splitting at the
+      // re-key boundary (#1245); non-legacy ids resolve to themselves.
       const sameSender =
         group.sender.kind === message.sender.kind &&
-        group.sender.id === message.sender.id;
+        resolveRenderSenderId(group.sender) ===
+          resolveRenderSenderId(message.sender);
       const withinWindow =
         createdMsSafe - group.lastCreatedMs <= GROUP_WINDOW_MS;
       if (!sameSender || !withinWindow) flush();

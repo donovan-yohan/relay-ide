@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { createLogger } from './logger.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import {
   agentDetailCardForItem,
@@ -253,7 +254,22 @@ export interface BindSessionToChannelInput {
   /** Shared sender-neutral attachment lane for agent-produced image items. */
   attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
+  /**
+   * Profile display label stamped onto the durable `ChannelSenderRef.displayName`
+   * (#1234). For a vendor's DEFAULT profile this is the framework catalog label
+   * (built-in defaults carry an empty stored displayName — the caller resolves the
+   * vendor label by `providerId` and passes it here). Distinct from the session/tab
+   * display name.
+   */
   displayName?: string;
+  /**
+   * Profile Actor id stamped onto `ChannelSenderRef.id` (#1234, epic #1232). Since
+   * no custom profiles exist yet, every agent session maps to its vendor's DEFAULT
+   * profile; callers pass `builtInAgentProfileId(vendor)`. Defaults to the vendor
+   * built-in default id when omitted so the `agent:<framework>` id format is gone
+   * regardless of caller.
+   */
+  profileActorId?: string;
   /** Resolve the immediate parent for a routed turn, if it began in a thread. */
   parentMessageIdForTurn?: (turnId: string) => string | undefined;
   /**
@@ -479,9 +495,13 @@ export function bindSessionToChannel(
     });
   }
 
+  // Attribution re-key (#1234): the sender identity slot IS the profile Actor id,
+  // not the bare `agent:<framework>` format. `providerId` stays the vendor so the
+  // renderer reads it explicitly (never by stripping `agent:` off the id), and the
+  // vendor glyph is shared across a vendor's profiles.
   const sender: ChannelSenderRef = {
     kind: 'agent',
-    id: `agent:${agentFramework}`,
+    id: input.profileActorId ?? builtInAgentProfileId(agentFramework),
     providerId: agentFramework,
     ...(input.displayName ? { displayName: input.displayName } : {}),
   };

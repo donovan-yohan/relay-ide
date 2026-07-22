@@ -1,6 +1,7 @@
 import React from 'react';
 import './MentionPalette.css';
 import type { RosterEntry } from '../../lib/api.js';
+import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import { AgentBadge } from '../AgentBadge.js';
 
@@ -50,7 +51,9 @@ export const MentionPalette: React.FC<MentionPaletteProps> = ({
       {entries.map((entry, index) => {
         const identity = resolveSenderIdentity({
           kind: 'agent',
-          id: `agent:${entry.id}`,
+          // Roster entries are vendors, i.e. their DEFAULT profile — key on the
+          // profile Actor id so the palette keeps the curated vendor token (#1234).
+          id: builtInAgentProfileId(entry.id),
           providerId: entry.id,
           displayName: entry.displayName,
         });

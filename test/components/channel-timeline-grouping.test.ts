@@ -154,6 +154,126 @@ describe('buildTimelineNodes — grouping rules', () => {
     expect(kinds(nodes)).toEqual(['day-divider', 'group', 'group']);
   });
 
+  it('breaks the group between two profiles of ONE vendor (grouping keys on the profile Actor id, #1234)', () => {
+    // Same vendor (providerId 'claude'), same glyph, only 1 minute apart — but
+    // two DISTINCT profile Actor ids must NOT collapse into one visual group.
+    const nodes = buildTimelineNodes(
+      [
+        msg({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          createdAt: '2026-07-18T10:00:00.000Z',
+          sender: {
+            kind: 'agent',
+            id: 'agent-profile:claude:default',
+            providerId: 'claude',
+            displayName: 'Claude Code',
+          },
+        }),
+        msg({
+          id: 'chm:2' as ChannelMessageId,
+          seq: 2,
+          createdAt: '2026-07-18T10:01:00.000Z',
+          sender: {
+            kind: 'agent',
+            id: 'agent-profile:claude:backend-xyz',
+            providerId: 'claude',
+            displayName: 'Backend Claude',
+          },
+        }),
+      ],
+      null
+    );
+    expect(kinds(nodes)).toEqual(['day-divider', 'group', 'group']);
+    expect(groupSeqs(nodes[1]!)).toEqual([1]);
+    expect(groupSeqs(nodes[2]!)).toEqual([2]);
+  });
+
+  it('coalesces consecutive messages from ONE profile within the window (#1234)', () => {
+    const sender = {
+      kind: 'agent' as const,
+      id: 'agent-profile:claude:backend-xyz',
+      providerId: 'claude',
+      displayName: 'Backend Claude',
+    };
+    const nodes = buildTimelineNodes(
+      [
+        msg({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          createdAt: '2026-07-18T10:00:00.000Z',
+          sender,
+        }),
+        msg({
+          id: 'chm:2' as ChannelMessageId,
+          seq: 2,
+          createdAt: '2026-07-18T10:02:00.000Z',
+          sender,
+        }),
+      ],
+      null
+    );
+    expect(kinds(nodes)).toEqual(['day-divider', 'group']);
+    expect(groupSeqs(nodes[1]!)).toEqual([1, 2]);
+  });
+
+  it('coalesces a legacy agent:<vendor> row with a new agent-profile:<vendor>:default row (#1245)', () => {
+    // A pre-#1234 legacy row (wire id `agent:claude`, unchanged on the wire) and
+    // a new default-profile row are the SAME sender after the render-time heal,
+    // so they must coalesce instead of splitting at the re-key boundary.
+    const nodes = buildTimelineNodes(
+      [
+        msg({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          createdAt: '2026-07-18T10:00:00.000Z',
+          sender: { kind: 'agent', id: 'agent:claude', providerId: 'claude' },
+        }),
+        msg({
+          id: 'chm:2' as ChannelMessageId,
+          seq: 2,
+          createdAt: '2026-07-18T10:01:00.000Z',
+          sender: {
+            kind: 'agent',
+            id: 'agent-profile:claude:default',
+            providerId: 'claude',
+            displayName: 'Claude Code',
+          },
+        }),
+      ],
+      null
+    );
+    expect(kinds(nodes)).toEqual(['day-divider', 'group']);
+    expect(groupSeqs(nodes[1]!)).toEqual([1, 2]);
+  });
+
+  it('still splits a legacy agent:<vendor> row from a DIFFERENT vendor default (#1245)', () => {
+    const nodes = buildTimelineNodes(
+      [
+        msg({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          createdAt: '2026-07-18T10:00:00.000Z',
+          sender: { kind: 'agent', id: 'agent:claude', providerId: 'claude' },
+        }),
+        msg({
+          id: 'chm:2' as ChannelMessageId,
+          seq: 2,
+          createdAt: '2026-07-18T10:01:00.000Z',
+          sender: {
+            kind: 'agent',
+            id: 'agent-profile:codex:default',
+            providerId: 'codex',
+          },
+        }),
+      ],
+      null
+    );
+    expect(kinds(nodes)).toEqual(['day-divider', 'group', 'group']);
+    expect(groupSeqs(nodes[1]!)).toEqual([1]);
+    expect(groupSeqs(nodes[2]!)).toEqual([2]);
+  });
+
   it('breaks a same-sender group across a day boundary within the window (§5.1)', () => {
     // Same sender, only 3 minutes apart (well inside GROUP_WINDOW_MS), but they
     // straddle local midnight — the day boundary MUST still split the group and

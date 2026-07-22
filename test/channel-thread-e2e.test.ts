@@ -195,7 +195,7 @@ describe('channel thread mention round trip', () => {
         .history(harness.channelId, { limit: 20 })
         .some(
           (message) =>
-            message.sender.id === 'agent:mock' &&
+            message.sender.id === 'agent-profile:mock:default' &&
             message.status === 'complete' &&
             !message.agentDetail
         )
@@ -204,7 +204,7 @@ describe('channel thread mention round trip', () => {
       .history(harness.channelId, { limit: 20 })
       .find(
         (message) =>
-          message.sender.id === 'agent:mock' &&
+          message.sender.id === 'agent-profile:mock:default' &&
           message.status === 'complete' &&
           !message.agentDetail
       );
