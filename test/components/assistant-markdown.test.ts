@@ -62,3 +62,80 @@ describe('AssistantMarkdown code classification', () => {
     expect(container.querySelector('.tl-md-code')).toBeNull();
   });
 });
+
+// Sanitization coverage ported from the retired chat-v2-rendering.test.ts.
+// AssistantMarkdown is the shared agent-markdown renderer on the primary
+// channel timeline; these behaviors are the security guarantees against
+// agent-supplied output (auto-fetching image beacons, dangerous-scheme links,
+// and raw-HTML/markup injection), so they must be tested against the component
+// directly rather than any one surface.
+describe('AssistantMarkdown sanitization', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const render = async (text: string): Promise<void> => {
+    await act(async () => {
+      root.render(
+        React.createElement(AssistantMarkdown, {
+          text,
+          keyPrefix: 'test',
+        })
+      );
+    });
+  };
+
+  it('renders a markdown image as a click-to-load link, never an auto-fetching <img>', async () => {
+    // A live `<img src>` would fetch the remote host the instant the message
+    // renders, beaconing the viewer's IP/timing to whatever URL the agent
+    // embedded. The component renders a link instead so nothing is fetched
+    // until the operator explicitly opens it.
+    await render('![a diagram](https://attacker.example/pixel.png)');
+
+    expect(container.querySelector('.tl-markdown img')).toBeNull();
+    const imgLink = container.querySelector<HTMLAnchorElement>(
+      '.tl-markdown a.tl-md-img-link'
+    );
+    expect(imgLink).not.toBeNull();
+    expect(imgLink?.getAttribute('href')).toBe(
+      'https://attacker.example/pixel.png'
+    );
+    expect(imgLink?.getAttribute('target')).toBe('_blank');
+    expect(imgLink?.getAttribute('rel')).toContain('noopener');
+    expect(imgLink?.textContent).toContain('a diagram');
+  });
+
+  it('neutralizes a javascript: link so the dangerous scheme never reaches href', async () => {
+    // react-markdown's default urlTransform strips non-safe protocols
+    // (only http/https/ircs?/mailto/xmpp survive), so a `javascript:` href is
+    // emptied before it can become a clickable script-execution vector.
+    await render('[click me](javascript:window.__pwned=true)');
+
+    const link = container.querySelector<HTMLAnchorElement>('.tl-markdown a');
+    expect(link).not.toBeNull();
+    expect(link?.textContent).toContain('click me');
+    expect(link?.getAttribute('href') ?? '').not.toMatch(/javascript:/i);
+    expect(link?.getAttribute('href')).toBe('');
+    expect((globalThis as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+
+  it('treats raw HTML as inert text — no live element, no script execution', async () => {
+    // react-markdown is used without rehype-raw, so an embedded HTML string is
+    // shown as inert text rather than parsed into live DOM. An `onerror` image
+    // must never fire.
+    await render('<img src="x" onerror="window.__pwned = true">');
+
+    expect(container.querySelector('.tl-markdown img')).toBeNull();
+    expect((globalThis as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+});
