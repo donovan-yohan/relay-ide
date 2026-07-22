@@ -2,14 +2,13 @@
  * AgentBlock — Workbench slice 2 of epic #612.
  *
  * Shows one actor/runtime session and its latest bounded state.
- * Reuses the existing ChatView component (agent chat surface) keyed on the
- * session id from actorRef.sessionRef. ChatView connects to /ws/:sessionId;
- * passing an actor identifier (actorRef.id) instead would route to a
- * non-existent socket. actorRef.sessionRef carries the live Relay session
- * that backs this actor.
  *
- * When actorRef.sessionRef is absent (actor has no attached live session),
- * ChatView receives null and renders its disconnected state.
+ * #1224: the legacy agent-chat surface this block used to embed was retired
+ * along with the rest of the web-session/Turn subtree. The Workbench AgentBlock
+ * chain is statically dormant (no live launch path mounts it), so it now
+ * renders a bounded placeholder that names the actor and its backing session
+ * instead of the deleted chat surface. Reviving a live agent surface here
+ * should target the channel timeline, not the removed legacy chat surface.
  *
  * No raw global paths escape this component.
  */
@@ -17,7 +16,6 @@
 import React from 'react';
 
 import type { WorkbenchBlockRenderer } from '../../../../shared/workbench-block-types.js';
-import { ChatView } from '../../components/chat/ChatView.js';
 
 import './agent.css';
 
@@ -26,8 +24,9 @@ export const AgentBlock: WorkbenchBlockRenderer<'agent'> = ({
   context: _context,
 }) => {
   const { actorRef } = descriptor.meta;
-  // Use the session id from the actor's live sessionRef for socket routing.
-  // actorRef.id is an actor identifier, not a Relay session id.
+  // actorRef.id is an actor identifier; actorRef.sessionRef carries the live
+  // Relay session that backs this actor (absent when the actor has no attached
+  // live session).
   const sessionId = actorRef.sessionRef?.sessionId ?? null;
 
   return (
@@ -38,7 +37,9 @@ export const AgentBlock: WorkbenchBlockRenderer<'agent'> = ({
         </span>
       </div>
       <div className="block-agent__chat">
-        <ChatView sessionId={sessionId} />
+        <p className="block-agent__placeholder">
+          {sessionId ? `session ${sessionId}` : 'no live session attached'}
+        </p>
       </div>
     </div>
   );

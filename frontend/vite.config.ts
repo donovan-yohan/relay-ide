@@ -72,10 +72,6 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-channel-thread.html'
   );
-  buildInputs['test-agent-detail-rows'] = resolve(
-    import.meta.dirname,
-    'test-agent-detail-rows.html'
-  );
   buildInputs['test-sidebar-mechanics'] = resolve(
     import.meta.dirname,
     'test-sidebar-mechanics.html'

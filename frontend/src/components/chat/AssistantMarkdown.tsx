@@ -15,6 +15,7 @@
 import React from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import './AssistantMarkdown.css';
 import type {
   AgentDetailCardStatusV2,
   AgentDetailCardV2,

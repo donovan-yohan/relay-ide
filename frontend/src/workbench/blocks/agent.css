@@ -31,3 +31,11 @@
   min-height: 0;
   overflow: hidden;
 }
+
+/* #1224: the retired ChatView surface is replaced by a bounded placeholder. */
+.block-agent__placeholder {
+  margin: 0;
+  padding: var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}

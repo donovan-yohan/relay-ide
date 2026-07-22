@@ -28,13 +28,6 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../frontend/src/components/chat/ChatView.js', () => ({
-  ChatView: ({ sessionId }: { sessionId: string | null }) =>
-    React.createElement('div', { 'data-testid': 'chat-view' }, sessionId),
-  default: ({ sessionId }: { sessionId: string | null }) =>
-    React.createElement('div', { 'data-testid': 'chat-view' }, sessionId),
-}));
-
 import {
   createWorkspaceTopicRoomAndMaybeLaunch,
   createWorkspaceTopic,
@@ -861,7 +854,7 @@ describe('TopicComposer', () => {
     expect(onSelectSession).toHaveBeenCalledWith('session-late');
   });
 
-  it('opens ChatHome launches into the active web chat without repo routing', async () => {
+  it('renders the archived-state tombstone for an active web session without repo routing (#1224)', async () => {
     const launchedSession = {
       id: 'session-chat-home',
       type: 'agent',
@@ -911,9 +904,13 @@ describe('TopicComposer', () => {
     expect(useUiStore.getState().activeRepoPath).toBeNull();
     expect(useUiStore.getState().forceOrgCockpit).toBe(false);
     expect(onSelectSession).not.toHaveBeenCalled();
+    // #1224: the legacy per-session web-chat surface (ChatView) is retired. An
+    // active `mode:'web'` row now resolves to the archived-state tombstone
+    // instead of the deleted chat surface — and the composer is replaced by it.
     expect(
-      container.querySelector('[data-testid="chat-view"]')?.textContent
-    ).toBe('session-chat-home');
+      container.querySelector('[aria-label="archived session"]')
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-view"]')).toBeNull();
     expect(container.querySelector('.topic-composer')).toBeNull();
   });
 

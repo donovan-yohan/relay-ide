@@ -185,11 +185,6 @@ vi.mock('../frontend/src/components/Terminal.js', async () => {
   return { Terminal: () => ReactModule.createElement('div') };
 });
 
-vi.mock('../frontend/src/components/chat/ChatView.js', async () => {
-  const ReactModule = await import('react');
-  return { ChatView: () => ReactModule.createElement('div') };
-});
-
 const { WorkspaceArea } =
   await import('../frontend/src/components/WorkspaceArea.js');
 
