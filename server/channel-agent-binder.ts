@@ -20,6 +20,7 @@ import type { CreateWebParams } from './web-session-handler.js';
 import type { Session, WebSession } from './types.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
   parseMentions,
   type ChannelMention,
@@ -347,6 +348,20 @@ export function createChannelAgentBinder(
     return targets.find((target) => target.id === framework);
   }
 
+  /**
+   * Vendor catalog label for the DEFAULT profile's `ChannelSenderRef.displayName`
+   * (#1234). Reuses the (cached) mention-target probe as the label source and
+   * fails soft to the raw framework id so an availability-probe error never blocks
+   * a spawn or an attribution stamp.
+   */
+  async function senderLabelFor(framework: string): Promise<string> {
+    try {
+      return (await resolveTarget(framework))?.displayName ?? framework;
+    } catch {
+      return framework;
+    }
+  }
+
   // ── status ──────────────────────────────────────────────────────────────────
 
   function setStatus(binding: LiveBinding, status: ChannelAgentStatus): void {
@@ -420,6 +435,7 @@ export function createChannelAgentBinder(
     channelId: string,
     framework: string,
     displayName: string,
+    senderDisplayName: string,
     session: { id: string; adapterV2: ProtocolAdapterV2 }
   ): LiveBinding {
     const key = bindingKey(channelId, framework);
@@ -454,7 +470,11 @@ export function createChannelAgentBinder(
         ? { attachmentStore: deps.attachmentStore }
         : {}),
       hub,
-      displayName,
+      // Sender attribution (#1234): the durable ChannelSenderRef carries the
+      // vendor DEFAULT profile Actor id + the vendor catalog label, NOT the
+      // session/tab composite (`binding.displayName`). One session == one profile.
+      profileActorId: builtInAgentProfileId(framework),
+      displayName: senderDisplayName,
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
       onAssistantMessageFinalized: (message) =>
         handleAssistantFinalized(message),
@@ -503,11 +523,23 @@ export function createChannelAgentBinder(
       if (session && session.adapterV2 === existing.adapter) return existing;
     }
 
+    // Sender attribution label (#1234): the vendor DEFAULT profile inherits the
+    // framework catalog label (built-in default profiles carry an empty stored
+    // displayName). Resolved past the reuse fast-path so a hot rebind pays no
+    // availability probe; failures fall back to the raw framework id.
+    const senderDisplayName = await senderLabelFor(framework);
+
     // 3. Rebind a restored session that survived a live reconnect / restart.
     const row = store.getBinding(channelId, framework);
     const restored = healthySession(row?.sessionId ?? null, framework);
     if (restored) {
-      return attachSession(channelId, framework, displayName, restored);
+      return attachSession(
+        channelId,
+        framework,
+        displayName,
+        senderDisplayName,
+        restored
+      );
     }
 
     // 3.5 Cross-node guard (Amendment 1): a remote-node topic must fail visibly,
@@ -556,6 +588,7 @@ export function createChannelAgentBinder(
       channelId,
       framework,
       displayName,
+      senderDisplayName,
       created.session
     );
     store.upsertBinding({

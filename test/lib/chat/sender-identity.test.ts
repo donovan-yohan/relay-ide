@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveSenderIdentity } from '../../../frontend/src/lib/chat/sender-identity.js';
+import { deriveColor } from '../../../frontend/src/lib/colors.js';
+import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 
 describe('resolveSenderIdentity', () => {
   it('renders human as "you" with no glyph and the text color', () => {
@@ -32,11 +34,11 @@ describe('resolveSenderIdentity', () => {
     ['hermes', 'var(--sender-hermes)'],
     ['opencode', 'var(--sender-opencode)'],
   ] as const)(
-    'maps known agent %s to its fixed color token and glyph',
+    'keeps the curated vendor token + glyph for the %s DEFAULT profile',
     (providerId, colorVar) => {
       const id = resolveSenderIdentity({
         kind: 'agent',
-        id: `agent:${providerId}`,
+        id: builtInAgentProfileId(providerId),
         providerId,
       });
       expect(id.kind).toBe('agent');
@@ -46,22 +48,66 @@ describe('resolveSenderIdentity', () => {
     }
   );
 
-  it('derives providerId from the id when the field is absent', () => {
-    const id = resolveSenderIdentity({ kind: 'agent', id: 'agent:claude' });
+  it('hashes a NON-default profile via deriveColor(profileActorId) while sharing the vendor glyph', () => {
+    const profileId = 'agent-profile:claude:backend-abc';
+    const id = resolveSenderIdentity({
+      kind: 'agent',
+      id: profileId,
+      providerId: 'claude',
+      displayName: 'Backend Claude',
+    });
+    // NOT the curated token — a concrete hex hashed on the profile Actor id.
+    expect(id.colorVar).toBe(deriveColor(profileId));
+    expect(id.colorVar.startsWith('#')).toBe(true);
+    expect(id.colorVar).not.toBe('var(--sender-claude)');
+    // The vendor glyph is shared across a vendor's profiles.
+    expect(id.glyph).toBe('claude');
+    expect(id.label).toBe('Backend Claude');
+  });
+
+  it('renders two non-default profiles of one vendor with distinct colors, same glyph', () => {
+    const a = resolveSenderIdentity({
+      kind: 'agent',
+      id: 'agent-profile:claude:backend-1',
+      providerId: 'claude',
+      displayName: 'Backend Claude',
+    });
+    const b = resolveSenderIdentity({
+      kind: 'agent',
+      id: 'agent-profile:claude:reviewer-2',
+      providerId: 'claude',
+      displayName: 'Reviewer Claude',
+    });
+    expect(a.glyph).toBe('claude');
+    expect(b.glyph).toBe('claude');
+    expect(a.colorVar).not.toBe(b.colorVar);
+    expect(a.colorVar).toBe(deriveColor('agent-profile:claude:backend-1'));
+    expect(b.colorVar).toBe(deriveColor('agent-profile:claude:reviewer-2'));
+  });
+
+  it('sources providerId from the explicit field, NOT by stripping the id', () => {
+    // The id is a profile Actor id that does not contain "claude"; providerId is
+    // still resolved from the field, so the vendor glyph + default token resolve.
+    const id = resolveSenderIdentity({
+      kind: 'agent',
+      id: builtInAgentProfileId('claude'),
+      providerId: 'claude',
+    });
     expect(id.glyph).toBe('claude');
     expect(id.colorVar).toBe('var(--sender-claude)');
   });
 
-  it('falls back to a hash-derived color and null glyph for custom providers', () => {
+  it('falls back to a hash-derived color and null glyph for a custom-vendor default profile', () => {
     const id = resolveSenderIdentity({
       kind: 'agent',
-      id: 'agent:custom:acme',
-      providerId: 'custom:acme',
+      id: builtInAgentProfileId('custom-acme'),
+      providerId: 'custom-acme',
       displayName: 'Acme Bot',
     });
     expect(id.glyph).toBe(null);
     expect(id.label).toBe('Acme Bot');
-    // Not a sender token — a concrete hex from the hash palette.
+    // No curated token for an unknown vendor — a concrete hex from the palette.
+    expect(id.colorVar).toBe(deriveColor(builtInAgentProfileId('custom-acme')));
     expect(id.colorVar.startsWith('#')).toBe(true);
   });
 });

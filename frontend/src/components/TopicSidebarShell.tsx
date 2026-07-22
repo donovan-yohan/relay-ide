@@ -28,6 +28,7 @@ import type {
   WorkflowRunState,
 } from '../../../shared/workflow-run.js';
 import type { RosterAttention } from '../../../shared/agent-roster.js';
+import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
   parseMentions,
   type ChannelMessage,
@@ -315,7 +316,9 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
   if (item.isDirectMessage && item.dmProviderId) {
     const identity = resolveSenderIdentity({
       kind: 'agent',
-      id: `agent:${item.dmProviderId}`,
+      // A DM row targets a vendor, i.e. its DEFAULT profile — key on the profile
+      // Actor id so the sidebar dot keeps the curated vendor token (#1234).
+      id: builtInAgentProfileId(item.dmProviderId),
       providerId: item.dmProviderId,
     });
     return (

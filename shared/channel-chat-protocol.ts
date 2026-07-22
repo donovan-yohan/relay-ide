@@ -58,10 +58,16 @@ export type ChannelBodyFormat = 'markdown' | 'text';
 
 export interface ChannelSenderRef {
   kind: ChannelSenderKind;
-  /** 'human:<actorId>' | 'agent:<frameworkId>' | 'system' */
+  /**
+   * Actor identity slot. `'human:<actorId>'` | `'system'` | for agents the
+   * profile Actor id (`agent-profile:<vendor>:default` for a vendor's built-in
+   * default; `agent-profile:<vendor>:<uuid>` for a custom profile) — NOT
+   * `agent:<framework>` (#1234). Read `providerId` for the vendor, never by
+   * stripping this id.
+   */
   id: string;
   displayName?: string;
-  /** agent framework id (claude/codex/hermes/opencode) */
+  /** agent framework/vendor id (claude/codex/hermes/opencode) */
   providerId?: string;
   /** backing adapter session (slice 4 fills) */
   sessionId?: string;

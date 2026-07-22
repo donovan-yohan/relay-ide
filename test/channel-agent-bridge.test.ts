@@ -563,7 +563,7 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(message.status).toBe('complete');
     expect(message.sender).toMatchObject({
       kind: 'agent',
-      id: 'agent:claude',
+      id: 'agent-profile:claude:default',
       providerId: 'claude',
     });
     expect(message.body.text).toBe('Mock v2 response complete.');
@@ -573,8 +573,67 @@ describe('channel-agent-bridge lifecycle', () => {
       itemId: 'assistant-turn-1',
     });
     expect(
-      store.listMembers('topic:test').some((m) => m.id === 'agent:claude')
+      store
+        .listMembers('topic:test')
+        .some((m) => m.id === 'agent-profile:claude:default')
     ).toBe(true);
+  });
+
+  it('stamps the sender as the vendor DEFAULT profile: id=profile, providerId=vendor, displayName=catalog label (#1234)', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 });
+    await adapter.connect(config('sess-p'));
+    const unbind = bindSessionToChannel({
+      channelId: 'topic:profile',
+      agentFramework: 'claude',
+      adapter,
+      store,
+      hub,
+      // The binder resolves a built-in default profile's empty stored displayName
+      // to the framework catalog label and passes it here.
+      displayName: 'Claude Code',
+    });
+    cleanup.push(unbind);
+
+    await adapter.sendMessage({ turnId: 'turn-p', content: 'hello' });
+
+    const message = store
+      .history('topic:profile')
+      .find((row) => !row.agentDetail)!;
+    // The `agent:<framework>` id format is gone — the id IS the profile Actor id.
+    expect(message.sender.id).toBe('agent-profile:claude:default');
+    expect(message.sender.id.startsWith('agent:')).toBe(false);
+    expect(message.sender.providerId).toBe('claude');
+    expect(message.sender.displayName).toBe('Claude Code');
+    // No new per-message identity carrier on the sender ref.
+    expect(
+      Object.prototype.hasOwnProperty.call(message.sender, 'profileId')
+    ).toBe(false);
+  });
+
+  it('stamps an explicit profileActorId onto the sender id, keeping providerId=vendor (#1234)', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 });
+    await adapter.connect(config('sess-c'));
+    const unbind = bindSessionToChannel({
+      channelId: 'topic:custom',
+      agentFramework: 'claude',
+      adapter,
+      store,
+      hub,
+      profileActorId: 'agent-profile:claude:backend-xyz',
+      displayName: 'Backend Claude',
+    });
+    cleanup.push(unbind);
+
+    await adapter.sendMessage({ turnId: 'turn-c', content: 'hello' });
+
+    const message = store
+      .history('topic:custom')
+      .find((row) => !row.agentDetail)!;
+    expect(message.sender.id).toBe('agent-profile:claude:backend-xyz');
+    expect(message.sender.providerId).toBe('claude');
+    expect(message.sender.displayName).toBe('Backend Claude');
   });
 
   it('keeps two concurrent bound sessions from cross-contaminating in one channel', async () => {
@@ -610,8 +669,12 @@ describe('channel-agent-bridge lifecycle', () => {
     const messages = store.history('topic:c');
     expect(messages).toHaveLength(10);
     const prose = messages.filter((message) => !message.agentDetail);
-    const claude = prose.find((m) => m.sender.id === 'agent:claude');
-    const codex = prose.find((m) => m.sender.id === 'agent:codex');
+    const claude = prose.find(
+      (m) => m.sender.id === 'agent-profile:claude:default'
+    );
+    const codex = prose.find(
+      (m) => m.sender.id === 'agent-profile:codex:default'
+    );
     expect(claude?.body.text).toBe('Mock v2 response complete.');
     expect(codex?.body.text).toBe('Mock v2 response complete.');
     expect(claude?.source?.sessionId).toBe('s1');
@@ -918,7 +981,7 @@ describe('channel-agent-bridge lifecycle', () => {
     });
     expect(messages[0]!.sender).toMatchObject({
       kind: 'agent',
-      id: 'agent:hermes',
+      id: 'agent-profile:hermes:default',
     });
   });
 

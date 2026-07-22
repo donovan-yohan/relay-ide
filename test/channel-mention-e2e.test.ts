@@ -346,7 +346,7 @@ function agentReply(store: ChannelMessageStore, channelId: string) {
     .history(channelId, { limit: 200 })
     .filter(
       (m: ChannelMessage) =>
-        m.sender.id === 'agent:mock' &&
+        m.sender.id === 'agent-profile:mock:default' &&
         m.status === 'complete' &&
         !m.agentDetail
     );
@@ -365,7 +365,7 @@ describe('mention routing — end-to-end via the router', () => {
     expect(res.body.message.sender.kind).toBe('human');
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
     const reply = agentReply(h.store, h.channelId)[0]!;
-    expect(reply.sender.id).toBe('agent:mock');
+    expect(reply.sender.id).toBe('agent-profile:mock:default');
     expect(reply.body.text).toBe('Mock v2 response complete.');
     expect(reply.threadId).toBeNull();
     expect(reply.parentMessageId).toBeNull();
@@ -392,7 +392,9 @@ describe('mention routing — end-to-end via the router', () => {
       id: 'agent:orchestrator',
     });
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
-    expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe('agent:mock');
+    expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe(
+      'agent-profile:mock:default'
+    );
   });
 
   it('a threaded mention receives only thread context and replies in that thread', async () => {
@@ -437,7 +439,7 @@ describe('mention routing — end-to-end via the router', () => {
     expect(adapter.contents[0]).toContain('prior thread detail');
     expect(adapter.contents[0]).not.toContain('unrelated top-level update');
     const reply = agentReply(h.store, h.channelId)[0]!;
-    expect(reply.sender.id).toBe('agent:mock');
+    expect(reply.sender.id).toBe('agent-profile:mock:default');
     expect(reply.body.text).toBe('thread ack');
     expect(reply.threadId).toBe(root.body.message.id);
     expect(reply.parentMessageId).toBe(trigger.body.message.id);
@@ -618,7 +620,9 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
     });
     // Routing works through the real auth lane.
     await waitFor(() => agentReply(h.store, h.channelId).length >= 1);
-    expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe('agent:mock');
+    expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe(
+      'agent-profile:mock:default'
+    );
 
     // Brake accounting: further agent-sender posts count toward the cap. Posting
     // past MAX trips the pause row — a browser (human) sender never would, proving

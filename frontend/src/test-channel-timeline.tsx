@@ -14,7 +14,7 @@ function message(
   text = `timeline row ${seq}`,
   sender: ChannelMessage['sender'] = seq % 2 === 0
     ? { kind: 'human', id: 'human:operator' }
-    : { kind: 'agent', id: 'agent:codex', providerId: 'codex' }
+    : { kind: 'agent', id: 'agent-profile:codex:default', providerId: 'codex' }
 ): ChannelMessage {
   const createdAt = new Date(Date.UTC(2026, 6, 18, 10, seq)).toISOString();
   return {
@@ -48,7 +48,7 @@ function detailMessage(
   return {
     ...message(seq, '', {
       kind: 'agent',
-      id: 'agent:codex',
+      id: 'agent-profile:codex:default',
       providerId: 'codex',
     }),
     agentDetail: { itemId: `detail-${seq}`, card },
@@ -175,7 +175,7 @@ function Fixture(): React.ReactElement {
               status: 'streaming',
               sender: {
                 kind: 'agent',
-                id: 'agent:codex',
+                id: 'agent-profile:codex:default',
                 providerId: 'codex',
               },
               body: { text: '', format: 'markdown' },
@@ -211,7 +211,7 @@ function Fixture(): React.ReactElement {
         ...current,
         message(latest + 1, 'concurrent catch-up', {
           kind: 'agent',
-          id: 'agent:codex',
+          id: 'agent-profile:codex:default',
           providerId: 'codex',
         }),
       ];
