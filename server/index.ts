@@ -741,14 +741,18 @@ export function buildTicketInitialPrompt(
 /**
  * Builds the CLI args array for an agent session based on resolved settings.
  */
-function buildAgentArgs(
+export function buildAgentArgs(
   resolvedAgent: AgentType,
   claudeArgs: string[],
   yolo: boolean,
   continuePolicy: ContinuePolicy | undefined
 ): string[] {
   const baseArgs = [
-    ...claudeArgs,
+    // config.claudeArgs carries Claude-specific flags (e.g. --model, --effort).
+    // Folding them into codex/opencode/hermes spawns makes those CLIs exit with
+    // code 2 within ~1s, killing every non-claude session on hubs with a
+    // non-empty claudeArgs. Gate the flags to the claude agent only.
+    ...(resolvedAgent === 'claude' ? claudeArgs : []),
     ...(yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
   ];
   const useContinue = continuePolicy === 'always';
@@ -4111,10 +4115,14 @@ async function main(): Promise<void> {
           cwd: opts.worktreePath,
           branchName: opts.branchName,
           displayName,
-          args: [
-            ...resolved.claudeArgs,
-            ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : []),
-          ],
+          // Route through buildAgentArgs so the claudeArgs leak gate applies to
+          // auto-checkout review sessions too (fresh session, continue: never).
+          args: buildAgentArgs(
+            resolved.agent,
+            resolved.claudeArgs,
+            resolved.yolo,
+            undefined
+          ),
           configPath: CONFIG_PATH,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,

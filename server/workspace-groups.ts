@@ -144,7 +144,11 @@ function buildFinalArgs(
     workspaceId
   );
   const resolvedAgent = resolved.agent;
-  const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
+  // config.claudeArgs carries Claude-specific flags (--model/--effort); folding
+  // them into codex/opencode/hermes spawns exits those CLIs with code 2. Gate
+  // to the claude agent only. --add-dir (multi-repo) composition is unchanged.
+  const agentClaudeArgs = resolvedAgent === 'claude' ? resolved.claudeArgs : [];
+  const combinedClaudeArgs = [...agentClaudeArgs, ...addDirArgs];
   const baseArgs = [
     ...combinedClaudeArgs,
     ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),

@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAgentArgs,
   parseRenderedScreenMaxLines,
   resolveSessionLaunchPaths,
   validateSessionCreateRequest,
 } from '../server/index.js';
-import type { Config } from '../server/types.js';
+import {
+  AGENT_CONTINUE_ARGS,
+  AGENT_YOLO_ARGS,
+  type Config,
+} from '../server/types.js';
 import type { WorkContextStore } from '../server/work-context.js';
 
 // Minimal config stub with the two repos we'll test with
@@ -372,6 +377,50 @@ describe('resolveSessionLaunchPaths', () => {
       cwd: '/home/dev/relay-ide',
       settingsAnchorPath: '/home/dev/relay-ide',
     });
+  });
+});
+
+describe('buildAgentArgs claudeArgs leak gate', () => {
+  // config.claudeArgs holds Claude-only flags (--model/--effort). Folding them
+  // into codex/opencode/hermes spawns exits those CLIs with code 2 within ~1s.
+  const claudeArgs = ['--model', 'opus', '--effort', 'high'];
+
+  it('omits claudeArgs from codex spawns when config.claudeArgs is non-empty', () => {
+    const args = buildAgentArgs('codex', claudeArgs, false, undefined);
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--effort');
+    expect(args).toEqual([]);
+  });
+
+  it('omits claudeArgs from opencode and hermes spawns', () => {
+    for (const agent of ['opencode', 'hermes'] as const) {
+      const args = buildAgentArgs(agent, claudeArgs, false, undefined);
+      expect(args).not.toContain('--model');
+      expect(args).not.toContain('--effort');
+    }
+  });
+
+  it('still passes claudeArgs to claude spawns', () => {
+    const args = buildAgentArgs('claude', claudeArgs, false, undefined);
+    expect(args).toEqual(['--model', 'opus', '--effort', 'high']);
+  });
+
+  it('keeps yolo + continue composition around claudeArgs for claude', () => {
+    const args = buildAgentArgs('claude', claudeArgs, true, 'always');
+    expect(args).toEqual([
+      ...(AGENT_CONTINUE_ARGS['claude'] ?? []),
+      ...claudeArgs,
+      ...(AGENT_YOLO_ARGS['claude'] ?? []),
+    ]);
+  });
+
+  it('keeps yolo + continue composition for codex without leaking claudeArgs', () => {
+    const args = buildAgentArgs('codex', claudeArgs, true, 'always');
+    expect(args).toEqual([
+      ...(AGENT_CONTINUE_ARGS['codex'] ?? []),
+      ...(AGENT_YOLO_ARGS['codex'] ?? []),
+    ]);
+    expect(args).not.toContain('--model');
   });
 });
 
