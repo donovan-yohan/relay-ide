@@ -1834,7 +1834,7 @@ function loadScrollback(
   return undefined;
 }
 
-function buildAgentArgs(
+export function buildAgentArgs(
   s: SerializedPtySession,
   frameworks?: Record<string, Partial<AgentFramework>>
 ): string[] {
@@ -1854,7 +1854,10 @@ function buildAgentArgs(
   }
   return [
     ...continueArgsList,
-    ...(s.claudeArgs ?? []),
+    // Serialized claudeArgs are Claude-specific flags (--model/--effort). On
+    // cold resume they must not be replayed into codex/opencode/hermes spawns,
+    // which exit code 2 within ~1s. Gate to the claude agent only.
+    ...(s.agent === 'claude' ? (s.claudeArgs ?? []) : []),
     ...(s.yolo ? yoloArgsList : []),
   ];
 }

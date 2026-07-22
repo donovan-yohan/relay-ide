@@ -34,6 +34,48 @@ afterEach(async () => {
   createdIds.length = 0;
 });
 
+describe('buildAgentArgs cold-resume claudeArgs leak gate', () => {
+  type SerializedSession = Parameters<typeof sessions.buildAgentArgs>[0];
+  // config.claudeArgs (persisted as the session's claudeArgs) are Claude-only
+  // flags. Replaying them into a codex resume exits the CLI with code 2.
+  const claudeArgs = ['--model', 'opus', '--effort', 'high'];
+  const base = {
+    id: 's1',
+    type: 'agent' as const,
+    cwd: '/tmp',
+    displayName: 'Agent',
+    createdAt: new Date().toISOString(),
+    lastActivity: new Date().toISOString(),
+    customCommand: null,
+  };
+
+  it('drops serialized claudeArgs when restoring a codex session', () => {
+    const args = sessions.buildAgentArgs({
+      ...base,
+      agent: 'codex',
+      claudeArgs,
+      yolo: false,
+    } as SerializedSession);
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--effort');
+    // Codex resume still gets its own continue args, never the claudeArgs.
+    expect(args).toEqual([...(AGENT_CONTINUE_ARGS['codex'] ?? [])]);
+  });
+
+  it('replays serialized claudeArgs when restoring a claude session', () => {
+    const args = sessions.buildAgentArgs({
+      ...base,
+      agent: 'claude',
+      claudeArgs,
+      yolo: false,
+    } as SerializedSession);
+    expect(args).toEqual([
+      ...(AGENT_CONTINUE_ARGS['claude'] ?? []),
+      ...claudeArgs,
+    ]);
+  });
+});
+
 describe('sessions', () => {
   it('list returns empty array initially', () => {
     const result = sessions.list();
