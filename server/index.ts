@@ -2407,6 +2407,7 @@ async function main(): Promise<void> {
       globalSessionIds?: string[];
       workContextIds?: string[];
       repoIds?: string[];
+      pathPrefixes?: string[];
       taskRefs?: string[];
     },
     expectedCommand?: CliGatewayActorCommand,
@@ -2485,6 +2486,7 @@ async function main(): Promise<void> {
             sessionIds?: string[];
             globalSessionIds?: string[];
             repoIds?: string[];
+            pathPrefixes?: string[];
             taskRefs?: string[];
           }
         | undefined;
@@ -2588,6 +2590,263 @@ async function main(): Promise<void> {
     }
     requireCliGatewayAuth(req, res, next);
   };
+
+  type ActorSessionCreateTarget =
+    | {
+        ok: true;
+        path: string;
+        repoId?: string;
+        body: Record<string, unknown>;
+        topic?: WorkspaceTopic;
+      }
+    | {
+        ok: false;
+        reason: 'missing_scope' | 'wrong_path_scope' | 'wrong_repo_scope';
+      };
+
+  const actorSessionCreateTargets = new WeakMap<
+    express.Request,
+    ActorSessionCreateTarget
+  >();
+  const invalidActorSessionCreatePath =
+    '/.relay-invalid-actor-session-create-target';
+
+  function actorSessionCreateTarget(
+    req: express.Request
+  ): ActorSessionCreateTarget {
+    const cached = actorSessionCreateTargets.get(req);
+    if (cached) return cached;
+    const rawBody = isRecord(req.body) ? req.body : {};
+    const validated = validateAndSanitizeLocalGatewayCreateInput(rawBody);
+    if (!validated.ok) {
+      const missing = { ok: false, reason: 'missing_scope' } as const;
+      actorSessionCreateTargets.set(req, missing);
+      return missing;
+    }
+    let body = validated.input;
+    let topic: WorkspaceTopic | undefined;
+    const workspaceTopicId = compactRequestPath(body['workspaceTopicId']);
+    if (workspaceTopicId) {
+      topic = workspaceTopicStore?.get(workspaceTopicId) ?? undefined;
+      if (!topic || topic.status === 'archived') {
+        const missing = { ok: false, reason: 'missing_scope' } as const;
+        actorSessionCreateTargets.set(req, missing);
+        return missing;
+      }
+      body = {
+        ...body,
+        ...buildWorkspaceTopicSessionCreateBody({
+          topic,
+          overrides: body,
+        }),
+        workspaceTopicId: topic.id,
+      };
+    }
+    const requestedRepoPath = compactRequestPath(body['repoPath']);
+    const requestedWorktreePath = compactRequestPath(body['worktreePath']);
+    const requestedCwd = compactRequestPath(body['cwd']);
+    const requestedTarget =
+      requestedWorktreePath ?? requestedCwd ?? requestedRepoPath;
+    if (!requestedTarget) {
+      const missing = { ok: false, reason: 'missing_scope' } as const;
+      actorSessionCreateTargets.set(req, missing);
+      return missing;
+    }
+    let canonicalTarget: string;
+    try {
+      canonicalTarget = fs.realpathSync(requestedTarget);
+    } catch {
+      const wrongPath = { ok: false, reason: 'wrong_path_scope' } as const;
+      actorSessionCreateTargets.set(req, wrongPath);
+      return wrongPath;
+    }
+    if (!requestedRepoPath) {
+      const canonicalBody = { ...body };
+      if (requestedWorktreePath) {
+        canonicalBody['worktreePath'] = canonicalTarget;
+      } else if (requestedCwd) {
+        canonicalBody['cwd'] = canonicalTarget;
+      }
+      const target = {
+        ok: true,
+        path: canonicalTarget,
+        body: canonicalBody,
+        ...(topic ? { topic } : {}),
+      } as const;
+      actorSessionCreateTargets.set(req, target);
+      return target;
+    }
+    try {
+      const canonicalRepoPath = fs.realpathSync(requestedRepoPath);
+      const canonicalBody = {
+        ...body,
+        repoPath: canonicalRepoPath,
+        ...(requestedWorktreePath
+          ? { worktreePath: canonicalTarget }
+          : requestedCwd
+            ? { cwd: canonicalTarget }
+            : {}),
+      };
+      const target = {
+        ok: true,
+        path: canonicalTarget,
+        repoId: canonicalRepoPath,
+        body: canonicalBody,
+        ...(topic ? { topic } : {}),
+      } as const;
+      actorSessionCreateTargets.set(req, target);
+      return target;
+    } catch {
+      const wrongRepo = { ok: false, reason: 'wrong_repo_scope' } as const;
+      actorSessionCreateTargets.set(req, wrongRepo);
+      return wrongRepo;
+    }
+  }
+
+  function actorSessionCreateScopeForRequest(req: express.Request): {
+    repoIds?: string[];
+    pathPrefixes: string[];
+    sessionIds?: string[];
+  } {
+    const target = actorSessionCreateTarget(req);
+    if (!target.ok) {
+      return { pathPrefixes: [invalidActorSessionCreatePath] };
+    }
+    const spawnedBySessionId = compactRequestPath(
+      target.body['spawnedBySessionId']
+    );
+    return {
+      ...(target.repoId ? { repoIds: [target.repoId] } : {}),
+      pathPrefixes: [target.path],
+      ...(spawnedBySessionId
+        ? { sessionIds: [spawnedBySessionId] }
+        : {}),
+    };
+  }
+
+  function pathIsWithin(parent: string, child: string): boolean {
+    const relative = path.relative(parent, child);
+    return (
+      relative === '' ||
+      (!relative.startsWith('..') && !path.isAbsolute(relative))
+    );
+  }
+
+  const requireActorSessionCreatePolicy: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
+    const credential = authenticatedCliGatewayActorCredential(req);
+    if (!credential) {
+      next();
+      return;
+    }
+    const target = actorSessionCreateTarget(req);
+    if (!target.ok) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: target.reason })
+      );
+      return;
+    }
+    const hasAuthorizedPathScope =
+      (credential.scope.pathPrefixes?.length ?? 0) > 0;
+    const hasAuthorizedRepoScope =
+      Boolean(target.repoId) &&
+      (credential.scope.repoIds?.length ?? 0) > 0 &&
+      pathIsWithin(target.repoId!, target.path);
+    if (!hasAuthorizedPathScope && !hasAuthorizedRepoScope) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: 'missing_scope' })
+      );
+      return;
+    }
+    const body = target.body;
+    if (body['type'] === 'terminal') {
+      res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_SESSION_TYPE_UNSUPPORTED',
+          message:
+            'scoped CLI actors may create agent worker sessions only; terminal creation requires the browser lane',
+          retryable: false,
+          lane: 'denied',
+          acceptedLanes: ['scoped-actor-credential'],
+        },
+      });
+      return;
+    }
+    const credentialSessionId = credential.scope.sessionIds?.[0];
+    const requestedParent =
+      typeof body['spawnedBySessionId'] === 'string'
+        ? body['spawnedBySessionId']
+        : undefined;
+    if (
+      credentialSessionId &&
+      requestedParent &&
+      requestedParent !== credentialSessionId
+    ) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: 'wrong_session_scope' })
+      );
+      return;
+    }
+    if (credentialSessionId) {
+      body['spawnedBySessionId'] = credentialSessionId;
+      if (isRecord(req.body)) {
+        req.body['spawnedBySessionId'] = credentialSessionId;
+      }
+    } else {
+      // A caller-provided lineage id is identity-like attribution. Without a
+      // credential-bound session id it is unverified, so omit it fail-closed.
+      delete body['spawnedBySessionId'];
+      if (isRecord(req.body)) {
+        delete req.body['spawnedBySessionId'];
+      }
+    }
+    next();
+  };
+
+  function actorSessionCreateControlState(
+    req: express.Request,
+    workerId: string,
+    workerDisplayName: string
+  ): ReturnType<typeof createAgentDrivenInitialControlState> {
+    const credential = authenticatedCliGatewayActorCredential(req);
+    if (!credential) {
+      throw new Error(
+        'actor session control state requires an authenticated actor credential'
+      );
+    }
+    const workerState = createAgentDrivenInitialControlState({
+      workerId,
+      displayName: workerDisplayName,
+    });
+    const owner = {
+      kind: 'agent' as const,
+      id: `agent:${credential.actor.id}`,
+      ...(credential.actor.displayName
+        ? { displayName: credential.actor.displayName }
+        : {}),
+      ...(credential.scope.nodeIds?.[0]
+        ? { nodeId: credential.scope.nodeIds[0] }
+        : {}),
+      ...(credential.scope.sessionIds?.[0]
+        ? { sessionId: credential.scope.sessionIds[0] }
+        : {}),
+    };
+    return {
+      ...workerState,
+      activeActors: [...workerState.activeActors, owner],
+      // activeWorker remains the spawned worker. The authenticated orchestrator
+      // is an additional controlling actor, never a body-supplied replacement.
+      activeWorker: workerState.activeWorker,
+      controlReason: 'scoped-actor-spawned-agent-worker',
+    };
+  }
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
@@ -5436,13 +5695,26 @@ async function main(): Promise<void> {
   }
 
   // POST /sessions — unified endpoint for agent and terminal sessions
-  app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
-    const requestedCreateBody = sessionCreateBodyFromRequest(req, res);
+  const requireCliGatewaySessionCreateAuth =
+    requireCliGatewayAuthForActorCommand('sessions.create', {
+      scopeForRequest: actorSessionCreateScopeForRequest,
+    });
+  app.post('/sessions', requireCliGatewaySessionCreateAuth, requireActorSessionCreatePolicy, async (req, res) => {
+    const actorTarget = authenticatedCliGatewayActorCredential(req)
+      ? actorSessionCreateTarget(req)
+      : undefined;
+    const requestedCreateBody =
+      actorTarget?.ok === true
+        ? actorTarget.body
+        : sessionCreateBodyFromRequest(req, res);
     if (!requestedCreateBody) return;
-    const topicCreate = resolveWorkspaceTopicSessionCreate(
-      requestedCreateBody,
-      res
-    );
+    const topicCreate =
+      actorTarget?.ok === true
+        ? {
+            body: actorTarget.body,
+            ...(actorTarget.topic ? { topic: actorTarget.topic } : {}),
+          }
+        : resolveWorkspaceTopicSessionCreate(requestedCreateBody, res);
     if (!topicCreate) return;
     const createBody = topicCreate.body;
     const workspaceTopic = topicCreate.topic;
@@ -5661,8 +5933,12 @@ async function main(): Promise<void> {
         requestedDisplayName,
         sessions.nextAgentName
       );
+      const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
+        ? crypto.randomBytes(8).toString('hex')
+        : undefined;
       try {
         const { session } = await localRelayNode.sessions.createWeb({
+          ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
           ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
           agentType: resolvedAgent,
           cwd,
@@ -5674,6 +5950,15 @@ async function main(): Promise<void> {
           port: startupConfig.port,
           configDir,
           sessionLane,
+          ...(actorWorkerSessionId
+            ? {
+                controlState: actorSessionCreateControlState(
+                  req,
+                  actorWorkerSessionId,
+                  displayName
+                ),
+              }
+            : {}),
           ...buildHermesCreateExtra(resolvedAgent, {
             workspaceTopic,
             repoPath: requestedRepoPath,
@@ -5713,10 +5998,14 @@ async function main(): Promise<void> {
       requestedDisplayName,
       sessions.nextAgentName
     );
+    const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
+      ? crypto.randomBytes(8).toString('hex')
+      : undefined;
 
     let session: CreateResult;
     try {
       session = createAgentSessionRecord({
+        ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
         ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
         repoName: name,
         repoPath: requestedRepoPath,
@@ -5738,6 +6027,15 @@ async function main(): Promise<void> {
         claudeFullscreen: freshConfig.claudeFullscreen,
         sessionLane,
         workContextId,
+        ...(actorWorkerSessionId
+          ? {
+              controlState: actorSessionCreateControlState(
+                req,
+                actorWorkerSessionId,
+                displayName
+              ),
+            }
+          : {}),
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
         envOverrides: sessionEnvOverrides,

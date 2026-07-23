@@ -30,6 +30,7 @@ export const CLI_GATEWAY_CORRELATION_ID_HEADER =
   'x-relay-correlation-id' as const;
 export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
+  'session:create:agent',
   'context:read',
   'context:write',
   'inbox:read',
@@ -82,6 +83,7 @@ export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
 
 export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
+  'sessions.create',
   'context.create',
   'context.pin',
   'context.unpin',
@@ -331,6 +333,7 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
+  if (command === 'sessions.create') return ['session:create:agent'];
   if (command === 'events.subscribe') return ['context:read'];
   // context/inbox reads must resolve to their read capability BEFORE the generic
   // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
