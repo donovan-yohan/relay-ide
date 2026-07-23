@@ -541,6 +541,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
 test('classifies explicitly scoped CLI gateway actor write routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toEqual([
+    'sessions.create',
     'context.create',
     'context.pin',
     'context.unpin',
@@ -636,6 +637,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
 test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('nodes.list')).toEqual([
     'session:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('sessions.create')).toEqual([
+    'session:create:agent',
   ]);
   expect(cliGatewayActorCommandCapabilities('context.create')).toEqual([
     'context:write',
@@ -941,7 +945,7 @@ test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts
 
   const denialCases = [
     [{ audience: 'relay:operator-handshake:v1' }, 'audience_expansion'],
-    [{ capabilities: ['session:create:agent'] }, 'capability_expansion'],
+    [{ capabilities: ['session:create:terminal'] }, 'capability_expansion'],
     [{ capabilities: ['definitely:not-a-capability'] }, 'unknown_capability'],
     [{ capabilities: ['*'] }, 'capability_expansion'],
     [{ scope: {} }, 'scope_required'],

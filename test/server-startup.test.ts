@@ -631,3 +631,238 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('scoped actor sessions.create spawns an in-scope controlled worker and rejects an out-of-scope cwd', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-session-create-')
+  );
+  const outsideDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-session-outside-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  const binDir = path.join(tmpDir, 'bin');
+  const codexStub = path.join(binDir, 'codex');
+  const authorizedDir = path.join(tmpDir, 'authorized');
+  const authorizedLink = path.join(tmpDir, 'authorized-link');
+  const topicOutsideDir = path.join(tmpDir, 'topic-outside');
+  const pin = '246810';
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(authorizedDir);
+  fs.mkdirSync(topicOutsideDir);
+  fs.symlinkSync(authorizedDir, authorizedLink, 'dir');
+  fs.writeFileSync(
+    codexStub,
+    '#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1000);\n'
+  );
+  fs.chmodSync(codexStub, 0o755);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      repos: [tmpDir],
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      HOME: tmpDir,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+    const canonicalRepoPath = fs.realpathSync(tmpDir);
+    const canonicalAuthorizedPath = fs.realpathSync(authorizedDir);
+    const orchestratorSessionId = 'orchestrator-session-1257';
+
+    const login = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    await expectJsonStatus<{ ok: true }>(login, 200, 'PIN login');
+    const cookie = cookieFromSetCookie(login.headers);
+
+    const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        actor: {
+          type: 'agent',
+          id: 'orchestrator-1257',
+          displayName: 'Issue 1257 orchestrator',
+        },
+        issuer: { id: 'browser-operator-test' },
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        capabilities: ['session:create:agent'],
+        scope: {
+          sessionIds: [orchestratorSessionId],
+          pathPrefixes: [canonicalAuthorizedPath],
+        },
+        ttlMs: 60_000,
+      }),
+    });
+    const requested = await expectJsonStatus<{ grant: { id: string } }>(
+      grantRequest,
+      201,
+      'operator session-create grant request'
+    );
+
+    const grantApproval = await fetch(
+      `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/approve`,
+      {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ approvedBy: { id: 'browser-operator-test' } }),
+      }
+    );
+    const approved = await expectJsonStatus<{ handle: string }>(
+      grantApproval,
+      200,
+      'operator session-create grant approval'
+    );
+
+    const minted = await fetch(`${base}/cli-gateway/actor-credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        grantHandle: approved.handle,
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        actor: {
+          type: 'agent',
+          id: 'orchestrator-1257',
+          displayName: 'Issue 1257 orchestrator',
+        },
+        capabilities: ['session:create:agent'],
+        scope: {
+          sessionIds: [orchestratorSessionId],
+          pathPrefixes: [canonicalAuthorizedPath],
+        },
+        ttlMs: 60_000,
+      }),
+    });
+    const issued = await expectJsonStatus<{ token: string }>(
+      minted,
+      201,
+      'grant-backed session-create actor credential mint'
+    );
+    const actorHeaders = {
+      authorization: `Bearer ${issued.token}`,
+      'content-type': 'application/json',
+      'x-relay-cli-gateway': 'v1',
+      'x-relay-cli-command': 'sessions.create',
+    };
+
+    const inScopeCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'agent',
+        agent: 'codex',
+        displayName: 'Scoped worker',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    const created = await expectJsonStatus<{
+      id: string;
+      cwd: string;
+      spawnedBySessionId?: string;
+      activeActors?: Array<{
+        kind: string;
+        id?: string;
+        sessionId?: string;
+      }>;
+      activeWorker?: { id?: string };
+    }>(inScopeCreate, 201, 'in-scope actor sessions.create');
+    expect(created.cwd).toBe(canonicalAuthorizedPath);
+    expect(created.spawnedBySessionId).toBe(orchestratorSessionId);
+    expect(created.activeWorker?.id).toBe(created.id);
+    expect(created.activeActors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'agent', id: created.id }),
+        expect.objectContaining({
+          kind: 'agent',
+          id: 'agent:orchestrator-1257',
+          sessionId: orchestratorSessionId,
+        }),
+      ])
+    );
+
+    const topicCreate = await fetch(`${base}/workspace-topics`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify({
+        id: 'topic:actor-scope-bypass-1257',
+        workspaceId: 'ws-actor-scope-1257',
+        title: 'Actor scope bypass regression',
+        routingDefaults: {
+          repoPath: canonicalRepoPath,
+          worktreePath: fs.realpathSync(topicOutsideDir),
+        },
+      }),
+    });
+    await expectJsonStatus<{ topic: { id: string } }>(
+      topicCreate,
+      201,
+      'workspace topic bypass fixture'
+    );
+
+    const topicBypassCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        workspaceTopicId: 'topic:actor-scope-bypass-1257',
+        type: 'agent',
+        agent: 'codex',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(topicBypassCreate, 403, 'topic-expanded out-of-scope actor create').then(
+      (body) => {
+        expect(body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_WRONG_PATH_SCOPE',
+        });
+      }
+    );
+
+    const outOfScopeCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: fs.realpathSync(outsideDir),
+        type: 'agent',
+        agent: 'codex',
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(outOfScopeCreate, 403, 'out-of-scope actor sessions.create').then(
+      (body) => {
+        expect(body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_WRONG_PATH_SCOPE',
+        });
+      }
+    );
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
