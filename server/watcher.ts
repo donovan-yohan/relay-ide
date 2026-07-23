@@ -790,12 +790,12 @@ export class GitWatcher extends EventEmitter {
     const stack: string[] = [startDir];
     let skipped = 0;
     let cappedHit = false;
-    // Count directories ATTEMPTED (not just successfully watched) so a run of
-    // fs.watch failures below the cap can't keep the walk readdir'ing +
-    // attempting through the whole tree (#1252 P2a). A failed watch never grows
-    // dirWatchers.size, so capping on size alone left the walk unbounded under
-    // inotify exhaustion.
-    let processed = 0;
+    // A failed fs.watch never grows dirWatchers.size, so the size cap alone can't
+    // stop a walk when watches keep FAILING (real OS inotify exhaustion,
+    // EMFILE/ENOSPC) — it would readdir + attempt through the whole tree. Bound
+    // that separately by aborting after a run of consecutive failures (#1252
+    // P2a). The size cap below stays GLOBAL (per workspace, across the initial
+    // walk + every reconcile re-walk) so total watches never exceed the cap.
     let consecutiveFailures = 0;
     let exhausted = false;
 
@@ -803,12 +803,11 @@ export class GitWatcher extends EventEmitter {
       const dir = stack.pop()!;
       if (entry.dirWatchers.has(dir)) continue;
 
-      if (processed >= MAX_WATCHED_DIRS) {
+      if (entry.dirWatchers.size >= MAX_WATCHED_DIRS) {
         skipped++;
         cappedHit = true;
         continue;
       }
-      processed++;
 
       const watcher = this.createDirWatcher(workspacePath, entry, dir);
       if (watcher) {
