@@ -496,6 +496,50 @@ describe('GitWatcher.watch — per-level IGNORED_DIRS pruning (#1249 / PR #1251 
     warnSpy.mockRestore();
   });
 
+  // ── 5c. BENIGN per-dir failures (ENOENT/EACCES) must NOT abort the walk ──────
+  // A run of unreadable/vanishing dirs is not inotify exhaustion; the walk skips
+  // each and keeps going, and never emits the exhaustion WARN (#1252 P2a review).
+  it('does NOT abort the walk on a run of ENOENT fs.watch failures', () => {
+    tree.setDir(
+      WORKSPACE,
+      Array.from({ length: 300 }, (_v, i) => ({ name: `pkg-${i}`, dir: true }))
+    );
+    for (let i = 0; i < 300; i++) {
+      tree.setDir(path.join(WORKSPACE, `pkg-${i}`), []);
+    }
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Root watch succeeds; every subsequent fs.watch throws ENOENT (the dir
+    // vanished between readdir and watch — a benign concurrent-delete race).
+    let calls = 0;
+    watchSpy.mockImplementation(((
+      p: fs.PathLike,
+      o?: unknown,
+      l?: unknown
+    ) => {
+      calls++;
+      if (calls > 1 && String(p) !== HEAD_PATH) {
+        const err = new Error('ENOENT: no such file or directory') as Error & {
+          code?: string;
+        };
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return fakeWatch(p, o, l);
+    }) as unknown as typeof fs.watch);
+
+    const watcher = new GitWatcher();
+    watcher.watch(WORKSPACE);
+
+    // The walk attempted ALL dirs (did not abort early on the failure streak).
+    expect(calls).toBeGreaterThan(300);
+    const warned = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(warned).not.toMatch(/exhaust/i);
+
+    watcher.close();
+    warnSpy.mockRestore();
+  });
+
   // ── 6. unwatch closes every per-dir watcher (+ HEAD) ───────────────────────
   it('unwatch closes every created watcher (root + all subdirs + HEAD)', () => {
     const watcher = new GitWatcher();

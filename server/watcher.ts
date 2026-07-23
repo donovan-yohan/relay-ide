@@ -699,8 +699,11 @@ interface WorkspaceWatchEntry {
   // Per-directory debounce timers for create/delete reconciliation, keyed by
   // the directory whose children changed.
   rescanTimers: Map<string, ReturnType<typeof setTimeout>>;
-  // Set once we log the cap WARN so a workspace warns at most once.
+  // Set once we log the size-cap WARN so a workspace warns at most once.
   cappedWarned: boolean;
+  // Set once we log the inotify-exhaustion WARN — independent of cappedWarned so
+  // hitting the size cap can't suppress a later exhaustion warning (#1252).
+  exhaustedWarned: boolean;
   refCount: number;
 }
 
@@ -720,6 +723,7 @@ export class GitWatcher extends EventEmitter {
       dirInodes: new Map(),
       rescanTimers: new Map(),
       cappedWarned: false,
+      exhaustedWarned: false,
       refCount: 1,
     };
 
@@ -809,21 +813,26 @@ export class GitWatcher extends EventEmitter {
         continue;
       }
 
-      const watcher = this.createDirWatcher(workspacePath, entry, dir);
-      if (watcher) {
-        entry.dirWatchers.set(dir, watcher);
+      const result = this.createDirWatcher(workspacePath, entry, dir);
+      if (result.watcher) {
+        entry.dirWatchers.set(dir, result.watcher);
         entry.dirInodes.set(dir, this.dirInode(dir));
         consecutiveFailures = 0;
-      } else {
+      } else if (result.resourceExhausted) {
         consecutiveFailures++;
         if (consecutiveFailures >= MAX_CONSECUTIVE_WATCH_FAILURES) {
-          // Real OS inotify exhaustion — stop; the remaining stack would just
-          // readdir + fail. Count the rest as skipped for the WARN.
+          // Real OS inotify exhaustion (EMFILE/ENOSPC) — every remaining watch
+          // would fail too, so stop; the rest of the stack would just readdir +
+          // fail. Count the rest as skipped for the WARN.
           exhausted = true;
           skipped += stack.length;
-          cappedHit = true;
           break;
         }
+      } else {
+        // Benign per-dir failure (ENOENT/EACCES/other): skip this one directory
+        // but keep walking siblings, and do NOT count it toward the exhaustion
+        // streak — a run of unreadable dirs must not masquerade as exhaustion.
+        consecutiveFailures = 0;
       }
 
       let dirents: fs.Dirent[];
@@ -841,13 +850,20 @@ export class GitWatcher extends EventEmitter {
       }
     }
 
+    // Size cap and inotify exhaustion are distinct causes with independent
+    // one-shot WARNs — a workspace that once hit the size cap must still warn if
+    // it LATER hits real exhaustion during a reconcile re-walk (never a silent
+    // cap — #1244 / #1252 review).
     if (cappedHit && !entry.cappedWarned) {
       entry.cappedWarned = true;
-      const cause = exhausted
-        ? `OS inotify watch exhaustion (${MAX_CONSECUTIVE_WATCH_FAILURES} consecutive fs.watch failures — try sysctl fs.inotify.max_user_watches=524288)`
-        : `watch cap of ${MAX_WATCHED_DIRS} directories`;
       logger.warn(
-        `[GitWatcher] ${workspacePath}: reached ${cause}; skipped at least ${skipped} — change detection is PARTIAL for this workspace (edits in directories beyond the cap will not auto-refresh changed-files)`
+        `[GitWatcher] ${workspacePath}: reached watch cap of ${MAX_WATCHED_DIRS} directories; skipped at least ${skipped} — change detection is PARTIAL for this workspace (edits beyond the cap will not auto-refresh changed-files)`
+      );
+    }
+    if (exhausted && !entry.exhaustedWarned) {
+      entry.exhaustedWarned = true;
+      logger.warn(
+        `[GitWatcher] ${workspacePath}: OS inotify watch exhaustion (${MAX_CONSECUTIVE_WATCH_FAILURES} consecutive EMFILE/ENOSPC fs.watch failures); skipped at least ${skipped} — change detection is PARTIAL for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288`
       );
     }
   }
@@ -874,7 +890,7 @@ export class GitWatcher extends EventEmitter {
     workspacePath: string,
     entry: WorkspaceWatchEntry,
     dir: string
-  ): fs.FSWatcher | undefined {
+  ): { watcher?: fs.FSWatcher; resourceExhausted: boolean } {
     try {
       const watcher = fs.watch(
         dir,
@@ -897,8 +913,18 @@ export class GitWatcher extends EventEmitter {
       watcher.on('error', () => {
         /* per-dir watch is best-effort */
       });
-      return watcher;
+      return { watcher, resourceExhausted: false };
     } catch (err: unknown) {
+      // Only EMFILE/ENOSPC mean the OS ran out of inotify watches/handles — a
+      // condition that will fail EVERY subsequent fs.watch, so the walk should
+      // abort. ENOENT (dir vanished mid-walk), EACCES (permission-walled subtree),
+      // and anything else are per-directory and benign: skip that one dir and
+      // keep walking the rest of the tree (#1252 P2a review).
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      const resourceExhausted = code === 'EMFILE' || code === 'ENOSPC';
       if (dir === workspacePath) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(
@@ -912,7 +938,7 @@ export class GitWatcher extends EventEmitter {
         );
       }
       // Nested per-dir watch failures are non-fatal and stay quiet.
-      return undefined;
+      return { resourceExhausted };
     }
   }
 
@@ -965,13 +991,21 @@ export class GitWatcher extends EventEmitter {
       if (!entry.dirWatchers.has(child)) {
         // Newly created non-ignored subdir — walk + watch it (bounded, pruned).
         this.walkAndWatch(workspacePath, entry, child);
-      } else if (entry.dirInodes.get(child) !== this.dirInode(child)) {
+      } else {
         // Same path, new inode: the dir was deleted + recreated within one
         // debounce window. The stale FSWatcher points at the old inode (its
         // no-op error handler swallows IN_IGNORED) and would silently stop
         // reporting this subtree. Drop it and re-watch the live dir (#1252 P2b).
-        this.unwatchSubtree(entry, child);
-        this.walkAndWatch(workspacePath, entry, child);
+        // Guard on a non-zero current inode: a transient statSync failure reads
+        // back 0 and must NOT trigger a spurious subtree teardown+rewalk. (Note:
+        // detection can still miss a recreate if the OS reuses the freed inode,
+        // and cannot be relied on where inodes are unstable, e.g. overlayfs
+        // without xino — this only NARROWS the pre-existing 100%-miss window.)
+        const currentInode = this.dirInode(child);
+        if (currentInode !== 0 && entry.dirInodes.get(child) !== currentInode) {
+          this.unwatchSubtree(entry, child);
+          this.walkAndWatch(workspacePath, entry, child);
+        }
       }
     }
 
