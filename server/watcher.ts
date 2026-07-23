@@ -710,6 +710,32 @@ interface WorkspaceWatchEntry {
 export class GitWatcher extends EventEmitter {
   private watchers = new Map<string, WorkspaceWatchEntry>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private sessionWorkspaces = new Map<string, string>();
+
+  /**
+   * Acquire one workspace-watch reference for a session. A session owns at
+   * most one reference: repeated registration is a no-op, while moving the
+   * same session to another cwd releases the old reference first.
+   */
+  watchSession(sessionId: string, workspacePath: string): void {
+    const existingPath = this.sessionWorkspaces.get(sessionId);
+    if (existingPath === workspacePath) return;
+    if (existingPath !== undefined) this.unwatch(existingPath);
+    this.sessionWorkspaces.set(sessionId, workspacePath);
+    this.watch(workspacePath);
+  }
+
+  /**
+   * Release the workspace-watch reference owned by this session. Idempotent so
+   * duplicate session-end notifications cannot decrement another session's
+   * shared cwd reference.
+   */
+  unwatchSession(sessionId: string): void {
+    const workspacePath = this.sessionWorkspaces.get(sessionId);
+    if (workspacePath === undefined) return;
+    this.sessionWorkspaces.delete(sessionId);
+    this.unwatch(workspacePath);
+  }
 
   watch(workspacePath: string): void {
     const existing = this.watchers.get(workspacePath);
@@ -1129,6 +1155,7 @@ export class GitWatcher extends EventEmitter {
       this.closeEntry(entry);
     }
     this.watchers.clear();
+    this.sessionWorkspaces.clear();
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }

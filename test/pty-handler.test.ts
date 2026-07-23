@@ -1,9 +1,13 @@
-import { describe, it, afterEach, expect } from 'vitest';
+import { describe, it, afterEach, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as sessions from '../server/sessions.js';
-import type { PtySession, EventSourceType } from '../server/types.js';
+import type {
+  PtySession,
+  EventSourceType,
+  Session,
+} from '../server/types.js';
 
 import {
   buildStatusLineRelayScript,
@@ -233,6 +237,48 @@ describe('framework-driven PTY handler', () => {
     await expect(
       sessions.captureTerminalVisibleText(result.id)
     ).resolves.toContain('relay-pty-ok');
+  });
+
+  it('releases restored-exit PTY resources while retaining cold-resume metadata', async () => {
+    const id = `restored-exit-${Date.now()}`;
+    const sessionMap = new Map<string, Session>();
+    const onSessionEnd = vi.fn();
+    const { createPtySession } = await import('../server/pty-handler.js');
+    const { session } = createPtySession(
+      {
+        id,
+        type: 'terminal',
+        agent: 'claude',
+        cwd: '/tmp',
+        command: '/bin/sh',
+        args: ['-c', 'sleep 0.1'],
+        restored: true,
+        initialScrollback: ['retained scrollback'],
+        callbacks: { onSessionEnd: [onSessionEnd] },
+      },
+      sessionMap
+    );
+    const terminalModel = session.terminalModel!;
+    const dispose = vi.spyOn(terminalModel, 'dispose');
+    session.terminalStreamSubscribers!.push(() => {});
+    const runtimeDir = path.join(os.tmpdir(), 'relay-ide', id);
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(path.join(runtimeDir, 'resource-marker'), 'live');
+
+    await expect
+      .poll(() => session.status, { timeout: 5_000 })
+      .toBe('disconnected');
+    await expect
+      .poll(() => fs.existsSync(runtimeDir), { timeout: 5_000 })
+      .toBe(false);
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(session.terminalModel).toBeUndefined();
+    expect(session.terminalStream).toBeUndefined();
+    expect(session.terminalStreamSubscribers).toBeUndefined();
+    expect(session.scrollback.join('')).toContain('retained scrollback');
+    expect(sessionMap.get(id)).toBe(session);
+    expect(onSessionEnd).not.toHaveBeenCalled();
   });
 
   it('preserves workContextId when relay-pty retries without --continue', async () => {

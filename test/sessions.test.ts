@@ -76,6 +76,49 @@ describe('buildAgentArgs cold-resume claudeArgs leak gate', () => {
   });
 });
 
+describe('routed PTY control-session cleanup', () => {
+  it('releases a routed control session idempotently', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-cleanup',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSession(
+        'remote-cleanup',
+        'session-one'
+      )
+    ).toBe(true);
+    expect(
+      sessions.releaseRoutedPtyControlSession(
+        'remote-cleanup',
+        'session-one'
+      )
+    ).toBe(false);
+  });
+
+  it('releases every routed control session owned by a revoked node', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-two',
+      data: 'y',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(2);
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(0);
+  });
+});
+
 describe('initial prompt delivery', () => {
   it('passes a Codex initial prompt as the final distinct argv element', async () => {
     const probeDir = fs.mkdtempSync(
