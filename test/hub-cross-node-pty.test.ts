@@ -240,7 +240,7 @@ class SimulatedNode {
       this.consumedMessageIndexes.add(existingIndex);
       return Promise.resolve(this.messages[existingIndex]!);
     }
-    return new Promise<RelayNodeEnvelope>((resolve, reject) => {
+    const promise = new Promise<RelayNodeEnvelope>((resolve, reject) => {
       const waiter = {
         label,
         predicate,
@@ -254,6 +254,13 @@ class SimulatedNode {
       waiter.timer.unref?.();
       this.waiters.push(waiter);
     });
+    // Safety net: when the node link closes after the test has stopped awaiting
+    // this waiter, rejectWaiters() still rejects it. Without a handler that late
+    // rejection surfaces as an unhandled rejection and trips vitest's exit code
+    // even though every test passed (#1252). Real awaiters still receive the
+    // rejection through their own await.
+    promise.catch(() => {});
+    return promise;
   }
 
   hello(): Promise<RelayNodeEnvelope> {

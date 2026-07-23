@@ -63,13 +63,26 @@ interface Child {
  */
 class FakeTree {
   private listings = new Map<string, Child[]>();
+  private inodes = new Map<string, number>();
+  private nextIno = 1000;
 
   setDir(dirPath: string, children: Child[]): void {
     this.listings.set(dirPath, children);
+    if (!this.inodes.has(dirPath)) this.inodes.set(dirPath, this.nextIno++);
   }
 
   removeDir(dirPath: string): void {
     this.listings.delete(dirPath);
+    this.inodes.delete(dirPath);
+  }
+
+  /** Simulate a delete+recreate of the same path: same listing, NEW inode. */
+  bumpInode(dirPath: string): void {
+    this.inodes.set(dirPath, this.nextIno++);
+  }
+
+  inodeOf(dirPath: string): number {
+    return this.inodes.get(dirPath) ?? 0;
   }
 
   readdir(dirPath: string): fs.Dirent[] {
@@ -199,11 +212,16 @@ describe('GitWatcher.watch — per-level IGNORED_DIRS pruning (#1249 / PR #1251 
     vi.spyOn(fs, 'readdirSync').mockImplementation(((p: fs.PathLike) =>
       tree.readdir(String(p))) as unknown as typeof fs.readdirSync);
 
-    // .git is a directory (regular repo) → HEAD lives at .git/HEAD.
+    // .git is a directory (regular repo) → HEAD lives at .git/HEAD. Non-.git
+    // directories that exist in the tree return a stat carrying their inode so
+    // the walker's delete+recreate detection (#1252 P2b) is exercisable.
     vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike) => {
-      if (String(p) === path.join(WORKSPACE, '.git')) {
+      const s = String(p);
+      if (s === path.join(WORKSPACE, '.git')) {
         return { isFile: () => false } as fs.Stats;
       }
+      const ino = tree.inodeOf(s);
+      if (ino) return { isFile: () => false, ino } as fs.Stats;
       throw new Error('ENOENT');
     }) as unknown as typeof fs.statSync);
 
@@ -400,6 +418,79 @@ describe('GitWatcher.watch — per-level IGNORED_DIRS pruning (#1249 / PR #1251 
     expect(warnSpy).toHaveBeenCalled();
     const warned = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(warned).toMatch(/cap/i);
+
+    watcher.close();
+    warnSpy.mockRestore();
+  });
+
+  // ── 4b. Delete + recreate WITHIN one debounce window → stale watcher refreshed
+  // (#1252 P2b). The delete's reconcile never runs on its own; the coalesced
+  // reconcile sees the same path still watched but with a NEW inode.
+  it('refreshes a watcher when a dir is recreated (new inode) inside one rescan window', () => {
+    const watcher = new GitWatcher();
+    watcher.watch(WORKSPACE);
+    const entry = entryFor(watcher, WORKSPACE);
+    const srcWatch = watchFor(path.join(WORKSPACE, 'src'));
+    const aPath = path.join(WORKSPACE, 'src', 'a');
+
+    expect(entry.dirWatchers.has(aPath)).toBe(true);
+    const originalAWatch = watchFor(aPath)!;
+    const watchesForABefore = created.filter((w) => w.path === aPath).length;
+
+    // src/a is deleted + recreated within the window: same listing, new inode,
+    // and (crucially) still present in dirWatchers because no reconcile ran yet.
+    tree.bumpInode(aPath);
+    srcWatch!.callback!('rename', 'a');
+    vi.advanceTimersByTime(300); // fire the single coalesced reconcile
+
+    // Stale watcher (old inode) closed; a fresh watch created for the live dir.
+    expect(originalAWatch.close).toHaveBeenCalled();
+    expect(entry.dirWatchers.has(aPath)).toBe(true);
+    expect(created.filter((w) => w.path === aPath).length).toBe(
+      watchesForABefore + 1
+    );
+
+    watcher.close();
+  });
+
+  // ── 5b. Real inotify exhaustion (consecutive fs.watch failures) aborts the walk
+  // instead of readdir'ing + failing through the whole tree (#1252 P2a).
+  it('aborts the walk after consecutive fs.watch failures and WARNs about exhaustion', () => {
+    tree.setDir(
+      WORKSPACE,
+      Array.from({ length: 500 }, (_v, i) => ({ name: `pkg-${i}`, dir: true }))
+    );
+    for (let i = 0; i < 500; i++) {
+      tree.setDir(path.join(WORKSPACE, `pkg-${i}`), []);
+    }
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Root watch succeeds; every subsequent fs.watch throws EMFILE.
+    let calls = 0;
+    watchSpy.mockImplementation(((
+      p: fs.PathLike,
+      o?: unknown,
+      l?: unknown
+    ) => {
+      calls++;
+      if (calls > 1 && String(p) !== HEAD_PATH) {
+        const err = new Error('EMFILE: too many open files') as Error & {
+          code?: string;
+        };
+        err.code = 'EMFILE';
+        throw err;
+      }
+      return fakeWatch(p, o, l);
+    }) as unknown as typeof fs.watch);
+
+    const watcher = new GitWatcher();
+    watcher.watch(WORKSPACE);
+
+    // The walk bailed out long before attempting all 500 dirs — bounded by the
+    // consecutive-failure limit, not by the tree size.
+    expect(calls).toBeLessThan(200);
+    const warned = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(warned).toMatch(/exhaust/i);
 
     watcher.close();
     warnSpy.mockRestore();
