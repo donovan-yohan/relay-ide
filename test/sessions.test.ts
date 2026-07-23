@@ -76,6 +76,120 @@ describe('buildAgentArgs cold-resume claudeArgs leak gate', () => {
   });
 });
 
+describe('initial prompt delivery', () => {
+  it('passes a Codex initial prompt as the final distinct argv element', async () => {
+    const probeDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-codex-argv-')
+    );
+    const probePath = path.join(probeDir, 'argv-probe.mjs');
+    fs.writeFileSync(
+      probePath,
+      [
+        "process.stdout.write('ARGV=' + JSON.stringify(process.argv.slice(2)));",
+        'setTimeout(() => {}, 10_000);',
+      ].join('\n'),
+      'utf-8'
+    );
+    const initialPrompt = 'fix spaces; $(never-shell-interpolate) && verify';
+    const cases = [
+      {
+        name: 'fresh',
+        args: ['--ask-for-approval', 'never'],
+      },
+      {
+        name: 'resume',
+        args: ['resume', '--last', '--ask-for-approval', 'never'],
+      },
+    ];
+
+    try {
+      for (const testCase of cases) {
+        const result = sessions.create({
+          repoName: `codex-${testCase.name}`,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          agent: 'codex',
+          command: process.execPath,
+          args: [probePath, ...testCase.args],
+          initialPrompt,
+        });
+        createdIds.push(result.id);
+
+        let output = '';
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          output =
+            (
+              sessions.get(result.id) as PtySession | undefined
+            )?.scrollback.join('') ?? '';
+          if (output.includes('ARGV=')) break;
+          await delay(10);
+        }
+
+        expect(output).toContain(
+          `ARGV=${JSON.stringify([...testCase.args, initialPrompt])}`
+        );
+        expect(
+          (sessions.get(result.id) as PtySession | undefined)?.initialPrompt
+        ).toBeUndefined();
+      }
+    } finally {
+      fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('schedules typed injection for Claude but not Codex', () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const codex = sessions.create({
+        repoName: 'codex-native-prompt',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'codex',
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 10_000);'],
+        initialPrompt: 'native prompt',
+      });
+      createdIds.push(codex.id);
+
+      expect(timeoutSpy.mock.calls.some((call) => call[1] === 8000)).toBe(
+        false
+      );
+      expect(
+        (sessions.get(codex.id) as PtySession | undefined)?.initialPrompt
+      ).toBeUndefined();
+
+      timeoutSpy.mockClear();
+      const claude = sessions.create({
+        repoName: 'claude-typed-prompt',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'claude',
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 10_000);'],
+        initialPrompt: 'typed prompt',
+      });
+      createdIds.push(claude.id);
+
+      const fallbackCallIndex = timeoutSpy.mock.calls.findIndex(
+        (call) => call[1] === 8000
+      );
+      expect(fallbackCallIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        (sessions.get(claude.id) as PtySession | undefined)?.initialPrompt
+      ).toBe('typed prompt');
+
+      const fallbackTimer = timeoutSpy.mock.results[fallbackCallIndex]
+        ?.value as ReturnType<typeof setTimeout> | undefined;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+});
+
 describe('sessions', () => {
   it('list returns empty array initially', () => {
     const result = sessions.list();
