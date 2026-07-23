@@ -562,3 +562,59 @@ test('workspace claude session keeps config claudeArgs in spawn args', async () 
     expect.arrayContaining(['--model', 'opus', '--effort', 'high'])
   );
 });
+
+// --add-dir is a Claude-only multi-repo flag; it must not leak into a non-claude
+// multi-repo workspace-group spawn (#1238, same class as #1237): codex exits
+// code 2 within ~1s on the unrecognized flag.
+test('workspace codex multi-repo session omits --add-dir from spawn args', async () => {
+  const repoA = path.join(tmpDir, 'repo-codex-a');
+  const repoB = path.join(tmpDir, 'repo-codex-b');
+  fs.mkdirSync(repoA, { recursive: true });
+  fs.mkdirSync(repoB, { recursive: true });
+  writeConfig({
+    configVersion: 4,
+    repos: [repoA, repoB],
+    workspaces: [
+      { id: 'ws-1', name: 'Ws', repos: [repoA, repoB], order: 0 },
+    ],
+  });
+  const sessionDeps = fakeSessionDeps();
+  await startServer(configPath, sessionDeps);
+
+  const result = await req('POST', '/workspace-groups/ws-1/session', {
+    agent: 'codex',
+  });
+  expect(result.status).toBe(201);
+  expect(sessionDeps.sessions.create).toHaveBeenCalledTimes(1);
+  const createParams = sessionDeps.sessions.create.mock.calls[0][0];
+  expect(createParams.agent).toBe('codex');
+  expect(createParams.args).not.toContain('--add-dir');
+  expect(createParams.args).not.toContain(repoB);
+});
+
+test('workspace claude multi-repo session keeps --add-dir for extra repos', async () => {
+  const repoA = path.join(tmpDir, 'repo-claude-a');
+  const repoB = path.join(tmpDir, 'repo-claude-b');
+  fs.mkdirSync(repoA, { recursive: true });
+  fs.mkdirSync(repoB, { recursive: true });
+  writeConfig({
+    configVersion: 4,
+    repos: [repoA, repoB],
+    workspaces: [
+      { id: 'ws-1', name: 'Ws', repos: [repoA, repoB], order: 0 },
+    ],
+  });
+  const sessionDeps = fakeSessionDeps();
+  await startServer(configPath, sessionDeps);
+
+  const result = await req('POST', '/workspace-groups/ws-1/session', {
+    agent: 'claude',
+  });
+  expect(result.status).toBe(201);
+  expect(sessionDeps.sessions.create).toHaveBeenCalledTimes(1);
+  const createParams = sessionDeps.sessions.create.mock.calls[0][0];
+  expect(createParams.agent).toBe('claude');
+  expect(createParams.args).toEqual(
+    expect.arrayContaining(['--add-dir', repoB])
+  );
+});
