@@ -644,6 +644,8 @@ function create({
   ...rest
 }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
+  const nativeInitialPrompt =
+    agent === 'codex' && initialPrompt ? initialPrompt : undefined;
 
   const ptyParams: CreatePtyParams = {
     ...rest,
@@ -651,7 +653,11 @@ function create({
     agent,
     cols,
     rows,
-    args,
+    // Codex accepts the first turn as a native positional argument for both
+    // fresh (`codex [flags] <PROMPT>`) and resumed
+    // (`codex resume --last [flags] <PROMPT>`) sessions. Keep it as a
+    // distinct argv element so the TUI never has to receive a typed fallback.
+    args: nativeInitialPrompt ? [...args, nativeInitialPrompt] : args,
     port: port ?? defaultPort,
     forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
     configDir: rest.configDir ?? defaultConfigDir,
@@ -711,7 +717,7 @@ function create({
   if (branchRenamePrompt) {
     ptySession.branchRenamePrompt = branchRenamePrompt;
   }
-  if (initialPrompt) {
+  if (initialPrompt && !nativeInitialPrompt) {
     ptySession.initialPrompt = initialPrompt;
   }
   if (workspaceId) {
@@ -732,7 +738,7 @@ function create({
     agentType: agent,
     startedAt: new Date().toISOString(),
   });
-  if (initialPrompt) {
+  if (initialPrompt && !nativeInitialPrompt) {
     // One-shot injection, guarded by ptySession.initialPrompt. The submit CR
     // is a second deferred write (canonical Enter, CR not LF): TUI input
     // loops coalesce a text+newline chunk into a paste and leave the prompt
