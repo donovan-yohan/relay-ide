@@ -1430,24 +1430,35 @@ describe('hub node routes and link', () => {
     app.use(express.json());
     const sessionEnvelopes = createSessionEnvelopeRegistry();
     const auditEntries: unknown[] = [];
+    const createRequests: Array<Record<string, unknown>> = [];
     const nodeLinks = {
       hasActiveNode: () => true,
-      request: async () => ({
-        session: {
-          id: 'remote-session',
-          type: 'agent',
-          mode: 'pty',
-          cwd: '/srv/app',
-          displayName: 'remote session',
-          createdAt: now.toISOString(),
-          lastActivity: now.toISOString(),
-          idle: false,
-          customCommand: null,
-          status: 'active',
-          needsBranchRename: false,
-          agentState: 'idle',
-        },
-      }),
+      request: async (
+        _nodeId: string,
+        type: string,
+        payload: Record<string, unknown>
+      ) => {
+        if (type === 'sessions.create') createRequests.push(payload);
+        return {
+          session: {
+            id: 'remote-session',
+            ...(typeof payload['spawnedBySessionId'] === 'string'
+              ? { spawnedBySessionId: payload['spawnedBySessionId'] }
+              : {}),
+            type: 'agent',
+            mode: 'pty',
+            cwd: '/srv/app',
+            displayName: 'remote session',
+            createdAt: now.toISOString(),
+            lastActivity: now.toISOString(),
+            idle: false,
+            customCommand: null,
+            status: 'active',
+            needsBranchRename: false,
+            agentState: 'idle',
+          },
+        };
+      },
     };
     app.use(
       createHubNodeRouter({
@@ -1579,15 +1590,30 @@ describe('hub node routes and link', () => {
       `${base}/hub/nodes/${exchanged.node.nodeId}/sessions`,
       {
         method: 'POST',
-        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        headers: {
+          'x-test-auth': 'yes',
+          'x-relay-cli-gateway': 'v1',
+          'content-type': 'application/json',
+        },
         body: JSON.stringify({
           type: 'agent',
           cwd: '/srv/app',
+          spawnedBySessionId: 'unknown-parent-session',
           expiresAt: '2026-01-02T03:06:00.000Z',
         }),
       }
     );
     expect(createRes.status).toBe(201);
+    expect(createRequests).toHaveLength(1);
+    expect(createRequests[0]).toMatchObject({
+      type: 'agent',
+      cwd: '/srv/app',
+      spawnedBySessionId: 'unknown-parent-session',
+    });
+    await expect(createRes.json()).resolves.toMatchObject({
+      id: 'remote-session',
+      spawnedBySessionId: 'unknown-parent-session',
+    });
 
     const listRes = await fetch(`${base}/hub/scoped-sessions`, {
       headers: { 'x-test-auth': 'yes' },

@@ -244,6 +244,43 @@ describe('sessions', () => {
     });
   });
 
+  it('records optional best-effort session lineage without requiring the parent to exist', () => {
+    const child = sessions.create({
+      spawnedBySessionId: 'unknown-parent-session',
+      repoName: 'lineage-child',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(child.id);
+
+    expect(child.spawnedBySessionId).toBe('unknown-parent-session');
+    expect(sessions.get(child.id)?.spawnedBySessionId).toBe(
+      'unknown-parent-session'
+    );
+    expect(
+      sessions.list().find((session) => session.id === child.id)
+        ?.spawnedBySessionId
+    ).toBe('unknown-parent-session');
+
+    const topLevel = sessions.create({
+      repoName: 'lineage-top-level',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(topLevel.id);
+    expect(topLevel).not.toHaveProperty('spawnedBySessionId');
+    expect(sessions.get(topLevel.id)).not.toHaveProperty('spawnedBySessionId');
+    expect(
+      sessions.list().find((session) => session.id === topLevel.id)
+    ).not.toHaveProperty('spawnedBySessionId');
+  });
+
   it('does not synthesize repo instance identity without repoPath', () => {
     const result = sessions.create({
       repoName: 'shell-only',
@@ -1165,6 +1202,7 @@ describe('session persistence', () => {
       command: '/bin/cat',
       args: [],
       displayName: 'my-session',
+      spawnedBySessionId: 'orchestrator-session',
     });
     const originalId = s.id;
 
@@ -1174,6 +1212,12 @@ describe('session persistence', () => {
     (session as PtySession).scrollback.push('saved output');
 
     serializeAll(configDir);
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    ) as { sessions: Array<{ spawnedBySessionId?: string }> };
+    expect(serialized.sessions[0]?.spawnedBySessionId).toBe(
+      'orchestrator-session'
+    );
 
     // Kill the original session
     sessions.kill(originalId);
@@ -1189,6 +1233,11 @@ describe('session persistence', () => {
     expect(restoredSession!.cwd).toBe('/tmp');
     expect(restoredSession!.repoPath).toBe('/tmp');
     expect(restoredSession!.displayName).toBe('my-session');
+    expect(restoredSession!.spawnedBySessionId).toBe('orchestrator-session');
+    expect(
+      sessions.list().find((entry) => entry.id === originalId)
+        ?.spawnedBySessionId
+    ).toBe('orchestrator-session');
 
     // Scrollback should be restored
     expect(restoredSession!.mode).toBe('pty');

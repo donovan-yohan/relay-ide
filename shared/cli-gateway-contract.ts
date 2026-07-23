@@ -677,6 +677,7 @@ const sessionDescriptorSchema: RelayJsonSchema = {
   additionalProperties: true,
   properties: {
     id: stringSchema,
+    spawnedBySessionId: stringSchema,
     type: { type: 'string', enum: ['agent', 'terminal'] },
     agent: stringSchema,
     mode: { type: 'string', enum: ['pty', 'web'] },
@@ -1373,6 +1374,11 @@ const createSessionInputSchema: RelayJsonSchema = {
       ...stringSchema,
       description:
         'Human-readable session label shown in session lists and the web UI; defaults to "Agent N" / "Terminal N".',
+    },
+    spawnedBySessionId: {
+      ...stringSchema,
+      description:
+        'Optional best-effort lineage id of the Relay session that spawned this session; parent existence is not validated.',
     },
     initialPrompt: stringSchema,
     continuePolicy: { type: 'string', enum: ['always', 'never'] },
@@ -3469,6 +3475,7 @@ const rosterEntrySchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     sessionId: stringSchema,
+    spawnedBySessionId: stringSchema,
     globalSessionId: stringSchema,
     nodeId: stringSchema,
     provider: stringSchema,

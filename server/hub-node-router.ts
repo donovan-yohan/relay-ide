@@ -229,6 +229,7 @@ function sessionAssociationFieldsOk(session: Partial<SessionSummary>): boolean {
     optionalNullableStringFieldOk(session.worktreePath) &&
     optionalStringFieldOk(session.repoName) &&
     optionalStringFieldOk(session.branchName) &&
+    optionalStringFieldOk(session.spawnedBySessionId) &&
     optionalStringFieldOk(session.workContextId)
   );
 }
@@ -2477,9 +2478,9 @@ function cachedAuditVerify(input: {
   const cache = input.cache;
   const cacheMatchesHead = Boolean(
     head &&
-      cache &&
-      cache.latestSequence === head.latestSequence &&
-      cache.latestHash === head.latestHash
+    cache &&
+    cache.latestSequence === head.latestSequence &&
+    cache.latestHash === head.latestHash
   );
   if (!input.force && cacheMatchesHead && cache) {
     return { result: cache.result, cache };

@@ -401,6 +401,9 @@ describe('CLI gateway contract', () => {
       capabilityHints: ['session:read'],
       cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
     });
+    expect(JSON.stringify(commandSpec('roster.list').outputSchema)).toContain(
+      '"spawnedBySessionId"'
+    );
     expect(relayCommandDefinition('roster.list')).toMatchObject({
       sideEffect: 'read',
       requiresConfirmation: false,
@@ -949,6 +952,9 @@ describe('CLI gateway contract', () => {
     const createProperties = create.inputSchema.properties ?? {};
     expect(createProperties['sessionEnvelope']).toBeDefined();
     expect(createProperties['workContextId']).toBeDefined();
+    expect(createProperties['spawnedBySessionId']).toMatchObject({
+      type: 'string',
+    });
     expect(JSON.stringify(create.inputSchema)).not.toContain(
       '"kind":{"const":"agent"}'
     );
@@ -1072,6 +1078,7 @@ describe('CLI gateway contract', () => {
       cols: 120,
       rows: 32,
       workContextId: 'wc:handoff',
+      spawnedBySessionId: 'unknown-parent-session',
     });
     expect(clean).toMatchObject({
       ok: true,
@@ -1083,6 +1090,7 @@ describe('CLI gateway contract', () => {
         cols: 120,
         rows: 32,
         workContextId: 'wc:handoff',
+        spawnedBySessionId: 'unknown-parent-session',
       },
       sessionType: 'terminal',
     });

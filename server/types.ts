@@ -321,6 +321,12 @@ export function collaborationPromptArgsForFramework(
 // Session types — discriminated union on `mode`
 interface BaseSession {
   id: string;
+  /**
+   * Canonical Relay session-lineage key. Hermes metadata uses
+   * `parentSessionId` for its event-local child reference, but persisted Relay
+   * sessions use `spawnedBySessionId` to name the create-time provenance.
+   */
+  spawnedBySessionId?: string;
   /** Execution node that owns this live session. */
   nodeId?: NodeId;
   type: SessionType;
@@ -443,6 +449,8 @@ export type Session = PtySession | WebSession;
 // Summary type for REST API responses (no internal handles)
 export interface SessionSummary {
   id: string;
+  /** Parent Relay session supplied by the spawner, when known. */
+  spawnedBySessionId?: string;
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;

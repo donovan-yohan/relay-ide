@@ -88,7 +88,9 @@ describe('relay-state-db', () => {
   });
 
   it('upserts and round-trips a web session', () => {
-    const session = fakeWebSession();
+    const session = fakeWebSession({
+      spawnedBySessionId: 'orchestrator-session',
+    });
     upsertWebSessionNow(session);
 
     const rows = loadAllWebSessions();
@@ -99,6 +101,7 @@ describe('relay-state-db', () => {
     expect(row.vendorSessionId).toBe('claude-abc');
     expect(row.agentSessionV2.id).toBe('sess-1');
     expect(row.meta.adapterType).toBe('claude');
+    expect(row.meta.spawnedBySessionId).toBe('orchestrator-session');
     expect(row.status).toBe('active');
   });
 

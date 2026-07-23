@@ -198,6 +198,7 @@ function enforceGlobalScrollbackCap(
 
 interface SerializedPtySession {
   id: string;
+  spawnedBySessionId?: string;
   type: SessionType;
   agent: AgentType;
   repoPath?: string;
@@ -248,6 +249,7 @@ const UNSUPPORTED_TMUX_SESSIONS_FILE = 'unsupported-tmux-sessions.json';
 
 export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   id?: string;
+  spawnedBySessionId?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   initialPrompt?: string;
@@ -629,6 +631,7 @@ export function fireBackendStateIfChanged(session: Session): void {
 
 function create({
   id: providedId,
+  spawnedBySessionId,
   needsBranchRename,
   branchRenamePrompt,
   initialPrompt,
@@ -726,6 +729,9 @@ function create({
   if (additionalDirs?.length) {
     ptySession.additionalDirs = additionalDirs;
   }
+  if (spawnedBySessionId !== undefined) {
+    ptySession.spawnedBySessionId = spawnedBySessionId;
+  }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   // Record session start for analytics
   recordSessionEvent(
@@ -781,6 +787,7 @@ function create({
   }
   const summary = withLocalIdentity({
     ...result,
+    ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
     needsBranchRename: !!ptySession.needsBranchRename,
   });
   ptySession.sessionEnvelope = summary.sessionEnvelope;
@@ -1063,6 +1070,9 @@ function list(): SessionSummary[] {
       const durability = emitDurabilityIfChanged(s);
       const summary = withLocalIdentity({
         id: s.id,
+        ...(s.spawnedBySessionId !== undefined
+          ? { spawnedBySessionId: s.spawnedBySessionId }
+          : {}),
         type: s.type,
         agent: s.agent,
         mode: s.mode,
@@ -1665,6 +1675,9 @@ function serializePtySession(
 
   return {
     id: session.id,
+    ...(session.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: session.spawnedBySessionId }
+      : {}),
     type: session.type,
     agent: session.agent,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
@@ -1983,6 +1996,9 @@ function restoreSession(
 ): void {
   const createParams: CreateParams = {
     id: s.id,
+    ...(s.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: s.spawnedBySessionId }
+      : {}),
     type: s.type,
     agent: s.agent,
     repoName: s.repoName,
@@ -2039,6 +2055,9 @@ async function restoreWebSessionFromDb(
     row.repoPath !== null && row.repoPath.length > 0 ? row.repoPath : undefined;
   const createParams: CreateWebParams = {
     id: row.id,
+    ...(row.meta.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: row.meta.spawnedBySessionId }
+      : {}),
     agentType: row.meta.adapterType,
     cwd: row.cwd,
     ...(restoredRepoPath !== undefined
