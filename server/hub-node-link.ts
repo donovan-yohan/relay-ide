@@ -2,7 +2,10 @@ import * as crypto from 'node:crypto';
 import type * as http from 'node:http';
 import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import type { CredentialAuthContext, HubNodeRegistry } from './hub-node-registry.js';
+import type {
+  CredentialAuthContext,
+  HubNodeRegistry,
+} from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -11,6 +14,7 @@ import {
   type RelayNodeEnvelope,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
+import { sendWithBackpressure } from './ws-backpressure.js';
 
 interface AuthenticatedNodeLink {
   node: HubNodeSummary;
@@ -121,7 +125,11 @@ export function authenticateHubNodeLink(
   if (auth.ok) {
     return {
       ok: true,
-      authenticated: { node: auth.node, token, credentialId: auth.credentialId },
+      authenticated: {
+        node: auth.node,
+        token,
+        credentialId: auth.credentialId,
+      },
     };
   }
   const error = auth.ok === false ? auth.error : undefined;
@@ -535,11 +543,17 @@ export class HubNodeLinkManager {
       this.openStream(stream, message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.chunk' || message.type === 'fs.tail.chunk') {
+    if (
+      message.type === 'logs.tail.chunk' ||
+      message.type === 'fs.tail.chunk'
+    ) {
       stream.onChunk(message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.error' || message.type === 'fs.tail.error') {
+    if (
+      message.type === 'logs.tail.error' ||
+      message.type === 'fs.tail.error'
+    ) {
       const error = payloadRecord(message.payload)['error'];
       if (typeof error === 'object' && error !== null) {
         stream.onError?.(error as RelayNodeError);
@@ -584,8 +598,12 @@ export class HubNodeLinkManager {
     const browserWs = stream.browserWs;
     if (message.type === 'pty.data') {
       const data = payloadRecord(message.payload)['data'];
-      if (typeof data === 'string' && browserWs.readyState === browserWs.OPEN) {
-        browserWs.send(data);
+      if (typeof data === 'string') {
+        // #1249: routed PTY stdout is a replayable delta (browser reconnect
+        // re-attaches and the node re-streams), so shed it to a lagging browser
+        // socket above the soft watermark rather than queuing frames off-heap;
+        // above the hard watermark close 4409 (cleanup sends pty.detach).
+        sendWithBackpressure(browserWs, () => data, { droppable: true });
       }
       return true;
     }
@@ -659,7 +677,8 @@ export function handleHubNodeLink(
   const authenticatedNodeId = authenticated.node.nodeId;
   nodeLinks?.registerNodeLink(authenticatedNodeId, ws);
   const unsubscribeStatus = registry.onNodeStatus((event) => {
-    if (event.nodeId !== authenticatedNodeId || event.status !== 'revoked') return;
+    if (event.nodeId !== authenticatedNodeId || event.status !== 'revoked')
+      return;
     sendJson(
       ws,
       errorEnvelope(
