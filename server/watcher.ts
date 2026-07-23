@@ -640,7 +640,14 @@ export class RefWatcher {
 
 // Directories to ignore when watching the working tree.
 // These never contain user-authored source files worth diffing.
-const IGNORED_DIRS = new Set([
+// IMPORTANT: these are pruned at EVERY level of the walk (not just the top),
+// so nested trees such as `.worktrees/<wt>/node_modules` or a monorepo's
+// `packages/<pkg>/node_modules` are never descended into (#1249 / PR #1251
+// review P0: nested node_modules re-wedged the hub even after top-level
+// exclusion). `.worktrees` and `.claude` are ignored because the dogfood
+// checkout keeps sibling worktrees and generated agent config there — both
+// are large, gitignored, and never source worth diffing from the root.
+export const IGNORED_DIRS = new Set([
   '.git',
   'node_modules',
   '.next',
@@ -658,25 +665,34 @@ const IGNORED_DIRS = new Set([
   '.turbo',
   '.cache',
   '.parcel-cache',
+  '.worktrees',
+  '.claude',
 ]);
 
-// Safety cap on the number of recursive top-level sub-watches per workspace.
-// A normal repo has a handful of source dirs; anything much larger is either
-// pathological or a directory we should not be walking. We attach up to this
-// many recursive watches and warn (never silently watch unbounded).
-const MAX_RECURSIVE_SUBDIR_WATCHES = 64;
+// Safety cap on the total number of per-directory watches per workspace.
+// The walk prunes IGNORED_DIRS at every level, so a normal source tree is
+// hundreds-to-low-thousands of dirs. This cap bounds a pathological
+// non-ignored tree; hitting it logs a WARN describing the partial coverage
+// (never a silent cap — #1244).
+const MAX_WATCHED_DIRS = 8192;
+
+// Debounce for reconciling a single directory's watch set after a create/delete
+// ('rename') event. Collapses bursts (e.g. a tool writing many files into a
+// watched dir) into one cheap, non-recursive re-read of that ONE directory.
+const RESCAN_DEBOUNCE_MS = 250;
 
 interface WorkspaceWatchEntry {
-  // Non-recursive watch on the workspace root: catches top-level file edits and
-  // the creation of new top-level directories (so we can attach a sub-watch).
-  rootWatcher?: fs.FSWatcher | undefined;
-  // Recursive watches, one per NON-ignored top-level directory. Keyed by the
-  // directory name so a rescan can skip dirs it already watches.
-  subWatchers: Map<string, fs.FSWatcher>;
+  // One NON-recursive fs.watch per NON-ignored directory in the tree, keyed by
+  // absolute directory path. Node's recursive fs.watch cannot prune per-level,
+  // so we maintain the recursion ourselves and skip IGNORED_DIRS at every depth.
+  dirWatchers: Map<string, fs.FSWatcher>;
   // .git/HEAD watch for commits / branch switches.
   headWatcher?: fs.FSWatcher | undefined;
-  // Debounce timer for the bounded top-level rescan (new dir detection).
-  rescanTimer?: ReturnType<typeof setTimeout> | null;
+  // Per-directory debounce timers for create/delete reconciliation, keyed by
+  // the directory whose children changed.
+  rescanTimers: Map<string, ReturnType<typeof setTimeout>>;
+  // Set once we log the cap WARN so a workspace warns at most once.
+  cappedWarned: boolean;
   refCount: number;
 }
 
@@ -692,24 +708,27 @@ export class GitWatcher extends EventEmitter {
     }
 
     const entry: WorkspaceWatchEntry = {
-      subWatchers: new Map(),
-      rescanTimer: null,
+      dirWatchers: new Map(),
+      rescanTimers: new Map(),
+      cappedWarned: false,
       refCount: 1,
     };
 
-    // 1. Watch the working tree for file edits WITHOUT recursing into
-    //    IGNORED_DIRS (#1249). Node's recursive fs.watch on Linux is
-    //    implemented in JS: it walks + stats + inotify-watches EVERY
-    //    subdirectory. A single fs.watch(root, {recursive:true}) therefore
-    //    walks node_modules (100k+ files) at setup and re-walks on events,
-    //    wedging the event loop — filtering in the callback is too late.
-    //    Instead: watch the root non-recursively (top-level file edits + new
-    //    top-level dir detection) and add a recursive watch to each
-    //    non-ignored top-level directory only. .git/ changes are still
-    //    filtered in the callback (defense in depth) so git-status calls
+    // 1. Watch the working tree for file edits with a CUSTOM per-level-pruning
+    //    recursive watcher (#1249 / PR #1251 review P0). Node's recursive
+    //    fs.watch on Linux is implemented in JS: it walks + stats +
+    //    inotify-watches EVERY subdirectory with NO per-level exclusion, so it
+    //    always descends node_modules (100k+ files) — even a `fs.watch(dir,
+    //    {recursive:true})` on a *non-ignored* top-level dir still walks any
+    //    node_modules nested underneath it (a monorepo `packages/*/node_modules`
+    //    or the dogfood checkout's `.worktrees/*/node_modules`, which is LARGER
+    //    than the root node_modules). We therefore walk the tree ourselves,
+    //    pruning IGNORED_DIRS at every level, and attach a NON-recursive watch
+    //    to each non-ignored directory. Create/delete of a child re-reads that
+    //    one directory (cheap) to add/drop watches dynamically. IGNORED_DIRS is
+    //    also filtered in each callback (defense in depth) so git-status calls
     //    never cause feedback loops.
-    entry.rootWatcher = this.createRootWatcher(workspacePath, entry);
-    this.attachTopLevelSubWatchers(workspacePath, entry);
+    this.walkAndWatch(workspacePath, entry, workspacePath);
 
     // 2. Watch .git/HEAD for commits and branch switches.
     //    Single-file watch, no feedback loop risk (HEAD only changes on checkout/commit).
@@ -739,11 +758,7 @@ export class GitWatcher extends EventEmitter {
       // .git doesn't exist or isn't readable — skip HEAD watching
     }
 
-    if (
-      !entry.rootWatcher &&
-      entry.subWatchers.size === 0 &&
-      !entry.headWatcher
-    ) {
+    if (entry.dirWatchers.size === 0 && !entry.headWatcher) {
       return;
     }
 
@@ -751,169 +766,217 @@ export class GitWatcher extends EventEmitter {
   }
 
   /**
-   * Watch the workspace root NON-recursively. Detects top-level file edits and
-   * the creation of new top-level directories. On a rename/create event we may
-   * schedule a bounded, debounced rescan to attach a recursive watch to a newly
-   * added non-ignored directory — but never a per-event re-walk of the tree.
+   * Walk the tree rooted at `startDir`, pruning IGNORED_DIRS at EVERY level, and
+   * attach a NON-recursive fs.watch to each non-ignored directory. Iterative
+   * (explicit stack) so a deep tree can't blow the call stack. Bounded by
+   * MAX_WATCHED_DIRS: once the cap is hit, remaining directories are skipped and
+   * a single WARN is logged (never a silent cap). An ignored directory is never
+   * counted toward the cap — the walk skips it before it is ever pushed.
    */
-  private createRootWatcher(
+  private walkAndWatch(
     workspacePath: string,
-    entry: WorkspaceWatchEntry
+    entry: WorkspaceWatchEntry,
+    startDir: string
+  ): void {
+    const stack: string[] = [startDir];
+    let skipped = 0;
+    let cappedHit = false;
+
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      if (entry.dirWatchers.has(dir)) continue;
+
+      if (entry.dirWatchers.size >= MAX_WATCHED_DIRS) {
+        skipped++;
+        cappedHit = true;
+        continue;
+      }
+
+      const watcher = this.createDirWatcher(workspacePath, entry, dir);
+      if (watcher) entry.dirWatchers.set(dir, watcher);
+
+      let dirents: fs.Dirent[];
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        // Directory vanished or is unreadable — nothing more to enqueue.
+        continue;
+      }
+      for (const dirent of dirents) {
+        if (!dirent.isDirectory()) continue;
+        if (IGNORED_DIRS.has(dirent.name)) continue; // prune at EVERY level
+        const child = path.join(dir, dirent.name);
+        if (!entry.dirWatchers.has(child)) stack.push(child);
+      }
+    }
+
+    if (cappedHit && !entry.cappedWarned) {
+      entry.cappedWarned = true;
+      logger.warn(
+        `[GitWatcher] ${workspacePath}: reached watch cap of ${MAX_WATCHED_DIRS} directories; skipped at least ${skipped} — change detection is PARTIAL for this workspace (edits in directories beyond the cap will not auto-refresh changed-files)`
+      );
+    }
+  }
+
+  /**
+   * Create a single NON-recursive fs.watch for `dir`. Its callback filters
+   * IGNORED_DIRS children (defense in depth) and, on a 'rename' (child created
+   * or deleted), schedules a debounced reconcile of THIS directory only — cheap,
+   * because it re-reads one directory non-recursively, never the whole tree.
+   */
+  private createDirWatcher(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    dir: string
   ): fs.FSWatcher | undefined {
     try {
-      const rootWatcher = fs.watch(
-        workspacePath,
+      const watcher = fs.watch(
+        dir,
         { persistent: false },
         (event, filename) => {
-          if (!filename) return;
-          const name = String(filename);
-          const firstSegment = name.split(path.sep)[0] ?? '';
-          if (IGNORED_DIRS.has(firstSegment)) return;
-          // A rename at the top level may be a newly created source dir —
-          // schedule a bounded, debounced rescan to attach a watch to it.
+          if (filename) {
+            // A non-recursive watch reports the changed direct child. Skip
+            // ignored children so a newly created node_modules / .worktrees
+            // neither gets watched nor spams git-status.
+            const firstSegment = String(filename).split(path.sep)[0] ?? '';
+            if (IGNORED_DIRS.has(firstSegment)) return;
+          }
           if (event === 'rename') {
-            this.scheduleTopLevelRescan(workspacePath, entry);
+            // Child dir created or removed — reconcile watches for this dir.
+            this.scheduleDirRescan(workspacePath, entry, dir);
           }
           this.debouncedEmit(workspacePath);
         }
       );
-      rootWatcher.on('error', (err) => {
+      watcher.on('error', () => {
+        /* per-dir watch is best-effort */
+      });
+      return watcher;
+    } catch (err: unknown) {
+      if (dir === workspacePath) {
+        const msg = err instanceof Error ? err.message : String(err);
         logger.warn(
-          '[GitWatcher] working-tree root watch failed for',
+          '[GitWatcher] could not watch working tree for',
           workspacePath,
           '—',
-          err.message
+          msg
         );
         logger.warn(
           '[GitWatcher] changed-files may not auto-refresh for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288'
         );
-      });
-      return rootWatcher;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(
-        '[GitWatcher] could not watch working tree for',
-        workspacePath,
-        '—',
-        msg
-      );
+      }
+      // Nested per-dir watch failures are non-fatal and stay quiet.
       return undefined;
     }
   }
 
   /**
-   * Attach a recursive fs.watch to each NON-ignored top-level directory that is
-   * not already watched. Reads only the top level (never walks into
-   * IGNORED_DIRS such as node_modules). Bounded by MAX_RECURSIVE_SUBDIR_WATCHES;
-   * excess directories are skipped with a warning (never silent unbounded
-   * watching).
+   * Debounce a reconcile of a single directory. At most one reconcile is pending
+   * per directory, so a burst of create/delete events collapses to one
+   * non-recursive readdir of that directory.
    */
-  private attachTopLevelSubWatchers(
+  private scheduleDirRescan(
     workspacePath: string,
-    entry: WorkspaceWatchEntry
+    entry: WorkspaceWatchEntry,
+    dir: string
+  ): void {
+    if (entry.rescanTimers.has(dir)) return;
+    const timer = setTimeout(() => {
+      entry.rescanTimers.delete(dir);
+      // Ignore if this entry has been torn down / replaced in the meantime.
+      if (this.watchers.get(workspacePath) !== entry) return;
+      this.reconcileDir(workspacePath, entry, dir);
+    }, RESCAN_DEBOUNCE_MS);
+    entry.rescanTimers.set(dir, timer);
+  }
+
+  /**
+   * Re-read ONE directory (non-recursively) and reconcile its child watches:
+   * walk+watch newly created non-ignored subdirs, and drop watches for direct
+   * child directories that were removed (unwatching their whole subtree). If the
+   * directory itself is gone, unwatch it and everything under it.
+   */
+  private reconcileDir(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    dir: string
   ): void {
     let dirents: fs.Dirent[];
     try {
-      dirents = fs.readdirSync(workspacePath, { withFileTypes: true });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(
-        '[GitWatcher] could not read top-level entries for',
-        workspacePath,
-        '—',
-        msg
-      );
+      dirents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      // Directory removed or unreadable — drop it and all descendant watches.
+      this.unwatchSubtree(entry, dir);
       return;
     }
 
-    let skipped = 0;
+    const liveChildDirs = new Set<string>();
     for (const dirent of dirents) {
       if (!dirent.isDirectory()) continue;
-      if (IGNORED_DIRS.has(dirent.name)) continue;
-      if (entry.subWatchers.has(dirent.name)) continue;
-      if (entry.subWatchers.size >= MAX_RECURSIVE_SUBDIR_WATCHES) {
-        skipped++;
-        continue;
-      }
-      const dirPath = path.join(workspacePath, dirent.name);
-      try {
-        const subWatcher = fs.watch(
-          dirPath,
-          { persistent: false, recursive: true },
-          (_event, filename) => {
-            if (filename) {
-              // Defense in depth: skip nested ignored dirs (e.g. a source dir
-              // that itself contains a node_modules) so a monorepo package's
-              // deps don't spam git-status.
-              const firstSegment = String(filename).split(path.sep)[0] ?? '';
-              if (IGNORED_DIRS.has(firstSegment)) return;
-            }
-            this.debouncedEmit(workspacePath);
-          }
-        );
-        subWatcher.on('error', () => {
-          /* per-dir watch is best-effort */
-        });
-        entry.subWatchers.set(dirent.name, subWatcher);
-      } catch {
-        // Individual directory watch failure is non-fatal.
+      if (IGNORED_DIRS.has(dirent.name)) continue; // prune ignored children
+      const child = path.join(dir, dirent.name);
+      liveChildDirs.add(child);
+      if (!entry.dirWatchers.has(child)) {
+        // Newly created non-ignored subdir — walk + watch it (bounded, pruned).
+        this.walkAndWatch(workspacePath, entry, child);
       }
     }
 
-    if (skipped > 0) {
-      logger.warn(
-        `[GitWatcher] ${workspacePath}: capped recursive watches at ${MAX_RECURSIVE_SUBDIR_WATCHES}; skipped ${skipped} top-level director${
-          skipped === 1 ? 'y' : 'ies'
-        } — changed-files may miss edits in unwatched top-level directories`
-      );
+    // Drop watches for direct child directories that no longer exist. A
+    // non-recursive watch on `dir` only reports its own direct children, so we
+    // only reconcile this level; nested changes are handled by nested watches.
+    for (const watched of [...entry.dirWatchers.keys()]) {
+      if (path.dirname(watched) !== dir) continue;
+      if (!liveChildDirs.has(watched)) {
+        this.unwatchSubtree(entry, watched);
+      }
     }
   }
 
   /**
-   * Schedule a single bounded, debounced rescan of the workspace top level to
-   * attach watches to newly created non-ignored directories. At most one rescan
-   * is pending per workspace, so a burst of rename events collapses to one
-   * top-level readdir — never a per-event re-walk.
+   * Close and forget the watch on `root` and every watched directory beneath it,
+   * plus any pending reconcile timers in that subtree. Idempotent.
    */
-  private scheduleTopLevelRescan(
-    workspacePath: string,
-    entry: WorkspaceWatchEntry
-  ): void {
-    if (entry.rescanTimer) return;
-    entry.rescanTimer = setTimeout(() => {
-      entry.rescanTimer = null;
-      // Ignore if this entry has been torn down / replaced in the meantime.
-      if (this.watchers.get(workspacePath) !== entry) return;
-      this.attachTopLevelSubWatchers(workspacePath, entry);
-    }, 1000);
+  private unwatchSubtree(entry: WorkspaceWatchEntry, root: string): void {
+    const prefix = root + path.sep;
+    for (const [watchedPath, watcher] of [...entry.dirWatchers]) {
+      if (watchedPath === root || watchedPath.startsWith(prefix)) {
+        try {
+          watcher.close();
+        } catch {
+          // ignore
+        }
+        entry.dirWatchers.delete(watchedPath);
+      }
+    }
+    for (const [timerPath, timer] of [...entry.rescanTimers]) {
+      if (timerPath === root || timerPath.startsWith(prefix)) {
+        clearTimeout(timer);
+        entry.rescanTimers.delete(timerPath);
+      }
+    }
   }
 
   private closeEntry(entry: WorkspaceWatchEntry): void {
-    if (entry.rescanTimer) {
-      clearTimeout(entry.rescanTimer);
-      entry.rescanTimer = null;
+    for (const timer of entry.rescanTimers.values()) {
+      clearTimeout(timer);
     }
-    if (entry.rootWatcher) {
+    entry.rescanTimers.clear();
+    for (const watcher of entry.dirWatchers.values()) {
       try {
-        entry.rootWatcher.close();
+        watcher.close();
       } catch {
         // ignore
       }
     }
-    for (const subWatcher of entry.subWatchers.values()) {
-      try {
-        subWatcher.close();
-      } catch {
-        // ignore
-      }
-    }
-    entry.subWatchers.clear();
+    entry.dirWatchers.clear();
     if (entry.headWatcher) {
       try {
         entry.headWatcher.close();
       } catch {
         // ignore
       }
+      entry.headWatcher = undefined;
     }
   }
 
