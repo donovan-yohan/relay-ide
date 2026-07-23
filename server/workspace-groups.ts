@@ -126,8 +126,6 @@ function buildFinalArgs(
   combinedClaudeArgs: string[];
   finalArgs: string[];
 } {
-  const addDirArgs = additionalDirs.flatMap((dir) => ['--add-dir', dir]);
-
   const sessionOverrides: Parameters<typeof resolveSessionSettings>[2] = {};
   if (overrides.agent !== undefined)
     sessionOverrides.agent = overrides.agent as AgentType;
@@ -144,10 +142,16 @@ function buildFinalArgs(
     workspaceId
   );
   const resolvedAgent = resolved.agent;
-  // config.claudeArgs carries Claude-specific flags (--model/--effort); folding
-  // them into codex/opencode/hermes spawns exits those CLIs with code 2. Gate
-  // to the claude agent only. --add-dir (multi-repo) composition is unchanged.
+  // config.claudeArgs carries Claude-specific flags (--model/--effort) and
+  // --add-dir is likewise a Claude-only multi-repo flag; folding either into
+  // codex/opencode/hermes spawns exits those CLIs with code 2 (#1238, same
+  // class as #1237). Gate BOTH to the claude agent. No other framework declares
+  // a multi-repo flag, so non-claude group spawns launch in the primary repo.
   const agentClaudeArgs = resolvedAgent === 'claude' ? resolved.claudeArgs : [];
+  const addDirArgs =
+    resolvedAgent === 'claude'
+      ? additionalDirs.flatMap((dir) => ['--add-dir', dir])
+      : [];
   const combinedClaudeArgs = [...agentClaudeArgs, ...addDirArgs];
   const baseArgs = [
     ...combinedClaudeArgs,
