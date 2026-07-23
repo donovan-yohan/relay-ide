@@ -48,9 +48,7 @@ describe('work-context store boot fallback', () => {
 
     expect(store.list()).toEqual([]);
     expect(store.get('wc:missing')).toBeNull();
-    expect(
-      store.listActiveWork({ sessions: [], nodes: [] })
-    ).toEqual([]);
+    expect(store.listActiveWork({ sessions: [], nodes: [] })).toEqual([]);
     expect(() => store.create({ id: 'wc:fallback' })).toThrow(
       'work_context_store_unavailable'
     );
@@ -438,31 +436,42 @@ describe('WorkContext store', () => {
       controlMode: 'co-driven',
       displayName: 'Pair session',
     });
-    const api = await startWorkContextApi(store, [pairSession], [node({ nodeId: 'node-remote' })]);
+    const api = await startWorkContextApi(
+      store,
+      [pairSession],
+      [node({ nodeId: 'node-remote' })]
+    );
     try {
-      const created = await jsonRequest(api.baseUrl, 'POST', '/work-contexts/from-task-ref', {
-        id: 'wc:handoff',
-        title: 'Pair handoff',
-        source: 'assistant',
-        taskRef: {
-          kind: 'github-issue',
-          id: '560',
-          title: 'assistant-to-pair-session handoff',
-          url: 'https://github.com/donovan-yohan/relay-ide/issues/560',
-          privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
-        },
-        actors: [
-          {
-            kind: 'agent',
-            id: 'assistant:kani',
-            displayName: 'Kani backend',
+      const created = await jsonRequest(
+        api.baseUrl,
+        'POST',
+        '/work-contexts/from-task-ref',
+        {
+          id: 'wc:handoff',
+          title: 'Pair handoff',
+          source: 'assistant',
+          taskRef: {
+            kind: 'github-issue',
+            id: '560',
+            title: 'assistant-to-pair-session handoff',
+            url: 'https://github.com/donovan-yohan/relay-ide/issues/560',
+            privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
           },
-        ],
-      });
+          actors: [
+            {
+              kind: 'agent',
+              id: 'assistant:kani',
+              displayName: 'Kani backend',
+            },
+          ],
+        }
+      );
       expect(created.status).toBe(201);
       expect(created.body.workContext.tasks).toHaveLength(1);
       expect(created.body.workContext.auditRefs).toEqual(
-        expect.arrayContaining([expect.objectContaining({ type: 'handoff.created' })])
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'handoff.created' }),
+        ])
       );
 
       const associated = await jsonRequest(
@@ -480,30 +489,45 @@ describe('WorkContext store', () => {
         cwd: '/remote/relay-ide/.worktrees/560-pair-handoff',
       });
 
-      const event = await jsonRequest(api.baseUrl, 'POST', '/work-contexts/wc:handoff/events', {
-        type: 'summary.recorded',
-        actorId: 'assistant:kani',
-        summary: 'implementation is ready for pair resume; raw transcript omitted',
-        artifacts: [
-          {
-            id: 'artifact:diff-summary',
-            kind: 'report',
-            title: 'Diff summary',
-            summary: 'server/work-contexts.ts adds compact resume refs',
-            privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
-          },
-        ],
-      });
+      const event = await jsonRequest(
+        api.baseUrl,
+        'POST',
+        '/work-contexts/wc:handoff/events',
+        {
+          type: 'summary.recorded',
+          actorId: 'assistant:kani',
+          summary:
+            'implementation is ready for pair resume; raw transcript omitted',
+          artifacts: [
+            {
+              id: 'artifact:diff-summary',
+              kind: 'report',
+              title: 'Diff summary',
+              summary: 'server/work-contexts.ts adds compact resume refs',
+              privacy: createWorkContextPrivacyMetadata({
+                retention: 'project',
+              }),
+            },
+          ],
+        }
+      );
       expect(event.status).toBe(201);
 
-      const resume = await jsonRequest(api.baseUrl, 'GET', '/work-contexts/wc:handoff/resume');
+      const resume = await jsonRequest(
+        api.baseUrl,
+        'GET',
+        '/work-contexts/wc:handoff/resume'
+      );
       expect(resume.status).toBe(200);
       expect(resume.body.resume).toMatchObject({
         workContext: {
           id: 'wc:handoff',
           tasks: [expect.objectContaining({ id: '560', kind: 'github-issue' })],
         },
-        node: expect.objectContaining({ nodeId: 'node-remote', status: 'online' }),
+        node: expect.objectContaining({
+          nodeId: 'node-remote',
+          status: 'online',
+        }),
         sessions: [
           expect.objectContaining({
             id: 'pair-1',
@@ -521,12 +545,18 @@ describe('WorkContext store', () => {
         },
       });
       expect(resume.body.resume.artifacts).toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: 'artifact:diff-summary' })])
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'artifact:diff-summary' }),
+        ])
       );
       expect(resume.body.resume.auditRefs).toEqual(
-        expect.arrayContaining([expect.objectContaining({ type: 'session.associated' })])
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'session.associated' }),
+        ])
       );
-      expect(JSON.stringify(resume.body.resume)).not.toContain('terminalTranscript');
+      expect(JSON.stringify(resume.body.resume)).not.toContain(
+        'terminalTranscript'
+      );
       expect(JSON.stringify(resume.body.resume)).not.toContain('providerToken');
     } finally {
       await api.close();
@@ -860,7 +890,7 @@ describe('WorkContext store', () => {
     const store = makeStore();
     try {
       const context = store.create({ id: 'wc:local', title: 'Local work' });
-      const local = session();
+      const local = session({ spawnedBySessionId: 'orchestrator-session' });
       store.associateSession(context.id, { session: local });
 
       const groups = store.listActiveWork({ sessions: [local], nodes: [] });
@@ -869,6 +899,7 @@ describe('WorkContext store', () => {
       expect(groups[0]?.node.status).toBe('online');
       expect(groups[0]?.sessions[0]).toMatchObject({
         id: local.id,
+        spawnedBySessionId: 'orchestrator-session',
         nodeId: DEFAULT_LOCAL_NODE_ID,
         repoPath: '/repo/relay-ide',
         live: true,
@@ -927,15 +958,19 @@ describe('WorkContext store', () => {
     const store = makeStore();
     try {
       const context = store.create({ id: 'wc:offline', title: 'Offline work' });
-      store.associateSession(context.id, {
-        sessionRef: {
-          nodeId: 'node-offline',
-          sessionId: 'sess-old',
-          globalSessionId: createGlobalSessionId('node-offline', 'sess-old'),
-          tabKind: 'agent',
-          cwd: '/remote/worktree',
-        },
+      const offlineSession = session({
+        id: 'sess-old',
+        nodeId: 'node-offline',
+        globalSessionId: createGlobalSessionId('node-offline', 'sess-old'),
+        spawnedBySessionId: 'orchestrator-session',
+        cwd: '/remote/worktree',
       });
+      store.associateSession(context.id, {
+        session: offlineSession,
+      });
+      expect(store.get(context.id)?.anchors.session?.spawnedBySessionId).toBe(
+        'orchestrator-session'
+      );
 
       const groups = store.listActiveWork({
         sessions: [],
@@ -952,6 +987,7 @@ describe('WorkContext store', () => {
       expect(groups[0]?.staleReadModel).toBe(true);
       expect(groups[0]?.sessions[0]).toMatchObject({
         id: 'sess-old',
+        spawnedBySessionId: 'orchestrator-session',
         live: false,
         cwd: '/remote/worktree',
       });

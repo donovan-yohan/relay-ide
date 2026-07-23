@@ -185,6 +185,7 @@ describe('web session restore failure recovery', () => {
         meta: {
           type: 'agent',
           agent: 'claude',
+          spawnedBySessionId: 'orchestrator-session',
           repoName: 'relay-ide',
           customCommand: null,
           runtimeOwnership: 'attached',
@@ -227,6 +228,7 @@ describe('web session restore failure recovery', () => {
     expect(session!.mode).toBe('web');
     if (session?.mode !== 'web') throw new Error('expected web session');
     expect(session.hookToken).toBe('restored-hook-token');
+    expect(session.spawnedBySessionId).toBe('orchestrator-session');
     expect(session.needsBranchRename).toBe(true);
     expect(session.workspaceId).toBe('workspace-1');
     expect(session.additionalDirs).toEqual([path.join(configDir, 'extra')]);

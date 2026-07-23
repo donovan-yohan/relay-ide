@@ -143,6 +143,7 @@ export interface SelfDeclaredPresence {
  */
 export interface RosterEntry {
   sessionId: string;
+  spawnedBySessionId?: string;
   globalSessionId?: string;
   nodeId?: string;
   /** Provider / agent kind (framework id), e.g. `claude` | `codex` | `hermes`. */
@@ -193,6 +194,7 @@ export interface AgentRoster {
  */
 export interface RosterSessionInput {
   id: string;
+  spawnedBySessionId?: string | undefined;
   globalSessionId?: string | undefined;
   nodeId?: string | undefined;
   agent?: string | undefined;
@@ -244,6 +246,9 @@ export function projectRosterEntry(
   const actors = projectActors(session.activeActors);
   return {
     sessionId: session.id,
+    ...(session.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: session.spawnedBySessionId }
+      : {}),
     ...(session.globalSessionId
       ? { globalSessionId: session.globalSessionId }
       : {}),

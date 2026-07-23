@@ -864,6 +864,7 @@ function resolveContinuePolicy(
 
 type AgentSessionParams = {
   id?: string;
+  spawnedBySessionId?: string;
   repoName: string;
   repoPath?: string | undefined;
   worktreePath: string | null | undefined;
@@ -894,6 +895,7 @@ type AgentSessionParams = {
 };
 
 type TerminalSessionParams = {
+  spawnedBySessionId?: string;
   repoName: string;
   repoPath?: string | undefined;
   worktreePath: string | null | undefined;
@@ -915,6 +917,9 @@ function createTerminalSessionRecord(
   const displayName = sessions.nextTerminalName();
   return localRelayNode.sessions.create({
     type: 'terminal',
+    ...(params.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: params.spawnedBySessionId }
+      : {}),
     agent: 'claude' as AgentType,
     repoName: params.repoName,
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),
@@ -939,6 +944,9 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
   const sessionId = params.id ?? crypto.randomBytes(8).toString('hex');
   const session = localRelayNode.sessions.create({
     id: sessionId,
+    ...(params.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: params.spawnedBySessionId }
+      : {}),
     type: 'agent',
     agent: params.resolvedAgent,
     repoName: params.repoName,
@@ -1312,6 +1320,8 @@ function createHandoffDestinationLauncher(params: {
           sessionLane: undefined,
           workContextId: undefined,
           portVariables,
+          // Pipeline-handoff destination is spawned by the source session.
+          spawnedBySessionId: input.request.source.sessionId,
         });
         localRelayNode.sessions.write(
           session.id,
@@ -1373,6 +1383,8 @@ function createHandoffDestinationLauncher(params: {
         sessionLane: undefined,
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
+        // Pipeline-handoff destination is spawned by the source session.
+        spawnedBySessionId: input.request.source.sessionId,
       });
       params.watchCwd(session.cwd);
       return { ok: true, session, acknowledgedBrief: true };
@@ -5448,6 +5460,7 @@ async function main(): Promise<void> {
       rows,
       branchName: requestBranchName,
       displayName: requestedDisplayName,
+      spawnedBySessionId,
       needsBranchRename,
       newWorktree,
       branchRenamePrompt,
@@ -5472,6 +5485,7 @@ async function main(): Promise<void> {
       rows?: number;
       branchName?: string;
       displayName?: string;
+      spawnedBySessionId?: string;
       needsBranchRename?: boolean;
       newWorktree?: boolean;
       branchRenamePrompt?: string;
@@ -5556,6 +5570,7 @@ async function main(): Promise<void> {
       let session: CreateResult;
       try {
         session = createTerminalSessionRecord({
+          ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
           repoName: name,
           repoPath: requestedRepoPath,
           worktreePath: requestedWorktreePath ?? null,
@@ -5648,6 +5663,7 @@ async function main(): Promise<void> {
       );
       try {
         const { session } = await localRelayNode.sessions.createWeb({
+          ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
           agentType: resolvedAgent,
           cwd,
           repoPath: requestedRepoPath,
@@ -5701,6 +5717,7 @@ async function main(): Promise<void> {
     let session: CreateResult;
     try {
       session = createAgentSessionRecord({
+        ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
         repoName: name,
         repoPath: requestedRepoPath,
         worktreePath: requestedWorktreePath,

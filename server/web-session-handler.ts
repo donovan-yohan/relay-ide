@@ -77,6 +77,7 @@ export function setWebSessionRestoreSnapshotFence(
 
 export interface CreateWebParams {
   id?: string;
+  spawnedBySessionId?: string;
   agentType: string;
   cwd: string;
   repoPath?: string | undefined;
@@ -116,6 +117,9 @@ export async function createWebSession(
   const session: WebSession = {
     mode: 'web',
     id,
+    ...(params.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: params.spawnedBySessionId }
+      : {}),
     nodeId: DEFAULT_LOCAL_NODE_ID,
     type: 'agent',
     agent: params.agentType as AgentType,

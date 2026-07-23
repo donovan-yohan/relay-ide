@@ -51,6 +51,7 @@ function group(
     sessions: [
       {
         id: `session-${id}`,
+        spawnedBySessionId: 'orchestrator-session',
         nodeId: 'local',
         globalSessionId: `local:session-${id}`,
         type: 'agent',
@@ -138,6 +139,7 @@ describe('terminal cockpit view', () => {
       count: 1,
       latest: [{ title: 'status permission' }],
     });
+    expect(view.next?.session.spawnedBySessionId).toBe('orchestrator-session');
   });
 
   it('preserves stale/offline last-known context while disabling live controls with reasons', () => {
@@ -182,7 +184,9 @@ describe('terminal cockpit view', () => {
     });
     expect(item.actions.destructive).toMatchObject({
       enabled: false,
-      disabledReason: expect.stringContaining('outside the terminal cockpit MVP'),
+      disabledReason: expect.stringContaining(
+        'outside the terminal cockpit MVP'
+      ),
     });
   });
 
@@ -210,7 +214,9 @@ describe('terminal cockpit view', () => {
     expect(screen).toContain('control: mode=co-driven freshness=fresh');
     expect(screen).toContain('task: github-issue:934 (in-progress)');
     expect(screen).toContain('artifacts: 1 latest=status render');
-    expect(screen).toContain('relay-ide v1 sessions attach --id local:session-render --json');
+    expect(screen).toContain(
+      'relay-ide v1 sessions attach --id local:session-render --json'
+    );
   });
 
   it('builds selected WorkContext detail with status/evidence/inbox/attach command hints', () => {
@@ -222,6 +228,9 @@ describe('terminal cockpit view', () => {
 
     expect(detail?.selector.workContextId).toBe('selected');
     expect(detail?.item.workContext.id).toBe('selected');
+    expect(detail?.item.session.spawnedBySessionId).toBe(
+      'orchestrator-session'
+    );
     expect(detail?.actionHints.status.map((hint) => hint.command)).toContain(
       'relay-ide v1 work-contexts resume --id selected --json'
     );
@@ -240,7 +249,8 @@ describe('terminal cockpit view', () => {
     expect(detail?.actionHints.attach).toMatchObject({
       id: 'sessions.attach',
       enabled: true,
-      command: 'relay-ide v1 sessions attach --id local:session-selected --json',
+      command:
+        'relay-ide v1 sessions attach --id local:session-selected --json',
       safety: 'attach',
     });
 

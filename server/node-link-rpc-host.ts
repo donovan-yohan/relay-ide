@@ -195,6 +195,7 @@ function parseInitialControlMode(
 
 interface SessionsCreateInput {
   id?: string;
+  spawnedBySessionId?: string;
   type: 'agent' | 'terminal';
   mode?: 'pty' | 'web';
   controlMode?: 'agent-driven' | 'human-driven';
@@ -239,6 +240,9 @@ function parseSessionsCreateInput(
   const input: SessionsCreateInput = { type: typeRaw };
   const id = asString(record['id']);
   if (id !== undefined) input.id = id;
+  const spawnedBySessionId = asString(record['spawnedBySessionId']);
+  if (spawnedBySessionId !== undefined)
+    input.spawnedBySessionId = spawnedBySessionId;
   if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
   const initialControl = parseInitialControlMode(record, typeRaw);
   if ('code' in initialControl) return initialControl;
