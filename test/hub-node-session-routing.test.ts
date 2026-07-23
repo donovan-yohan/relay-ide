@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import express from 'express';
 import { WebSocket } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
@@ -287,7 +287,16 @@ describe('hub-routed node session create and attach', () => {
     while (cleanup.length > 0) await cleanup.pop()?.();
   });
 
-  async function startHub(now = () => new Date('2026-01-02T03:04:05.000Z')) {
+  async function startHub(
+    now = () => new Date('2026-01-02T03:04:05.000Z'),
+    routedControlCleanup: {
+      releaseRoutedPtyControlSession?: (
+        nodeId: string,
+        sessionId: string
+      ) => void;
+      releaseRoutedPtyControlSessionsForNode?: (nodeId: string) => void;
+    } = {}
+  ) {
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), 'relay-hub-session-route-')
     );
@@ -350,6 +359,7 @@ describe('hub-routed node session create and attach', () => {
         requireAuth,
         cliGatewayAuth,
         cliGatewayAuthForActorCommand,
+        ...routedControlCleanup,
       })
     );
     const server = http.createServer(app);
@@ -948,7 +958,11 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('routes remote session delete to the selected connected node', async () => {
-    const { base, wsBase, sessionEnvelopes, registry } = await startHub();
+    const releaseRoutedPtyControlSession = vi.fn();
+    const { base, wsBase, sessionEnvelopes, registry } = await startHub(
+      undefined,
+      { releaseRoutedPtyControlSession }
+    );
     const { token, nodeId } = await pairNode(base);
     grantNodeCapabilitiesForTest(registry, nodeId, ['session:control:kill']);
     seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
@@ -994,6 +1008,11 @@ describe('hub-routed node session create and attach', () => {
       sessionId: 'remote-session-1',
       nodeId,
     });
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledOnce();
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledWith(
+      nodeId,
+      'remote-session-1'
+    );
   });
 
   it('routes remote session rename to the selected connected node', async () => {
@@ -1051,7 +1070,10 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('returns NODE_OFFLINE when deleting a remote session on a node with no live reverse link', async () => {
-    const { base } = await startHub();
+    const releaseRoutedPtyControlSession = vi.fn();
+    const { base } = await startHub(undefined, {
+      releaseRoutedPtyControlSession,
+    });
     const { nodeId } = await pairNode(base);
 
     const res = await fetch(
@@ -1066,6 +1088,27 @@ describe('hub-routed node session create and attach', () => {
     expect(await res.json()).toMatchObject({
       error: { code: 'NODE_OFFLINE', retryable: true },
     });
+    expect(releaseRoutedPtyControlSession).not.toHaveBeenCalled();
+  });
+
+  it('releases all routed control sessions when a node is revoked', async () => {
+    const releaseRoutedPtyControlSessionsForNode = vi.fn();
+    const { base } = await startHub(undefined, {
+      releaseRoutedPtyControlSessionsForNode,
+    });
+    const { nodeId } = await pairNode(base);
+
+    const res = await fetch(
+      `${base}/nodes/${encodeURIComponent(nodeId)}`,
+      {
+        method: 'DELETE',
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+
+    expect(res.status).toBe(200);
+    expect(releaseRoutedPtyControlSessionsForNode).toHaveBeenCalledOnce();
+    expect(releaseRoutedPtyControlSessionsForNode).toHaveBeenCalledWith(nodeId);
   });
 
   it('does not trust node-provided scoped identity fields when worktree scope is absent', async () => {

@@ -57,7 +57,7 @@ interface SessionDeps {
     list?: () => Array<{ mode?: string; status?: string }>;
     nextAgentName: () => string;
   };
-  gitWatcher: { watch(cwd: string): void };
+  gitWatcher: { watchSession(sessionId: string, cwd: string): void };
   configPath: string;
 }
 
@@ -591,7 +591,7 @@ export function createWorkspaceGroupsRouter(
             });
           }
 
-          sessionDeps.gitWatcher.watch(session.cwd);
+          sessionDeps.gitWatcher.watchSession(session.id, session.cwd);
 
           const response: Record<string, unknown> = { ...session };
           if (failures.length > 0) {

@@ -151,4 +151,53 @@ describe('GitWatcher', () => {
     // Now closed (refCount = 0)
     watcher.close();
   });
+
+  it('releases each session watch exactly once when session-end fires twice', () => {
+    const watcher = new GitWatcher();
+    watcher.watchSession('session-a', repoDir);
+    watcher.watchSession('session-b', repoDir);
+
+    watcher.unwatchSession('session-a');
+    watcher.unwatchSession('session-a');
+
+    const entry = (
+      watcher as unknown as {
+        watchers: Map<string, { refCount: number }>;
+      }
+    ).watchers.get(repoDir);
+    expect(entry?.refCount).toBe(1);
+
+    watcher.unwatchSession('session-b');
+    expect(
+      (
+        watcher as unknown as {
+          watchers: Map<string, { refCount: number }>;
+        }
+      ).watchers.has(repoDir)
+    ).toBe(false);
+    watcher.close();
+  });
+
+  it('moves an existing session watch without retaining its old cwd', () => {
+    const otherRepoDir = path.join(tmpDir, 'other-repo');
+    fs.mkdirSync(path.join(otherRepoDir, '.git'), { recursive: true });
+    fs.writeFileSync(
+      path.join(otherRepoDir, '.git', 'HEAD'),
+      'ref: refs/heads/main\n'
+    );
+
+    const watcher = new GitWatcher();
+    watcher.watchSession('moving-session', repoDir);
+    watcher.watchSession('moving-session', repoDir);
+    watcher.watchSession('moving-session', otherRepoDir);
+
+    const entries = (
+      watcher as unknown as {
+        watchers: Map<string, { refCount: number }>;
+      }
+    ).watchers;
+    expect(entries.has(repoDir)).toBe(false);
+    expect(entries.get(otherRepoDir)?.refCount).toBe(1);
+    watcher.close();
+  });
 });

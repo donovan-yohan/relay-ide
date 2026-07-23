@@ -1431,6 +1431,7 @@ describe('hub node routes and link', () => {
     const sessionEnvelopes = createSessionEnvelopeRegistry();
     const auditEntries: unknown[] = [];
     const createRequests: Array<Record<string, unknown>> = [];
+    const releaseRoutedPtyControlSession = vi.fn();
     const nodeLinks = {
       hasActiveNode: () => true,
       request: async (
@@ -1465,6 +1466,7 @@ describe('hub node routes and link', () => {
         registry,
         nodeLinks: nodeLinks as never,
         sessionEnvelopes,
+        releaseRoutedPtyControlSession,
         now: () => now,
         auditSink: {
           append: (entry) => auditEntries.push(entry),
@@ -1653,6 +1655,7 @@ describe('hub node routes and link', () => {
         details: { reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID', matches: 2 },
       },
     });
+    expect(releaseRoutedPtyControlSession).not.toHaveBeenCalled();
 
     const revokeRes = await fetch(
       `${base}/hub/scoped-sessions/remote-session/revoke`,
@@ -1678,6 +1681,11 @@ describe('hub node routes and link', () => {
       decision: 'revoked',
       reasonCode: 'SESSION_REVOKED',
     });
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledOnce();
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledWith(
+      exchanged.node.nodeId,
+      'remote-session'
+    );
 
     const activeOnlyRes = await fetch(
       `${base}/hub/scoped-sessions?includeRevoked=0`,

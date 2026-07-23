@@ -84,7 +84,7 @@ function fakeSessionDeps() {
       list: () => [],
       nextAgentName: () => 'Agent 1',
     },
-    gitWatcher: { watch: vi.fn() },
+    gitWatcher: { watchSession: vi.fn() },
     configPath,
   };
 }

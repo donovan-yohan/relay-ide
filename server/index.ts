@@ -1236,7 +1236,7 @@ function createHandoffDestinationLauncher(params: {
   startupConfig: Config;
   configDir: string;
   getConfig: () => Config;
-  watchCwd: (cwd: string) => void;
+  watchSessionCwd: (sessionId: string, cwd: string) => void;
 }): (input: HandoffDestinationLaunchInput) => Promise<
   | {
       ok: true;
@@ -1327,7 +1327,7 @@ function createHandoffDestinationLauncher(params: {
           session.id,
           terminalBriefCommand(input.handoffBrief)
         );
-        params.watchCwd(session.cwd);
+        params.watchSessionCwd(session.id, session.cwd);
         return { ok: true, session, acknowledgedBrief: true };
       }
 
@@ -1386,7 +1386,7 @@ function createHandoffDestinationLauncher(params: {
         // Pipeline-handoff destination is spawned by the source session.
         spawnedBySessionId: input.request.source.sessionId,
       });
-      params.watchCwd(session.cwd);
+      params.watchSessionCwd(session.id, session.cwd);
       return { ok: true, session, acknowledgedBrief: true };
     } catch (err) {
       return {
@@ -1985,6 +1985,8 @@ async function main(): Promise<void> {
   const hubNodeLinks = createHubNodeLinkManager({
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,
     ptyInputRecorder: sessions.recordRoutedPtyInput,
+    releaseRoutedPtyControlSession:
+      sessions.releaseRoutedPtyControlSession,
   });
   const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
   const credentialRotationScheduler = startCredentialRotationScheduler({
@@ -3060,6 +3062,10 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       renewLocalSession: localRelayNode.sessions.renew,
+      releaseRoutedPtyControlSession:
+        sessions.releaseRoutedPtyControlSession,
+      releaseRoutedPtyControlSessionsForNode:
+        sessions.releaseRoutedPtyControlSessionsForNode,
       workContextStore,
       readModelCache: remoteSessionReadModelCache,
       sourceDiagnostics: {
@@ -3602,21 +3608,12 @@ async function main(): Promise<void> {
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
 
-  // gitWatcher lifecycle: `gitWatcher.watch(cwd)` is refcounted per session at
-  // each session-create site; `gitWatcher.unwatch(cwd)` must be called once per
-  // matching teardown. It is wired to the explicit teardown paths — DELETE
-  // /sessions/:id and the DELETE /worktrees force-kill loop (#1244). A session
-  // that exits on its own (PTY dies without an explicit DELETE) is NOT unwatched
-  // here: a central sessions.onSessionEnd → unwatch is deliberately avoided
-  // because PTY sessions fire session-end twice on explicit kill (kill() +
-  // pty-exit cleanup), which would over-decrement the refcount and close a
-  // watcher another session at the same cwd still needs. The residual leak is
-  // now bounded — post-#1249/#1251 the GitWatcher maintains its own recursion and
-  // attaches one non-recursive fs.watch per non-ignored directory at every depth,
-  // pruning IGNORED_DIRS (node_modules/.git/.worktrees/…) at each level and
-  // capping total watches — so it can no longer wedge the event loop.
-  // Follow-up: single-fire session-end + central unwatch (tracked in #1244).
+  // GitWatcher owns one refcounted cwd watch per session id. Central session-end
+  // cleanup is safe even though PTY explicit kill can fire session-end twice:
+  // unwatchSession(id) consumes that session's ownership once and subsequent
+  // notifications are no-ops, without decrementing another session at the cwd.
   const gitWatcher = new GitWatcher();
+  sessions.onSessionEnd((sessionId) => gitWatcher.unwatchSession(sessionId));
 
   const server = http.createServer(app);
   const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(
@@ -3941,7 +3938,8 @@ async function main(): Promise<void> {
         startupConfig,
         configDir,
         getConfig,
-        watchCwd: (cwd) => gitWatcher.watch(cwd),
+        watchSessionCwd: (sessionId, cwd) =>
+          gitWatcher.watchSession(sessionId, cwd),
       }),
     })
   );
@@ -4393,7 +4391,7 @@ async function main(): Promise<void> {
   // Periodic rate limit snapshot recording (every 5 minutes)
   let lastRateLimitSnapshot = 0;
   const RATE_LIMIT_SNAPSHOT_INTERVAL = 5 * 60 * 1000;
-  setInterval(() => {
+  const rateLimitSnapshotTimer = setInterval(() => {
     const now = Date.now();
     if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
     const account = Object.values(getAccountTelemetry())
@@ -4413,9 +4411,10 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     });
   }, 60_000);
+  rateLimitSnapshotTimer.unref();
 
   // Schedule daily retention cleanup
-  setInterval(
+  const retentionCleanupTimer = setInterval(
     () => {
       try {
         runRetentionCleanup();
@@ -4425,6 +4424,7 @@ async function main(): Promise<void> {
     },
     24 * 60 * 60 * 1000
   );
+  retentionCleanupTimer.unref();
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});
@@ -5628,10 +5628,6 @@ async function main(): Promise<void> {
     // Force: kill active sessions in this worktree first
     if (force) {
       for (const sessionId of worktreeSessions) {
-        // Capture cwd before kill so we can release the git watcher. #1244:
-        // this teardown path previously killed sessions without unwatching,
-        // leaking a working-tree watcher per force-deleted worktree.
-        const killedCwd = localRelayNode.sessions.get(sessionId)?.cwd;
         try {
           localRelayNode.sessions.kill(sessionId);
         } catch (err) {
@@ -5640,7 +5636,6 @@ async function main(): Promise<void> {
             err instanceof Error ? err.message : err
           );
         }
-        if (killedCwd) gitWatcher.unwatch(killedCwd);
       }
     }
 
@@ -5861,7 +5856,7 @@ async function main(): Promise<void> {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
         return;
       }
-      gitWatcher.watch(session.cwd);
+      gitWatcher.watchSession(session.id, session.cwd);
       const associationError = associateSessionWithWorkContext(
         workContextStore,
         workContextId,
@@ -5975,7 +5970,7 @@ async function main(): Promise<void> {
             initialPrompt: computedInitialPrompt,
           }),
         });
-        gitWatcher.watch(session.cwd);
+        gitWatcher.watchSession(session.id, session.cwd);
         const associationError = associateSessionWithWorkContext(
           workContextStore,
           workContextId,
@@ -6047,7 +6042,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    gitWatcher.watch(session.cwd);
+    gitWatcher.watchSession(session.id, session.cwd);
 
     if (ticketContext) {
       transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
@@ -6079,10 +6074,8 @@ async function main(): Promise<void> {
     }
     const id = req.params['id'] as string;
     try {
-      const sessionToDelete = localRelayNode.sessions.get(id);
       localRelayNode.sessions.kill(id);
       push.removeSession(id);
-      if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
       res.json({ ok: true, id, sessionId: id, killed: true });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
@@ -6364,7 +6357,11 @@ async function main(): Promise<void> {
 
   // Clean expired browser content tokens every hour
   const BROWSER_TOKEN_TTL = 24 * 60 * 60 * 1000;
-  setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);
+  const browserTokenCleanupTimer = setInterval(
+    () => cleanExpiredTokens(BROWSER_TOKEN_TTL),
+    60 * 60 * 1000
+  );
+  browserTokenCleanupTimer.unref();
 
   const devInstance =
     process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
@@ -6383,6 +6380,9 @@ async function main(): Promise<void> {
     branchWatcher.close();
     refWatcher.close();
     gitWatcher.close();
+    clearInterval(rateLimitSnapshotTimer);
+    clearInterval(retentionCleanupTimer);
+    clearInterval(browserTokenCleanupTimer);
     server.close();
     credentialRotationScheduler?.stop();
     await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
@@ -6462,7 +6462,7 @@ async function main(): Promise<void> {
           `Restored ${restoredCount} session(s) from previous update.`
         );
         for (const session of localRelayNode.sessions.list()) {
-          gitWatcher.watch(session.cwd);
+          gitWatcher.watchSession(session.id, session.cwd);
         }
       },
       failed: (err) => {

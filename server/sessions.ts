@@ -1422,6 +1422,25 @@ function recordRoutedPtyInput(input: {
   recordHumanPtyInput(session, input.data, controlEngineOptions());
 }
 
+function releaseRoutedPtyControlSession(
+  nodeId: string,
+  sessionId: string
+): boolean {
+  return routedPtyControlSessions.delete(
+    createGlobalSessionId(nodeId, sessionId)
+  );
+}
+
+function releaseRoutedPtyControlSessionsForNode(nodeId: string): number {
+  let released = 0;
+  for (const [globalSessionId, session] of routedPtyControlSessions) {
+    if (session.nodeId !== nodeId) continue;
+    routedPtyControlSessions.delete(globalSessionId);
+    released++;
+  }
+  return released;
+}
+
 function controlAction(
   id: string,
   action: ControlModeAction
@@ -2846,6 +2865,8 @@ export {
   write,
   supervisorWrite,
   recordRoutedPtyInput,
+  releaseRoutedPtyControlSession,
+  releaseRoutedPtyControlSessionsForNode,
   controlAction,
   acknowledgeInterventions,
   handBackToAgent,

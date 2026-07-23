@@ -259,9 +259,15 @@ export type HubNodePtyInputRecorder = (input: {
   data: string;
 }) => void;
 
+export type HubNodePtyControlSessionReleaser = (
+  nodeId: string,
+  sessionId: string
+) => void;
+
 export interface HubNodeLinkManagerOptions {
   inventoryValidator?: HubNodeLinkInventoryValidator;
   ptyInputRecorder?: HubNodePtyInputRecorder;
+  releaseRoutedPtyControlSession?: HubNodePtyControlSessionReleaser;
 }
 
 export class HubNodeLinkManager {
@@ -272,6 +278,7 @@ export class HubNodeLinkManager {
   private readonly eventHandlers = new Set<NodeEventHandler>();
   private readonly inventoryValidator?: HubNodeLinkInventoryValidator;
   private readonly ptyInputRecorder?: HubNodePtyInputRecorder;
+  private readonly releaseRoutedPtyControlSession?: HubNodePtyControlSessionReleaser;
 
   constructor(options: HubNodeLinkManagerOptions = {}) {
     if (options.inventoryValidator) {
@@ -279,6 +286,10 @@ export class HubNodeLinkManager {
     }
     if (options.ptyInputRecorder) {
       this.ptyInputRecorder = options.ptyInputRecorder;
+    }
+    if (options.releaseRoutedPtyControlSession) {
+      this.releaseRoutedPtyControlSession =
+        options.releaseRoutedPtyControlSession;
     }
   }
 
@@ -609,6 +620,10 @@ export class HubNodeLinkManager {
     }
     if (message.type === 'pty.exit') {
       this.ptyStreams.delete(message.streamId!);
+      this.releaseRoutedPtyControlSession?.(
+        stream.nodeId,
+        stream.sessionId
+      );
       if (browserWs.readyState === browserWs.OPEN) browserWs.close(1000);
       return true;
     }
@@ -655,6 +670,10 @@ export class HubNodeLinkManager {
     for (const [streamId, stream] of Array.from(this.ptyStreams)) {
       if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;
       this.ptyStreams.delete(streamId);
+      // An ungraceful link drop is terminal for the stream — release the routed
+      // control-session entry too, so it doesn't leak until an explicit node
+      // revoke (#1244 item 3 review). Idempotent; a same-id reconnect recreates.
+      this.releaseRoutedPtyControlSession?.(stream.nodeId, stream.sessionId);
       if (stream.browserWs.readyState === stream.browserWs.OPEN) {
         stream.browserWs.close(1011, 'node link closed');
       }
