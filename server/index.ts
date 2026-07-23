@@ -3331,6 +3331,18 @@ async function main(): Promise<void> {
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
 
+  // gitWatcher lifecycle: `gitWatcher.watch(cwd)` is refcounted per session at
+  // each session-create site; `gitWatcher.unwatch(cwd)` must be called once per
+  // matching teardown. It is wired to the explicit teardown paths — DELETE
+  // /sessions/:id and the DELETE /worktrees force-kill loop (#1244). A session
+  // that exits on its own (PTY dies without an explicit DELETE) is NOT unwatched
+  // here: a central sessions.onSessionEnd → unwatch is deliberately avoided
+  // because PTY sessions fire session-end twice on explicit kill (kill() +
+  // pty-exit cleanup), which would over-decrement the refcount and close a
+  // watcher another session at the same cwd still needs. The residual leak is
+  // now bounded — post-#1249 a watcher only covers non-ignored top-level source
+  // dirs, never node_modules — so it can no longer wedge the event loop.
+  // Follow-up: single-fire session-end + central unwatch (tracked in #1244).
   const gitWatcher = new GitWatcher();
 
   const server = http.createServer(app);
@@ -5343,6 +5355,10 @@ async function main(): Promise<void> {
     // Force: kill active sessions in this worktree first
     if (force) {
       for (const sessionId of worktreeSessions) {
+        // Capture cwd before kill so we can release the git watcher. #1244:
+        // this teardown path previously killed sessions without unwatching,
+        // leaking a working-tree watcher per force-deleted worktree.
+        const killedCwd = localRelayNode.sessions.get(sessionId)?.cwd;
         try {
           localRelayNode.sessions.kill(sessionId);
         } catch (err) {
@@ -5351,6 +5367,7 @@ async function main(): Promise<void> {
             err instanceof Error ? err.message : err
           );
         }
+        if (killedCwd) gitWatcher.unwatch(killedCwd);
       }
     }
 
