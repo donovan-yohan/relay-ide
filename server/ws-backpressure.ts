@@ -141,16 +141,24 @@ export type DeltaLaneResult =
 
 /**
  * Deliver one replayable delta to a subscriber that heals via re-sync:
- *  - `bufferedAmount > hard` → close 4409 (`'closed'`); handler splices.
- *  - draining below the low watermark after lagging → clear lagging and send the
- *    `resync` frame ONLY (`'resync'`). `serializeResync` is a full snapshot of the
- *    already-applied session state (agent patches are applied to session state
- *    BEFORE this forwarder runs — see `handleAgentPatchV2`), so it already
- *    reflects this delta; sending the delta too would double-apply it client-side.
- *  - `bufferedAmount > soft` → mark lagging, shed the delta (`'dropped'`).
+ *  - `bufferedAmount > hard` → close 4409 (`'closed'`); handler splices. Checked
+ *    FIRST so a client stuck lagging (never drains below low) is still closed if
+ *    its queue ever crosses the hard cap.
+ *  - LAGGING (a prior delta was shed) is a healing window: mirror channel-hub's
+ *    `if (lagging) return` and SUPPRESS every subsequent raw delta (`'dropped'`)
+ *    until the queue drains, so the client never applies a patch OVER the un-healed
+ *    gap (#1250). Draining below the low watermark clears lagging and sends the
+ *    `resync` snapshot ONLY (`'resync'`) — exactly once, no flapping. The snapshot
+ *    is a full view of the already-applied session state (agent patches are applied
+ *    to session state BEFORE this forwarder runs — see `handleAgentPatchV2`), so it
+ *    already reflects every shed delta; sending a delta too would double-apply it.
+ *  - `bufferedAmount > soft` (not yet lagging) → mark lagging, shed the delta
+ *    (`'dropped'`).
  *  - otherwise send the delta (`'sent'`).
  *
  * A healthy client (low `bufferedAmount`) never lags, never drops, never re-syncs.
+ * While lagging the send queue does NOT grow: every path returns without sending
+ * except the single bounded resync snapshot on drain.
  */
 export function deliverDelta(
   ws: BackpressureSocket,
@@ -168,15 +176,20 @@ export function deliverDelta(
     }
     return 'closed';
   }
-  if (state.lagging && buffered < WS_LOW_LIMIT_BYTES) {
-    // Recovered: the snapshot supersedes every shed delta (including this one).
-    state.lagging = false;
-    try {
-      ws.send(serializeResync());
-    } catch {
-      return 'not-open';
+  if (state.lagging) {
+    if (buffered < WS_LOW_LIMIT_BYTES) {
+      // Recovered: the snapshot supersedes every shed delta (including this one).
+      state.lagging = false;
+      try {
+        ws.send(serializeResync());
+      } catch {
+        return 'not-open';
+      }
+      return 'resync';
     }
-    return 'resync';
+    // Still healing in the [low, soft] band — suppress the raw delta rather than
+    // let the client apply it over the un-healed gap (the missing #1250 guard).
+    return 'dropped';
   }
   if (buffered > WS_SOFT_LIMIT_BYTES) {
     state.lagging = true;
@@ -184,6 +197,100 @@ export function deliverDelta(
   }
   try {
     ws.send(serializeDelta());
+  } catch {
+    return 'not-open';
+  }
+  return 'sent';
+}
+
+/**
+ * Per-subscriber gap-heal state for the terminal `data` lane (#1250). Mirrors the
+ * agent `DeltaLaneState` but also remembers WHERE the shed gap starts so the drain
+ * resync can replay exactly the missed contiguous byte range from server
+ * scrollback instead of silently advancing the client past it.
+ */
+export interface TerminalLaneState {
+  lagging: boolean;
+  /**
+   * Byte cursor at the START of the first shed frame == the client's current
+   * cursor (everything before it was delivered contiguously). The resync replays
+   * from here so the client's cursor only ever advances over bytes it receives.
+   */
+  gapStartCursor: number;
+}
+
+export type TerminalLaneResult =
+  | 'sent'
+  | 'dropped'
+  | 'suppressed'
+  | 'resync'
+  | 'closed'
+  | 'not-open';
+
+/**
+ * Deliver one terminal-stream envelope to a subscriber with a gap-heal mirroring
+ * the agent delta lane, closing the #1250 silent-output-loss finding. Before this
+ * fix a shed `data` envelope emitted nothing while the NEXT (coarse or drained)
+ * envelope advanced the client's `Math.max` cursor PAST the shed range, so a
+ * `?cursor=` reconnect never re-fetched it (permanent gap; a split ANSI escape
+ * corrupts the xterm parser).
+ *
+ *  - `bufferedAmount > hard` → close 4409 (`'closed'`); the close handler splices.
+ *  - LAGGING + drained below LOW → RESYNC: replay the contiguous missed byte range
+ *    from `gapStartCursor` (server scrollback) so the client's cursor advances only
+ *    over bytes it actually receives, then clear lagging (`'resync'`). If scrollback
+ *    FIFO-trimmed part of the gap, the replay builder starts at the earliest still
+ *    resident cursor and includes a `lag` marker for the unavoidable truncation.
+ *  - LAGGING + still above LOW → SUPPRESS every envelope (`'suppressed'`). Coarse
+ *    envelopes (metadata/resize/replay) carry a cursor too; sending one would let
+ *    the client's cursor jump PAST the un-replayed gap, so they are held and folded
+ *    into the resync replay (whose metadata carries the latest resize).
+ *  - a `droppable` `data` delta above SOFT (not yet lagging) → shed it, record the
+ *    gap start, enter lagging (`'dropped'`). The shed bytes stay in scrollback for
+ *    the resync — nothing is sent, so the send queue does not grow.
+ *  - otherwise send the envelope (`'sent'`).
+ *
+ * A healthy client (low `bufferedAmount`) never lags: every frame is sent in order.
+ * While lagging the send queue does NOT grow — every path returns without sending
+ * except the single bounded resync replay on drain (≤ scrollback capacity).
+ */
+export function deliverTerminalEnvelope(
+  ws: BackpressureSocket,
+  state: TerminalLaneState,
+  frame: { droppable: boolean; gapStart: number; serialize: () => string },
+  serializeResync: (gapStartCursor: number) => Iterable<string>
+): TerminalLaneResult {
+  if (ws.readyState !== WS_OPEN) return 'not-open';
+  const buffered = bufferedAmountOf(ws);
+  if (buffered > WS_HARD_LIMIT_BYTES) {
+    try {
+      ws.close(WS_BACKPRESSURE_CLOSE_CODE);
+    } catch {
+      /* ignore */
+    }
+    return 'closed';
+  }
+  if (state.lagging) {
+    if (buffered < WS_LOW_LIMIT_BYTES) {
+      state.lagging = false;
+      try {
+        for (const framePayload of serializeResync(state.gapStartCursor)) {
+          ws.send(framePayload);
+        }
+      } catch {
+        return 'not-open';
+      }
+      return 'resync';
+    }
+    return 'suppressed';
+  }
+  if (buffered > WS_SOFT_LIMIT_BYTES && frame.droppable) {
+    state.lagging = true;
+    state.gapStartCursor = frame.gapStart;
+    return 'dropped';
+  }
+  try {
+    ws.send(frame.serialize());
   } catch {
     return 'not-open';
   }

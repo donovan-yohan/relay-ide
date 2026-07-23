@@ -5,6 +5,7 @@ import {
   bufferedAmountOf,
   createWsHeartbeatMonitor,
   deliverDelta,
+  deliverTerminalEnvelope,
   sendWithBackpressure,
   WS_BACKPRESSURE_CLOSE_CODE,
   WS_HARD_LIMIT_BYTES,
@@ -13,12 +14,15 @@ import {
   type BackpressureSocket,
   type DeltaLaneState,
   type HeartbeatSocket,
+  type TerminalLaneState,
 } from '../server/ws-backpressure.js';
 import { sendTerminalStreamEnvelope } from '../server/ws.js';
 import {
   appendTerminalStreamData,
+  buildTerminalStreamReplay,
   createTerminalStreamState,
   type TerminalStreamEnvelope,
+  type TerminalStreamState,
 } from '../shared/session-replay.js';
 
 // #1249: these tests ARE the off-heap leak confirmation. The pre-fix fan-out
@@ -281,6 +285,268 @@ describe('#1249 deliverDelta — agent web-session patch lane', () => {
       );
     }
     expect(ws.bufferedAmount).toBeLessThan(WS_HARD_LIMIT_BYTES);
+  });
+});
+
+// #1250 FIX 2: `deliverDelta` was missing channel-hub's `if (lagging) return`
+// guard. After a patch was shed and BEFORE the drain snapshot healed the gap (the
+// [low, soft] band) it kept sending RAW patches, which the client applied over the
+// gap → inconsistent view. The lane must SUPPRESS every raw delta while lagging and
+// heal with exactly one resync snapshot on drain.
+describe('#1250 deliverDelta — suppress raw patches while lagging (no agent desync)', () => {
+  it('SUPPRESSES a raw patch while lagging in the [low, soft] band (does not apply over the gap)', () => {
+    const ws = fakeSocket({
+      bufferedAmount: Math.floor(
+        (WS_LOW_LIMIT_BYTES + WS_SOFT_LIMIT_BYTES) / 2
+      ),
+    });
+    const state: DeltaLaneState = { lagging: true };
+    const result = deliverDelta(
+      ws,
+      state,
+      () => 'patch',
+      () => 'snapshot'
+    );
+    // Pre-fix this returned 'sent' and applied the patch over the un-healed gap.
+    expect(result).toBe('dropped');
+    expect(state.lagging).toBe(true);
+    expect(ws.sent).toHaveLength(0);
+  });
+
+  it('still closes 4409 at the hard cap WHILE lagging (a client that never drains is not stuck forever)', () => {
+    const ws = fakeSocket({ bufferedAmount: WS_HARD_LIMIT_BYTES + 1 });
+    const state: DeltaLaneState = { lagging: true };
+    expect(
+      deliverDelta(
+        ws,
+        state,
+        () => 'patch',
+        () => 'snapshot'
+      )
+    ).toBe('closed');
+    expect(ws.closedWith).toBe(WS_BACKPRESSURE_CLOSE_CODE);
+  });
+
+  it('NO DESYNC end-to-end: healthy → shed → suppress → drain → ONE snapshot; client state == server state', () => {
+    const ws = fakeSocket();
+    const state: DeltaLaneState = { lagging: false };
+    // Model the forwarder: a patch is applied to session state BEFORE deliverDelta
+    // runs (handleAgentPatchV2), so the resync snapshot always reflects it.
+    let serverN = 0;
+    const apply = () => {
+      serverN += 1;
+    };
+    const delta = () => `patch:${serverN}`;
+    const snapshot = () => `snap:${serverN}`;
+
+    // Healthy: every patch is delivered in order.
+    ws.bufferedAmount = 0;
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('sent'); // p1
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('sent'); // p2
+    expect(ws.sent).toEqual(['patch:1', 'patch:2']);
+
+    // Stall above soft: the next patch is shed and the lane enters lagging.
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES + 1;
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('dropped'); // p3 shed
+    expect(state.lagging).toBe(true);
+
+    // Still lagging in the [low, soft] band: subsequent patches are SUPPRESSED —
+    // NOT sent — so the client never applies a patch over the un-healed gap.
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES - 1;
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('dropped'); // p4 suppressed
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('dropped'); // p5 suppressed
+    expect(ws.sent).toEqual(['patch:1', 'patch:2']); // no raw patch sent while lagging
+
+    // Drain below low: exactly ONE resync snapshot reflecting ALL applied patches.
+    ws.bufferedAmount = WS_LOW_LIMIT_BYTES - 1;
+    apply();
+    expect(deliverDelta(ws, state, delta, snapshot)).toBe('resync'); // p6
+    expect(state.lagging).toBe(false);
+    expect(ws.sent).toEqual(['patch:1', 'patch:2', 'snap:6']);
+
+    // A client applying the received messages in order ends at the server state —
+    // no desync, no double-apply (the snapshot supersedes the shed patches).
+    let clientN = 0;
+    for (const raw of ws.sent) {
+      const [, n] = raw.split(':');
+      clientN = Number(n);
+    }
+    expect(clientN).toBe(serverN); // 6
+  });
+});
+
+// #1250 FIX 1: a shed terminal `data` envelope emitted nothing while the next
+// (coarse or drained) envelope advanced the client's `Math.max` cursor PAST the
+// shed range, so a `?cursor=` reconnect skipped it — silent, permanent output loss
+// (and a split ANSI escape corrupts the xterm parser). The terminal lane now heals
+// like the agent lane: suppress while lagging, replay the missed byte range from
+// scrollback on drain, and never advance the client cursor past un-delivered bytes.
+function terminalSubscriber(
+  ws: FakeSocket,
+  lane: TerminalLaneState,
+  stream: TerminalStreamState
+): (envelope: TerminalStreamEnvelope) => void {
+  return (envelope) => {
+    deliverTerminalEnvelope(
+      ws,
+      lane,
+      {
+        droppable: envelope.kind === 'data',
+        gapStart:
+          envelope.kind === 'data'
+            ? envelope.payload.range.start
+            : envelope.cursor,
+        serialize: () => JSON.stringify(envelope),
+      },
+      (gapStartCursor) =>
+        buildTerminalStreamReplay(stream, gapStartCursor).map((env) =>
+          JSON.stringify(env)
+        )
+    );
+  };
+}
+
+/**
+ * Reconstruct what the browser client would render from the frames actually put on
+ * the wire, applying the exact client logic (`terminalStreamCursor = Math.max(...)`
+ * + `data` payload concatenation). `sawGap` is the no-silent-gap invariant: for a
+ * stream that starts at cursor 0 with no FIFO truncation, the cursor must never
+ * exceed the number of contiguous bytes the client has actually received.
+ */
+function reconstructClient(sent: string[]): {
+  cursor: number;
+  data: string;
+  sawGap: boolean;
+  lagSeen: boolean;
+} {
+  let cursor = 0;
+  let data = '';
+  let sawGap = false;
+  let lagSeen = false;
+  for (const raw of sent) {
+    const env = JSON.parse(raw) as TerminalStreamEnvelope;
+    cursor = Math.max(cursor, env.cursor);
+    if (env.kind === 'data') data += env.payload.data;
+    if (env.kind === 'lag') lagSeen = true;
+    if (cursor > data.length) sawGap = true;
+  }
+  return { cursor, data, sawGap, lagSeen };
+}
+
+describe('#1250 deliverTerminalEnvelope — terminal gap-heal (no silent output loss)', () => {
+  it('NO SILENT GAP: a lagging client that drains RECEIVES the missed byte range via resync (contiguous; cursor never jumps past delivered data)', () => {
+    const stream = createTerminalStreamState({
+      sessionId: 'sess-1',
+      capacityBytes: 1_000_000,
+    });
+    const ws = fakeSocket();
+    const lane: TerminalLaneState = { lagging: false, gapStartCursor: 0 };
+    const deliver = terminalSubscriber(ws, lane, stream);
+    const emit = (text: string) =>
+      deliver(appendTerminalStreamData(stream, text));
+
+    // Healthy: delivered.
+    ws.bufferedAmount = 0;
+    emit('AAAA'); // [0,4)
+    expect(lane.lagging).toBe(false);
+
+    // Stall above soft → next data shed; gap starts at the client cursor (4).
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES + 1;
+    emit('BBBB'); // [4,8) shed
+    expect(lane.lagging).toBe(true);
+    expect(lane.gapStartCursor).toBe(4);
+
+    // Still lagging in [low, soft]: further data suppressed — NOT sent.
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES - 1;
+    emit('CCCC'); // [8,12) suppressed
+    emit('DDDD'); // [12,16) suppressed
+
+    // Drain below low → resync replays [4,20) contiguously from scrollback.
+    ws.bufferedAmount = WS_LOW_LIMIT_BYTES - 1;
+    emit('EEEE'); // [16,20) triggers resync
+    expect(lane.lagging).toBe(false);
+
+    const client = reconstructClient(ws.sent);
+    expect(client.data).toBe('AAAABBBBCCCCDDDDEEEE'); // full output, no gap
+    expect(client.cursor).toBe(stream.cursor); // caught up to head (20)
+    expect(client.sawGap).toBe(false); // cursor never advanced past delivered bytes
+  });
+
+  it('HEALTHY CLIENT: a fast-draining terminal socket receives every data frame in order, never lags', () => {
+    const stream = createTerminalStreamState({
+      sessionId: 'sess-1',
+      capacityBytes: 1_000_000,
+    });
+    const ws = fakeSocket(); // bufferedAmount stays 0
+    const lane: TerminalLaneState = { lagging: false, gapStartCursor: 0 };
+    const deliver = terminalSubscriber(ws, lane, stream);
+    let expected = '';
+    for (let i = 0; i < 200; i += 1) {
+      const text = `f${i};`;
+      expected += text;
+      deliver(appendTerminalStreamData(stream, text));
+    }
+    expect(lane.lagging).toBe(false);
+    const client = reconstructClient(ws.sent);
+    expect(client.data).toBe(expected);
+    expect(client.cursor).toBe(stream.cursor);
+    expect(client.sawGap).toBe(false);
+    expect(ws.closedWith).toBeNull();
+  });
+
+  it('UNAVOIDABLE TRUNCATION: when scrollback FIFO-trimmed the gap, resync starts at the oldest resident cursor and marks the loss with a `lag` envelope', () => {
+    const stream = createTerminalStreamState({
+      sessionId: 'sess-1',
+      capacityBytes: 1024,
+    });
+    const ws = fakeSocket();
+    const lane: TerminalLaneState = { lagging: false, gapStartCursor: 0 };
+    const deliver = terminalSubscriber(ws, lane, stream);
+
+    ws.bufferedAmount = 0;
+    deliver(appendTerminalStreamData(stream, 'A'.repeat(100))); // [0,100)
+
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES + 1;
+    deliver(appendTerminalStreamData(stream, 'B'.repeat(100))); // [100,200) shed
+    expect(lane.gapStartCursor).toBe(100);
+
+    // Produce enough while lagging to FIFO-trim past the gap start.
+    ws.bufferedAmount = WS_SOFT_LIMIT_BYTES - 1;
+    for (let i = 0; i < 30; i += 1) {
+      deliver(appendTerminalStreamData(stream, 'C'.repeat(100)));
+    }
+    expect(stream.oldestCursor).toBeGreaterThan(100); // gap start trimmed away
+
+    // Drain → resync from gapStart=100 clamps to oldestCursor and emits a lag.
+    ws.bufferedAmount = WS_LOW_LIMIT_BYTES - 1;
+    deliver(appendTerminalStreamData(stream, 'D'.repeat(10)));
+    expect(lane.lagging).toBe(false);
+
+    const client = reconstructClient(ws.sent);
+    expect(client.lagSeen).toBe(true); // truncation surfaced, not hidden
+    expect(client.cursor).toBe(stream.cursor); // client still catches up to head
+  });
+
+  it('BOUNDED GROWTH: a stalled terminal subscriber sheds then suppresses — queue stays bounded, socket not closed', () => {
+    const stream = createTerminalStreamState({
+      sessionId: 'sess-1',
+      capacityBytes: 256 * 1024,
+    });
+    const ws = fakeSocket({ stalled: true });
+    const lane: TerminalLaneState = { lagging: false, gapStartCursor: 0 };
+    const deliver = terminalSubscriber(ws, lane, stream);
+    for (let i = 0; i < 20_000; i += 1) {
+      deliver(appendTerminalStreamData(stream, 'x'.repeat(1024)));
+    }
+    expect(ws.queuedBytes).toBeLessThan(WS_HARD_LIMIT_BYTES);
+    expect(ws.bufferedAmount).toBeLessThanOrEqual(WS_SOFT_LIMIT_BYTES + 4096);
+    expect(lane.lagging).toBe(true); // never drained below low → still healing
+    expect(ws.closedWith).toBeNull(); // shed/suppressed, not closed — no churn
   });
 });
 

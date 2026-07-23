@@ -60,8 +60,10 @@ import { isWorkspaceTopicId } from '../shared/workspace-topics.js';
 import {
   createWsHeartbeatMonitor,
   deliverDelta,
+  deliverTerminalEnvelope,
   sendWithBackpressure,
   type DeltaLaneState,
+  type TerminalLaneState,
 } from './ws-backpressure.js';
 
 const logger = createLogger('ws');
@@ -1002,11 +1004,41 @@ function setupWebSocket(
         resizeOwner: 'active' as const,
       };
       const terminalStream = ensureTerminalStreamState(session);
+      // #1250: per-subscriber gap-heal state for the terminal `data` lane. A shed
+      // `data` envelope must NOT let the client's cursor advance past the gap
+      // (that made a `?cursor=` reconnect skip the shed range — silent, permanent
+      // output loss + split-escape xterm corruption). While lagging every envelope
+      // is suppressed; a drain below the low watermark replays the missed byte
+      // range from server scrollback so the client's cursor only advances over
+      // bytes it actually receives. Mirrors the agent `deliverDelta` lane.
+      const terminalLane: TerminalLaneState = {
+        lagging: false,
+        gapStartCursor: 0,
+      };
       const terminalStreamSubscriber = (envelope: TerminalStreamEnvelope) => {
-        sendTerminalStreamEnvelope(ws, envelope);
+        deliverTerminalEnvelope(
+          ws,
+          terminalLane,
+          {
+            droppable: envelope.kind === 'data',
+            // Gap starts at the first shed byte == the client's current cursor
+            // for a contiguously delivered `data` stream.
+            gapStart:
+              envelope.kind === 'data'
+                ? envelope.payload.range.start
+                : envelope.cursor,
+            serialize: () => JSON.stringify(envelope),
+          },
+          (gapStartCursor) =>
+            buildTerminalStreamReplay(terminalStream, gapStartCursor).map(
+              (env) => JSON.stringify(env)
+            )
+        );
       };
       session.terminalStreamSubscribers?.push(terminalStreamSubscriber);
 
+      // Connect-time replay is bounded by scrollback (≤ soft watermark) on a fresh
+      // socket, so it never sheds — send it directly rather than through the lane.
       for (const envelope of buildTerminalStreamReplay(
         terminalStream,
         attachContext.replayCursor
