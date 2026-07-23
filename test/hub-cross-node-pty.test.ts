@@ -240,7 +240,7 @@ class SimulatedNode {
       this.consumedMessageIndexes.add(existingIndex);
       return Promise.resolve(this.messages[existingIndex]!);
     }
-    return new Promise<RelayNodeEnvelope>((resolve, reject) => {
+    const promise = new Promise<RelayNodeEnvelope>((resolve, reject) => {
       const waiter = {
         label,
         predicate,
@@ -254,6 +254,13 @@ class SimulatedNode {
       waiter.timer.unref?.();
       this.waiters.push(waiter);
     });
+    // Safety net: when the node link closes after the test has stopped awaiting
+    // this waiter, rejectWaiters() still rejects it. Without a handler that late
+    // rejection surfaces as an unhandled rejection and trips vitest's exit code
+    // even though every test passed (#1252). Real awaiters still receive the
+    // rejection through their own await.
+    promise.catch(() => {});
+    return promise;
   }
 
   hello(): Promise<RelayNodeEnvelope> {
@@ -345,7 +352,7 @@ class BrowserClient {
   ): Promise<string> {
     const existing = this.messages.find(predicate);
     if (existing !== undefined) return Promise.resolve(existing);
-    return new Promise<string>((resolve, reject) => {
+    const promise = new Promise<string>((resolve, reject) => {
       const waiter = {
         label,
         predicate,
@@ -359,6 +366,10 @@ class BrowserClient {
       waiter.timer.unref?.();
       this.waiters.push(waiter);
     });
+    // Safety net: a late rejection from rejectWaiters() on ws close after the
+    // test stopped awaiting must not surface as an unhandled rejection (#1252).
+    promise.catch(() => {});
+    return promise;
   }
 
   waitForBytes(
@@ -371,7 +382,7 @@ class BrowserClient {
     const existingBytes = receivedBytes();
     if (existingBytes >= expectedBytes) return Promise.resolve(existingBytes);
 
-    return new Promise<number>((resolve, reject) => {
+    const promise = new Promise<number>((resolve, reject) => {
       const waiter = {
         label,
         predicate: () => {
@@ -394,6 +405,9 @@ class BrowserClient {
       waiter.timer.unref?.();
       this.waiters.push(waiter);
     });
+    // Safety net: see waitFor above (#1252).
+    promise.catch(() => {});
+    return promise;
   }
 
   send(data: string): void {

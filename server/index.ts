@@ -3611,8 +3611,10 @@ async function main(): Promise<void> {
   // because PTY sessions fire session-end twice on explicit kill (kill() +
   // pty-exit cleanup), which would over-decrement the refcount and close a
   // watcher another session at the same cwd still needs. The residual leak is
-  // now bounded — post-#1249 a watcher only covers non-ignored top-level source
-  // dirs, never node_modules — so it can no longer wedge the event loop.
+  // now bounded — post-#1249/#1251 the GitWatcher maintains its own recursion and
+  // attaches one non-recursive fs.watch per non-ignored directory at every depth,
+  // pruning IGNORED_DIRS (node_modules/.git/.worktrees/…) at each level and
+  // capping total watches — so it can no longer wedge the event loop.
   // Follow-up: single-fire session-end + central unwatch (tracked in #1244).
   const gitWatcher = new GitWatcher();
 
