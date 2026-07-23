@@ -1320,6 +1320,8 @@ function createHandoffDestinationLauncher(params: {
           sessionLane: undefined,
           workContextId: undefined,
           portVariables,
+          // Pipeline-handoff destination is spawned by the source session.
+          spawnedBySessionId: input.request.source.sessionId,
         });
         localRelayNode.sessions.write(
           session.id,
@@ -1381,6 +1383,8 @@ function createHandoffDestinationLauncher(params: {
         sessionLane: undefined,
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
+        // Pipeline-handoff destination is spawned by the source session.
+        spawnedBySessionId: input.request.source.sessionId,
       });
       params.watchCwd(session.cwd);
       return { ok: true, session, acknowledgedBrief: true };
