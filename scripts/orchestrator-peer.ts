@@ -20,6 +20,7 @@ export interface PeerConfig {
   displayName: string;
   role: string;
   productChannelId: string;
+  implChannelId: string;
   capabilities: string[];
   scope?: unknown;
   renewable: boolean;
@@ -64,10 +65,19 @@ export function buildAckText(message: ChannelMessage): string {
   return `orchestrator online — ack seq ${message.seq} from ${message.sender.id}`;
 }
 
+export function buildInstruction(message: ChannelMessage): string {
+  return `instruction (relayed from product): ${message.body.text}`;
+}
+
+export function buildRollup(message: ChannelMessage): string {
+  return `rollup (from impl): ${message.body.text}`;
+}
+
 export function selectNewMessages(
   messages: ChannelMessage[],
   lastSeq: number,
-  selfSenderId: string
+  selfSenderId: string,
+  buildText: (message: ChannelMessage) => string = buildAckText
 ): MessageSelection {
   const unseen = messages
     .filter((message) => message.seq > lastSeq)
@@ -78,7 +88,7 @@ export function selectNewMessages(
   for (const message of unseen) {
     nextSeq = Math.max(nextSeq, message.seq);
     if (message.sender.id === selfSenderId) continue;
-    acks.push({ seq: message.seq, text: buildAckText(message) });
+    acks.push({ seq: message.seq, text: buildText(message) });
   }
 
   return { acks, nextSeq };
@@ -296,9 +306,11 @@ export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 
 export class OrchestratorPeer {
   private readonly baseUrl: string;
-  private readonly channelPath: string;
+  private readonly productChannelPath: string;
+  private readonly implChannelPath: string;
   private readonly tokenManager: TokenManager;
-  private cursor = 0;
+  private productCursor = 0;
+  private implCursor = 0;
 
   constructor(
     private readonly config: PeerConfig,
@@ -306,18 +318,31 @@ export class OrchestratorPeer {
     now: () => number = Date.now
   ) {
     this.baseUrl = normalizedBaseUrl(config.baseUrl);
-    this.channelPath = `/channels/${encodeURIComponent(config.productChannelId)}`;
+    this.productChannelPath =
+      `/channels/${encodeURIComponent(config.productChannelId)}`;
+    this.implChannelPath =
+      `/channels/${encodeURIComponent(config.implChannelId)}`;
     this.tokenManager = new TokenManager(config, fetchImpl, now);
   }
 
-  get lastSeq(): number {
-    return this.cursor;
+  get productLastSeq(): number {
+    return this.productCursor;
   }
 
-  async pollOnce(): Promise<{ ackCount: number; lastSeq: number }> {
+  get implLastSeq(): number {
+    return this.implCursor;
+  }
+
+  private async relayChannel(
+    sourceChannelPath: string,
+    targetChannelPath: string,
+    cursor: number,
+    buildText: (message: ChannelMessage) => string,
+    relayKind: 'instruction' | 'rollup'
+  ): Promise<MessageSelection> {
     const historyUrl =
-      `${this.baseUrl}${this.channelPath}/messages` +
-      `?afterSeq=${this.cursor}&limit=${HISTORY_LIMIT}`;
+      `${this.baseUrl}${sourceChannelPath}/messages` +
+      `?afterSeq=${cursor}&limit=${HISTORY_LIMIT}`;
     const historyResponse = await this.tokenManager.gatewayFetch(
       historyUrl,
       'channels.history'
@@ -328,13 +353,14 @@ export class OrchestratorPeer {
     const history = parseHistoryResponse(await historyResponse.json());
     const selection = selectNewMessages(
       history.messages,
-      this.cursor,
-      `agent:${this.config.actorId}`
+      cursor,
+      `agent:${this.config.actorId}`,
+      buildText
     );
 
     for (const ack of selection.acks) {
       const postResponse = await this.tokenManager.gatewayFetch(
-        `${this.baseUrl}${this.channelPath}/messages`,
+        `${this.baseUrl}${targetChannelPath}/messages`,
         'channels.post',
         {
           method: 'POST',
@@ -344,14 +370,45 @@ export class OrchestratorPeer {
       );
       if (!postResponse.ok) {
         throw await responseError(
-          `channels.post ack for seq ${ack.seq}`,
+          `channels.post ${relayKind} for seq ${ack.seq}`,
           postResponse
         );
       }
     }
 
-    this.cursor = selection.nextSeq;
-    return { ackCount: selection.acks.length, lastSeq: this.cursor };
+    return selection;
+  }
+
+  async pollOnce(): Promise<{
+    instructionCount: number;
+    rollupCount: number;
+    productLastSeq: number;
+    implLastSeq: number;
+  }> {
+    const productSelection = await this.relayChannel(
+      this.productChannelPath,
+      this.implChannelPath,
+      this.productCursor,
+      buildInstruction,
+      'instruction'
+    );
+    this.productCursor = productSelection.nextSeq;
+
+    const implSelection = await this.relayChannel(
+      this.implChannelPath,
+      this.productChannelPath,
+      this.implCursor,
+      buildRollup,
+      'rollup'
+    );
+    this.implCursor = implSelection.nextSeq;
+
+    return {
+      instructionCount: productSelection.acks.length,
+      rollupCount: implSelection.acks.length,
+      productLastSeq: this.productCursor,
+      implLastSeq: this.implCursor,
+    };
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -383,9 +440,12 @@ export function readPeerConfig(
   const pin = argValue(argv, '--pin') ?? env['RELAY_PEER_PIN'];
   const productChannelId =
     argValue(argv, '--channel') ?? env['RELAY_PEER_CHANNEL_ID'];
-  if (!pin || !productChannelId) {
+  const implChannelId =
+    argValue(argv, '--impl-channel') ??
+    env['RELAY_PEER_IMPL_CHANNEL_ID'];
+  if (!pin || !productChannelId || !implChannelId) {
     throw new Error(
-      'PIN and channel are required via --pin/--channel or RELAY_PEER_PIN/RELAY_PEER_CHANNEL_ID'
+      'PIN, product channel, and impl channel are required via --pin/--channel/--impl-channel or RELAY_PEER_PIN/RELAY_PEER_CHANNEL_ID/RELAY_PEER_IMPL_CHANNEL_ID'
     );
   }
 
@@ -414,6 +474,7 @@ export function readPeerConfig(
       actorId,
     role: env['RELAY_PEER_ROLE'] ?? 'orchestrator',
     productChannelId,
+    implChannelId,
     capabilities:
       capabilities && capabilities.length
         ? capabilities
@@ -436,7 +497,7 @@ export async function main(): Promise<void> {
 
   try {
     console.log(
-      `orchestrator peer ${config.actorId} polling ${config.productChannelId}`
+      `orchestrator peer ${config.actorId} polling ${config.productChannelId} and ${config.implChannelId}`
     );
     await new OrchestratorPeer(config).run(controller.signal);
   } finally {
