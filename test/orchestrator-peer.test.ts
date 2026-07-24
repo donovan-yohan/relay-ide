@@ -7,15 +7,17 @@ import {
   buildAckText,
   buildInstruction,
   buildRollup,
+  buildWorkerMention,
   needsRemint,
   readPeerConfig,
   selectNewMessages,
   type FetchLike,
   type PeerConfig,
 } from '../scripts/orchestrator-peer.js';
-import type {
-  ChannelMessage,
-  ChannelMessageId,
+import {
+  parseMentions,
+  type ChannelMessage,
+  type ChannelMessageId,
 } from '../shared/channel-chat-protocol.js';
 
 const CONFIG: PeerConfig = {
@@ -26,6 +28,7 @@ const CONFIG: PeerConfig = {
   role: 'orchestrator',
   productChannelId: 'topic:general',
   implChannelId: 'topic:implementation',
+  workerFramework: 'codex',
   capabilities: ['session:read', 'context:read', 'context:write'],
   renewable: true,
   pollIntervalMs: 10,
@@ -35,7 +38,8 @@ function message(
   seq: number,
   senderId: string,
   text = 'hello',
-  channelId = CONFIG.productChannelId
+  channelId = CONFIG.productChannelId,
+  status: ChannelMessage['status'] = 'complete'
 ): ChannelMessage {
   return {
     schemaVersion: 1,
@@ -43,7 +47,7 @@ function message(
     channelId,
     seq,
     kind: 'message',
-    status: 'complete',
+    status,
     sender: {
       kind: senderId.startsWith('agent:') ? 'agent' : 'human',
       id: senderId,
@@ -105,6 +109,67 @@ describe('orchestrator peer pure seams', () => {
     );
   });
 
+  it('holds the cursor on a still-streaming message and relays it once complete', () => {
+    // A live worker reply begins as a streaming, empty-bodied message. The peer
+    // must NOT relay it yet, and must NOT advance past it (else the finalized
+    // text is lost) — the failure the 4c live proof surfaced (empty rollup).
+    const streaming = selectNewMessages(
+      [message(2, 'agent:worker', '', CONFIG.implChannelId, 'streaming')],
+      1,
+      'agent:echo-peer'
+    );
+    expect(streaming.acks).toEqual([]);
+    expect(streaming.nextSeq).toBe(1); // cursor held BEFORE the streaming msg
+
+    // Next poll: the same message has finalized → relayed exactly once, advanced.
+    const completed = selectNewMessages(
+      [
+        message(
+          2,
+          'agent:worker',
+          'WORKER_OK',
+          CONFIG.implChannelId,
+          'complete'
+        ),
+      ],
+      1,
+      'agent:echo-peer'
+    );
+    expect(completed.acks).toEqual([
+      { seq: 2, text: 'orchestrator online — ack seq 2 from agent:worker' },
+    ]);
+    expect(completed.nextSeq).toBe(2);
+
+    // A terminal 'failed' reply carries no useful text: advance past, no relay.
+    const failed = selectNewMessages(
+      [message(3, 'agent:worker', '', CONFIG.implChannelId, 'failed')],
+      2,
+      'agent:echo-peer'
+    );
+    expect(failed.acks).toEqual([]);
+    expect(failed.nextSeq).toBe(3);
+
+    // 'truncated' (size-capped but final) IS relayed — it carries real content.
+    const truncated = selectNewMessages(
+      [message(4, 'agent:worker', 'partial reply', CONFIG.implChannelId, 'truncated')],
+      3,
+      'agent:echo-peer'
+    );
+    expect(truncated.acks).toEqual([
+      { seq: 4, text: 'orchestrator online — ack seq 4 from agent:worker' },
+    ]);
+    expect(truncated.nextSeq).toBe(4);
+
+    // A terminal 'interrupted' reply is advanced past without relay (like failed).
+    const interrupted = selectNewMessages(
+      [message(5, 'agent:worker', 'cut off', CONFIG.implChannelId, 'interrupted')],
+      4,
+      'agent:echo-peer'
+    );
+    expect(interrupted.acks).toEqual([]);
+    expect(interrupted.nextSeq).toBe(5);
+  });
+
   it('builds canned instruction and rollup text', () => {
     expect(buildInstruction(message(1, 'human:operator', 'ship it'))).toBe(
       'instruction (relayed from product): ship it'
@@ -114,16 +179,29 @@ describe('orchestrator peer pure seams', () => {
     );
   });
 
-  it('reads both channel ids from args or environment', () => {
+  it('builds a worker mention recognized as the configured framework', () => {
+    const text = buildWorkerMention(
+      'codex',
+      message(1, 'human:operator', 'ship it')
+    );
+
+    expect(parseMentions(text, ['codex'])).toEqual([
+      { raw: '@codex', providerId: 'codex' },
+    ]);
+  });
+
+  it('reads channel ids and worker framework from args or environment', () => {
     const fromEnvironment = readPeerConfig({
       RELAY_PEER_PIN: 'environment-pin',
       RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
       RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
+      RELAY_PEER_WORKER_FRAMEWORK: 'claude',
     });
     expect(fromEnvironment.productChannelId).toBe(
       'topic:product-environment'
     );
     expect(fromEnvironment.implChannelId).toBe('topic:impl-environment');
+    expect(fromEnvironment.workerFramework).toBe('claude');
 
     const fromArgs = readPeerConfig(
       {
@@ -138,11 +216,21 @@ describe('orchestrator peer pure seams', () => {
         'topic:product-argument',
         '--impl-channel',
         'topic:impl-argument',
+        '--worker-framework',
+        'codex-argument',
       ]
     );
     expect(fromArgs.pin).toBe('argument-pin');
     expect(fromArgs.productChannelId).toBe('topic:product-argument');
     expect(fromArgs.implChannelId).toBe('topic:impl-argument');
+    expect(fromArgs.workerFramework).toBe('codex-argument');
+
+    const withDefault = readPeerConfig({
+      RELAY_PEER_PIN: 'environment-pin',
+      RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
+      RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
+    });
+    expect(withDefault.workerFramework).toBe('codex');
   });
 
   it('needsRemint fires inside the refresh window', () => {
@@ -178,7 +266,7 @@ describe('orchestrator peer pure seams', () => {
 });
 
 describe('orchestrator peer gateway cycle', () => {
-  it('relays a product message as one instruction into impl with exact gateway recipe', async () => {
+  it('relays a product message as one worker mention into impl with exact gateway recipe', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
@@ -214,7 +302,7 @@ describe('orchestrator peer gateway cycle', () => {
             message: message(
               1,
               'agent:echo-peer',
-              'instruction (relayed from product): build feature',
+              '@codex build feature',
               CONFIG.implChannelId
             ),
           },
@@ -278,7 +366,7 @@ describe('orchestrator peer gateway cycle', () => {
       new Headers(gatewayCalls[1]?.init.headers).get('content-type')
     ).toBe('application/json');
     expect(JSON.parse(String(gatewayCalls[1]?.init.body))).toEqual({
-      text: 'instruction (relayed from product): build feature',
+      text: '@codex build feature',
     });
     expect(gatewayCalls[2]?.url).toBe(
       'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
@@ -367,7 +455,7 @@ describe('orchestrator peer gateway cycle', () => {
     });
   });
 
-  it('self-skips own posts in both channels without cross-channel ping-pong', async () => {
+  it('self-skips its own worker mention in impl without cross-channel ping-pong', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
@@ -400,7 +488,7 @@ describe('orchestrator peer gateway cycle', () => {
             message(
               7,
               'agent:echo-peer',
-              'own instruction',
+              '@codex build feature',
               CONFIG.implChannelId
             ),
           ],

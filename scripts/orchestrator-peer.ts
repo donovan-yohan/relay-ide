@@ -21,6 +21,7 @@ export interface PeerConfig {
   role: string;
   productChannelId: string;
   implChannelId: string;
+  workerFramework: string;
   capabilities: string[];
   scope?: unknown;
   renewable: boolean;
@@ -69,6 +70,13 @@ export function buildInstruction(message: ChannelMessage): string {
   return `instruction (relayed from product): ${message.body.text}`;
 }
 
+export function buildWorkerMention(
+  framework: string,
+  message: ChannelMessage
+): string {
+  return `@${framework} ${message.body.text}`;
+}
+
 export function buildRollup(message: ChannelMessage): string {
   return `rollup (from impl): ${message.body.text}`;
 }
@@ -86,9 +94,30 @@ export function selectNewMessages(
   const acks: PeerAck[] = [];
 
   for (const message of unseen) {
+    // The peer's own posts are written complete; skip + advance past them.
+    if (message.sender.id === selfSenderId) {
+      nextSeq = Math.max(nextSeq, message.seq);
+      continue;
+    }
+    // A still-streaming message has no finalized text yet (a live worker reply
+    // begins empty and fills in). Relaying it now would carry empty/partial
+    // content AND advance the cursor past it, so the finalized text is never
+    // relayed. HOLD the cursor before it — re-read next poll — so it is relayed
+    // exactly once, when complete. A stale stream is not a permanent hold: the
+    // bridge finalizes an open row (truncated/failed) on turn-complete, error,
+    // idle, or session-end. Caveat: this break blocks any HIGHER-seq message
+    // behind an earlier streaming one. With the current one-worker-per-impl
+    // relay that's a single stream at a time (fine); if a future slice runs
+    // concurrent cross-sender streams in one channel, an earlier open stream can
+    // briefly head-of-line-block a later finished one (bounded, no data loss).
+    if (message.status === 'streaming') break;
     nextSeq = Math.max(nextSeq, message.seq);
-    if (message.sender.id === selfSenderId) continue;
-    acks.push({ seq: message.seq, text: buildText(message) });
+    // Relay only messages that carry final content. 'complete'/'truncated' have
+    // finalized text; 'interrupted'/'failed' are terminal with no useful reply —
+    // advance past them without relaying.
+    if (message.status === 'complete' || message.status === 'truncated') {
+      acks.push({ seq: message.seq, text: buildText(message) });
+    }
   }
 
   return { acks, nextSeq };
@@ -389,7 +418,7 @@ export class OrchestratorPeer {
       this.productChannelPath,
       this.implChannelPath,
       this.productCursor,
-      buildInstruction,
+      (message) => buildWorkerMention(this.config.workerFramework, message),
       'instruction'
     );
     this.productCursor = productSelection.nextSeq;
@@ -475,6 +504,10 @@ export function readPeerConfig(
     role: env['RELAY_PEER_ROLE'] ?? 'orchestrator',
     productChannelId,
     implChannelId,
+    workerFramework:
+      argValue(argv, '--worker-framework') ??
+      env['RELAY_PEER_WORKER_FRAMEWORK'] ??
+      'codex',
     capabilities:
       capabilities && capabilities.length
         ? capabilities
