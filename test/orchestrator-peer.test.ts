@@ -148,6 +148,26 @@ describe('orchestrator peer pure seams', () => {
     );
     expect(failed.acks).toEqual([]);
     expect(failed.nextSeq).toBe(3);
+
+    // 'truncated' (size-capped but final) IS relayed — it carries real content.
+    const truncated = selectNewMessages(
+      [message(4, 'agent:worker', 'partial reply', CONFIG.implChannelId, 'truncated')],
+      3,
+      'agent:echo-peer'
+    );
+    expect(truncated.acks).toEqual([
+      { seq: 4, text: 'orchestrator online — ack seq 4 from agent:worker' },
+    ]);
+    expect(truncated.nextSeq).toBe(4);
+
+    // A terminal 'interrupted' reply is advanced past without relay (like failed).
+    const interrupted = selectNewMessages(
+      [message(5, 'agent:worker', 'cut off', CONFIG.implChannelId, 'interrupted')],
+      4,
+      'agent:echo-peer'
+    );
+    expect(interrupted.acks).toEqual([]);
+    expect(interrupted.nextSeq).toBe(5);
   });
 
   it('builds canned instruction and rollup text', () => {

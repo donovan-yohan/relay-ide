@@ -103,8 +103,13 @@ export function selectNewMessages(
     // begins empty and fills in). Relaying it now would carry empty/partial
     // content AND advance the cursor past it, so the finalized text is never
     // relayed. HOLD the cursor before it — re-read next poll — so it is relayed
-    // exactly once, when complete. Messages finalize in seq order, so an
-    // in-progress message correctly blocks the higher seqs behind it.
+    // exactly once, when complete. A stale stream is not a permanent hold: the
+    // bridge finalizes an open row (truncated/failed) on turn-complete, error,
+    // idle, or session-end. Caveat: this break blocks any HIGHER-seq message
+    // behind an earlier streaming one. With the current one-worker-per-impl
+    // relay that's a single stream at a time (fine); if a future slice runs
+    // concurrent cross-sender streams in one channel, an earlier open stream can
+    // briefly head-of-line-block a later finished one (bounded, no data loss).
     if (message.status === 'streaming') break;
     nextSeq = Math.max(nextSeq, message.seq);
     // Relay only messages that carry final content. 'complete'/'truncated' have
