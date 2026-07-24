@@ -5,7 +5,10 @@ import {
   TokenManager,
   abortableDelay,
   buildAckText,
+  buildInstruction,
+  buildRollup,
   needsRemint,
+  readPeerConfig,
   selectNewMessages,
   type FetchLike,
   type PeerConfig,
@@ -22,6 +25,7 @@ const CONFIG: PeerConfig = {
   displayName: 'Echo Peer',
   role: 'orchestrator',
   productChannelId: 'topic:general',
+  implChannelId: 'topic:implementation',
   capabilities: ['session:read', 'context:read', 'context:write'],
   renewable: true,
   pollIntervalMs: 10,
@@ -30,12 +34,13 @@ const CONFIG: PeerConfig = {
 function message(
   seq: number,
   senderId: string,
-  text = 'hello'
+  text = 'hello',
+  channelId = CONFIG.productChannelId
 ): ChannelMessage {
   return {
     schemaVersion: 1,
     id: `chm:${seq}` as ChannelMessageId,
-    channelId: CONFIG.productChannelId,
+    channelId,
     seq,
     kind: 'message',
     status: 'complete',
@@ -100,6 +105,46 @@ describe('orchestrator peer pure seams', () => {
     );
   });
 
+  it('builds canned instruction and rollup text', () => {
+    expect(buildInstruction(message(1, 'human:operator', 'ship it'))).toBe(
+      'instruction (relayed from product): ship it'
+    );
+    expect(buildRollup(message(2, 'agent:worker', 'done'))).toBe(
+      'rollup (from impl): done'
+    );
+  });
+
+  it('reads both channel ids from args or environment', () => {
+    const fromEnvironment = readPeerConfig({
+      RELAY_PEER_PIN: 'environment-pin',
+      RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
+      RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
+    });
+    expect(fromEnvironment.productChannelId).toBe(
+      'topic:product-environment'
+    );
+    expect(fromEnvironment.implChannelId).toBe('topic:impl-environment');
+
+    const fromArgs = readPeerConfig(
+      {
+        RELAY_PEER_PIN: 'environment-pin',
+        RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
+        RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
+      },
+      [
+        '--pin',
+        'argument-pin',
+        '--channel',
+        'topic:product-argument',
+        '--impl-channel',
+        'topic:impl-argument',
+      ]
+    );
+    expect(fromArgs.pin).toBe('argument-pin');
+    expect(fromArgs.productChannelId).toBe('topic:product-argument');
+    expect(fromArgs.implChannelId).toBe('topic:impl-argument');
+  });
+
   it('needsRemint fires inside the refresh window', () => {
     expect(needsRemint(300_000, 199_999, 2 / 3)).toBe(false);
     expect(needsRemint(300_000, 200_000, 2 / 3)).toBe(true);
@@ -133,7 +178,7 @@ describe('orchestrator peer pure seams', () => {
 });
 
 describe('orchestrator peer gateway cycle', () => {
-  it('runs mint, poll, and one post with exact gateway headers and no self ack', async () => {
+  it('relays a product message as one instruction into impl with exact gateway recipe', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
@@ -147,17 +192,32 @@ describe('orchestrator peer gateway cycle', () => {
       if (url.endsWith('/cli-gateway/actor-credentials')) {
         return minted('relay-sac-v1.first');
       }
-      if (url.includes('?afterSeq=0&limit=100')) {
+      if (
+        url.endsWith(
+          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
+        )
+      ) {
         return jsonResponse({
-          messages: [
-            message(1, 'human:operator'),
-            message(2, 'agent:echo-peer'),
-          ],
+          messages: [message(1, 'human:operator', 'build feature')],
         });
       }
-      if (url.endsWith('/channels/topic%3Ageneral/messages')) {
+      if (
+        url.endsWith(
+          '/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.endsWith('/channels/topic%3Aimplementation/messages')) {
         return jsonResponse(
-          { message: message(3, 'agent:echo-peer') },
+          {
+            message: message(
+              1,
+              'agent:echo-peer',
+              'instruction (relayed from product): build feature',
+              CONFIG.implChannelId
+            ),
+          },
           { status: 201 }
         );
       }
@@ -168,11 +228,13 @@ describe('orchestrator peer gateway cycle', () => {
       Date.parse('2026-07-24T00:00:00.000Z')
     );
     await expect(peer.pollOnce()).resolves.toEqual({
-      ackCount: 1,
-      lastSeq: 2,
+      instructionCount: 1,
+      rollupCount: 0,
+      productLastSeq: 1,
+      implLastSeq: 0,
     });
 
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     const authBody = JSON.parse(String(calls[0]?.init.body)) as unknown;
     expect(authBody).toEqual({ pin: 'test-pin' });
     const mintBody = JSON.parse(String(calls[1]?.init.body)) as Record<
@@ -193,21 +255,245 @@ describe('orchestrator peer gateway cycle', () => {
     );
 
     const gatewayCalls = calls.slice(2);
-    expect(gatewayCalls).toHaveLength(2);
+    expect(gatewayCalls).toHaveLength(3);
     for (const call of gatewayCalls) {
       const headers = new Headers(call.init.headers);
       expect(headers.get('authorization')).toBe('Bearer relay-sac-v1.first');
       expect(headers.get('x-relay-cli-gateway')).toBe('v1');
     }
+    expect(gatewayCalls[0]?.url).toBe(
+      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
+    );
     expect(
       new Headers(gatewayCalls[0]?.init.headers).get('x-relay-cli-command')
     ).toBe('channels.history');
+    expect(gatewayCalls[1]?.url).toBe(
+      'http://relay.test/channels/topic%3Aimplementation/messages'
+    );
+    expect(gatewayCalls[1]?.init.method).toBe('POST');
     expect(
       new Headers(gatewayCalls[1]?.init.headers).get('x-relay-cli-command')
     ).toBe('channels.post');
+    expect(
+      new Headers(gatewayCalls[1]?.init.headers).get('content-type')
+    ).toBe('application/json');
     expect(JSON.parse(String(gatewayCalls[1]?.init.body))).toEqual({
-      text: 'orchestrator online — ack seq 1 from human:operator',
+      text: 'instruction (relayed from product): build feature',
     });
+    expect(gatewayCalls[2]?.url).toBe(
+      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+    );
+    expect(
+      new Headers(gatewayCalls[2]?.init.headers).get('x-relay-cli-command')
+    ).toBe('channels.history');
+  });
+
+  it('relays an impl message as one rollup into product', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
+      const url = input.toString();
+      calls.push({ url, init });
+      if (url.endsWith('/auth')) {
+        return jsonResponse(
+          { ok: true },
+          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
+        );
+      }
+      if (url.endsWith('/cli-gateway/actor-credentials')) {
+        return minted('relay-sac-v1.first');
+      }
+      if (
+        url.endsWith(
+          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({ messages: [] });
+      }
+      if (
+        url.endsWith(
+          '/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({
+          messages: [
+            message(
+              4,
+              'agent:worker',
+              'implementation complete',
+              CONFIG.implChannelId
+            ),
+          ],
+        });
+      }
+      if (url.endsWith('/channels/topic%3Ageneral/messages')) {
+        return jsonResponse(
+          {
+            message: message(
+              1,
+              'agent:echo-peer',
+              'rollup (from impl): implementation complete'
+            ),
+          },
+          { status: 201 }
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
+      Date.parse('2026-07-24T00:00:00.000Z')
+    );
+    await expect(peer.pollOnce()).resolves.toEqual({
+      instructionCount: 0,
+      rollupCount: 1,
+      productLastSeq: 0,
+      implLastSeq: 4,
+    });
+
+    const gatewayCalls = calls.slice(2);
+    expect(gatewayCalls).toHaveLength(3);
+    const post = gatewayCalls[2];
+    expect(post?.url).toBe(
+      'http://relay.test/channels/topic%3Ageneral/messages'
+    );
+    expect(post?.init.method).toBe('POST');
+    const headers = new Headers(post?.init.headers);
+    expect(headers.get('authorization')).toBe('Bearer relay-sac-v1.first');
+    expect(headers.get('x-relay-cli-gateway')).toBe('v1');
+    expect(headers.get('x-relay-cli-command')).toBe('channels.post');
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(JSON.parse(String(post?.init.body))).toEqual({
+      text: 'rollup (from impl): implementation complete',
+    });
+  });
+
+  it('self-skips own posts in both channels without cross-channel ping-pong', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
+      const url = input.toString();
+      calls.push({ url, init });
+      if (url.endsWith('/auth')) {
+        return jsonResponse(
+          { ok: true },
+          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
+        );
+      }
+      if (url.endsWith('/cli-gateway/actor-credentials')) {
+        return minted('relay-sac-v1.first');
+      }
+      if (
+        url.endsWith(
+          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({
+          messages: [message(3, 'agent:echo-peer', 'own rollup')],
+        });
+      }
+      if (
+        url.endsWith(
+          '/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({
+          messages: [
+            message(
+              7,
+              'agent:echo-peer',
+              'own instruction',
+              CONFIG.implChannelId
+            ),
+          ],
+        });
+      }
+      if (url.includes('/channels/') && url.includes('/messages?afterSeq=')) {
+        return jsonResponse({ messages: [] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
+      Date.parse('2026-07-24T00:00:00.000Z')
+    );
+    await expect(peer.pollOnce()).resolves.toEqual({
+      instructionCount: 0,
+      rollupCount: 0,
+      productLastSeq: 3,
+      implLastSeq: 7,
+    });
+    await expect(peer.pollOnce()).resolves.toEqual({
+      instructionCount: 0,
+      rollupCount: 0,
+      productLastSeq: 3,
+      implLastSeq: 7,
+    });
+
+    const channelPosts = calls.filter(
+      (call) =>
+        call.url.includes('/channels/') &&
+        call.init.method?.toUpperCase() === 'POST'
+    );
+    expect(channelPosts).toEqual([]);
+  });
+
+  it('advances product and impl cursors independently', async () => {
+    const historyUrls: string[] = [];
+    let productPoll = 0;
+    const fetchMock = vi.fn<FetchLike>(async (input) => {
+      const url = input.toString();
+      if (url.endsWith('/auth')) {
+        return jsonResponse(
+          { ok: true },
+          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
+        );
+      }
+      if (url.endsWith('/cli-gateway/actor-credentials')) {
+        return minted('relay-sac-v1.first');
+      }
+      historyUrls.push(url);
+      if (url.includes('/channels/topic%3Ageneral/')) {
+        productPoll += 1;
+        return jsonResponse({
+          messages:
+            productPoll === 1
+              ? [message(5, 'agent:echo-peer')]
+              : [message(6, 'agent:echo-peer')],
+        });
+      }
+      if (url.includes('/channels/topic%3Aimplementation/')) {
+        return jsonResponse({
+          messages:
+            historyUrls.length === 2
+              ? [
+                  message(
+                    2,
+                    'agent:echo-peer',
+                    'own instruction',
+                    CONFIG.implChannelId
+                  ),
+                ]
+              : [],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
+      Date.parse('2026-07-24T00:00:00.000Z')
+    );
+    await peer.pollOnce();
+    await expect(peer.pollOnce()).resolves.toMatchObject({
+      productLastSeq: 6,
+      implLastSeq: 2,
+    });
+    expect(peer.productLastSeq).toBe(6);
+    expect(peer.implLastSeq).toBe(2);
+    expect(historyUrls).toEqual([
+      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=0&limit=100',
+      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100',
+      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=5&limit=100',
+      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=2&limit=100',
+    ]);
   });
 
   it('re-mints once and retries a gateway 401', async () => {
