@@ -27,6 +27,7 @@ import {
 import {
   ChannelAgentNoActiveTurnError,
   ChannelAgentNotFoundError,
+  ChannelAgentRoleConflictError,
   type ChannelAgentBinder,
 } from './channel-agent-binder.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
@@ -922,6 +923,47 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       .rosterForChannel(topic.id)
       .then((roster) => res.json({ roster }))
       .catch((error) => mapStoreError(res, error));
+  });
+
+  // #1259 slice 4: operator designates (spawns / resumes) the persistent
+  // orchestrator for a product channel. Operator lane ONLY — scoped actors are
+  // forbidden from creating orchestrator-role sessions (see the actor
+  // session-create policy); the durable orchestrator role is granted here.
+  router.post('/channels/:id/orchestrator', auth, (req, res) => {
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    const requested = req.query['framework'];
+    const framework =
+      typeof requested === 'string' && requested.length > 0
+        ? requested
+        : 'claude';
+    binder
+      .ensureOrchestrator(topic.id, framework)
+      .then((binding) =>
+        res.json({
+          ok: true,
+          orchestrator: {
+            sessionId: binding.sessionId ?? null,
+            status: binding.status ?? 'idle',
+            framework,
+          },
+        })
+      )
+      .catch((error) => {
+        if (error instanceof ChannelAgentRoleConflictError) {
+          sendGatewayError(
+            res,
+            'SESSION_CONFLICT',
+            'channel already bound to a non-orchestrator session',
+            false,
+            { channelId: topic.id, reasonCode: 'CHANNEL_ROLE_CONFLICT' }
+          );
+          return;
+        }
+        mapStoreError(res, error);
+      });
   });
 
   // #1167 §7: interrupt the agent's active turn.
