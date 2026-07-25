@@ -429,6 +429,8 @@ export interface PtySession extends BaseSession {
 
 export interface WebSession extends BaseSession {
   mode: 'web';
+  /** Durable AgentProfile actor that selected this runtime, when profile-bound. */
+  profileId?: string;
   /** Native v2 protocol adapter for web-chat sessions. */
   adapterV2: ProtocolAdapterV2;
   /** Canonical v2 web-chat state. */
@@ -465,6 +467,8 @@ export interface SessionSummary {
   /** Durable collaboration role. A hint for routing/UI, not authorization. */
   role?: AgentRole;
   mode: SessionMode;
+  /** Durable AgentProfile actor that selected this web runtime, when profile-bound. */
+  profileId?: string;
   /**
    * Filesystem path of the repo this session is bound to. Optional so
    * non-repo (node-only / raw-shell) routed sessions can flow through

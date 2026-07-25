@@ -212,6 +212,26 @@ describe('best-effort init survives a malformed custom framework (#1241 FIX 1)',
 });
 
 describe('one-default-per-provider invariant (enforcement CHOICE: reject)', () => {
+  it('refuses to delete a built-in default profile', () => {
+    const store = makeStore();
+    store.seedBuiltIns([{ id: 'claude' }]);
+    const builtInId = builtInAgentProfileId('claude');
+
+    try {
+      store.delete(builtInId);
+      throw new Error('expected built-in default delete to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'agent_profile_builtin_default_delete_forbidden',
+        status: 409,
+      });
+    }
+    expect(store.get(builtInId)).toMatchObject({
+      isBuiltIn: true,
+      isDefault: true,
+    });
+  });
+
   it('rejects creating a second default for the same provider', () => {
     const store = makeStore();
     store.seedBuiltIns([{ id: 'claude' }]);

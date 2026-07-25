@@ -12,6 +12,7 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import type { ChannelSenderRef } from '../shared/channel-chat-protocol.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -39,7 +40,74 @@ const AGENT: ChannelSenderRef = {
 };
 
 describe('channel-message-store schema migration', () => {
-  it('widens v1 status safely and preserves durable rows', () => {
+  it('migrates a v2 binding to its built-in profile without changing durable fields on reopen', () => {
+    const file = dbPath();
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (2);
+      CREATE TABLE channel_messages (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, seq INTEGER NOT NULL,
+        kind TEXT NOT NULL, status TEXT NOT NULL, sender_kind TEXT NOT NULL,
+        sender_id TEXT NOT NULL, sender_display TEXT, thread_id TEXT,
+        parent_message_id TEXT, body_text TEXT NOT NULL, body_format TEXT NOT NULL,
+        meta_json TEXT, source_session_id TEXT, source_turn_id TEXT,
+        source_item_id TEXT, client_message_id TEXT, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, completed_at TEXT, UNIQUE(channel_id, seq)
+      );
+      CREATE TABLE channel_members (
+        channel_id TEXT NOT NULL, member_kind TEXT NOT NULL, member_id TEXT NOT NULL,
+        joined_at TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY(channel_id, member_kind, member_id)
+      );
+      CREATE UNIQUE INDEX idx_chm_source_dedupe
+        ON channel_messages(source_session_id, source_turn_id, source_item_id)
+        WHERE source_session_id IS NOT NULL
+          AND source_turn_id IS NOT NULL
+          AND source_item_id IS NOT NULL;
+      CREATE UNIQUE INDEX idx_chm_client_dedupe
+        ON channel_messages(channel_id, sender_id, client_message_id)
+        WHERE client_message_id IS NOT NULL;
+      CREATE TABLE channel_agent_bindings (
+        channel_id TEXT NOT NULL, agent_framework TEXT NOT NULL,
+        session_id TEXT, provider_session_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (channel_id, agent_framework)
+      );
+      INSERT INTO channel_agent_bindings VALUES (
+        'topic:v2', 'claude', 'sess-v2', '{"lastDeliveredSeq":7}',
+        '2026-07-01T00:00:00.000Z', '2026-07-02T00:00:00.000Z'
+      );
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    const profileId = builtInAgentProfileId('claude');
+    expect(migrated.getBinding('topic:v2', profileId)).toMatchObject({
+      profileActorId: profileId,
+      agentFramework: 'claude',
+      sessionId: 'sess-v2',
+      providerSession: { lastDeliveredSeq: 7 },
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    });
+    const reopened = store(file);
+    expect(reopened.getBinding('topic:v2', profileId)).toMatchObject({
+      sessionId: 'sess-v2',
+      providerSession: { lastDeliveredSeq: 7 },
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    });
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      inspect
+        .prepare('SELECT COUNT(*) AS count FROM channel_agent_bindings')
+        .get()
+    ).toEqual({ count: 1 });
+  });
+
+  it('widens v1 status, heals its known aliases, and preserves durable rows through v3', () => {
     const file = dbPath();
     const legacy = new Database(file);
     legacy.exec(`
@@ -193,10 +261,15 @@ describe('channel-message-store schema migration', () => {
     ).toHaveLength(2);
     expect(migrated.getMessage('chm:claude-live-keeper')?.replyCount).toBe(1);
     expect(
-      migrated.getBinding('topic:live-heal', 'claude')?.providerSession[
+      migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))?.providerSession[
         'lastDeliveredSeq'
       ]
     ).toBe(2);
+    expect(migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))).toMatchObject({
+      profileActorId: builtInAgentProfileId('claude'),
+      agentFramework: 'claude',
+      sessionId: 'session-live',
+    });
     expect(migrated.latestSeq('topic:live-heal')).toBe(3);
     expect(
       migrated
@@ -216,7 +289,7 @@ describe('channel-message-store schema migration', () => {
       }).seq
     ).toBe(4);
 
-    // Reopening a v2 database is an idempotent no-op: the healed row set,
+    // Reopening the v3 database is an idempotent no-op: the healed row set,
     // references, gap-free sequence, and translated delivery cursor survive.
     const reopened = store(file);
     expect(
@@ -230,7 +303,7 @@ describe('channel-message-store schema migration', () => {
       [expect.any(String), 4],
     ]);
     expect(
-      reopened.getBinding('topic:live-heal', 'claude')?.providerSession[
+      reopened.getBinding('topic:live-heal', builtInAgentProfileId('claude'))?.providerSession[
         'lastDeliveredSeq'
       ]
     ).toBe(2);
@@ -243,7 +316,30 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(2);
+    ).toBe(3);
+
+    // The v3 conversion is reopen-idempotent: exactly one legacy binding is
+    // backfilled, with its session and provider cursor byte-for-byte intact.
+    const bindingRows = (
+      inspect
+        .prepare(
+          'SELECT profile_actor_id, agent_framework, session_id, provider_session_json FROM channel_agent_bindings'
+        )
+        .all() as Array<{
+        profile_actor_id: string;
+        agent_framework: string;
+        session_id: string | null;
+        provider_session_json: string;
+      }>
+    );
+    expect(bindingRows).toEqual([
+      {
+        profile_actor_id: builtInAgentProfileId('claude'),
+        agent_framework: 'claude',
+        session_id: 'session-live',
+        provider_session_json: '{"claudeSessionId":"session-live","lastDeliveredSeq":2}',
+      },
+    ]);
   });
 });
 
@@ -961,6 +1057,21 @@ describe('channel-message-store members and bindings', () => {
     });
     expect(updated.sessionId).toBe('sess-9');
     expect(updated.providerSession).toEqual({ claudeSessionId: 'abc' });
+
+    // Arbitrary profile ids are real actor ids, never rewritten by a prefix
+    // heuristic or legacy provider fallback.
+    s.upsertBinding({
+      channelId: 'topic:c',
+      profileActorId: 'reviewer',
+      agentFramework: 'claude',
+      sessionId: 'sess-reviewer',
+      providerSession: { lastDeliveredSeq: 9 },
+    });
+    expect(s.getBinding('topic:c', 'reviewer')).toMatchObject({
+      profileActorId: 'reviewer',
+      sessionId: 'sess-reviewer',
+      providerSession: { lastDeliveredSeq: 9 },
+    });
   });
 
   it('lists distinct non-null bound session ids (reaper protection) (#1248)', () => {

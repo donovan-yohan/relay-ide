@@ -1,14 +1,7 @@
 // Build the @mention palette's contact set (#1236, slice 4).
 //
-// v1 SOURCE = CLIENT-SIDE SYNTHESIS, no new server endpoint. Agent contacts are
-// the vendor DEFAULT profiles synthesized from the channel roster the composer
-// already fetches (`GET /channels/:id/roster`), each keyed on
-// `builtInAgentProfileId(vendor)`. Human contacts come from the channel members
-// the composer already receives. When a later slice adds custom-profile
-// creation those rows slot in as `kind: 'profile'` with their own ids — this
-// builder is the only place that changes.
-
-import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
+// Agent contacts arrive as durable profile rows from the channel roster; human
+// contacts come from the channel members the composer already receives.
 import {
   annotateMentionCollisions,
   type MentionContact,
@@ -17,8 +10,8 @@ import type { ChannelMemberRef } from '../../../../shared/channel-chat-protocol.
 import type { RosterEntry } from '../api.js';
 
 /**
- * Synthesize the palette contact set from the framework roster (vendor defaults)
- * plus human channel members, then annotate same-name collisions with a stable
+ * Build the palette contact set from the profile roster plus human channel
+ * members, then annotate same-name collisions with a stable
  * local id token. Ordering: agents first (roster order), then humans.
  */
 export function buildMentionContacts(
@@ -26,18 +19,19 @@ export function buildMentionContacts(
   members: readonly ChannelMemberRef[] = []
 ): MentionContact[] {
   const contacts: MentionContact[] = [];
-  for (const framework of roster) {
+  for (const profile of roster) {
     contacts.push({
-      id: builtInAgentProfileId(framework.id),
-      providerId: framework.id,
-      displayName: framework.displayName,
-      kind: 'vendor-default',
-      owner: 'system',
-      available: framework.available,
-      reason: framework.reason,
+      id: profile.id,
+      providerId: profile.providerId,
+      displayName: profile.displayName,
+      kind:
+        profile.isDefault && profile.isBuiltIn ? 'vendor-default' : 'profile',
+      owner: profile.isBuiltIn ? 'system' : 'user',
+      available: profile.available,
+      reason: profile.reason,
       inChannel: true,
-      isDefault: true,
-      isBuiltIn: true,
+      isDefault: profile.isDefault,
+      isBuiltIn: profile.isBuiltIn,
     });
   }
   const seenHumans = new Set<string>();

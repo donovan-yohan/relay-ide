@@ -19,8 +19,13 @@ import type { Attachment, ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { Session, WebSession } from './types.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
+import type { AgentProfileStore } from './agent-profile-store.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
-import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import {
+  builtInAgentProfileId,
+  resolveProfileForMention,
+  type AgentProfile,
+} from '../shared/agent-profile.js';
 import {
   parseMentions,
   type ChannelMention,
@@ -91,6 +96,9 @@ export interface MentionTarget {
 export interface ChannelAgentRosterEntry {
   id: string;
   displayName: string;
+  providerId: string;
+  isDefault: boolean;
+  isBuiltIn: boolean;
   kind: 'framework';
   available: boolean;
   reason: string | null;
@@ -118,6 +126,8 @@ export interface ChannelAgentBinderDeps {
   attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
+  /** Durable local AgentProfile catalog; null keeps the legacy default-profile fallback. */
+  agentProfileStore?: AgentProfileStore | null;
   sessions: BinderSessions;
   /** Resolve the current routable frameworks (builtin/configured + mock in tests). */
   mentionTargets: () => Promise<MentionTarget[]>;
@@ -140,7 +150,8 @@ export interface ChannelAgentBinder {
   /** Designate or resume the one orchestrator bound to a product channel. */
   ensureOrchestrator(
     channelId: string,
-    framework?: string
+    framework?: string,
+    profileActorId?: string
   ): Promise<LiveBinding>;
   interrupt(channelId: string, agentId: string): Promise<void>;
   respondToApproval(
@@ -162,7 +173,10 @@ interface QueuedTurn {
 
 export interface LiveBinding {
   channelId: string;
+  /** Actor id, not provider id: one profile owns one live binding/session. */
+  profileActorId: string;
   framework: string;
+  /** Bare profile label for user-facing channel rows, never the session title. */
   displayName: string;
   sessionId: string | null;
   adapter: ProtocolAdapterV2 | null;
@@ -241,8 +255,8 @@ class BinderClosedError extends Error {
 
 const SYSTEM_SENDER = { kind: 'system', id: 'system' } as const;
 
-function bindingKey(channelId: string, framework: string): string {
-  return `${channelId}\u0000${framework}`;
+function bindingKey(channelId: string, profileActorId: string): string {
+  return `${channelId}\u0000${profileActorId}`;
 }
 
 export function createChannelAgentBinder(
@@ -302,11 +316,11 @@ export function createChannelAgentBinder(
 
   function postUnavailableRow(
     channelId: string,
-    framework: string,
+    profileActorId: string,
     text: string,
     parentMessageId?: string
   ): void {
-    const key = `${bindingKey(channelId, framework)}\u0000${text}\u0000${parentMessageId ?? ''}`;
+    const key = `${bindingKey(channelId, profileActorId)}\u0000${text}\u0000${parentMessageId ?? ''}`;
     const last = unavailableRowAt.get(key);
     if (last !== undefined && now() - last < UNAVAILABLE_ROW_TTL_MS) return;
     unavailableRowAt.set(key, now());
@@ -383,6 +397,49 @@ export function createChannelAgentBinder(
     }
   }
 
+  /**
+   * The profile store is intentionally the only named-profile resolver. When it
+   * is unavailable during boot/failure, retain legacy `@provider` behavior by
+   * synthesizing just that provider's built-in actor identity.
+   */
+  function defaultProfileForProvider(providerId: string): AgentProfile {
+    const stored = deps.agentProfileStore?.getDefaultForProvider(providerId);
+    if (stored) return stored;
+    return {
+      id: builtInAgentProfileId(providerId),
+      providerId,
+      displayName: '',
+      avatar: null,
+      isDefault: true,
+      isBuiltIn: true,
+    };
+  }
+
+  function resolveProfileMention(
+    mention: ChannelMention
+  ): AgentProfile | null {
+    const profiles = deps.agentProfileStore?.list() ?? [];
+    if (mention.profileId) {
+      const pinned = profiles.find((profile) => profile.id === mention.profileId);
+      if (pinned) return pinned;
+      // A persisted, collision-disambiguated profile id must never silently
+      // become a different named profile after a catalog edit.
+      return null;
+    }
+    // Keep mention identity deterministic even if an older caller did not
+    // persist `profileId`: all profile matching delegates to the shared
+    // vendor-alias/longest-name resolver.
+    const resolved = resolveProfileForMention(mention.raw, profiles);
+    if (resolved) return resolved;
+    return mention.providerId
+      ? defaultProfileForProvider(mention.providerId)
+      : null;
+  }
+
+  async function rosterDisplayName(profile: AgentProfile): Promise<string> {
+    return profile.displayName || (await senderLabelFor(profile.providerId));
+  }
+
   // ── status ──────────────────────────────────────────────────────────────────
 
   function setStatus(binding: LiveBinding, status: ChannelAgentStatus): void {
@@ -390,7 +447,7 @@ export function createChannelAgentBinder(
     binding.status = status;
     statusBroadcaster?.('channel-agent-status', {
       channelId: binding.channelId,
-      agentId: binding.framework,
+      agentId: binding.profileActorId,
       status,
       sessionId: binding.sessionId ?? null,
     });
@@ -426,11 +483,13 @@ export function createChannelAgentBinder(
 
   function newLiveBinding(
     channelId: string,
+    profileActorId: string,
     framework: string,
     displayName: string
   ): LiveBinding {
     return {
       channelId,
+      profileActorId,
       framework,
       displayName,
       sessionId: null,
@@ -454,12 +513,12 @@ export function createChannelAgentBinder(
 
   function attachSession(
     channelId: string,
+    profileActorId: string,
     framework: string,
-    displayName: string,
     senderDisplayName: string,
     session: { id: string; adapterV2: ProtocolAdapterV2 }
   ): LiveBinding {
-    const key = bindingKey(channelId, framework);
+    const key = bindingKey(channelId, profileActorId);
     const existing = live.get(key);
     // Tear down any prior wiring before re-binding a fresh adapter.
     existing?.unbind?.();
@@ -478,8 +537,10 @@ export function createChannelAgentBinder(
       existing.turnZeroFallbackUnsafe = false;
     }
     const binding =
-      existing ?? newLiveBinding(channelId, framework, displayName);
-    binding.displayName = displayName;
+      existing ??
+      newLiveBinding(channelId, profileActorId, framework, senderDisplayName);
+    binding.profileActorId = profileActorId;
+    binding.displayName = senderDisplayName;
     binding.sessionId = session.id;
     binding.adapter = session.adapterV2;
     binding.unbind = bindSessionToChannel({
@@ -492,9 +553,9 @@ export function createChannelAgentBinder(
         : {}),
       hub,
       // Sender attribution (#1234): the durable ChannelSenderRef carries the
-      // vendor DEFAULT profile Actor id + the vendor catalog label, NOT the
-      // session/tab composite (`binding.displayName`). One session == one profile.
-      profileActorId: builtInAgentProfileId(framework),
+      // vendor DEFAULT profile Actor id + its catalog label. One session == one
+      // profile, and the composite session title remains createWeb-only.
+      profileActorId,
       displayName: senderDisplayName,
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
       onAssistantMessageFinalized: (message) =>
@@ -509,7 +570,8 @@ export function createChannelAgentBinder(
 
   function healthySession(
     sessionId: string | null,
-    framework: string
+    framework: string,
+    profileActorId: string
   ): (Session & { adapterV2: ProtocolAdapterV2 }) | null {
     if (!sessionId) return null;
     const session = deps.sessions.get(sessionId);
@@ -517,6 +579,9 @@ export function createChannelAgentBinder(
       session &&
       session.mode === 'web' &&
       session.agent === framework &&
+      (session.profileId === profileActorId ||
+        (session.profileId === undefined &&
+          profileActorId === builtInAgentProfileId(framework))) &&
       session.adapterV2
     ) {
       return session as Session & { adapterV2: ProtocolAdapterV2 };
@@ -524,24 +589,34 @@ export function createChannelAgentBinder(
     return null;
   }
 
-  function displayNameFor(channelId: string, framework: string): string {
+  function displayNameFor(
+    channelId: string,
+    framework: string,
+    profile: AgentProfile
+  ): string {
     const topic = topicStore?.get(channelId);
-    return `#${topic?.display.title ?? channelId} · ${framework}`;
+    return `#${topic?.display.title ?? channelId} · ${profile.displayName || framework}`;
   }
 
   async function doEnsureBinding(
     channelId: string,
-    framework: string,
+    profile: AgentProfile,
     requiredRole?: 'orchestrator'
   ): Promise<LiveBinding> {
     if (closed) throw new BinderClosedError();
-    const key = bindingKey(channelId, framework);
-    const displayName = displayNameFor(channelId, framework);
+    const framework = profile.providerId;
+    const profileActorId = profile.id;
+    const key = bindingKey(channelId, profileActorId);
+    const sessionDisplayName = displayNameFor(channelId, framework, profile);
 
     // 2. Reuse a live entry whose session is still healthy.
     const existing = live.get(key);
     if (existing?.adapter && existing.sessionId) {
-      const session = healthySession(existing.sessionId, framework);
+      const session = healthySession(
+        existing.sessionId,
+        framework,
+        profileActorId
+      );
       if (session && session.adapterV2 === existing.adapter) {
         if (requiredRole && session.role !== requiredRole) {
           throw new ChannelAgentRoleConflictError(
@@ -559,11 +634,15 @@ export function createChannelAgentBinder(
     // framework catalog label (built-in default profiles carry an empty stored
     // displayName). Resolved past the reuse fast-path so a hot rebind pays no
     // availability probe; failures fall back to the raw framework id.
-    const senderDisplayName = await senderLabelFor(framework);
+    const senderDisplayName = await rosterDisplayName(profile);
 
     // 3. Rebind a restored session that survived a live reconnect / restart.
-    const row = store.getBinding(channelId, framework);
-    const restored = healthySession(row?.sessionId ?? null, framework);
+    const row = store.getBinding(channelId, profileActorId);
+    const restored = healthySession(
+      row?.sessionId ?? null,
+      framework,
+      profileActorId
+    );
     if (restored) {
       if (requiredRole && restored.role !== requiredRole) {
         throw new ChannelAgentRoleConflictError(
@@ -575,8 +654,8 @@ export function createChannelAgentBinder(
       }
       return attachSession(
         channelId,
+        profileActorId,
         framework,
-        displayName,
         senderDisplayName,
         restored
       );
@@ -599,27 +678,44 @@ export function createChannelAgentBinder(
     const cwd =
       routing.cwd ?? routing.worktreePath ?? routing.repoPath ?? os.homedir();
     const provisional =
-      existing ?? newLiveBinding(channelId, framework, displayName);
+      existing ??
+      newLiveBinding(channelId, profileActorId, framework, senderDisplayName);
     live.set(key, provisional);
     setStatus(provisional, 'spawning');
     let created: { session: WebSession };
     try {
       created = await deps.sessions.createWeb({
         agentType: framework,
+        profileId: profileActorId,
         cwd,
-        displayName,
+        displayName: sessionDisplayName,
         port: deps.port,
         configDir: deps.configDir,
         ...(requiredRole ? { role: requiredRole } : {}),
         ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
         ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
         ...(yolo ? { permissionMode: YOLO_PERMISSION_MODE } : {}),
+        ...(profile.model !== undefined ? { model: profile.model } : {}),
+        ...(profile.envVars !== undefined ? { processEnv: profile.envVars } : {}),
+        ...(profile.systemPrompt !== undefined
+          ? { systemPrompt: profile.systemPrompt }
+          : {}),
+        ...(profile.provider !== undefined || profile.effort !== undefined
+          ? {
+              extra: {
+                ...(profile.provider !== undefined
+                  ? { provider: profile.provider }
+                  : {}),
+                ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+              },
+            }
+          : {}),
       });
     } catch (err) {
       setStatus(provisional, 'idle');
       throw new ChannelBindingError(
-        `spawn failed for @${framework}: ${errText(err)}`,
-        `@${framework} failed to start: ${errText(err)}`
+        `spawn failed for @${senderDisplayName}: ${errText(err)}`,
+        `@${senderDisplayName} failed to start: ${errText(err)}`
       );
     }
     // close() may have raced the spawn await: abort before we attach a bridge,
@@ -627,13 +723,14 @@ export function createChannelAgentBinder(
     if (closed) throw new BinderClosedError();
     const binding = attachSession(
       channelId,
+      profileActorId,
       framework,
-      displayName,
       senderDisplayName,
       created.session
     );
     store.upsertBinding({
       channelId,
+      profileActorId,
       agentFramework: framework,
       sessionId: created.session.id,
     });
@@ -645,12 +742,19 @@ export function createChannelAgentBinder(
     channelId: string,
     framework: string
   ): Promise<LiveBinding> {
-    const key = bindingKey(channelId, framework);
+    return ensureProfileBinding(channelId, defaultProfileForProvider(framework));
+  }
+
+  function ensureProfileBinding(
+    channelId: string,
+    profile: AgentProfile,
+    requiredRole?: 'orchestrator'
+  ): Promise<LiveBinding> {
+    const key = bindingKey(channelId, profile.id);
     const pending = inflight.get(key);
     if (pending) return pending;
-    // Store the promise BEFORE any await so two concurrent mentions of the same
-    // framework in one channel single-flight to exactly one spawn.
-    const promise = doEnsureBinding(channelId, framework).finally(() => {
+    // Store before awaiting so concurrent mentions of one profile single-flight.
+    const promise = doEnsureBinding(channelId, profile, requiredRole).finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, promise);
@@ -659,14 +763,24 @@ export function createChannelAgentBinder(
 
   async function ensureOrchestrator(
     channelId: string,
-    framework = 'claude'
+    framework = 'claude',
+    profileActorId?: string
   ): Promise<LiveBinding> {
-    const key = bindingKey(channelId, framework);
+    const profile = profileActorId
+      ? deps.agentProfileStore?.get(profileActorId) ?? null
+      : defaultProfileForProvider(framework);
+    if (!profile) {
+      throw new ChannelBindingError(
+        `agent profile ${profileActorId} was not found`,
+        'The requested agent profile no longer exists.'
+      );
+    }
+    const key = bindingKey(channelId, profile.id);
     const pending = inflight.get(key);
     if (pending) {
       const binding = await pending;
       const session = binding.sessionId
-        ? healthySession(binding.sessionId, framework)
+        ? healthySession(binding.sessionId, profile.providerId, profile.id)
         : null;
       if (!session || session.role !== 'orchestrator') {
         throw new ChannelAgentRoleConflictError(
@@ -678,11 +792,7 @@ export function createChannelAgentBinder(
       }
       return binding;
     }
-    const promise = doEnsureBinding(
-      channelId,
-      framework,
-      'orchestrator'
-    ).finally(() => {
+    const promise = doEnsureBinding(channelId, profile, 'orchestrator').finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, promise);
@@ -695,7 +805,7 @@ export function createChannelAgentBinder(
     if (binding.queue.length >= QUEUE_CAP) {
       postSystemRow(
         binding.channelId,
-        `@${binding.framework} has ${QUEUE_CAP} turns queued — message dropped`,
+        `@${binding.displayName} has ${QUEUE_CAP} turns queued — message dropped`,
         { parentMessageId: parentForTrigger(trigger) }
       );
       return;
@@ -718,7 +828,7 @@ export function createChannelAgentBinder(
   ): ResolvedMentionContextPacket {
     const topic = topicStore?.get(binding.channelId);
     const title = topic?.display.title ?? binding.channelId;
-    const row = store.getBinding(binding.channelId, binding.framework);
+    const row = store.getBinding(binding.channelId, binding.profileActorId);
     const lastDeliveredSeq =
       typeof row?.providerSession['lastDeliveredSeq'] === 'number'
         ? (row.providerSession['lastDeliveredSeq'] as number)
@@ -760,7 +870,7 @@ export function createChannelAgentBinder(
   function sendTurn(binding: LiveBinding, trigger: ChannelMessage): void {
     const adapter = binding.adapter;
     if (!adapter) return;
-    const turnId = `chturn-${trigger.id}-${binding.framework}`;
+    const turnId = `chturn-${trigger.id}-${binding.profileActorId}`;
     // Build the packet BEFORE mutating any binding state: buildPacket does
     // synchronous SQLite work (getBinding/history) that can throw. If it did so
     // AFTER activeTurnId was set (and before the watchdog armed), the binding
@@ -773,7 +883,7 @@ export function createChannelAgentBinder(
       logger.warn('channel binder packet build failed:', err);
       postSystemRow(
         binding.channelId,
-        `@${binding.framework} could not build the message context: ${errText(err)}`,
+        `@${binding.displayName} could not build the message context: ${errText(err)}`,
         { parentMessageId: parentForTrigger(trigger) }
       );
       pump(binding); // activeTurnId is still null — keep the queue draining
@@ -819,7 +929,7 @@ export function createChannelAgentBinder(
         // Deterministic per routed (message, framework) turn (Amendment 3): a
         // retry reuses the same turn identity. `clientMessageId` is forward-compat
         // only — no adapter dedupes on it today.
-        clientMessageId: `${trigger.id}:${binding.framework}`,
+        clientMessageId: `${trigger.id}:${binding.profileActorId}`,
       })
       .then(() => advanceCursor(binding, trigger))
       .catch((err) => handleSendFailure(binding, trigger, turnId, err));
@@ -834,7 +944,7 @@ export function createChannelAgentBinder(
     // Cursor advances only on send acceptance (§4): a failed send re-offers the
     // rows next mention (at-least-once). Never lower the cursor.
     try {
-      const row = store.getBinding(binding.channelId, binding.framework);
+      const row = store.getBinding(binding.channelId, binding.profileActorId);
       const prev = row?.providerSession ?? {};
       const current =
         typeof prev['lastDeliveredSeq'] === 'number'
@@ -843,6 +953,7 @@ export function createChannelAgentBinder(
       if (triggerSeq <= current) return;
       store.upsertBinding({
         channelId: binding.channelId,
+        profileActorId: binding.profileActorId,
         agentFramework: binding.framework,
         providerSession: { ...prev, lastDeliveredSeq: triggerSeq },
       });
@@ -863,10 +974,16 @@ export function createChannelAgentBinder(
     if (!binding.retriedTurns.has(turnId)) {
       binding.retriedTurns.add(turnId);
       try {
-        const rebound = await ensureBinding(
-          binding.channelId,
-          binding.framework
-        );
+        const profile = deps.agentProfileStore
+          ? deps.agentProfileStore.get(binding.profileActorId)
+          : defaultProfileForProvider(binding.framework);
+        if (!profile) {
+          throw new ChannelBindingError(
+            `agent profile ${binding.profileActorId} no longer exists`,
+            `@${binding.displayName} could not receive the message: its profile no longer exists.`
+          );
+        }
+        const rebound = await ensureProfileBinding(binding.channelId, profile);
         if (closed) return;
         if (rebound.adapter && rebound.activeTurnId === turnId) {
           // Same binding still owns this turn — redeliver identical content.
@@ -889,7 +1006,7 @@ export function createChannelAgentBinder(
     }
     postSystemRow(
       binding.channelId,
-      `@${binding.framework} could not receive the message: ${errText(err)}`,
+      `@${binding.displayName} could not receive the message: ${errText(err)}`,
       { parentMessageId: parentForTrigger(trigger) }
     );
     releaseTurnParent(binding, turnId);
@@ -1027,7 +1144,7 @@ export function createChannelAgentBinder(
             if (!binding.sawStream) {
               postSystemRow(
                 binding.channelId,
-                `@${binding.framework} errored: ${patch.message}`,
+                `@${binding.displayName} errored: ${patch.message}`,
                 {
                   parentMessageId:
                     activeTurnId === null
@@ -1073,7 +1190,7 @@ export function createChannelAgentBinder(
     binding.announcedApprovals.add(item.requestId);
     postSystemRow(
       binding.channelId,
-      `@${binding.framework} requests approval: ${item.description} (${item.target})`,
+      `@${binding.displayName} requests approval: ${item.description} (${item.target})`,
       {
         parentMessageId:
           binding.activeTurnId === null
@@ -1081,7 +1198,7 @@ export function createChannelAgentBinder(
             : parentForTurn(binding, binding.activeTurnId),
         meta: {
           approvalRequestId: item.requestId,
-          agentId: binding.framework,
+          agentId: binding.profileActorId,
           sessionId: binding.sessionId,
         },
       }
@@ -1095,7 +1212,7 @@ export function createChannelAgentBinder(
     if (!binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.delete(item.requestId);
     const kind = item.decision?.kind ?? 'resolved';
-    postSystemRow(binding.channelId, `@${binding.framework} approval ${kind}`, {
+    postSystemRow(binding.channelId, `@${binding.displayName} approval ${kind}`, {
       parentMessageId:
         binding.activeTurnId === null
           ? undefined
@@ -1105,31 +1222,34 @@ export function createChannelAgentBinder(
 
   // ── routing ─────────────────────────────────────────────────────────────────
 
-  function routeOne(trigger: ChannelMessage, framework: string): void {
+  function routeOne(trigger: ChannelMessage, profile: AgentProfile): void {
     void (async () => {
       try {
+        const framework = profile.providerId;
         const target = await resolveTarget(framework);
         if (closed) return; // close() raced the availability probe
         if (!target) return; // not a known framework — ignore silently
         if (!target.available) {
+          const senderDisplayName =
+            profile.displayName || target.displayName || framework;
           postUnavailableRow(
             trigger.channelId,
-            framework,
-            `@${framework} is not available in channels yet — ${target.reason ?? 'web sessions unavailable.'}`,
+            profile.id,
+            `@${senderDisplayName} is not available in channels yet — ${target.reason ?? 'web sessions unavailable.'}`,
             parentForTrigger(trigger)
           );
           return;
         }
         let binding: LiveBinding;
         try {
-          binding = await ensureBinding(trigger.channelId, framework);
+          binding = await ensureProfileBinding(trigger.channelId, profile);
         } catch (err) {
           if (err instanceof BinderClosedError) return; // shutdown — silent
           if (err instanceof ChannelBindingError) {
             if (err.unavailable) {
               postUnavailableRow(
                 trigger.channelId,
-                framework,
+                profile.id,
                 err.systemMessage,
                 parentForTrigger(trigger)
               );
@@ -1151,20 +1271,71 @@ export function createChannelAgentBinder(
     })();
   }
 
-  /** Eligible (providerId-resolved, non-self) mentions in routing order. */
-  function eligibleFrameworks(
+  /** Eligible profile-resolved, non-self mentions in routing order. */
+  function eligibleProfiles(
     message: ChannelMessage,
     mentions: ChannelMention[]
-  ): string[] {
+  ): AgentProfile[] {
     const seen = new Set<string>();
-    const out: string[] = [];
+    const out: AgentProfile[] = [];
     for (const mention of mentions) {
-      const framework = mention.providerId;
-      if (!framework) continue; // unknown @name never routes (§1)
-      if (framework === message.sender.providerId) continue; // self-mention
-      if (seen.has(framework)) continue;
-      seen.add(framework);
-      out.push(framework);
+      const profile = resolveProfileMention(mention);
+      if (!profile) continue; // unknown @name never routes (§1)
+      // Bound-session replies carry the exact profile Actor id. Gateway posts
+      // may instead use a provider-owned agent id (for example `agent:claude`),
+      // so a provider's default profile must also be treated as self.
+      if (
+        profile.id === message.sender.id ||
+        (profile.providerId === message.sender.providerId &&
+          (profile.isDefault || profile.id === message.sender.id))
+      ) {
+        continue;
+      }
+      if (seen.has(profile.id)) continue;
+      seen.add(profile.id);
+      out.push(profile);
+    }
+    return out;
+  }
+
+  function currentProfileMentions(
+    message: ChannelMessage,
+    supplied: ChannelMention[]
+  ): ChannelMention[] {
+    if (!deps.agentProfileStore) return supplied;
+    const reparsed = parseMentions(
+      message.body.text,
+      deps.knownProviderIds,
+      deps.agentProfileStore.list()
+    );
+    const reparsedByRaw = new Map(
+      reparsed.map((mention) => [mention.raw.toLowerCase(), mention])
+    );
+    const seen = new Set<string>();
+    const out: ChannelMention[] = [];
+    const pinnedRaw = new Set(
+      supplied
+        .filter((mention) => mention.profileId)
+        .map((mention) => mention.raw.toLowerCase())
+    );
+    const append = (mention: ChannelMention) => {
+      const key = mention.profileId ?? mention.raw.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(mention);
+    };
+    // Persisted profile pins are authoritative through renames/collisions. Only
+    // unpinned legacy tokens are refreshed from the current contact catalog.
+    for (const mention of supplied) {
+      append(
+        mention.profileId
+          ? mention
+          : (reparsedByRaw.get(mention.raw.toLowerCase()) ?? mention)
+      );
+    }
+    for (const mention of reparsed) {
+      if (pinnedRaw.has(mention.raw.toLowerCase())) continue;
+      append(mention);
     }
     return out;
   }
@@ -1186,8 +1357,8 @@ export function createChannelAgentBinder(
    * AND gateway-agent posts so neither can escape the token-spend guard between
    * human turns.
    */
-  function routeWithBrake(message: ChannelMessage, frameworks: string[]): void {
-    if (frameworks.length === 0) return;
+  function routeWithBrake(message: ChannelMessage, profiles: AgentProfile[]): void {
+    if (profiles.length === 0) return;
     const sourceSession = message.source?.sessionId
       ? deps.sessions.get(message.source.sessionId)
       : undefined;
@@ -1196,8 +1367,8 @@ export function createChannelAgentBinder(
       // participant. It must keep coordinating even after worker traffic trips
       // the brake, and its turns must not consume the worker-turn allowance.
       // Human posts still reset the ordinary brake state below.
-      for (const framework of frameworks) {
-        routeOne(message, framework);
+      for (const profile of profiles) {
+        routeOne(message, profile);
       }
       return;
     }
@@ -1226,8 +1397,8 @@ export function createChannelAgentBinder(
       state.allowedTurnKeys.add(turnKey);
       state.count += 1;
     }
-    for (const framework of frameworks) {
-      routeOne(message, framework);
+    for (const profile of profiles) {
+      routeOne(message, profile);
     }
   }
 
@@ -1249,21 +1420,26 @@ export function createChannelAgentBinder(
     // Without this a bound agent posting via `relay-ide v1 channels.post` would
     // both bypass the increment AND reset the brake, defeating the sole
     // token-spend guard between human turns (#1167 P1).
-    const frameworks = eligibleFrameworks(message, mentions);
+    const routingMentions = currentProfileMentions(message, mentions);
+    const profiles = eligibleProfiles(message, routingMentions);
     if (message.sender.kind === 'agent') {
-      routeWithBrake(message, frameworks);
+      routeWithBrake(message, profiles);
       return;
     }
     consecutiveAgentTurns.delete(message.channelId);
-    for (const framework of frameworks) {
-      routeOne(message, framework);
+    for (const profile of profiles) {
+      routeOne(message, profile);
     }
   }
 
   function handleAssistantFinalized(message: ChannelMessage): void {
     if (closed) return;
-    const mentions = parseMentions(message.body.text, deps.knownProviderIds);
-    routeWithBrake(message, eligibleFrameworks(message, mentions));
+    const mentions = parseMentions(
+      message.body.text,
+      deps.knownProviderIds,
+      deps.agentProfileStore?.list()
+    );
+    routeWithBrake(message, eligibleProfiles(message, mentions));
   }
 
   // ── session death ───────────────────────────────────────────────────────────
@@ -1277,7 +1453,7 @@ export function createChannelAgentBinder(
       for (const queued of binding.queue) {
         postSystemRow(
           binding.channelId,
-          `@${binding.framework} session ended before delivering a queued message.`,
+          `@${binding.displayName} session ended before delivering a queued message.`,
           { parentMessageId: parentForTrigger(queued.trigger) }
         );
       }
@@ -1296,6 +1472,7 @@ export function createChannelAgentBinder(
       try {
         store.upsertBinding({
           channelId: binding.channelId,
+          profileActorId: binding.profileActorId,
           agentFramework: binding.framework,
           sessionId: null,
         });
@@ -1308,7 +1485,9 @@ export function createChannelAgentBinder(
   // ── control verbs ───────────────────────────────────────────────────────────
 
   async function interrupt(channelId: string, agentId: string): Promise<void> {
-    const binding = live.get(bindingKey(channelId, agentId));
+    const binding =
+      live.get(bindingKey(channelId, agentId)) ??
+      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
     if (!binding || !binding.adapter) throw new ChannelAgentNotFoundError();
     if (binding.activeTurnId === null)
       throw new ChannelAgentNoActiveTurnError();
@@ -1321,7 +1500,9 @@ export function createChannelAgentBinder(
     requestId: string,
     decision: AgentApprovalDecisionV2
   ): Promise<void> {
-    const binding = live.get(bindingKey(channelId, agentId));
+    const binding =
+      live.get(bindingKey(channelId, agentId)) ??
+      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
     if (!binding || !binding.adapter) throw new ChannelAgentNotFoundError();
     await binding.adapter.respondToApproval({ requestId, decision });
   }
@@ -1330,23 +1511,42 @@ export function createChannelAgentBinder(
     channelId: string
   ): Promise<ChannelAgentRosterEntry[]> {
     const targets = await getTargets();
-    return targets.map((target) => {
-      const binding = live.get(bindingKey(channelId, target.id));
-      const row = store.getBinding(channelId, target.id);
+    const targetByProvider = new Map(targets.map((target) => [target.id, target]));
+    const storedProfiles = deps.agentProfileStore?.list();
+    const profiles = storedProfiles
+      ? [
+          ...storedProfiles,
+          ...targets
+            .filter(
+              (target) =>
+                !storedProfiles.some(
+                  (profile) => profile.providerId === target.id
+                )
+            )
+            .map((target) => defaultProfileForProvider(target.id)),
+        ]
+      : targets.map((target) => defaultProfileForProvider(target.id));
+    return Promise.all(profiles.map(async (profile) => {
+      const target = targetByProvider.get(profile.providerId);
+      const binding = live.get(bindingKey(channelId, profile.id));
+      const row = store.getBinding(channelId, profile.id);
       const sessionId = binding?.sessionId ?? row?.sessionId ?? null;
       const session = sessionId ? deps.sessions.get(sessionId) : undefined;
       return {
-        id: target.id,
-        displayName: target.displayName,
+        id: profile.id,
+        displayName: await rosterDisplayName(profile),
+        providerId: profile.providerId,
+        isDefault: profile.isDefault,
+        isBuiltIn: profile.isBuiltIn,
         kind: 'framework',
-        available: target.available,
-        reason: target.reason,
+        available: target?.available ?? false,
+        reason: target?.reason ?? 'framework unavailable',
         ...(session?.role !== undefined ? { role: session.role } : {}),
         binding: sessionId
           ? { sessionId, status: binding?.status ?? 'idle' }
           : null,
       };
-    });
+    }));
   }
 
   return {

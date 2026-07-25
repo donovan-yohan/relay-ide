@@ -84,6 +84,8 @@ export interface CreateWebParams {
   id?: string;
   spawnedBySessionId?: string;
   agentType: string;
+  /** Durable AgentProfile actor identity for profile-bound web runtimes. */
+  profileId?: string;
   role?: AgentRole;
   roleOverrides?: Readonly<Record<string, AgentRole>>;
   cwd: string;
@@ -96,6 +98,8 @@ export interface CreateWebParams {
   configDir: string;
   permissionMode?: string;
   model?: string;
+  /** Profile-authored prompt appended after Relay's collaboration instructions. */
+  systemPrompt?: string;
   /** Runtime-only subprocess env; never copied into persisted provider options. */
   processEnv?: Record<string, string>;
   sessionLane?: SessionLane | undefined;
@@ -139,6 +143,7 @@ export async function createWebSession(
     nodeId: DEFAULT_LOCAL_NODE_ID,
     type: 'agent',
     agent: params.agentType as AgentType,
+    ...(params.profileId !== undefined ? { profileId: params.profileId } : {}),
     ...(params.role !== undefined ? { role: params.role } : {}),
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),
     ...(params.repoPath ? { worktreePath: params.worktreePath ?? null } : {}),
@@ -219,10 +224,15 @@ export async function createWebSession(
     sessionId: id,
     hookToken,
     configDir: params.configDir,
-    systemPromptAppendix: collaborationPromptAppendix({
-      provider: params.agentType,
-      role: displayRole,
-    }),
+    systemPromptAppendix: [
+      collaborationPromptAppendix({
+        provider: params.agentType,
+        role: displayRole,
+      }),
+      params.systemPrompt,
+    ]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join('\n\n'),
     ...(params.processEnv !== undefined
       ? { processEnv: { ...params.processEnv } }
       : {}),
