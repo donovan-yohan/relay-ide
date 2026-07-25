@@ -2008,6 +2008,33 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
 });
 
 describe('channel-agent-binder — roster + availability', () => {
+  it('surfaces bound session roles in the channel roster', async () => {
+    const { binder, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        ...MOCK_TARGETS,
+        {
+          id: 'worker',
+          displayName: 'Worker',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['mock', 'worker'],
+    });
+
+    await binder.ensureOrchestrator(CH, 'mock');
+    await binder.ensureBinding(CH, 'worker');
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster.find((entry) => entry.id === 'mock')?.role).toBe(
+      'orchestrator'
+    );
+    expect(roster.find((entry) => entry.id === 'worker')?.role).toBeUndefined();
+    expect(sessions.spawns()).toBe(2);
+  });
+
   it('reports availability, reasons, and live binding status', async () => {
     const { binder, store } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),

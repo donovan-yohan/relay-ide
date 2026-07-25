@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import type { ChannelMessagePart } from '../../../../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
+import type { AgentRole } from '../../../../shared/agent-roster.js';
 import './ChannelView.css';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
@@ -14,6 +15,7 @@ import {
   fetchWorkspaceTopic,
   restoreWorkspaceTopic,
   fetchChannelRoster,
+  designateChannelOrchestrator,
   interruptChannelAgent,
   HttpError,
   type ChannelAgentStatus,
@@ -31,6 +33,7 @@ import {
 } from '../../lib/stores/channel-agent-status.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { AgentBadge } from '../AgentBadge.js';
+import { TuiProgress } from '../TuiProgress.js';
 import { ChannelTimeline } from './ChannelTimeline.js';
 import { ChannelComposer } from './ChannelComposer.js';
 import { ChannelThreadPanel } from './ChannelThreadPanel.js';
@@ -153,6 +156,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       setRestorePending(false);
     }
   }, [channelId, queryClient]);
+
+  const [designatePending, setDesignatePending] = useState(false);
 
   const handleSend = useCallback(
     async (
@@ -338,6 +343,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     const chips: Array<{
       agentId: string;
       status: ChannelAgentStatus;
+      role?: AgentRole;
       identity: ReturnType<typeof resolveSenderIdentity>;
     }> = [];
     for (const agentId of candidateIds) {
@@ -363,7 +369,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         providerId: agentId,
         ...(entry?.displayName ? { displayName: entry.displayName } : {}),
       });
-      chips.push({ agentId, status, identity });
+      chips.push({
+        agentId,
+        status,
+        ...(entry?.role ? { role: entry.role } : {}),
+        identity,
+      });
     }
     return chips;
   }, [
@@ -382,6 +393,25 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       void interruptChannelAgent(channelId, agentId).catch(() => {});
     },
     [channelId]
+  );
+
+  const handleDesignateOrchestrator = useCallback(async () => {
+    setDesignatePending(true);
+    try {
+      await designateChannelOrchestrator(channelId);
+      await queryClient.invalidateQueries({
+        queryKey: ['channel-roster', channelId],
+      });
+    } catch {
+      // Keep the affordance available for a retry; API errors stay local to this
+      // operator control just as interrupt races do.
+    } finally {
+      setDesignatePending(false);
+    }
+  }, [channelId, queryClient]);
+
+  const hasOrchestrator = agentChips.some(
+    (chip) => chip.role === 'orchestrator'
   );
 
   const channelNotFound =
@@ -446,7 +476,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                 <span
                   key={chip.agentId}
                   className={`ch-agent-chip ch-agent-chip--${chip.status}`}
-                  title={`${chip.identity.label} · ${chip.status}`}
+                  title={`${chip.identity.label}${
+                    chip.role ? ` · ${chip.role}` : ''
+                  } · ${chip.status}`}
                 >
                   {chip.identity.glyph ? (
                     <span
@@ -461,6 +493,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                   <span className="ch-agent-chip__name">
                     {chip.identity.label}
                   </span>
+                  {chip.role === 'orchestrator' ? (
+                    <span className="ch-agent-chip__role">orchestrator</span>
+                  ) : null}
                   {canInterrupt ? (
                     <button
                       type="button"
@@ -476,6 +511,26 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               );
             })}
           </span>
+        ) : null}
+        {rosterChipsQuery.isSuccess && !hasOrchestrator ? (
+          <button
+            type="button"
+            className="ch-designate-orchestrator"
+            onClick={() => void handleDesignateOrchestrator()}
+            disabled={designatePending}
+          >
+            {designatePending ? (
+              <>
+                <TuiProgress
+                  variant="braille"
+                  className="ch-designate-orchestrator__progress"
+                />{' '}
+                designating
+              </>
+            ) : (
+              'designate orchestrator'
+            )}
+          </button>
         ) : null}
         <span className="ch-header__spacer" />
         {disconnected ? (
