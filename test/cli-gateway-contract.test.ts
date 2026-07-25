@@ -234,6 +234,7 @@ describe('CLI gateway contract', () => {
       'workspace-topics.create',
       'workspace-topics.update',
       'workspace-topics.archive',
+      'channels.post',
       'roster.list',
       'roster.register',
       'roster.updateSelf',

@@ -98,6 +98,7 @@ export type RelayCliGatewayCommand =
   | 'workspace-topics.create'
   | 'workspace-topics.update'
   | 'workspace-topics.archive'
+  | 'channels.post'
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
@@ -680,6 +681,7 @@ const sessionDescriptorSchema: RelayJsonSchema = {
     spawnedBySessionId: stringSchema,
     type: { type: 'string', enum: ['agent', 'terminal'] },
     agent: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
     mode: { type: 'string', enum: ['pty', 'web'] },
     nodeId: stringSchema,
     globalSessionId: stringSchema,
@@ -1366,6 +1368,12 @@ const createSessionInputSchema: RelayJsonSchema = {
     type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
     mode: { type: 'string', enum: ['pty', 'web'] },
     agent: stringSchema,
+    role: {
+      type: 'string',
+      enum: [...AGENT_ROLES],
+      description:
+        'Collaboration role for a web agent session. The orchestrator role is operator-designated and cannot be self-assigned by an actor-created worker.',
+    },
     yolo: booleanSchema,
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
@@ -3720,6 +3728,50 @@ const cockpitGetOutputDataSchema: RelayJsonSchema = {
     },
   },
   required: ['generatedAt', 'selector', 'item', 'actionHints', 'readFirst'],
+};
+
+const channelMessagePartSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    type: { const: 'image' },
+    id: stringSchema,
+    mime: {
+      type: 'string',
+      enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+    },
+    w: { type: 'number' },
+    h: { type: 'number' },
+    bytes: { type: 'number' },
+    alt: stringSchema,
+  },
+  required: ['type', 'id', 'mime', 'w', 'h', 'bytes'],
+};
+
+const channelPostInputSchema: RelayJsonSchema = {
+  title: 'ChannelsPostInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    text: stringSchema,
+    format: { type: 'string', enum: ['markdown', 'text'] },
+    parentMessageId: stringSchema,
+    threadId: nullableStringSchema,
+    clientMessageId: stringSchema,
+    parts: { type: 'array', items: channelMessagePartSchema },
+  },
+  required: ['channelId', 'text'],
+};
+
+const channelPostOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsPostData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    message: { type: 'object', additionalProperties: true },
+  },
+  required: ['message'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -6904,6 +6956,35 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SESSION_CONFLICT',
       'SERVER_UNAVAILABLE',
       'INTERNAL',
+    ],
+  },
+  {
+    name: 'channels.post',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'post',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Post a human- or agent-attributed message to a product channel; sender and source are always derived by the server.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: channelPostInputSchema,
+    outputSchema: okOutput('ChannelsPostOutput', channelPostOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
     ],
   },
   {

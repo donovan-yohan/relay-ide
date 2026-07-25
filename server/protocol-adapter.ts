@@ -25,6 +25,16 @@ export interface AdapterConfig {
   permissionMode?: string;
   /** Model override (e.g. 'claude-opus-4-6') */
   model?: string;
+  /**
+   * Runtime-only subprocess environment overlay. Credentials belong here, not
+   * in `extra`, because provider options are persisted with web-session state.
+   */
+  processEnv?: Record<string, string>;
+  /**
+   * Relay-authored system-prompt appendix. Adapters translate this semantic
+   * field into their provider-specific launch argument.
+   */
+  systemPromptAppendix?: string;
   /** Additional agent-specific configuration */
   extra?: Record<string, unknown>;
 }

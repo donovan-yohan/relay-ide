@@ -233,7 +233,11 @@ import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAutomationRunRouter } from './features/automation-run-router.js';
 import { createPrOverseerRouter } from './features/pr-overseer-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
-import { buildAttentionEventInput } from '../shared/agent-roster.js';
+import {
+  AGENT_ROLES,
+  buildAttentionEventInput,
+  type AgentRole,
+} from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initChannelMessageStore,
@@ -366,6 +370,7 @@ import {
   isCliGatewayActorTokenRequest,
   issueCliGatewayActorCredential,
   issueCliGatewayActorCredentialWithGrant,
+  issuePersistentOrchestratorCliGatewayActorCredential,
   listCliGatewayActorCredentialsWithGrant,
   revokeCliGatewayActorCredentialWithGrant,
   rotateCliGatewayActorCredentialWithGrant,
@@ -375,6 +380,7 @@ import {
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
+import { actorSessionCreateRolePolicy } from './actor-session-create-policy.js';
 import {
   RELAY_CAPABILITY_BITS,
   type RelayCapabilityBit,
@@ -2768,7 +2774,29 @@ async function main(): Promise<void> {
       Boolean(target.repoId) &&
       (credential.scope.repoIds?.length ?? 0) > 0 &&
       pathIsWithin(target.repoId!, target.path);
-    if (!hasAuthorizedPathScope && !hasAuthorizedRepoScope) {
+    const persistentOrchestratorSession =
+      credential.metadata?.reason === 'persistent-orchestrator'
+        ? sessions.get(credential.actor.id)
+        : undefined;
+    const requestedParent = compactRequestPath(
+      target.body['spawnedBySessionId']
+    );
+    const isBoundPersistentOrchestrator =
+      persistentOrchestratorSession?.mode === 'web' &&
+      persistentOrchestratorSession.role === 'orchestrator' &&
+      persistentOrchestratorSession.status === 'active' &&
+      requestedParent === credential.actor.id &&
+      [
+        persistentOrchestratorSession.cwd,
+        persistentOrchestratorSession.repoPath,
+      ]
+        .filter((root): root is string => Boolean(root))
+        .some((root) => pathIsWithin(root, target.path));
+    if (
+      !hasAuthorizedPathScope &&
+      !hasAuthorizedRepoScope &&
+      !isBoundPersistentOrchestrator
+    ) {
       sendCliGatewayActorFailure(
         res,
         cliGatewayActorFailure({ reason: 'missing_scope' })
@@ -2776,6 +2804,21 @@ async function main(): Promise<void> {
       return;
     }
     const body = target.body;
+    const rolePolicy = actorSessionCreateRolePolicy(body);
+    if (!rolePolicy.ok) {
+      res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          reasonCode: rolePolicy.reasonCode,
+          message:
+            'scoped CLI actors may create worker sessions only; the orchestrator role requires the browser operator lane',
+          retryable: false,
+          lane: 'denied',
+          acceptedLanes: ['browser-cookie-lane'],
+        },
+      });
+      return;
+    }
     if (body['type'] === 'terminal') {
       res.status(403).json({
         error: {
@@ -2790,15 +2833,17 @@ async function main(): Promise<void> {
       });
       return;
     }
-    const credentialSessionId = credential.scope.sessionIds?.[0];
-    const requestedParent =
+    const credentialSessionId =
+      credential.scope.sessionIds?.[0] ??
+      (isBoundPersistentOrchestrator ? credential.actor.id : undefined);
+    const requestedParentSessionId =
       typeof body['spawnedBySessionId'] === 'string'
         ? body['spawnedBySessionId']
         : undefined;
     if (
       credentialSessionId &&
-      requestedParent &&
-      requestedParent !== credentialSessionId
+      requestedParentSessionId &&
+      requestedParentSessionId !== credentialSessionId
     ) {
       sendCliGatewayActorFailure(
         res,
@@ -2837,6 +2882,13 @@ async function main(): Promise<void> {
       workerId,
       displayName: workerDisplayName,
     });
+    const persistentOrchestratorSessionId =
+      credential.metadata?.reason === 'persistent-orchestrator' &&
+      sessions.get(credential.actor.id)?.role === 'orchestrator'
+        ? credential.actor.id
+        : undefined;
+    const ownerSessionId =
+      credential.scope.sessionIds?.[0] ?? persistentOrchestratorSessionId;
     const owner = {
       kind: 'agent' as const,
       id: `agent:${credential.actor.id}`,
@@ -2846,9 +2898,7 @@ async function main(): Promise<void> {
       ...(credential.scope.nodeIds?.[0]
         ? { nodeId: credential.scope.nodeIds[0] }
         : {}),
-      ...(credential.scope.sessionIds?.[0]
-        ? { sessionId: credential.scope.sessionIds[0] }
-        : {}),
+      ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
     };
     return {
       ...workerState,
@@ -3161,6 +3211,7 @@ async function main(): Promise<void> {
       topicStore: workspaceTopicStore,
       binder: channelAgentBinder,
       knownProviderIds: Object.keys(v2Adapters),
+      getSession: (sessionId) => sessions.get(sessionId),
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
@@ -3769,9 +3820,18 @@ async function main(): Promise<void> {
   });
 
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
-  sessions.configure(
-    buildSessionConfig(startupConfig, configDir, securityAuditLog)
-  );
+  sessions.configure({
+    ...buildSessionConfig(startupConfig, configDir, securityAuditLog),
+    orchestratorCredentials: {
+      issueCredential: (input) =>
+        issuePersistentOrchestratorCliGatewayActorCredential(
+          cliGatewayActorRegistry,
+          input
+        ),
+      revokeCredential: (credentialId, input) =>
+        cliGatewayActorRegistry.revoke(credentialId, input),
+    },
+  });
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({
@@ -5727,6 +5787,7 @@ async function main(): Promise<void> {
         type = 'agent',
         mode,
         agent,
+        role,
         yolo,
         terminalBackend,
         claudeArgs,
@@ -5752,6 +5813,7 @@ async function main(): Promise<void> {
         type?: 'agent' | 'terminal';
         mode?: 'pty' | 'web';
         agent?: AgentType;
+        role?: AgentRole;
         yolo?: boolean;
         terminalBackend?: TerminalBackend;
         claudeArgs?: string[];
@@ -5779,6 +5841,16 @@ async function main(): Promise<void> {
           repoName: string;
         };
       };
+
+      if (
+        role !== undefined &&
+        !(AGENT_ROLES as readonly string[]).includes(role)
+      ) {
+        res.status(400).json({
+          error: `role must be one of: ${AGENT_ROLES.join(', ')}`,
+        });
+        return;
+      }
 
       // Read config once for the lifetime of this request
       const freshConfig = getConfig();
@@ -5928,6 +6000,12 @@ async function main(): Promise<void> {
       // original native-Hermes launch path.
       const requestedMode =
         mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
+      if (role !== undefined && requestedMode !== 'web') {
+        res.status(400).json({
+          error: 'role is only supported for web agent sessions',
+        });
+        return;
+      }
       if (requestedMode === 'web') {
         const webAvailability = await validateAgentWebRuntimeAvailable(
           freshConfig,
@@ -5949,6 +6027,7 @@ async function main(): Promise<void> {
             ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
             ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
             agentType: resolvedAgent,
+            ...(role !== undefined ? { role } : {}),
             cwd,
             repoPath: requestedRepoPath,
             repoName: name,

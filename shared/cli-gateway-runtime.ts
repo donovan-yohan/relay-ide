@@ -3,6 +3,7 @@ import type {
   RelayCliGatewayError,
   RelayCliGatewayErrorCode,
 } from './cli-gateway-contract.js';
+import { AGENT_ROLES } from './agent-roster.js';
 
 export interface GatewayCreateValidationOk {
   ok: true;
@@ -29,6 +30,7 @@ const createSessionAllowedFields = new Set([
   'type',
   'mode',
   'agent',
+  'role',
   'yolo',
   'terminalBackend',
   'cols',
@@ -77,6 +79,7 @@ const stringFields = [
   'repoPath',
   'cwd',
   'agent',
+  'role',
   'terminalBackend',
   'branchName',
   'displayName',
@@ -102,6 +105,7 @@ const localCreateSupportedFields = [
   'type',
   'mode',
   'agent',
+  'role',
   'yolo',
   'terminalBackend',
   'cols',
@@ -468,6 +472,15 @@ function validateCreateEnums(
     return invalidCreateInput('sessions.create mode must be pty or web', {
       field: 'mode',
     });
+  }
+  if (
+    input['role'] !== undefined &&
+    !(AGENT_ROLES as readonly unknown[]).includes(input['role'])
+  ) {
+    return invalidCreateInput(
+      `sessions.create role must be one of: ${AGENT_ROLES.join(', ')}`,
+      { field: 'role' }
+    );
   }
   if (
     input['terminalBackend'] !== undefined &&

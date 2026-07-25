@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import { hashPin } from '../server/auth.js';
 import {
   closeRelayStateDb,
@@ -642,6 +643,8 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
   const configPath = path.join(tmpDir, 'config.json');
   const binDir = path.join(tmpDir, 'bin');
   const codexStub = path.join(binDir, 'codex');
+  const claudeStub = path.join(binDir, 'claude');
+  const hermesStub = path.join(binDir, 'hermes');
   const authorizedDir = path.join(tmpDir, 'authorized');
   const authorizedLink = path.join(tmpDir, 'authorized-link');
   const topicOutsideDir = path.join(tmpDir, 'topic-outside');
@@ -655,6 +658,10 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
     '#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1000);\n'
   );
   fs.chmodSync(codexStub, 0o755);
+  for (const stub of [claudeStub, hermesStub]) {
+    fs.copyFileSync(codexStub, stub);
+    fs.chmodSync(stub, 0o755);
+  }
   fs.writeFileSync(
     configPath,
     JSON.stringify({
@@ -666,12 +673,35 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
     })
   );
 
+  const hermesGateway = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) =>
+    hermesGateway.listen(0, '127.0.0.1', resolve)
+  );
+  const hermesAddress = hermesGateway.address();
+  if (!hermesAddress || typeof hermesAddress === 'string') {
+    throw new Error('Hermes test gateway did not bind');
+  }
+
   const child = startServer({
     env: {
       RELAY_IDE_CONFIG: configPath,
       RELAY_IDE_PORT: '0',
       HOME: tmpDir,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      HERMES_API_ENDPOINT: `http://127.0.0.1:${hermesAddress.port}`,
     },
   });
 
@@ -760,6 +790,93 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       'x-relay-cli-command': 'sessions.create',
     };
 
+    const credentialsBeforeHermes = await fetch(
+      `${base}/cli-gateway/actor-credentials`,
+      { headers: { cookie } }
+    ).then((response) =>
+      expectJsonStatus<{
+        credentials: Array<{ metadata?: { reason?: string } }>;
+      }>(response, 200, 'credential list before actor Hermes create')
+    );
+    const actorHermesCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'agent',
+        mode: 'web',
+        agent: 'hermes',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    const actorHermes = await expectJsonStatus<{
+      id: string;
+      agent: string;
+      role?: string;
+    }>(actorHermesCreate, 201, 'actor Hermes web worker create');
+    expect(actorHermes.agent).toBe('hermes');
+    expect(actorHermes.role).toBeUndefined();
+    const credentialsAfterHermes = await fetch(
+      `${base}/cli-gateway/actor-credentials`,
+      { headers: { cookie } }
+    ).then((response) =>
+      expectJsonStatus<{
+        credentials: Array<{ metadata?: { reason?: string } }>;
+      }>(response, 200, 'credential list after actor Hermes create')
+    );
+    expect(credentialsAfterHermes.credentials).toHaveLength(
+      credentialsBeforeHermes.credentials.length
+    );
+    expect(
+      credentialsAfterHermes.credentials.filter(
+        (credential) =>
+          credential.metadata?.reason === 'persistent-orchestrator'
+      )
+    ).toHaveLength(0);
+
+    const actorClaudeCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'agent',
+        mode: 'web',
+        agent: 'claude',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    const actorClaude = await expectJsonStatus<{
+      agent: string;
+      role?: string;
+    }>(actorClaudeCreate, 201, 'actor Claude web worker create');
+    expect(actorClaude).toMatchObject({ agent: 'claude' });
+    expect(actorClaude.role).toBeUndefined();
+
+    const explicitOrchestratorCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'agent',
+        mode: 'web',
+        agent: 'claude',
+        role: 'orchestrator',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(
+      explicitOrchestratorCreate,
+      403,
+      'actor explicit orchestrator role create'
+    ).then((body) => {
+      expect(body.error).toMatchObject({
+        code: 'FORBIDDEN',
+        reasonCode: 'CLI_ACTOR_ORCHESTRATOR_ROLE_UNSUPPORTED',
+      });
+    });
+
     const inScopeCreate = await fetch(`${base}/sessions`, {
       method: 'POST',
       headers: actorHeaders,
@@ -775,6 +892,7 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       id: string;
       cwd: string;
       spawnedBySessionId?: string;
+      role?: string;
       activeActors?: Array<{
         kind: string;
         id?: string;
@@ -784,6 +902,7 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
     }>(inScopeCreate, 201, 'in-scope actor sessions.create');
     expect(created.cwd).toBe(canonicalAuthorizedPath);
     expect(created.spawnedBySessionId).toBe(orchestratorSessionId);
+    expect(created.role).toBeUndefined();
     expect(created.activeWorker?.id).toBe(created.id);
     expect(created.activeActors).toEqual(
       expect.arrayContaining([
@@ -862,6 +981,9 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
     );
   } finally {
     await killAndWait(child);
+    await new Promise<void>((resolve, reject) =>
+      hermesGateway.close((error) => (error ? reject(error) : resolve()))
+    );
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.rmSync(outsideDir, { recursive: true, force: true });
   }

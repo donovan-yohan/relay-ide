@@ -22,6 +22,11 @@ import {
   type ControlStateSummary,
 } from '../shared/control-state.js';
 import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
+import {
+  collaborationPromptAppendix,
+  roleForAgent,
+  type AgentRole,
+} from '../shared/agent-roster.js';
 
 const logger = createLogger('web-session');
 const restoreSnapshotFencedAdapters = new WeakSet<ProtocolAdapterV2>();
@@ -79,6 +84,8 @@ export interface CreateWebParams {
   id?: string;
   spawnedBySessionId?: string;
   agentType: string;
+  role?: AgentRole;
+  roleOverrides?: Readonly<Record<string, AgentRole>>;
   cwd: string;
   repoPath?: string | undefined;
   repoName?: string | undefined;
@@ -89,6 +96,8 @@ export interface CreateWebParams {
   configDir: string;
   permissionMode?: string;
   model?: string;
+  /** Runtime-only subprocess env; never copied into persisted provider options. */
+  processEnv?: Record<string, string>;
   sessionLane?: SessionLane | undefined;
   workspaceId?: string;
   additionalDirs?: string[];
@@ -110,6 +119,13 @@ export async function createWebSession(
   const activeRuntime = adapterV2;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
   const createdAt = new Date().toISOString();
+  const displayRole =
+    params.role ?? roleForAgent(params.agentType, params.roleOverrides);
+  if (params.role === 'orchestrator' && !adapterV2.refreshRuntimeEnv) {
+    throw new Error(
+      `Agent adapter ${params.agentType} does not support orchestrator credential refresh`
+    );
+  }
   const normalizedControlState = normalizeControlStateSummary(
     params.controlState ?? createLegacyControlStateSummary()
   );
@@ -123,6 +139,7 @@ export async function createWebSession(
     nodeId: DEFAULT_LOCAL_NODE_ID,
     type: 'agent',
     agent: params.agentType as AgentType,
+    ...(params.role !== undefined ? { role: params.role } : {}),
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),
     ...(params.repoPath ? { worktreePath: params.worktreePath ?? null } : {}),
     cwd: params.cwd,
@@ -202,6 +219,13 @@ export async function createWebSession(
     sessionId: id,
     hookToken,
     configDir: params.configDir,
+    systemPromptAppendix: collaborationPromptAppendix({
+      provider: params.agentType,
+      role: displayRole,
+    }),
+    ...(params.processEnv !== undefined
+      ? { processEnv: { ...params.processEnv } }
+      : {}),
     ...(params.permissionMode !== undefined
       ? { permissionMode: params.permissionMode }
       : {}),

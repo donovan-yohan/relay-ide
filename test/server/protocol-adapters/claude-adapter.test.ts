@@ -253,6 +253,11 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       ...baseConfig(),
       model: 'sonnet',
       permissionMode: 'default',
+      processEnv: {
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.runtime-only.test-token',
+        CLAUDECODE: 'must-still-be-stripped',
+      },
+      systemPromptAppendix: 'Relay orchestrator playbook',
       extra: {
         additionalDirectories: ['/extra/dir'],
         yolo: true,
@@ -300,6 +305,10 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('sonnet');
     expect(args).toContain('--add-dir');
     expect(args[args.indexOf('--add-dir') + 1]).toBe('/extra/dir');
+    expect(args).toContain('--append-system-prompt');
+    expect(args[args.indexOf('--append-system-prompt') + 1]).toBe(
+      'Relay orchestrator playbook'
+    );
     expect(args).toContain('--dangerously-skip-permissions');
     // No --resume on a first spawn (no session id yet).
     expect(args).not.toContain('--resume');
@@ -315,7 +324,158 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(args).not.toContain('-r=alias-session');
     // CLAUDECODE stripped from the child env.
     expect(options.env.CLAUDECODE).toBeUndefined();
+    expect(options.env.RELAY_IDE_ACTOR_TOKEN).toBe(
+      'relay-sac-v1.runtime-only.test-token'
+    );
 
+    await adapter.disconnect();
+  });
+
+  it('interrupts and requeues a long active turn before refreshing runtime env', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect({
+      ...baseConfig(),
+      processEnv: {
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-old.redacted',
+      },
+    });
+
+    await adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const oldChild = harness.latest().child;
+    await oldChild.waitForFrames(1);
+    oldChild.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-refresh',
+    });
+    const queuedTurn = adapter.sendMessage({
+      turnId: 'turn-B',
+      content: 'b',
+    });
+    const refresh = adapter.refreshRuntimeEnv({
+      RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-new.redacted',
+    });
+
+    expect(harness.spawns).toHaveLength(1);
+    await oldChild.waitForFrames(2);
+    expect(oldChild.frames()[1]).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'interrupt' },
+    });
+    oldChild.serverWrite({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'relay-int-1' },
+    });
+
+    await refresh;
+
+    expect(harness.spawns).toHaveLength(2);
+    expect(harness.spawns[0]?.options.env.RELAY_IDE_ACTOR_TOKEN).toBe(
+      'relay-sac-v1.credential-old.redacted'
+    );
+    const replacement = harness.latest();
+    expect(replacement.options.env.RELAY_IDE_ACTOR_TOKEN).toBe(
+      'relay-sac-v1.credential-new.redacted'
+    );
+    expect(replacement.args).toContain('--resume');
+    expect(replacement.child.frames()[0]).toMatchObject({
+      message: { content: 'a' },
+    });
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' &&
+          patch.turnId === 'turn-A' &&
+          patch.status === 'interrupted'
+      )
+    ).toBe(true);
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' &&
+          patch.turn.id === 'turn-A-credential-refresh-1'
+      )
+    ).toBe(true);
+
+    replacement.child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-refresh',
+    });
+    replacement.child.serverWrite(successResult());
+    await queuedTurn;
+    expect(replacement.child.frames()[1]).toMatchObject({
+      message: { content: 'b' },
+    });
+    replacement.child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('does not requeue when the active turn completes during the refresh interrupt race', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect({
+      ...baseConfig(),
+      processEnv: {
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-old.redacted',
+      },
+    });
+
+    await adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const oldChild = harness.latest().child;
+    await oldChild.waitForFrames(1);
+    oldChild.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-refresh-race',
+    });
+    const queuedTurn = adapter.sendMessage({
+      turnId: 'turn-B',
+      content: 'b',
+    });
+    const refresh = adapter.refreshRuntimeEnv({
+      RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-new.redacted',
+    });
+    await oldChild.waitForFrames(2);
+
+    oldChild.serverWrite(successResult());
+    oldChild.serverWrite({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'relay-int-1' },
+    });
+
+    await refresh;
+    await queuedTurn;
+
+    expect(harness.spawns).toHaveLength(2);
+    const replacement = harness.latest();
+    expect(replacement.child.frames()[0]).toMatchObject({
+      message: { content: 'b' },
+    });
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' &&
+          patch.turn.id.includes('credential-refresh')
+      )
+    ).toBe(false);
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' &&
+          patch.turnId === 'turn-A'
+      )
+    ).toHaveLength(1);
+
+    replacement.child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-refresh-race',
+    });
+    replacement.child.serverWrite(successResult());
     await adapter.disconnect();
   });
 

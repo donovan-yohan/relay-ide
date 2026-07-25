@@ -51,6 +51,11 @@ export interface ProtocolAdapterV2 {
   connect(config: AdapterConfig): Promise<void>;
   disconnect(): Promise<void>;
   /**
+   * Replace the runtime-only environment used by an owned subprocess.
+   * Implementations must prevent later queued work from using the old process.
+   */
+  refreshRuntimeEnv?(processEnv: Record<string, string>): Promise<void>;
+  /**
    * Transport-level reconnect with no state change. Tears down and re-establishes
    * the underlying connection using the same session configuration as before.
    * Use when the transport drops and you want to continue the same session state.

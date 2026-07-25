@@ -113,6 +113,11 @@ import {
   type TerminalInputKey,
 } from './terminal-model-backend.js';
 import { cleanupSessionImageTempDir } from './session-image-ingress.js';
+import {
+  startOrchestratorCredentialLifecycle,
+  type OrchestratorCredentialLifecycle,
+  type OrchestratorCredentialLifecycleDeps,
+} from './orchestrator-credential-lifecycle.js';
 
 const logger = createLogger('sessions');
 
@@ -277,6 +282,17 @@ let defaultSecurityAuditSink:
   | { append(input: SecurityAuditEntryInput): unknown }
   | undefined;
 let defaultMaxScrollbackPerSessionBytes: number | undefined;
+let defaultOrchestratorCredentialAuthority:
+  | Pick<
+      OrchestratorCredentialLifecycleDeps,
+      'issueCredential' | 'revokeCredential'
+    >
+  | undefined;
+const orchestratorCredentialLeases = new Map<
+  string,
+  OrchestratorCredentialLifecycle
+>();
+const orchestratorFailClosedSessions = new Set<string>();
 
 function configure(opts: {
   port?: number;
@@ -285,6 +301,10 @@ function configure(opts: {
   interventionDebounceMs?: number;
   coDrivenAutoRevertMs?: number;
   securityAuditSink?: { append(input: SecurityAuditEntryInput): unknown };
+  orchestratorCredentials?: Pick<
+    OrchestratorCredentialLifecycleDeps,
+    'issueCredential' | 'revokeCredential'
+  >;
   /** Global scrollback cap across all sessions in bytes. Default: 4 MB. */
   maxScrollbackGlobalBytes?: number;
   /** Per-session scrollback cap in bytes. Default: 256 KB. */
@@ -296,12 +316,123 @@ function configure(opts: {
   defaultInterventionDebounceMs = opts.interventionDebounceMs;
   defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
   defaultSecurityAuditSink = opts.securityAuditSink;
+  defaultOrchestratorCredentialAuthority = opts.orchestratorCredentials;
   if (opts.maxScrollbackGlobalBytes !== undefined) {
     globalScrollbackCapBytes = opts.maxScrollbackGlobalBytes;
   }
   if (opts.maxScrollbackPerSessionBytes !== undefined) {
     defaultMaxScrollbackPerSessionBytes = opts.maxScrollbackPerSessionBytes;
   }
+}
+
+function stopOrchestratorCredentialLease(sessionId: string): void {
+  const lease = orchestratorCredentialLeases.get(sessionId);
+  if (!lease) return;
+  orchestratorCredentialLeases.delete(sessionId);
+  lease.stop();
+}
+
+function orchestratorRuntimeIsDisconnected(session: WebSession): boolean {
+  if (
+    session.status === 'disconnected' ||
+    session.agentSessionV2.live.status === 'disconnected'
+  ) {
+    return true;
+  }
+  // Restore creates the durable wrapper before connecting its adapter. That
+  // one fenced pre-connect state is not a runtime loss; every other
+  // disconnected adapter state ends the privileged lease.
+  return (
+    session.adapterV2.status === 'disconnected' &&
+    session.restoreState !== 'restoring'
+  );
+}
+
+function failClosedOrchestratorSession(sessionId: string): void {
+  if (orchestratorFailClosedSessions.has(sessionId)) return;
+  orchestratorFailClosedSessions.add(sessionId);
+  try {
+    if (sessions.has(sessionId)) kill(sessionId);
+  } finally {
+    orchestratorFailClosedSessions.delete(sessionId);
+  }
+}
+
+function prepareOrchestratorWebCreate(params: CreateWebParams): {
+  params: CreateWebParams;
+  lease?: OrchestratorCredentialLifecycle;
+} {
+  if (params.role !== 'orchestrator') return { params };
+
+  const authority = defaultOrchestratorCredentialAuthority;
+  if (!authority) {
+    throw new Error(
+      'Orchestrator actor credential authority is not configured'
+    );
+  }
+  const id = params.id ?? crypto.randomBytes(8).toString('hex');
+  if (orchestratorCredentialLeases.has(id)) {
+    throw new Error(`Orchestrator credential lease already exists for ${id}`);
+  }
+  const lease = startOrchestratorCredentialLifecycle(
+    {
+      sessionId: id,
+      port: params.port,
+      ...(params.displayName ? { displayName: params.displayName } : {}),
+    },
+    {
+      ...authority,
+      applyRuntimeEnv: async (processEnv) => {
+        const session = sessions.get(id);
+        if (
+          session?.mode !== 'web' ||
+          session.role !== 'orchestrator' ||
+          orchestratorRuntimeIsDisconnected(session)
+        ) {
+          stopOrchestratorCredentialLease(id);
+          throw new Error(
+            'Orchestrator session unavailable during credential refresh'
+          );
+        }
+        const refreshRuntimeEnv = session.adapterV2.refreshRuntimeEnv;
+        if (!refreshRuntimeEnv) {
+          throw new Error(
+            'Orchestrator adapter cannot refresh its runtime environment'
+          );
+        }
+        await refreshRuntimeEnv.call(session.adapterV2, processEnv);
+      },
+      failClosed: () => failClosedOrchestratorSession(id),
+    }
+  );
+  return {
+    params: {
+      ...params,
+      id,
+      processEnv: {
+        ...(params.processEnv ?? {}),
+        ...lease.processEnv,
+      },
+    },
+    lease,
+  };
+}
+
+function retainOrchestratorCredentialLease(
+  sessionId: string,
+  lease: OrchestratorCredentialLifecycle | undefined
+): void {
+  if (!lease) return;
+  const session = sessions.get(sessionId);
+  if (
+    session?.mode !== 'web' ||
+    session.role !== 'orchestrator' ||
+    orchestratorRuntimeIsDisconnected(session)
+  ) {
+    lease.stop();
+    return;
+  }
+  orchestratorCredentialLeases.set(sessionId, lease);
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -596,6 +727,12 @@ export function onBackendStateChange(cb: BackendStateChangeCallback): void {
 }
 
 export function fireBackendStateIfChanged(session: Session): void {
+  if (
+    session.mode === 'web' &&
+    orchestratorRuntimeIsDisconnected(session)
+  ) {
+    stopOrchestratorCredentialLease(session.id);
+  }
   const newState = computeBackendState(session);
 
   let permissionType: 'approval' | 'question' | undefined;
@@ -1075,6 +1212,7 @@ function list(): SessionSummary[] {
           : {}),
         type: s.type,
         agent: s.agent,
+        ...(s.role !== undefined ? { role: s.role } : {}),
         mode: s.mode,
         ...(s.repoPath ? { repoPath: s.repoPath } : {}),
         ...(s.worktreePath !== undefined
@@ -1178,6 +1316,7 @@ function kill(id: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
+  stopOrchestratorCredentialLease(id);
   if (session.mode === 'pty') {
     void terminatePtySession(session, 'explicit-session-kill');
   } else {
@@ -1227,6 +1366,7 @@ function detachForRestart(id: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
+  stopOrchestratorCredentialLease(id);
   if (session.mode === 'pty') {
     session.preserveRuntimeFilesOnExit = true;
     try {
@@ -2078,6 +2218,7 @@ async function restoreWebSessionFromDb(
       ? { spawnedBySessionId: row.meta.spawnedBySessionId }
       : {}),
     agentType: row.meta.adapterType,
+    ...(row.meta.role !== undefined ? { role: row.meta.role } : {}),
     cwd: row.cwd,
     ...(restoredRepoPath !== undefined
       ? {
@@ -2112,12 +2253,22 @@ async function restoreWebSessionFromDb(
   // persisted DB row with a freshly-initialized blank transcript before we
   // copy back agentSessionV2 below — a process death in that window would
   // lose the session.
-  const { session, config } = await createWebSession(
-    createParams,
-    sessions,
-    fireBackendStateIfChanged,
-    { skipInitialPersist: true, deferConnect: true }
-  );
+  const preparedCreate = prepareOrchestratorWebCreate(createParams);
+  let created: Awaited<ReturnType<typeof createWebSession>>;
+  try {
+    created = await createWebSession(
+      preparedCreate.params,
+      sessions,
+      fireBackendStateIfChanged,
+      { skipInitialPersist: true, deferConnect: true }
+    );
+  } catch (error) {
+    preparedCreate.lease?.stop();
+    throw error;
+  }
+  const { session, config } = created;
+  session.restoreState = 'restoring';
+  retainOrchestratorCredentialLease(session.id, preparedCreate.lease);
 
   // Replace the freshly-created blank transcript with the persisted one.
   const persistedAgentSessionV2 = structuredClone(row.agentSessionV2);
@@ -2137,7 +2288,6 @@ async function restoreWebSessionFromDb(
   session.createdAt = new Date(row.createdAt).toISOString();
   session.lastActivity = new Date(row.lastActivity).toISOString();
   session.status = row.status === 'archived' ? 'disconnected' : row.status;
-  session.restoreState = 'restoring';
 
   // Derive runtime state from the persisted live snapshot, mirroring the
   // mapping in web-session-handler's adapter listener.
@@ -2754,11 +2904,19 @@ async function populateMetaCache(): Promise<void> {
 async function createWeb(
   params: CreateWebParams
 ): Promise<{ session: WebSession }> {
-  const result = await createWebSession(
-    params,
-    sessions,
-    fireBackendStateIfChanged
-  );
+  const preparedCreate = prepareOrchestratorWebCreate(params);
+  let result: Awaited<ReturnType<typeof createWebSession>>;
+  try {
+    result = await createWebSession(
+      preparedCreate.params,
+      sessions,
+      fireBackendStateIfChanged
+    );
+  } catch (error) {
+    preparedCreate.lease?.stop();
+    throw error;
+  }
+  retainOrchestratorCredentialLease(result.session.id, preparedCreate.lease);
   if (result.session.sessionEnvelope) {
     sessionEnvelopeRegistry.upsert(result.session.sessionEnvelope);
   }

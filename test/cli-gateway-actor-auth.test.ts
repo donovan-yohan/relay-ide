@@ -11,6 +11,7 @@ import {
   classifyCliGatewayCredentialLane,
   issueCliGatewayActorCredential,
   issueCliGatewayActorCredentialWithGrant,
+  issuePersistentOrchestratorCliGatewayActorCredential,
   listCliGatewayActorCredentialsWithGrant,
   revokeCliGatewayActorCredentialWithGrant,
   rotateCliGatewayActorCredentialWithGrant,
@@ -134,6 +135,46 @@ test('issues and validates bounded read-only CLI gateway actor credentials', () 
     correlationId: 'corr-cli-1',
   });
   expect(validation).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+});
+
+test('reserves the persistent-orchestrator reason for the internal lease issuer', () => {
+  const scopedRegistry = registry();
+  const ordinary = issueCliGatewayActorCredential(scopedRegistry, {
+    metadata: {
+      reason: 'persistent-orchestrator',
+      trace: 'ordinary',
+    },
+  });
+  expect(ordinary.credential.metadata?.reason).toBeUndefined();
+
+  const grants = grantRegistry();
+  const grantBacked = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-reserved-reason'),
+        'reserved-reason'
+      ),
+      metadata: {
+        reason: 'persistent-orchestrator',
+        trace: 'grant',
+      },
+    }
+  );
+  expect(grantBacked.credential.metadata?.reason).toBeUndefined();
+
+  const internal = issuePersistentOrchestratorCliGatewayActorCredential(
+    scopedRegistry,
+    {
+      actor: { type: 'agent', id: 'orchestrator-session' },
+      issuer: { id: 'relay-ide' },
+      capabilities: ['session:read'],
+    }
+  );
+  expect(internal.credential.metadata).toEqual({
+    reason: 'persistent-orchestrator',
+  });
 });
 
 test('validates WorkContext-scoped actor credentials against exact artifact read scopes', () => {

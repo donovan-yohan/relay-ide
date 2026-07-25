@@ -23,7 +23,10 @@ import {
   type ChannelHub,
   type ChannelSocket,
 } from '../server/channel-hub.js';
-import { createChannelChatRouter } from '../server/channel-chat-router.js';
+import {
+  authenticatedSourceSessionId,
+  createChannelChatRouter,
+} from '../server/channel-chat-router.js';
 import {
   CHANNEL_IMAGE_MAX_BYTES,
   createChannelAttachmentStore,
@@ -467,6 +470,35 @@ describe('channel routes — attribution', () => {
       kind: 'agent',
       id: 'agent:claude',
     });
+  });
+
+  it('attributes persistent-orchestrator posts only to a matching durable orchestrator session', () => {
+    const roles: Readonly<Record<string, string>> = {
+      'session:orchestrator': 'orchestrator',
+      'session:worker': 'implementer',
+    };
+    const getSession = (sessionId: string) => {
+      const role = roles[sessionId];
+      return role ? { role, status: 'active' } : undefined;
+    };
+    const credential = (actorId: string) =>
+      ({
+        actor: { type: 'agent', id: actorId },
+        metadata: { reason: 'persistent-orchestrator' },
+      }) as unknown as ScopedActorCredentialRecord;
+
+    expect(
+      authenticatedSourceSessionId(
+        credential('session:orchestrator'),
+        getSession
+      )
+    ).toBe('session:orchestrator');
+    expect(
+      authenticatedSourceSessionId(credential('session:worker'), getSession)
+    ).toBeUndefined();
+    expect(
+      authenticatedSourceSessionId(credential('session:stale'), getSession)
+    ).toBeUndefined();
   });
 });
 
