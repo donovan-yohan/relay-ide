@@ -61,6 +61,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '/api/analytics/*',
       '/telemetry/*',
       '/work-contexts/*',
+      '/agent-profiles/*',
     ],
     acceptedLanes: ['browser-session'],
     middleware: 'requireAuth',

@@ -96,6 +96,27 @@ export interface AgentProfileCreateInput {
   isBuiltIn?: boolean;
 }
 
+/**
+ * Mutable overlay fields for an existing profile. Every field is optional so
+ * callers can make a true PATCH; `null` clears optional vendor-dependent
+ * overlays. `isBuiltIn` is store-managed and may not be changed.
+ */
+export interface AgentProfileUpdateInput {
+  providerId?: string;
+  displayName?: string;
+  avatar?: AgentProfileAvatarRef | null;
+  systemPrompt?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  effort?: string | null;
+  envVars?: Record<string, string> | null;
+  namePool?: string[] | null;
+  respondTo?: AgentProfileRespondTo | null;
+  respondToAllowlist?: string[] | null;
+  isDefault?: boolean;
+  isBuiltIn?: boolean;
+}
+
 export interface AgentProfileStore {
   close(): void;
   /**
@@ -104,6 +125,12 @@ export interface AgentProfileStore {
    * profile is default.
    */
   create(input: AgentProfileCreateInput): AgentProfile;
+  /**
+   * Update a profile atomically while keeping the JSON blob and denormalized
+   * identity/default columns in lockstep. A default cannot be cleared or moved
+   * to another provider because that would leave its old provider defaultless.
+   */
+  update(id: string, patch: AgentProfileUpdateInput): AgentProfile;
   get(id: string): AgentProfile | null;
   list(filter?: { providerId?: string }): AgentProfile[];
   getDefaultForProvider(providerId: string): AgentProfile | null;
@@ -166,6 +193,15 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
   const setDefaultRow = db.prepare(
     `UPDATE agent_profiles SET is_default = 1, profile_json = ?, updated_at = ?
      WHERE id = ?`
+  );
+  const updateRow = db.prepare(
+    `UPDATE agent_profiles
+       SET provider_id = @providerId,
+           is_default = @isDefault,
+           is_built_in = @isBuiltIn,
+           profile_json = @profileJson,
+           updated_at = @updatedAt
+     WHERE id = @id`
   );
   // Self-heal a zero-default vendor: force a survivor at the stable built-in PK
   // to be the built-in default. Sets is_built_in = 1 (not just is_default) so a
@@ -241,6 +277,99 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         createdAt: nowIso,
         updatedAt: nowIso,
       });
+      const written = getById(id);
+      if (!written) {
+        throw new AgentProfileStoreError(500, 'agent_profile_write_failed');
+      }
+      return written;
+    },
+
+    update(id: string, patch: AgentProfileUpdateInput): AgentProfile {
+      const current = getById(id);
+      if (!current) {
+        throw new AgentProfileStoreError(404, 'agent_profile_not_found');
+      }
+      if (
+        hasOwn(patch, 'isBuiltIn') &&
+        patch.isBuiltIn !== undefined &&
+        patch.isBuiltIn !== current.isBuiltIn
+      ) {
+        throw new AgentProfileStoreError(
+          400,
+          'agent_profile_is_built_in_immutable',
+          'isBuiltIn is managed by the store and cannot be changed.'
+        );
+      }
+
+      const providerId = hasOwn(patch, 'providerId')
+        ? requireNonEmpty(patch.providerId, 'providerId')
+        : current.providerId;
+      if (current.isBuiltIn && providerId !== current.providerId) {
+        throw new AgentProfileStoreError(
+          400,
+          'agent_profile_builtin_provider_change_forbidden',
+          'Built-in profiles cannot change providerId.'
+        );
+      }
+      const isDefault = hasOwn(patch, 'isDefault')
+        ? patch.isDefault
+        : current.isDefault;
+      if (typeof isDefault !== 'boolean') {
+        throw new AgentProfileStoreError(400, 'agent_profile_invalid');
+      }
+      if (current.isDefault && !isDefault) {
+        throw new AgentProfileStoreError(
+          409,
+          'agent_profile_last_default',
+          'A provider must retain a default profile.'
+        );
+      }
+      if (current.isDefault && providerId !== current.providerId) {
+        throw new AgentProfileStoreError(
+          409,
+          'agent_profile_default_provider_change_forbidden',
+          'Move a non-default profile, or set another default first.'
+        );
+      }
+
+      const profile = applyProfilePatch(current, patch, providerId, isDefault);
+      if (!isAgentProfile(profile)) {
+        throw new AgentProfileStoreError(400, 'agent_profile_invalid');
+      }
+      const nowIso = new Date().toISOString();
+      const write = db.transaction(() => {
+        // A false→true flip is the one sanctioned way update() changes a
+        // provider's default. Clear its current default first, then write the
+        // target row, so JSON and denormalized flags agree at every commit.
+        if (profile.isDefault && !current.isDefault) {
+          const previous = selectDefaultForProvider.get(profile.providerId) as
+            | AgentProfileRow
+            | undefined;
+          if (previous && previous.id !== id) {
+            const previousProfile = rowToProfileSafe(previous);
+            if (previousProfile) {
+              clearDefault.run(
+                JSON.stringify({ ...previousProfile, isDefault: false }),
+                nowIso,
+                previous.id
+              );
+            }
+          }
+        }
+        try {
+          updateRow.run({
+            id,
+            providerId: profile.providerId,
+            isDefault: profile.isDefault ? 1 : 0,
+            isBuiltIn: profile.isBuiltIn ? 1 : 0,
+            profileJson: JSON.stringify(profile),
+            updatedAt: nowIso,
+          });
+        } catch (err) {
+          rethrowConstraint(err, profile.providerId);
+        }
+      });
+      write();
       const written = getById(id);
       if (!written) {
         throw new AgentProfileStoreError(500, 'agent_profile_write_failed');
@@ -405,6 +534,91 @@ function requireNonEmpty(value: unknown, field: string): string {
 
 function readTrimmed(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function hasOwn(record: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function optionalString(value: string | null | undefined): string | undefined {
+  return readTrimmed(value);
+}
+
+function stringRecord(
+  value: Record<string, string> | null | undefined
+): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') result[key] = entry;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function stringList(value: string[] | null | undefined): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result = value.filter(
+    (entry): entry is string =>
+      typeof entry === 'string' && entry.trim().length > 0
+  );
+  return result.length ? result : undefined;
+}
+
+/** Apply only fields explicitly present in the PATCH, preserving every other overlay. */
+function applyProfilePatch(
+  current: AgentProfile,
+  patch: AgentProfileUpdateInput,
+  providerId: string,
+  isDefault: boolean
+): AgentProfile {
+  const profile: AgentProfile = {
+    ...current,
+    providerId,
+    isDefault,
+  };
+  if (hasOwn(patch, 'displayName')) {
+    profile.displayName =
+      typeof patch.displayName === 'string' ? patch.displayName : '';
+  }
+  if (hasOwn(patch, 'avatar')) profile.avatar = patch.avatar ?? null;
+
+  const optionalFields: Array<
+    readonly [
+      'systemPrompt' | 'model' | 'provider' | 'effort',
+      string | null | undefined,
+    ]
+  > = [
+    ['systemPrompt', patch.systemPrompt],
+    ['model', patch.model],
+    ['provider', patch.provider],
+    ['effort', patch.effort],
+  ];
+  for (const [field, value] of optionalFields) {
+    if (!hasOwn(patch, field)) continue;
+    const normalized = optionalString(value);
+    if (normalized) profile[field] = normalized;
+    else delete profile[field];
+  }
+  if (hasOwn(patch, 'envVars')) {
+    const normalized = stringRecord(patch.envVars);
+    if (normalized) profile.envVars = normalized;
+    else delete profile.envVars;
+  }
+  if (hasOwn(patch, 'namePool')) {
+    const normalized = stringList(patch.namePool);
+    if (normalized) profile.namePool = normalized;
+    else delete profile.namePool;
+  }
+  if (hasOwn(patch, 'respondTo')) {
+    if (patch.respondTo) profile.respondTo = patch.respondTo;
+    else delete profile.respondTo;
+  }
+  if (hasOwn(patch, 'respondToAllowlist')) {
+    const normalized = stringList(patch.respondToAllowlist);
+    if (normalized) profile.respondToAllowlist = normalized;
+    else delete profile.respondToAllowlist;
+  }
+  return profile;
 }
 
 function generateProfileId(providerId: string, isDefault: boolean): string {

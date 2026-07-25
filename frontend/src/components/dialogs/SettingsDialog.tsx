@@ -15,6 +15,7 @@ import GitHubIntegration from './integrations/GitHubIntegration.js';
 import WebhookIntegration from './integrations/WebhookIntegration.js';
 import JiraIntegration from './integrations/JiraIntegration.js';
 import SettingsNodesSection from './SettingsNodesSection.js';
+import SettingsAgentProfilesSection from './SettingsAgentProfilesSection.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import {
   setDefaultAgent,
@@ -77,7 +78,10 @@ const TOC_SECTIONS = [
   {
     id: 'section-agents',
     label: 'agents',
-    children: [{ id: 'agent-claude-code', label: 'Claude Code' }],
+    children: [
+      { id: 'agent-claude-code', label: 'Claude Code' },
+      { id: 'section-agent-profiles', label: 'profiles' },
+    ],
   },
   {
     id: 'section-integrations',
@@ -104,7 +108,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'branch name',
     'session name',
   ],
-  agents: ['claude', 'claude code', 'fullscreen', 'no flicker'],
+  agents: ['claude', 'claude code', 'fullscreen', 'no flicker', 'profiles'],
   integrations: [
     'github',
     'webhooks',
@@ -481,6 +485,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               searchQuery={searchQuery}
               handlers={configHandlers}
             />
+            <SettingsAgentProfilesSection searchQuery={searchQuery} />
             <IntegrationsSection
               searchQuery={searchQuery}
               githubConnected={githubConnected}

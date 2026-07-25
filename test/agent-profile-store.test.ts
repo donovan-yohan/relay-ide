@@ -359,6 +359,90 @@ describe('one-default-per-provider invariant (enforcement CHOICE: reject)', () =
   });
 });
 
+describe('update — profile JSON and denormalized invariant stay in lockstep', () => {
+  it('patches explicit fields while preserving omitted overlay fields', () => {
+    const store = makeStore();
+    store.seedBuiltIns([{ id: 'codex' }]);
+    const created = store.create({
+      providerId: 'codex',
+      displayName: 'Fast Codex',
+      systemPrompt: 'be concise',
+      model: 'gpt-x',
+      effort: 'high',
+      envVars: { FAST: '1' },
+    });
+
+    const updated = store.update(created.id, {
+      displayName: 'Careful Codex',
+      effort: null,
+    });
+    expect(updated).toMatchObject({
+      id: created.id,
+      providerId: 'codex',
+      displayName: 'Careful Codex',
+      systemPrompt: 'be concise',
+      model: 'gpt-x',
+      envVars: { FAST: '1' },
+      isDefault: false,
+      isBuiltIn: false,
+    });
+    expect(updated.effort).toBeUndefined();
+    expect(store.get(created.id)).toEqual(updated);
+  });
+
+  it('rejects provider changes for built-in profiles and isBuiltIn edits', () => {
+    const store = makeStore();
+    store.seedBuiltIns([{ id: 'claude' }]);
+    const builtInId = builtInAgentProfileId('claude');
+
+    try {
+      store.update(builtInId, { providerId: 'codex' });
+      throw new Error('expected provider change to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'agent_profile_builtin_provider_change_forbidden',
+        status: 400,
+      });
+    }
+    try {
+      store.update(builtInId, { isBuiltIn: false });
+      throw new Error('expected isBuiltIn edit to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'agent_profile_is_built_in_immutable',
+        status: 400,
+      });
+    }
+  });
+
+  it('keeps exactly one default when an update promotes a profile', () => {
+    const store = makeStore();
+    store.seedBuiltIns([{ id: 'claude' }]);
+    const custom = store.create({
+      providerId: 'claude',
+      displayName: 'Reviewer Claude',
+    });
+
+    const updated = store.update(custom.id, { isDefault: true });
+    expect(updated.isDefault).toBe(true);
+    expect(store.get(builtInAgentProfileId('claude'))?.isDefault).toBe(false);
+    expect(
+      store
+        .list({ providerId: 'claude' })
+        .filter((profile) => profile.isDefault)
+    ).toHaveLength(1);
+    try {
+      store.update(custom.id, { isDefault: false });
+      throw new Error('expected default clearing to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'agent_profile_last_default',
+        status: 409,
+      });
+    }
+  });
+});
+
 describe('read-time shim over the store', () => {
   it('maps agent:<framework> to the seeded default profile id', () => {
     const store = makeStore();

@@ -74,3 +74,8 @@
   color: var(--text-muted);
   font-style: italic;
 }
+
+.ss-active .fzf-cursor {
+  transform: translateX(0);
+  opacity: 1;
+}
