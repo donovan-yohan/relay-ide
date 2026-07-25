@@ -33,6 +33,10 @@ const loggerMocks = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+const serverStartMocks = vi.hoisted(() => ({
+  imported: vi.fn(),
+}));
+
 vi.mock('../server/service.js', () => ({
   CONFIG_DIR: '/tmp/relay-ide-test-config',
   install: serviceMocks.install,
@@ -44,6 +48,11 @@ vi.mock('../server/service.js', () => ({
 vi.mock('../server/logger.js', () => ({
   createLogger: () => loggerMocks,
 }));
+
+vi.mock('../server/index.js', () => {
+  serverStartMocks.imported();
+  return {};
+});
 
 type CliExitError = Error & { code: number; relayCliExit: true };
 
@@ -66,6 +75,7 @@ async function runCli(
   serviceMocks.status.mockClear();
   loggerMocks.info.mockClear();
   loggerMocks.error.mockClear();
+  serverStartMocks.imported.mockClear();
 
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((
     code?: number | string | null
@@ -244,13 +254,62 @@ describe('hub/node packaging decision', () => {
     }
 
     expect(cliSource).toContain(
-      'hub                Run the Relay hub web server'
+      'Run the Relay hub web server (same as bare relay-ide)'
     );
     expect(cliSource).toContain(
       'node               Manage relay-node pairing and diagnostics'
     );
+    expect(cliSource).toContain('--allow-degraded');
     expect(bootstrapDoc).toContain('run the web server as `relay-ide hub`');
     expect(bootstrapDoc).toContain('relay-ide node install');
+  });
+
+  it('documents and forwards --allow-degraded before hub startup', async () => {
+    const previous = process.env['RELAY_IDE_ALLOW_DEGRADED'];
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const configPath = writeHubConfig();
+    delete process.env['RELAY_IDE_ALLOW_DEGRADED'];
+
+    try {
+      const bareResult = await runCli([
+        '--allow-degraded',
+        '--config',
+        configPath,
+      ]);
+      expect(bareResult.exitCode).toBeUndefined();
+      expect(process.env['RELAY_IDE_ALLOW_DEGRADED']).toBe('1');
+      expect(serverStartMocks.imported).toHaveBeenCalledTimes(1);
+
+      delete process.env['RELAY_IDE_ALLOW_DEGRADED'];
+      const hubResult = await runCli([
+        'hub',
+        '--allow-degraded',
+        '--config',
+        configPath,
+      ]);
+      expect(hubResult.exitCode).toBeUndefined();
+      expect(process.env['RELAY_IDE_ALLOW_DEGRADED']).toBe('1');
+      expect(
+        cliSource.indexOf("process.env['RELAY_IDE_ALLOW_DEGRADED'] = '1'")
+      ).toBeLessThan(cliSource.indexOf("await import('../server/index.js')"));
+
+      process.env['RELAY_IDE_ALLOW_DEGRADED'] = 'already-set';
+      const envOptInResult = await runCli(['--config', configPath]);
+      expect(envOptInResult.exitCode).toBeUndefined();
+      expect(process.env['RELAY_IDE_ALLOW_DEGRADED']).toBe('already-set');
+
+      const helpResult = await runCli(['--help']);
+      expect(helpResult.exitCode).toBe(0);
+      expect(loggerMocks.info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '--allow-degraded   Permit the hub to start with failed persistence stores'
+        )
+      );
+    } finally {
+      resetCliLogDir();
+      if (previous === undefined) delete process.env['RELAY_IDE_ALLOW_DEGRADED'];
+      else process.env['RELAY_IDE_ALLOW_DEGRADED'] = previous;
+    }
   });
 
   it('keeps explicit hub subcommands ahead of the --bg shorthand fallback', () => {
@@ -504,6 +563,151 @@ describe('hub/node packaging decision', () => {
     }
   });
 
+  it('reports unauthenticated degraded persistence health as a typed hub doctor failure', async () => {
+    resetCliLogDir();
+    const configPath = writeHubConfig();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === '/version') {
+        return new Response(JSON.stringify({ version: '0.1.0' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === '/healthz') {
+        return new Response(
+          JSON.stringify({
+            status: 'degraded',
+            lagMs: 3,
+            rss: 1024,
+            disabledStores: ['channelMessages', 'workContexts'],
+          }),
+          {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          }
+        );
+      }
+      return new Response(JSON.stringify({ nodes: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const result = await runCli([
+        'hub',
+        'doctor',
+        '--json',
+        '--config',
+        configPath,
+      ]);
+      expect(result.exitCode).toBe(1);
+      const payload = JSON.parse(stdout) as {
+        ok: boolean;
+        checks: Array<{
+          name: string;
+          reason?: string;
+          details?: { status?: string; disabledStores?: string[] };
+        }>;
+      };
+      const persistence = payload.checks.find(
+        (check) => check.name === 'persistence.health'
+      );
+      expect(payload.ok).toBe(false);
+      expect(persistence).toMatchObject({
+        reason: 'PERSISTENCE_DEGRADED',
+        details: {
+          status: 'degraded',
+          disabledStores: ['channelMessages', 'workContexts'],
+        },
+      });
+      const healthCall = fetchMock.mock.calls.find(
+        ([input]) => new URL(String(input)).pathname === '/healthz'
+      );
+      expect(healthCall?.[1]).toMatchObject({
+        headers: { 'x-relay-cli-gateway': 'v1' },
+      });
+      expect((healthCall?.[1] as RequestInit | undefined)?.headers).not.toHaveProperty(
+        'Authorization'
+      );
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
+  });
+
+  it('keeps lag-only health degradation as a hub health failure', async () => {
+    resetCliLogDir();
+    const configPath = writeHubConfig();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
+    stubHubFetch([
+      { pathName: '/version', body: { version: '0.1.0' } },
+      {
+        pathName: '/healthz',
+        status: 503,
+        body: { status: 'degraded', lagMs: 125, rss: 2048 },
+      },
+      { pathName: '/nodes', body: { nodes: [] } },
+    ]);
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const result = await runCli([
+        'hub',
+        'doctor',
+        '--json',
+        '--config',
+        configPath,
+      ]);
+      expect(result.exitCode).toBe(1);
+      const payload = JSON.parse(stdout) as {
+        checks: Array<{
+          name: string;
+          reason?: string;
+          details?: { status?: number; body?: Record<string, unknown> };
+        }>;
+      };
+      expect(
+        payload.checks.find((check) => check.name === 'persistence.health')
+      ).toBeUndefined();
+      expect(
+        payload.checks.find((check) => check.name === 'hub.health')
+      ).toMatchObject({
+        status: 'fail',
+        reason: 'HUB_HTTP_ERROR',
+        details: {
+          status: 503,
+          body: { status: 'degraded', lagMs: 125, rss: 2048 },
+        },
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
+  });
+
   it('reports node availability, version, capability, and log support diagnostics', async () => {
     resetCliLogDir();
     const configPath = writeHubConfig();
@@ -539,6 +743,7 @@ describe('hub/node packaging decision', () => {
     ];
     stubHubFetch([
       { pathName: '/version', body: { version: '0.1.0' } },
+      { pathName: '/healthz', body: { status: 'ok', lagMs: 0, rss: 0 } },
       { pathName: '/nodes', body: { nodes } },
       {
         pathName: '/hub/nodes/node_no_relay_pty/logs?lines=0',

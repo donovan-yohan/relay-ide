@@ -94,7 +94,8 @@ import {
 } from './relay-state-db.js';
 import {
   createWorkContextRouter,
-  initWorkContextStoreBestEffort,
+  createUnavailableWorkContextStore,
+  initWorkContextStore,
   type WorkContextStore,
 } from './work-contexts.js';
 import { initIaStore, type IaStore } from './ia-store.js';
@@ -325,6 +326,13 @@ import {
 } from './browser-content.js';
 import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 import { createLogger, initFileLogging } from './logger.js';
+import {
+  initializePersistenceStores,
+  isAllowDegradedPersistence,
+  persistenceFailureInjectorFromTestEnvironment,
+  PersistenceStartupError,
+  type PersistenceStartupState,
+} from './persistence-startup.js';
 import { createSecurityAuditLog } from './security-audit-log.js';
 import {
   getDefaultAllocator,
@@ -1628,39 +1636,6 @@ function deriveContextInboxStore(
   return store ? createContextInboxStoreAdapter(store) : null;
 }
 
-function initWorkContextArtifactStoreBestEffort(
-  configDir: string
-): WorkContextArtifactStore | null {
-  try {
-    return initWorkContextArtifactStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'WorkContext artifact store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-/**
- * Boot the #964 explicit agent presence store, or `null` when init fails (the
- * roster then degrades to its derived projection and presence writes 503).
- * Extracted from `main()` to keep that boot function under the complexity gate.
- */
-function initAgentPresenceStoreBestEffort(
-  configDir: string
-): AgentPresenceStore | null {
-  try {
-    return initAgentPresenceStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Agent presence store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
 /**
  * Audit-attributed actor id for an explicit-presence (#964) write, sourced from
  * the authenticated CLI-gateway actor credential. Module-scoped so `main()`
@@ -1671,143 +1646,116 @@ function presenceActorIdFromRequest(req: express.Request): string | undefined {
 }
 
 /**
- * Boot the #1233 AgentProfile store and seed one built-in default profile per
- * CONFIGURED framework, or `null` when init fails (agent-profile identity then
- * simply has no rows this boot). Seeding is idempotent — safe every startup.
- * Extracted from `main()` to keep that boot function under the complexity gate.
+ * Initialize every SQLite-backed boot store through one collector. A hub may
+ * use disabled stores only when the operator explicitly opts into degraded
+ * mode; the collector otherwise throws before Express or server.listen exist.
  */
-function initAgentProfileStoreBestEffort(
+function initializeHubPersistence(
   configDir: string,
   config: Config
-): AgentProfileStore | null {
-  try {
-    const store = initAgentProfileStore(configDir);
-    // Enumerate configured frameworks INSIDE the guard: resolveFramework throws
-    // for a malformed fully-custom framework entry (missing command/args/parser/
-    // capabilities) that config loading does not validate. Keeping it here lets
-    // that resolution throw degrade to "no profile rows" instead of escaping the
-    // best-effort guard and crashing hub boot.
-    store.seedBuiltIns(listConfiguredFrameworks(config.frameworks));
-    return store;
-  } catch (err) {
-    logger.warn(
-      'Agent profile store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initWorkflowRunStoreBestEffort(
-  configDir: string
-): WorkflowRunStore | null {
-  try {
-    return initWorkflowRunStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Workflow run store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initAutomationRunStoreBestEffort(
-  configDir: string
-): AutomationRunStore | null {
-  try {
-    return initAutomationRunStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Automation run store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initWorkspaceSurfaceStoreBestEffort(
-  configDir: string
-): WorkspaceSurfaceStore | null {
-  try {
-    return initWorkspaceSurfaceStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Workspace surface store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initWorkspaceTopicStoreBestEffort(
-  configDir: string
-): WorkspaceTopicStore | null {
-  try {
-    return initWorkspaceTopicStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Workspace topic store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initPrOverseerStoreBestEffort(
-  configDir: string
-): PrOverseerStore | null {
-  try {
-    return initPrOverseerStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'PR overseer store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initWorkContextMessageStoreBestEffort(
-  configDir: string
-): WorkContextMessageStore | null {
-  try {
-    return initWorkContextMessageStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'WorkContext message store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initChannelMessageStoreBestEffort(
-  configDir: string
-): ChannelMessageStore | null {
-  try {
-    return initChannelMessageStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Channel message store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-function initChannelAttachmentStoreBestEffort(
-  configDir: string
-): ChannelAttachmentStore | null {
-  try {
-    return initChannelAttachmentStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Channel attachment store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
+): PersistenceStartupState {
+  const failureInjector = persistenceFailureInjectorFromTestEnvironment();
+  return initializePersistenceStores(
+    [
+      {
+        name: 'security-audit',
+        criticality: 'core',
+        initialize: () =>
+          createSecurityAuditLog(path.join(configDir, 'security-audit.db')),
+      },
+      {
+        name: 'relay-state',
+        criticality: 'core',
+        initialize: () => initRelayStateDb(configDir),
+      },
+      {
+        name: 'work-contexts',
+        criticality: 'core',
+        initialize: () => initWorkContextStore(configDir),
+        unavailable: (cause) => createUnavailableWorkContextStore(cause),
+      },
+      { name: 'ia', criticality: 'core', initialize: () => initIaStore(configDir) },
+      {
+        name: 'context-packets',
+        criticality: 'core',
+        initialize: () => initContextPacketStore(configDir),
+      },
+      {
+        name: 'agent-presence',
+        criticality: 'core',
+        initialize: () => initAgentPresenceStore(configDir),
+      },
+      {
+        name: 'agent-profiles',
+        criticality: 'core',
+        initialize: () => {
+          const store = initAgentProfileStore(configDir);
+          store.seedBuiltIns(listConfiguredFrameworks(config.frameworks));
+          return store;
+        },
+      },
+      {
+        name: 'work-context-artifacts',
+        criticality: 'core',
+        initialize: () => initWorkContextArtifactStore(configDir),
+      },
+      {
+        name: 'workspace-topics',
+        criticality: 'core',
+        initialize: () => initWorkspaceTopicStore(configDir),
+      },
+      {
+        name: 'work-context-messages',
+        criticality: 'core',
+        initialize: () => initWorkContextMessageStore(configDir),
+      },
+      {
+        name: 'channel-attachments',
+        criticality: 'core',
+        initialize: () => initChannelAttachmentStore(configDir),
+      },
+      {
+        name: 'channel-messages',
+        criticality: 'core',
+        initialize: () => initChannelMessageStore(configDir),
+      },
+      {
+        name: 'intervention-log',
+        criticality: 'core',
+        initialize: () => initInterventionLog(configDir),
+      },
+      {
+        name: 'analytics',
+        criticality: 'optional',
+        initialize: () => initAnalytics(configDir),
+      },
+      {
+        name: 'workflow-runs',
+        criticality: 'optional',
+        initialize: () => initWorkflowRunStore(configDir),
+      },
+      {
+        name: 'automation-runs',
+        criticality: 'optional',
+        initialize: () => initAutomationRunStore(configDir),
+      },
+      {
+        name: 'workspace-surfaces',
+        criticality: 'optional',
+        initialize: () => initWorkspaceSurfaceStore(configDir),
+      },
+      {
+        name: 'pr-overseer',
+        criticality: 'optional',
+        initialize: () => initPrOverseerStore(configDir),
+      },
+    ],
+    {
+      allowDegraded: isAllowDegradedPersistence(),
+      logger,
+      ...(failureInjector ? { failureInjector } : {}),
+    }
+  );
 }
 
 /**
@@ -1986,17 +1934,42 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
-  let securityAuditLog: ReturnType<typeof createSecurityAuditLog> | undefined;
-  try {
-    securityAuditLog = createSecurityAuditLog(
-      path.join(configDir, 'security-audit.db')
-    );
-  } catch (err) {
-    logger.warn(
-      'Security audit log disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
+  // Finalize all SQLite persistence before building long-lived services. A
+  // failed store throws here by default, before a scheduler or listener can
+  // leave an amnesiac hub running.
+  const persistenceState = initializeHubPersistence(configDir, getConfig());
+  const securityAuditLog =
+    persistenceState.get<ReturnType<typeof createSecurityAuditLog>>(
+      'security-audit'
+    ) ?? undefined;
+  const workContextStore =
+    persistenceState.get<WorkContextStore>('work-contexts') ??
+    createUnavailableWorkContextStore('work-contexts missing from startup');
+  const iaStore = persistenceState.get<IaStore>('ia');
+  const contextPacketStore =
+    persistenceState.get<ContextPacketStore>('context-packets');
+  const agentPresenceStore =
+    persistenceState.get<AgentPresenceStore>('agent-presence');
+  const agentProfileStore =
+    persistenceState.get<AgentProfileStore>('agent-profiles');
+  const workContextArtifactStore =
+    persistenceState.get<WorkContextArtifactStore>('work-context-artifacts');
+  const workflowRunStore =
+    persistenceState.get<WorkflowRunStore>('workflow-runs');
+  const automationRunStore =
+    persistenceState.get<AutomationRunStore>('automation-runs');
+  const workspaceSurfaceStore =
+    persistenceState.get<WorkspaceSurfaceStore>('workspace-surfaces');
+  const workspaceTopicStore =
+    persistenceState.get<WorkspaceTopicStore>('workspace-topics');
+  const prOverseerStore =
+    persistenceState.get<PrOverseerStore>('pr-overseer');
+  const workContextMessageStore =
+    persistenceState.get<WorkContextMessageStore>('work-context-messages');
+  const channelAttachmentStore =
+    persistenceState.get<ChannelAttachmentStore>('channel-attachments');
+  const channelMessageStore =
+    persistenceState.get<ChannelMessageStore>('channel-messages');
   const hubNodeRegistry = createAuditedHubNodeRegistry(
     configDir,
     securityAuditLog
@@ -2037,31 +2010,6 @@ async function main(): Promise<void> {
     reconcilePortsForAllRepos
   );
 
-  try {
-    initRelayStateDb(configDir);
-  } catch (err) {
-    logger.warn(
-      'Relay state DB disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  const workContextStore = initWorkContextStoreBestEffort(configDir);
-
-  // IA persistence substrate (#737): Workspace grouping + Bench overlays. Own
-  // SQLite file; new tables only, non-destructive. Routes that consume it
-  // (#733/#735) land in follow-ups. Guarded so a DB error degrades to "no IA
-  // persistence" rather than failing boot.
-  let iaStore: IaStore | null = null;
-  try {
-    iaStore = initIaStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'IA store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
   // #736: one-time, idempotent boot migration of legacy `config.workspaces`
   // groupings → persisted IA Workspaces (`ia.db`). NON-DESTRUCTIVE: reads
   // `config.workspaces` + the local repo inventory, writes ONLY to `ia.db`.
@@ -2078,56 +2026,6 @@ async function main(): Promise<void> {
         configPath: CONFIG_PATH,
       }),
   });
-
-  // Context-packet + session-inbox store (#758, ADR-019). Own SQLite file
-  // (`context-packets.db`); new tables only, non-destructive. CLI verbs/routes
-  // that consume it (#765) and anchor resolution (#766) land in follow-ups.
-  // Guarded so a DB error degrades to "no context-packet persistence" rather
-  // than failing boot.
-  let contextPacketStore: ContextPacketStore | null = null;
-  try {
-    contextPacketStore = initContextPacketStore(configDir);
-  } catch (err) {
-    logger.warn(
-      'Context-packet store disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // Explicit agent presence store (#964, child of #953). Own SQLite file
-  // (`agent-presence.db`); new table only, non-destructive. Backs
-  // roster.register / roster.updateSelf and the roster.list self-declared
-  // overlay. Guarded so a DB error degrades to "no explicit presence" (the
-  // roster falls back to the derived projection) rather than failing boot.
-  const agentPresenceStore = initAgentPresenceStoreBestEffort(configDir);
-
-  // AgentProfile store (#1233, epic #1232). Own SQLite file (`agent-profiles.db`);
-  // new table only, non-destructive. Seeds one built-in default profile per
-  // configured framework at boot (idempotent). Guarded so a DB error degrades to
-  // "no profile rows" rather than failing boot. NO live-row re-key ships here.
-  const agentProfileStore = initAgentProfileStoreBestEffort(
-    configDir,
-    getConfig()
-  );
-
-  // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
-  // degrade to typed 503 when initialization fails so hub startup stays useful.
-  const workContextArtifactStore =
-    initWorkContextArtifactStoreBestEffort(configDir);
-  const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
-  const automationRunStore = initAutomationRunStoreBestEffort(configDir);
-  const workspaceSurfaceStore = initWorkspaceSurfaceStoreBestEffort(configDir);
-  const workspaceTopicStore = initWorkspaceTopicStoreBestEffort(configDir);
-  const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
-  const workContextMessageStore =
-    initWorkContextMessageStoreBestEffort(configDir);
-  const channelAttachmentStore =
-    initChannelAttachmentStoreBestEffort(configDir);
-  // Channel conversation core (#1165). Own SQLite (`channel-chat.db`); routes and
-  // the /ws/channels lane degrade when init fails — a failed channel store never
-  // takes down the hub or the untouched /ws/:sessionId lane. Boot order: init →
-  // sweep stale streaming → sweep orphans → hub → mount router → wire ws.
-  const channelMessageStore = initChannelMessageStoreBestEffort(configDir);
   if (channelMessageStore) {
     try {
       channelMessageStore.sweepStaleStreaming();
@@ -2197,24 +2095,6 @@ async function main(): Promise<void> {
   });
   const cliGatewayEventBus = createCliGatewayEventBus();
 
-  try {
-    initInterventionLog(configDir);
-  } catch (err) {
-    logger.warn(
-      'Intervention log disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  try {
-    initAnalytics(configDir);
-  } catch (err) {
-    logger.warn(
-      'Analytics disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
   await initializePinConfig(startupConfig);
 
   const authenticatedTokens = new Set<string>();
@@ -2247,7 +2127,9 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
-  const healthMonitor = createHealthMonitor();
+  const healthMonitor = createHealthMonitor({
+    disabledStores: persistenceState.disabledStores,
+  });
   app.get('/healthz', healthMonitor.handler);
 
   function authenticatedBrowserSession(req: express.Request): boolean {
@@ -4732,7 +4614,15 @@ async function main(): Promise<void> {
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();
-    res.json({ hasPIN: auth.isPinConfigured(config.pinHash) });
+    res.json({
+      hasPIN: auth.isPinConfigured(config.pinHash),
+      ...(persistenceState.isDegraded
+        ? {
+            status: 'degraded',
+            disabledStores: persistenceState.disabledStores,
+          }
+        : {}),
+    });
   });
 
   // POST /auth/setup — set initial PIN (only works when no PIN is configured)
@@ -6615,6 +6505,10 @@ function positiveIntegerEnv(name: string): number | undefined {
 }
 
 main().catch((err) => {
-  logger.error('Unhandled fatal error:', err);
+  if (err instanceof PersistenceStartupError) {
+    logger.error(err.message);
+  } else {
+    logger.error('Unhandled fatal error:', err);
+  }
   process.exitCode = 1;
 });

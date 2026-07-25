@@ -141,7 +141,8 @@ if (args.includes('--help') || args.includes('-h')) {
 Commands:
   dev [--self-host]  Run backend + Vite frontend with HMR (source checkout)
   update             Update this single relay-ide package from npm
-  hub                Run the Relay hub web server (same as bare relay-ide)
+  hub [--allow-degraded]
+                     Run the Relay hub web server (same as bare relay-ide)
     install                           Install/start the hub background service
     uninstall                         Stop and remove the hub background service
     status                            Show hub service status
@@ -198,6 +199,7 @@ Options:
   --config <path>    Path to config.json (default: ~/.config/relay-ide/config.json)
   --compact          With 'manifest': print compact JSON
   --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
+  --allow-degraded   Permit the hub to start with failed persistence stores (unsafe; health reports degraded)
   --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
   --help, -h         Show this help`);
@@ -6220,6 +6222,7 @@ type HubDoctorReason =
   | 'AUTH_TOKEN_MISSING'
   | 'HUB_UNREACHABLE'
   | 'HUB_HTTP_ERROR'
+  | 'PERSISTENCE_DEGRADED'
   | 'UNAUTHORIZED'
   | 'NODE_REGISTRY_INVALID'
   | 'NODE_OFFLINE'
@@ -6275,7 +6278,8 @@ function isAbortError(error: unknown): boolean {
 
 async function hubFetchJson(
   pathName: string,
-  capabilities: readonly string[] = []
+  capabilities: readonly string[] = [],
+  unauthenticated = false
 ): Promise<
   | { ok: true; status: number; body: unknown }
   | {
@@ -6286,7 +6290,7 @@ async function hubFetchJson(
       body?: unknown;
     }
 > {
-  const token = hubCliToken();
+  const token = unauthenticated ? '' : hubCliToken();
   const headers: Record<string, string> = { 'x-relay-cli-gateway': 'v1' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   if (capabilities.length)
@@ -6625,6 +6629,53 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
           message: reachable.message,
         }
   );
+  if (hubReachable) {
+    const health = await hubFetchJson('/healthz', [], true);
+    const body =
+      typeof health.body === 'object' && health.body !== null
+        ? (health.body as Record<string, unknown>)
+        : {};
+    const rawDisabledStores = body['disabledStores'];
+    const disabledStores =
+      Array.isArray(rawDisabledStores) &&
+      rawDisabledStores.length > 0 &&
+      rawDisabledStores.every(
+        (store): store is string =>
+          typeof store === 'string' && store.length > 0
+      )
+        ? rawDisabledStores
+        : undefined;
+    if (disabledStores) {
+      checks.push({
+        name: 'persistence.health',
+        status: 'fail',
+        reason: 'PERSISTENCE_DEGRADED',
+        message: `hub persistence is degraded: ${disabledStores.join(', ')}.`,
+        details: { status: body['status'], disabledStores },
+      });
+    } else if ('reason' in health) {
+      checks.push({
+        name: 'hub.health',
+        status: 'fail',
+        reason: health.reason,
+        message: health.message,
+        details: { status: health.status, body: health.body },
+      });
+    } else {
+      checks.push({
+        name: 'hub.health',
+        status: 'pass',
+        message: `hub /healthz reports ${typeof body['status'] === 'string' ? body['status'] : 'healthy'}.`,
+      });
+    }
+  } else {
+    checks.push({
+      name: 'hub.health',
+      status: 'skip',
+      reason: 'CHECK_SKIPPED',
+      message: 'unauthenticated health check skipped because hub reachability failed.',
+    });
+  }
   let nodes: HubNodeSummary[] = [];
   if (hubCliToken() && hubReachable) {
     const fetched = await fetchHubNodes();
@@ -8453,7 +8504,7 @@ if (command === 'hub') {
     // an alias preserves bare `relay-ide` while making the runtime role explicit.
   } else {
     logger.error(
-      'Usage: relay-ide hub [install|uninstall|status|logs|nodes|doctor|node-logs] [--port <port>] [--host <host>] [--config <path>]'
+      'Usage: relay-ide hub [install|uninstall|status|logs|nodes|doctor|node-logs] [--allow-degraded] [--port <port>] [--host <host>] [--config <path>]'
     );
     process.exit(1);
   }
@@ -9009,5 +9060,8 @@ if (portArg !== undefined) process.env['RELAY_IDE_PORT'] = portArg;
 const hostArg = getArg('--host');
 if (hostArg !== undefined) process.env['RELAY_IDE_HOST'] = hostArg;
 if (args.includes('--debug-log')) process.env['RELAY_IDE_DEBUG_LOG'] = '1';
+if (args.includes('--allow-degraded')) {
+  process.env['RELAY_IDE_ALLOW_DEGRADED'] = '1';
+}
 
 await import('../server/index.js');

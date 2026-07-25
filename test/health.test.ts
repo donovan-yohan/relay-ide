@@ -139,6 +139,37 @@ describe('/healthz', () => {
     });
   });
 
+  it('returns 503 and disabled stores when persistence is explicitly degraded', () => {
+    const monitor = createHealthMonitor({
+      getLagMs: () => 12,
+      disabledStores: ['channel-messages', 'analytics'],
+      memoryLogIntervalMs: 60_000,
+      memoryUsage: () => ({
+        rss: 123_456,
+        heapTotal: 80_000,
+        heapUsed: 40_000,
+        external: 2_000,
+        arrayBuffers: 1_000,
+      }),
+    });
+    monitors.push(monitor);
+    const json = vi.fn();
+    const response = {
+      status: vi.fn().mockReturnThis(),
+      json,
+    };
+
+    monitor.handler({} as never, response as never, vi.fn());
+
+    expect(response.status).toHaveBeenCalledWith(503);
+    expect(json).toHaveBeenCalledWith({
+      status: 'degraded',
+      lagMs: 12,
+      rss: 123_456,
+      disabledStores: ['channel-messages', 'analytics'],
+    });
+  });
+
   it('formats one memory line with rss, heapUsed, and external', () => {
     const info = vi.fn();
     const snapshot = logHealthMemorySnapshot(
