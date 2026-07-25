@@ -48,6 +48,7 @@
 }
 
 .ch-header__title {
+  min-width: 0;
   color: var(--text);
   font-weight: 700;
   text-transform: lowercase;
@@ -74,6 +75,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex-shrink: 1;
   overflow: hidden;
 }
 
@@ -132,6 +134,51 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 12ch;
+}
+
+/* Role is a structural, monochrome tag. Agent identity remains the resolved
+   sender color on the reused vendor glyph; this adds no second color system. */
+.ch-agent-chip__role {
+  padding: 0 3px;
+  border: 1px solid currentColor;
+  color: inherit;
+  font-size: 0.65rem;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
+/* Inline operator control: outline-only and transparent on the primary black
+   header surface, never a floating --surface treatment. */
+.ch-designate-orchestrator {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-transform: lowercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ch-designate-orchestrator:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-designate-orchestrator:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ch-designate-orchestrator__progress {
+  color: currentColor;
+  font-size: inherit;
 }
 
 .ch-agent-chip__stop {
@@ -745,6 +792,26 @@
 @media (max-width: 767px) {
   .ch-header {
     padding: 8px 10px;
+  }
+
+  .ch-header__meta {
+    display: none;
+  }
+
+  .ch-header__title {
+    flex: 1 1 auto;
+  }
+
+  /* Retain the role distinction in the shared mobile header without consuming
+     the full desktop label width. The DOM text stays "orchestrator" for AT. */
+  .ch-agent-chip__role {
+    padding: 0 2px;
+    font-size: 0;
+  }
+
+  .ch-agent-chip__role::after {
+    content: 'orch';
+    font-size: 0.65rem;
   }
 
   .ch-tl {

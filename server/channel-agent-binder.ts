@@ -27,6 +27,7 @@ import {
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type { AgentRole } from '../shared/agent-roster.js';
 
 // @-mention routing binder (#1167, slice 4). One module owns the whole loop:
 // subscribe to hub.onMessagePosted → resolve mentions → ensure a (channel,
@@ -93,6 +94,7 @@ export interface ChannelAgentRosterEntry {
   kind: 'framework';
   available: boolean;
   reason: string | null;
+  role?: AgentRole;
   binding: { sessionId: string; status: ChannelAgentStatus } | null;
 }
 
@@ -1332,12 +1334,14 @@ export function createChannelAgentBinder(
       const binding = live.get(bindingKey(channelId, target.id));
       const row = store.getBinding(channelId, target.id);
       const sessionId = binding?.sessionId ?? row?.sessionId ?? null;
+      const session = sessionId ? deps.sessions.get(sessionId) : undefined;
       return {
         id: target.id,
         displayName: target.displayName,
         kind: 'framework',
         available: target.available,
         reason: target.reason,
+        ...(session?.role !== undefined ? { role: session.role } : {}),
         binding: sessionId
           ? { sessionId, status: binding?.status ?? 'idle' }
           : null,

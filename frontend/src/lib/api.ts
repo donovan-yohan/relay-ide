@@ -1,5 +1,5 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
-import type { AgentRoster } from '../../../shared/agent-roster.js';
+import type { AgentRole, AgentRoster } from '../../../shared/agent-roster.js';
 import type {
   AnchorRef,
   AnchorState,
@@ -1914,6 +1914,8 @@ export interface RosterEntry {
   /** False when the framework cannot currently be routed to (see `reason`). */
   available: boolean;
   reason: string | null;
+  /** Present for a bound session when its collaboration role is known. */
+  role?: AgentRole;
   /** Present when a live session is bound to this agent in the channel. */
   binding: { sessionId: string; status: ChannelAgentStatus } | null;
 }
@@ -1981,6 +1983,41 @@ export async function interruptChannelAgent(
       `/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(
         agentId
       )}/interrupt`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+  );
+}
+
+/** Persistent orchestrator binding created by the operator lane. */
+export interface ChannelOrchestratorDesignation {
+  ok: true;
+  orchestrator: {
+    sessionId: string | null;
+    status: ChannelAgentStatus;
+    framework: string;
+  };
+}
+
+/**
+ * Designate (or resume) the persistent orchestrator for a product channel.
+ * This route is cookie-authenticated: it keeps the standard operator channel
+ * capability header but intentionally has no actor-token path.
+ */
+export async function designateChannelOrchestrator(
+  channelId: string,
+  framework = 'claude'
+): Promise<ChannelOrchestratorDesignation> {
+  const params = new URLSearchParams({ framework });
+  return json<ChannelOrchestratorDesignation>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/orchestrator?${params.toString()}`,
       {
         method: 'POST',
         headers: {
