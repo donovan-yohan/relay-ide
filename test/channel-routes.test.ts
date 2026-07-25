@@ -28,6 +28,10 @@ import {
   createChannelChatRouter,
 } from '../server/channel-chat-router.js';
 import {
+  ChannelAgentRoleConflictError,
+  type ChannelAgentBinder,
+} from '../server/channel-agent-binder.js';
+import {
   CHANNEL_IMAGE_MAX_BYTES,
   createChannelAttachmentStore,
   type ChannelAttachmentStore,
@@ -65,6 +69,7 @@ async function harness(
     withAttachmentStore?: boolean;
     historyMaxBytes?: number;
     withAuth?: boolean;
+    binder?: Partial<ChannelAgentBinder>;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
@@ -108,6 +113,9 @@ async function harness(
         options.withAttachmentStore === false ? null : attachmentStore,
       hub,
       topicStore,
+      ...(options.binder
+        ? { binder: options.binder as unknown as ChannelAgentBinder }
+        : {}),
       ...(options.withAuth
         ? {
             requireAuth: (req, res, next) => {
@@ -1177,5 +1185,86 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
+  });
+});
+
+describe('channel routes — orchestrator designation (#1259)', () => {
+  it('designates the persistent orchestrator via ensureOrchestrator', async () => {
+    const calls: Array<{ channelId: string; framework: string }> = [];
+    const h = await harness({
+      binder: {
+        ensureOrchestrator: async (channelId: string, framework: string) => {
+          calls.push({ channelId, framework });
+          return { sessionId: 'orch-1', status: 'idle' } as never;
+        },
+      },
+    });
+    const res = await req<{
+      ok: boolean;
+      orchestrator: { sessionId: string; status: string; framework: string };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator?framework=claude`,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.orchestrator).toEqual({
+      sessionId: 'orch-1',
+      status: 'idle',
+      framework: 'claude',
+    });
+    expect(calls).toEqual([{ channelId: h.channelId, framework: 'claude' }]);
+  });
+
+  it('defaults the framework to claude when omitted', async () => {
+    const seen: string[] = [];
+    const h = await harness({
+      binder: {
+        ensureOrchestrator: async (_channelId: string, framework: string) => {
+          seen.push(framework);
+          return { sessionId: 'orch-2', status: 'idle' } as never;
+        },
+      },
+    });
+    const res = await req<{ ok: boolean }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator`,
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['claude']);
+  });
+
+  it('maps a role conflict to SESSION_CONFLICT', async () => {
+    const h = await harness({
+      binder: {
+        ensureOrchestrator: async () => {
+          throw new ChannelAgentRoleConflictError(
+            'topic:x',
+            'claude',
+            'sess-x',
+            'implementer'
+          );
+        },
+      },
+    });
+    const res = await req<{ error: { reasonCode?: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator`,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBeDefined();
+  });
+
+  it('returns 503 when no binder is configured', async () => {
+    const h = await harness();
+    const res = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator`,
+    });
+    expect(res.status).toBe(503);
   });
 });
