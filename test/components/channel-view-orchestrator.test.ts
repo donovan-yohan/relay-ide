@@ -111,9 +111,16 @@ let root: Root;
 let queryClient: QueryClient;
 
 async function flush(): Promise<void> {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  // Drain several macrotasks per flush: resolving a mocked query promise takes
+  // a microtask to settle, then TanStack Query flips isSuccess and schedules a
+  // re-render on a later tick — a single setTimeout(0) intermittently observed
+  // the DOM before the designate control re-rendered (flaky "expected null not
+  // to be null"). A few ticks reliably drains the resolve → re-render chain.
+  for (let i = 0; i < 5; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 async function render(): Promise<void> {

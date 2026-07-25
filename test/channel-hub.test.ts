@@ -474,6 +474,191 @@ describe('channel-hub snapshot correctness', () => {
     expect(state.needsCatchup).toBe(false);
   });
 
+  it('prioritizes a fresh row over resync rows that exceed the default 4MB catch-up budget', () => {
+    const s = store();
+    const resyncText = 'r'.repeat(10 * 1024);
+    for (let index = 0; index < 500; index++) {
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: AGENT,
+        source: { sessionId: `resync-${index}` },
+        text: resyncText,
+      });
+    }
+    const sinceSeq = s.latestSeq('topic:c');
+    const fresh = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'fresh after reconnect',
+    });
+    expect(
+      Buffer.byteLength(
+        JSON.stringify(s.listResyncRows('topic:c', sinceSeq, 500)),
+        'utf8'
+      )
+    ).toBeGreaterThan(4 * 1024 * 1024);
+
+    const hub = hubWith(s); // default 4MB budget
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+
+    expect(snap.truncated).toBe(true);
+    expect(snap.messages.some((message) => message.id === fresh.id)).toBe(true);
+    expect(snap.latestSeq).toBe(fresh.seq);
+    expect(
+      snap.messages.reduce(
+        (total, message) =>
+          total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+        0
+      )
+    ).toBeLessThanOrEqual(4 * 1024 * 1024);
+    let state = {
+      ...initialChannelReducerState('topic:c'),
+      lastSeq: sinceSeq,
+    };
+    state = applyChannelEventV1(state, snap);
+    expect(state.lastSeq).toBe(fresh.seq);
+    expect(state.needsCatchup).toBe(false);
+  });
+
+  it('trims resync rows nearest the cursor while emitting them in ascending sequence order', () => {
+    const s = store();
+    for (let index = 0; index < 4; index++) {
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: AGENT,
+        source: { sessionId: `resync-${index}` },
+        text: 'r'.repeat(1_000),
+      });
+    }
+    const sinceSeq = s.latestSeq('topic:c');
+    const resync = s.listResyncRows('topic:c', sinceSeq, 500);
+    const snapshotMaxBytes = resync.slice(-2).reduce(
+      (total, message) =>
+        total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+      0
+    );
+    const hub = hubWith(s, { snapshotMaxBytes });
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+
+    expect(snap.truncated).toBe(true);
+    expect(snap.messages.map((message) => message.seq)).toEqual([3, 4]);
+    expect(snap.latestSeq).toBe(4);
+  });
+
+  it('keeps a contiguous fresh prefix and cursor at its end when fresh rows overflow the budget', () => {
+    const s = store();
+    s.appendComplete({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { sessionId: 'resync' },
+      text: 'resync',
+    });
+    const sinceSeq = s.latestSeq('topic:c');
+    const fresh = [0, 1, 2].map((index) =>
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: `fresh-${index}-${'f'.repeat(1_000)}`,
+      })
+    );
+    const snapshotMaxBytes = fresh.slice(0, 2).reduce(
+      (total, message) =>
+        total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+      0
+    );
+    const hub = hubWith(s, { snapshotMaxBytes });
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+
+    expect(snap.truncated).toBe(true);
+    expect(snap.messages.map((message) => message.seq)).toEqual(
+      fresh.slice(0, 2).map((message) => message.seq)
+    );
+    expect(snap.latestSeq).toBe(fresh[1]!.seq);
+    let state = {
+      ...initialChannelReducerState('topic:c'),
+      lastSeq: sinceSeq,
+    };
+    state = applyChannelEventV1(state, snap);
+    expect(state.lastSeq).toBe(fresh[1]!.seq);
+    expect(state.needsCatchup).toBe(false);
+  });
+
+  it('keeps only fresh rows when one exactly fills the catch-up budget remainder', () => {
+    const s = store();
+    s.appendComplete({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { sessionId: 'resync' },
+      text: 'resync',
+    });
+    const sinceSeq = s.latestSeq('topic:c');
+    const fresh = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'fresh',
+    });
+    const snapshotMaxBytes =
+      Buffer.byteLength(JSON.stringify(fresh), 'utf8') + 1;
+    const hub = hubWith(s, { snapshotMaxBytes });
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+
+    expect(snap.truncated).toBe(true);
+    expect(snap.messages.map((message) => message.id)).toEqual([fresh.id]);
+    expect(
+      snap.messages.reduce(
+        (total, message) =>
+          total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+        0
+      )
+    ).toBeLessThanOrEqual(snapshotMaxBytes);
+  });
+
+  it('keeps an under-budget resync plus fresh catch-up complete and ascending', () => {
+    const s = store();
+    for (let index = 0; index < 2; index++) {
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: AGENT,
+        source: { sessionId: `resync-${index}` },
+        text: `resync-${index}`,
+      });
+    }
+    const sinceSeq = s.latestSeq('topic:c');
+    s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'fresh-1' });
+    const fresh = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'fresh-2',
+    });
+    const hub = hubWith(s);
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+
+    expect(snap.mode).toBe('catchup');
+    expect(snap.truncated).toBe(false);
+    expect(snap.latestSeq).toBe(fresh.seq);
+    expect(snap.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4]);
+  });
+
   it('forces a full snapshot (client reset) when the cursor is ahead of the server head', () => {
     const s = store();
     for (let i = 1; i <= 3; i++) {

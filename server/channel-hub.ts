@@ -271,21 +271,29 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
    * Assemble rows under the byte budget. `keepEnd` chooses which side to keep
    * when the candidate set overflows: `'tail'` keeps the newest rows (full
    * snapshot — older rows scroll back), `'head'` keeps the oldest-first rows
-   * (catch-up — forward pagination fills the remainder). Always keeps ≥1 row
-   * (a single row is ≤256KB < 4MB), returning `truncated` when it stopped early.
+   * (catch-up — forward pagination fills the remainder). The normal snapshot
+   * mode keeps ≥1 row (a single row is ≤256KB < 4MB); an optional remainder
+   * mode may keep zero rows so a secondary allocation cannot exceed the shared
+   * cap. Returns `truncated` when it stopped early.
    */
   function assembleWithBudget(
     candidate: ChannelMessage[],
-    keepEnd: 'head' | 'tail'
-  ): { rows: ChannelMessage[]; truncated: boolean } {
-    if (candidate.length === 0) return { rows: [], truncated: false };
+    keepEnd: 'head' | 'tail',
+    maxBytes = snapshotMaxBytes,
+    keepFirstOverBudget = true
+  ): { rows: ChannelMessage[]; truncated: boolean; bytes: number } {
+    if (candidate.length === 0)
+      return { rows: [], truncated: false, bytes: 0 };
     const order = keepEnd === 'tail' ? [...candidate].reverse() : candidate;
     const kept: ChannelMessage[] = [];
     let bytes = 0;
     let truncated = false;
     for (const row of order) {
       const size = Buffer.byteLength(JSON.stringify(row), 'utf8') + 1;
-      if (kept.length > 0 && bytes + size > snapshotMaxBytes) {
+      if (
+        bytes + size > maxBytes &&
+        (kept.length > 0 || !keepFirstOverBudget)
+      ) {
         truncated = true;
         break;
       }
@@ -293,7 +301,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       kept.push(row);
     }
     if (keepEnd === 'tail') kept.reverse();
-    return { rows: kept, truncated };
+    return { rows: kept, truncated, bytes };
   }
 
   function buildSnapshot(
@@ -352,9 +360,26 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         cursor = page[page.length - 1]!.seq;
         if (page.length < 200) break;
       }
-      assembled = assembleWithBudget([...resync, ...fresh], 'head');
-      if (assembled.truncated && assembled.rows.length > 0) {
-        snapshotLatestSeq = assembled.rows[assembled.rows.length - 1]!.seq;
+      // Fresh rows must consume the shared budget first: skipping a fresh seq
+      // would strand the reconnect cursor behind it. Resync rows only replace
+      // known messages, so use any remainder for the rows nearest the cursor.
+      const freshAssembled = assembleWithBudget(fresh, 'head');
+      const remainingBytes = snapshotMaxBytes - freshAssembled.bytes;
+      const resyncAssembled =
+        remainingBytes > 0
+          ? assembleWithBudget(resync, 'tail', remainingBytes, false)
+          : { rows: [], truncated: resync.length > 0, bytes: 0 };
+      assembled = {
+        rows: [...resyncAssembled.rows, ...freshAssembled.rows].sort(
+          (a, b) => a.seq - b.seq
+        ),
+        truncated: freshAssembled.truncated || resyncAssembled.truncated,
+      };
+      // Only a fresh-row truncation leaves an undelivered seq above the cursor.
+      // Partial resync merely omits stale replacements and must not pull the
+      // cursor back from an otherwise complete fresh catch-up.
+      if (freshAssembled.truncated && freshAssembled.rows.length > 0) {
+        snapshotLatestSeq = freshAssembled.rows[freshAssembled.rows.length - 1]!.seq;
       }
     }
 
