@@ -900,6 +900,7 @@ type TerminalSessionParams = {
   repoPath?: string | undefined;
   worktreePath: string | null | undefined;
   cwd: string;
+  displayName: string | undefined;
   safeCols: number | undefined;
   safeRows: number | undefined;
   resolvedTerminalBackend: TerminalBackend;
@@ -914,7 +915,10 @@ function createTerminalSessionRecord(
   params: TerminalSessionParams
 ): CreateResult {
   const shell = process.env.SHELL || '/bin/sh';
-  const displayName = sessions.nextTerminalName();
+  const displayName = resolveSessionDisplayName(
+    params.displayName,
+    sessions.nextTerminalName
+  );
   return localRelayNode.sessions.create({
     type: 'terminal',
     ...(params.spawnedBySessionId !== undefined
@@ -1054,6 +1058,14 @@ export function resolveSessionLaunchPaths(input: {
     cwd,
     settingsAnchorPath: requestedRepoPath ?? cwd,
   };
+}
+
+export function resolveSessionDisplayName(
+  requested: string | undefined,
+  fallback: () => string
+): string {
+  const trimmed = requested?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback();
 }
 
 function devSessionCwdFallback(): string | undefined {
@@ -1314,6 +1326,7 @@ function createHandoffDestinationLauncher(params: {
           repoPath,
           worktreePath,
           cwd,
+          displayName: undefined,
           safeCols: undefined,
           safeRows: undefined,
           resolvedTerminalBackend: resolvedTerminal.terminalBackend,
@@ -1985,8 +1998,7 @@ async function main(): Promise<void> {
   const hubNodeLinks = createHubNodeLinkManager({
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,
     ptyInputRecorder: sessions.recordRoutedPtyInput,
-    releaseRoutedPtyControlSession:
-      sessions.releaseRoutedPtyControlSession,
+    releaseRoutedPtyControlSession: sessions.releaseRoutedPtyControlSession,
   });
   const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
   const credentialRotationScheduler = startCredentialRotationScheduler({
@@ -2720,9 +2732,7 @@ async function main(): Promise<void> {
     return {
       ...(target.repoId ? { repoIds: [target.repoId] } : {}),
       pathPrefixes: [target.path],
-      ...(spawnedBySessionId
-        ? { sessionIds: [spawnedBySessionId] }
-        : {}),
+      ...(spawnedBySessionId ? { sessionIds: [spawnedBySessionId] } : {}),
     };
   }
 
@@ -3062,8 +3072,7 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       renewLocalSession: localRelayNode.sessions.renew,
-      releaseRoutedPtyControlSession:
-        sessions.releaseRoutedPtyControlSession,
+      releaseRoutedPtyControlSession: sessions.releaseRoutedPtyControlSession,
       releaseRoutedPtyControlSessionsForNode:
         sessions.releaseRoutedPtyControlSessionsForNode,
       workContextStore,
@@ -5683,249 +5692,321 @@ async function main(): Promise<void> {
     res.json({ ok: true, branchDeleted });
   });
 
-  function resolveSessionDisplayName(
-    requested: string | undefined,
-    fallback: () => string
-  ): string {
-    const trimmed = requested?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : fallback();
-  }
-
   // POST /sessions — unified endpoint for agent and terminal sessions
   const requireCliGatewaySessionCreateAuth =
     requireCliGatewayAuthForActorCommand('sessions.create', {
       scopeForRequest: actorSessionCreateScopeForRequest,
     });
-  app.post('/sessions', requireCliGatewaySessionCreateAuth, requireActorSessionCreatePolicy, async (req, res) => {
-    const actorTarget = authenticatedCliGatewayActorCredential(req)
-      ? actorSessionCreateTarget(req)
-      : undefined;
-    const requestedCreateBody =
-      actorTarget?.ok === true
-        ? actorTarget.body
-        : sessionCreateBodyFromRequest(req, res);
-    if (!requestedCreateBody) return;
-    const topicCreate =
-      actorTarget?.ok === true
-        ? {
-            body: actorTarget.body,
-            ...(actorTarget.topic ? { topic: actorTarget.topic } : {}),
-          }
-        : resolveWorkspaceTopicSessionCreate(requestedCreateBody, res);
-    if (!topicCreate) return;
-    const createBody = topicCreate.body;
-    const workspaceTopic = topicCreate.topic;
-    const {
-      repoPath,
-      worktreePath,
-      cwd: requestCwd,
-      type = 'agent',
-      mode,
-      agent,
-      yolo,
-      terminalBackend,
-      claudeArgs,
-      cols,
-      rows,
-      branchName: requestBranchName,
-      displayName: requestedDisplayName,
-      spawnedBySessionId,
-      needsBranchRename,
-      newWorktree,
-      branchRenamePrompt,
-      initialPrompt,
-      continue: explicitContinue,
-      continuePolicy: explicitContinuePolicy,
-      sessionLane,
-      ticketContext,
-      workContextId,
-      envOverrides: rawEnvOverrides,
-    } = createBody as {
-      repoPath?: string;
-      worktreePath?: string | null;
-      cwd?: string;
-      type?: 'agent' | 'terminal';
-      mode?: 'pty' | 'web';
-      agent?: AgentType;
-      yolo?: boolean;
-      terminalBackend?: TerminalBackend;
-      claudeArgs?: string[];
-      cols?: number;
-      rows?: number;
-      branchName?: string;
-      displayName?: string;
-      spawnedBySessionId?: string;
-      needsBranchRename?: boolean;
-      newWorktree?: boolean;
-      branchRenamePrompt?: string;
-      initialPrompt?: string;
-      continue?: boolean;
-      continuePolicy?: ContinuePolicy;
-      sessionLane?: SessionLane;
-      workContextId?: string;
-      envOverrides?: unknown;
-      ticketContext?: {
-        ticketId: string;
-        title: string;
-        description?: string;
-        url: string;
-        source: 'github' | 'jira';
-        repoPath: string;
-        repoName: string;
+  app.post(
+    '/sessions',
+    requireCliGatewaySessionCreateAuth,
+    requireActorSessionCreatePolicy,
+    async (req, res) => {
+      const actorTarget = authenticatedCliGatewayActorCredential(req)
+        ? actorSessionCreateTarget(req)
+        : undefined;
+      const requestedCreateBody =
+        actorTarget?.ok === true
+          ? actorTarget.body
+          : sessionCreateBodyFromRequest(req, res);
+      if (!requestedCreateBody) return;
+      const topicCreate =
+        actorTarget?.ok === true
+          ? {
+              body: actorTarget.body,
+              ...(actorTarget.topic ? { topic: actorTarget.topic } : {}),
+            }
+          : resolveWorkspaceTopicSessionCreate(requestedCreateBody, res);
+      if (!topicCreate) return;
+      const createBody = topicCreate.body;
+      const workspaceTopic = topicCreate.topic;
+      const {
+        repoPath,
+        worktreePath,
+        cwd: requestCwd,
+        type = 'agent',
+        mode,
+        agent,
+        yolo,
+        terminalBackend,
+        claudeArgs,
+        cols,
+        rows,
+        branchName: requestBranchName,
+        displayName: requestedDisplayName,
+        spawnedBySessionId,
+        needsBranchRename,
+        newWorktree,
+        branchRenamePrompt,
+        initialPrompt,
+        continue: explicitContinue,
+        continuePolicy: explicitContinuePolicy,
+        sessionLane,
+        ticketContext,
+        workContextId,
+        envOverrides: rawEnvOverrides,
+      } = createBody as {
+        repoPath?: string;
+        worktreePath?: string | null;
+        cwd?: string;
+        type?: 'agent' | 'terminal';
+        mode?: 'pty' | 'web';
+        agent?: AgentType;
+        yolo?: boolean;
+        terminalBackend?: TerminalBackend;
+        claudeArgs?: string[];
+        cols?: number;
+        rows?: number;
+        branchName?: string;
+        displayName?: string;
+        spawnedBySessionId?: string;
+        needsBranchRename?: boolean;
+        newWorktree?: boolean;
+        branchRenamePrompt?: string;
+        initialPrompt?: string;
+        continue?: boolean;
+        continuePolicy?: ContinuePolicy;
+        sessionLane?: SessionLane;
+        workContextId?: string;
+        envOverrides?: unknown;
+        ticketContext?: {
+          ticketId: string;
+          title: string;
+          description?: string;
+          url: string;
+          source: 'github' | 'jira';
+          repoPath: string;
+          repoName: string;
+        };
       };
-    };
 
-    // Read config once for the lifetime of this request
-    const freshConfig = getConfig();
-    const requestedTerminalBackend = normalizeTerminalBackend(terminalBackend);
+      // Read config once for the lifetime of this request
+      const freshConfig = getConfig();
+      const requestedTerminalBackend =
+        normalizeTerminalBackend(terminalBackend);
 
-    // #740: Bench-inherited env overrides (sanitized to string->string). The
-    // PTY layer applies these additively and refuses reserved keys.
-    const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
+      // #740: Bench-inherited env overrides (sanitized to string->string). The
+      // PTY layer applies these additively and refuses reserved keys.
+      const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
 
-    const {
-      requestedRepoPath,
-      requestedWorktreePath,
-      cwd,
-      settingsAnchorPath,
-    } = resolveSessionLaunchPaths({
-      repoPath,
-      worktreePath,
-      cwd: requestCwd,
-      config: freshConfig,
-      devCwdFallback: devSessionCwdFallback(),
-    });
-
-    if (
-      !validateSessionCreateRequest(
+      const {
         requestedRepoPath,
+        requestedWorktreePath,
         cwd,
-        type,
-        freshConfig,
-        workContextStore,
-        workContextId,
-        res
-      )
-    ) {
-      return;
-    }
-
-    // Validate cwd directory exists
-    if (!fs.existsSync(cwd)) {
-      res.status(400).json({ error: `Directory does not exist: ${cwd}` });
-      return;
-    }
-
-    const safeCols = clampDimension(cols, 1, 500);
-    const safeRows = clampDimension(rows, 1, 200);
-
-    const name = sessionNameFromRepoPath(settingsAnchorPath);
-    const portVariables = getRepoPortVariables(freshConfig, settingsAnchorPath);
-    const capacityResponse = buildPtyCapacityResponse(
-      activePtySessionCount(),
-      freshConfig.maxPtySessions
-    );
-    if (sendPtyCapacityError(res, capacityResponse)) return;
-
-    if (type === 'terminal') {
-      const terminalSettings = resolveSessionSettings(
-        freshConfig,
         settingsAnchorPath,
-        {
-          terminalBackend: requestedTerminalBackend,
-        }
-      );
-      // Terminal session — bare shell
-      let session: CreateResult;
-      try {
-        session = createTerminalSessionRecord({
-          ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
-          repoName: name,
-          repoPath: requestedRepoPath,
-          worktreePath: requestedWorktreePath ?? null,
+      } = resolveSessionLaunchPaths({
+        repoPath,
+        worktreePath,
+        cwd: requestCwd,
+        config: freshConfig,
+        devCwdFallback: devSessionCwdFallback(),
+      });
+
+      if (
+        !validateSessionCreateRequest(
+          requestedRepoPath,
           cwd,
-          safeCols,
-          safeRows,
-          resolvedTerminalBackend: terminalSettings.terminalBackend,
-          sessionLane,
+          type,
+          freshConfig,
+          workContextStore,
           workContextId,
-          portVariables,
-          envOverrides: sessionEnvOverrides,
-        });
-      } catch (err) {
-        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+          res
+        )
+      ) {
         return;
       }
-      gitWatcher.watchSession(session.id, session.cwd);
-      const associationError = associateSessionWithWorkContext(
-        workContextStore,
-        workContextId,
-        session
-      );
-      linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-      sendSessionCreateSuccess(res, session, associationError, workContextId);
-      return;
-    }
 
-    // Resolve continue policy (handles legacy boolean continue + new worktree override)
-    const effectivePolicy = resolveContinuePolicy(
-      explicitContinuePolicy,
-      explicitContinue,
-      needsBranchRename,
-      newWorktree ?? false
-    );
-
-    const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
-      agent,
-      yolo,
-      terminalBackend: requestedTerminalBackend,
-      claudeArgs,
-      continuePolicy: effectivePolicy,
-    });
-    const resolvedAgent = resolved.agent;
-    const frameworkAvailability = validateAgentFrameworkAvailable(
-      freshConfig,
-      resolvedAgent
-    );
-    if (!frameworkAvailability.ok) {
-      res.status(400).json(frameworkAvailability.body);
-      return;
-    }
-
-    // Ticket context validation and initial prompt. Hoisted above the
-    // web/pty mode branch (#1062) so a Hermes web-mode session launched from
-    // a ticket gets the same validation + computed prompt as the PTY path,
-    // instead of the web branch returning early with neither.
-    let computedInitialPrompt: string | undefined = initialPrompt;
-    if (ticketContext) {
-      const ticketErr = validateTicketContext(
-        ticketContext,
-        freshConfig.repos ?? []
-      );
-      if (ticketErr) {
-        res.status(400).json({ error: ticketErr });
+      // Validate cwd directory exists
+      if (!fs.existsSync(cwd)) {
+        res.status(400).json({ error: `Directory does not exist: ${cwd}` });
         return;
       }
-      const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
-      computedInitialPrompt = buildTicketInitialPrompt(
-        ticketContext,
-        repoSettings
-      );
-    }
 
-    // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
-    // Hermes remains web by default for backwards compatibility with the
-    // original native-Hermes launch path.
-    const requestedMode = mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
-    if (requestedMode === 'web') {
-      const webAvailability = await validateAgentWebRuntimeAvailable(
+      const safeCols = clampDimension(cols, 1, 500);
+      const safeRows = clampDimension(rows, 1, 200);
+
+      const name = sessionNameFromRepoPath(settingsAnchorPath);
+      const portVariables = getRepoPortVariables(
+        freshConfig,
+        settingsAnchorPath
+      );
+      const capacityResponse = buildPtyCapacityResponse(
+        activePtySessionCount(),
+        freshConfig.maxPtySessions
+      );
+      if (sendPtyCapacityError(res, capacityResponse)) return;
+
+      if (type === 'terminal') {
+        const terminalSettings = resolveSessionSettings(
+          freshConfig,
+          settingsAnchorPath,
+          {
+            terminalBackend: requestedTerminalBackend,
+          }
+        );
+        // Terminal session — bare shell
+        let session: CreateResult;
+        try {
+          session = createTerminalSessionRecord({
+            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
+            repoName: name,
+            repoPath: requestedRepoPath,
+            worktreePath: requestedWorktreePath ?? null,
+            cwd,
+            displayName: requestedDisplayName,
+            safeCols,
+            safeRows,
+            resolvedTerminalBackend: terminalSettings.terminalBackend,
+            sessionLane,
+            workContextId,
+            portVariables,
+            envOverrides: sessionEnvOverrides,
+          });
+        } catch (err) {
+          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+          return;
+        }
+        gitWatcher.watchSession(session.id, session.cwd);
+        const associationError = associateSessionWithWorkContext(
+          workContextStore,
+          workContextId,
+          session
+        );
+        linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
+        sendSessionCreateSuccess(res, session, associationError, workContextId);
+        return;
+      }
+
+      // Resolve continue policy (handles legacy boolean continue + new worktree override)
+      const effectivePolicy = resolveContinuePolicy(
+        explicitContinuePolicy,
+        explicitContinue,
+        needsBranchRename,
+        newWorktree ?? false
+      );
+
+      const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
+        agent,
+        yolo,
+        terminalBackend: requestedTerminalBackend,
+        claudeArgs,
+        continuePolicy: effectivePolicy,
+      });
+      const resolvedAgent = resolved.agent;
+      const frameworkAvailability = validateAgentFrameworkAvailable(
         freshConfig,
         resolvedAgent
       );
-      if (!webAvailability.ok) {
-        res.status(400).json(webAvailability.body);
+      if (!frameworkAvailability.ok) {
+        res.status(400).json(frameworkAvailability.body);
         return;
       }
+
+      // Ticket context validation and initial prompt. Hoisted above the
+      // web/pty mode branch (#1062) so a Hermes web-mode session launched from
+      // a ticket gets the same validation + computed prompt as the PTY path,
+      // instead of the web branch returning early with neither.
+      let computedInitialPrompt: string | undefined = initialPrompt;
+      if (ticketContext) {
+        const ticketErr = validateTicketContext(
+          ticketContext,
+          freshConfig.repos ?? []
+        );
+        if (ticketErr) {
+          res.status(400).json({ error: ticketErr });
+          return;
+        }
+        const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
+        computedInitialPrompt = buildTicketInitialPrompt(
+          ticketContext,
+          repoSettings
+        );
+      }
+
+      // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
+      // Hermes remains web by default for backwards compatibility with the
+      // original native-Hermes launch path.
+      const requestedMode =
+        mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
+      if (requestedMode === 'web') {
+        const webAvailability = await validateAgentWebRuntimeAvailable(
+          freshConfig,
+          resolvedAgent
+        );
+        if (!webAvailability.ok) {
+          res.status(400).json(webAvailability.body);
+          return;
+        }
+        const displayName = resolveSessionDisplayName(
+          requestedDisplayName,
+          sessions.nextAgentName
+        );
+        const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
+          ? crypto.randomBytes(8).toString('hex')
+          : undefined;
+        try {
+          const { session } = await localRelayNode.sessions.createWeb({
+            ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
+            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
+            agentType: resolvedAgent,
+            cwd,
+            repoPath: requestedRepoPath,
+            repoName: name,
+            worktreePath: requestedWorktreePath ?? null,
+            branchName: requestBranchName ?? '',
+            displayName,
+            port: startupConfig.port,
+            configDir,
+            sessionLane,
+            ...(actorWorkerSessionId
+              ? {
+                  controlState: actorSessionCreateControlState(
+                    req,
+                    actorWorkerSessionId,
+                    displayName
+                  ),
+                }
+              : {}),
+            ...buildHermesCreateExtra(resolvedAgent, {
+              workspaceTopic,
+              repoPath: requestedRepoPath,
+              worktreePath: requestedWorktreePath,
+              branchName: requestBranchName,
+              // Local hub is itself a node (server/local-node.ts); this call
+              // site only ever creates sessions on the local node today, so
+              // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
+              // revisit once /sessions can target a federated node directly.
+              nodeId: DEFAULT_LOCAL_NODE_ID,
+              ticketContext,
+              initialPrompt: computedInitialPrompt,
+            }),
+          });
+          gitWatcher.watchSession(session.id, session.cwd);
+          const associationError = associateSessionWithWorkContext(
+            workContextStore,
+            workContextId,
+            session
+          );
+          linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
+          sendSessionCreateSuccess(
+            res,
+            session,
+            associationError,
+            workContextId
+          );
+        } catch (err) {
+          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        }
+        return;
+      }
+
+      const args = buildAgentArgs(
+        resolvedAgent,
+        resolved.claudeArgs,
+        resolved.yolo,
+        resolved.continuePolicy
+      );
+
       const displayName = resolveSessionDisplayName(
         requestedDisplayName,
         sessions.nextAgentName
@@ -5933,20 +6014,32 @@ async function main(): Promise<void> {
       const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
         ? crypto.randomBytes(8).toString('hex')
         : undefined;
+
+      let session: CreateResult;
       try {
-        const { session } = await localRelayNode.sessions.createWeb({
+        session = createAgentSessionRecord({
           ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
           ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
-          agentType: resolvedAgent,
-          cwd,
-          repoPath: requestedRepoPath,
           repoName: name,
-          worktreePath: requestedWorktreePath ?? null,
-          branchName: requestBranchName ?? '',
+          repoPath: requestedRepoPath,
+          worktreePath: requestedWorktreePath,
+          cwd,
+          requestBranchName,
           displayName,
-          port: startupConfig.port,
-          configDir,
+          args,
+          resolvedAgent,
+          resolvedTerminalBackend: resolved.terminalBackend,
+          resolvedYolo: resolved.yolo,
+          resolvedClaudeArgs: resolved.claudeArgs,
+          resolvedContinuePolicy: resolved.continuePolicy,
+          safeCols,
+          safeRows,
+          needsBranchRename: needsBranchRename ?? false,
+          branchRenamePrompt: branchRenamePrompt ?? '',
+          computedInitialPrompt,
+          claudeFullscreen: freshConfig.claudeFullscreen,
           sessionLane,
+          workContextId,
           ...(actorWorkerSessionId
             ? {
                 controlState: actorSessionCreateControlState(
@@ -5956,110 +6049,34 @@ async function main(): Promise<void> {
                 ),
               }
             : {}),
-          ...buildHermesCreateExtra(resolvedAgent, {
-            workspaceTopic,
-            repoPath: requestedRepoPath,
-            worktreePath: requestedWorktreePath,
-            branchName: requestBranchName,
-            // Local hub is itself a node (server/local-node.ts); this call
-            // site only ever creates sessions on the local node today, so
-            // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
-            // revisit once /sessions can target a federated node directly.
-            nodeId: DEFAULT_LOCAL_NODE_ID,
-            ticketContext,
-            initialPrompt: computedInitialPrompt,
-          }),
+          portVariables,
+          scrollbackBytes: resolved.scrollbackBytes,
+          envOverrides: sessionEnvOverrides,
         });
-        gitWatcher.watchSession(session.id, session.cwd);
-        const associationError = associateSessionWithWorkContext(
-          workContextStore,
-          workContextId,
-          session
-        );
-        linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-        sendSessionCreateSuccess(res, session, associationError, workContextId);
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        return;
       }
-      return;
-    }
 
-    const args = buildAgentArgs(
-      resolvedAgent,
-      resolved.claudeArgs,
-      resolved.yolo,
-      resolved.continuePolicy
-    );
+      gitWatcher.watchSession(session.id, session.cwd);
 
-    const displayName = resolveSessionDisplayName(
-      requestedDisplayName,
-      sessions.nextAgentName
-    );
-    const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
-      ? crypto.randomBytes(8).toString('hex')
-      : undefined;
+      if (ticketContext) {
+        transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
+          logger.error('[index] transition on session create failed:', err);
+        });
+      }
 
-    let session: CreateResult;
-    try {
-      session = createAgentSessionRecord({
-        ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
-        ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
-        repoName: name,
-        repoPath: requestedRepoPath,
-        worktreePath: requestedWorktreePath,
-        cwd,
-        requestBranchName,
-        displayName,
-        args,
-        resolvedAgent,
-        resolvedTerminalBackend: resolved.terminalBackend,
-        resolvedYolo: resolved.yolo,
-        resolvedClaudeArgs: resolved.claudeArgs,
-        resolvedContinuePolicy: resolved.continuePolicy,
-        safeCols,
-        safeRows,
-        needsBranchRename: needsBranchRename ?? false,
-        branchRenamePrompt: branchRenamePrompt ?? '',
-        computedInitialPrompt,
-        claudeFullscreen: freshConfig.claudeFullscreen,
-        sessionLane,
+      const associationError = associateSessionWithWorkContext(
+        workContextStore,
         workContextId,
-        ...(actorWorkerSessionId
-          ? {
-              controlState: actorSessionCreateControlState(
-                req,
-                actorWorkerSessionId,
-                displayName
-              ),
-            }
-          : {}),
-        portVariables,
-        scrollbackBytes: resolved.scrollbackBytes,
-        envOverrides: sessionEnvOverrides,
-      });
-    } catch (err) {
-      sendSessionCreateError(res, err, freshConfig.maxPtySessions);
-      return;
+        session
+      );
+
+      linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
+
+      sendSessionCreateSuccess(res, session, associationError, workContextId);
     }
-
-    gitWatcher.watchSession(session.id, session.cwd);
-
-    if (ticketContext) {
-      transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
-        logger.error('[index] transition on session create failed:', err);
-      });
-    }
-
-    const associationError = associateSessionWithWorkContext(
-      workContextStore,
-      workContextId,
-      session
-    );
-
-    linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-
-    sendSessionCreateSuccess(res, session, associationError, workContextId);
-  });
+  );
 
   // DELETE /sessions/:id
   app.delete('/sessions/:id', requireAuth, (req, res) => {

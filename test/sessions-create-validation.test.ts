@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAgentArgs,
   parseRenderedScreenMaxLines,
+  resolveSessionDisplayName,
   resolveSessionLaunchPaths,
   validateSessionCreateRequest,
 } from '../server/index.js';
@@ -377,6 +378,23 @@ describe('resolveSessionLaunchPaths', () => {
       cwd: '/home/dev/relay-ide',
       settingsAnchorPath: '/home/dev/relay-ide',
     });
+  });
+});
+
+describe('resolveSessionDisplayName', () => {
+  it('honors and trims an explicit terminal sessions.create displayName', () => {
+    expect(
+      resolveSessionDisplayName('  Build worker  ', () => 'Terminal 1')
+    ).toBe('Build worker');
+  });
+
+  it('falls back to the generated terminal name for blank or omitted input', () => {
+    expect(resolveSessionDisplayName('   ', () => 'Terminal 2')).toBe(
+      'Terminal 2'
+    );
+    expect(resolveSessionDisplayName(undefined, () => 'Terminal 3')).toBe(
+      'Terminal 3'
+    );
   });
 });
 
