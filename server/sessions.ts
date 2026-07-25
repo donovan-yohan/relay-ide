@@ -33,7 +33,7 @@ import {
   type CreateWebParams,
 } from './web-session-handler.js';
 import {
-  loadAllWebSessions,
+  iterateWebSessions,
   deleteWebSession,
   upsertWebSessionNow,
 } from './relay-state-db.js';
@@ -120,6 +120,11 @@ import {
 } from './orchestrator-credential-lifecycle.js';
 
 const logger = createLogger('sessions');
+
+/** Let pending HTTP, socket, and I/O callbacks run between cold-resume units. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 // ── Global scrollback cap ──────────────────────────────────────────────────────
 
@@ -1958,10 +1963,10 @@ function readPendingSessionsFile(
   }
 }
 
-function migrateV2ToV3(
+async function migrateV2ToV3(
   sessions: SerializedPtySession[],
   workspaces: string[]
-): void {
+): Promise<void> {
   for (const s of sessions) {
     const raw = s as unknown as RawV2Session;
     // In v2 format, the field was called "repoPath" and stored the CWD
@@ -1994,10 +1999,13 @@ function migrateV2ToV3(
     // Clean up legacy fields (repoPath is now kept as it's our real field)
     delete raw.root;
     delete raw.worktreeName;
+    await yieldToEventLoop();
   }
 }
 
-function migrateV3ToV4(sessions: SerializedPtySession[]): void {
+async function migrateV3ToV4(
+  sessions: SerializedPtySession[]
+): Promise<void> {
   // v3 → v4 migration: workspacePath → repoPath
   // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
   // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
@@ -2008,6 +2016,7 @@ function migrateV3ToV4(sessions: SerializedPtySession[]): void {
       (legacy as unknown as RawV2Session).repoPath = legacy.workspacePath;
       delete legacy.workspacePath;
     }
+    await yieldToEventLoop();
   }
 }
 
@@ -2623,12 +2632,13 @@ function withPendingSince(
   };
 }
 
-function migratePendingSessionsFile(
+async function migratePendingSessionsFile(
   pending: PendingSessionsFile,
   workspaces?: string[]
-): void {
-  if (pending.version <= 2) migrateV2ToV3(pending.sessions, workspaces ?? []);
-  if (pending.version <= 3) migrateV3ToV4(pending.sessions);
+): Promise<void> {
+  if (pending.version <= 2)
+    await migrateV2ToV3(pending.sessions, workspaces ?? []);
+  if (pending.version <= 3) await migrateV3ToV4(pending.sessions);
 }
 
 async function tryRestorePtySession(
@@ -2677,13 +2687,17 @@ async function restoreFreshPendingSessions(
   workspaces?: string[],
   frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<number> {
-  migratePendingSessionsFile(pending, workspaces);
+  await migratePendingSessionsFile(pending, workspaces);
   const failedSessions: SerializedPtySession[] = [];
   const scrollbackDirPath = scrollbackDir(configDir);
   let restored = 0;
   const unsupportedTmuxSessions: SerializedPtySession[] = [];
 
   for (const s of pending.sessions) {
+    // Yield before each restore unit rather than after it. This gives HTTP/I/O
+    // a turn between sessions without delaying restoreFromDisk's result after
+    // the final child has been created.
+    await yieldToEventLoop();
     const removedTmuxReason = removedTmuxBackendReason(s, pending.version);
     if (removedTmuxReason) {
       logger.warn(
@@ -2748,9 +2762,13 @@ async function restorePendingSessionsFromDisk(
     configDir
   );
 
-  const freshSessions = pending.sessions
-    .filter((session) => !isPendingSessionStale(pending, session))
-    .map((session) => withPendingSince(pending, session));
+  const freshSessions: SerializedPtySession[] = [];
+  for (const session of pending.sessions) {
+    if (!isPendingSessionStale(pending, session)) {
+      freshSessions.push(withPendingSince(pending, session));
+    }
+    await yieldToEventLoop();
+  }
   const staleSessionCount = pending.sessions.length - freshSessions.length;
   if (freshSessions.length === 0) {
     logger.warn(
@@ -2792,11 +2810,15 @@ async function restoreWebSessionsFromDb(
   // Web sessions live in relay-state.db. Rows persist until the user archives or
   // closes the session, OR until the relay-state-db age-reaper (#1248) evicts a
   // row idle past its retention window — but never one that is live in-memory or
-  // still bound to an open channel, so resume anchors survive. loadAllWebSessions
+  // still bound to an open channel, so resume anchors survive. iterateWebSessions
   // restores ALL non-archived rows (no restore cap); the reaper bounds count.
-  for (const row of loadAllWebSessions()) {
-    if (webSessionRestoreShutdown) break;
+  for (const row of iterateWebSessions()) {
+    // Rows are parsed one at a time. Yield before their synchronous
+    // materialization, but never after the final row so a just-restored child
+    // remains observable when the restore promise resolves.
+    await yieldToEventLoop();
     try {
+      if (webSessionRestoreShutdown) break;
       await restoreWebSessionFromDb(row, reattachTimeoutMs);
       restored++;
     } catch (err) {
@@ -2816,6 +2838,10 @@ async function restoreFromDisk(
   options: RestoreFromDiskOptions = {}
 ): Promise<number> {
   webSessionRestoreShutdown = false;
+  // Startup restore is detached after `listening`, but an async function still
+  // executes synchronously until its first await. Yield before manifest/DB work
+  // so the listener can return to the event loop before any cold-resume burst.
+  await yieldToEventLoop();
   const restoredPty = await restorePendingSessionsFromDisk(
     configDir,
     workspaces,

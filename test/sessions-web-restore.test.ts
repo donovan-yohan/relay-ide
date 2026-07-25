@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
@@ -57,6 +58,10 @@ const refreshRuntimeEnv = vi.fn();
 let supportsRuntimeEnvRefresh = true;
 let emitBlankSnapshotOnConnect = false;
 let emitPatchOnDisconnect: AgentPatchV2 | undefined;
+let syncRestoreHoldMs = 0;
+let onAdapterCreated: (() => void) | undefined;
+const restoreHoldSignal = new Int32Array(new SharedArrayBuffer(4));
+const servers: http.Server[] = [];
 
 class RestoreFailureAdapter implements ProtocolAdapterV2 {
   readonly agentType = 'claude';
@@ -130,6 +135,9 @@ const createdAdapters: RestoreFailureAdapter[] = [];
 
 vi.mock('../server/relay-state-db.js', () => ({
   loadAllWebSessions,
+  iterateWebSessions: function* () {
+    yield* loadAllWebSessions();
+  },
   upsertWebSessionNow,
   deleteWebSession,
   scheduleWebSessionUpsert,
@@ -139,6 +147,10 @@ vi.mock('../server/protocol-adapters/index.js', () => ({
   createAdapterV2: () => {
     latestAdapter = new RestoreFailureAdapter();
     createdAdapters.push(latestAdapter);
+    onAdapterCreated?.();
+    if (syncRestoreHoldMs > 0) {
+      Atomics.wait(restoreHoldSignal, 0, 0, syncRestoreHoldMs);
+    }
     return latestAdapter;
   },
 }));
@@ -170,6 +182,38 @@ function restoredOrchestratorCredential(
   };
 }
 
+function restoredWebRow(id: string, configDir: string): LoadedWebSessionRow {
+  return {
+    id,
+    vendor: 'claude',
+    vendorSessionId: `provider-${id}`,
+    cwd: configDir,
+    repoPath: configDir,
+    worktreePath: null,
+    branchName: 'feature/resume-yield',
+    displayName: `Restored ${id}`,
+    workspaceId: null,
+    agentSessionV2: emptyAgentSessionV2({
+      id,
+      provider: 'claude',
+      cwd: configDir,
+      capabilities,
+      providerSession: { claudeSessionId: `provider-${id}` },
+    }),
+    meta: {
+      type: 'agent',
+      agent: 'claude',
+      customCommand: null,
+      runtimeOwnership: 'attached',
+      hookToken: `hook-${id}`,
+      adapterType: 'claude',
+    },
+    createdAt: Date.now() - 10_000,
+    lastActivity: Date.now() - 5_000,
+    status: 'active',
+  };
+}
+
 describe('web session restore failure recovery', () => {
   let configDir: string;
 
@@ -191,6 +235,8 @@ describe('web session restore failure recovery', () => {
     createdAdapters.length = 0;
     emitBlankSnapshotOnConnect = false;
     emitPatchOnDisconnect = undefined;
+    syncRestoreHoldMs = 0;
+    onAdapterCreated = undefined;
   });
 
   afterEach(async () => {
@@ -202,7 +248,82 @@ describe('web session restore failure recovery', () => {
         /* ignore */
       }
     }
+    await Promise.all(
+      servers.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve) => server.close(() => resolve()))
+      )
+    );
     fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('serves HTTP between slow restored web sessions', async () => {
+    loadAllWebSessions.mockReturnValueOnce(
+      ['resume-yield-1', 'resume-yield-2', 'resume-yield-3'].map((id) =>
+        restoredWebRow(id, configDir)
+      )
+    );
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+
+    let complete = false;
+    let resolveFirstResponse:
+      | ((value: { status: number; ready: boolean }) => void)
+      | undefined;
+    let rejectFirstResponse: ((reason: unknown) => void) | undefined;
+    const firstResponse = new Promise<{ status: number; ready: boolean }>(
+      (resolve, reject) => {
+        resolveFirstResponse = resolve;
+        rejectFirstResponse = reject;
+      }
+    );
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ready: complete }));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test server did not bind an address');
+    }
+
+    syncRestoreHoldMs = 25;
+    onAdapterCreated = () => {
+      if (createdAdapters.length !== 1) return;
+      void fetch(`http://127.0.0.1:${String(address.port)}/healthz`)
+        .then(async (response) => {
+          resolveFirstResponse?.({
+            status: response.status,
+            ready: (await response.json() as { ready: boolean }).ready,
+          });
+        })
+        .catch(rejectFirstResponse);
+    };
+    const restoring = sessions.restoreFromDisk(configDir).then((restored) => {
+      complete = true;
+      return restored;
+    });
+
+    const response = await firstResponse;
+    expect(response.status).toBe(200);
+    // The server handler ran while restore was still in flight and reported
+    // ready:false — the deterministic proof that resume did not starve the event
+    // loop. (We intentionally do NOT assert `complete===false` here: resume may
+    // legitimately finish while the response is still in transit back to the
+    // client, so that check races resume completion without adding coverage —
+    // response.ready captured the in-flight state at handler time.)
+    expect(response.ready).toBe(false);
+    await expect(restoring).resolves.toBe(3);
+    expect(createdAdapters).toHaveLength(3);
+
+    const completedResponse = await fetch(
+      `http://127.0.0.1:${String(address.port)}/healthz`
+    );
+    await expect(completedResponse.json()).resolves.toEqual({ ready: true });
   });
 
   it('restores persisted web metadata and surfaces resume failure as recoverable session state', async () => {

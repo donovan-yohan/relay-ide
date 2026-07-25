@@ -294,6 +294,13 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
       status: 'ok',
       lagMs: expect.any(Number),
       rss: expect.any(Number),
+      ready: expect.any(Boolean),
+      resume: {
+        inProgress: expect.any(Boolean),
+        complete: expect.any(Boolean),
+        restored: expect.any(Number),
+        failed: expect.any(Boolean),
+      },
     });
 
     // Hit GET /auth/status — should work without auth
@@ -411,7 +418,16 @@ test('real server listens before a hanging serialized-session restore', async ()
       fetch(`${baseUrl}/auth/status`),
     ]);
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({ status: 'ok' });
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'ok',
+      ready: false,
+      resume: {
+        inProgress: true,
+        complete: false,
+        restored: 0,
+        failed: false,
+      },
+    });
     expect(authStatus.status).toBe(200);
     await expect(authStatus.json()).resolves.toEqual({ hasPIN: true });
     // The real startup restore function is still held. This proves both public
@@ -449,6 +465,18 @@ test('real server listens before a hanging serialized-session restore', async ()
         'Restored 1 session(s) from previous update.'
       )
     );
+    const resumedHealth = await fetch(`${baseUrl}/healthz`);
+    expect(resumedHealth.status).toBe(200);
+    await expect(resumedHealth.json()).resolves.toMatchObject({
+      status: 'ok',
+      ready: true,
+      resume: {
+        inProgress: false,
+        complete: true,
+        restored: 1,
+        failed: false,
+      },
+    });
     const listeningAt = output
       .stdout()
       .indexOf('relay-ide listening on 127.0.0.1:');

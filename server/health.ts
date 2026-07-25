@@ -12,6 +12,17 @@ export interface HealthMemorySnapshot {
   external: number;
 }
 
+/**
+ * Progress for work that begins only after the HTTP listener is available.
+ * Health reports this informationally; it never changes the health status.
+ */
+export interface ResumeReadiness {
+  inProgress: boolean;
+  complete: boolean;
+  restored: number;
+  failed: boolean;
+}
+
 export interface HealthMonitor {
   handler: RequestHandler;
   getLagMs(): number;
@@ -28,6 +39,8 @@ export interface HealthMonitorOptions {
   memoryUsage?: () => NodeJS.MemoryUsage;
   monotonicNow?: () => number;
   logger?: Logger;
+  /** Optional post-listen session-resume progress owned by server startup. */
+  getResumeReadiness?: () => ResumeReadiness;
 }
 
 const healthLogger = createLogger('health');
@@ -92,11 +105,13 @@ export function createHealthMonitor(
     const lagMs = Math.round(getLagMs());
     const { rss } = readHealthMemorySnapshot(memoryUsage);
     const healthy = lagMs <= lagThresholdMs && disabledStores.length === 0;
+    const resume = options.getResumeReadiness?.();
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'ok' : 'degraded',
       lagMs,
       rss,
       ...(disabledStores.length > 0 ? { disabledStores } : {}),
+      ...(resume ? { ready: resume.complete, resume } : {}),
     });
   };
 
