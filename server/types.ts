@@ -33,7 +33,10 @@ import type { SessionDurabilityState } from '../shared/session-durability.js';
 // Runtime value import (#955): the single shared authoring source for the
 // launch-time collaboration system-prompt appendix. `shared/agent-roster.ts`
 // has no `server/` imports, so this stays a one-way, cycle-free dependency.
-import { collaborationPromptAppendix } from '../shared/agent-roster.js';
+import {
+  collaborationPromptAppendix,
+  type AgentRole,
+} from '../shared/agent-roster.js';
 import type { TerminalModelBackend } from './terminal-model-backend.js';
 
 export type AgentState =
@@ -304,7 +307,8 @@ export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
  * never enters serialized session state.
  */
 export function collaborationPromptArgsForFramework(
-  framework: AgentFramework
+  framework: AgentFramework,
+  role?: AgentRole
 ): string[] {
   if (
     !framework.capabilities.supportsCollaborationPrompt ||
@@ -314,7 +318,10 @@ export function collaborationPromptArgsForFramework(
   }
   return [
     framework.collaborationPromptArg,
-    collaborationPromptAppendix({ provider: framework.id }),
+    collaborationPromptAppendix({
+      provider: framework.id,
+      ...(role ? { role } : {}),
+    }),
   ];
 }
 
@@ -331,6 +338,8 @@ interface BaseSession {
   nodeId?: NodeId;
   type: SessionType;
   agent: AgentType;
+  /** Durable collaboration role. A hint for routing/UI, not authorization. */
+  role?: AgentRole;
   mode: SessionMode;
   /**
    * Filesystem path of the repo this session is bound to. Omitted for
@@ -453,6 +462,8 @@ export interface SessionSummary {
   spawnedBySessionId?: string;
   type: SessionType;
   agent: AgentType;
+  /** Durable collaboration role. A hint for routing/UI, not authorization. */
+  role?: AgentRole;
   mode: SessionMode;
   /**
    * Filesystem path of the repo this session is bound to. Optional so

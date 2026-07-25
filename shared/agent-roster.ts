@@ -198,6 +198,7 @@ export interface RosterSessionInput {
   globalSessionId?: string | undefined;
   nodeId?: string | undefined;
   agent?: string | undefined;
+  role?: AgentRole | undefined;
   type?: string | undefined;
   displayName?: string | undefined;
   repoPath?: string | undefined;
@@ -255,7 +256,7 @@ export function projectRosterEntry(
     ...(session.nodeId ? { nodeId: session.nodeId } : {}),
     provider,
     sessionType: session.type ?? 'agent',
-    role: roleForAgent(provider, extras.roleOverrides),
+    role: session.role ?? roleForAgent(provider, extras.roleOverrides),
     displayName: session.displayName ?? session.id,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
     ...(session.repoName ? { repoName: session.repoName } : {}),
@@ -352,7 +353,7 @@ export function buildAttentionEventInput(
       pendingInboxCount: attention.pendingInboxCount,
       ...(opts.permissionType ? { permissionType: opts.permissionType } : {}),
       provider,
-      role: roleForAgent(provider, opts.roleOverrides),
+      role: session.role ?? roleForAgent(provider, opts.roleOverrides),
       sessionType: session.type ?? 'agent',
       ...(session.repoName ? { repoName: session.repoName } : {}),
       ...(session.branchName ? { branchName: session.branchName } : {}),
@@ -385,6 +386,18 @@ export function collaborationPromptAppendix(
   } = {}
 ): string {
   const role = input.role ?? roleForAgent(input.provider);
+  if (role === 'orchestrator') {
+    return [
+      'You are the operator’s Relay-managed orchestrator in a product channel.',
+      '',
+      '- Coordinate implementation workers; do not perform every task yourself.',
+      '- Narrate decisions and summarize progress with `relay-ide v1 channels post --json`.',
+      '- Spawn a worker into an implementation channel with `relay-ide v1 sessions create --json`, then steer it with an explicit `@mention`.',
+      '- Watch worker state with `relay-ide v1 roster list --json` and `relay-ide v1 events subscribe --topic attention --json`.',
+      '- Keep fan-out ownership and pending work in your own conversation context; Relay preserves session lineage.',
+      '- Keep every routed reply explicitly addressed to its intended operator or agent.',
+    ].join('\n');
+  }
   return [
     `You are a Relay-managed agent session (role: ${role}). You are not an isolated terminal — other agents and operators can see and message you through Relay. Use Relay's CLI gateway to collaborate instead of polling:`,
     '',

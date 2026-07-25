@@ -169,6 +169,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workspace-topics.create': 'create workspace topic',
   'workspace-topics.update': 'update workspace topic',
   'workspace-topics.archive': 'archive workspace topic',
+  'channels.post': 'post channel message',
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
@@ -253,6 +254,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-surfaces.publish',
   'workspace-topics.create',
   'workspace-topics.update',
+  'channels.post',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -313,6 +315,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('cockpit.') || name.startsWith('orchestration-runs.'))
     return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
+  if (name.startsWith('channels.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))
     return ['repo', 'worktree', 'work-context', 'session'];

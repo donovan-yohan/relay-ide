@@ -146,6 +146,11 @@ export interface CliGatewayActorIssueInput {
   correlationId?: unknown;
 }
 
+export type PersistentOrchestratorCredentialIssueInput = Omit<
+  CliGatewayActorIssueInput,
+  'metadata'
+>;
+
 export interface CliGatewayGrantActorLifecycleInput extends CliGatewayActorIssueInput {
   grantHandle?: unknown;
   audience?: unknown;
@@ -479,13 +484,28 @@ export function cliGatewayActorFailure(input: {
   };
 }
 
-export function issueCliGatewayActorCredential(
+function credentialIssueMetadata(
+  metadata: unknown
+): Record<string, unknown> | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const sanitized = { ...metadata };
+  if (sanitized['reason'] === 'persistent-orchestrator') {
+    delete sanitized['reason'];
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function issueCliGatewayActorCredentialInternal(
   registry: ScopedActorCredentialRegistry,
-  input: CliGatewayActorIssueInput = {}
+  input: CliGatewayActorIssueInput,
+  persistentOrchestrator: boolean
 ): { token: string; credential: ScopedActorCredentialRecord } {
   const scope = coerceScope(input.scope);
   const capabilities = coerceCapabilities(input.capabilities);
   const ttlMs = typeof input.ttlMs === 'number' ? input.ttlMs : 5 * 60 * 1000;
+  const metadata = persistentOrchestrator
+    ? { reason: 'persistent-orchestrator' }
+    : credentialIssueMetadata(input.metadata);
   return registry.issue({
     actor: coerceActor(input.actor),
     issuer: coerceIssuer(input.issuer),
@@ -496,11 +516,29 @@ export function issueCliGatewayActorCredential(
     ...(typeof input.expiresAt === 'string'
       ? { expiresAt: input.expiresAt }
       : {}),
-    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    ...(metadata ? { metadata } : {}),
     ...(typeof input.correlationId === 'string'
       ? { correlationId: input.correlationId }
       : {}),
   });
+}
+
+export function issueCliGatewayActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  input: CliGatewayActorIssueInput = {}
+): { token: string; credential: ScopedActorCredentialRecord } {
+  return issueCliGatewayActorCredentialInternal(registry, input, false);
+}
+
+/**
+ * Trusted in-process issuer for the persistent orchestrator lease. External
+ * issue/grant inputs cannot set this security-weighted reason marker.
+ */
+export function issuePersistentOrchestratorCliGatewayActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  input: PersistentOrchestratorCredentialIssueInput
+): { token: string; credential: ScopedActorCredentialRecord } {
+  return issueCliGatewayActorCredentialInternal(registry, input, true);
 }
 
 export function issueCliGatewayActorCredentialWithGrant(
@@ -510,6 +548,7 @@ export function issueCliGatewayActorCredentialWithGrant(
 ): { token: string; credential: ScopedActorCredentialRecord } {
   const request = strictGrantLifecycleRequest(input);
   const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const metadata = credentialIssueMetadata(input.metadata);
   const issued = registry.issue({
     actor: request.actor,
     issuer: {
@@ -524,7 +563,7 @@ export function issueCliGatewayActorCredentialWithGrant(
     scope: request.scope,
     ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
     ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    ...(metadata ? { metadata } : {}),
     correlationId: request.correlationId,
   });
   return issued;
@@ -610,6 +649,7 @@ export function rotateCliGatewayActorCredentialWithGrant(
     actor: existing.actor,
   });
   const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const metadata = credentialIssueMetadata(input.metadata);
   const issued = registry.issue({
     actor: existing.actor,
     issuer: {
@@ -624,7 +664,7 @@ export function rotateCliGatewayActorCredentialWithGrant(
     scope: existing.scope,
     ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
     ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    ...(metadata ? { metadata } : {}),
     correlationId: request.correlationId,
   });
   const revoked = registry.revoke(credentialId, {

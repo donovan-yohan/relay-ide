@@ -201,7 +201,7 @@ describe('createWebSession', () => {
   });
 
   it('creates a web session and adds it to sessionsMap', async () => {
-    const { session } = await createWebSession(
+    const { session, config } = await createWebSession(
       {
         agentType: 'mock',
         cwd: '/repo',
@@ -218,12 +218,58 @@ describe('createWebSession', () => {
 
     expect(session.mode).toBe('web');
     expect(session.adapterType).toBe('mock');
+    expect(session.role).toBeUndefined();
+    expect(config.systemPromptAppendix).toContain('role: collaborator');
     expect(session.controlState).toMatchObject({
       controlMode: 'human-driven',
       controlFreshness: 'unknown',
     });
     expect(sessionsMap.has(session.id)).toBe(true);
     expect(sessionsMap.get(session.id)).toBe(session);
+  });
+
+  it('persists an explicit role and threads its playbook into web adapter config', async () => {
+    const { session, config } = await createWebSession(
+      {
+        agentType: 'claude',
+        role: 'orchestrator',
+        cwd: '/repo',
+        displayName: 'Product orchestrator',
+        port: 3000,
+        configDir: '/config',
+      },
+      sessionsMap,
+      onBackendStateChanged
+    );
+
+    expect(session.role).toBe('orchestrator');
+    expect(config.systemPromptAppendix).toContain(
+      'operator’s Relay-managed orchestrator'
+    );
+    expect(config.systemPromptAppendix).toContain(
+      'events subscribe --topic attention'
+    );
+    expect(config.systemPromptAppendix).not.toContain(
+      'events subscribe --topic inbox'
+    );
+  });
+
+  it('uses role overrides only for display when an explicit role is absent', async () => {
+    const { session, config } = await createWebSession(
+      {
+        agentType: 'mock',
+        roleOverrides: { mock: 'reviewer' },
+        cwd: '/repo',
+        displayName: 'Review agent',
+        port: 3000,
+        configDir: '/config',
+      },
+      sessionsMap,
+      onBackendStateChanged
+    );
+
+    expect(session.role).toBeUndefined();
+    expect(config.systemPromptAppendix).toContain('role: reviewer');
   });
 
   it('uses provided control state independently from web transport mode', async () => {

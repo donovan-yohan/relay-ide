@@ -21,6 +21,7 @@ import type {
 } from '../server/protocol-adapter-v2.js';
 import { getSessionCategory } from '../server/session-attribution.js';
 import type { WebSession } from '../server/types.js';
+import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 
 const capabilities: AgentCapabilitySetV2 = {
   text: true,
@@ -52,6 +53,8 @@ const resumeSession = vi.fn();
 const reconnect = vi.fn();
 const connect = vi.fn();
 const disconnect = vi.fn();
+const refreshRuntimeEnv = vi.fn();
+let supportsRuntimeEnvRefresh = true;
 let emitBlankSnapshotOnConnect = false;
 let emitPatchOnDisconnect: AgentPatchV2 | undefined;
 
@@ -59,11 +62,25 @@ class RestoreFailureAdapter implements ProtocolAdapterV2 {
   readonly agentType = 'claude';
   readonly runtimeOwnership = 'attached' as const;
   readonly capabilities = capabilities;
-  readonly status: AdapterStatus = 'connected';
+  private adapterStatus: AdapterStatus = 'disconnected';
   private handlers = new Set<AgentPatchHandlerV2>();
+  refreshRuntimeEnv?: (processEnv: Record<string, string>) => Promise<void>;
+
+  constructor() {
+    if (supportsRuntimeEnvRefresh) {
+      this.refreshRuntimeEnv = async (processEnv) => {
+        await refreshRuntimeEnv(processEnv);
+      };
+    }
+  }
+
+  get status(): AdapterStatus {
+    return this.adapterStatus;
+  }
 
   async connect(config: AdapterConfig): Promise<void> {
     await connect(config);
+    this.adapterStatus = 'connected';
     if (emitBlankSnapshotOnConnect) {
       this.emit({
         type: 'agent-session-snapshot-v2',
@@ -79,6 +96,7 @@ class RestoreFailureAdapter implements ProtocolAdapterV2 {
     }
   }
   async disconnect(): Promise<void> {
+    this.adapterStatus = 'disconnected';
     if (emitPatchOnDisconnect) this.emit(emitPatchOnDisconnect);
     this.handlers.clear();
     await disconnect();
@@ -125,6 +143,33 @@ vi.mock('../server/protocol-adapters/index.js', () => ({
   },
 }));
 
+function restoredOrchestratorCredential(
+  id: string,
+  sessionId: string
+): { token: string; credential: ScopedActorCredentialRecord } {
+  const issuedAt = Date.now();
+  return {
+    token: `relay-sac-v1.${id}.redacted`,
+    credential: {
+      id,
+      actor: { type: 'agent', id: sessionId },
+      issuer: { id: 'relay-ide' },
+      audience: 'relay:cli-gateway:v1',
+      capabilities: [
+        'session:read',
+        'context:read',
+        'context:write',
+        'session:create:agent',
+      ],
+      scope: { taskRefs: ['relay:cli-gateway:v1:read'] },
+      metadata: { reason: 'persistent-orchestrator' },
+      issuedAt: new Date(issuedAt).toISOString(),
+      expiresAt: new Date(issuedAt + 15 * 60 * 1000).toISOString(),
+      correlationId: `correlation-${id}`,
+    },
+  };
+}
+
 describe('web session restore failure recovery', () => {
   let configDir: string;
 
@@ -140,6 +185,8 @@ describe('web session restore failure recovery', () => {
     resumeSession.mockReset();
     connect.mockReset();
     disconnect.mockReset();
+    refreshRuntimeEnv.mockReset();
+    supportsRuntimeEnvRefresh = true;
     latestAdapter = undefined;
     createdAdapters.length = 0;
     emitBlankSnapshotOnConnect = false;
@@ -185,6 +232,7 @@ describe('web session restore failure recovery', () => {
         meta: {
           type: 'agent',
           agent: 'claude',
+          role: 'orchestrator',
           spawnedBySessionId: 'orchestrator-session',
           repoName: 'relay-ide',
           customCommand: null,
@@ -213,7 +261,18 @@ describe('web session restore failure recovery', () => {
     ]);
 
     const sessions = await import('../server/sessions.js');
-    sessions.configure({ port: 4567, configDir });
+    sessions.configure({
+      port: 4567,
+      configDir,
+      orchestratorCredentials: {
+        issueCredential: () =>
+          restoredOrchestratorCredential(
+            'restore-credential',
+            'web-restore-failure'
+          ),
+        revokeCredential: vi.fn(),
+      },
+    });
 
     const restored = await sessions.restoreFromDisk(configDir);
 
@@ -229,6 +288,10 @@ describe('web session restore failure recovery', () => {
     if (session?.mode !== 'web') throw new Error('expected web session');
     expect(session.hookToken).toBe('restored-hook-token');
     expect(session.spawnedBySessionId).toBe('orchestrator-session');
+    expect(session.role).toBe('orchestrator');
+    expect(sessions.list().find((entry) => entry.id === session.id)?.role).toBe(
+      'orchestrator'
+    );
     expect(session.needsBranchRename).toBe(true);
     expect(session.workspaceId).toBe('workspace-1');
     expect(session.additionalDirs).toEqual([path.join(configDir, 'extra')]);
@@ -255,6 +318,78 @@ describe('web session restore failure recovery', () => {
       )
     ).toBe(true);
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
+  });
+
+  it('retains an explicit orchestrator credential through successful restore and revokes it on kill', async () => {
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-orchestrator-success',
+        vendor: 'claude',
+        vendorSessionId: 'stored-orchestrator-provider-session',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'restored orchestrator',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-orchestrator-success',
+          provider: 'claude',
+          cwd: configDir,
+          capabilities,
+          providerSession: {
+            claudeSessionId: 'stored-orchestrator-provider-session',
+          },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'claude',
+          role: 'orchestrator',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'orchestrator-success-hook-token',
+          adapterType: 'claude',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+    const revokeCredential = vi.fn();
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({
+      port: 4567,
+      configDir,
+      orchestratorCredentials: {
+        issueCredential: () =>
+          restoredOrchestratorCredential(
+            'orchestrator-success-credential',
+            'web-restore-orchestrator-success'
+          ),
+        revokeCredential,
+      },
+    });
+
+    expect(await sessions.restoreFromDisk(configDir)).toBe(1);
+    await vi.waitFor(() =>
+      expect(resumeSession).toHaveBeenCalledWith(
+        'stored-orchestrator-provider-session'
+      )
+    );
+    const session = sessions.get('web-restore-orchestrator-success');
+    expect(session?.role).toBe('orchestrator');
+    await vi.waitFor(() => expect(session?.restoreState).toBeUndefined());
+    expect(revokeCredential).not.toHaveBeenCalled();
+
+    sessions.kill('web-restore-orchestrator-success');
+    expect(revokeCredential).toHaveBeenCalledTimes(1);
+    expect(revokeCredential).toHaveBeenCalledWith(
+      'orchestrator-success-credential',
+      {
+        revokedBy: 'relay-ide',
+        reason: 'orchestrator-session-ended',
+      }
+    );
   });
 
   it('fences blank connect snapshots and resumes from the persisted transcript identity', async () => {
@@ -841,7 +976,8 @@ describe('web session restore failure recovery', () => {
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
   });
 
-  it('resumes a persisted Hermes session from its stored response id', async () => {
+  it('resumes a persisted Hermes session from its stored response id as a normal worker', async () => {
+    supportsRuntimeEnvRefresh = false;
     loadAllWebSessions.mockReturnValueOnce([
       {
         id: 'web-restore-hermes',
@@ -885,6 +1021,7 @@ describe('web session restore failure recovery', () => {
     await vi.waitFor(() =>
       expect(resumeSession).toHaveBeenCalledWith('resp_stored')
     );
+    expect(sessions.get('web-restore-hermes')?.role).toBeUndefined();
     expect(reconnect).not.toHaveBeenCalled();
   });
 });

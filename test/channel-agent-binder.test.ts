@@ -15,6 +15,7 @@ import {
   type ProtocolAdapterV2,
 } from '../server/protocol-adapter-v2.js';
 import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
+import type { AgentRole } from '../shared/agent-roster.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -57,6 +58,12 @@ const AGENT_SENDER: ChannelSenderRef = {
   id: 'agent:orchestrator',
   providerId: 'orchestrator',
   displayName: 'orchestrator',
+};
+const CLAUDE_AGENT_SENDER: ChannelSenderRef = {
+  kind: 'agent',
+  id: 'agent-profile:claude:default',
+  providerId: 'claude',
+  displayName: 'Claude',
 };
 
 function makeStore(): { store: ChannelMessageStore; hub: ChannelHub } {
@@ -124,13 +131,15 @@ function postAgentTurnRow(
   turnId: string,
   itemId: string,
   text: string,
-  knownIds: string[]
+  knownIds: string[],
+  sessionId = 'session:orchestrator',
+  sender: ChannelSenderRef = AGENT_SENDER
 ): ChannelMessage {
   const mentions = parseMentions(text, knownIds);
   const stream = store.beginStream({
     channelId: CH,
-    sender: AGENT_SENDER,
-    source: { sessionId: 'session:orchestrator', turnId, itemId },
+    sender,
+    source: { sessionId, turnId, itemId },
     ...(mentions.length ? { mentions } : {}),
   });
   const message = store.finalizeStream(stream.id, {
@@ -764,6 +773,12 @@ interface SessionsHarness {
   adapterFor: (sessionId: string) => ProtocolAdapterV2;
   fireEnd: (sessionId: string) => void;
   forgetWithoutEnd: (sessionId: string) => void;
+  registerSourceSession: (sessionId: string, role: AgentRole) => void;
+  registerRestoredWebSession: (
+    sessionId: string,
+    agentType: string,
+    role: AgentRole
+  ) => Promise<void>;
   lastCreateParams: () => CreateWebParams | undefined;
 }
 
@@ -797,6 +812,7 @@ function makeSessions(
         id,
         mode: 'web',
         agent: params.agentType,
+        ...(params.role !== undefined ? { role: params.role } : {}),
         adapterV2: adapter,
         cwd: params.cwd,
       } as unknown as WebSession;
@@ -826,6 +842,31 @@ function makeSessions(
     },
     forgetWithoutEnd: (id) => {
       created.delete(id);
+    },
+    registerSourceSession: (id, role) => {
+      created.set(id, {
+        session: { id, role } as unknown as WebSession,
+      });
+    },
+    registerRestoredWebSession: async (id, agentType, role) => {
+      const adapter = build(agentType);
+      await adapter.connect({
+        cwd: '/tmp',
+        port: 0,
+        sessionId: id,
+        hookToken: 't',
+        configDir: '/tmp',
+      });
+      created.set(id, {
+        session: {
+          id,
+          mode: 'web',
+          agent: agentType,
+          role,
+          adapterV2: adapter,
+          cwd: '/tmp',
+        } as unknown as WebSession,
+      });
     },
     lastCreateParams: () => lastParams,
   };
@@ -882,6 +923,72 @@ function makeBinder(cfg: {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe('channel-agent-binder — lifecycle', () => {
+  it('designates an orchestrator without submitting a turn', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+
+    const binding = await binder.ensureOrchestrator(CH, 'mock');
+
+    expect(binding.sessionId).toBe(sessions.firstSessionId());
+    expect(sessions.lastCreateParams()).toMatchObject({
+      agentType: 'mock',
+      role: 'orchestrator',
+    });
+    expect(agentReplies(store)).toHaveLength(0);
+  });
+
+  it('reuses a restored orchestrator binding', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const sessionId = 'session:restored-driver';
+    await sessions.registerRestoredWebSession(
+      sessionId,
+      'mock',
+      'orchestrator'
+    );
+    store.upsertBinding({
+      channelId: CH,
+      agentFramework: 'mock',
+      sessionId,
+    });
+
+    const binding = await binder.ensureOrchestrator(CH, 'mock');
+
+    expect(binding.sessionId).toBe(sessionId);
+    expect(sessions.spawns()).toBe(0);
+  });
+
+  it('rejects a restored healthy non-orchestrator binding', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const sessionId = 'session:restored-worker';
+    await sessions.registerRestoredWebSession(
+      sessionId,
+      'mock',
+      'implementer'
+    );
+    store.upsertBinding({
+      channelId: CH,
+      agentFramework: 'mock',
+      sessionId,
+    });
+
+    await expect(binder.ensureOrchestrator(CH, 'mock')).rejects.toThrow(
+      /already binds @mock.*role implementer/
+    );
+    expect(sessions.spawns()).toBe(0);
+    expect(store.getBinding(CH, 'mock')?.sessionId).toBe(sessionId);
+  });
+
   it('first mention spawns exactly one session and streams the reply as agent:mock', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
@@ -1533,6 +1640,206 @@ describe('channel-agent-binder — delivery + idempotency', () => {
 });
 
 describe('channel-agent-binder — agent-to-agent brake', () => {
+  it('does not grant the brake exemption from a self-declared orchestrator presence role', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `self-declared-${index}`,
+        'item-0',
+        `@mock self-declared orchestrator ${index}`,
+        ['mock'],
+        'session:not-registered',
+        AGENT_SENDER
+      );
+    }
+    await waitFor(
+      () => agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+
+    postAgentTurnRow(
+      store,
+      binder,
+      'self-declared-cap',
+      'item-0',
+      '@mock should be braked',
+      ['mock'],
+      'session:not-registered',
+      AGENT_SENDER
+    );
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    );
+    expect(agentReplies(store, 'mock')).toHaveLength(
+      MAX_CONSECUTIVE_AGENT_TURNS
+    );
+  });
+
+  it('does not charge orchestrator turns against the worker-turn allowance', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const driverSessionId = 'session:driver';
+    const workerSessionId = 'session:worker';
+    sessions.registerSourceSession(driverSessionId, 'orchestrator');
+    sessions.registerSourceSession(workerSessionId, 'implementer');
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS + 1; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `driver-turn-${index}`,
+        'item-0',
+        `@mock coordinate ${index}`,
+        ['mock'],
+        driverSessionId,
+        CLAUDE_AGENT_SENDER
+      );
+    }
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        MAX_CONSECUTIVE_AGENT_TURNS + 1
+    );
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(0);
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `worker-turn-${index}`,
+        'item-0',
+        `@mock worker ${index}`,
+        ['mock'],
+        workerSessionId,
+        AGENT_SENDER
+      );
+    }
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        MAX_CONSECUTIVE_AGENT_TURNS * 2 + 1
+    );
+    postAgentTurnRow(
+      store,
+      binder,
+      'worker-turn-cap',
+      'item-0',
+      '@mock worker cap',
+      ['mock'],
+      workerSessionId,
+      AGENT_SENDER
+    );
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    );
+    expect(agentReplies(store, 'mock')).toHaveLength(
+      MAX_CONSECUTIVE_AGENT_TURNS * 2 + 1
+    );
+  });
+
+  it('lets the orchestrator route through a paused brake while human reset restores workers', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const driverSessionId = 'session:driver';
+    const workerSessionId = 'session:worker';
+    sessions.registerSourceSession(driverSessionId, 'orchestrator');
+    sessions.registerSourceSession(workerSessionId, 'implementer');
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `worker-pause-${index}`,
+        'item-0',
+        `@mock worker ${index}`,
+        ['mock'],
+        workerSessionId,
+        AGENT_SENDER
+      );
+    }
+    await waitFor(
+      () => agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+    postAgentTurnRow(
+      store,
+      binder,
+      'worker-pause-cap',
+      'item-0',
+      '@mock pause',
+      ['mock'],
+      workerSessionId,
+      AGENT_SENDER
+    );
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    );
+
+    postAgentTurnRow(
+      store,
+      binder,
+      'driver-after-pause',
+      'item-0',
+      '@mock keep coordinating',
+      ['mock'],
+      driverSessionId,
+      CLAUDE_AGENT_SENDER
+    );
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        MAX_CONSECUTIVE_AGENT_TURNS + 1
+    );
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(1);
+
+    post(store, binder, '@mock human reset', ['mock'], OPERATOR);
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        MAX_CONSECUTIVE_AGENT_TURNS + 2
+    );
+    postAgentTurnRow(
+      store,
+      binder,
+      'worker-after-reset',
+      'item-0',
+      '@mock worker resumed',
+      ['mock'],
+      workerSessionId,
+      AGENT_SENDER
+    );
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').length ===
+        MAX_CONSECUTIVE_AGENT_TURNS + 3
+    );
+  });
+
   it('counts one provider turn once across item rows and mention fanout', async () => {
     const build = (agentType: string) =>
       agentType === 'a'

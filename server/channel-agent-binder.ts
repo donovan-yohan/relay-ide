@@ -135,6 +135,11 @@ export interface ChannelAgentBinder {
     mentions: ChannelMention[]
   ): void;
   ensureBinding(channelId: string, framework: string): Promise<LiveBinding>;
+  /** Designate or resume the one orchestrator bound to a product channel. */
+  ensureOrchestrator(
+    channelId: string,
+    framework?: string
+  ): Promise<LiveBinding>;
   interrupt(channelId: string, agentId: string): Promise<void>;
   respondToApproval(
     channelId: string,
@@ -202,6 +207,20 @@ export class ChannelAgentNoActiveTurnError extends Error {
   constructor(message = 'agent has no active turn') {
     super(message);
     this.name = 'ChannelAgentNoActiveTurnError';
+  }
+}
+
+export class ChannelAgentRoleConflictError extends Error {
+  constructor(
+    readonly channelId: string,
+    readonly framework: string,
+    readonly sessionId: string,
+    readonly actualRole: string
+  ) {
+    super(
+      `channel ${channelId} already binds @${framework} to session ${sessionId} with role ${actualRole}; expected orchestrator`
+    );
+    this.name = 'ChannelAgentRoleConflictError';
   }
 }
 
@@ -510,7 +529,8 @@ export function createChannelAgentBinder(
 
   async function doEnsureBinding(
     channelId: string,
-    framework: string
+    framework: string,
+    requiredRole?: 'orchestrator'
   ): Promise<LiveBinding> {
     if (closed) throw new BinderClosedError();
     const key = bindingKey(channelId, framework);
@@ -520,7 +540,17 @@ export function createChannelAgentBinder(
     const existing = live.get(key);
     if (existing?.adapter && existing.sessionId) {
       const session = healthySession(existing.sessionId, framework);
-      if (session && session.adapterV2 === existing.adapter) return existing;
+      if (session && session.adapterV2 === existing.adapter) {
+        if (requiredRole && session.role !== requiredRole) {
+          throw new ChannelAgentRoleConflictError(
+            channelId,
+            framework,
+            session.id,
+            session.role ?? 'unknown'
+          );
+        }
+        return existing;
+      }
     }
 
     // Sender attribution label (#1234): the vendor DEFAULT profile inherits the
@@ -533,6 +563,14 @@ export function createChannelAgentBinder(
     const row = store.getBinding(channelId, framework);
     const restored = healthySession(row?.sessionId ?? null, framework);
     if (restored) {
+      if (requiredRole && restored.role !== requiredRole) {
+        throw new ChannelAgentRoleConflictError(
+          channelId,
+          framework,
+          restored.id,
+          restored.role ?? 'unknown'
+        );
+      }
       return attachSession(
         channelId,
         framework,
@@ -570,6 +608,7 @@ export function createChannelAgentBinder(
         displayName,
         port: deps.port,
         configDir: deps.configDir,
+        ...(requiredRole ? { role: requiredRole } : {}),
         ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
         ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
         ...(yolo ? { permissionMode: YOLO_PERMISSION_MODE } : {}),
@@ -610,6 +649,38 @@ export function createChannelAgentBinder(
     // Store the promise BEFORE any await so two concurrent mentions of the same
     // framework in one channel single-flight to exactly one spawn.
     const promise = doEnsureBinding(channelId, framework).finally(() => {
+      inflight.delete(key);
+    });
+    inflight.set(key, promise);
+    return promise;
+  }
+
+  async function ensureOrchestrator(
+    channelId: string,
+    framework = 'claude'
+  ): Promise<LiveBinding> {
+    const key = bindingKey(channelId, framework);
+    const pending = inflight.get(key);
+    if (pending) {
+      const binding = await pending;
+      const session = binding.sessionId
+        ? healthySession(binding.sessionId, framework)
+        : null;
+      if (!session || session.role !== 'orchestrator') {
+        throw new ChannelAgentRoleConflictError(
+          channelId,
+          framework,
+          binding.sessionId ?? 'unknown',
+          session?.role ?? 'unknown'
+        );
+      }
+      return binding;
+    }
+    const promise = doEnsureBinding(
+      channelId,
+      framework,
+      'orchestrator'
+    ).finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, promise);
@@ -1115,6 +1186,19 @@ export function createChannelAgentBinder(
    */
   function routeWithBrake(message: ChannelMessage, frameworks: string[]): void {
     if (frameworks.length === 0) return;
+    const sourceSession = message.source?.sessionId
+      ? deps.sessions.get(message.source.sessionId)
+      : undefined;
+    if (sourceSession?.role === 'orchestrator') {
+      // The orchestrator is the channel's Relay-managed driver, not a fan-out
+      // participant. It must keep coordinating even after worker traffic trips
+      // the brake, and its turns must not consume the worker-turn allowance.
+      // Human posts still reset the ordinary brake state below.
+      for (const framework of frameworks) {
+        routeOne(message, framework);
+      }
+      return;
+    }
     const turnKey = agentTurnBrakeKey(message);
     let state = consecutiveAgentTurns.get(message.channelId);
     if (!state) {
@@ -1264,6 +1348,7 @@ export function createChannelAgentBinder(
   return {
     handleMessagePosted,
     ensureBinding,
+    ensureOrchestrator,
     interrupt,
     respondToApproval,
     rosterForChannel,

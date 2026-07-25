@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/identity.js';
 import type { SessionEnvelope } from '../../../shared/session-envelope.js';
 import type { SessionDurabilityState } from '../../../shared/session-durability.js';
+import type { AgentRole } from '../../../shared/agent-roster.js';
 import type {
   RepoIdentityWarning,
   ResolvedRemoteIdentity,
@@ -160,6 +161,8 @@ export interface SessionSummary {
   id: string;
   type: 'agent' | 'terminal';
   agent: AgentType;
+  /** Durable collaboration role. A hint for routing/UI, not authorization. */
+  role?: AgentRole;
   mode?: 'pty' | 'web' | undefined;
   repoName?: string;
   repoPath?: string;

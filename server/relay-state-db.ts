@@ -10,6 +10,7 @@ import {
   type ControlStateSummary,
 } from '../shared/control-state.js';
 import { createLogger } from './logger.js';
+import type { AgentRole } from '../shared/agent-roster.js';
 
 const logger = createLogger('relay-state-db');
 
@@ -109,6 +110,7 @@ ON CONFLICT(id) DO UPDATE SET
 export interface WebSessionMeta {
   type: string;
   agent: string;
+  role?: AgentRole;
   spawnedBySessionId?: string;
   repoName?: string;
   customCommand: string | null;
@@ -449,6 +451,7 @@ function writeUpsert(session: WebSession): void {
   const meta: WebSessionMeta = {
     type: session.type,
     agent: session.agent,
+    ...(session.role !== undefined ? { role: session.role } : {}),
     ...(session.spawnedBySessionId !== undefined
       ? { spawnedBySessionId: session.spawnedBySessionId }
       : {}),

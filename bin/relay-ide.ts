@@ -1546,6 +1546,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.pair.requests',
   'sessions.list',
   'sessions.get',
+  'sessions.create',
   'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
@@ -1593,6 +1594,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.create',
   'workspace-topics.update',
   'workspace-topics.archive',
+  'channels.post',
   'roster.list',
   'roster.register',
   'roster.updateSelf',
@@ -1795,7 +1797,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|orchestration-runs launch|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|roster list|roster register|roster update-self|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|orchestration-runs launch|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -5558,6 +5560,37 @@ async function runGatewayWorkspaceTopics(
   }
 }
 
+async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
+  if (gatewayArgs[1] === 'post') {
+    const input = parseGatewayInputObject(
+      'channels.post',
+      gatewayArgs.slice(2)
+    );
+    const channelId =
+      typeof input['channelId'] === 'string' ? input['channelId'].trim() : '';
+    if (!channelId) {
+      gatewayInvalid(
+        'channels.post',
+        'channelId is required and must be a non-empty string',
+        { field: 'channelId' }
+      );
+    }
+    const body = { ...input };
+    delete body['channelId'];
+    const result = await gatewayHttpJson({
+      commandName: 'channels.post',
+      pathName: `/channels/${encodeURIComponent(channelId)}/messages`,
+      method: 'POST',
+      body,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.post', result), 0);
+  }
+  gatewayInvalid('channels.post', 'unknown channels command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const rosterArgs = gatewayArgs.slice(2);
@@ -5869,6 +5902,7 @@ async function runGatewayV1(): Promise<never> {
       'pr-overseer': runGatewayPrOverseer,
       'workspace-surfaces': runGatewayWorkspaceSurfaces,
       'workspace-topics': runGatewayWorkspaceTopics,
+      channels: runGatewayChannels,
       roster: runGatewayRoster,
       cockpit: runGatewayCockpit,
       artifacts: runGatewayArtifacts,

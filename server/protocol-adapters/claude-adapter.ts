@@ -615,6 +615,7 @@ export class ClaudeProtocolAdapter
   private claudeSessionId: string | null = null;
 
   private activeTurnId: string | null = null;
+  private activeTurnInput: AgentSendMessageInputV2 | null = null;
   private activeStartedAt: string | null = null;
   private turnStartedAtMs: number | null = null;
   private completedActiveTurn = false;
@@ -623,8 +624,19 @@ export class ClaudeProtocolAdapter
   private slashCommandsEmitted = false;
   private providerExtensionSeq = 0;
   private interruptSeq = 0;
+  private runtimeEnvRefreshTurnSeq = 0;
 
   private readonly queue: QueuedClaudeMessage[] = [];
+  private pendingRuntimeEnvRefresh:
+    | {
+        processEnv: Record<string, string>;
+        waiters: Array<{
+          resolve: () => void;
+          reject: (error: Error) => void;
+        }>;
+      }
+    | undefined;
+  private runtimeEnvRefreshApplying = false;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly approvalStallTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingInterrupts = new Map<string, () => void>();
@@ -750,11 +762,79 @@ export class ClaudeProtocolAdapter
     this.emitSessionUpdate({ slashCommands: RELAY_CLAUDE_COMMANDS });
   }
 
+  async refreshRuntimeEnv(processEnv: Record<string, string>): Promise<void> {
+    if (!this.config) {
+      throw new Error('Cannot refresh Claude runtime env before connect');
+    }
+    const nextEnv = { ...processEnv };
+    if (this.activeTurnId === null) {
+      await this.applyRuntimeEnvRefresh(nextEnv);
+      return;
+    }
+
+    let forceBoundary = false;
+    const applied = new Promise<void>((resolve, reject) => {
+      if (this.pendingRuntimeEnvRefresh) {
+        this.pendingRuntimeEnvRefresh.processEnv = nextEnv;
+        this.pendingRuntimeEnvRefresh.waiters.push({ resolve, reject });
+      } else {
+        this.pendingRuntimeEnvRefresh = {
+          processEnv: nextEnv,
+          waiters: [{ resolve, reject }],
+        };
+        forceBoundary = true;
+      }
+    });
+    if (forceBoundary) {
+      void this.forceRuntimeEnvRefreshBoundary().catch((error: unknown) => {
+        const refreshError =
+          error instanceof Error
+            ? error
+            : new Error('Claude runtime env refresh boundary failed');
+        this.rejectPendingRuntimeEnvRefresh(refreshError);
+        this.rejectQueued(refreshError);
+      });
+    }
+    return applied;
+  }
+
+  /**
+   * A subprocess cannot receive a replacement token mid-turn. End the current
+   * turn deliberately, put its input at the front of the queue under a fresh
+   * turn id, apply the environment while idle, then resume that work.
+   */
+  private async forceRuntimeEnvRefreshBoundary(): Promise<void> {
+    const activeTurnId = this.activeTurnId;
+    const activeInput = this.activeTurnInput;
+    if (!activeTurnId || !activeInput) {
+      this.drainQueue();
+      return;
+    }
+    const interrupted = await this.interruptTurn(
+      { turnId: activeTurnId },
+      true
+    );
+    if (interrupted) {
+      this.queue.unshift({
+        input: {
+          ...activeInput,
+          turnId: `${activeInput.turnId}-credential-refresh-${++this.runtimeEnvRefreshTurnSeq}`,
+        },
+        resolve: () => {},
+        reject: () => {},
+      });
+      this.drainQueue();
+    }
+  }
+
   protected async onDisconnect(): Promise<void> {
     this._status = 'disconnected';
     this.registry.unregister(this.registrySessionId);
 
     this.rejectQueued(new Error('Claude adapter disconnected'));
+    this.rejectPendingRuntimeEnvRefresh(
+      new Error('Claude adapter disconnected during runtime env refresh')
+    );
 
     // Auto-deny outstanding approvals before the child is killed (§7.4).
     for (const requestId of [...this.pendingApprovals.keys()]) {
@@ -772,6 +852,7 @@ export class ClaudeProtocolAdapter
     const dead = this.client;
     this.client = null;
     this.activeTurnId = null;
+    this.activeTurnInput = null;
     this.activeStartedAt = null;
     this.turnStartedAtMs = null;
     this.completedActiveTurn = false;
@@ -813,6 +894,7 @@ export class ClaudeProtocolAdapter
     const dead = this.client;
     this.client = null;
     this.activeTurnId = null;
+    this.activeTurnInput = null;
     this.activeStartedAt = null;
     this.turnStartedAtMs = null;
     this.completedActiveTurn = false;
@@ -868,7 +950,11 @@ export class ClaudeProtocolAdapter
     }
     this.lastActivityAt = Date.now();
 
-    if (this.activeTurnId !== null) {
+    if (
+      this.activeTurnId !== null ||
+      this.pendingRuntimeEnvRefresh !== undefined ||
+      this.runtimeEnvRefreshApplying
+    ) {
       return new Promise<void>((resolve, reject) => {
         this.queue.push({ input, resolve, reject });
         this.emitLiveState({
@@ -883,9 +969,16 @@ export class ClaudeProtocolAdapter
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
-    if (this.activeTurnId === null) return;
+    await this.interruptTurn(input, false);
+  }
+
+  private async interruptTurn(
+    input: AgentInterruptInputV2,
+    deferDrain: boolean
+  ): Promise<boolean> {
+    if (this.activeTurnId === null) return false;
     if (input.turnId !== undefined && input.turnId !== this.activeTurnId)
-      return;
+      return false;
 
     // Capture the turn this interrupt targets. The ack/timeout race below spans
     // an await; during that window the CLI's own `result` line for this turn can
@@ -913,22 +1006,22 @@ export class ClaudeProtocolAdapter
 
       // The targeted turn already ended on its own during the ack window — the
       // warm child (and any newly drained turn) must be left untouched.
-      if (this.activeTurnId !== targetTurnId) return;
+      if (this.activeTurnId !== targetTurnId) return false;
 
       if (outcome === 'timeout') {
         // No receipt — fall back to the SIGTERM ladder and evict (§3).
         const dead = this.client;
         this.client = null;
         if (dead) await dead.stop().catch(() => undefined);
-        if (this.activeTurnId !== targetTurnId) return;
+        if (this.activeTurnId !== targetTurnId) return false;
         this.completeActiveTurn('interrupted');
-        this.drainQueue();
-        return;
+        if (!deferDrain) this.drainQueue();
+        return true;
       }
     }
 
     // Acked (or no live child): complete as interrupted, stay warm.
-    if (this.activeTurnId !== targetTurnId) return;
+    if (this.activeTurnId !== targetTurnId) return false;
     const hasQueuedFollowUp = this.queue.length > 0;
     this.completeActiveTurn('interrupted');
     // The warm child may still flush this turn's trailing lines (its `result`,
@@ -936,7 +1029,8 @@ export class ClaudeProtocolAdapter
     // is about to drain onto the same child, suppress that stale tail so it is
     // not attributed to the next turn (§14).
     if (hasQueuedFollowUp) this.suppressInterruptedTail = true;
-    this.drainQueue();
+    if (!deferDrain) this.drainQueue();
+    return true;
   }
 
   async respondToApproval(input: AgentApprovalResponseInputV2): Promise<void> {
@@ -1047,6 +1141,7 @@ export class ClaudeProtocolAdapter
 
     const startedAt = nowIso();
     this.activeTurnId = input.turnId;
+    this.activeTurnInput = input;
     this.activeStartedAt = startedAt;
     this.turnStartedAtMs = Date.now();
     this.completedActiveTurn = false;
@@ -1256,6 +1351,9 @@ export class ClaudeProtocolAdapter
     args.push('--permission-mode', mode);
 
     if (config.model) args.push('--model', config.model);
+    if (config.systemPromptAppendix?.trim()) {
+      args.push('--append-system-prompt', config.systemPromptAppendix);
+    }
 
     const extra = isRecord(config.extra) ? config.extra : {};
     const additionalDirs = extra.additionalDirectories;
@@ -1283,7 +1381,11 @@ export class ClaudeProtocolAdapter
   }
 
   private buildEnv(): Record<string, string> {
-    const env = cleanEnv(); // strips CLAUDECODE (nesting rule)
+    const env = {
+      ...cleanEnv(),
+      ...(this.config?.processEnv ?? {}),
+    };
+    delete env.CLAUDECODE; // preserve the nesting rule across trusted overlays
     delete env.CLAUDE_CODE_ENTRYPOINT; // avoid inheriting a stale value
     return env;
   }
@@ -2358,6 +2460,7 @@ export class ClaudeProtocolAdapter
     });
 
     this.activeTurnId = null;
+    this.activeTurnInput = null;
     this.activeStartedAt = null;
     this.turnStartedAtMs = null;
     this.streamedTextItems.clear();
@@ -2382,6 +2485,26 @@ export class ClaudeProtocolAdapter
 
   private drainQueue(): void {
     if (this._status !== 'connected' || this.activeTurnId !== null) return;
+    if (this.runtimeEnvRefreshApplying) return;
+    const pendingRefresh = this.pendingRuntimeEnvRefresh;
+    if (pendingRefresh) {
+      this.pendingRuntimeEnvRefresh = undefined;
+      this.runtimeEnvRefreshApplying = true;
+      void this.applyRuntimeEnvRefresh(pendingRefresh.processEnv).then(
+        () => {
+          this.runtimeEnvRefreshApplying = false;
+          for (const waiter of pendingRefresh.waiters) waiter.resolve();
+          this.drainQueue();
+        },
+        () => {
+          this.runtimeEnvRefreshApplying = false;
+          const error = new Error('Claude runtime env refresh failed');
+          for (const waiter of pendingRefresh.waiters) waiter.reject(error);
+          this.rejectQueued(error);
+        }
+      );
+      return;
+    }
     const queued = this.queue.shift();
     if (!queued) return;
     try {
@@ -2399,6 +2522,28 @@ export class ClaudeProtocolAdapter
     const queued = this.queue.splice(0);
     for (const message of queued) message.reject(err);
     if (queued.length > 0) this.emitLiveState({ queueLength: 0 });
+  }
+
+  private async applyRuntimeEnvRefresh(
+    processEnv: Record<string, string>
+  ): Promise<void> {
+    if (!this.config) {
+      throw new Error('Cannot refresh Claude runtime env before connect');
+    }
+    this.config.processEnv = {
+      ...(this.config.processEnv ?? {}),
+      ...processEnv,
+    };
+    const dead = this.client;
+    this.client = null;
+    if (dead) await dead.stop();
+  }
+
+  private rejectPendingRuntimeEnvRefresh(error: Error): void {
+    const pending = this.pendingRuntimeEnvRefresh;
+    this.pendingRuntimeEnvRefresh = undefined;
+    if (!pending) return;
+    for (const waiter of pending.waiters) waiter.reject(error);
   }
 
   // ── Emit helpers ───────────────────────────────────────────────────────────

@@ -123,6 +123,10 @@ export interface ChannelChatRouterDeps {
   binder?: ChannelAgentBinder | null;
   /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
   knownProviderIds?: readonly string[];
+  /** Live session lookup used to authenticate privileged source attribution. */
+  getSession?: (
+    sessionId: string
+  ) => { role?: string; status?: string } | undefined;
   /** byte budget for one history response body (defaults to 4MB). */
   historyMaxBytes?: number;
   requireAuth?: RequestHandler;
@@ -315,6 +319,22 @@ function deriveSender(req: Request): ChannelSenderRef {
   return { kind: 'human', id: 'human:operator', displayName: 'Operator' };
 }
 
+/**
+ * Persistent-orchestrator credentials use their actor id as authoritative
+ * backing-session provenance. Other actor credentials stay unattributed and
+ * therefore remain subject to the ordinary agent brake.
+ */
+export function authenticatedSourceSessionId(
+  credential: ReturnType<typeof authenticatedCliGatewayActorCredential>,
+  getSession: ChannelChatRouterDeps['getSession']
+): string | undefined {
+  if (credential?.metadata?.reason !== 'persistent-orchestrator') {
+    return undefined;
+  }
+  const session = getSession?.(credential.actor.id);
+  return session?.role === 'orchestrator' ? credential.actor.id : undefined;
+}
+
 function mapStoreError(res: Response, error: unknown): void {
   if (error instanceof ChannelAttachmentStoreError) {
     const code: RelayCliGatewayErrorCode =
@@ -405,6 +425,7 @@ function postToChannel(
   input: {
     channelId: string;
     sender: ChannelSenderRef;
+    sourceSessionId?: string;
     text: string;
     format?: ChannelBodyFormat;
     parentMessageId?: string;
@@ -426,6 +447,9 @@ function postToChannel(
       : {}),
     ...(input.mentions.length ? { mentions: input.mentions } : {}),
     ...(input.parts?.length ? { parts: input.parts } : {}),
+    ...(input.sourceSessionId
+      ? { source: { sessionId: input.sourceSessionId } }
+      : {}),
   });
   store.upsertMember({
     channelId: input.channelId,
@@ -717,13 +741,20 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
     // [MF] Reject a client-supplied sender field outright — attribution is
     // ALWAYS server-derived from the auth lane, never forgeable from the body.
-    if ('sender' in body) {
+    if ('sender' in body || 'source' in body) {
+      const field = 'sender' in body ? 'sender' : 'source';
       sendGatewayError(
         res,
         'INVALID_ARGUMENT',
-        'sender is server-derived and must not be supplied in the request body',
+        `${field} is server-derived and must not be supplied in the request body`,
         false,
-        { field: 'sender', reasonCode: 'CHANNEL_SENDER_NOT_ALLOWED' }
+        {
+          field,
+          reasonCode:
+            field === 'sender'
+              ? 'CHANNEL_SENDER_NOT_ALLOWED'
+              : 'CHANNEL_SOURCE_NOT_ALLOWED',
+        }
       );
       return;
     }
@@ -834,6 +865,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         : undefined;
 
     const sender = deriveSender(req);
+    const sourceSessionId = authenticatedSourceSessionId(
+      authenticatedCliGatewayActorCredential(req),
+      deps.getSession
+    );
 
     // clientMessageId idempotency: return the existing row without re-broadcast.
     if (clientMessageId) {
@@ -860,6 +895,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const message = postToChannel(store, deps.hub, {
         channelId: id,
         sender,
+        ...(sourceSessionId ? { sourceSessionId } : {}),
         text,
         ...(format ? { format } : {}),
         ...(parentMessageId ? { parentMessageId } : {}),

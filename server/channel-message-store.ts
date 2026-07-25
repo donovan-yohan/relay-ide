@@ -20,6 +20,7 @@ import {
   type ChannelMessageId,
   type ChannelMessageKind,
   type ChannelMessagePart,
+  type ChannelMessageSource,
   type ChannelMessageStatus,
   type ChannelTruncationReason,
   type ChannelSenderRef,
@@ -207,6 +208,8 @@ export interface AppendCompleteInput {
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
   meta?: ChannelMessageMeta;
+  /** Server-derived backing session for authenticated agent posts. */
+  source?: Pick<ChannelMessageSource, 'sessionId'>;
 }
 
 export interface BeginStreamInput {
@@ -1019,7 +1022,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           : {}),
         ...(input.meta ? { extra: input.meta } : {}),
       }),
-      sourceSessionId: null,
+      sourceSessionId: input.source?.sessionId ?? null,
       sourceTurnId: null,
       sourceItemId: null,
       clientMessageId: input.clientMessageId ?? null,

@@ -60,6 +60,21 @@ describe('collaborationPromptArgsForFramework (#955)', () => {
     }
   });
 
+  it('threads an explicit orchestrator role into the shared appendix', () => {
+    const args = collaborationPromptArgsForFramework(
+      BUILTIN_FRAMEWORKS.claude,
+      'orchestrator'
+    );
+    expect(args).toEqual([
+      '--append-system-prompt',
+      collaborationPromptAppendix({
+        provider: 'claude',
+        role: 'orchestrator',
+      }),
+    ]);
+    expect(args[1]).toContain('product channel');
+  });
+
   it('embeds no raw transcripts/secrets/provider-store paths in the prompt', () => {
     const appendix = collaborationPromptArgsForFramework(
       BUILTIN_FRAMEWORKS.claude

@@ -133,6 +133,14 @@ describe('projectRosterEntry', () => {
     ]);
   });
 
+  it('prefers a durable per-session role over the provider default', () => {
+    const entry = projectRosterEntry({
+      ...session,
+      role: 'orchestrator',
+    });
+    expect(entry.role).toBe('orchestrator');
+  });
+
   it('is redaction-safe — never carries transcript/prompt/env/token fields', () => {
     const entry = projectRosterEntry(
       {
@@ -193,5 +201,21 @@ describe('collaborationPromptAppendix', () => {
     expect(text).toContain('events subscribe --topic attention');
     expect(text.toLowerCase()).not.toContain('tmux');
     expect(text.toLowerCase()).not.toContain('pty');
+  });
+
+  it('provides a concise orchestrator playbook without inaccessible inbox subscription guidance', () => {
+    const text = collaborationPromptAppendix({
+      provider: 'claude',
+      role: 'orchestrator',
+    });
+    expect(text).toContain('product channel');
+    expect(text).toContain('relay-ide v1 channels post');
+    expect(text).toContain('relay-ide v1 sessions create');
+    expect(text).toContain('explicit `@mention`');
+    expect(text).toContain('relay-ide v1 roster list');
+    expect(text).toContain('events subscribe --topic attention');
+    expect(text).toContain('own conversation context');
+    expect(text).toContain('explicitly addressed');
+    expect(text).not.toContain('events subscribe --topic inbox');
   });
 });
