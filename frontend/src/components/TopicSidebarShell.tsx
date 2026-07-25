@@ -60,6 +60,8 @@ import {
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
+import { buildSessionLineage } from '../lib/session-lineage.js';
+import { scopedSessionKey } from '../lib/session-keys.js';
 import {
   hasUnseenActivity,
   useChannelActivityStore,
@@ -595,6 +597,159 @@ function ParticipantRoster({
   );
 }
 
+function sessionLineageStatus(session: SessionSummary): 'idle' | 'active' {
+  return session.idle ? 'idle' : 'active';
+}
+
+function SessionLineageRow({
+  session,
+  depth,
+  onSelectSession,
+}: {
+  session: SessionSummary;
+  depth: number;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const status = sessionLineageStatus(session);
+  const selectKey = scopedSessionKey(session);
+  const identity = resolveSenderIdentity({
+    kind: 'agent',
+    id: selectKey,
+    providerId: session.agent,
+    displayName: session.displayName,
+  });
+  const rowStyle = { '--session-lineage-depth': depth } as CSSProperties;
+  return (
+    <li className="session-lineage-tree__item" style={rowStyle}>
+      <button
+        type="button"
+        className={`session-lineage-tree__row session-lineage-tree__row--${status}`}
+        disabled={!onSelectSession}
+        data-session-id={session.id}
+        title={`open session ${session.displayName}`}
+        onClick={() => onSelectSession?.(selectKey)}
+      >
+        <span className="session-lineage-tree__icon" aria-hidden="true">
+          <AgentAvatar
+            identity={identity}
+            name={session.displayName}
+            presence={status === 'active' ? 'busy' : 'online'}
+            size={20}
+          />
+        </span>
+        <span className="session-lineage-tree__content">
+          <span className="session-lineage-tree__name">
+            <MarqueeText>{session.displayName}</MarqueeText>
+          </span>
+          <span className="session-lineage-tree__meta">
+            {session.role === 'orchestrator' ? (
+              <span className="session-lineage-tree__role">orchestrator</span>
+            ) : null}
+            <span>{status}</span>
+          </span>
+        </span>
+        <span className="session-lineage-tree__action" aria-hidden="true">
+          {status === 'active' ? '⠿' : '·'}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+/** Operator-facing, one-hop hierarchy over the live session summaries. */
+function SessionLineageTree({
+  sessions,
+  onSelectSession,
+}: {
+  sessions: SessionSummary[];
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const lineage = buildSessionLineage(sessions);
+  const hasOrchestrators = lineage.orchestrators.length > 0;
+  if (
+    !hasOrchestrators &&
+    lineage.standalone.length === 0 &&
+    lineage.ungrouped.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <section
+      className={`session-lineage-tree${hasOrchestrators ? '' : ' session-lineage-tree--flat'}`}
+      aria-label="session lineage"
+    >
+      <div className="session-lineage-tree__header">
+        <span>session tree</span>
+        <span>{sessions.length} live</span>
+      </div>
+      {hasOrchestrators ? (
+        <ul className="session-lineage-tree__list">
+          {lineage.orchestrators.map(({ session, workers }) => (
+            <li
+              className="session-lineage-tree__branch"
+              key={scopedSessionKey(session)}
+            >
+              <ul className="session-lineage-tree__list">
+                <SessionLineageRow
+                  session={session}
+                  depth={0}
+                  onSelectSession={onSelectSession}
+                />
+              </ul>
+              {workers.length > 0 ? (
+                <ul className="session-lineage-tree__list">
+                  {workers.map((worker) => (
+                    <SessionLineageRow
+                      key={scopedSessionKey(worker)}
+                      session={worker}
+                      depth={1}
+                      onSelectSession={onSelectSession}
+                    />
+                  ))}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {lineage.standalone.length > 0 ? (
+        <div className="session-lineage-tree__bucket">
+          <div className="session-lineage-tree__bucket-label">
+            {hasOrchestrators ? 'other sessions' : 'sessions'}
+          </div>
+          <ul className="session-lineage-tree__list">
+            {lineage.standalone.map((session) => (
+              <SessionLineageRow
+                key={scopedSessionKey(session)}
+                session={session}
+                depth={0}
+                onSelectSession={onSelectSession}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {lineage.ungrouped.length > 0 ? (
+        <div className="session-lineage-tree__bucket">
+          <div className="session-lineage-tree__bucket-label">
+            ungrouped/other
+          </div>
+          <ul className="session-lineage-tree__list">
+            {lineage.ungrouped.map((session) => (
+              <SessionLineageRow
+                key={scopedSessionKey(session)}
+                session={session}
+                depth={0}
+                onSelectSession={onSelectSession}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function TopicRoomSessionRow({
   session,
   onSelectSession,
@@ -970,6 +1125,7 @@ function resolveWorkspaceName(
 
 function TopicDetail({
   item,
+  sessions,
   workspaceName,
   surfacesError,
   surfacesLoading,
@@ -982,6 +1138,7 @@ function TopicDetail({
   onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem;
+  sessions: SessionSummary[];
   /** Friendly workspace name for the meta strip; omitted entirely (never a raw id) when unresolved. */
   workspaceName?: string | null | undefined;
   surfacesError?: boolean | undefined;
@@ -1159,6 +1316,10 @@ function TopicDetail({
         fallback.
       </div>
 
+      <SessionLineageTree
+        sessions={sessions}
+        onSelectSession={onSelectSession}
+      />
       <ParticipantRoster item={item} onSelectSession={onSelectSession} />
     </section>
   );
@@ -1538,6 +1699,7 @@ function TopicMobileControlPanelGate({
 
 function TopicAdvancedDetailGate({
   item,
+  sessions,
   show,
   workspaceNameById,
   surfacesError,
@@ -1548,6 +1710,7 @@ function TopicAdvancedDetailGate({
   onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem | undefined;
+  sessions: SessionSummary[];
   show: boolean;
   workspaceNameById: Map<string, string>;
   surfacesError: boolean;
@@ -1575,6 +1738,7 @@ function TopicAdvancedDetailGate({
     <div className="topic-shell__advanced-detail">
       <TopicDetail
         item={item}
+        sessions={sessions}
         workspaceName={resolveWorkspaceName(item, workspaceNameById)}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
@@ -1891,6 +2055,7 @@ function MobileRailSection({
 
 function TopicMobileCockpit({
   tree,
+  sessions,
   unreadByChannel,
   statusByChannelAgent,
   mentionsMeByChannel,
@@ -1901,8 +2066,10 @@ function TopicMobileCockpit({
   onInterrupt,
   onCreateTaskRoom,
   onResumeLast,
+  onSelectSession,
 }: {
   tree: ChannelRailTree;
+  sessions: SessionSummary[];
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   mentionsMeByChannel: Readonly<Record<string, boolean>>;
@@ -1917,6 +2084,7 @@ function TopicMobileCockpit({
   onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
+  onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
     () => new Set()
@@ -1977,6 +2145,10 @@ function TopicMobileCockpit({
         statusTextForItem={topicLatestStatus}
         onNudge={onNudge}
         onInterrupt={onInterrupt}
+      />
+      <SessionLineageTree
+        sessions={sessions}
+        onSelectSession={onSelectSession}
       />
       <div className="topic-cockpit__all-chats-header">all chats</div>
       <div className="topic-mobile-list" aria-label="workspace-grouped chats">
@@ -2811,6 +2983,7 @@ export function TopicSidebarView({
       />
       <TopicMobileCockpit
         tree={railTree}
+        sessions={sessions}
         unreadByChannel={unreadByChannel}
         statusByChannelAgent={effectiveStatusByChannelAgent}
         mentionsMeByChannel={mentionsMeByChannel}
@@ -2819,6 +2992,7 @@ export function TopicSidebarView({
         onSelect={selectMobile}
         onNudge={postMobileNudge}
         onInterrupt={interruptMobileAgent}
+        onSelectSession={onSelectSession}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
@@ -2844,6 +3018,7 @@ export function TopicSidebarView({
       <GroupedTopicTree tree={railTree} renderRow={renderTopicRow} />
       <TopicAdvancedDetailGate
         item={selectedItem}
+        sessions={sessions}
         show={advancedMode && showAdvancedDetail}
         workspaceNameById={workspaceNameById}
         surfacesError={surfacesError}
