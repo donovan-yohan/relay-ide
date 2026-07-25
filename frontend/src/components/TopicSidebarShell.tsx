@@ -7,7 +7,13 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
+import { useShallow } from 'zustand/react/shallow';
 import {
   CircleAlert,
   Folder,
@@ -21,6 +27,12 @@ import type {
   WorkflowRunSessionLink,
   WorkflowRunState,
 } from '../../../shared/workflow-run.js';
+import type { RosterAttention } from '../../../shared/agent-roster.js';
+import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
+import {
+  parseMentions,
+  type ChannelMessage,
+} from '../../../shared/channel-chat-protocol.js';
 import {
   createGlobalSessionId,
   DEFAULT_LOCAL_NODE_ID,
@@ -33,27 +45,46 @@ import {
 } from '../../../shared/workspace-topics.js';
 import {
   fetchHubNodes,
+  fetchAgentRoster,
+  fetchChannelRoster,
+  fetchChannelHistory,
   fetchWorkflowRuns,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
+  interruptChannelAgent,
+  postChannelMessage,
   restoreWorkspaceTopic,
   searchWorkspaceTopics,
   sendSessionInput,
+  type ChannelAgentStatus,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
+import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
+import {
+  hasUnseenActivity,
+  useChannelActivityStore,
+} from '../lib/stores/channel-activity.js';
+import { AgentAvatar } from './chat/AgentAvatar.js';
 import { openTopicTaskRoom } from '../lib/topic-task-room.js';
 import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
+import {
+  channelAgentStatusKey,
+  resolveEffectiveAgentStatus,
+  useChannelAgentStatusStore,
+} from '../lib/stores/channel-agent-status.js';
 import { useIaWorkspacesQuery } from '../lib/hooks/use-ia-workspaces.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
-  groupTopicsByWorkspace,
-  type GroupedTopicNav,
+  selectChannelRailTree,
+  type ChannelRailNode,
+  type ChannelRailSection,
+  type ChannelRailTree,
   type TopicNavItem,
   type TopicNavModel,
   type TopicNavNode,
@@ -64,6 +95,11 @@ import {
   type TopicNavTone,
 } from '../lib/state/topic-nav.js';
 import { MarqueeText } from './MarqueeText.js';
+import {
+  CockpitPresenceChip,
+  MobileCockpitAttentionLane,
+  MobileCockpitRowActions,
+} from './MobileCockpitAttentionLane.js';
 import './TopicSidebarShell.css';
 
 function AttentionIcon({ tone }: { tone: TopicNavItem['tone'] }) {
@@ -98,7 +134,40 @@ const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
 const WORKFLOW_RUNS_LIMIT = 5;
+const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
+const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
+const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 const EMPTY_WORKFLOW_RUNS: WorkflowRunProjection[] = [];
+
+function useMobileCockpitViewport(): boolean {
+  const [matches, setMatches] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 600px)').matches
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const media = window.matchMedia('(max-width: 600px)');
+    const update = () => setMatches(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return matches;
+}
+
+function messageMentionsCurrentOperator(message: ChannelMessage): boolean {
+  if (message.sender.id === CURRENT_OPERATOR_SENDER_ID) return false;
+  // Browser-authored channel posts are canonically `human:operator` with the
+  // display name `Operator` (channel-chat-router deriveSender). Persisted
+  // mentions come from this same parser; parse older rows when metadata is
+  // absent rather than introducing a cockpit-only regex/tokenizer.
+  const mentions = message.mentions ?? parseMentions(message.body.text);
+  return mentions.some(
+    (mention) =>
+      mention.raw.slice(1).toLowerCase() === CURRENT_OPERATOR_MENTION_NAME
+  );
+}
 
 function boundedTopicLatestStatus(value: string): string {
   const trimmed = value.trim();
@@ -242,6 +311,26 @@ function topicLatestStatus(item: TopicNavItem): string {
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
+  // #1166: DM rows show the agent's colored glyph on a muted-variant background
+  // (the same color-mix recipe repo-identity badges use), not a generic icon.
+  if (item.isDirectMessage && item.dmProviderId) {
+    const identity = resolveSenderIdentity({
+      kind: 'agent',
+      // A DM row targets a vendor, i.e. its DEFAULT profile — key on the profile
+      // Actor id so the sidebar dot keeps the curated vendor token (#1234).
+      id: builtInAgentProfileId(item.dmProviderId),
+      providerId: item.dmProviderId,
+    });
+    return (
+      <AgentAvatar
+        className="topic-row__dm-avatar"
+        identity={identity}
+        name={identity.label}
+        size={22}
+        title={`direct message with ${identity.label}`}
+      />
+    );
+  }
   const background = item.color ?? deriveColor(item.badgeSeed);
   const label = item.channelKind
     ? `${item.channelKind} channel`
@@ -890,6 +979,7 @@ function TopicDetail({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem;
   /** Friendly workspace name for the meta strip; omitted entirely (never a raw id) when unresolved. */
@@ -902,6 +992,7 @@ function TopicDetail({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
@@ -1046,6 +1137,15 @@ function TopicDetail({
         <div className="topic-room__section-header">
           <span>artifacts/surfaces</span>
           <span>{item.surfaces.length + item.artifactIds.length}</span>
+          {onOpenEvidenceDashboard ? (
+            <button
+              type="button"
+              className="topic-room__evidence-link"
+              onClick={onOpenEvidenceDashboard}
+            >
+              open evidence dashboard
+            </button>
+          ) : null}
         </div>
         <TopicRoomSurfaceStrip
           item={item}
@@ -1065,62 +1165,102 @@ function TopicDetail({
 }
 
 function TopicMobileAttentionRow({
-  item,
+  node,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
+  depth,
   selected,
   onSelect,
-  onSelectSession,
 }: {
-  item: TopicNavItem;
+  node: ChannelRailNode;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  depth: number;
   selected: boolean;
   onSelect: (id: string) => void;
-  onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const { item, unread } = node;
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
   const resumeDisabledReason = sessionAttachDisabledReason(session);
-  const canResume = Boolean(
+  const resumesDerivedSession = Boolean(
+    item.source === 'derived' &&
     action.label === 'resume' &&
     session &&
-    !resumeDisabledReason &&
-    onSelectSession
+    !resumeDisabledReason
   );
+  const rowStyle = { '--topic-depth': depth } as CSSProperties;
   return (
-    <button
-      type="button"
-      className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
-      onClick={() => {
-        if (canResume && session) {
-          onSelectSession?.(session.selectKey);
-          return;
+    <div className="topic-mobile-row-shell">
+      <button
+        type="button"
+        className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
+        style={rowStyle}
+        data-topic-id={item.id}
+        data-unread={unread ? 'true' : 'false'}
+        onClick={() => onSelect(item.id)}
+        title={
+          resumesDerivedSession && session
+            ? `resume chat ${session.label}`
+            : action.label === 'resume'
+              ? 'open channel timeline'
+              : (resumeDisabledReason ?? action.detail)
         }
-        onSelect(item.id);
-      }}
-      title={
-        canResume && session
-          ? `resume chat ${session.label}`
-          : (resumeDisabledReason ?? action.detail)
-      }
-      aria-current={selected ? 'page' : undefined}
-    >
-      <TopicBadge item={item} />
-      <span className="topic-mobile-row__main">
-        <span className="topic-mobile-row__title">{item.title}</span>
-        <span className="topic-mobile-row__status">
-          {topicLatestStatus(item)}
+        aria-current={selected ? 'page' : undefined}
+      >
+        <CockpitPresenceChip
+          item={item}
+          statuses={statusByChannelAgent}
+          unread={unread}
+        />
+        <span className="topic-mobile-row__main">
+          <span className="topic-mobile-row__title">{item.title}</span>
+          <span className="topic-mobile-row__status">
+            {topicLatestStatus(item)}
+          </span>
         </span>
-      </span>
-      <span className="topic-mobile-row__cta">{action.label}</span>
-      <StatusGlyph tone={item.tone} />
-    </button>
+        <span className="topic-mobile-row__cta">
+          {resumesDerivedSession
+            ? 'resume'
+            : action.label === 'resume'
+              ? 'open'
+              : action.label}
+        </span>
+        <span className="topic-mobile-row__trail">
+          {unread ? (
+            <span
+              className="topic-row__activity-dot"
+              aria-label="unread activity"
+              title="unread activity"
+            />
+          ) : null}
+          <StatusGlyph tone={item.tone} />
+        </span>
+      </button>
+      <MobileCockpitRowActions
+        item={item}
+        statuses={statusByChannelAgent}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
+      />
+    </div>
   );
 }
 
 function TopicMobileControlPanel({
   item,
+  showDiagnostics,
   onSelectSession,
   onSendInput,
 }: {
   item: TopicNavItem;
+  showDiagnostics: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput: TopicSendInput;
 }) {
@@ -1147,7 +1287,7 @@ function TopicMobileControlPanel({
     setInputValue('');
     setPendingValue(null);
     setStatus(null);
-  }, [item.id, session?.id, session?.selectKey]);
+  }, [action.label, item.id, session?.id, session?.selectKey]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1157,16 +1297,26 @@ function TopicMobileControlPanel({
     if (value !== inputValue) setInputValue(value);
     if (pendingValue !== value) {
       setPendingValue(value);
-      setStatus('preview ready · tap send again to record the intervention');
+      setStatus(
+        showDiagnostics
+          ? 'preview ready · tap send again to record the intervention'
+          : 'review before sending'
+      );
       return;
     }
     setSending(true);
-    setStatus('sending audited control input...');
+    setStatus(
+      showDiagnostics ? 'sending audited control input...' : 'sending…'
+    );
     try {
       await onSendInput(session.id, `${value}\r`, session.nodeId ?? undefined);
       setInputValue('');
       setPendingValue(null);
-      setStatus('sent · audit/intervention trail preserved by session control');
+      setStatus(
+        showDiagnostics
+          ? 'sent · audit/intervention trail preserved by session control'
+          : 'sent'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`failed: ${message}`);
@@ -1216,19 +1366,27 @@ function TopicMobileControlPanel({
         </div>
         <TopicBadge item={item} />
       </div>
-      <p className="topic-mobile-detail__latest">{topicLatestStatus(item)}</p>
-      <div className="topic-mobile-detail__meta">
-        <span>{item.kindLabel}</span>
-        {item.routingLabel ? <span>{item.routingLabel}</span> : null}
-        {session ? (
-          <span>
-            {session.agent} · {session.type}
-          </span>
-        ) : null}
-        {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
-      </div>
-      {item.description ? (
-        <p className="topic-mobile-detail__description">{item.description}</p>
+      {showDiagnostics ? (
+        <>
+          <p className="topic-mobile-detail__latest">
+            {topicLatestStatus(item)}
+          </p>
+          <div className="topic-mobile-detail__meta">
+            <span>{item.kindLabel}</span>
+            {item.routingLabel ? <span>{item.routingLabel}</span> : null}
+            {session ? (
+              <span>
+                {session.agent} · {session.type}
+              </span>
+            ) : null}
+            {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
+          </div>
+          {item.description ? (
+            <p className="topic-mobile-detail__description">
+              {item.description}
+            </p>
+          ) : null}
+        </>
       ) : null}
 
       <form className="topic-mobile-control" onSubmit={handleSubmit}>
@@ -1279,7 +1437,11 @@ function TopicMobileControlPanel({
           type="submit"
           className="topic-mobile-control__primary"
           disabled={!canSend || inputValue.trim().length === 0 || sending}
-          title={action.disabledReason ?? action.detail}
+          title={
+            showDiagnostics
+              ? (action.disabledReason ?? action.detail)
+              : `review and send ${action.label}`
+          }
         >
           {pendingValue === inputValue.trimEnd() && pendingValue
             ? `send ${action.label}`
@@ -1291,44 +1453,57 @@ function TopicMobileControlPanel({
         <div className="topic-mobile-confirm" role="status">
           <span>confirmation preview</span>
           <code>{pendingValue}</code>
-          <span>{session?.label} · carriage return appended</span>
+          <span>
+            {session?.label} ·{' '}
+            {showDiagnostics
+              ? 'carriage return appended'
+              : 'review before sending'}
+          </span>
         </div>
       ) : null}
 
-      <div className="topic-mobile-actions" aria-label="topic quick actions">
-        <button
-          type="button"
-          disabled={!canResume}
-          onClick={handleResume}
-          title={
-            resumeDisabledReason ?? 'open the linked Relay tab for this topic'
-          }
-        >
-          resume topic
-        </button>
-        <button
-          type="button"
-          disabled={!canResume}
-          onClick={handleResume}
-          title={
-            resumeDisabledReason ??
-            'same linked Relay tab as resume; raw PTY is the fallback once open'
-          }
-        >
-          open terminal tab
-        </button>
-        <button
-          type="button"
-          disabled={!topSurface?.target}
-          onClick={handleSurface}
-        >
-          {topSurface ? `${topSurface.kind} artifact` : 'artifact'}
-        </button>
-      </div>
-      {action.disabledReason ? (
-        <p className="topic-mobile-disabled">
-          controls disabled: {action.disabledReason}
-        </p>
+      {showDiagnostics ? (
+        <>
+          <div
+            className="topic-mobile-actions"
+            aria-label="topic quick actions"
+          >
+            <button
+              type="button"
+              disabled={!canResume}
+              onClick={handleResume}
+              title={
+                resumeDisabledReason ??
+                'open the linked Relay tab for this topic'
+              }
+            >
+              resume topic
+            </button>
+            <button
+              type="button"
+              disabled={!canResume}
+              onClick={handleResume}
+              title={
+                resumeDisabledReason ??
+                'same linked Relay tab as resume; raw PTY is the fallback once open'
+              }
+            >
+              open terminal tab
+            </button>
+            <button
+              type="button"
+              disabled={!topSurface?.target}
+              onClick={handleSurface}
+            >
+              {topSurface ? `${topSurface.kind} artifact` : 'artifact'}
+            </button>
+          </div>
+          {action.disabledReason ? (
+            <p className="topic-mobile-disabled">
+              controls disabled: {action.disabledReason}
+            </p>
+          ) : null}
+        </>
       ) : null}
       {status ? (
         <p className="topic-mobile-status" role="status">
@@ -1341,10 +1516,12 @@ function TopicMobileControlPanel({
 
 function TopicMobileControlPanelGate({
   item,
+  showDiagnostics,
   onSelectSession,
   onSendInput,
 }: {
   item: TopicNavItem | undefined;
+  showDiagnostics: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput: TopicSendInput;
 }) {
@@ -1352,6 +1529,7 @@ function TopicMobileControlPanelGate({
   return (
     <TopicMobileControlPanel
       item={item}
+      showDiagnostics={showDiagnostics}
       onSelectSession={onSelectSession}
       onSendInput={onSendInput}
     />
@@ -1367,6 +1545,7 @@ function TopicAdvancedDetailGate({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem | undefined;
   show: boolean;
@@ -1376,6 +1555,7 @@ function TopicAdvancedDetailGate({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const workContextId = item?.workContextIds[0] ?? null;
   const workflowRunsQuery = useQuery({
@@ -1406,31 +1586,31 @@ function TopicAdvancedDetailGate({
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        onOpenEvidenceDashboard={onOpenEvidenceDashboard}
       />
     </div>
   );
 }
 
 function TopicRow({
-  item,
+  node,
   depth,
-  model,
   expandedIds,
   selectedId,
   onToggle,
   onSelect,
   onSelectSession,
 }: {
-  item: TopicNavItem;
+  node: ChannelRailNode;
   depth: number;
-  model: TopicNavModel;
   expandedIds: Set<string>;
   selectedId: string | null;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const hasNested = item.childIds.length > 0 || item.participants.length > 0;
+  const { item, unread, children } = node;
+  const hasNested = children.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
 
@@ -1456,6 +1636,8 @@ function TopicRow({
         .filter(Boolean)
         .join(' ')}
       style={rowStyle}
+      data-topic-id={item.id}
+      data-unread={unread ? 'true' : 'false'}
     >
       <div className={rowClassName}>
         <button
@@ -1480,6 +1662,13 @@ function TopicRow({
           </span>
         </button>
         <span className="topic-row__trail" aria-label={item.statusLabel}>
+          {unread ? (
+            <span
+              className="topic-row__activity-dot"
+              aria-label="unread activity"
+              title="unread activity"
+            />
+          ) : null}
           <StatusGlyph tone={item.tone} />
         </span>
       </div>
@@ -1496,24 +1685,20 @@ function TopicRow({
               ))}
             </ul>
           ) : null}
-          {item.childIds.length > 0 ? (
+          {children.length > 0 ? (
             <ul className="topic-child-list topic-child-list--topics">
-              {item.childIds.map((childId) => {
-                const child = model.byId.get(childId);
-                return child ? (
-                  <TopicRow
-                    key={child.id}
-                    item={child}
-                    depth={depth + 1}
-                    model={model}
-                    expandedIds={expandedIds}
-                    selectedId={selectedId}
-                    onToggle={onToggle}
-                    onSelect={onSelect}
-                    onSelectSession={onSelectSession}
-                  />
-                ) : null;
-              })}
+              {children.map((child) => (
+                <TopicRow
+                  key={child.item.id}
+                  node={child}
+                  depth={depth + 1}
+                  expandedIds={expandedIds}
+                  selectedId={selectedId}
+                  onToggle={onToggle}
+                  onSelect={onSelect}
+                  onSelectSession={onSelectSession}
+                />
+              ))}
             </ul>
           ) : null}
         </>
@@ -1607,40 +1792,145 @@ function topicEmptyStateText(input: {
   return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
-/** A workspace bucket of mobile topic rows, kept in attention order. */
-interface MobileTopicGroup {
-  id: string;
-  title: string;
-  icon: string | null;
-  items: TopicNavItem[];
+function MobileRailRows({
+  nodes,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
+  selectedId,
+  onSelect,
+  depth = 0,
+}: {
+  nodes: ChannelRailNode[];
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  depth?: number;
+}) {
+  return nodes.map((node) => (
+    <div className="topic-mobile-node" key={node.item.id}>
+      <TopicMobileAttentionRow
+        node={node}
+        statusByChannelAgent={statusByChannelAgent}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
+        depth={depth}
+        selected={selectedId === node.item.id}
+        onSelect={onSelect}
+      />
+      {node.children.length > 0 ? (
+        <MobileRailRows
+          nodes={node.children}
+          statusByChannelAgent={statusByChannelAgent}
+          onNudge={onNudge}
+          onInterrupt={onInterrupt}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          depth={depth + 1}
+        />
+      ) : null}
+    </div>
+  ));
+}
+
+function MobileRailSection({
+  section,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
+  selectedId,
+  onSelect,
+}: {
+  section: ChannelRailSection;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <>
+      <div data-rail-section="channels">
+        <MobileRailRows
+          nodes={section.channels}
+          statusByChannelAgent={statusByChannelAgent}
+          onNudge={onNudge}
+          onInterrupt={onInterrupt}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+      </div>
+      {section.directMessages.length > 0 ? (
+        <>
+          <div className="topic-mobile-group__dm-header">direct messages</div>
+          <div data-rail-section="direct-messages">
+            <MobileRailRows
+              nodes={section.directMessages}
+              statusByChannelAgent={statusByChannelAgent}
+              onNudge={onNudge}
+              onInterrupt={onInterrupt}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          </div>
+        </>
+      ) : null}
+    </>
+  );
 }
 
 function TopicMobileCockpit({
-  groups,
-  ungrouped,
+  tree,
+  unreadByChannel,
+  statusByChannelAgent,
+  mentionsMeByChannel,
+  rosterAttentionBySessionKey,
   selectedId,
   onSelect,
-  onSelectSession,
+  onNudge,
+  onInterrupt,
   onCreateTaskRoom,
   onResumeLast,
 }: {
-  groups: MobileTopicGroup[];
-  ungrouped: TopicNavItem[];
+  tree: ChannelRailTree;
+  unreadByChannel: Readonly<Record<string, boolean>>;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  mentionsMeByChannel: Readonly<Record<string, boolean>>;
+  rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onSelectSession?: ((id: string) => void) | undefined;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
 }) {
-  const renderRow = (item: TopicNavItem): ReactNode => (
-    <TopicMobileAttentionRow
-      key={item.id}
-      item={item}
-      selected={selectedId === item.id}
-      onSelect={onSelect}
-      onSelectSession={onSelectSession}
-    />
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
+    () => new Set()
   );
+  const toggleGroup = useCallback((id: string) => {
+    setCollapsedGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const hasOrphans =
+    tree.orphans.channels.length > 0 || tree.orphans.directMessages.length > 0;
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile chat switcher">
       <div
@@ -1676,36 +1966,86 @@ function TopicMobileCockpit({
           </button>
         </div>
       </div>
+      <MobileCockpitAttentionLane
+        tree={tree}
+        unreadByChannel={unreadByChannel}
+        statusByChannelAgent={statusByChannelAgent}
+        mentionsMeByChannel={mentionsMeByChannel}
+        rosterAttentionBySessionKey={rosterAttentionBySessionKey}
+        onSelect={onSelect}
+        actionLabelForItem={(item) => topicPrimaryAction(item).label}
+        statusTextForItem={topicLatestStatus}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
+      />
+      <div className="topic-cockpit__all-chats-header">all chats</div>
       <div className="topic-mobile-list" aria-label="workspace-grouped chats">
-        {groups.map((group) => (
-          <section
-            key={group.id}
-            className="topic-mobile-group"
-            aria-label={group.title}
-          >
-            <div className="topic-mobile-group__header">
-              {group.icon ? (
-                <span className="topic-mobile-group__icon" aria-hidden="true">
-                  {group.icon}
+        {tree.groups.map((group) => {
+          const expanded = !collapsedGroupIds.has(group.id);
+          return (
+            <section
+              key={group.id}
+              className="topic-mobile-group"
+              aria-label={group.title}
+              data-workspace-id={group.id}
+            >
+              <button
+                type="button"
+                className="topic-mobile-group__header"
+                aria-expanded={expanded}
+                onClick={() => toggleGroup(group.id)}
+              >
+                {group.icon ? (
+                  <span className="topic-mobile-group__icon" aria-hidden="true">
+                    {group.icon}
+                  </span>
+                ) : null}
+                <span className="topic-mobile-group__name">{group.title}</span>
+                {!expanded && group.unread ? (
+                  <span
+                    className="topic-row__activity-dot"
+                    aria-label="unread activity"
+                    title="unread activity"
+                  />
+                ) : null}
+                <span className="topic-mobile-group__toggle" aria-hidden="true">
+                  {expanded ? '−' : '+'}
                 </span>
+              </button>
+              {expanded ? (
+                <MobileRailSection
+                  section={group}
+                  statusByChannelAgent={statusByChannelAgent}
+                  onNudge={onNudge}
+                  onInterrupt={onInterrupt}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                />
               ) : null}
-              <span className="topic-mobile-group__name">{group.title}</span>
-            </div>
-            {group.items.map(renderRow)}
-          </section>
-        ))}
-        {ungrouped.length > 0 && groups.length > 0 ? (
+            </section>
+          );
+        })}
+        {hasOrphans ? (
           <section
             className="topic-mobile-group topic-mobile-group--orphan"
             aria-label="no workspace"
+            data-workspace-id="orphan"
           >
-            <div className="topic-mobile-group__header">
-              <span className="topic-mobile-group__name">no workspace</span>
-            </div>
-            {ungrouped.map(renderRow)}
+            {tree.groups.length > 0 ? (
+              <div className="topic-mobile-group__header topic-mobile-group__header--static">
+                <span className="topic-mobile-group__name">no workspace</span>
+              </div>
+            ) : null}
+            <MobileRailSection
+              section={tree.orphans}
+              statusByChannelAgent={statusByChannelAgent}
+              onNudge={onNudge}
+              onInterrupt={onInterrupt}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
           </section>
         ) : null}
-        {groups.length === 0 ? ungrouped.map(renderRow) : null}
       </div>
     </section>
   );
@@ -1841,21 +2181,51 @@ function ArchivedToggle({
   );
 }
 
-/** The workspace-grouped chat tree: a section per workspace + an orphan lane. */
-function GroupedTopicTree({
-  grouped,
+/** Regular channels then, if any, a `direct messages` sub-section (#1166). */
+function ChannelsAndDmsLists({
+  section,
   renderRow,
 }: {
-  grouped: GroupedTopicNav;
-  renderRow: (id: string) => ReactNode;
+  section: ChannelRailSection;
+  renderRow: (node: ChannelRailNode) => ReactNode;
+}) {
+  return (
+    <>
+      <ul className="topic-tree__list" data-rail-section="channels">
+        {section.channels.map(renderRow)}
+      </ul>
+      {section.directMessages.length > 0 ? (
+        <>
+          <div className="topic-workspace-group__dm-header">
+            direct messages
+          </div>
+          <ul
+            className="topic-tree__list topic-tree__list--dm"
+            data-rail-section="direct-messages"
+          >
+            {section.directMessages.map(renderRow)}
+          </ul>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function GroupedTopicTree({
+  tree,
+  renderRow,
+}: {
+  tree: ChannelRailTree;
+  renderRow: (node: ChannelRailNode) => ReactNode;
 }) {
   return (
     <div className="topic-tree" aria-label="workspace chats">
-      {grouped.groups.map((group) => (
+      {tree.groups.map((group) => (
         <section
           key={group.id}
           className="topic-workspace-group"
           aria-label={group.title}
+          data-workspace-id={group.id}
         >
           <div className="topic-workspace-group__header">
             {group.icon ? (
@@ -1865,24 +2235,22 @@ function GroupedTopicTree({
             ) : null}
             <span className="topic-workspace-group__name">{group.title}</span>
           </div>
-          <ul className="topic-tree__list">
-            {group.rootIds.map((id) => renderRow(id))}
-          </ul>
+          <ChannelsAndDmsLists section={group} renderRow={renderRow} />
         </section>
       ))}
-      {grouped.orphanRootIds.length > 0 ? (
+      {tree.orphans.channels.length > 0 ||
+      tree.orphans.directMessages.length > 0 ? (
         <section
           className="topic-workspace-group topic-workspace-group--orphan"
           aria-label="no workspace"
+          data-workspace-id="orphan"
         >
-          {grouped.groups.length > 0 ? (
+          {tree.groups.length > 0 ? (
             <div className="topic-workspace-group__header">
               <span className="topic-workspace-group__name">no workspace</span>
             </div>
           ) : null}
-          <ul className="topic-tree__list">
-            {grouped.orphanRootIds.map((id) => renderRow(id))}
-          </ul>
+          <ChannelsAndDmsLists section={tree.orphans} renderRow={renderRow} />
         </section>
       ) : null}
     </div>
@@ -1996,20 +2364,279 @@ export function TopicSidebarView({
     () => new Map(topics.map((topic) => [topic.id, topic])),
     [topics]
   );
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
+  const advancedMode = useUiStore((s) => s.advancedMode);
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen);
+  const mobileCockpitViewport = useMobileCockpitViewport();
+  const activityIds = useMemo(
+    () => model.items.map((item) => item.id),
+    [model.items]
+  );
+  const relevantActivity = useChannelActivityStore(
+    useShallow((state) =>
+      activityIds.flatMap((id) => [
+        state.latestSeqByChannel[id],
+        state.lastReadByChannel[id],
+      ])
+    )
+  );
+  const statusByChannelAgent = useChannelAgentStatusStore(
+    (state) => state.statusByChannelAgent
+  );
+  const statusUpdatedAtByChannelAgent = useChannelAgentStatusStore(
+    (state) => state.updatedAtByChannelAgent
+  );
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
     [workspaces]
   );
-  // Grouping always shows every workspace so the full channel list stays
-  // visible; the active workspace only scopes search (via the scope chip),
-  // not the tree. (The filter arg is exercised for a future rail selection.)
-  const grouped = useMemo(
-    () => groupTopicsByWorkspace(model, workspaces, null),
-    [model, workspaces]
+  // Resolve unread once (including the persisted last-read fallback) and feed
+  // the same pure rail projection to desktop and mobile.
+  const unreadByChannel = useMemo(
+    () =>
+      Object.fromEntries(
+        model.items.map((item, index) => [
+          item.id,
+          relevantActivity[index * 2] !== undefined &&
+            hasUnseenActivity(item.id, activeChannelId),
+        ])
+      ),
+    [activeChannelId, model.items, relevantActivity]
+  );
+  const latestSeqByChannel = useMemo(
+    () =>
+      Object.fromEntries(
+        activityIds.flatMap((id, index) => {
+          const latestSeq = relevantActivity[index * 2];
+          return typeof latestSeq === 'number' ? [[id, latestSeq]] : [];
+        })
+      ),
+    [activityIds, relevantActivity]
+  );
+  // The channel roster endpoint is per-channel, so reconcile only while the
+  // mobile cockpit is actually open. High-signal rows lead rolling batches;
+  // every persisted channel is eventually covered without a request burst.
+  // Query keys intentionally match ChannelView for cache reuse.
+  const allRosterChannelIds = useMemo(() => {
+    if (!mobileCockpitViewport || !sidebarOpen) return [];
+    const rawPresencePriority = (item: TopicNavItem): number => {
+      const prefix = `${item.id} `;
+      const statuses = Object.entries(statusByChannelAgent).flatMap(
+        ([key, status]) => (key.startsWith(prefix) ? [status] : [])
+      );
+      if (statuses.includes('waiting')) return 5;
+      if (statuses.some((status) => status !== 'idle')) return 4;
+      if (item.tone === 'attention' || item.tone === 'error') return 3;
+      if (unreadByChannel[item.id]) return 2;
+      if (item.pinned) return 1;
+      return 0;
+    };
+    return model.items
+      .filter((item) => item.source === 'persisted')
+      .sort(
+        (a, b) =>
+          rawPresencePriority(b) - rawPresencePriority(a) ||
+          b.attentionPriority - a.attentionPriority ||
+          Number(b.pinned) - Number(a.pinned) ||
+          b.updatedAt.localeCompare(a.updatedAt) ||
+          a.id.localeCompare(b.id)
+      )
+      .map((item) => item.id);
+  }, [
+    mobileCockpitViewport,
+    model.items,
+    sidebarOpen,
+    statusByChannelAgent,
+    unreadByChannel,
+  ]);
+  const rosterBatchScope = JSON.stringify(allRosterChannelIds);
+  const [rosterBatch, setRosterBatch] = useState({
+    scope: '',
+    end: MOBILE_COCKPIT_ROSTER_BATCH_SIZE,
+  });
+  const rosterBatchEnd =
+    rosterBatch.scope === rosterBatchScope
+      ? rosterBatch.end
+      : MOBILE_COCKPIT_ROSTER_BATCH_SIZE;
+  const rosterChannelIds = useMemo(
+    () => allRosterChannelIds.slice(0, rosterBatchEnd),
+    [allRosterChannelIds, rosterBatchEnd]
+  );
+  const rosterQueries = useQueries({
+    queries: rosterChannelIds.map((channelId) => ({
+      queryKey: ['channel-roster', channelId],
+      queryFn: () => fetchChannelRoster(channelId),
+      staleTime: 30_000,
+      retry: false,
+    })),
+  });
+  const activeRosterBatchEnd = rosterChannelIds.length;
+  const currentRosterBatchStart = Math.max(
+    0,
+    activeRosterBatchEnd - MOBILE_COCKPIT_ROSTER_BATCH_SIZE
+  );
+  const currentRosterBatchSettled =
+    activeRosterBatchEnd > 0 &&
+    rosterQueries
+      .slice(currentRosterBatchStart, activeRosterBatchEnd)
+      .every((query) => !query.isPending && !query.isFetching);
+  const latestUnreadTargets = useMemo(
+    () =>
+      rosterChannelIds.flatMap((channelId, index) => {
+        const rosterQuery = rosterQueries[index];
+        const latestSeq = latestSeqByChannel[channelId];
+        return unreadByChannel[channelId] &&
+          typeof latestSeq === 'number' &&
+          rosterQuery &&
+          !rosterQuery.isPending &&
+          !rosterQuery.isFetching
+          ? [{ channelId, latestSeq }]
+          : [];
+      }),
+    [latestSeqByChannel, rosterChannelIds, rosterQueries, unreadByChannel]
+  );
+  const latestUnreadQueries = useQueries({
+    queries: latestUnreadTargets.map(({ channelId, latestSeq }) => ({
+      queryKey: ['channel-history', channelId, 'latest-unread', latestSeq],
+      queryFn: () => fetchChannelHistory(channelId, { limit: 1 }),
+      staleTime: Number.POSITIVE_INFINITY,
+      gcTime: 60_000,
+      retry: false,
+    })),
+  });
+  const currentRosterBatchIds = rosterChannelIds.slice(
+    currentRosterBatchStart,
+    activeRosterBatchEnd
+  );
+  const latestUnreadQueryByChannel = new Map(
+    latestUnreadTargets.map((target, index) => [
+      target.channelId,
+      latestUnreadQueries[index],
+    ])
+  );
+  const currentMentionBatchSettled = currentRosterBatchIds.every(
+    (channelId) => {
+      if (!unreadByChannel[channelId]) return true;
+      const query = latestUnreadQueryByChannel.get(channelId);
+      return Boolean(query && !query.isPending && !query.isFetching);
+    }
+  );
+  useEffect(() => {
+    if (rosterBatch.scope !== rosterBatchScope) {
+      setRosterBatch({
+        scope: rosterBatchScope,
+        end: MOBILE_COCKPIT_ROSTER_BATCH_SIZE,
+      });
+      return;
+    }
+    if (
+      currentRosterBatchSettled &&
+      currentMentionBatchSettled &&
+      rosterBatch.end < allRosterChannelIds.length
+    ) {
+      setRosterBatch((current) => ({
+        ...current,
+        end: Math.min(
+          allRosterChannelIds.length,
+          current.end + MOBILE_COCKPIT_ROSTER_BATCH_SIZE
+        ),
+      }));
+    }
+  }, [
+    allRosterChannelIds.length,
+    currentMentionBatchSettled,
+    currentRosterBatchSettled,
+    rosterBatch.end,
+    rosterBatch.scope,
+    rosterBatchScope,
+  ]);
+  const mentionsMeByChannel = useMemo(() => {
+    const mentioned: Record<string, boolean> = {};
+    latestUnreadTargets.forEach((target, index) => {
+      const message = latestUnreadQueries[index]?.data?.messages.at(-1);
+      if (
+        message &&
+        message.seq === target.latestSeq &&
+        messageMentionsCurrentOperator(message)
+      ) {
+        mentioned[target.channelId] = true;
+      }
+    });
+    return mentioned;
+  }, [latestUnreadQueries, latestUnreadTargets]);
+  const effectiveStatusByChannelAgent = useMemo(() => {
+    const effective: Record<string, ChannelAgentStatus> = {
+      ...statusByChannelAgent,
+    };
+    rosterQueries.forEach((query, index) => {
+      const channelId = rosterChannelIds[index];
+      if (!channelId || !query.data) return;
+      const rosterById = new Map(query.data.map((entry) => [entry.id, entry]));
+      const candidateAgentIds = new Set(rosterById.keys());
+      const prefix = `${channelId} `;
+      for (const key of Object.keys(statusByChannelAgent)) {
+        if (key.startsWith(prefix))
+          candidateAgentIds.add(key.slice(prefix.length));
+      }
+      for (const agentId of candidateAgentIds) {
+        const entry = rosterById.get(agentId);
+        const key = channelAgentStatusKey(channelId, agentId);
+        const status = resolveEffectiveAgentStatus({
+          socketStatus: statusByChannelAgent[key],
+          socketUpdatedAt: statusUpdatedAtByChannelAgent[key],
+          rosterStatus: entry?.binding?.status,
+          rosterUpdatedAt: query.dataUpdatedAt,
+          streaming: false,
+        });
+        // A fresh unbound roster row supersedes a stale idle socket entry. A
+        // newer active socket transition still wins through the resolver.
+        if (entry?.binding == null && status === 'idle') delete effective[key];
+        else effective[key] = status;
+      }
+    });
+    return effective;
+  }, [
+    rosterChannelIds,
+    rosterQueries,
+    statusByChannelAgent,
+    statusUpdatedAtByChannelAgent,
+  ]);
+  const mobileAgentRosterQuery = useQuery({
+    queryKey: ['agent-roster', 'mobile-cockpit', 200],
+    queryFn: () =>
+      fetchAgentRoster({
+        includeTerminals: false,
+        needsAttention: true,
+        limit: 200,
+      }),
+    enabled: mobileCockpitViewport && sidebarOpen,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const rosterAttentionBySessionKey = useMemo(() => {
+    const attentionBySessionKey: Record<string, RosterAttention> = {};
+    for (const entry of mobileAgentRosterQuery.data?.entries ?? []) {
+      attentionBySessionKey[entry.sessionId] = entry.attention;
+      if (entry.globalSessionId) {
+        attentionBySessionKey[entry.globalSessionId] = entry.attention;
+      } else if (entry.nodeId) {
+        attentionBySessionKey[
+          createGlobalSessionId(entry.nodeId, entry.sessionId)
+        ] = entry.attention;
+      }
+    }
+    return attentionBySessionKey;
+  }, [mobileAgentRosterQuery.data]);
+  const railTree = useMemo(
+    () => selectChannelRailTree(model, workspaces, { unreadByChannel }),
+    [model, unreadByChannel, workspaces]
   );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
+  const [mobileControlTopicId, setMobileControlTopicId] = useState<
+    string | null
+  >(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => new Set(model.rootIds)
   );
@@ -2038,73 +2665,119 @@ export function TopicSidebarView({
   // and the workspace pane operate in the topic's node/repo. Only fires on an
   // explicit user selection — the initial/auto-selection sets `selectedId`
   // directly and never clobbers the active repo.
+  // #1166: for a persisted channel (anything backed by GET /channels), clicking
+  // the row also opens it in the main pane (activeChannelId) and closes the
+  // composer — "selected in sidebar" and "open in main pane" become one state
+  // for channels. Derived (non-persisted) topics never route to a channel.
   const select = useCallback(
     (id: string) => {
       setSelectedId(id);
-      applyTopicActiveContext(topicsById.get(id));
+      setMobileControlTopicId(null);
+      const topic = topicsById.get(id);
+      applyTopicActiveContext(topic);
+      if (topic?.source === 'persisted') {
+        const ui = useUiStore.getState();
+        ui.setActiveChannelId(id);
+        ui.setTopicComposerOpen(false);
+      }
     },
     [topicsById]
   );
+  const selectMobile = useCallback(
+    (id: string) => {
+      select(id);
+      const item = model.byId.get(id);
+      const action = item ? topicPrimaryAction(item) : null;
+      const actionable =
+        action?.label === 'approve' || action?.label === 'reply';
+      setMobileControlTopicId(actionable ? id : null);
+      const session = item ? topicPrimarySession(item) : null;
+      const resumesDerivedSession = Boolean(
+        item?.source === 'derived' &&
+        action?.label === 'resume' &&
+        session &&
+        !sessionAttachDisabledReason(session) &&
+        onSelectSession
+      );
+      if (resumesDerivedSession && session) {
+        onSelectSession?.(session.selectKey);
+        useUiStore.getState().closeSidebar();
+        return;
+      }
+      if (!actionable && topicsById.get(id)?.source === 'persisted') {
+        useUiStore.getState().closeSidebar();
+      }
+    },
+    [model.byId, onSelectSession, select, topicsById]
+  );
+  const postMobileNudge = useCallback(
+    async (channelId: string, text: string, clientMessageId: string) => {
+      await postChannelMessage(channelId, {
+        text,
+        format: 'text',
+        clientMessageId,
+      });
+    },
+    []
+  );
+  const interruptMobileAgent = useCallback(
+    async (channelId: string, agentId: string) => {
+      await interruptChannelAgent(channelId, agentId);
+    },
+    []
+  );
+  useEffect(() => {
+    if (!mobileControlTopicId) return;
+    if (selectedId !== mobileControlTopicId) {
+      setMobileControlTopicId(null);
+      return;
+    }
+    const item = model.byId.get(mobileControlTopicId);
+    const action = item ? topicPrimaryAction(item) : null;
+    if (action?.label !== 'approve' && action?.label !== 'reply') {
+      setMobileControlTopicId(null);
+    }
+  }, [mobileControlTopicId, model.byId, selectedId]);
   const openCreateTaskRoom = useCallback(() => {
     applyTopicActiveContext(
       selectedId ? topicsById.get(selectedId) : undefined
     );
     onCreateTaskRoom?.();
   }, [onCreateTaskRoom, selectedId, topicsById]);
-  const renderTopicRow = (id: string): ReactNode => {
-    const item = model.byId.get(id);
-    return item ? (
+  const renderTopicRow = (node: ChannelRailNode): ReactNode => {
+    const item = node.item;
+    return (
       <TopicRow
         key={item.id}
-        item={item}
+        node={node}
         depth={0}
-        model={model}
         expandedIds={expandedIds}
         selectedId={selectedId}
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
       />
-    ) : null;
+    );
   };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
-  const mobileItems = useMemo(
-    () =>
-      [...model.items].sort((a, b) => {
-        if (a.attentionPriority !== b.attentionPriority) {
-          return b.attentionPriority - a.attentionPriority;
-        }
-        return a.title.localeCompare(b.title);
-      }),
-    [model.items]
-  );
-  // Bucket the attention-sorted mobile rows under their workspace, in the same
-  // pinned-first workspace order the desktop tree uses, so mobile exposes the
-  // same workspace→topic nav (#1088). Rows keep attention order within a group.
-  const { mobileGroups, mobileUngrouped } = useMemo(() => {
-    const groupOrder = new Map(grouped.groups.map((g, index) => [g.id, index]));
-    const buckets = new Map<string, TopicNavItem[]>();
-    const ungrouped: TopicNavItem[] = [];
-    for (const item of mobileItems) {
-      const workspaceId = item.workspaceId;
-      if (workspaceId && groupOrder.has(workspaceId)) {
-        const list = buckets.get(workspaceId);
-        if (list) list.push(item);
-        else buckets.set(workspaceId, [item]);
-      } else {
-        ungrouped.push(item);
-      }
-    }
-    const groups: MobileTopicGroup[] = grouped.groups
-      .filter((g) => buckets.has(g.id))
-      .map((g) => ({
-        id: g.id,
-        title: g.title,
-        icon: g.icon,
-        items: buckets.get(g.id) ?? [],
-      }));
-    return { mobileGroups: groups, mobileUngrouped: ungrouped };
-  }, [mobileItems, grouped.groups]);
+  const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
+  const selectedRepoPath = selectedTopic
+    ? resolveTopicActiveContext(selectedTopic).repoPath
+    : null;
+  const openEvidenceDashboard = useCallback(() => {
+    if (!selectedTopic || !selectedRepoPath) return;
+    const context = resolveTopicActiveContext(selectedTopic);
+    const ui = useUiStore.getState();
+    ui.requestRepoDashboardTab(selectedRepoPath, 'evidence');
+    ui.setActiveWorkspaceId(context.workspaceId);
+    ui.setActiveRepoPath(selectedRepoPath);
+    ui.setActiveChannelId(null);
+    ui.setTopicComposerOpen(false);
+    ui.setAnalyticsView(null);
+    ui.setForceOrgCockpit(false);
+    useSessionsStore.getState().setActiveSessionId(null);
+    ui.closeSidebar();
+  }, [selectedRepoPath, selectedTopic]);
   // One-tap resume-last: the select key of the most recently active session
   // across every topic. Null when nothing resumable exists yet.
   const resumeLastSelectKey = useMemo(() => {
@@ -2137,11 +2810,15 @@ export function TopicSidebarView({
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
       />
       <TopicMobileCockpit
-        groups={mobileGroups}
-        ungrouped={mobileUngrouped}
+        tree={railTree}
+        unreadByChannel={unreadByChannel}
+        statusByChannelAgent={effectiveStatusByChannelAgent}
+        mentionsMeByChannel={mentionsMeByChannel}
+        rosterAttentionBySessionKey={rosterAttentionBySessionKey}
         selectedId={selectedId}
-        onSelect={select}
-        onSelectSession={onSelectSession}
+        onSelect={selectMobile}
+        onNudge={postMobileNudge}
+        onInterrupt={interruptMobileAgent}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
@@ -2164,22 +2841,28 @@ export function TopicSidebarView({
         canScope={activeWorkspaceId != null}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
-      <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
+      <GroupedTopicTree tree={railTree} renderRow={renderTopicRow} />
       <TopicAdvancedDetailGate
         item={selectedItem}
-        show={showAdvancedDetail}
+        show={advancedMode && showAdvancedDetail}
         workspaceNameById={workspaceNameById}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        {...(selectedRepoPath
+          ? { onOpenEvidenceDashboard: openEvidenceDashboard }
+          : {})}
       />
-      <TopicMobileControlPanelGate
-        item={selectedItem}
-        onSelectSession={onSelectSession}
-        onSendInput={onSendInput}
-      />
+      {advancedMode || mobileControlTopicId === selectedItem?.id ? (
+        <TopicMobileControlPanelGate
+          item={selectedItem}
+          showDiagnostics={advancedMode}
+          onSelectSession={onSelectSession}
+          onSendInput={onSendInput}
+        />
+      ) : null}
     </div>
   );
 }

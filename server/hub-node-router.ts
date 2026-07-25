@@ -183,6 +183,11 @@ interface HubNodeRouterOptions {
     expiresAt: string;
     now?: Date;
   }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
+  releaseRoutedPtyControlSession?: (
+    nodeId: string,
+    sessionId: string
+  ) => void;
+  releaseRoutedPtyControlSessionsForNode?: (nodeId: string) => void;
   confirmations?: ConfirmationChallengeStore;
   operatorHandshakeGrants?: HandshakeGrantRegistry;
   auditSink?: RoutedSessionAuditSink;
@@ -229,6 +234,7 @@ function sessionAssociationFieldsOk(session: Partial<SessionSummary>): boolean {
     optionalNullableStringFieldOk(session.worktreePath) &&
     optionalStringFieldOk(session.repoName) &&
     optionalStringFieldOk(session.branchName) &&
+    optionalStringFieldOk(session.spawnedBySessionId) &&
     optionalStringFieldOk(session.workContextId)
   );
 }
@@ -2477,9 +2483,9 @@ function cachedAuditVerify(input: {
   const cache = input.cache;
   const cacheMatchesHead = Boolean(
     head &&
-      cache &&
-      cache.latestSequence === head.latestSequence &&
-      cache.latestHash === head.latestHash
+    cache &&
+    cache.latestSequence === head.latestSequence &&
+    cache.latestHash === head.latestHash
   );
   if (!input.force && cacheMatchesHead && cache) {
     return { result: cache.result, cache };
@@ -3944,6 +3950,10 @@ export function createHubNodeRouter(
         return;
       }
       auditLifecycleRevocation(options.auditSink, summary, body);
+      options.releaseRoutedPtyControlSession?.(
+        summary.nodeId,
+        summary.sessionId
+      );
       res.json({ session: summary });
     }
   );
@@ -3984,6 +3994,10 @@ export function createHubNodeRouter(
       auditLifecycleRevocation(options.auditSink, summary, {
         method: 'DELETE',
       });
+      options.releaseRoutedPtyControlSession?.(
+        summary.nodeId,
+        summary.sessionId
+      );
       res.json({ session: summary });
     }
   );
@@ -4794,6 +4808,7 @@ export function createHubNodeRouter(
           }
         );
         envelopes.delete(sessionId, nodeId);
+        options.releaseRoutedPtyControlSession?.(nodeId, sessionId);
         res.json({
           ...(typeof payload === 'object' && payload !== null
             ? (payload as Record<string, unknown>)
@@ -4843,6 +4858,7 @@ export function createHubNodeRouter(
         now: now(),
         auditSink: options.auditSink,
       });
+      options.releaseRoutedPtyControlSessionsForNode?.(nodeId);
       res.json({
         node,
         events: revokedSessions.map((session) => ({

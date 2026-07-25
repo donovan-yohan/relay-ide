@@ -57,7 +57,7 @@ interface SessionDeps {
     list?: () => Array<{ mode?: string; status?: string }>;
     nextAgentName: () => string;
   };
-  gitWatcher: { watch(cwd: string): void };
+  gitWatcher: { watchSession(sessionId: string, cwd: string): void };
   configPath: string;
 }
 
@@ -126,8 +126,6 @@ function buildFinalArgs(
   combinedClaudeArgs: string[];
   finalArgs: string[];
 } {
-  const addDirArgs = additionalDirs.flatMap((dir) => ['--add-dir', dir]);
-
   const sessionOverrides: Parameters<typeof resolveSessionSettings>[2] = {};
   if (overrides.agent !== undefined)
     sessionOverrides.agent = overrides.agent as AgentType;
@@ -144,7 +142,17 @@ function buildFinalArgs(
     workspaceId
   );
   const resolvedAgent = resolved.agent;
-  const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
+  // config.claudeArgs carries Claude-specific flags (--model/--effort) and
+  // --add-dir is likewise a Claude-only multi-repo flag; folding either into
+  // codex/opencode/hermes spawns exits those CLIs with code 2 (#1238, same
+  // class as #1237). Gate BOTH to the claude agent. No other framework declares
+  // a multi-repo flag, so non-claude group spawns launch in the primary repo.
+  const agentClaudeArgs = resolvedAgent === 'claude' ? resolved.claudeArgs : [];
+  const addDirArgs =
+    resolvedAgent === 'claude'
+      ? additionalDirs.flatMap((dir) => ['--add-dir', dir])
+      : [];
+  const combinedClaudeArgs = [...agentClaudeArgs, ...addDirArgs];
   const baseArgs = [
     ...combinedClaudeArgs,
     ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
@@ -583,7 +591,7 @@ export function createWorkspaceGroupsRouter(
             });
           }
 
-          sessionDeps.gitWatcher.watch(session.cwd);
+          sessionDeps.gitWatcher.watchSession(session.id, session.cwd);
 
           const response: Record<string, unknown> = { ...session };
           if (failures.length > 0) {

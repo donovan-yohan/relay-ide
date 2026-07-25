@@ -30,6 +30,7 @@ export const CLI_GATEWAY_CORRELATION_ID_HEADER =
   'x-relay-correlation-id' as const;
 export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
+  'session:create:agent',
   'context:read',
   'context:write',
   'inbox:read',
@@ -68,6 +69,11 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'workspace-topics.list',
   'workspace-topics.search',
   'workspace-topics.get',
+  'channels.list',
+  'channels.get',
+  'channels.history',
+  'channels.threads.history',
+  'channels.roster',
   'context.get',
   'context.list',
   'inbox.list',
@@ -77,6 +83,7 @@ export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
 
 export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
+  'sessions.create',
   'context.create',
   'context.pin',
   'context.unpin',
@@ -104,6 +111,9 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.update',
   'workspace-topics.archive',
   'workspace-topics.restore',
+  'channels.post',
+  'channels.interrupt',
+  'channels.respond-approval',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -323,6 +333,7 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
+  if (command === 'sessions.create') return ['session:create:agent'];
   if (command === 'events.subscribe') return ['context:read'];
   // context/inbox reads must resolve to their read capability BEFORE the generic
   // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
@@ -333,6 +344,23 @@ export function cliGatewayActorCommandCapabilities(
   if (command === 'inbox.list' || command === 'inbox.get')
     return ['inbox:read'];
   if (command === 'work-context-messages.append') return ['context:write'];
+  // Channel conversation verbs (#1165): reads gate on context:read, the single
+  // post write gates on context:write. Mounting the router alone is not enough —
+  // the capability map must resolve or gateway auth fails at runtime.
+  if (
+    command === 'channels.list' ||
+    command === 'channels.get' ||
+    command === 'channels.history' ||
+    command === 'channels.threads.history' ||
+    command === 'channels.roster'
+  )
+    return ['context:read'];
+  if (
+    command === 'channels.post' ||
+    command === 'channels.interrupt' ||
+    command === 'channels.respond-approval'
+  )
+    return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||

@@ -640,7 +640,14 @@ export class RefWatcher {
 
 // Directories to ignore when watching the working tree.
 // These never contain user-authored source files worth diffing.
-const IGNORED_DIRS = new Set([
+// IMPORTANT: these are pruned at EVERY level of the walk (not just the top),
+// so nested trees such as `.worktrees/<wt>/node_modules` or a monorepo's
+// `packages/<pkg>/node_modules` are never descended into (#1249 / PR #1251
+// review P0: nested node_modules re-wedged the hub even after top-level
+// exclusion). `.worktrees` and `.claude` are ignored because the dogfood
+// checkout keeps sibling worktrees and generated agent config there — both
+// are large, gitignored, and never source worth diffing from the root.
+export const IGNORED_DIRS = new Set([
   '.git',
   'node_modules',
   '.next',
@@ -658,18 +665,77 @@ const IGNORED_DIRS = new Set([
   '.turbo',
   '.cache',
   '.parcel-cache',
+  '.worktrees',
+  '.claude',
 ]);
 
+// Safety cap on the total number of per-directory watches per workspace.
+// The walk prunes IGNORED_DIRS at every level, so a normal source tree is
+// hundreds-to-low-thousands of dirs. This cap bounds a pathological
+// non-ignored tree; hitting it logs a WARN describing the partial coverage
+// (never a silent cap — #1244).
+const MAX_WATCHED_DIRS = 8192;
+// If fs.watch() fails this many times in a row during a walk, treat it as real
+// OS inotify exhaustion (EMFILE/ENOSPC) and abort the walk instead of readdir'ing
+// + failing through the whole remaining tree (#1252 P2a).
+const MAX_CONSECUTIVE_WATCH_FAILURES = 64;
+
+// Debounce for reconciling a single directory's watch set after a create/delete
+// ('rename') event. Collapses bursts (e.g. a tool writing many files into a
+// watched dir) into one cheap, non-recursive re-read of that ONE directory.
+const RESCAN_DEBOUNCE_MS = 250;
+
+interface WorkspaceWatchEntry {
+  // One NON-recursive fs.watch per NON-ignored directory in the tree, keyed by
+  // absolute directory path. Node's recursive fs.watch cannot prune per-level,
+  // so we maintain the recursion ourselves and skip IGNORED_DIRS at every depth.
+  dirWatchers: Map<string, fs.FSWatcher>;
+  // Inode of each watched directory at watch time, keyed identically to
+  // `dirWatchers`. Lets reconcile detect a delete+recreate of the same path (new
+  // inode) within one debounce window and refresh the stale watcher (#1252 P2b).
+  dirInodes: Map<string, number>;
+  // .git/HEAD watch for commits / branch switches.
+  headWatcher?: fs.FSWatcher | undefined;
+  // Per-directory debounce timers for create/delete reconciliation, keyed by
+  // the directory whose children changed.
+  rescanTimers: Map<string, ReturnType<typeof setTimeout>>;
+  // Set once we log the size-cap WARN so a workspace warns at most once.
+  cappedWarned: boolean;
+  // Set once we log the inotify-exhaustion WARN — independent of cappedWarned so
+  // hitting the size cap can't suppress a later exhaustion warning (#1252).
+  exhaustedWarned: boolean;
+  refCount: number;
+}
+
 export class GitWatcher extends EventEmitter {
-  private watchers = new Map<
-    string,
-    {
-      treeWatcher: fs.FSWatcher;
-      headWatcher?: fs.FSWatcher | undefined;
-      refCount: number;
-    }
-  >();
+  private watchers = new Map<string, WorkspaceWatchEntry>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private sessionWorkspaces = new Map<string, string>();
+
+  /**
+   * Acquire one workspace-watch reference for a session. A session owns at
+   * most one reference: repeated registration is a no-op, while moving the
+   * same session to another cwd releases the old reference first.
+   */
+  watchSession(sessionId: string, workspacePath: string): void {
+    const existingPath = this.sessionWorkspaces.get(sessionId);
+    if (existingPath === workspacePath) return;
+    if (existingPath !== undefined) this.unwatch(existingPath);
+    this.sessionWorkspaces.set(sessionId, workspacePath);
+    this.watch(workspacePath);
+  }
+
+  /**
+   * Release the workspace-watch reference owned by this session. Idempotent so
+   * duplicate session-end notifications cannot decrement another session's
+   * shared cwd reference.
+   */
+  unwatchSession(sessionId: string): void {
+    const workspacePath = this.sessionWorkspaces.get(sessionId);
+    if (workspacePath === undefined) return;
+    this.sessionWorkspaces.delete(sessionId);
+    this.unwatch(workspacePath);
+  }
 
   watch(workspacePath: string): void {
     const existing = this.watchers.get(workspacePath);
@@ -678,44 +744,30 @@ export class GitWatcher extends EventEmitter {
       return;
     }
 
-    let treeWatcher: fs.FSWatcher | undefined;
-    let headWatcher: fs.FSWatcher | undefined;
+    const entry: WorkspaceWatchEntry = {
+      dirWatchers: new Map(),
+      dirInodes: new Map(),
+      rescanTimers: new Map(),
+      cappedWarned: false,
+      exhaustedWarned: false,
+      refCount: 1,
+    };
 
-    // 1. Watch the working tree recursively for file edits.
-    //    macOS uses FSEvents (single kernel subscription). Linux uses inotify
-    //    (one watch per directory, can hit fs.inotify.max_user_watches limit).
-    //    .git/ changes are filtered out so git-status calls never cause feedback loops.
-    try {
-      treeWatcher = fs.watch(
-        workspacePath,
-        { persistent: false, recursive: true },
-        (_event, filename) => {
-          if (!filename) return;
-          const firstSegment = filename.split(path.sep)[0] ?? '';
-          if (IGNORED_DIRS.has(firstSegment)) return;
-          this.debouncedEmit(workspacePath);
-        }
-      );
-      treeWatcher.on('error', (err) => {
-        logger.warn(
-          '[GitWatcher] working-tree watch failed for',
-          workspacePath,
-          '—',
-          err.message
-        );
-        logger.warn(
-          '[GitWatcher] changed-files will not auto-refresh for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288'
-        );
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(
-        '[GitWatcher] could not watch working tree for',
-        workspacePath,
-        '—',
-        msg
-      );
-    }
+    // 1. Watch the working tree for file edits with a CUSTOM per-level-pruning
+    //    recursive watcher (#1249 / PR #1251 review P0). Node's recursive
+    //    fs.watch on Linux is implemented in JS: it walks + stats +
+    //    inotify-watches EVERY subdirectory with NO per-level exclusion, so it
+    //    always descends node_modules (100k+ files) — even a `fs.watch(dir,
+    //    {recursive:true})` on a *non-ignored* top-level dir still walks any
+    //    node_modules nested underneath it (a monorepo `packages/*/node_modules`
+    //    or the dogfood checkout's `.worktrees/*/node_modules`, which is LARGER
+    //    than the root node_modules). We therefore walk the tree ourselves,
+    //    pruning IGNORED_DIRS at every level, and attach a NON-recursive watch
+    //    to each non-ignored directory. Create/delete of a child re-reads that
+    //    one directory (cheap) to add/drop watches dynamically. IGNORED_DIRS is
+    //    also filtered in each callback (defense in depth) so git-status calls
+    //    never cause feedback loops.
+    this.walkAndWatch(workspacePath, entry, workspacePath);
 
     // 2. Watch .git/HEAD for commits and branch switches.
     //    Single-file watch, no feedback loop risk (HEAD only changes on checkout/commit).
@@ -734,10 +786,10 @@ export class GitWatcher extends EventEmitter {
         headPath = path.join(gitDir, 'HEAD');
       }
       if (headPath && fs.existsSync(headPath)) {
-        headWatcher = fs.watch(headPath, { persistent: false }, () => {
+        entry.headWatcher = fs.watch(headPath, { persistent: false }, () => {
           this.debouncedEmit(workspacePath);
         });
-        headWatcher.on('error', () => {
+        entry.headWatcher.on('error', () => {
           /* HEAD watch is best-effort */
         });
       }
@@ -745,13 +797,302 @@ export class GitWatcher extends EventEmitter {
       // .git doesn't exist or isn't readable — skip HEAD watching
     }
 
-    if (!treeWatcher && !headWatcher) return;
+    if (entry.dirWatchers.size === 0 && !entry.headWatcher) {
+      return;
+    }
 
-    this.watchers.set(workspacePath, {
-      treeWatcher: treeWatcher ?? headWatcher!,
-      headWatcher: treeWatcher ? headWatcher : undefined,
-      refCount: 1,
-    });
+    this.watchers.set(workspacePath, entry);
+  }
+
+  /**
+   * Walk the tree rooted at `startDir`, pruning IGNORED_DIRS at EVERY level, and
+   * attach a NON-recursive fs.watch to each non-ignored directory. Iterative
+   * (explicit stack) so a deep tree can't blow the call stack. Bounded by
+   * MAX_WATCHED_DIRS: once the cap is hit, remaining directories are skipped and
+   * a single WARN is logged (never a silent cap). An ignored directory is never
+   * counted toward the cap — the walk skips it before it is ever pushed.
+   */
+  private walkAndWatch(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    startDir: string
+  ): void {
+    const stack: string[] = [startDir];
+    let skipped = 0;
+    let cappedHit = false;
+    // A failed fs.watch never grows dirWatchers.size, so the size cap alone can't
+    // stop a walk when watches keep FAILING (real OS inotify exhaustion,
+    // EMFILE/ENOSPC) — it would readdir + attempt through the whole tree. Bound
+    // that separately by aborting after a run of consecutive failures (#1252
+    // P2a). The size cap below stays GLOBAL (per workspace, across the initial
+    // walk + every reconcile re-walk) so total watches never exceed the cap.
+    let consecutiveFailures = 0;
+    let exhausted = false;
+
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      if (entry.dirWatchers.has(dir)) continue;
+
+      if (entry.dirWatchers.size >= MAX_WATCHED_DIRS) {
+        skipped++;
+        cappedHit = true;
+        continue;
+      }
+
+      const result = this.createDirWatcher(workspacePath, entry, dir);
+      if (result.watcher) {
+        entry.dirWatchers.set(dir, result.watcher);
+        entry.dirInodes.set(dir, this.dirInode(dir));
+        consecutiveFailures = 0;
+      } else if (result.resourceExhausted) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_WATCH_FAILURES) {
+          // Real OS inotify exhaustion (EMFILE/ENOSPC) — every remaining watch
+          // would fail too, so stop; the rest of the stack would just readdir +
+          // fail. Count the rest as skipped for the WARN.
+          exhausted = true;
+          skipped += stack.length;
+          break;
+        }
+      } else {
+        // Benign per-dir failure (ENOENT/EACCES/other): skip this one directory
+        // but keep walking siblings, and do NOT count it toward the exhaustion
+        // streak — a run of unreadable dirs must not masquerade as exhaustion.
+        consecutiveFailures = 0;
+      }
+
+      let dirents: fs.Dirent[];
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        // Directory vanished or is unreadable — nothing more to enqueue.
+        continue;
+      }
+      for (const dirent of dirents) {
+        if (!dirent.isDirectory()) continue;
+        if (IGNORED_DIRS.has(dirent.name)) continue; // prune at EVERY level
+        const child = path.join(dir, dirent.name);
+        if (!entry.dirWatchers.has(child)) stack.push(child);
+      }
+    }
+
+    // Size cap and inotify exhaustion are distinct causes with independent
+    // one-shot WARNs — a workspace that once hit the size cap must still warn if
+    // it LATER hits real exhaustion during a reconcile re-walk (never a silent
+    // cap — #1244 / #1252 review).
+    if (cappedHit && !entry.cappedWarned) {
+      entry.cappedWarned = true;
+      logger.warn(
+        `[GitWatcher] ${workspacePath}: reached watch cap of ${MAX_WATCHED_DIRS} directories; skipped at least ${skipped} — change detection is PARTIAL for this workspace (edits beyond the cap will not auto-refresh changed-files)`
+      );
+    }
+    if (exhausted && !entry.exhaustedWarned) {
+      entry.exhaustedWarned = true;
+      logger.warn(
+        `[GitWatcher] ${workspacePath}: OS inotify watch exhaustion (${MAX_CONSECUTIVE_WATCH_FAILURES} consecutive EMFILE/ENOSPC fs.watch failures); skipped at least ${skipped} — change detection is PARTIAL for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288`
+      );
+    }
+  }
+
+  /**
+   * Best-effort inode of a directory (0 if it can't be stat'd). Used only to
+   * detect a same-path delete+recreate so a stale watcher can be refreshed.
+   */
+  private dirInode(dir: string): number {
+    try {
+      return Number(fs.statSync(dir).ino);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Create a single NON-recursive fs.watch for `dir`. Its callback filters
+   * IGNORED_DIRS children (defense in depth) and, on a 'rename' (child created
+   * or deleted), schedules a debounced reconcile of THIS directory only — cheap,
+   * because it re-reads one directory non-recursively, never the whole tree.
+   */
+  private createDirWatcher(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    dir: string
+  ): { watcher?: fs.FSWatcher; resourceExhausted: boolean } {
+    try {
+      const watcher = fs.watch(
+        dir,
+        { persistent: false },
+        (event, filename) => {
+          if (filename) {
+            // A non-recursive watch reports the changed direct child. Skip
+            // ignored children so a newly created node_modules / .worktrees
+            // neither gets watched nor spams git-status.
+            const firstSegment = String(filename).split(path.sep)[0] ?? '';
+            if (IGNORED_DIRS.has(firstSegment)) return;
+          }
+          if (event === 'rename') {
+            // Child dir created or removed — reconcile watches for this dir.
+            this.scheduleDirRescan(workspacePath, entry, dir);
+          }
+          this.debouncedEmit(workspacePath);
+        }
+      );
+      watcher.on('error', () => {
+        /* per-dir watch is best-effort */
+      });
+      return { watcher, resourceExhausted: false };
+    } catch (err: unknown) {
+      // Only EMFILE/ENOSPC mean the OS ran out of inotify watches/handles — a
+      // condition that will fail EVERY subsequent fs.watch, so the walk should
+      // abort. ENOENT (dir vanished mid-walk), EACCES (permission-walled subtree),
+      // and anything else are per-directory and benign: skip that one dir and
+      // keep walking the rest of the tree (#1252 P2a review).
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      const resourceExhausted = code === 'EMFILE' || code === 'ENOSPC';
+      if (dir === workspacePath) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          '[GitWatcher] could not watch working tree for',
+          workspacePath,
+          '—',
+          msg
+        );
+        logger.warn(
+          '[GitWatcher] changed-files may not auto-refresh for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288'
+        );
+      }
+      // Nested per-dir watch failures are non-fatal and stay quiet.
+      return { resourceExhausted };
+    }
+  }
+
+  /**
+   * Debounce a reconcile of a single directory. At most one reconcile is pending
+   * per directory, so a burst of create/delete events collapses to one
+   * non-recursive readdir of that directory.
+   */
+  private scheduleDirRescan(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    dir: string
+  ): void {
+    if (entry.rescanTimers.has(dir)) return;
+    const timer = setTimeout(() => {
+      entry.rescanTimers.delete(dir);
+      // Ignore if this entry has been torn down / replaced in the meantime.
+      if (this.watchers.get(workspacePath) !== entry) return;
+      this.reconcileDir(workspacePath, entry, dir);
+    }, RESCAN_DEBOUNCE_MS);
+    entry.rescanTimers.set(dir, timer);
+  }
+
+  /**
+   * Re-read ONE directory (non-recursively) and reconcile its child watches:
+   * walk+watch newly created non-ignored subdirs, and drop watches for direct
+   * child directories that were removed (unwatching their whole subtree). If the
+   * directory itself is gone, unwatch it and everything under it.
+   */
+  private reconcileDir(
+    workspacePath: string,
+    entry: WorkspaceWatchEntry,
+    dir: string
+  ): void {
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      // Directory removed or unreadable — drop it and all descendant watches.
+      this.unwatchSubtree(entry, dir);
+      return;
+    }
+
+    const liveChildDirs = new Set<string>();
+    for (const dirent of dirents) {
+      if (!dirent.isDirectory()) continue;
+      if (IGNORED_DIRS.has(dirent.name)) continue; // prune ignored children
+      const child = path.join(dir, dirent.name);
+      liveChildDirs.add(child);
+      if (!entry.dirWatchers.has(child)) {
+        // Newly created non-ignored subdir — walk + watch it (bounded, pruned).
+        this.walkAndWatch(workspacePath, entry, child);
+      } else {
+        // Same path, new inode: the dir was deleted + recreated within one
+        // debounce window. The stale FSWatcher points at the old inode (its
+        // no-op error handler swallows IN_IGNORED) and would silently stop
+        // reporting this subtree. Drop it and re-watch the live dir (#1252 P2b).
+        // Guard on a non-zero current inode: a transient statSync failure reads
+        // back 0 and must NOT trigger a spurious subtree teardown+rewalk. (Note:
+        // detection can still miss a recreate if the OS reuses the freed inode,
+        // and cannot be relied on where inodes are unstable, e.g. overlayfs
+        // without xino — this only NARROWS the pre-existing 100%-miss window.)
+        const currentInode = this.dirInode(child);
+        if (currentInode !== 0 && entry.dirInodes.get(child) !== currentInode) {
+          this.unwatchSubtree(entry, child);
+          this.walkAndWatch(workspacePath, entry, child);
+        }
+      }
+    }
+
+    // Drop watches for direct child directories that no longer exist. A
+    // non-recursive watch on `dir` only reports its own direct children, so we
+    // only reconcile this level; nested changes are handled by nested watches.
+    for (const watched of [...entry.dirWatchers.keys()]) {
+      if (path.dirname(watched) !== dir) continue;
+      if (!liveChildDirs.has(watched)) {
+        this.unwatchSubtree(entry, watched);
+      }
+    }
+  }
+
+  /**
+   * Close and forget the watch on `root` and every watched directory beneath it,
+   * plus any pending reconcile timers in that subtree. Idempotent.
+   */
+  private unwatchSubtree(entry: WorkspaceWatchEntry, root: string): void {
+    const prefix = root + path.sep;
+    for (const [watchedPath, watcher] of [...entry.dirWatchers]) {
+      if (watchedPath === root || watchedPath.startsWith(prefix)) {
+        try {
+          watcher.close();
+        } catch {
+          // ignore
+        }
+        entry.dirWatchers.delete(watchedPath);
+        entry.dirInodes.delete(watchedPath);
+      }
+    }
+    for (const [timerPath, timer] of [...entry.rescanTimers]) {
+      if (timerPath === root || timerPath.startsWith(prefix)) {
+        clearTimeout(timer);
+        entry.rescanTimers.delete(timerPath);
+      }
+    }
+  }
+
+  private closeEntry(entry: WorkspaceWatchEntry): void {
+    for (const timer of entry.rescanTimers.values()) {
+      clearTimeout(timer);
+    }
+    entry.rescanTimers.clear();
+    for (const watcher of entry.dirWatchers.values()) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore
+      }
+    }
+    entry.dirWatchers.clear();
+    entry.dirInodes.clear();
+    if (entry.headWatcher) {
+      try {
+        entry.headWatcher.close();
+      } catch {
+        // ignore
+      }
+      entry.headWatcher = undefined;
+    }
   }
 
   unwatch(workspacePath: string): void {
@@ -759,17 +1100,7 @@ export class GitWatcher extends EventEmitter {
     if (!entry) return;
     entry.refCount--;
     if (entry.refCount <= 0) {
-      try {
-        entry.treeWatcher.close();
-      } catch {
-        // ignore
-      }
-      if (entry.headWatcher)
-        try {
-          entry.headWatcher.close();
-        } catch {
-          // ignore
-        }
+      this.closeEntry(entry);
       this.watchers.delete(workspacePath);
       const timer = this.debounceTimers.get(workspacePath);
       if (timer) {
@@ -821,19 +1152,10 @@ export class GitWatcher extends EventEmitter {
 
   close(): void {
     for (const entry of this.watchers.values()) {
-      try {
-        entry.treeWatcher.close();
-      } catch {
-        // ignore
-      }
-      if (entry.headWatcher)
-        try {
-          entry.headWatcher.close();
-        } catch {
-          // ignore
-        }
+      this.closeEntry(entry);
     }
     this.watchers.clear();
+    this.sessionWorkspaces.clear();
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }

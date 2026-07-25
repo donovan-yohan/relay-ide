@@ -41,8 +41,8 @@ export function useShikiHighlight(
 
   // Track the current tokenization generation to discard stale results.
   const genRef = useRef(0);
-  // Track the (key, source) pair we last kicked tokenization off for, plus
-  // whether that pass has settled. This is the loop guard: registering an
+  // Track the (key, source, language) input we last kicked tokenization off
+  // for, plus whether that pass has settled. This is the loop guard: registering an
   // entry mutates the store, which re-runs the highlight effect (its dep array
   // includes `entry`). Without this ref the effect would call
   // `setEntry(... null)` again on that re-run — producing a fresh entry object
@@ -55,6 +55,7 @@ export function useShikiHighlight(
   const kickedRef = useRef<{
     key: string;
     source: string;
+    language: string;
     settled: boolean;
   } | null>(null);
 
@@ -67,7 +68,7 @@ export function useShikiHighlight(
 
   // Kick off highlighting when:
   //   (a) the entry doesn't exist yet, or
-  //   (b) the source changed, or
+  //   (b) the source or language changed, or
   //   (c) highlight output was evicted by GC (entry exists, source matches,
   //       but highlightOutput went null after previously being populated).
   useEffect(() => {
@@ -75,20 +76,29 @@ export function useShikiHighlight(
 
     const currentOutput = entry?.highlightOutput ?? null;
     const currentSource = entry?.source;
+    const currentLanguage = entry?.language;
 
-    // Already highlighted and source matches — nothing to do.
-    if (currentOutput !== null && currentSource === code) return;
+    // Already highlighted and the complete input matches — nothing to do.
+    if (
+      currentOutput !== null &&
+      currentSource === code &&
+      currentLanguage === language
+    ) {
+      return;
+    }
 
-    // A tokenization pass is already in-flight for this exact (key, source)
-    // and has not settled yet; the null output just means it has not resolved.
+    // A tokenization pass is already in-flight for this exact input and has
+    // not settled yet; the null output just means it has not resolved.
     // Re-registering here would loop — wait for it to call setHighlightOutput.
     const kicked = kickedRef.current;
     const inFlight =
       kicked !== null &&
       kicked.key === key &&
       kicked.source === code &&
+      kicked.language === language &&
       !kicked.settled &&
-      currentSource === code;
+      currentSource === code &&
+      currentLanguage === language;
     if (inFlight) return;
 
     // Register the entry immediately with null output so the GC store has
@@ -96,14 +106,14 @@ export function useShikiHighlight(
     setEntry(key, code, language, null);
 
     const gen = ++genRef.current;
-    const kick = { key, source: code, settled: false };
+    const kick = { key, source: code, language, settled: false };
     kickedRef.current = kick;
 
     tokenizeCode(code, language)
       .then((tokens) => {
         kick.settled = true;
         if (gen !== genRef.current) return; // stale
-        setHighlightOutput(key, tokens);
+        setHighlightOutput(key, tokens, { source: code, language });
       })
       .catch(() => {
         // Tokenization failure is non-fatal — plain text stays visible.
@@ -111,14 +121,23 @@ export function useShikiHighlight(
       });
   }, [key, code, language, entry, setEntry, setHighlightOutput]);
 
+  // Never pair token text from a previous source/language with current raw
+  // lines. A source update renders current plain text immediately until its
+  // own tokenization generation settles.
+  const entryMatchesInput =
+    entry?.source === code && entry?.language === language;
   const tokens =
-    entry?.highlightOutput !== null && entry?.highlightOutput !== undefined
+    entryMatchesInput &&
+    entry?.highlightOutput !== null &&
+    entry?.highlightOutput !== undefined
       ? (entry.highlightOutput as ThemedToken[][])
       : null;
 
   const highlighting =
-    entry === undefined ||
-    (entry.source === code && entry.highlightOutput === null);
+    code.length > 0 &&
+    (!entryMatchesInput ||
+      entry === undefined ||
+      entry.highlightOutput === null);
 
   return { tokens, highlighting };
 }

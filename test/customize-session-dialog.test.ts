@@ -16,8 +16,9 @@ import type { AggregatedRepoInventoryResponse } from '../shared/repo-inventory.j
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 
 function framework(id: string, installed = true): FrameworkInfo {
-  // Mirrors BUILTIN_FRAMEWORKS in server/types.ts. Claude web sessions are
-  // de-advertised pending end-to-end verification (issue #300).
+  // Mirrors BUILTIN_FRAMEWORKS in server/types.ts. Codex web sessions are
+  // advertised as of #1169 (closes #301). Claude stays absent here so this
+  // frontend guard keeps exercising the "only tui" branch for one provider.
   return {
     id,
     displayName: id,
@@ -27,10 +28,7 @@ function framework(id: string, installed = true): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      // Claude + Codex are both intentionally absent — their web-session
-      // capabilities are de-advertised pending full implementations
-      // (issues #300 and #301).
-      supportsWebSessions: ['opencode', 'hermes'].includes(id),
+      supportsWebSessions: ['opencode', 'hermes', 'codex'].includes(id),
     },
     eventSource: 'hooks',
     availability: installed
@@ -192,11 +190,12 @@ describe('CustomizeSessionDialog session mode options', () => {
     ]);
   });
 
-  // Regression guard for issue #301: Codex's web mode is intentionally
-  // de-advertised until assistant text streaming is implemented.
-  it('shows only tui for codex (web mode de-advertised, see #301)', () => {
+  // #1169 (closes #301): Codex web sessions are advertised, so the session-mode
+  // dropdown now surfaces both tui and web when codex is selected.
+  it('shows tui and web for codex (web mode advertised, #1169 closes #301)', () => {
     expect(getSessionModeOptions([framework('codex')], 'codex')).toEqual([
       { value: 'pty', label: 'tui' },
+      { value: 'web', label: 'web' },
     ]);
   });
 
@@ -219,9 +218,9 @@ describe('CustomizeSessionDialog session mode options', () => {
     expect(defaultSessionModeForAgent([framework('codex')], 'codex')).toBe(
       'pty'
     );
-    expect(defaultSessionModeForAgent([framework('opencode')], 'opencode')).toBe(
-      'pty'
-    );
+    expect(
+      defaultSessionModeForAgent([framework('opencode')], 'opencode')
+    ).toBe('pty');
   });
 
   it('disables web mode when an installed agent runtime is unavailable', () => {

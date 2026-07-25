@@ -17,6 +17,11 @@ import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
+import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
+import {
+  channelLastReadKey,
+  useChannelActivityStore,
+} from '../frontend/src/lib/stores/channel-activity.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -91,6 +96,15 @@ describe('TopicSidebarView', () => {
 
   beforeEach(() => {
     globalThis.ResizeObserver = ResizeObserverStub as typeof ResizeObserver;
+    useUiStore.setState({
+      advancedMode: false,
+      repoDashboardTabIntent: null,
+      activeChannelId: null,
+    });
+    useChannelActivityStore.setState({
+      latestSeqByChannel: {},
+      lastReadByChannel: {},
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -102,28 +116,52 @@ describe('TopicSidebarView', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     useSessionsStore.setState({ sessions: [] });
+    useUiStore.setState({
+      advancedMode: false,
+      repoDashboardTabIntent: null,
+      activeChannelId: null,
+    });
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setActiveWorkspaceId(null);
+    useChannelActivityStore.setState({
+      latestSeqByChannel: {},
+      lastReadByChannel: {},
+    });
+    localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
 
   async function renderView(
-    props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
+    props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {},
+    options: {
+      advancedMode?: boolean;
+      onRender?: React.ProfilerOnRenderCallback;
+    } = {}
   ) {
+    useUiStore.setState({
+      advancedMode: options.advancedMode ?? props.showAdvancedDetail === true,
+    });
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    const view = React.createElement(TopicSidebarView, {
+      topics: [makeTopic()],
+      sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
+      surfaces: [makeSurface()],
+      onSelectSession,
+      ...props,
     });
     await act(async () => {
       root.render(
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(TopicSidebarView, {
-            topics: [makeTopic()],
-            sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
-            surfaces: [makeSurface()],
-            onSelectSession,
-            ...props,
-          })
+          options.onRender
+            ? React.createElement(
+                React.Profiler,
+                { id: 'topic-sidebar', onRender: options.onRender },
+                view
+              )
+            : view
         )
       );
     });
@@ -140,6 +178,152 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Thin-line topic detail');
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('preview');
+    expect(container.textContent).toContain('artifacts/surfaces');
+    expect(
+      container.querySelector('.topic-room__evidence-link')
+    ).not.toBeNull();
+  });
+
+  it('keeps the default rail to workspaces, channels/DMs, compact presence, and unread state', async () => {
+    const dmId = dmChannelTopicId('claude', 'workspace:alpha');
+    useChannelActivityStore.setState({
+      latestSeqByChannel: { 'topic:alpha': 9 },
+      lastReadByChannel: { 'topic:alpha': 3 },
+    });
+
+    await renderView(
+      {
+        showAdvancedDetail: true,
+        topics: [
+          makeTopic(),
+          makeTopic({
+            id: dmId,
+            display: { title: 'Claude' },
+            routingDefaults: { providerId: 'claude' },
+            linkedRefs: {},
+          }),
+        ],
+        workspaces: [
+          {
+            id: 'workspace:alpha',
+            name: 'engineering',
+            order: 0,
+            pinned: false,
+            color: null,
+            icon: null,
+          },
+        ],
+      },
+      { advancedMode: false }
+    );
+
+    expect(container.textContent).toContain('engineering');
+    expect(container.textContent).toContain('Build UI shell');
+    expect(container.textContent).toContain('direct messages');
+    expect(container.textContent).toContain('Claude');
+    expect(
+      container.querySelector(
+        `.topic-workspace-group [data-topic-id="${dmId}"]`
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(`.topic-mobile-group [data-topic-id="${dmId}"]`)
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.topic-workspace-group [data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.topic-mobile-group [data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.topic-row__activity-dot[aria-label="unread activity"]'
+      )
+    ).not.toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
+    expect(container.textContent).not.toContain('task room');
+    expect(container.textContent).not.toContain('primary action');
+    expect(container.textContent).not.toContain('orchestration');
+    expect(container.textContent).not.toContain('raw terminal attach');
+    expect(container.querySelector('.topic-participants')).toBeNull();
+    expect(container.querySelector('.topic-child-row__button')).not.toBeNull();
+
+    const channelButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.topic-row__main')
+    ).find((button) => button.textContent?.includes('Build UI shell'));
+    expect(channelButton).toBeTruthy();
+    await act(async () => channelButton?.click());
+    expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('preserves persisted last-read fallback in the shared rail snapshot', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '9');
+    useChannelActivityStore.setState({
+      latestSeqByChannel: { 'topic:alpha': 9 },
+      lastReadByChannel: {},
+    });
+
+    await renderView();
+
+    expect(
+      container.querySelector(
+        '[data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).toBeNull();
+    localStorage.removeItem(channelLastReadKey('topic:alpha'));
+  });
+
+  it('does not commit the sidebar for unrelated channel activity', async () => {
+    let commits = 0;
+    await renderView(
+      {
+        topics: [makeTopic({ id: 'topic:relevant' })],
+        sessions: [],
+        surfaces: [],
+      },
+      { onRender: () => commits++ }
+    );
+    const committedBeforeUnrelatedActivity = commits;
+
+    await act(async () => {
+      useChannelActivityStore.getState().recordActivity('topic:unrelated', 1);
+    });
+
+    expect(commits).toBe(committedBeforeUnrelatedActivity);
+  });
+
+  it('reveals mechanical detail only in advanced mode and hands evidence to the repo dashboard', async () => {
+    await renderView({ showAdvancedDetail: true }, { advancedMode: true });
+
+    expect(
+      container.querySelector('.topic-shell__advanced-detail')
+    ).not.toBeNull();
+    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.textContent).toContain('task room');
+    expect(container.textContent).toContain('primary action');
+    expect(container.textContent).toContain('sessions');
+    expect(container.textContent).toContain('artifacts/surfaces');
+    expect(container.textContent).toContain('raw terminal attach');
+    expect(container.querySelector('.topic-participants')).not.toBeNull();
+
+    const evidenceLink = container.querySelector(
+      '.topic-room__evidence-link'
+    ) as HTMLButtonElement;
+    expect(evidenceLink).not.toBeNull();
+    await act(async () => evidenceLink.click());
+
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:alpha');
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/relay');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().repoDashboardTabIntent).toEqual({
+      repoPath: '/repo/relay',
+      tab: 'evidence',
+    });
   });
 
   it('renders WorkContext orchestration runs with clickable visible lanes', async () => {
@@ -232,6 +416,43 @@ describe('TopicSidebarView', () => {
     expect(workerButton).toBeTruthy();
     await act(async () => (workerButton as HTMLButtonElement).click());
     expect(onSelectSession).toHaveBeenCalledWith('global:worker');
+  });
+
+  it('does not fetch WorkContext workflow runs until advanced mode is enabled', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ workflowRuns: [] })
+    ) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
+      showAdvancedDetail: true,
+      topics: [
+        makeTopic({
+          linkedRefs: { workContextIds: ['wc:relay'] },
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    };
+
+    await renderView(props, { advancedMode: false });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+
+    await renderView(props, { advancedMode: true });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/workflow-runs?workContextId=wc%3Arelay&limit=5',
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(
+      container.querySelector('.topic-shell__advanced-detail')
+    ).not.toBeNull();
   });
 
   it('keeps collapsed topic rows free of linked-item and recency metadata', async () => {
@@ -398,7 +619,8 @@ describe('TopicSidebarView', () => {
     expect(resume.disabled).toBe(true);
   });
 
-  it('resumes a chat when tapping its mobile switcher row instead of opening detail chrome (#1122)', async () => {
+  it('opens a persisted channel timeline when tapping its mobile row (#1205)', async () => {
+    useUiStore.setState({ sidebarOpen: true });
     await renderView({
       topics: [
         makeTopic({
@@ -430,9 +652,109 @@ describe('TopicSidebarView', () => {
     expect(row).not.toBeNull();
     await act(async () => row.click());
 
-    expect(onSelectSession).toHaveBeenCalledTimes(1);
-    expect(onSelectSession).toHaveBeenCalledWith('s-new');
-    expect(useUiStore.getState().activeRepoPath).toBeNull();
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:a');
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/mobile-detail');
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+  });
+
+  it('locally collapses and expands a mobile workspace group (#1205)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+
+    const group = container.querySelector(
+      '.topic-mobile-group[data-workspace-id="ws:a"]'
+    ) as HTMLElement;
+    const header = group.querySelector(
+      '.topic-mobile-group__header'
+    ) as HTMLButtonElement;
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+
+    await act(async () => header.click());
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).toBeNull();
+
+    await act(async () => header.click());
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+  });
+
+  it('shows reactive unread state on a collapsed mobile workspace header (#1205)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+
+    const header = container.querySelector(
+      '.topic-mobile-group__header'
+    ) as HTMLButtonElement;
+    await act(async () => header.click());
+    expect(header.querySelector('[aria-label="unread activity"]')).toBeNull();
+
+    await act(async () => {
+      useChannelActivityStore.getState().recordActivity('topic:a', 2);
+    });
+    expect(
+      header.querySelector('[aria-label="unread activity"]')
+    ).not.toBeNull();
+  });
+
+  it('suppresses the no-workspace header consistently for a sole orphan lane', async () => {
+    await renderView({ workspaces: [] });
+
+    const desktopOrphan = container.querySelector(
+      '.topic-workspace-group--orphan'
+    ) as HTMLElement;
+    const mobileOrphan = container.querySelector(
+      '.topic-mobile-group--orphan'
+    ) as HTMLElement;
+    expect(desktopOrphan).not.toBeNull();
+    expect(mobileOrphan).not.toBeNull();
+    expect(
+      desktopOrphan.querySelector('.topic-workspace-group__header')
+    ).toBeNull();
+    expect(
+      mobileOrphan.querySelector('.topic-mobile-group__header')
+    ).toBeNull();
   });
 
   it('hides the mobile detail/control chrome for resumable chat rows (#1122)', async () => {
@@ -445,22 +767,134 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).not.toContain('open terminal tab');
   });
 
-  it('keeps the mobile control panel available for reply/approval states', async () => {
-    await renderView({
+  it('opens an actionable mobile control panel only after its row is tapped in default mode', async () => {
+    useUiStore.setState({ sidebarOpen: true });
+    const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
       sessions: [
         makeSession({
           id: 's1',
           displayName: 'Frontend lane',
-          agentState: 'waiting-for-input',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
           controlFreshness: 'fresh',
           mode: 'pty',
         }),
       ],
       surfaces: [],
-    });
+    };
+
+    await renderView(props, { advancedMode: false });
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
+
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.textContent).toContain('approve');
+    await act(async () => row.click());
 
     expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
-    expect(container.textContent).toContain('reply');
+    expect(useUiStore.getState().sidebarOpen).toBe(true);
+    expect(container.textContent).toContain('approve');
+    expect(container.querySelector('.topic-mobile-control')).not.toBeNull();
+    expect(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).toHaveLength(2);
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    expect(submit.title).toBe('review and send approve');
+    expect(submit.title).not.toMatch(/audited|live session|terminal|control/i);
+    expect(container.querySelector('.topic-mobile-detail__latest')).toBeNull();
+    expect(container.querySelector('.topic-mobile-detail__meta')).toBeNull();
+    expect(
+      container.querySelector('.topic-mobile-detail__description')
+    ).toBeNull();
+    expect(container.querySelector('.topic-mobile-actions')).toBeNull();
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
+    expect(useUiStore.getState().advancedMode).toBe(false);
+  });
+
+  it('resets default mobile input and preview when one session changes from approve to reply', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    const renderAction = async (
+      agentState: 'permission-prompt' | 'waiting-for-input'
+    ) => {
+      await renderView(
+        {
+          sessions: [
+            makeSession({
+              id: 's1',
+              displayName: 'Frontend lane',
+              agentState,
+              ...(agentState === 'permission-prompt'
+                ? { permissionType: 'approval' as const }
+                : {}),
+              controlFreshness: 'fresh',
+              mode: 'pty',
+            }),
+          ],
+          surfaces: [],
+          onSendInput,
+        },
+        { advancedMode: false }
+      );
+    };
+
+    await renderAction('permission-prompt');
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    await act(async () => row.click());
+    const approve = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '.topic-mobile-control__preset'
+      )
+    ).find((button) => button.textContent === 'approve')!;
+    await act(async () => approve.click());
+    const approvalForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => approvalForm.requestSubmit());
+    expect(container.querySelector('.topic-mobile-confirm')).not.toBeNull();
+    expect(container.textContent).toContain('review before sending');
+
+    await renderAction('waiting-for-input');
+    const replyInput = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    expect(replyInput.value).toBe('');
+    expect(container.querySelector('.topic-mobile-confirm')).toBeNull();
+    expect(container.textContent).not.toContain('approve selected');
+    expect(onSendInput).not.toHaveBeenCalled();
+
+    await act(async () => {
+      replyInput.value = 'ready';
+      replyInput.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'ready',
+          inputType: 'insertText',
+        })
+      );
+      replyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const replyForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => replyForm.requestSubmit());
+    expect(container.textContent).toContain('review before sending');
+    await act(async () => replyForm.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'ready\r', undefined);
+    expect(container.textContent).toContain('sent');
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
   });
 
   it('shows a search scope toggle only when a workspace is active', async () => {
@@ -1128,22 +1562,25 @@ describe('TopicSidebarView', () => {
 
   it('bounds mobile topic latest status from raw activity text', async () => {
     const longToolName = 'tool-name-'.repeat(30);
-    await renderView({
-      topics: [
-        makeTopic({
-          linkedRefs: { sessionIds: ['waiting-session'] },
-        }),
-      ],
-      sessions: [
-        makeSession({
-          id: 'waiting-session',
-          displayName: 'waiting lane',
-          agentState: 'waiting-for-input',
-          currentActivity: { tool: longToolName },
-        }),
-      ],
-      surfaces: [],
-    });
+    await renderView(
+      {
+        topics: [
+          makeTopic({
+            linkedRefs: { sessionIds: ['waiting-session'] },
+          }),
+        ],
+        sessions: [
+          makeSession({
+            id: 'waiting-session',
+            displayName: 'waiting lane',
+            agentState: 'waiting-for-input',
+            currentActivity: { tool: longToolName },
+          }),
+        ],
+        surfaces: [],
+      },
+      { advancedMode: true }
+    );
 
     const mobileRowStatus = container.querySelector(
       '.topic-mobile-row__status'
@@ -1170,18 +1607,21 @@ describe('TopicSidebarView', () => {
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1213,18 +1653,21 @@ describe('TopicSidebarView', () => {
 
   it('offers explicit approve and deny presets before audited mobile approval send', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const denyPreset = Array.from(
       container.querySelectorAll('.topic-mobile-control__preset')
@@ -1250,20 +1693,23 @@ describe('TopicSidebarView', () => {
 
   it('sends audited mobile replies to the local session id when linked by global id', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
-      sessions: [
-        makeSession({
-          id: 'local-session',
-          globalSessionId: 'global:agent-1',
-          displayName: 'global approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
+        sessions: [
+          makeSession({
+            id: 'local-session',
+            globalSessionId: 'global:agent-1',
+            displayName: 'global approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1293,19 +1739,22 @@ describe('TopicSidebarView', () => {
 
   it('disables disconnected mobile controls before submit', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'offline approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-          status: 'disconnected',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'offline approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+            status: 'disconnected',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1329,27 +1778,30 @@ describe('TopicSidebarView', () => {
   });
 
   it('disables stale/offline mobile resume while preserving artifact handoff', async () => {
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'offline idle session',
-          agentState: 'idle',
-          idle: true,
-          status: 'disconnected',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      surfaces: [
-        makeSurface({
-          id: 'surface:log',
-          kind: 'logs',
-          label: 'Last known artifact',
-          openMode: 'copy',
-          command: 'relay artifact show surface:log',
-        }),
-      ],
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'offline idle session',
+            agentState: 'idle',
+            idle: true,
+            status: 'disconnected',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        surfaces: [
+          makeSurface({
+            id: 'surface:log',
+            kind: 'logs',
+            label: 'Last known artifact',
+            openMode: 'copy',
+            command: 'relay artifact show surface:log',
+          }),
+        ],
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'waiting'
@@ -1384,18 +1836,21 @@ describe('TopicSidebarView', () => {
 
   it('keeps permission/question mobile input fail-closed when control freshness is omitted', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval awaiting freshness',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          status: 'active',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval awaiting freshness',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            status: 'active',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'approve'
@@ -1436,18 +1891,21 @@ describe('TopicSidebarView', () => {
     expect(onSendInput).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'question awaiting freshness',
-          agentState: 'permission-prompt',
-          permissionType: 'question',
-          status: 'active',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'question awaiting freshness',
+            agentState: 'permission-prompt',
+            permissionType: 'question',
+            status: 'active',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'reply'
@@ -1480,7 +1938,7 @@ describe('TopicSidebarView', () => {
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps mobile resume enabled when only live input control state is unsafe', async () => {
+  it('keeps resume-last enabled when only live input control state is unsafe', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView({
       sessions: [
@@ -1494,21 +1952,18 @@ describe('TopicSidebarView', () => {
       onSendInput,
     });
 
-    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
-      'resume'
-    );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector(
-      '.topic-mobile-row'
+    const resumeLast = container.querySelector(
+      '.topic-mobile-cockpit__resume'
     ) as HTMLButtonElement;
-    expect(row.title).toContain('resume chat');
-    await act(async () => row.click());
+    expect(resumeLast.disabled).toBe(false);
+    await act(async () => resumeLast.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps web session input hidden while allowing mobile row resume', async () => {
+  it('keeps web session input hidden while allowing resume-last', async () => {
     await renderView({
       sessions: [
         makeSession({
@@ -1521,29 +1976,65 @@ describe('TopicSidebarView', () => {
       ],
     });
 
-    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
-      'resume'
-    );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector(
-      '.topic-mobile-row'
+    const resumeLast = container.querySelector(
+      '.topic-mobile-cockpit__resume'
     ) as HTMLButtonElement;
-    await act(async () => row.click());
+    await act(async () => resumeLast.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
-  it('makes the mobile row itself the explicit resume affordance', async () => {
+  it('makes the mobile row an explicit channel timeline affordance', async () => {
     await renderView();
 
     const row = container.querySelector(
       '.topic-mobile-row'
     ) as HTMLButtonElement;
     expect(container.querySelector('.topic-mobile-actions')).toBeNull();
-    expect(row.textContent).toContain('resume');
-    expect(row.title).toContain('resume chat');
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'open'
+    );
+    expect(row.title).toBe('open channel timeline');
     await act(async () => row.click());
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('resumes an attachable derived session without opening a channel timeline', async () => {
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:derived-session',
+          source: 'derived',
+          linkedRefs: { sessionIds: ['s1'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'Derived lane',
+          status: 'active',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'resume'
+    );
+    expect(row.title).toContain('resume chat Derived lane');
+
+    await act(async () => row.click());
+
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
     expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
   });
 
   it('renders bounded topic history search without changing the thin-line layout', async () => {

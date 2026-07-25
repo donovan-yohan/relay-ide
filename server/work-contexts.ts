@@ -222,6 +222,7 @@ export interface WorkContextResumeSnapshot {
 
 export interface WorkContextSessionSummary {
   id: string;
+  spawnedBySessionId?: string;
   nodeId: string;
   globalSessionId?: string;
   tabKind: WorkContextTabKind;
@@ -898,6 +899,7 @@ function resolveWorkContextReadAuth(
 
 interface SessionRefBody {
   sessionId: string;
+  spawnedBySessionId?: string;
   nodeId?: string;
   globalSessionId?: string;
   tabId?: string;
@@ -1112,6 +1114,7 @@ function pickAnchors(anchors: WorkContext['anchors']): WorkContext['anchors'] {
     ? withoutUndefined({
         nodeId: anchors.session.nodeId,
         sessionId: anchors.session.sessionId,
+        spawnedBySessionId: anchors.session.spawnedBySessionId,
         globalSessionId: anchors.session.globalSessionId,
         tabId: anchors.session.tabId,
         tabKind: anchors.session.tabKind,
@@ -1416,6 +1419,9 @@ export function sessionSummaryToRef(session: SessionSummary): SessionRef {
   return {
     nodeId,
     sessionId: session.id,
+    ...(session.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: session.spawnedBySessionId }
+      : {}),
     globalSessionId,
     tabKind,
     cwd: session.cwd,
@@ -1434,6 +1440,9 @@ function sessionRefFromBody(body: SessionRefBody): SessionRef {
   return {
     nodeId,
     sessionId: body.sessionId,
+    ...(body.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: body.spawnedBySessionId }
+      : {}),
     ...(body.globalSessionId ? { globalSessionId: body.globalSessionId } : {}),
     ...(body.tabId ? { tabId: body.tabId } : {}),
     tabKind: body.tabKind ?? 'terminal',
@@ -1618,6 +1627,9 @@ function summarizeLinkedSession(
   if (liveSession) return summarizeLiveSession(link, liveSession);
   return {
     id: ref.sessionId,
+    ...(ref.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: ref.spawnedBySessionId }
+      : {}),
     nodeId: ref.nodeId,
     ...(ref.globalSessionId ? { globalSessionId: ref.globalSessionId } : {}),
     tabKind: ref.tabKind,
@@ -1637,6 +1649,9 @@ function summarizeLiveSession(
   const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   const summary: WorkContextSessionSummary = {
     id: session.id,
+    ...(session.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: session.spawnedBySessionId }
+      : {}),
     nodeId,
     ...(session.globalSessionId
       ? { globalSessionId: session.globalSessionId }

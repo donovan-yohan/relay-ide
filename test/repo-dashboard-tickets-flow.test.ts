@@ -3,6 +3,11 @@
 import React, { act } from 'react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
+import { useUiStore } from '../frontend/src/lib/stores/ui.js';
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mocks = vi.hoisted(() => ({
   useQuery: vi.fn(),
@@ -140,9 +145,19 @@ vi.mock('../frontend/src/components/StartWorkModal.js', async () => {
   };
 });
 
-const { RepoDashboard } = await import(
-  '../frontend/src/components/RepoDashboard.tsx'
+vi.mock(
+  '../frontend/src/components/WorkspaceEvidenceDashboard.js',
+  async () => {
+    const ReactModule = await import('react');
+    return {
+      default: () =>
+        ReactModule.createElement('div', { className: 'evidence-dashboard' }),
+    };
+  }
 );
+
+const { RepoDashboard } =
+  await import('../frontend/src/components/RepoDashboard.tsx');
 
 describe('RepoDashboard ticket flow', () => {
   let container: HTMLDivElement;
@@ -152,21 +167,24 @@ describe('RepoDashboard ticket flow', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    mocks.useQuery.mockReturnValue({
-      data: {
-        isGitRepo: true,
-        prs: [],
-        activity: [],
-      },
-      isLoading: false,
-      isError: false,
-    });
+    mocks.useQuery.mockImplementation(
+      ({ queryKey }: { queryKey: readonly unknown[] }) => ({
+        data:
+          queryKey[0] === 'dashboard'
+            ? { isGitRepo: true, prs: [], activity: [] }
+            : [],
+        isLoading: false,
+        isError: false,
+      })
+    );
+    useUiStore.setState({ repoDashboardTabIntent: null });
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    useUiStore.setState({ repoDashboardTabIntent: null });
   });
 
   it('mounts TicketsPanel from the repo dashboard and forwards Start Work sessions', async () => {
@@ -196,7 +214,9 @@ describe('RepoDashboard ticket flow', () => {
       ticketsTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(container.querySelector('[data-testid="tickets-panel"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="tickets-panel"]')
+    ).toBeTruthy();
 
     const startWorkButton = Array.from(
       container.querySelectorAll('button')
@@ -209,7 +229,9 @@ describe('RepoDashboard ticket flow', () => {
       );
     });
 
-    expect(container.querySelector('[data-testid="start-work-modal"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="start-work-modal"]')
+    ).toBeTruthy();
     expect(
       container.querySelector('[data-testid="start-work-issue"]')?.textContent
     ).toBe('PROJ-42');
@@ -220,12 +242,64 @@ describe('RepoDashboard ticket flow', () => {
     expect(completeButton).toBeTruthy();
 
     await act(async () => {
-      completeButton?.dispatchEvent(
-        new MouseEvent('click', { bubbles: true })
-      );
+      completeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
     expect(onSessionCreated).toHaveBeenCalledWith('session-123');
-    expect(container.querySelector('[data-testid="start-work-modal"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="start-work-modal"]')
+    ).toBeNull();
+  });
+
+  it('consumes a repo-scoped evidence-tab navigation intent', async () => {
+    useUiStore.getState().requestRepoDashboardTab('/repo/path', 'evidence');
+
+    await act(async () => {
+      root.render(
+        React.createElement(RepoDashboard, {
+          repoPath: '/repo/path',
+          workspaceName: 'relay-ide',
+          onNewSession: vi.fn(),
+          onNewWorktree: vi.fn(),
+          onFixConflicts: vi.fn(),
+          onPrAction: vi.fn(),
+          onOpenPrSession: vi.fn(),
+        })
+      );
+    });
+
+    const evidenceTab = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'evidence'
+    );
+    expect(evidenceTab).toBeTruthy();
+    expect(evidenceTab?.classList.contains('tab-btn--active')).toBe(true);
+    expect(container.querySelector('.evidence-dashboard')).toBeTruthy();
+    expect(useUiStore.getState().repoDashboardTabIntent).toBeNull();
+  });
+
+  it('leaves a mismatched repo intent queued and keeps overview active', async () => {
+    const intent = { repoPath: '/repo/b', tab: 'evidence' } as const;
+    useUiStore.getState().requestRepoDashboardTab(intent.repoPath, intent.tab);
+
+    await act(async () => {
+      root.render(
+        React.createElement(RepoDashboard, {
+          repoPath: '/repo/a',
+          workspaceName: 'relay-ide',
+          onNewSession: vi.fn(),
+          onNewWorktree: vi.fn(),
+          onFixConflicts: vi.fn(),
+          onPrAction: vi.fn(),
+          onOpenPrSession: vi.fn(),
+        })
+      );
+    });
+
+    const overviewTab = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'overview'
+    );
+    expect(overviewTab?.classList.contains('tab-btn--active')).toBe(true);
+    expect(container.querySelector('.evidence-dashboard')).toBeNull();
+    expect(useUiStore.getState().repoDashboardTabIntent).toEqual(intent);
   });
 });

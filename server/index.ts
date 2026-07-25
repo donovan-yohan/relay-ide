@@ -9,6 +9,8 @@ import { promisify } from 'node:util';
 
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import { createHealthMonitor } from './health.js';
+import { restoreSessionsAfterListen } from './startup-restore.js';
 
 import {
   loadConfig,
@@ -88,6 +90,7 @@ import {
   initRelayStateDb,
   closeRelayStateDb,
   flushAllPendingWrites as flushRelayStateWrites,
+  setReapProtectedSessionIdsProvider,
 } from './relay-state-db.js';
 import {
   createWorkContextRouter,
@@ -104,6 +107,10 @@ import {
   initAgentPresenceStore,
   type AgentPresenceStore,
 } from './agent-presence-store.js';
+import {
+  initAgentProfileStore,
+  type AgentProfileStore,
+} from './agent-profile-store.js';
 import {
   initInterventionLog,
   closeInterventionLog,
@@ -144,6 +151,7 @@ import {
   getFrameworkAvailability,
   getFrameworkClientInfoWithRuntime,
   getFrameworkWebAvailability,
+  listConfiguredFrameworks,
 } from './frameworks.js';
 import {
   createOpenAiCompatibleCommandCenterIntentProvider,
@@ -227,6 +235,22 @@ import { createPrOverseerRouter } from './features/pr-overseer-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { buildAttentionEventInput } from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
+import {
+  initChannelMessageStore,
+  type ChannelMessageStore,
+} from './channel-message-store.js';
+import {
+  initChannelAttachmentStore,
+  type ChannelAttachmentStore,
+} from './channel-attachments.js';
+import { createChannelHub, type ChannelHub } from './channel-hub.js';
+import { createChannelChatRouter } from './channel-chat-router.js';
+import {
+  createChannelAgentBinder,
+  type ChannelAgentBinder,
+  type MentionTarget,
+} from './channel-agent-binder.js';
+import { v2Adapters } from './protocol-adapters/index.js';
 import {
   initWorkContextArtifactStore,
   type WorkContextArtifactStore,
@@ -722,14 +746,18 @@ export function buildTicketInitialPrompt(
 /**
  * Builds the CLI args array for an agent session based on resolved settings.
  */
-function buildAgentArgs(
+export function buildAgentArgs(
   resolvedAgent: AgentType,
   claudeArgs: string[],
   yolo: boolean,
   continuePolicy: ContinuePolicy | undefined
 ): string[] {
   const baseArgs = [
-    ...claudeArgs,
+    // config.claudeArgs carries Claude-specific flags (e.g. --model, --effort).
+    // Folding them into codex/opencode/hermes spawns makes those CLIs exit with
+    // code 2 within ~1s, killing every non-claude session on hubs with a
+    // non-empty claudeArgs. Gate the flags to the claude agent only.
+    ...(resolvedAgent === 'claude' ? claudeArgs : []),
     ...(yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
   ];
   const useContinue = continuePolicy === 'always';
@@ -836,6 +864,7 @@ function resolveContinuePolicy(
 
 type AgentSessionParams = {
   id?: string;
+  spawnedBySessionId?: string;
   repoName: string;
   repoPath?: string | undefined;
   worktreePath: string | null | undefined;
@@ -866,10 +895,12 @@ type AgentSessionParams = {
 };
 
 type TerminalSessionParams = {
+  spawnedBySessionId?: string;
   repoName: string;
   repoPath?: string | undefined;
   worktreePath: string | null | undefined;
   cwd: string;
+  displayName: string | undefined;
   safeCols: number | undefined;
   safeRows: number | undefined;
   resolvedTerminalBackend: TerminalBackend;
@@ -884,9 +915,15 @@ function createTerminalSessionRecord(
   params: TerminalSessionParams
 ): CreateResult {
   const shell = process.env.SHELL || '/bin/sh';
-  const displayName = sessions.nextTerminalName();
+  const displayName = resolveSessionDisplayName(
+    params.displayName,
+    sessions.nextTerminalName
+  );
   return localRelayNode.sessions.create({
     type: 'terminal',
+    ...(params.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: params.spawnedBySessionId }
+      : {}),
     agent: 'claude' as AgentType,
     repoName: params.repoName,
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),
@@ -911,6 +948,9 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
   const sessionId = params.id ?? crypto.randomBytes(8).toString('hex');
   const session = localRelayNode.sessions.create({
     id: sessionId,
+    ...(params.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: params.spawnedBySessionId }
+      : {}),
     type: 'agent',
     agent: params.resolvedAgent,
     repoName: params.repoName,
@@ -1018,6 +1058,14 @@ export function resolveSessionLaunchPaths(input: {
     cwd,
     settingsAnchorPath: requestedRepoPath ?? cwd,
   };
+}
+
+export function resolveSessionDisplayName(
+  requested: string | undefined,
+  fallback: () => string
+): string {
+  const trimmed = requested?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback();
 }
 
 function devSessionCwdFallback(): string | undefined {
@@ -1200,7 +1248,7 @@ function createHandoffDestinationLauncher(params: {
   startupConfig: Config;
   configDir: string;
   getConfig: () => Config;
-  watchCwd: (cwd: string) => void;
+  watchSessionCwd: (sessionId: string, cwd: string) => void;
 }): (input: HandoffDestinationLaunchInput) => Promise<
   | {
       ok: true;
@@ -1278,18 +1326,21 @@ function createHandoffDestinationLauncher(params: {
           repoPath,
           worktreePath,
           cwd,
+          displayName: undefined,
           safeCols: undefined,
           safeRows: undefined,
           resolvedTerminalBackend: resolvedTerminal.terminalBackend,
           sessionLane: undefined,
           workContextId: undefined,
           portVariables,
+          // Pipeline-handoff destination is spawned by the source session.
+          spawnedBySessionId: input.request.source.sessionId,
         });
         localRelayNode.sessions.write(
           session.id,
           terminalBriefCommand(input.handoffBrief)
         );
-        params.watchCwd(session.cwd);
+        params.watchSessionCwd(session.id, session.cwd);
         return { ok: true, session, acknowledgedBrief: true };
       }
 
@@ -1345,8 +1396,10 @@ function createHandoffDestinationLauncher(params: {
         sessionLane: undefined,
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
+        // Pipeline-handoff destination is spawned by the source session.
+        spawnedBySessionId: input.request.source.sessionId,
       });
-      params.watchCwd(session.cwd);
+      params.watchSessionCwd(session.id, session.cwd);
       return { ok: true, session, acknowledgedBrief: true };
     } catch (err) {
       return {
@@ -1610,6 +1663,34 @@ function presenceActorIdFromRequest(req: express.Request): string | undefined {
   return authenticatedCliGatewayActorCredential(req)?.actor?.id;
 }
 
+/**
+ * Boot the #1233 AgentProfile store and seed one built-in default profile per
+ * CONFIGURED framework, or `null` when init fails (agent-profile identity then
+ * simply has no rows this boot). Seeding is idempotent — safe every startup.
+ * Extracted from `main()` to keep that boot function under the complexity gate.
+ */
+function initAgentProfileStoreBestEffort(
+  configDir: string,
+  config: Config
+): AgentProfileStore | null {
+  try {
+    const store = initAgentProfileStore(configDir);
+    // Enumerate configured frameworks INSIDE the guard: resolveFramework throws
+    // for a malformed fully-custom framework entry (missing command/args/parser/
+    // capabilities) that config loading does not validate. Keeping it here lets
+    // that resolution throw degrade to "no profile rows" instead of escaping the
+    // best-effort guard and crashing hub boot.
+    store.seedBuiltIns(listConfiguredFrameworks(config.frameworks));
+    return store;
+  } catch (err) {
+    logger.warn(
+      'Agent profile store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initWorkflowRunStoreBestEffort(
   configDir: string
 ): WorkflowRunStore | null {
@@ -1692,6 +1773,64 @@ function initWorkContextMessageStoreBestEffort(
     );
     return null;
   }
+}
+
+function initChannelMessageStoreBestEffort(
+  configDir: string
+): ChannelMessageStore | null {
+  try {
+    return initChannelMessageStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Channel message store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
+function initChannelAttachmentStoreBestEffort(
+  configDir: string
+): ChannelAttachmentStore | null {
+  try {
+    return initChannelAttachmentStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Channel attachment store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
+/**
+ * Routable framework targets for @-mention routing (#1167): builtin/configured
+ * frameworks gated on `supportsWebSessions` + web availability, plus `mock` when
+ * `RELAY_MOCK_AGENT=1` (dev/tests). Unavailable frameworks are INCLUDED with
+ * `available:false` so the palette can render them greyed with the reason.
+ */
+async function channelMentionTargets(config: Config): Promise<MentionTarget[]> {
+  const targets: MentionTarget[] = [];
+  for (const framework of listConfiguredFrameworks(config.frameworks)) {
+    const web = await getFrameworkWebAvailability(framework);
+    targets.push({
+      id: framework.id,
+      displayName: framework.displayName,
+      kind: 'framework',
+      available: web.available,
+      reason: web.available ? null : (web.reason ?? null),
+    });
+  }
+  if (process.env['RELAY_MOCK_AGENT'] === '1') {
+    targets.push({
+      id: 'mock',
+      displayName: 'Mock Agent',
+      kind: 'framework',
+      available: true,
+      reason: null,
+    });
+  }
+  return targets;
 }
 
 async function ensureStartupTerminalBackendAvailable(
@@ -1859,6 +1998,7 @@ async function main(): Promise<void> {
   const hubNodeLinks = createHubNodeLinkManager({
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,
     ptyInputRecorder: sessions.recordRoutedPtyInput,
+    releaseRoutedPtyControlSession: sessions.releaseRoutedPtyControlSession,
   });
   const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
   const credentialRotationScheduler = startCredentialRotationScheduler({
@@ -1954,6 +2094,15 @@ async function main(): Promise<void> {
   // roster falls back to the derived projection) rather than failing boot.
   const agentPresenceStore = initAgentPresenceStoreBestEffort(configDir);
 
+  // AgentProfile store (#1233, epic #1232). Own SQLite file (`agent-profiles.db`);
+  // new table only, non-destructive. Seeds one built-in default profile per
+  // configured framework at boot (idempotent). Guarded so a DB error degrades to
+  // "no profile rows" rather than failing boot. NO live-row re-key ships here.
+  const agentProfileStore = initAgentProfileStoreBestEffort(
+    configDir,
+    getConfig()
+  );
+
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
   // degrade to typed 503 when initialization fails so hub startup stays useful.
   const workContextArtifactStore =
@@ -1965,6 +2114,79 @@ async function main(): Promise<void> {
   const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
+  const channelAttachmentStore =
+    initChannelAttachmentStoreBestEffort(configDir);
+  // Channel conversation core (#1165). Own SQLite (`channel-chat.db`); routes and
+  // the /ws/channels lane degrade when init fails — a failed channel store never
+  // takes down the hub or the untouched /ws/:sessionId lane. Boot order: init →
+  // sweep stale streaming → sweep orphans → hub → mount router → wire ws.
+  const channelMessageStore = initChannelMessageStoreBestEffort(configDir);
+  if (channelMessageStore) {
+    try {
+      channelMessageStore.sweepStaleStreaming();
+      if (workspaceTopicStore) {
+        // Enumerate ALL stored topic ids uncapped — NOT via `list()`, which caps
+        // at 200 while the store retains up to 500. Feeding the capped list to
+        // sweepOrphans would delete every channel whose topic ranks beyond the
+        // top-200-by-updated_at (silent, unrecoverable data loss) once >200
+        // topics exist.
+        const persistedTopicIds = new Set(
+          workspaceTopicStore.listAllTopicIds()
+        );
+        channelMessageStore.sweepOrphans(persistedTopicIds);
+      }
+    } catch (err) {
+      logger.warn(
+        'Channel store boot sweep failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  const channelHub: ChannelHub = createChannelHub({
+    store: channelMessageStore,
+    channelExists: (channelId) => Boolean(workspaceTopicStore?.get(channelId)),
+  });
+  // @-mention routing binder (#1167): spawns/reuses (channel, framework) web
+  // sessions on mention and streams replies back through the slice-2 bridge.
+  // Null when the channel store failed to init (routes degrade to 503).
+  const channelAgentBinder: ChannelAgentBinder | null = channelMessageStore
+    ? createChannelAgentBinder({
+        store: channelMessageStore,
+        attachmentStore: channelAttachmentStore,
+        hub: channelHub,
+        topicStore: workspaceTopicStore,
+        sessions: {
+          createWeb: sessions.createWeb,
+          get: sessions.get,
+          onSessionEnd: sessions.onSessionEnd,
+        },
+        knownProviderIds: Object.keys(v2Adapters),
+        mentionTargets: () => channelMentionTargets(getConfig()),
+        port: startupConfig.port,
+        configDir,
+        localNodeId: DEFAULT_LOCAL_NODE_ID,
+      })
+    : null;
+  if (channelAgentBinder) {
+    channelHub.onMessagePosted((message, mentions) =>
+      channelAgentBinder.handleMessagePosted(message, mentions)
+    );
+  }
+
+  // Teach the relay-state-db age-reaper (#1248) which web_sessions must never be
+  // evicted: every session live in the in-memory map (including disconnected-
+  // but-retained ones a channel binding may rebind) plus every session still
+  // referenced by an open channel binding. Without this the reaper could drop a
+  // stale-but-still-wanted session's row and destroy its resume anchor.
+  setReapProtectedSessionIdsProvider(() => {
+    const protectedIds = new Set<string>(sessions.liveSessionIds());
+    if (channelMessageStore) {
+      for (const id of channelMessageStore.listBoundSessionIds()) {
+        protectedIds.add(id);
+      }
+    }
+    return protectedIds;
+  });
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
@@ -2017,6 +2239,8 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+  const healthMonitor = createHealthMonitor();
+  app.get('/healthz', healthMonitor.handler);
 
   function authenticatedBrowserSession(req: express.Request): boolean {
     const token = req.cookies && req.cookies.token;
@@ -2197,6 +2421,7 @@ async function main(): Promise<void> {
       globalSessionIds?: string[];
       workContextIds?: string[];
       repoIds?: string[];
+      pathPrefixes?: string[];
       taskRefs?: string[];
     },
     expectedCommand?: CliGatewayActorCommand,
@@ -2275,6 +2500,7 @@ async function main(): Promise<void> {
             sessionIds?: string[];
             globalSessionIds?: string[];
             repoIds?: string[];
+            pathPrefixes?: string[];
             taskRefs?: string[];
           }
         | undefined;
@@ -2378,6 +2604,261 @@ async function main(): Promise<void> {
     }
     requireCliGatewayAuth(req, res, next);
   };
+
+  type ActorSessionCreateTarget =
+    | {
+        ok: true;
+        path: string;
+        repoId?: string;
+        body: Record<string, unknown>;
+        topic?: WorkspaceTopic;
+      }
+    | {
+        ok: false;
+        reason: 'missing_scope' | 'wrong_path_scope' | 'wrong_repo_scope';
+      };
+
+  const actorSessionCreateTargets = new WeakMap<
+    express.Request,
+    ActorSessionCreateTarget
+  >();
+  const invalidActorSessionCreatePath =
+    '/.relay-invalid-actor-session-create-target';
+
+  function actorSessionCreateTarget(
+    req: express.Request
+  ): ActorSessionCreateTarget {
+    const cached = actorSessionCreateTargets.get(req);
+    if (cached) return cached;
+    const rawBody = isRecord(req.body) ? req.body : {};
+    const validated = validateAndSanitizeLocalGatewayCreateInput(rawBody);
+    if (!validated.ok) {
+      const missing = { ok: false, reason: 'missing_scope' } as const;
+      actorSessionCreateTargets.set(req, missing);
+      return missing;
+    }
+    let body = validated.input;
+    let topic: WorkspaceTopic | undefined;
+    const workspaceTopicId = compactRequestPath(body['workspaceTopicId']);
+    if (workspaceTopicId) {
+      topic = workspaceTopicStore?.get(workspaceTopicId) ?? undefined;
+      if (!topic || topic.status === 'archived') {
+        const missing = { ok: false, reason: 'missing_scope' } as const;
+        actorSessionCreateTargets.set(req, missing);
+        return missing;
+      }
+      body = {
+        ...body,
+        ...buildWorkspaceTopicSessionCreateBody({
+          topic,
+          overrides: body,
+        }),
+        workspaceTopicId: topic.id,
+      };
+    }
+    const requestedRepoPath = compactRequestPath(body['repoPath']);
+    const requestedWorktreePath = compactRequestPath(body['worktreePath']);
+    const requestedCwd = compactRequestPath(body['cwd']);
+    const requestedTarget =
+      requestedWorktreePath ?? requestedCwd ?? requestedRepoPath;
+    if (!requestedTarget) {
+      const missing = { ok: false, reason: 'missing_scope' } as const;
+      actorSessionCreateTargets.set(req, missing);
+      return missing;
+    }
+    let canonicalTarget: string;
+    try {
+      canonicalTarget = fs.realpathSync(requestedTarget);
+    } catch {
+      const wrongPath = { ok: false, reason: 'wrong_path_scope' } as const;
+      actorSessionCreateTargets.set(req, wrongPath);
+      return wrongPath;
+    }
+    if (!requestedRepoPath) {
+      const canonicalBody = { ...body };
+      if (requestedWorktreePath) {
+        canonicalBody['worktreePath'] = canonicalTarget;
+      } else if (requestedCwd) {
+        canonicalBody['cwd'] = canonicalTarget;
+      }
+      const target = {
+        ok: true,
+        path: canonicalTarget,
+        body: canonicalBody,
+        ...(topic ? { topic } : {}),
+      } as const;
+      actorSessionCreateTargets.set(req, target);
+      return target;
+    }
+    try {
+      const canonicalRepoPath = fs.realpathSync(requestedRepoPath);
+      const canonicalBody = {
+        ...body,
+        repoPath: canonicalRepoPath,
+        ...(requestedWorktreePath
+          ? { worktreePath: canonicalTarget }
+          : requestedCwd
+            ? { cwd: canonicalTarget }
+            : {}),
+      };
+      const target = {
+        ok: true,
+        path: canonicalTarget,
+        repoId: canonicalRepoPath,
+        body: canonicalBody,
+        ...(topic ? { topic } : {}),
+      } as const;
+      actorSessionCreateTargets.set(req, target);
+      return target;
+    } catch {
+      const wrongRepo = { ok: false, reason: 'wrong_repo_scope' } as const;
+      actorSessionCreateTargets.set(req, wrongRepo);
+      return wrongRepo;
+    }
+  }
+
+  function actorSessionCreateScopeForRequest(req: express.Request): {
+    repoIds?: string[];
+    pathPrefixes: string[];
+    sessionIds?: string[];
+  } {
+    const target = actorSessionCreateTarget(req);
+    if (!target.ok) {
+      return { pathPrefixes: [invalidActorSessionCreatePath] };
+    }
+    const spawnedBySessionId = compactRequestPath(
+      target.body['spawnedBySessionId']
+    );
+    return {
+      ...(target.repoId ? { repoIds: [target.repoId] } : {}),
+      pathPrefixes: [target.path],
+      ...(spawnedBySessionId ? { sessionIds: [spawnedBySessionId] } : {}),
+    };
+  }
+
+  function pathIsWithin(parent: string, child: string): boolean {
+    const relative = path.relative(parent, child);
+    return (
+      relative === '' ||
+      (!relative.startsWith('..') && !path.isAbsolute(relative))
+    );
+  }
+
+  const requireActorSessionCreatePolicy: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
+    const credential = authenticatedCliGatewayActorCredential(req);
+    if (!credential) {
+      next();
+      return;
+    }
+    const target = actorSessionCreateTarget(req);
+    if (!target.ok) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: target.reason })
+      );
+      return;
+    }
+    const hasAuthorizedPathScope =
+      (credential.scope.pathPrefixes?.length ?? 0) > 0;
+    const hasAuthorizedRepoScope =
+      Boolean(target.repoId) &&
+      (credential.scope.repoIds?.length ?? 0) > 0 &&
+      pathIsWithin(target.repoId!, target.path);
+    if (!hasAuthorizedPathScope && !hasAuthorizedRepoScope) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: 'missing_scope' })
+      );
+      return;
+    }
+    const body = target.body;
+    if (body['type'] === 'terminal') {
+      res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_SESSION_TYPE_UNSUPPORTED',
+          message:
+            'scoped CLI actors may create agent worker sessions only; terminal creation requires the browser lane',
+          retryable: false,
+          lane: 'denied',
+          acceptedLanes: ['scoped-actor-credential'],
+        },
+      });
+      return;
+    }
+    const credentialSessionId = credential.scope.sessionIds?.[0];
+    const requestedParent =
+      typeof body['spawnedBySessionId'] === 'string'
+        ? body['spawnedBySessionId']
+        : undefined;
+    if (
+      credentialSessionId &&
+      requestedParent &&
+      requestedParent !== credentialSessionId
+    ) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ reason: 'wrong_session_scope' })
+      );
+      return;
+    }
+    if (credentialSessionId) {
+      body['spawnedBySessionId'] = credentialSessionId;
+      if (isRecord(req.body)) {
+        req.body['spawnedBySessionId'] = credentialSessionId;
+      }
+    } else {
+      // A caller-provided lineage id is identity-like attribution. Without a
+      // credential-bound session id it is unverified, so omit it fail-closed.
+      delete body['spawnedBySessionId'];
+      if (isRecord(req.body)) {
+        delete req.body['spawnedBySessionId'];
+      }
+    }
+    next();
+  };
+
+  function actorSessionCreateControlState(
+    req: express.Request,
+    workerId: string,
+    workerDisplayName: string
+  ): ReturnType<typeof createAgentDrivenInitialControlState> {
+    const credential = authenticatedCliGatewayActorCredential(req);
+    if (!credential) {
+      throw new Error(
+        'actor session control state requires an authenticated actor credential'
+      );
+    }
+    const workerState = createAgentDrivenInitialControlState({
+      workerId,
+      displayName: workerDisplayName,
+    });
+    const owner = {
+      kind: 'agent' as const,
+      id: `agent:${credential.actor.id}`,
+      ...(credential.actor.displayName
+        ? { displayName: credential.actor.displayName }
+        : {}),
+      ...(credential.scope.nodeIds?.[0]
+        ? { nodeId: credential.scope.nodeIds[0] }
+        : {}),
+      ...(credential.scope.sessionIds?.[0]
+        ? { sessionId: credential.scope.sessionIds[0] }
+        : {}),
+    };
+    return {
+      ...workerState,
+      activeActors: [...workerState.activeActors, owner],
+      // activeWorker remains the spawned worker. The authenticated orchestrator
+      // is an additional controlling actor, never a body-supplied replacement.
+      activeWorker: workerState.activeWorker,
+      controlReason: 'scoped-actor-spawned-agent-worker',
+    };
+  }
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
@@ -2591,6 +3072,9 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       renewLocalSession: localRelayNode.sessions.renew,
+      releaseRoutedPtyControlSession: sessions.releaseRoutedPtyControlSession,
+      releaseRoutedPtyControlSessionsForNode:
+        sessions.releaseRoutedPtyControlSessionsForNode,
       workContextStore,
       readModelCache: remoteSessionReadModelCache,
       sourceDiagnostics: {
@@ -2661,6 +3145,22 @@ async function main(): Promise<void> {
       surfaceStore: workspaceSurfaceStore,
       workContextStore,
       getConfig,
+      requireAuth: requireCliGatewayAuth,
+      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+    })
+  );
+  // channel conversation core (#1165): channels.* verbs over channel-chat.db.
+  // Topic CRUD stays on the workspace-topics routes above; channels are a read/
+  // write conversation surface keyed by workspace_topics id. Single write path.
+  app.use(
+    createChannelChatRouter({
+      store: channelMessageStore,
+      attachmentStore: channelAttachmentStore,
+      hub: channelHub,
+      topicStore: workspaceTopicStore,
+      binder: channelAgentBinder,
+      knownProviderIds: Object.keys(v2Adapters),
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
@@ -3117,7 +3617,12 @@ async function main(): Promise<void> {
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
 
+  // GitWatcher owns one refcounted cwd watch per session id. Central session-end
+  // cleanup is safe even though PTY explicit kill can fire session-end twice:
+  // unwatchSession(id) consumes that session's ownership once and subsequent
+  // notifications are no-ops, without decrementing another session at the cwd.
   const gitWatcher = new GitWatcher();
+  sessions.onSessionEnd((sessionId) => gitWatcher.unwatchSession(sessionId));
 
   const server = http.createServer(app);
   const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(
@@ -3131,8 +3636,12 @@ async function main(): Promise<void> {
     hubNodeLinks,
     sessionEnvelopeRegistry,
     securityAuditLog,
-    { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' }
+    { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' },
+    channelHub
   );
+  // Coarse per-agent status rides the existing /ws/events lane (#1167 §6),
+  // mirroring the sidebar-badge broadcaster pattern.
+  channelAgentBinder?.setStatusBroadcaster(broadcastEvent);
 
   const browserScopedToken = generateScopedToken();
   process.env['RELAY_IDE_BROWSER'] = '1';
@@ -3438,7 +3947,8 @@ async function main(): Promise<void> {
         startupConfig,
         configDir,
         getConfig,
-        watchCwd: (cwd) => gitWatcher.watch(cwd),
+        watchSessionCwd: (sessionId, cwd) =>
+          gitWatcher.watchSession(sessionId, cwd),
       }),
     })
   );
@@ -3877,20 +4387,6 @@ async function main(): Promise<void> {
     res.json(result);
   });
 
-  // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(
-    configDir,
-    getConfig().repos ?? [],
-    getConfig().frameworks
-  );
-  if (restoredCount > 0) {
-    logger.info(`Restored ${restoredCount} session(s) from previous update.`);
-    // Start git watching for restored sessions
-    for (const session of localRelayNode.sessions.list()) {
-      gitWatcher.watch(session.cwd);
-    }
-  }
-
   startTelemetry({
     getActiveSessions: sessions.list,
     broadcastEvent,
@@ -3904,7 +4400,7 @@ async function main(): Promise<void> {
   // Periodic rate limit snapshot recording (every 5 minutes)
   let lastRateLimitSnapshot = 0;
   const RATE_LIMIT_SNAPSHOT_INTERVAL = 5 * 60 * 1000;
-  setInterval(() => {
+  const rateLimitSnapshotTimer = setInterval(() => {
     const now = Date.now();
     if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
     const account = Object.values(getAccountTelemetry())
@@ -3924,9 +4420,10 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     });
   }, 60_000);
+  rateLimitSnapshotTimer.unref();
 
   // Schedule daily retention cleanup
-  setInterval(
+  const retentionCleanupTimer = setInterval(
     () => {
       try {
         runRetentionCleanup();
@@ -3936,6 +4433,7 @@ async function main(): Promise<void> {
     },
     24 * 60 * 60 * 1000
   );
+  retentionCleanupTimer.unref();
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});
@@ -3968,10 +4466,14 @@ async function main(): Promise<void> {
           cwd: opts.worktreePath,
           branchName: opts.branchName,
           displayName,
-          args: [
-            ...resolved.claudeArgs,
-            ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : []),
-          ],
+          // Route through buildAgentArgs so the claudeArgs leak gate applies to
+          // auto-checkout review sessions too (fresh session, continue: never).
+          args: buildAgentArgs(
+            resolved.agent,
+            resolved.claudeArgs,
+            resolved.yolo,
+            undefined
+          ),
           configPath: CONFIG_PATH,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,
@@ -5190,264 +5692,181 @@ async function main(): Promise<void> {
     res.json({ ok: true, branchDeleted });
   });
 
-  function resolveSessionDisplayName(
-    requested: string | undefined,
-    fallback: () => string
-  ): string {
-    const trimmed = requested?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : fallback();
-  }
-
   // POST /sessions — unified endpoint for agent and terminal sessions
-  app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
-    const requestedCreateBody = sessionCreateBodyFromRequest(req, res);
-    if (!requestedCreateBody) return;
-    const topicCreate = resolveWorkspaceTopicSessionCreate(
-      requestedCreateBody,
-      res
-    );
-    if (!topicCreate) return;
-    const createBody = topicCreate.body;
-    const workspaceTopic = topicCreate.topic;
-    const {
-      repoPath,
-      worktreePath,
-      cwd: requestCwd,
-      type = 'agent',
-      mode,
-      agent,
-      yolo,
-      terminalBackend,
-      claudeArgs,
-      cols,
-      rows,
-      branchName: requestBranchName,
-      displayName: requestedDisplayName,
-      needsBranchRename,
-      newWorktree,
-      branchRenamePrompt,
-      initialPrompt,
-      continue: explicitContinue,
-      continuePolicy: explicitContinuePolicy,
-      sessionLane,
-      ticketContext,
-      workContextId,
-      envOverrides: rawEnvOverrides,
-    } = createBody as {
-      repoPath?: string;
-      worktreePath?: string | null;
-      cwd?: string;
-      type?: 'agent' | 'terminal';
-      mode?: 'pty' | 'web';
-      agent?: AgentType;
-      yolo?: boolean;
-      terminalBackend?: TerminalBackend;
-      claudeArgs?: string[];
-      cols?: number;
-      rows?: number;
-      branchName?: string;
-      displayName?: string;
-      needsBranchRename?: boolean;
-      newWorktree?: boolean;
-      branchRenamePrompt?: string;
-      initialPrompt?: string;
-      continue?: boolean;
-      continuePolicy?: ContinuePolicy;
-      sessionLane?: SessionLane;
-      workContextId?: string;
-      envOverrides?: unknown;
-      ticketContext?: {
-        ticketId: string;
-        title: string;
-        description?: string;
-        url: string;
-        source: 'github' | 'jira';
-        repoPath: string;
-        repoName: string;
+  const requireCliGatewaySessionCreateAuth =
+    requireCliGatewayAuthForActorCommand('sessions.create', {
+      scopeForRequest: actorSessionCreateScopeForRequest,
+    });
+  app.post(
+    '/sessions',
+    requireCliGatewaySessionCreateAuth,
+    requireActorSessionCreatePolicy,
+    async (req, res) => {
+      const actorTarget = authenticatedCliGatewayActorCredential(req)
+        ? actorSessionCreateTarget(req)
+        : undefined;
+      const requestedCreateBody =
+        actorTarget?.ok === true
+          ? actorTarget.body
+          : sessionCreateBodyFromRequest(req, res);
+      if (!requestedCreateBody) return;
+      const topicCreate =
+        actorTarget?.ok === true
+          ? {
+              body: actorTarget.body,
+              ...(actorTarget.topic ? { topic: actorTarget.topic } : {}),
+            }
+          : resolveWorkspaceTopicSessionCreate(requestedCreateBody, res);
+      if (!topicCreate) return;
+      const createBody = topicCreate.body;
+      const workspaceTopic = topicCreate.topic;
+      const {
+        repoPath,
+        worktreePath,
+        cwd: requestCwd,
+        type = 'agent',
+        mode,
+        agent,
+        yolo,
+        terminalBackend,
+        claudeArgs,
+        cols,
+        rows,
+        branchName: requestBranchName,
+        displayName: requestedDisplayName,
+        spawnedBySessionId,
+        needsBranchRename,
+        newWorktree,
+        branchRenamePrompt,
+        initialPrompt,
+        continue: explicitContinue,
+        continuePolicy: explicitContinuePolicy,
+        sessionLane,
+        ticketContext,
+        workContextId,
+        envOverrides: rawEnvOverrides,
+      } = createBody as {
+        repoPath?: string;
+        worktreePath?: string | null;
+        cwd?: string;
+        type?: 'agent' | 'terminal';
+        mode?: 'pty' | 'web';
+        agent?: AgentType;
+        yolo?: boolean;
+        terminalBackend?: TerminalBackend;
+        claudeArgs?: string[];
+        cols?: number;
+        rows?: number;
+        branchName?: string;
+        displayName?: string;
+        spawnedBySessionId?: string;
+        needsBranchRename?: boolean;
+        newWorktree?: boolean;
+        branchRenamePrompt?: string;
+        initialPrompt?: string;
+        continue?: boolean;
+        continuePolicy?: ContinuePolicy;
+        sessionLane?: SessionLane;
+        workContextId?: string;
+        envOverrides?: unknown;
+        ticketContext?: {
+          ticketId: string;
+          title: string;
+          description?: string;
+          url: string;
+          source: 'github' | 'jira';
+          repoPath: string;
+          repoName: string;
+        };
       };
-    };
 
-    // Read config once for the lifetime of this request
-    const freshConfig = getConfig();
-    const requestedTerminalBackend = normalizeTerminalBackend(terminalBackend);
+      // Read config once for the lifetime of this request
+      const freshConfig = getConfig();
+      const requestedTerminalBackend =
+        normalizeTerminalBackend(terminalBackend);
 
-    // #740: Bench-inherited env overrides (sanitized to string->string). The
-    // PTY layer applies these additively and refuses reserved keys.
-    const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
+      // #740: Bench-inherited env overrides (sanitized to string->string). The
+      // PTY layer applies these additively and refuses reserved keys.
+      const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
 
-    const {
-      requestedRepoPath,
-      requestedWorktreePath,
-      cwd,
-      settingsAnchorPath,
-    } = resolveSessionLaunchPaths({
-      repoPath,
-      worktreePath,
-      cwd: requestCwd,
-      config: freshConfig,
-      devCwdFallback: devSessionCwdFallback(),
-    });
-
-    if (
-      !validateSessionCreateRequest(
+      const {
         requestedRepoPath,
+        requestedWorktreePath,
         cwd,
-        type,
-        freshConfig,
-        workContextStore,
-        workContextId,
-        res
-      )
-    ) {
-      return;
-    }
-
-    // Validate cwd directory exists
-    if (!fs.existsSync(cwd)) {
-      res.status(400).json({ error: `Directory does not exist: ${cwd}` });
-      return;
-    }
-
-    const safeCols = clampDimension(cols, 1, 500);
-    const safeRows = clampDimension(rows, 1, 200);
-
-    const name = sessionNameFromRepoPath(settingsAnchorPath);
-    const portVariables = getRepoPortVariables(freshConfig, settingsAnchorPath);
-    const capacityResponse = buildPtyCapacityResponse(
-      activePtySessionCount(),
-      freshConfig.maxPtySessions
-    );
-    if (sendPtyCapacityError(res, capacityResponse)) return;
-
-    if (type === 'terminal') {
-      const terminalSettings = resolveSessionSettings(
-        freshConfig,
         settingsAnchorPath,
-        {
-          terminalBackend: requestedTerminalBackend,
-        }
-      );
-      // Terminal session — bare shell
-      let session: CreateResult;
-      try {
-        session = createTerminalSessionRecord({
-          repoName: name,
-          repoPath: requestedRepoPath,
-          worktreePath: requestedWorktreePath ?? null,
+      } = resolveSessionLaunchPaths({
+        repoPath,
+        worktreePath,
+        cwd: requestCwd,
+        config: freshConfig,
+        devCwdFallback: devSessionCwdFallback(),
+      });
+
+      if (
+        !validateSessionCreateRequest(
+          requestedRepoPath,
           cwd,
-          safeCols,
-          safeRows,
-          resolvedTerminalBackend: terminalSettings.terminalBackend,
-          sessionLane,
+          type,
+          freshConfig,
+          workContextStore,
           workContextId,
-          portVariables,
-          envOverrides: sessionEnvOverrides,
-        });
-      } catch (err) {
-        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+          res
+        )
+      ) {
         return;
       }
-      gitWatcher.watch(session.cwd);
-      const associationError = associateSessionWithWorkContext(
-        workContextStore,
-        workContextId,
-        session
-      );
-      linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-      sendSessionCreateSuccess(res, session, associationError, workContextId);
-      return;
-    }
 
-    // Resolve continue policy (handles legacy boolean continue + new worktree override)
-    const effectivePolicy = resolveContinuePolicy(
-      explicitContinuePolicy,
-      explicitContinue,
-      needsBranchRename,
-      newWorktree ?? false
-    );
-
-    const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
-      agent,
-      yolo,
-      terminalBackend: requestedTerminalBackend,
-      claudeArgs,
-      continuePolicy: effectivePolicy,
-    });
-    const resolvedAgent = resolved.agent;
-    const frameworkAvailability = validateAgentFrameworkAvailable(
-      freshConfig,
-      resolvedAgent
-    );
-    if (!frameworkAvailability.ok) {
-      res.status(400).json(frameworkAvailability.body);
-      return;
-    }
-
-    // Ticket context validation and initial prompt. Hoisted above the
-    // web/pty mode branch (#1062) so a Hermes web-mode session launched from
-    // a ticket gets the same validation + computed prompt as the PTY path,
-    // instead of the web branch returning early with neither.
-    let computedInitialPrompt: string | undefined = initialPrompt;
-    if (ticketContext) {
-      const ticketErr = validateTicketContext(
-        ticketContext,
-        freshConfig.repos ?? []
-      );
-      if (ticketErr) {
-        res.status(400).json({ error: ticketErr });
+      // Validate cwd directory exists
+      if (!fs.existsSync(cwd)) {
+        res.status(400).json({ error: `Directory does not exist: ${cwd}` });
         return;
       }
-      const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
-      computedInitialPrompt = buildTicketInitialPrompt(
-        ticketContext,
-        repoSettings
-      );
-    }
 
-    // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
-    // Hermes remains web by default for backwards compatibility with the
-    // original native-Hermes launch path.
-    const requestedMode = mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
-    if (requestedMode === 'web') {
-      const webAvailability = await validateAgentWebRuntimeAvailable(
+      const safeCols = clampDimension(cols, 1, 500);
+      const safeRows = clampDimension(rows, 1, 200);
+
+      const name = sessionNameFromRepoPath(settingsAnchorPath);
+      const portVariables = getRepoPortVariables(
         freshConfig,
-        resolvedAgent
+        settingsAnchorPath
       );
-      if (!webAvailability.ok) {
-        res.status(400).json(webAvailability.body);
-        return;
-      }
-      const displayName = resolveSessionDisplayName(
-        requestedDisplayName,
-        sessions.nextAgentName
+      const capacityResponse = buildPtyCapacityResponse(
+        activePtySessionCount(),
+        freshConfig.maxPtySessions
       );
-      try {
-        const { session } = await localRelayNode.sessions.createWeb({
-          agentType: resolvedAgent,
-          cwd,
-          repoPath: requestedRepoPath,
-          repoName: name,
-          worktreePath: requestedWorktreePath ?? null,
-          branchName: requestBranchName ?? '',
-          displayName,
-          port: startupConfig.port,
-          configDir,
-          sessionLane,
-          ...buildHermesCreateExtra(resolvedAgent, {
-            workspaceTopic,
+      if (sendPtyCapacityError(res, capacityResponse)) return;
+
+      if (type === 'terminal') {
+        const terminalSettings = resolveSessionSettings(
+          freshConfig,
+          settingsAnchorPath,
+          {
+            terminalBackend: requestedTerminalBackend,
+          }
+        );
+        // Terminal session — bare shell
+        let session: CreateResult;
+        try {
+          session = createTerminalSessionRecord({
+            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
+            repoName: name,
             repoPath: requestedRepoPath,
-            worktreePath: requestedWorktreePath,
-            branchName: requestBranchName,
-            // Local hub is itself a node (server/local-node.ts); this call
-            // site only ever creates sessions on the local node today, so
-            // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
-            // revisit once /sessions can target a federated node directly.
-            nodeId: DEFAULT_LOCAL_NODE_ID,
-            ticketContext,
-            initialPrompt: computedInitialPrompt,
-          }),
-        });
-        gitWatcher.watch(session.cwd);
+            worktreePath: requestedWorktreePath ?? null,
+            cwd,
+            displayName: requestedDisplayName,
+            safeCols,
+            safeRows,
+            resolvedTerminalBackend: terminalSettings.terminalBackend,
+            sessionLane,
+            workContextId,
+            portVariables,
+            envOverrides: sessionEnvOverrides,
+          });
+        } catch (err) {
+          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+          return;
+        }
+        gitWatcher.watchSession(session.id, session.cwd);
         const associationError = associateSessionWithWorkContext(
           workContextStore,
           workContextId,
@@ -5455,74 +5874,209 @@ async function main(): Promise<void> {
         );
         linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
         sendSessionCreateSuccess(res, session, associationError, workContextId);
+        return;
+      }
+
+      // Resolve continue policy (handles legacy boolean continue + new worktree override)
+      const effectivePolicy = resolveContinuePolicy(
+        explicitContinuePolicy,
+        explicitContinue,
+        needsBranchRename,
+        newWorktree ?? false
+      );
+
+      const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
+        agent,
+        yolo,
+        terminalBackend: requestedTerminalBackend,
+        claudeArgs,
+        continuePolicy: effectivePolicy,
+      });
+      const resolvedAgent = resolved.agent;
+      const frameworkAvailability = validateAgentFrameworkAvailable(
+        freshConfig,
+        resolvedAgent
+      );
+      if (!frameworkAvailability.ok) {
+        res.status(400).json(frameworkAvailability.body);
+        return;
+      }
+
+      // Ticket context validation and initial prompt. Hoisted above the
+      // web/pty mode branch (#1062) so a Hermes web-mode session launched from
+      // a ticket gets the same validation + computed prompt as the PTY path,
+      // instead of the web branch returning early with neither.
+      let computedInitialPrompt: string | undefined = initialPrompt;
+      if (ticketContext) {
+        const ticketErr = validateTicketContext(
+          ticketContext,
+          freshConfig.repos ?? []
+        );
+        if (ticketErr) {
+          res.status(400).json({ error: ticketErr });
+          return;
+        }
+        const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
+        computedInitialPrompt = buildTicketInitialPrompt(
+          ticketContext,
+          repoSettings
+        );
+      }
+
+      // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
+      // Hermes remains web by default for backwards compatibility with the
+      // original native-Hermes launch path.
+      const requestedMode =
+        mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
+      if (requestedMode === 'web') {
+        const webAvailability = await validateAgentWebRuntimeAvailable(
+          freshConfig,
+          resolvedAgent
+        );
+        if (!webAvailability.ok) {
+          res.status(400).json(webAvailability.body);
+          return;
+        }
+        const displayName = resolveSessionDisplayName(
+          requestedDisplayName,
+          sessions.nextAgentName
+        );
+        const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
+          ? crypto.randomBytes(8).toString('hex')
+          : undefined;
+        try {
+          const { session } = await localRelayNode.sessions.createWeb({
+            ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
+            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
+            agentType: resolvedAgent,
+            cwd,
+            repoPath: requestedRepoPath,
+            repoName: name,
+            worktreePath: requestedWorktreePath ?? null,
+            branchName: requestBranchName ?? '',
+            displayName,
+            port: startupConfig.port,
+            configDir,
+            sessionLane,
+            ...(actorWorkerSessionId
+              ? {
+                  controlState: actorSessionCreateControlState(
+                    req,
+                    actorWorkerSessionId,
+                    displayName
+                  ),
+                }
+              : {}),
+            ...buildHermesCreateExtra(resolvedAgent, {
+              workspaceTopic,
+              repoPath: requestedRepoPath,
+              worktreePath: requestedWorktreePath,
+              branchName: requestBranchName,
+              // Local hub is itself a node (server/local-node.ts); this call
+              // site only ever creates sessions on the local node today, so
+              // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
+              // revisit once /sessions can target a federated node directly.
+              nodeId: DEFAULT_LOCAL_NODE_ID,
+              ticketContext,
+              initialPrompt: computedInitialPrompt,
+            }),
+          });
+          gitWatcher.watchSession(session.id, session.cwd);
+          const associationError = associateSessionWithWorkContext(
+            workContextStore,
+            workContextId,
+            session
+          );
+          linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
+          sendSessionCreateSuccess(
+            res,
+            session,
+            associationError,
+            workContextId
+          );
+        } catch (err) {
+          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        }
+        return;
+      }
+
+      const args = buildAgentArgs(
+        resolvedAgent,
+        resolved.claudeArgs,
+        resolved.yolo,
+        resolved.continuePolicy
+      );
+
+      const displayName = resolveSessionDisplayName(
+        requestedDisplayName,
+        sessions.nextAgentName
+      );
+      const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
+        ? crypto.randomBytes(8).toString('hex')
+        : undefined;
+
+      let session: CreateResult;
+      try {
+        session = createAgentSessionRecord({
+          ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
+          ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
+          repoName: name,
+          repoPath: requestedRepoPath,
+          worktreePath: requestedWorktreePath,
+          cwd,
+          requestBranchName,
+          displayName,
+          args,
+          resolvedAgent,
+          resolvedTerminalBackend: resolved.terminalBackend,
+          resolvedYolo: resolved.yolo,
+          resolvedClaudeArgs: resolved.claudeArgs,
+          resolvedContinuePolicy: resolved.continuePolicy,
+          safeCols,
+          safeRows,
+          needsBranchRename: needsBranchRename ?? false,
+          branchRenamePrompt: branchRenamePrompt ?? '',
+          computedInitialPrompt,
+          claudeFullscreen: freshConfig.claudeFullscreen,
+          sessionLane,
+          workContextId,
+          ...(actorWorkerSessionId
+            ? {
+                controlState: actorSessionCreateControlState(
+                  req,
+                  actorWorkerSessionId,
+                  displayName
+                ),
+              }
+            : {}),
+          portVariables,
+          scrollbackBytes: resolved.scrollbackBytes,
+          envOverrides: sessionEnvOverrides,
+        });
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        return;
       }
-      return;
-    }
 
-    const args = buildAgentArgs(
-      resolvedAgent,
-      resolved.claudeArgs,
-      resolved.yolo,
-      resolved.continuePolicy
-    );
+      gitWatcher.watchSession(session.id, session.cwd);
 
-    const displayName = resolveSessionDisplayName(
-      requestedDisplayName,
-      sessions.nextAgentName
-    );
+      if (ticketContext) {
+        transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
+          logger.error('[index] transition on session create failed:', err);
+        });
+      }
 
-    let session: CreateResult;
-    try {
-      session = createAgentSessionRecord({
-        repoName: name,
-        repoPath: requestedRepoPath,
-        worktreePath: requestedWorktreePath,
-        cwd,
-        requestBranchName,
-        displayName,
-        args,
-        resolvedAgent,
-        resolvedTerminalBackend: resolved.terminalBackend,
-        resolvedYolo: resolved.yolo,
-        resolvedClaudeArgs: resolved.claudeArgs,
-        resolvedContinuePolicy: resolved.continuePolicy,
-        safeCols,
-        safeRows,
-        needsBranchRename: needsBranchRename ?? false,
-        branchRenamePrompt: branchRenamePrompt ?? '',
-        computedInitialPrompt,
-        claudeFullscreen: freshConfig.claudeFullscreen,
-        sessionLane,
+      const associationError = associateSessionWithWorkContext(
+        workContextStore,
         workContextId,
-        portVariables,
-        scrollbackBytes: resolved.scrollbackBytes,
-        envOverrides: sessionEnvOverrides,
-      });
-    } catch (err) {
-      sendSessionCreateError(res, err, freshConfig.maxPtySessions);
-      return;
+        session
+      );
+
+      linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
+
+      sendSessionCreateSuccess(res, session, associationError, workContextId);
     }
-
-    gitWatcher.watch(session.cwd);
-
-    if (ticketContext) {
-      transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
-        logger.error('[index] transition on session create failed:', err);
-      });
-    }
-
-    const associationError = associateSessionWithWorkContext(
-      workContextStore,
-      workContextId,
-      session
-    );
-
-    linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-
-    sendSessionCreateSuccess(res, session, associationError, workContextId);
-  });
+  );
 
   // DELETE /sessions/:id
   app.delete('/sessions/:id', requireAuth, (req, res) => {
@@ -5537,10 +6091,8 @@ async function main(): Promise<void> {
     }
     const id = req.params['id'] as string;
     try {
-      const sessionToDelete = localRelayNode.sessions.get(id);
       localRelayNode.sessions.kill(id);
       push.removeSession(id);
-      if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
       res.json({ ok: true, id, sessionId: id, killed: true });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
@@ -5760,6 +6312,7 @@ async function main(): Promise<void> {
         iaStore?.close();
         contextPacketStore?.close();
         agentPresenceStore?.close();
+        agentProfileStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         automationRunStore?.close();
@@ -5767,6 +6320,10 @@ async function main(): Promise<void> {
         workspaceTopicStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
+        channelAgentBinder?.close();
+        channelHub.close();
+        channelMessageStore?.close();
+        channelAttachmentStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -5817,21 +6374,32 @@ async function main(): Promise<void> {
 
   // Clean expired browser content tokens every hour
   const BROWSER_TOKEN_TTL = 24 * 60 * 60 * 1000;
-  setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);
+  const browserTokenCleanupTimer = setInterval(
+    () => cleanExpiredTokens(BROWSER_TOKEN_TTL),
+    60 * 60 * 1000
+  );
+  browserTokenCleanupTimer.unref();
 
   const devInstance =
     process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
     process.env.RELAY_IDE_SELF_HOST === '1';
+  let cancelStartupRestore = (): void => {};
   async function gracefulShutdown() {
+    cancelStartupRestore();
+    sessions.cancelBackgroundRestores();
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
     stopEventBatching();
     stopTelemetry();
     closeAnalytics();
+    healthMonitor.stop();
     branchWatcher.close();
     refWatcher.close();
     gitWatcher.close();
+    clearInterval(rateLimitSnapshotTimer);
+    clearInterval(retentionCleanupTimer);
+    clearInterval(browserTokenCleanupTimer);
     server.close();
     credentialRotationScheduler?.stop();
     await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
@@ -5844,6 +6412,7 @@ async function main(): Promise<void> {
     iaStore?.close();
     contextPacketStore?.close();
     agentPresenceStore?.close();
+    agentProfileStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     automationRunStore?.close();
@@ -5851,6 +6420,10 @@ async function main(): Promise<void> {
     workspaceTopicStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
+    channelAgentBinder?.close();
+    channelHub.close();
+    channelMessageStore?.close();
+    channelAttachmentStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
@@ -5868,6 +6441,55 @@ async function main(): Promise<void> {
   // previous process hasn't released the port yet (launchd KeepAlive restarts).
   const MAX_RETRIES = 5;
   let attempt = 0;
+
+  const configuredReattachTimeoutMs = positiveIntegerEnv(
+    'RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS'
+  );
+  // Integration-test-only ordering seam. Normal startup never sleeps: the
+  // hold is accepted only under NODE_ENV=test and defaults to zero. Keeping it
+  // inside the exact function handed to restoreSessionsAfterListen means the
+  // real-process regression fails if this function is moved/awaited before
+  // server.listen().
+  const testStartupRestoreHoldMs =
+    process.env['NODE_ENV'] === 'test'
+      ? (positiveIntegerEnv('RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS') ?? 0)
+      : 0;
+  async function restoreStartupSessions(): Promise<number> {
+    if (testStartupRestoreHoldMs > 0) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, testStartupRestoreHoldMs)
+      );
+    }
+    return restoreFromDisk(
+      configDir,
+      getConfig().repos ?? [],
+      getConfig().frameworks,
+      configuredReattachTimeoutMs === undefined
+        ? undefined
+        : { webSessionReattachTimeoutMs: configuredReattachTimeoutMs }
+    );
+  }
+  cancelStartupRestore = restoreSessionsAfterListen(
+    server,
+    restoreStartupSessions,
+    {
+      restored: (restoredCount) => {
+        if (restoredCount === 0) return;
+        logger.info(
+          `Restored ${restoredCount} session(s) from previous update.`
+        );
+        for (const session of localRelayNode.sessions.list()) {
+          gitWatcher.watchSession(session.id, session.cwd);
+        }
+      },
+      failed: (err) => {
+        logger.error(
+          'Background session restore failed:',
+          err instanceof Error ? err.message : String(err)
+        );
+      },
+    }
+  );
   function tryListen() {
     server.listen(startupConfig.port, startupConfig.host, () => {
       const addr = server.address() as import('node:net').AddressInfo;
@@ -5887,6 +6509,17 @@ async function main(): Promise<void> {
     }
   });
   tryListen();
+}
+
+function positiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn(`Ignoring ${name}: expected a positive integer number of ms.`);
+    return undefined;
+  }
+  return parsed;
 }
 
 main().catch((err) => {

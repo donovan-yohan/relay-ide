@@ -1,10 +1,17 @@
-import { test, expect } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { hashPin } from '../server/auth.js';
+import {
+  closeRelayStateDb,
+  initRelayStateDb,
+  upsertWebSessionNow,
+} from '../server/relay-state-db.js';
+import type { SessionSummary, WebSession } from '../server/types.js';
+import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
@@ -16,6 +23,11 @@ const SERVER_SCRIPT = path.resolve(
   'dist',
   'server',
   'index.js'
+);
+const HANGING_CODEX_APP_SERVER = path.resolve(
+  import.meta.dirname,
+  'fixtures',
+  'hanging-codex-app-server.mjs'
 );
 
 if (!fs.existsSync(SERVER_SCRIPT)) {
@@ -84,6 +96,100 @@ function startServer(opts: StartServerOpts): ChildProcess {
   });
 }
 
+function captureOutput(child: ChildProcess): {
+  stdout(): string;
+  stderr(): string;
+} {
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  return {
+    stdout: () => stdout,
+    stderr: () => stderr,
+  };
+}
+
+function seedHangingCodexSession(configDir: string): void {
+  const id = 'startup-hanging-codex';
+  const now = new Date().toISOString();
+  const session = {
+    mode: 'web',
+    id,
+    type: 'agent',
+    agent: 'codex',
+    cwd: configDir,
+    displayName: 'Restored hanging Codex',
+    createdAt: now,
+    lastActivity: now,
+    idle: true,
+    customCommand: null,
+    status: 'active',
+    needsBranchRename: false,
+    agentState: 'idle',
+    adapterV2: {
+      disconnect: async () => {},
+    },
+    adapterType: 'codex',
+    agentSessionV2: emptyAgentSessionV2({
+      id,
+      provider: 'codex',
+      cwd: configDir,
+      capabilities: { resume: true },
+      providerSession: { threadId: 'thread-that-never-reattaches' },
+      config: {
+        providerOptions: {
+          command: process.execPath,
+          args: [HANGING_CODEX_APP_SERVER],
+        },
+      },
+    }),
+    agentPatchesV2: [],
+    protocolVersion: 2,
+    currentTurnId: null,
+    runtimeOwnership: 'spawned',
+    hookToken: 'startup-hanging-codex-hook',
+    hooksActive: true,
+  } as unknown as WebSession;
+
+  initRelayStateDb(configDir);
+  try {
+    upsertWebSessionNow(session);
+  } finally {
+    closeRelayStateDb();
+  }
+}
+
+async function waitForRestoredSession(
+  baseUrl: string,
+  cookie: string,
+  predicate: (session: SessionSummary) => boolean,
+  timeoutMs = 5_000
+): Promise<SessionSummary> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const response = await fetch(`${baseUrl}/sessions`, {
+      headers: { cookie },
+    });
+    if (response.ok) {
+      const sessions = (await response.json()) as SessionSummary[];
+      const session = sessions.find(
+        (candidate) =>
+          candidate.id === 'startup-hanging-codex' && predicate(candidate)
+      );
+      if (session) return session;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(
+    'restored hanging Codex session did not reach expected state'
+  );
+}
+
 function cookieFromSetCookie(headers: Headers): string {
   const raw = headers.get('set-cookie');
   if (!raw) throw new Error('expected set-cookie header');
@@ -100,7 +206,10 @@ async function expectJsonStatus<T>(
   return body;
 }
 
-async function rawUpgradeStatus(port: number, pathName: string): Promise<number> {
+async function rawUpgradeStatus(
+  port: number,
+  pathName: string
+): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
       socket.write(
@@ -160,11 +269,109 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
   try {
     const port = await waitForListeningPort(child);
 
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'ok',
+      lagMs: expect.any(Number),
+      rss: expect.any(Number),
+    });
+
     // Hit GET /auth/status — should work without auth
     const res = await fetch(`http://127.0.0.1:${port}/auth/status`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { hasPIN: boolean };
     expect(body.hasPIN).toBe(false);
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('real server listens before a hanging serialized-session restore', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-listen-before-restore-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  const pin = '246810';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+  seedHangingCodexSession(tmpDir);
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS: '500',
+      RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS: '1000',
+      NODE_ENV: 'test',
+      HOME: tmpDir,
+    },
+  });
+  const output = captureOutput(child);
+
+  try {
+    const port = await waitForListeningPort(child);
+    const baseUrl = `http://127.0.0.1:${String(port)}`;
+
+    const [health, authStatus] = await Promise.all([
+      fetch(`${baseUrl}/healthz`),
+      fetch(`${baseUrl}/auth/status`),
+    ]);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({ status: 'ok' });
+    expect(authStatus.status).toBe(200);
+    await expect(authStatus.json()).resolves.toEqual({ hasPIN: true });
+    // The real startup restore function is still held. This proves both public
+    // routes answered while restore remained incomplete.
+    expect(output.stdout()).not.toContain(
+      'Restored 1 session(s) from previous update.'
+    );
+
+    const login = await fetch(`${baseUrl}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = cookieFromSetCookie(login.headers);
+
+    await waitForRestoredSession(
+      baseUrl,
+      cookie,
+      (session) => session.restoreState === 'restoring'
+    );
+    const failed = await waitForRestoredSession(
+      baseUrl,
+      cookie,
+      (session) => session.restoreState === 'reattach-failed'
+    );
+    expect(failed).toMatchObject({
+      status: 'disconnected',
+      agentState: 'error',
+      restoreState: 'reattach-failed',
+    });
+
+    await vi.waitFor(() =>
+      expect(output.stdout()).toContain(
+        'Restored 1 session(s) from previous update.'
+      )
+    );
+    const listeningAt = output
+      .stdout()
+      .indexOf('relay-ide listening on 127.0.0.1:');
+    const restoredAt = output
+      .stdout()
+      .indexOf('Restored 1 session(s) from previous update.');
+    expect(listeningAt, output.stderr()).toBeGreaterThanOrEqual(0);
+    expect(restoredAt, output.stderr()).toBeGreaterThan(listeningAt);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -257,7 +464,9 @@ test('legacy disabled PIN sentinel allows first-run setup instead of lockout', a
 });
 
 test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-pin-no-bypass-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-no-pin-no-bypass-')
+  );
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
@@ -305,7 +514,9 @@ test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async
 });
 
 test('protected hub accepts grant-backed CLI actor credential for nodes.list without browser-cookie fallback', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cli-actor-protected-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-protected-')
+  );
   const configPath = path.join(tmpDir, 'config.json');
   const pin = '246810';
   fs.writeFileSync(
@@ -400,7 +611,11 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
         'x-relay-capabilities': 'session:read',
       },
     });
-    await expectJsonStatus<{ nodes: unknown[] }>(actorNodes, 200, 'actor nodes.list');
+    await expectJsonStatus<{ nodes: unknown[] }>(
+      actorNodes,
+      200,
+      'actor nodes.list'
+    );
 
     const nodeCredentialNodes = await fetch(`${base}/nodes`, {
       headers: {
@@ -414,5 +629,240 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scoped actor sessions.create spawns an in-scope controlled worker and rejects an out-of-scope cwd', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-session-create-')
+  );
+  const outsideDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-session-outside-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  const binDir = path.join(tmpDir, 'bin');
+  const codexStub = path.join(binDir, 'codex');
+  const authorizedDir = path.join(tmpDir, 'authorized');
+  const authorizedLink = path.join(tmpDir, 'authorized-link');
+  const topicOutsideDir = path.join(tmpDir, 'topic-outside');
+  const pin = '246810';
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(authorizedDir);
+  fs.mkdirSync(topicOutsideDir);
+  fs.symlinkSync(authorizedDir, authorizedLink, 'dir');
+  fs.writeFileSync(
+    codexStub,
+    '#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1000);\n'
+  );
+  fs.chmodSync(codexStub, 0o755);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      repos: [tmpDir],
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      HOME: tmpDir,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+    const canonicalRepoPath = fs.realpathSync(tmpDir);
+    const canonicalAuthorizedPath = fs.realpathSync(authorizedDir);
+    const orchestratorSessionId = 'orchestrator-session-1257';
+
+    const login = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    await expectJsonStatus<{ ok: true }>(login, 200, 'PIN login');
+    const cookie = cookieFromSetCookie(login.headers);
+
+    const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        actor: {
+          type: 'agent',
+          id: 'orchestrator-1257',
+          displayName: 'Issue 1257 orchestrator',
+        },
+        issuer: { id: 'browser-operator-test' },
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        capabilities: ['session:create:agent'],
+        scope: {
+          sessionIds: [orchestratorSessionId],
+          pathPrefixes: [canonicalAuthorizedPath],
+        },
+        ttlMs: 60_000,
+      }),
+    });
+    const requested = await expectJsonStatus<{ grant: { id: string } }>(
+      grantRequest,
+      201,
+      'operator session-create grant request'
+    );
+
+    const grantApproval = await fetch(
+      `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/approve`,
+      {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ approvedBy: { id: 'browser-operator-test' } }),
+      }
+    );
+    const approved = await expectJsonStatus<{ handle: string }>(
+      grantApproval,
+      200,
+      'operator session-create grant approval'
+    );
+
+    const minted = await fetch(`${base}/cli-gateway/actor-credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        grantHandle: approved.handle,
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        actor: {
+          type: 'agent',
+          id: 'orchestrator-1257',
+          displayName: 'Issue 1257 orchestrator',
+        },
+        capabilities: ['session:create:agent'],
+        scope: {
+          sessionIds: [orchestratorSessionId],
+          pathPrefixes: [canonicalAuthorizedPath],
+        },
+        ttlMs: 60_000,
+      }),
+    });
+    const issued = await expectJsonStatus<{ token: string }>(
+      minted,
+      201,
+      'grant-backed session-create actor credential mint'
+    );
+    const actorHeaders = {
+      authorization: `Bearer ${issued.token}`,
+      'content-type': 'application/json',
+      'x-relay-cli-gateway': 'v1',
+      'x-relay-cli-command': 'sessions.create',
+    };
+
+    const inScopeCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'agent',
+        agent: 'codex',
+        displayName: 'Scoped worker',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    const created = await expectJsonStatus<{
+      id: string;
+      cwd: string;
+      spawnedBySessionId?: string;
+      activeActors?: Array<{
+        kind: string;
+        id?: string;
+        sessionId?: string;
+      }>;
+      activeWorker?: { id?: string };
+    }>(inScopeCreate, 201, 'in-scope actor sessions.create');
+    expect(created.cwd).toBe(canonicalAuthorizedPath);
+    expect(created.spawnedBySessionId).toBe(orchestratorSessionId);
+    expect(created.activeWorker?.id).toBe(created.id);
+    expect(created.activeActors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'agent', id: created.id }),
+        expect.objectContaining({
+          kind: 'agent',
+          id: 'agent:orchestrator-1257',
+          sessionId: orchestratorSessionId,
+        }),
+      ])
+    );
+
+    const topicCreate = await fetch(`${base}/workspace-topics`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify({
+        id: 'topic:actor-scope-bypass-1257',
+        workspaceId: 'ws-actor-scope-1257',
+        title: 'Actor scope bypass regression',
+        routingDefaults: {
+          repoPath: canonicalRepoPath,
+          worktreePath: fs.realpathSync(topicOutsideDir),
+        },
+      }),
+    });
+    await expectJsonStatus<{ topic: { id: string } }>(
+      topicCreate,
+      201,
+      'workspace topic bypass fixture'
+    );
+
+    const topicBypassCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        workspaceTopicId: 'topic:actor-scope-bypass-1257',
+        type: 'agent',
+        agent: 'codex',
+        spawnedBySessionId: orchestratorSessionId,
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(topicBypassCreate, 403, 'topic-expanded out-of-scope actor create').then(
+      (body) => {
+        expect(body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_WRONG_PATH_SCOPE',
+        });
+      }
+    );
+
+    const outOfScopeCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: fs.realpathSync(outsideDir),
+        type: 'agent',
+        agent: 'codex',
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(outOfScopeCreate, 403, 'out-of-scope actor sessions.create').then(
+      (body) => {
+        expect(body.error).toMatchObject({
+          code: 'FORBIDDEN',
+          reasonCode: 'CLI_ACTOR_WRONG_PATH_SCOPE',
+        });
+      }
+    );
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(outsideDir, { recursive: true, force: true });
   }
 });

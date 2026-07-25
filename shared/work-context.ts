@@ -148,6 +148,7 @@ export interface NodeRef {
 export interface SessionRef {
   nodeId: NodeId;
   sessionId: string;
+  spawnedBySessionId?: string;
   globalSessionId?: GlobalSessionId;
   tabId?: string;
   tabKind: WorkContextTabKind;
@@ -446,12 +447,14 @@ function isSessionRef(value: unknown): value is SessionRef {
   return (
     hasString(value.nodeId) &&
     hasString(value.sessionId) &&
+    isOptionalString(value.spawnedBySessionId) &&
     isOptionalString(value.globalSessionId) &&
     isOptionalString(value.tabId) &&
     isEnumValue(value.tabKind, TAB_KINDS) &&
     hasString(value.cwd) &&
     isOptionalString(value.agent) &&
-    (value.controlMode === undefined || isEnumValue(value.controlMode, CONTROL_MODES))
+    (value.controlMode === undefined ||
+      isEnumValue(value.controlMode, CONTROL_MODES))
   );
 }
 

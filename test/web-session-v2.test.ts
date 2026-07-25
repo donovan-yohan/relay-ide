@@ -9,7 +9,6 @@ async function cleanupSessions(): Promise<void> {
     [...sessionsMap.values()].map(async (session) => {
       if (session.mode !== 'web') return;
       await session.adapterV2?.disconnect().catch(() => {});
-      await session.adapter.disconnect().catch(() => {});
     })
   );
   sessionsMap.clear();

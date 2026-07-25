@@ -1,17 +1,165 @@
+/**
+ * Unit tests for the ClaudeProtocolAdapter persistent-subprocess transport.
+ *
+ * Every test injects a fake ChildProcess via `spawnFn` — no real `claude`
+ * binary is invoked. stdout stream-json is scripted per test; stdin frames are
+ * captured and asserted. Emitted patches are validated by the base class
+ * (`isAgentPatchV2` throws on an invalid emit) and, for the happy path, reduced
+ * through `applyAgentPatchV2` to assert reducer legality.
+ */
 import { describe, expect, it, vi } from 'vitest';
-import { ClaudeProtocolAdapter } from '../../../server/protocol-adapters/claude-adapter.js';
+import { PassThrough } from 'node:stream';
+import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { ChildProcess } from 'node:child_process';
+import {
+  ClaudeProtocolAdapter,
+  ClaudeProcessRegistry,
+} from '../../../server/protocol-adapters/claude-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
-import type { ClaudeQueryFunction } from '../../../server/protocol-adapters/claude-adapter.js';
-import type { AgentPatchV2 } from '../../../shared/agent-chat-protocol-v2.js';
+import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
+import claudeDetailFixture from '../../fixtures/agent-detail/claude.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  isAgentPatchV2,
+  type AgentPatchV2,
+  type AgentSessionV2,
+} from '../../../shared/agent-chat-protocol-v2.js';
 
-const config: AdapterConfig = {
-  cwd: '/tmp/repo',
-  port: 3000,
-  sessionId: 'session-1',
-  hookToken: 'token',
-  configDir: '/tmp/config',
-  model: 'sonnet',
-};
+// ── Fake child + spawn harness ────────────────────────────────────────────────
+
+interface MockChild extends EventEmitter {
+  stdin: PassThrough;
+  stdout: PassThrough;
+  stderr: PassThrough;
+  kill: ReturnType<typeof vi.fn>;
+  pid: number;
+  closed: boolean;
+  serverWrite(obj: unknown): void;
+  emitClose(code: number | null, signal?: NodeJS.Signals | null): void;
+  emitStderr(text: string): void;
+  frames(): Record<string, unknown>[];
+  waitForFrames(
+    count: number,
+    timeoutMs?: number
+  ): Promise<Record<string, unknown>[]>;
+}
+
+function makeMockChild(options?: { closeOnStdinEnd?: boolean }): MockChild {
+  const child = new EventEmitter() as MockChild;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.pid = Math.floor(Math.random() * 100000);
+  child.closed = false;
+
+  const frames: Record<string, unknown>[] = [];
+  const waiters: Array<{
+    count: number;
+    resolve: (f: Record<string, unknown>[]) => void;
+  }> = [];
+  let buf = '';
+  child.stdin.on('data', (chunk: Buffer) => {
+    buf += chunk.toString();
+    let idx: number;
+    while ((idx = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        frames.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        frames.push({ __raw: line });
+      }
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (frames.length >= waiters[i]!.count) {
+          waiters.splice(i, 1)[0]!.resolve([...frames]);
+        }
+      }
+    }
+  });
+
+  child.emitClose = (code, signal = null) => {
+    if (child.closed) return;
+    child.closed = true;
+    child.emit('close', code, signal);
+    child.stdout.push(null);
+  };
+  child.kill = vi.fn((_signal?: string) => true);
+  if (options?.closeOnStdinEnd !== false) {
+    child.stdin.on('finish', () =>
+      setImmediate(() => child.emitClose(0, null))
+    );
+  }
+  child.serverWrite = (obj) => child.stdout.push(JSON.stringify(obj) + '\n');
+  child.emitStderr = (text) =>
+    child.stderr.push(text.endsWith('\n') ? text : text + '\n');
+  child.frames = () => [...frames];
+  child.waitForFrames = (count, timeoutMs = 1000) => {
+    if (frames.length >= count) return Promise.resolve([...frames]);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          reject(new Error(`timeout: ${frames.length}/${count} stdin frames`)),
+        timeoutMs
+      );
+      waiters.push({
+        count,
+        resolve: (f) => {
+          clearTimeout(timer);
+          resolve(f);
+        },
+      });
+    });
+  };
+  return child;
+}
+
+interface SpawnRecord {
+  command: string;
+  args: string[];
+  options: { cwd: string; env: Record<string, string>; stdio: 'pipe' };
+  child: MockChild;
+}
+
+function makeHarness() {
+  const spawns: SpawnRecord[] = [];
+  let nextOpts: { closeOnStdinEnd?: boolean } | undefined;
+  const spawnFn: ClaudeSpawnFn = (command, args, options) => {
+    const child = makeMockChild(nextOpts);
+    nextOpts = undefined;
+    spawns.push({ command, args, options, child });
+    return child as unknown as ChildProcess;
+  };
+  return {
+    spawnFn,
+    spawns,
+    latest: (): SpawnRecord => spawns[spawns.length - 1]!,
+    setNextChildOptions: (o: { closeOnStdinEnd?: boolean }) => {
+      nextOpts = o;
+    },
+  };
+}
+
+// A registry with no live GC timer — tests drive gcSweep() manually.
+function inertRegistry(): ClaudeProcessRegistry {
+  return new ClaudeProcessRegistry(1_000_000);
+}
+
+function baseConfig(extra?: Record<string, unknown>): AdapterConfig {
+  return {
+    cwd: '/tmp/repo',
+    port: 3000,
+    sessionId: 'session-1',
+    hookToken: 'token',
+    configDir: '/tmp/config',
+    ...(extra ? { extra } : {}),
+  };
+}
 
 function collectPatches(adapter: ClaudeProtocolAdapter): AgentPatchV2[] {
   const patches: AgentPatchV2[] = [];
@@ -19,1766 +167,1785 @@ function collectPatches(adapter: ClaudeProtocolAdapter): AgentPatchV2[] {
   return patches;
 }
 
-interface ScriptedQuery {
-  emit: (message: unknown) => void;
-  end: () => void;
-  initializationResult?: unknown;
-  supportedCommandsResult?: unknown[];
-  initializationResultCalls: number;
-  supportedCommandsCalls: number;
-  interruptCalls: number;
-  closeCalls: number;
-  inputs: unknown[];
-}
-
-interface ScriptedQueryFn {
-  (): ClaudeQueryFunction;
-  current: ScriptedQuery | null;
-}
-
-function makeScriptedQuery(): ScriptedQueryFn {
-  const fn = (() => {
-    const controller: ScriptedQuery = {
-      emit: () => undefined,
-      end: () => undefined,
-      supportedCommandsCalls: 0,
-      initializationResultCalls: 0,
-      interruptCalls: 0,
-      closeCalls: 0,
-      inputs: [],
-    };
-    fn.current = controller;
-    return ((params) => {
-      const queue: unknown[] = [];
-      let waiter: ((msg: IteratorResult<unknown>) => void) | null = null;
-      let ended = false;
-
-      controller.emit = (message: unknown) => {
-        if (waiter) {
-          const w = waiter;
-          waiter = null;
-          w({ value: message, done: false });
-        } else {
-          queue.push(message);
-        }
-      };
-      controller.end = () => {
-        ended = true;
-        if (waiter) {
-          const w = waiter;
-          waiter = null;
-          w({ value: undefined, done: true });
-        }
-      };
-
-      // Drain user inputs from the streaming prompt iterator.
-      void (async () => {
-        const prompt = params.prompt;
-        if (typeof prompt === 'string' || prompt === undefined) return;
-        for await (const userMessage of prompt) {
-          controller.inputs.push(userMessage);
-        }
-      })();
-
-      const generator: AsyncGenerator<unknown, void, unknown> & {
-        interrupt?: () => Promise<void>;
-        close?: () => void;
-        initializationResult?: () => Promise<unknown>;
-        supportedCommands?: () => Promise<unknown[]>;
-      } = (async function* () {
-        while (true) {
-          if (queue.length > 0) {
-            yield queue.shift();
-            continue;
-          }
-          if (ended) return;
-          const next = await new Promise<IteratorResult<unknown>>((resolve) => {
-            waiter = resolve;
-          });
-          if (next.done) return;
-          yield next.value;
-        }
-      })();
-      generator.interrupt = async () => {
-        controller.interruptCalls++;
-      };
-      generator.close = () => {
-        controller.closeCalls++;
-        controller.end();
-      };
-      generator.initializationResult = async () => {
-        controller.initializationResultCalls++;
-        return (
-          controller.initializationResult ?? {
-            commands: controller.supportedCommandsResult ?? [],
-          }
-        );
-      };
-      generator.supportedCommands = async () => {
-        controller.supportedCommandsCalls++;
-        return controller.supportedCommandsResult ?? [];
-      };
-      return generator as unknown as ReturnType<ClaudeQueryFunction>;
-    }) as ClaudeQueryFunction;
-  }) as unknown as ScriptedQueryFn;
-  fn.current = null;
-  return fn;
-}
-
-function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = () => {
-      if (predicate()) {
-        resolve();
-        return;
-      }
-      if (Date.now() - started > timeoutMs) {
-        reject(new Error('timed out waiting for Claude adapter condition'));
-        return;
-      }
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeoutMs)
+        return reject(new Error('timed out waiting for adapter condition'));
       setTimeout(tick, 1);
     };
     tick();
   });
 }
 
-describe('ClaudeProtocolAdapter V2', () => {
-  it('advertises the claude v2 capability set', () => {
-    const adapter = new ClaudeProtocolAdapter((() => {
-      const gen: AsyncGenerator<unknown, void, unknown> =
-        (async function* () {})();
-      return gen as unknown as ReturnType<ClaudeQueryFunction>;
-    }) as ClaudeQueryFunction);
+function tick(ms = 15): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+function successResult(
+  overrides?: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    type: 'result',
+    subtype: 'success',
+    duration_ms: 1,
+    total_cost_usd: 0,
+    usage: {},
+    session_id: 'claude-session-1',
+    ...overrides,
+  };
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
+  it('advertises the claude v2 capability set with questions/slashCommands gated off', () => {
+    const adapter = new ClaudeProtocolAdapter(
+      makeHarness().spawnFn,
+      inertRegistry()
+    );
     expect(adapter.capabilities).toMatchObject({
       text: true,
       reasoning: true,
       tools: true,
-      commandExecution: true,
-      fileChanges: true,
       approvals: true,
-      queue: true,
-      interrupt: true,
-      cancelQueued: false,
       resume: true,
-      compact: true,
-      slashCommands: true,
+      interrupt: true,
+      streaming: true,
+      questions: false,
+      slashCommands: false,
     });
   });
 
-  it('opens streaming query on connect, fetches supportedCommands, and pushes user input to the SDK', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
+  it('connect emits snapshot + idle live-state + relay commands WITHOUT spawning', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-    const controller = queryFn.current!;
-    expect(controller).not.toBeNull();
-    controller.supportedCommandsResult = [
-      { name: 'compact', description: 'compact context', argumentHint: '' },
-      {
-        name: 'review',
-        description: 'review the diff',
-        argumentHint: '<scope>',
-        aliases: ['rev'],
-      },
-    ];
 
-    await adapter.connect(config);
+    await adapter.connect(baseConfig());
 
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-      cwd: '/tmp/repo',
-      model: 'sonnet',
-      tools: ['Bash', 'Edit'],
-      slash_commands: ['compact', 'review'],
-      skills: ['compact'],
-      plugins: [],
-    });
-
-    await waitFor(() =>
-      patches.some(
-        (patch) =>
-          patch.type === 'agent-session-updated-v2' &&
-          patch.slashCommands !== undefined
-      )
-    );
-
-    const slashPatch = patches.find(
-      (patch) =>
-        patch.type === 'agent-session-updated-v2' &&
-        patch.slashCommands !== undefined
-    );
-    expect(slashPatch?.type).toBe('agent-session-updated-v2');
-    expect(controller.initializationResultCalls).toBe(1);
-    expect(controller.supportedCommandsCalls).toBe(0);
-    expect(slashPatch?.slashCommands).toEqual(
+    expect(harness.spawns).toHaveLength(0);
+    expect(patches.map((p) => p.type)).toEqual([
+      'agent-session-snapshot-v2',
+      'agent-live-state-updated-v2',
+      'agent-session-updated-v2',
+    ]);
+    const slash = patches.find((p) => p.type === 'agent-session-updated-v2');
+    expect(
+      slash?.type === 'agent-session-updated-v2' && slash.slashCommands
+    ).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          name: 'compact',
-          description: 'compact context',
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'review',
-          description: 'review the diff',
-          argumentHint: '<scope>',
-          aliases: ['rev'],
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'resume',
-          aliases: ['continue'],
-          source: 'relay',
-        }),
+        expect.objectContaining({ name: 'clear', source: 'relay' }),
+        expect.objectContaining({ name: 'resume', source: 'relay' }),
+        expect.objectContaining({ name: 'model', source: 'relay' }),
       ])
     );
 
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-1',
-      content: 'hello',
-    });
+    await adapter.disconnect();
+  });
 
-    await waitFor(() => controller.inputs.length > 0);
-    expect(controller.inputs[0]).toMatchObject({
+  it('first send spawns with the exact argv (fixed + config + denylist + yolo) and strips CLAUDECODE', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const config: AdapterConfig = {
+      ...baseConfig(),
+      model: 'sonnet',
+      permissionMode: 'default',
+      extra: {
+        additionalDirectories: ['/extra/dir'],
+        yolo: true,
+        claudeArgs: [
+          '--append-system-prompt',
+          'hi',
+          '--verbose', // reserved (bool) → dropped
+          '--resume', // reserved (value) → dropped with its value token
+          'SHOULD_DROP',
+          '--output-format=json', // reserved (=form) → dropped
+          '-c', // short alias of --continue (bool) → dropped
+          '-r', // short alias of --resume (value) → dropped with its value token
+          'SHOULD_DROP_R',
+          '-r=alias-session', // short alias (=form) → dropped
+          '--keep-me',
+        ],
+      },
+    };
+    await adapter.connect(config);
+
+    process.env.CLAUDECODE = '1';
+    try {
+      await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+    } finally {
+      delete process.env.CLAUDECODE;
+    }
+
+    expect(harness.spawns).toHaveLength(1);
+    const { args, options } = harness.latest();
+
+    expect(args.slice(0, 11)).toEqual([
+      '-p',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-prompt-tool',
+      'stdio',
+      '--permission-mode',
+      'default',
+    ]);
+    expect(args).toContain('--model');
+    expect(args[args.indexOf('--model') + 1]).toBe('sonnet');
+    expect(args).toContain('--add-dir');
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('/extra/dir');
+    expect(args).toContain('--dangerously-skip-permissions');
+    // No --resume on a first spawn (no session id yet).
+    expect(args).not.toContain('--resume');
+    // claudeArgs denylist: kept the safe flags, dropped the reserved ones.
+    expect(args).toContain('--append-system-prompt');
+    expect(args).toContain('--keep-me');
+    expect(args).not.toContain('SHOULD_DROP');
+    expect(args).not.toContain('--output-format=json');
+    // Short aliases of reserved flags are denied too (-c/--continue, -r/--resume).
+    expect(args).not.toContain('-c');
+    expect(args).not.toContain('-r');
+    expect(args).not.toContain('SHOULD_DROP_R');
+    expect(args).not.toContain('-r=alias-session');
+    // CLAUDECODE stripped from the child env.
+    expect(options.env.CLAUDECODE).toBeUndefined();
+
+    await adapter.disconnect();
+  });
+
+  it('happy path: init → deltas → assistant echo → result reduces to one user + one assistant message with summed iteration usage', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    expect(child.frames()[0]).toMatchObject({
       type: 'user',
       message: { role: 'user', content: 'hello' },
     });
 
-    controller.emit({
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+      slash_commands: ['compact'],
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-1' } },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'ok' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    // The assistant line duplicates the streamed text — must be echo-dropped.
+    child.serverWrite({
       type: 'assistant',
-      message: {
-        id: 'msg-native-1',
-        content: [{ type: 'text', text: 'hello from claude' }],
-      },
-      session_id: 'claude-session-1',
+      message: { id: 'm-1', content: [{ type: 'text', text: 'ok' }] },
     });
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 12,
-      total_cost_usd: 0.01,
-      usage: {
-        input_tokens: 10,
-        output_tokens: 20,
-        cache_read_input_tokens: 3,
-        cache_creation_input_tokens: 4,
-      },
-      session_id: 'claude-session-1',
+    child.serverWrite(
+      successResult({
+        usage: {
+          input_tokens: 3, // top-level = last iteration only
+          output_tokens: 1,
+          iterations: [
+            { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 2 },
+            { input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 1 },
+          ],
+        },
+        total_cost_usd: 0.05,
+      })
+    );
+
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    // Reduce the whole stream to assert reducer legality + no duplicate text.
+    const session = reduce(patches);
+    const turn = session.turns.find((t) => t.id === 'turn-1')!;
+    const userMsgs = turn.items.filter((i) => i.type === 'userMessage');
+    const assistantMsgs = turn.items.filter(
+      (i) => i.type === 'assistantMessage'
+    );
+    expect(userMsgs).toHaveLength(1);
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0]).toMatchObject({ text: 'ok', status: 'completed' });
+    expect(turn.status).toBe('completed');
+    expect(turn.usage).toMatchObject({
+      inputTokens: 13, // 10 + 3 summed across iterations
+      outputTokens: 21,
+      cacheReadTokens: 3,
+      costUsd: 0.05,
     });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    // Session-updated providerSession captured once.
+    const providerUpdates = patches.filter(
+      (p) =>
+        p.type === 'agent-session-updated-v2' && p.providerSession !== undefined
     );
-
-    expect(patches).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'agent-session-snapshot-v2',
-          session: expect.objectContaining({ provider: 'claude' }),
-        }),
-        expect.objectContaining({
-          type: 'agent-session-updated-v2',
-          providerSession: { claudeSessionId: 'claude-session-1' },
-        }),
-        expect.objectContaining({
-          type: 'agent-item-delta-v2',
-          turnId: 'turn-1',
-          delta: { text: 'hello from claude' },
-        }),
-        expect.objectContaining({
-          type: 'agent-turn-completed-v2',
-          turnId: 'turn-1',
-          status: 'completed',
-          usage: expect.objectContaining({
-            inputTokens: 10,
-            outputTokens: 20,
-            cacheReadTokens: 3,
-            cacheWriteTokens: 4,
-            costUsd: 0.01,
-          }),
-        }),
-      ])
-    );
-
-    await adapter.disconnect();
-    expect(controller.closeCalls).toBeGreaterThanOrEqual(1);
-  });
-
-  it('fetches SDK slash commands on connect before any streamed init message', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-    const controller = queryFn.current!;
-    controller.supportedCommandsResult = [
-      {
-        name: 'ticket',
-        description: 'create a GitHub issue',
-        argumentHint: '<title>',
-      },
-      { name: 'scope', description: 'scope an issue', argumentHint: '' },
-    ];
-
-    await adapter.connect(config);
-
-    await waitFor(() =>
-      patches.some(
-        (patch) =>
-          patch.type === 'agent-session-updated-v2' &&
-          patch.slashCommands !== undefined
-      )
-    );
-
-    expect(controller.initializationResultCalls).toBe(1);
-    expect(controller.supportedCommandsCalls).toBe(0);
-    const slashPatch = patches.find(
-      (patch) =>
-        patch.type === 'agent-session-updated-v2' &&
-        patch.slashCommands !== undefined
-    );
-    expect(slashPatch?.type).toBe('agent-session-updated-v2');
-    expect(slashPatch?.slashCommands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: 'ticket',
-          description: 'create a GitHub issue',
-          argumentHint: '<title>',
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'scope',
-          description: 'scope an issue',
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'resume',
-          aliases: ['continue'],
-          source: 'relay',
-        }),
-      ])
-    );
+    expect(providerUpdates).toHaveLength(1);
 
     await adapter.disconnect();
   });
 
-  it('adds Relay-owned Claude controls with aliases to the slash command catalog', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
+  it('maps thinking, Bash, Edit, and mcp__ tool_use with tool_result closures', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-    const controller = queryFn.current!;
-    controller.initializationResult = {
-      commands: [
-        {
-          name: 'compact',
-          description: 'Free up context',
-          argumentHint: '<instructions>',
-        },
-        {
-          name: 'clear',
-          description: 'Start a new session',
-          argumentHint: '',
-        },
-      ],
-    };
+    await adapter.connect(baseConfig());
 
-    await adapter.connect(config);
-
-    await waitFor(() =>
-      patches.some(
-        (patch) =>
-          patch.type === 'agent-session-updated-v2' &&
-          patch.slashCommands !== undefined
-      )
-    );
-
-    expect(controller.initializationResultCalls).toBe(1);
-    expect(controller.supportedCommandsCalls).toBe(0);
-    const slashPatch = patches.find(
-      (patch) =>
-        patch.type === 'agent-session-updated-v2' &&
-        patch.slashCommands !== undefined
-    );
-    expect(slashPatch?.type).toBe('agent-session-updated-v2');
-    expect(slashPatch?.slashCommands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: 'compact',
-          description: 'Free up context',
-          argumentHint: '<instructions>',
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'clear',
-          description: 'Start a new session',
-          aliases: ['reset', 'new'],
-          source: 'sdk',
-        }),
-        expect.objectContaining({
-          name: 'resume',
-          aliases: ['continue'],
-          source: 'relay',
-          dispatch: 'relay-control',
-        }),
-        expect.objectContaining({
-          name: 'model',
-          source: 'relay',
-          dispatch: 'relay-control',
-        }),
-      ])
-    );
-
-    await adapter.disconnect();
-  });
-
-  it('marks low-level Claude SDK events as trace provider extensions', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
+    await adapter.sendMessage({ turnId: 'turn-tools', content: 'do work' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
       type: 'system',
       subtype: 'init',
       session_id: 'claude-session-1',
     });
 
-    void adapter.sendMessage({ turnId: 'turn-events', content: 'hello' });
-    await waitFor(() => controller.inputs.length === 1);
+    child.serverWrite({
+      type: 'assistant',
+      message: {
+        id: 'm-tools',
+        content: [
+          { type: 'thinking', thinking: 'plan' },
+          {
+            type: 'tool_use',
+            id: 'tu-bash',
+            name: 'Bash',
+            input: { command: 'echo hi' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tu-edit',
+            name: 'Edit',
+            input: { file_path: '/repo/a.ts' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tu-mcp',
+            name: 'mcp__github__create_issue',
+            input: { title: 'x' },
+          },
+        ],
+      },
+    });
+    child.serverWrite({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tu-bash', content: 'hi' },
+        ],
+      },
+      tool_use_result: { stdout: 'hi\n', stderr: '' },
+    });
+    child.serverWrite({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tu-mcp', content: 'created' },
+        ],
+      },
+      tool_use_result: { issue: 42 },
+    });
+    child.serverWrite(successResult());
 
-    controller.emit({
-      type: 'stream_event',
-      event: { type: 'message_delta' },
-      session_id: 'claude-session-1',
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    const startedTypes = patches
+      .filter((p) => p.type === 'agent-item-started-v2')
+      .map((p) => (p.type === 'agent-item-started-v2' ? p.item.type : ''));
+    expect(startedTypes).toEqual(
+      expect.arrayContaining([
+        'reasoning',
+        'commandExecution',
+        'fileChange',
+        'mcpToolCall',
+      ])
+    );
+
+    const thought = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        patch.item.type === 'reasoning'
+    );
+    expect(
+      thought?.type === 'agent-item-started-v2' && thought.item.card
+    ).toMatchObject({
+      kind: 'thought',
+      title: 'plan',
+      content: 'plan',
+      status: 'completed',
     });
-    controller.emit({
+
+    const command = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(
+      command?.type === 'agent-item-updated-v2' && command.item.card
+    ).toMatchObject({
+      kind: 'output',
+      title: 'echo hi',
+      command: 'echo hi',
+      content: 'hi\n',
+      language: 'bash',
+      status: 'completed',
+    });
+
+    const file = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(
+      file?.type === 'agent-item-started-v2' && file.item.card
+    ).toMatchObject({
+      kind: 'diff',
+      title: '/repo/a.ts',
+      path: '/repo/a.ts',
+      status: 'pending',
+    });
+
+    const mcpUpdate = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'mcpToolCall'
+    );
+    expect(
+      mcpUpdate?.type === 'agent-item-updated-v2' && mcpUpdate.item
+    ).toMatchObject({
+      type: 'mcpToolCall',
+      server: 'github',
+      tool: 'create_issue',
+      status: 'completed',
+    });
+
+    await adapter.disconnect();
+  });
+
+  it('maps a direct persistent-subprocess file patch into a populated diff card', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-direct-patch', content: 'edit' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
       type: 'system',
-      subtype: 'hook_response',
-      hook_name: 'Stop',
-      outcome: 'success',
-      stdout: '',
-      stderr: '',
-      session_id: 'claude-session-1',
+      subtype: 'init',
+      session_id: 'claude-session-direct-patch',
     });
-    controller.emit({
-      type: 'rate_limit_event',
-      rate_limit_info: { status: 'allowed' },
-      session_id: 'claude-session-1',
+    child.serverWrite({
+      type: 'assistant',
+      message: {
+        id: 'message-direct-patch',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-direct-patch',
+            name: 'Edit',
+            input: { file_path: '/workspace/example/src/direct.ts' },
+          },
+        ],
+      },
     });
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
+    const directPatch =
+      '--- a/src/direct.ts\n+++ b/src/direct.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    child.serverWrite({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-direct-patch',
+            content: directPatch,
+          },
+        ],
+      },
+      tool_use_result: {
+        filePath: '/workspace/example/src/direct.ts',
+        patch: directPatch,
+      },
     });
+    child.serverWrite(successResult());
 
     await waitFor(() =>
       patches.some((patch) => patch.type === 'agent-turn-completed-v2')
     );
-    const extensions = patches
-      .filter((patch) => patch.type === 'agent-item-started-v2')
-      .map((patch) => patch.item)
-      .filter((item) => item.type === 'providerExtension');
+    const file = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(file).toMatchObject({
+      item: {
+        id: 'file-tool-direct-patch',
+        patch: directPatch,
+        status: 'completed',
+        card: {
+          kind: 'diff',
+          path: '/workspace/example/src/direct.ts',
+          content: directPatch,
+          additions: 1,
+          deletions: 1,
+        },
+      },
+    });
 
-    // stream_event is now consumed by the streaming pipeline (not emitted as
-    // providerExtension). Only hook_response (debug) and rate_limit_event
-    // (trace) survive as extensions.
-    expect(extensions).toHaveLength(2);
-    expect(extensions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          payload: expect.objectContaining({ type: 'rate_limit_event' }),
-          metadata: { eventVisibility: 'trace' },
-        }),
-      ])
+    await adapter.disconnect();
+  });
+
+  it('replays the sanitized Claude detail fixture into normalized cards', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-fixture', content: 'fixture' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    for (const event of claudeDetailFixture.nativeEvents) {
+      child.serverWrite(event);
+    }
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const session = reduce(patches);
+    const cards = session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    const expectedCards = claudeDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    expect(cards).toEqual(expectedCards);
+    expect(claudeDetailFixture.sanitization.containsLiveTranscriptBytes).toBe(
+      false
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('reuses the same subprocess for a second send and dedupes per-turn init', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'one' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    await adapter.sendMessage({ turnId: 'turn-2', content: 'two' });
+    await child.waitForFrames(2);
+    // init re-emitted every turn — providerSession must not be re-emitted.
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+    child.serverWrite(successResult());
+    await waitFor(
+      () =>
+        patches.filter((p) => p.type === 'agent-turn-completed-v2').length === 2
+    );
+
+    expect(harness.spawns).toHaveLength(1); // same process reused
+    const providerUpdates = patches.filter(
+      (p) =>
+        p.type === 'agent-session-updated-v2' && p.providerSession !== undefined
+    );
+    expect(providerUpdates).toHaveLength(1);
+
+    await adapter.disconnect();
+  });
+
+  it('queues a second send and starts it after the first turn completes', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    const first = adapter.sendMessage({ turnId: 'turn-1', content: 'one' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    const second = adapter.sendMessage({ turnId: 'turn-2', content: 'two' });
+    await tick(); // second must NOT have written a frame yet
+    expect(child.frames()).toHaveLength(1);
+
+    child.serverWrite(successResult());
+    await first;
+    await child.waitForFrames(2);
+    expect(child.frames()[1]).toMatchObject({ message: { content: 'two' } });
+    child.serverWrite(successResult());
+    await second;
+
+    await waitFor(
+      () =>
+        patches.filter((p) => p.type === 'agent-turn-completed-v2').length === 2
+    );
+    const completed = patches.filter(
+      (p) => p.type === 'agent-turn-completed-v2'
     );
     expect(
-      extensions.some(
-        (ext) =>
-          (ext.payload as Record<string, unknown>).type === 'stream_event'
+      completed.map((p) =>
+        p.type === 'agent-turn-completed-v2' ? p.turnId : ''
+      )
+    ).toEqual(['turn-1', 'turn-2']);
+
+    await adapter.disconnect();
+  });
+
+  it('routes can_use_tool to an approval and replies with request_id nested inside response (accept)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.sendMessage({ turnId: 'turn-approval', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-1',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: { command: 'npm test' },
+      },
+    });
+
+    await waitFor(() =>
+      patches.some(
+        (p) =>
+          p.type === 'agent-live-state-updated-v2' &&
+          p.live.waitingOn === 'approval'
+      )
+    );
+    const approvalStart = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
+    );
+    expect(
+      approvalStart?.type === 'agent-item-started-v2' && approvalStart.item
+    ).toMatchObject({
+      type: 'approval',
+      requestId: 'req-1',
+      target: 'npm test',
+      supported: {
+        scopes: ['once', 'permanent'],
+        amendmentTypes: [],
+        canCancel: false,
+      },
+    });
+
+    await adapter.respondToApproval({
+      requestId: 'req-1',
+      decision: { kind: 'accept', scope: 'once' },
+    });
+    await child.waitForFrames(2);
+    const reply = child.frames()[1] as {
+      type: string;
+      request_id?: unknown;
+      response: {
+        subtype: string;
+        request_id: string;
+        response: { behavior: string };
+      };
+    };
+    expect(reply.type).toBe('control_response');
+    // WIRE INVARIANT: request_id nests INSIDE response, never top-level.
+    expect(reply.request_id).toBeUndefined();
+    expect(reply.response.request_id).toBe('req-1');
+    expect(reply.response.subtype).toBe('success');
+    expect(reply.response.response.behavior).toBe('allow');
+
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+    await adapter.disconnect();
+  });
+
+  it('replies deny for a declined approval', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-deny', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-deny',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: { command: 'rm -rf /' },
+      },
+    });
+    await waitFor(() =>
+      patches.some(
+        (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
+      )
+    );
+
+    await adapter.respondToApproval({
+      requestId: 'req-deny',
+      decision: { kind: 'decline' },
+    });
+    await child.waitForFrames(2);
+    const reply = child.frames()[1] as {
+      response: {
+        request_id: string;
+        response: { behavior: string; message?: string };
+      };
+    };
+    expect(reply.response.request_id).toBe('req-deny');
+    expect(reply.response.response.behavior).toBe('deny');
+
+    child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('auto-denies a stalled approval after approvalStallMs', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig({ approvalStallMs: 20 }));
+    await adapter.sendMessage({ turnId: 'turn-stall', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-stall',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: { command: 'ls' },
+      },
+    });
+
+    await child.waitForFrames(2); // the auto-deny reply
+    const reply = child.frames()[1] as {
+      response: { request_id: string; response: { behavior: string } };
+    };
+    expect(reply.response.request_id).toBe('req-stall');
+    expect(reply.response.response.behavior).toBe('deny');
+    const updated = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'approval'
+    );
+    expect(
+      updated?.type === 'agent-item-updated-v2' && updated.item
+    ).toMatchObject({
+      respondedBy: 'timeout',
+    });
+
+    child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('auto-cancels request_user_dialog and elicitation control requests', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-dialog', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-dialog',
+      request: { subtype: 'request_user_dialog' },
+    });
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-elicit',
+      request: { subtype: 'elicitation' },
+    });
+
+    const frames = await child.waitForFrames(3);
+    const dialog = frames.find(
+      (f) =>
+        (f.response as { request_id?: string } | undefined)?.request_id ===
+        'req-dialog'
+    ) as { response: { response: unknown } };
+    const elicit = frames.find(
+      (f) =>
+        (f.response as { request_id?: string } | undefined)?.request_id ===
+        'req-elicit'
+    ) as { response: { response: unknown } };
+    expect(dialog.response.response).toBe('cancelled');
+    expect(elicit.response.response).toBe('cancel');
+
+    child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('maps AskUserQuestion can_use_tool to a question item', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-q', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-q',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'AskUserQuestion',
+        question: 'Which one?',
+      },
+    });
+
+    await waitFor(() =>
+      patches.some(
+        (p) => p.type === 'agent-item-started-v2' && p.item.type === 'question'
+      )
+    );
+    const question = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'question'
+    );
+    expect(
+      question?.type === 'agent-item-started-v2' && question.item
+    ).toMatchObject({
+      type: 'question',
+      requestId: 'req-q',
+      question: 'Which one?',
+    });
+
+    child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('interrupt writes a control_request then falls back to the SIGTERM ladder on no ack', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    harness.setNextChildOptions({ closeOnStdinEnd: false });
+    await adapter.connect(
+      baseConfig({
+        interruptAckMs: 20,
+        teardownAfterStdinMs: 10,
+        teardownAfterSigtermMs: 10,
+      })
+    );
+    await adapter.sendMessage({ turnId: 'turn-int', content: 'long task' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+    // The child never acks; kill() must close it so stop() resolves.
+    child.kill.mockImplementation((_sig?: string) => {
+      if (_sig === 'SIGKILL')
+        setImmediate(() => child.emitClose(null, 'SIGKILL'));
+      return true;
+    });
+
+    await adapter.interrupt({ turnId: 'turn-int' });
+
+    const interruptFrame = child
+      .frames()
+      .find(
+        (f) =>
+          f.type === 'control_request' &&
+          (f.request as { subtype?: string })?.subtype === 'interrupt'
+      );
+    expect(interruptFrame).toBeDefined();
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(
+      completed?.type === 'agent-turn-completed-v2' && completed.status
+    ).toBe('interrupted');
+
+    await adapter.disconnect();
+  });
+
+  it('reports a mid-turn crash with stderr tail and respawns with --resume on the next send', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-crash', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-abc',
+    });
+    child.emitStderr('fatal: boom');
+    await tick();
+    child.emitClose(1, null);
+
+    await waitFor(() =>
+      patches.some(
+        (p) =>
+          p.type === 'agent-turn-completed-v2' &&
+          p.type === 'agent-turn-completed-v2' &&
+          p.status === 'failed'
+      )
+    );
+    const error = patches.find((p) => p.type === 'agent-error-v2');
+    expect(error?.type === 'agent-error-v2' && error.message).toMatch(/exited/);
+    expect(error?.type === 'agent-error-v2' && error.message).toMatch(/boom/);
+
+    // Next send respawns with --resume against the captured session id.
+    await adapter.sendMessage({ turnId: 'turn-after-crash', content: 'again' });
+    expect(harness.spawns).toHaveLength(2);
+    const args = harness.latest().args;
+    expect(args).toContain('--resume');
+    expect(args[args.indexOf('--resume') + 1]).toBe('claude-abc');
+
+    await adapter.disconnect();
+  });
+
+  it('trips the crash-loop breaker after 3 respawns', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+
+    for (let i = 0; i < 3; i++) {
+      await adapter.sendMessage({ turnId: `turn-${i}`, content: 'go' });
+      const child = harness.latest().child;
+      await child.waitForFrames(1);
+      child.serverWrite({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess',
+      });
+      child.emitClose(1, null);
+      await waitFor(
+        () => adapter.status === 'connected' && harness.spawns.length === i + 1
+      );
+      await tick();
+    }
+    expect(harness.spawns).toHaveLength(3);
+
+    await expect(
+      adapter.sendMessage({ turnId: 'turn-breaker', content: 'go' })
+    ).rejects.toThrow(/crash-loop/i);
+    expect(harness.spawns).toHaveLength(3);
+
+    await adapter.disconnect();
+  });
+
+  it('idle eviction kills the child, stays connected, and respawns with --resume', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-evict',
+    });
+    child.serverWrite(successResult({ session_id: 'claude-evict' }));
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    const before = patches.length;
+    // Force the warm-idle → evicted transition.
+    adapter.gcSweep(Date.now() + 15 * 60_000 + 5_000);
+    await tick(30);
+
+    expect(adapter.status).toBe('connected');
+    // No UI-visible disconnected live-state leaked by the eviction.
+    const leaked = patches
+      .slice(before)
+      .some(
+        (p) =>
+          p.type === 'agent-live-state-updated-v2' &&
+          p.live.status === 'disconnected'
+      );
+    expect(leaked).toBe(false);
+
+    await adapter.sendMessage({ turnId: 'turn-2', content: 'again' });
+    expect(harness.spawns).toHaveLength(2);
+    const args = harness.latest().args;
+    expect(args[args.indexOf('--resume') + 1]).toBe('claude-evict');
+
+    await adapter.disconnect();
+  });
+
+  it('resumeSession stores the id, emits a providerSession snapshot without spawning, then respawns with --resume', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.resumeSession('resume-xyz');
+    expect(harness.spawns).toHaveLength(0);
+    const resumeSnap = patches
+      .filter((p) => p.type === 'agent-session-snapshot-v2')
+      .at(-1);
+    expect(
+      resumeSnap?.type === 'agent-session-snapshot-v2' && resumeSnap.session
+    ).toMatchObject({
+      providerSession: { claudeSessionId: 'resume-xyz' },
+    });
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'go' });
+    expect(harness.spawns).toHaveLength(1);
+    const args = harness.latest().args;
+    expect(args[args.indexOf('--resume') + 1]).toBe('resume-xyz');
+
+    await adapter.disconnect();
+  });
+
+  it('frames image attachments as base64 blocks and rejects bad ones loudly', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-img-'));
+    const pngPath = path.join(dir, 'good.png');
+    const pngBytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3,
+    ]);
+    fs.writeFileSync(pngPath, pngBytes);
+
+    try {
+      await adapter.sendMessage({
+        turnId: 'turn-img',
+        content: 'look',
+        attachments: [
+          {
+            type: 'image',
+            path: '/does/not/matter.bmp',
+            mimeType: 'image/bmp',
+          },
+          { type: 'image', path: pngPath, mimeType: 'image/png' },
+        ],
+      });
+      const child = harness.latest().child;
+      const frames = await child.waitForFrames(1);
+      const content = (frames[0] as { message: { content: unknown } }).message
+        .content as Array<Record<string, unknown>>;
+      expect(Array.isArray(content)).toBe(true);
+      const imageBlock = content.find((b) => b.type === 'image') as {
+        source: { media_type: string; data: string };
+      };
+      expect(imageBlock.source.media_type).toBe('image/png');
+      expect(imageBlock.source.data).toBe(pngBytes.toString('base64'));
+      // The unsupported bmp was rejected with a loud errorMessage naming the file.
+      const err = patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' && p.item.type === 'errorMessage'
+      );
+      expect(
+        err?.type === 'agent-item-started-v2' &&
+          (err.item as { message: string }).message
+      ).toMatch(/matter\.bmp/);
+
+      child.serverWrite(successResult());
+      await adapter.disconnect();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces an ENOENT spawn failure as an install/login error', async () => {
+    const spawnFn: ClaudeSpawnFn = () => {
+      const err = new Error('spawn claude ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    const adapter = new ClaudeProtocolAdapter(spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.sendMessage({ turnId: 'turn-enoent', content: 'go' });
+    await waitFor(() =>
+      patches.some(
+        (p) =>
+          p.type === 'agent-error-v2' && /not found on PATH/.test(p.message)
+      )
+    );
+    const err = patches.find((p) => p.type === 'agent-error-v2');
+    expect(err?.type === 'agent-error-v2' && err.message).toMatch(
+      /claude login/
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('every emitted patch passes isAgentPatchV2 (base-class guard is exercised)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'hi' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({ type: 'system', subtype: 'init', session_id: 's' });
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    expect(patches.length).toBeGreaterThan(0);
+    for (const patch of patches) expect(isAgentPatchV2(patch)).toBe(true);
+
+    await adapter.disconnect();
+  });
+
+  it('interrupt whose ack lands after the turn already completed does not touch the drained turn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig({ interruptAckMs: 10_000 }));
+
+    const first = adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    const second = adapter.sendMessage({ turnId: 'turn-B', content: 'b' }); // queued
+
+    const interruptP = adapter.interrupt({ turnId: 'turn-A' });
+    await child.waitForFrames(2); // interrupt control_request written
+
+    // A's own result lands first → A completes 'completed' → B drains onto the
+    // warm child (its user line = frame 3).
+    child.serverWrite(successResult());
+    await child.waitForFrames(3);
+    await first;
+
+    // Only now does the interrupt ack arrive — it must NOT complete/kill turn B.
+    child.serverWrite({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'relay-int-1' },
+    });
+    await interruptP;
+
+    const aCompletions = patches.filter(
+      (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-A'
+    );
+    expect(aCompletions).toHaveLength(1);
+    expect(
+      aCompletions[0]?.type === 'agent-turn-completed-v2' &&
+        aCompletions[0].status
+    ).toBe('completed'); // NOT 'interrupted'
+    // B is still running — nothing completed it.
+    expect(
+      patches.some(
+        (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-B'
+      )
+    ).toBe(false);
+
+    child.serverWrite(successResult());
+    await second;
+    const bCompletions = patches.filter(
+      (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-B'
+    );
+    expect(bCompletions).toHaveLength(1);
+    expect(
+      bCompletions[0]?.type === 'agent-turn-completed-v2' &&
+        bCompletions[0].status
+    ).toBe('completed');
+
+    await adapter.disconnect();
+  });
+
+  it('interrupt timeout path with a queued message: A is interrupted and B survives to run', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    harness.setNextChildOptions({ closeOnStdinEnd: false });
+    await adapter.connect(
+      baseConfig({
+        interruptAckMs: 20,
+        teardownAfterStdinMs: 10,
+        teardownAfterSigtermMs: 10,
+      })
+    );
+
+    const first = adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.kill.mockImplementation((_sig?: string) => {
+      if (_sig === 'SIGKILL')
+        setImmediate(() => child.emitClose(null, 'SIGKILL'));
+      return true;
+    });
+    const second = adapter.sendMessage({ turnId: 'turn-B', content: 'b' }); // queued
+
+    await adapter.interrupt({ turnId: 'turn-A' });
+    await first;
+
+    const aCompletion = patches.find(
+      (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-A'
+    );
+    expect(
+      aCompletion?.type === 'agent-turn-completed-v2' && aCompletion.status
+    ).toBe('interrupted');
+
+    // B survives the interrupt-kill and runs on a fresh respawn.
+    expect(harness.spawns).toHaveLength(2);
+    const child2 = harness.latest().child;
+    await child2.waitForFrames(1);
+    expect(child2.frames()[0]).toMatchObject({ message: { content: 'b' } });
+    child2.serverWrite(successResult());
+    await second;
+    const bCompletion = patches.find(
+      (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-B'
+    );
+    expect(
+      bCompletion?.type === 'agent-turn-completed-v2' && bCompletion.status
+    ).toBe('completed');
+
+    await adapter.disconnect();
+  });
+
+  it('post-interrupt-ack stale wire lines are dropped, not attributed to the drained turn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig({ interruptAckMs: 10_000 }));
+
+    const first = adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    const second = adapter.sendMessage({ turnId: 'turn-B', content: 'b' }); // queued
+
+    const interruptP = adapter.interrupt({ turnId: 'turn-A' });
+    await child.waitForFrames(2);
+    // Ack arrives (no result yet) → A interrupted, B drains onto the warm child.
+    child.serverWrite({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: 'relay-int-1' },
+    });
+    await interruptP;
+    await first;
+    await child.waitForFrames(3); // B's user line
+
+    // Aborted turn A's trailing tail flushes onto the warm child AFTER B is
+    // active — it must be suppressed, not injected into B.
+    child.serverWrite({
+      type: 'assistant',
+      message: {
+        id: 'm-A-stale',
+        content: [{ type: 'text', text: 'STALE-A' }],
+      },
+    });
+    child.serverWrite(successResult()); // A's terminal result → dropped + clears suppression
+
+    // B's real stream follows and completes cleanly.
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-B' } },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'B-REAL' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    child.serverWrite(successResult());
+    await second;
+
+    const bCompletions = patches.filter(
+      (p) => p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-B'
+    );
+    expect(bCompletions).toHaveLength(1); // NOT completed early by A's stale result
+    expect(
+      bCompletions[0]?.type === 'agent-turn-completed-v2' &&
+        bCompletions[0].status
+    ).toBe('completed');
+
+    const session = reduce(patches);
+    const turnB = session.turns.find((t) => t.id === 'turn-B')!;
+    const assistantMsgs = turnB.items.filter(
+      (i) => i.type === 'assistantMessage'
+    );
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0]).toMatchObject({ text: 'B-REAL' });
+    // The stale turn-A text never leaked into turn B.
+    expect(
+      turnB.items.some(
+        (i) => i.type === 'assistantMessage' && i.text === 'STALE-A'
       )
     ).toBe(false);
 
     await adapter.disconnect();
   });
 
-  it('queues a second sendMessage and starts it after the first turn completes', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
+  it('keeps both assistant messages in one turn (content_block index restarts per message)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
 
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
+    await adapter.sendMessage({ turnId: 'turn-multi', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
       type: 'system',
       subtype: 'init',
       session_id: 'claude-session-1',
     });
 
-    const first = adapter.sendMessage({ turnId: 'turn-1', content: 'one' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const second = adapter.sendMessage({ turnId: 'turn-2', content: 'two' });
-    expect(controller.inputs.length).toBe(1);
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
+    // ── API message 1: text "first" (index 0) then a Bash tool_use (index 1) ──
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-1' } },
     });
-
-    await first;
-    await waitFor(() => controller.inputs.length === 2);
-    expect(controller.inputs[1]).toMatchObject({
-      type: 'user',
-      message: { role: 'user', content: 'two' },
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text' },
+      },
     });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'first' },
+      },
     });
-    await second;
-    await waitFor(
-      () =>
-        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
-          .length === 2
-    );
-
-    const completedTurns = patches.filter(
-      (patch) => patch.type === 'agent-turn-completed-v2'
-    );
-    expect(completedTurns.map((patch) => patch.turnId)).toEqual([
-      'turn-1',
-      'turn-2',
-    ]);
-
-    await adapter.disconnect();
-  });
-
-  it('maps SDK tool_use blocks to command, file, and dynamic tool items', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
     });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-tools',
-      content: 'tools',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
+    child.serverWrite({
       type: 'assistant',
       message: {
-        id: 'msg-native-tools',
+        id: 'm-1',
         content: [
-          { type: 'thinking', thinking: 'inspect files' },
+          { type: 'text', text: 'first' },
           {
             type: 'tool_use',
-            id: 'tool-bash',
-            name: 'Bash',
-            input: { command: 'npm test' },
-          },
-          {
-            type: 'tool_use',
-            id: 'tool-edit',
-            name: 'Edit',
-            input: { file_path: 'src/a.ts' },
-          },
-          {
-            type: 'tool_use',
-            id: 'tool-grep',
-            name: 'Grep',
-            input: { pattern: 'x' },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
-    );
-
-    const itemTypes = patches
-      .filter((patch) => patch.type === 'agent-item-started-v2')
-      .map((patch) => patch.item.type);
-
-    expect(itemTypes).toEqual(
-      expect.arrayContaining([
-        'reasoning',
-        'commandExecution',
-        'fileChange',
-        'dynamicToolCall',
-      ])
-    );
-
-    await adapter.disconnect();
-  });
-
-  it('completes file change items with patch from tool_use_result', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-edit',
-      content: 'edit it',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-edit',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-edit-1',
-            name: 'Edit',
-            input: {
-              file_path: '/repo/test.md',
-              old_string: 'foo',
-              new_string: 'bar',
-            },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-edit-1',
-            content: 'Edited.',
-          },
-        ],
-      },
-      tool_use_result: {
-        filePath: '/repo/test.md',
-        oldString: 'foo',
-        newString: 'bar',
-        structuredPatch: [
-          {
-            oldStart: 1,
-            oldLines: 1,
-            newStart: 1,
-            newLines: 1,
-            lines: ['-foo', '+bar'],
-          },
-        ],
-        gitDiff: {
-          filename: 'test.md',
-          status: 'modified',
-          additions: 1,
-          deletions: 1,
-          changes: 2,
-          patch: '@@ -1,1 +1,1 @@\n-foo\n+bar',
-        },
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
-    );
-
-    const updates = patches.filter(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'fileChange'
-    );
-    expect(updates).toHaveLength(1);
-    const update = updates[0];
-    expect(update.item).toMatchObject({
-      id: 'file-tool-edit-1',
-      applyStatus: 'applied',
-      status: 'completed',
-    });
-    if (update.item.type !== 'fileChange')
-      throw new Error('expected fileChange');
-    expect(update.item.patch).toContain('-foo');
-    expect(update.item.patch).toContain('+bar');
-
-    await adapter.disconnect();
-  });
-
-  it('falls back to structuredPatch when gitDiff.patch is missing', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-write',
-      content: 'write it',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-write',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-write-1',
-            name: 'Write',
-            input: { file_path: '/repo/new.md', content: 'hello\nworld\n' },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-write-1',
-            content: 'File created.',
-          },
-        ],
-      },
-      tool_use_result: {
-        filePath: '/repo/new.md',
-        structuredPatch: [
-          {
-            oldStart: 0,
-            oldLines: 0,
-            newStart: 1,
-            newLines: 2,
-            lines: ['+hello', '+world'],
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
-    );
-
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'fileChange'
-    );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'fileChange')
-      throw new Error('expected fileChange');
-    expect(update.item.patch).toContain('@@ -0,0 +1,2 @@');
-    expect(update.item.patch).toContain('+hello');
-    expect(update.item.patch).toContain('+world');
-    expect(update.item.applyStatus).toBe('applied');
-
-    await adapter.disconnect();
-  });
-
-  it('marks file change failed when tool_result is_error is true', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-fail',
-      content: 'edit broken',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-fail',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-edit-fail',
-            name: 'Edit',
-            input: { file_path: '/repo/missing.md' },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-edit-fail',
-            is_error: true,
-            content: 'File does not exist.',
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
-    );
-
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'fileChange'
-    );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'fileChange')
-      throw new Error('expected fileChange');
-    expect(update.item.applyStatus).toBe('failed');
-    expect(update.item.status).toBe('failed');
-
-    await adapter.disconnect();
-  });
-
-  it('completes commandExecution items with stdout/stderr and interactive flag', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-bash',
-      content: 'run it',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-bash',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-bash-1',
+            id: 'tu-1',
             name: 'Bash',
             input: { command: 'echo hi' },
           },
         ],
       },
-      session_id: 'claude-session-1',
     });
-
-    controller.emit({
+    child.serverWrite({
       type: 'user',
       message: {
         role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-bash-1',
-            content: 'hi',
-          },
-        ],
+        content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'hi' }],
       },
-      tool_use_result: {
-        stdout: 'hi\n',
-        stderr: '',
-        interrupted: true,
-      },
-      session_id: 'claude-session-1',
+      tool_use_result: { stdout: 'hi\n', stderr: '' },
     });
 
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
+    // ── API message 2: text "second" — content_block index restarts at 0 ──
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-2' } },
     });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'second' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    child.serverWrite({
+      type: 'assistant',
+      message: { id: 'm-2', content: [{ type: 'text', text: 'second' }] },
+    });
+    child.serverWrite(successResult());
 
-    await sendPromise;
     await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
     );
 
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'commandExecution'
+    const session = reduce(patches);
+    const turn = session.turns.find((t) => t.id === 'turn-multi')!;
+    const assistantMsgs = turn.items.filter(
+      (i) => i.type === 'assistantMessage'
     );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'commandExecution')
-      throw new Error('expected commandExecution');
-    expect(update.item.command).toBe('echo hi');
-    expect(update.item.output).toBe('hi\n');
-    expect(update.item.status).toBe('completed');
-    expect(update.item.interactive).toBe(true);
+    // Both messages survive the per-message index restart (no id collision), and
+    // both echoes were still dropped (exactly two, not four).
+    expect(assistantMsgs).toHaveLength(2);
+    expect(
+      assistantMsgs.map((m) => (m.type === 'assistantMessage' ? m.text : ''))
+    ).toEqual(['first', 'second']);
+    expect(
+      assistantMsgs.every(
+        (m) => m.type === 'assistantMessage' && m.status === 'completed'
+      )
+    ).toBe(true);
 
     await adapter.disconnect();
   });
 
-  it('falls back to stderr then result text when stdout is empty', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
+  it('keeps multiple text slots when non-text blocks shift raw stream indexes', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
 
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
+    await adapter.sendMessage({ turnId: 'turn-slots', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-slots' } },
     });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-bash-fail',
-      content: 'run failing',
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking' },
+      },
     });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'plan' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    for (const [index, text] of [
+      [1, 'first'],
+      [2, 'second'],
+    ] as const) {
+      child.serverWrite({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'text' },
+        },
+      });
+      child.serverWrite({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'text_delta', text },
+        },
+      });
+      child.serverWrite({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index },
+      });
+    }
+    // The echo omits thinking, so its two text blocks are ordinals 0 and 1
+    // even though the stream addressed them by raw indexes 1 and 2.
+    child.serverWrite({
       type: 'assistant',
       message: {
-        id: 'msg-bash-fail',
+        id: 'm-slots',
         content: [
-          {
-            type: 'tool_use',
-            id: 'tool-bash-fail',
-            name: 'Bash',
-            input: { command: 'false' },
-          },
+          { type: 'text', text: 'first' },
+          { type: 'text', text: 'second' },
         ],
       },
-      session_id: 'claude-session-1',
     });
+    child.serverWrite(successResult());
 
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-bash-fail',
-            is_error: true,
-            content: 'command failed',
-          },
-        ],
-      },
-      tool_use_result: {
-        stdout: '',
-        stderr: 'boom\n',
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
     await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
     );
-
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'commandExecution'
+    const turn = reduce(patches).turns.find((t) => t.id === 'turn-slots')!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
     );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'commandExecution')
-      throw new Error('expected commandExecution');
-    expect(update.item.output).toBe('boom\n');
-    expect(update.item.status).toBe('failed');
+    expect(assistantMsgs).toHaveLength(2);
+    expect(
+      assistantMsgs.map((item) =>
+        item.type === 'assistantMessage' ? item.text : ''
+      )
+    ).toEqual(['first', 'second']);
 
     await adapter.disconnect();
   });
 
-  it('completes dynamicToolCall items with raw result and extracted text', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
+  it('does not preempt an outstanding approval with the stuck-turn kill; auto-deny keeps the turn alive', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-grep',
-      content: 'search',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-grep',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-grep-1',
-            name: 'Grep',
-            input: { pattern: 'TODO' },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-grep-1',
-            content: [
-              { type: 'text', text: 'src/foo.ts:12: // TODO' },
-              { type: 'text', text: 'src/bar.ts:7: // TODO' },
-            ],
-          },
-        ],
-      },
-      tool_use_result: { matches: 2 },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    // Both deadlines small; the approval outstrips the raw turn-timeout budget.
+    await adapter.connect(
+      baseConfig({ turnTimeoutMs: 20, approvalStallMs: 40 })
     );
-
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'dynamicToolCall'
-    );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'dynamicToolCall')
-      throw new Error('expected dynamicToolCall');
-    expect(update.item.tool).toBe('Grep');
-    expect(update.item.status).toBe('completed');
-    expect(update.item.result).toEqual({ matches: 2 });
-    expect(update.item.content).toContain('src/foo.ts:12');
-    expect(update.item.content).toContain('src/bar.ts:7');
-
-    await adapter.disconnect();
-  });
-
-  it('marks dynamicToolCall failed when tool_result is_error is true', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    const sendPromise = adapter.sendMessage({
-      turnId: 'turn-grep-fail',
-      content: 'search broken',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-grep-fail',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-grep-fail',
-            name: 'Grep',
-            input: { pattern: '???' },
-          },
-        ],
+    await adapter.sendMessage({ turnId: 'turn-approve', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-appr',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: { command: 'ls' },
       },
-      session_id: 'claude-session-1',
     });
-
-    controller.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-grep-fail',
-            is_error: true,
-            content: 'invalid pattern',
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
-    });
-
-    await sendPromise;
-    await waitFor(() =>
-      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
-    );
-
-    const update = patches.find(
-      (
-        patch
-      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
-        patch.type === 'agent-item-updated-v2' &&
-        patch.item.type === 'dynamicToolCall'
-    );
-    expect(update).toBeDefined();
-    if (!update || update.item.type !== 'dynamicToolCall')
-      throw new Error('expected dynamicToolCall');
-    expect(update.item.status).toBe('failed');
-    expect(update.item.content).toBe('invalid pattern');
-
-    await adapter.disconnect();
-  });
-
-  it('clears tracked tool uses on disconnect so resumed sessions emit no stale completions', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    void adapter.sendMessage({
-      turnId: 'turn-teardown',
-      content: 'edit then drop',
-    });
-    await waitFor(() => controller.inputs.length === 1);
-
-    controller.emit({
-      type: 'assistant',
-      message: {
-        id: 'msg-teardown',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'tool-teardown-1',
-            name: 'Edit',
-            input: {
-              file_path: '/repo/dropped.md',
-              old_string: 'a',
-              new_string: 'b',
-            },
-          },
-        ],
-      },
-      session_id: 'claude-session-1',
-    });
-
     await waitFor(() =>
       patches.some(
         (p) =>
-          p.type === 'agent-item-started-v2' &&
-          p.item.id === 'file-tool-teardown-1'
+          p.type === 'agent-live-state-updated-v2' &&
+          p.live.waitingOn === 'approval'
       )
     );
 
-    // Disconnect before tool_result arrives — drops the in-flight tool_use.
-    await adapter.disconnect();
+    // Drive the GC sweep well past turnTimeoutMs while the approval is still
+    // outstanding — the stuck-turn kill must NOT fire.
+    adapter.gcSweep(Date.now() + 10_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(
+      patches.some(
+        (p) =>
+          p.type === 'agent-turn-completed-v2' && p.turnId === 'turn-approve'
+      )
+    ).toBe(false);
+    expect(adapter.status).toBe('connected');
 
-    const beforeReconnectCount = patches.length;
-
-    // Reconnect and emit a stale tool_result for the dropped tool_use_id.
-    await adapter.connect(config);
-    const controller2 = queryFn.current!;
-    controller2.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-2',
-    });
-    controller2.emit({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'tool-teardown-1',
-            content: 'late result',
-          },
-        ],
-      },
-      tool_use_result: { filePath: '/repo/dropped.md' },
-      session_id: 'claude-session-2',
-    });
-
-    // Give the adapter a tick to process; assert no fileChange completion was
-    // emitted for the dropped tool_use after reconnect.
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const newPatches = patches.slice(beforeReconnectCount);
-    const stale = newPatches.find(
-      (p) =>
-        p.type === 'agent-item-updated-v2' &&
-        p.item.type === 'fileChange' &&
-        p.item.id === 'file-tool-teardown-1'
+    // The approval-stall timer auto-denies (child stays warm); the turn then
+    // completes normally on its result.
+    await child.waitForFrames(2); // the auto-deny control_response
+    const denied = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'approval'
     );
-    expect(stale).toBeUndefined();
+    expect(
+      denied?.type === 'agent-item-updated-v2' && denied.item
+    ).toMatchObject({ respondedBy: 'timeout' });
+
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(
+      completed?.type === 'agent-turn-completed-v2' && completed.status
+    ).toBe('completed');
 
     await adapter.disconnect();
   });
 
-  it('bridges SDK canUseTool approval through respondToApproval', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
+  it('resolves pending approval cards when a turn is crash-completed (no lingering pending)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-crash-appr', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'control_request',
+      request_id: 'req-orphan',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: { command: 'rm x' },
+      },
     });
-
-    void adapter.sendMessage({ turnId: 'turn-approval', content: 'approval' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'npm test' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'tool-approval',
-        title: 'Claude wants to run tests',
-        displayName: 'Run command',
-        description: 'npm test',
-      }
-    );
-
     await waitFor(() =>
       patches.some(
-        (patch) =>
-          patch.type === 'agent-live-state-updated-v2' &&
-          patch.live.waitingOn === 'approval'
+        (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
       )
     );
 
-    await adapter.respondToApproval({
-      requestId: 'tool-approval',
-      decision: { kind: 'accept', scope: 'once' },
-    });
-    const decision = await decisionPromise;
-    expect(decision?.behavior).toBe('allow');
+    // Child crashes mid-approval.
+    child.emitClose(1, null);
+    await waitFor(() =>
+      patches.some(
+        (p) => p.type === 'agent-turn-completed-v2' && p.status === 'failed'
+      )
+    );
 
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-      session_id: 'claude-session-1',
+    const session = reduce(patches);
+    const turn = session.turns.find((t) => t.id === 'turn-crash-appr')!;
+    const approvals = turn.items.filter((i) => i.type === 'approval');
+    expect(approvals.length).toBeGreaterThan(0);
+    expect(approvals.every((a) => a.status !== 'pending')).toBe(true);
+    expect(approvals[0]?.status).toBe('cancelled');
+
+    await adapter.disconnect();
+  });
+
+  it('does not count interrupt-kills toward the crash-loop breaker', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(
+      baseConfig({
+        interruptAckMs: 10,
+        teardownAfterStdinMs: 5,
+        teardownAfterSigtermMs: 5,
+      })
+    );
+
+    // Two interrupt-kills (deliberate SIGTERM/SIGKILL ladder — NOT crashes).
+    for (let i = 0; i < 2; i++) {
+      harness.setNextChildOptions({ closeOnStdinEnd: false });
+      const send = adapter.sendMessage({ turnId: `turn-${i}`, content: 'go' });
+      const child = harness.latest().child;
+      await child.waitForFrames(1);
+      child.kill.mockImplementation((_sig?: string) => {
+        if (_sig === 'SIGKILL')
+          setImmediate(() => child.emitClose(null, 'SIGKILL'));
+        return true;
+      });
+      await adapter.interrupt({ turnId: `turn-${i}` });
+      await send;
+    }
+    expect(harness.spawns).toHaveLength(2);
+
+    // A third send within the 5-minute window must still spawn — the breaker
+    // only counts unexpected exits, of which there were none.
+    await expect(
+      adapter.sendMessage({ turnId: 'turn-final', content: 'go' })
+    ).resolves.toBeUndefined();
+    expect(harness.spawns).toHaveLength(3);
+
+    await adapter.disconnect();
+  });
+
+  it('replays the sanitized live fixture end-to-end to one user + one assistant message', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-replay', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.join(
+      here,
+      '..',
+      '..',
+      'fixtures',
+      'claude-stream',
+      'hello.jsonl'
+    );
+    const lines = fs
+      .readFileSync(fixturePath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0);
+    for (const line of lines) child.serverWrite(JSON.parse(line));
+
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+
+    const session = reduce(patches);
+    const turn = session.turns.find((t) => t.id === 'turn-replay')!;
+    const userMsgs = turn.items.filter((i) => i.type === 'userMessage');
+    const assistantMsgs = turn.items.filter(
+      (i) => i.type === 'assistantMessage'
+    );
+    expect(userMsgs).toHaveLength(1);
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0]).toMatchObject({ text: 'ok', status: 'completed' });
+    expect(turn.status).toBe('completed');
+    // The fixture's system/init session_id was captured (and follows the hook
+    // events; the system/status line follows init).
+    const providerUpdate = patches.find(
+      (p) =>
+        p.type === 'agent-session-updated-v2' && p.providerSession !== undefined
+    );
+    expect(
+      providerUpdate?.type === 'agent-session-updated-v2' &&
+        providerUpdate.providerSession
+    ).toMatchObject({
+      claudeSessionId: '00000000-0000-4000-8000-000000000001',
     });
+
+    await adapter.disconnect();
+  });
+
+  it('replays sanitized text-index drift as one assistant item', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-index-drift', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.join(
+      here,
+      '..',
+      '..',
+      'fixtures',
+      'claude-stream',
+      'text-index-drift.jsonl'
+    );
+    const lines = fs
+      .readFileSync(fixturePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    for (const line of lines) child.serverWrite(JSON.parse(line));
+
     await waitFor(() =>
       patches.some((patch) => patch.type === 'agent-turn-completed-v2')
     );
-
-    expect(patches).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'agent-item-started-v2',
-          item: expect.objectContaining({
-            type: 'approval',
-            requestId: 'tool-approval',
-            target: 'npm test',
-            supported: {
-              scopes: ['once', 'permanent'],
-              amendmentTypes: [],
-              canCancel: false,
-            },
-          }),
-        }),
-        expect.objectContaining({
-          type: 'agent-item-updated-v2',
-          item: expect.objectContaining({
-            type: 'approval',
-            decision: { kind: 'accept', scope: 'once' },
-          }),
-        }),
-      ])
+    const turn = reduce(patches).turns.find(
+      (candidate) => candidate.id === 'turn-index-drift'
+    )!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
     );
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0]).toMatchObject({
+      text: 'synthetic answer',
+      status: 'completed',
+    });
 
     await adapter.disconnect();
   });
 
-  it('maps accept/once V2 decision to allow_once SDK result', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
+  it('replays two blank-id assistant messages as distinct items in one turn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-blank-ids', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
 
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({ type: 'system', subtype: 'init', session_id: 's1' });
-    void adapter.sendMessage({ turnId: 'turn-v2', content: 'go' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'ls' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'req-once',
-        title: 'run ls',
-      }
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.join(
+      here,
+      '..',
+      '..',
+      'fixtures',
+      'claude-stream',
+      'two-blank-message-ids.jsonl'
     );
-    await adapter.respondToApproval({
-      requestId: 'req-once',
-      decision: { kind: 'accept', scope: 'once' },
-    });
-    const result = await decisionPromise;
-    expect(result?.behavior).toBe('allow');
+    const lines = fs
+      .readFileSync(fixturePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    for (const line of lines) child.serverWrite(JSON.parse(line));
+
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+    const turn = reduce(patches).turns.find(
+      (candidate) => candidate.id === 'turn-blank-ids'
+    )!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
+    );
+    expect(assistantMsgs).toHaveLength(2);
     expect(
-      (result as { decisionClassification?: string }).decisionClassification
-    ).toBe('user_temporary');
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-    });
-    await adapter.disconnect();
-  });
-
-  it('maps accept/permanent V2 decision to allow_permanent SDK result', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({ type: 'system', subtype: 'init', session_id: 's1' });
-    void adapter.sendMessage({ turnId: 'turn-perm', content: 'go' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'ls' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'req-perm',
-        title: 'run ls',
-      }
-    );
-    await adapter.respondToApproval({
-      requestId: 'req-perm',
-      decision: { kind: 'accept', scope: 'permanent' },
-    });
-    const result = await decisionPromise;
-    expect(result?.behavior).toBe('allow');
-    expect(
-      (result as { decisionClassification?: string }).decisionClassification
-    ).toBe('user_permanent');
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-    });
-    await adapter.disconnect();
-  });
-
-  it('maps decline V2 decision to deny SDK result', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({ type: 'system', subtype: 'init', session_id: 's1' });
-    void adapter.sendMessage({ turnId: 'turn-deny', content: 'go' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'ls' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'req-deny',
-        title: 'run ls',
-      }
-    );
-    await adapter.respondToApproval({
-      requestId: 'req-deny',
-      decision: { kind: 'decline' },
-    });
-    const result = await decisionPromise;
-    expect(result?.behavior).toBe('deny');
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-    });
-    await adapter.disconnect();
-  });
-
-  it('throws when cancel V2 decision is sent to Claude adapter', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({ type: 'system', subtype: 'init', session_id: 's1' });
-    void adapter.sendMessage({ turnId: 'turn-cancel', content: 'go' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'ls' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'req-cancel',
-        title: 'run ls',
-      }
-    );
-    await adapter.respondToApproval({
-      requestId: 'req-cancel',
-      decision: { kind: 'cancel' },
-    });
-    await expect(decisionPromise).rejects.toThrow(/cancel/i);
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-    });
-    await adapter.disconnect();
-  });
-
-  it('throws when unsupported session scope V2 decision is sent to Claude adapter', async () => {
-    const queryFn = makeScriptedQuery();
-    let capturedCanUseTool:
-      | NonNullable<Parameters<ClaudeQueryFunction>[0]['options']>['canUseTool']
-      | undefined;
-    const wrappedFn: ClaudeQueryFunction = (params) => {
-      capturedCanUseTool = params.options?.canUseTool;
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(wrappedFn);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({ type: 'system', subtype: 'init', session_id: 's1' });
-    void adapter.sendMessage({ turnId: 'turn-scope', content: 'go' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    const decisionPromise = capturedCanUseTool?.(
-      'Bash',
-      { command: 'ls' },
-      {
-        signal: new AbortController().signal,
-        toolUseID: 'req-scope',
-        title: 'run ls',
-      }
-    );
-    await adapter.respondToApproval({
-      requestId: 'req-scope',
-      decision: { kind: 'accept', scope: 'session' },
-    });
-    await expect(decisionPromise).rejects.toThrow(/session/i);
-
-    controller.emit({
-      type: 'result',
-      subtype: 'success',
-      duration_ms: 1,
-      total_cost_usd: 0,
-      usage: {},
-    });
-    await adapter.disconnect();
-  });
-
-  it('interrupt() ends the active turn and triggers SDK interrupt', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    collectPatches(adapter);
-
-    await adapter.connect(config);
-    const controller = queryFn.current!;
-    controller.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'claude-session-1',
-    });
-
-    void adapter.sendMessage({ turnId: 'turn-int', content: 'long task' });
-    await waitFor(() => controller.inputs.length === 1);
-
-    await adapter.interrupt({ turnId: 'turn-int' });
-
-    expect(controller.interruptCalls).toBe(1);
-    await adapter.disconnect();
-  });
-
-  it('resumeSession passes resume option to the SDK query and emits snapshot with providerSession', async () => {
-    const queryFn = makeScriptedQuery();
-    const capturedOptions: Array<
-      Parameters<ClaudeQueryFunction>[0]['options']
-    > = [];
-    const trackingFn: ClaudeQueryFunction = (params) => {
-      capturedOptions.push(params.options);
-      return queryFn()(params);
-    };
-    const adapter = new ClaudeProtocolAdapter(trackingFn);
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    // First connect captures options[0]
-
-    await adapter.resumeSession('claude-resume-id-1');
-    // resumeSession captures options[1]
-
-    expect(capturedOptions).toHaveLength(2);
-    expect(capturedOptions[1]?.resume).toBe('claude-resume-id-1');
-
-    const snapshotAfterResume = patches.find(
-      (patch, idx) =>
-        patch.type === 'agent-session-snapshot-v2' &&
-        idx > patches.findIndex((p) => p.type === 'agent-session-snapshot-v2')
-    );
-    expect(snapshotAfterResume).toMatchObject({
-      type: 'agent-session-snapshot-v2',
-      session: expect.objectContaining({
-        providerSession: { claudeSessionId: 'claude-resume-id-1' },
-        capabilities: expect.objectContaining({ resume: true }),
-      }),
-    });
-
-    await adapter.disconnect();
-  });
-
-  it('resumeSession emits an idle live-state patch after the snapshot', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    const firstSnapshotIdx = patches.findIndex(
-      (p) => p.type === 'agent-session-snapshot-v2'
-    );
-
-    await adapter.resumeSession('resume-id-idle-check');
-
-    const afterResumePatch = patches.slice(firstSnapshotIdx + 1);
-    const resumeSnapshot = afterResumePatch.find(
-      (p) => p.type === 'agent-session-snapshot-v2'
-    );
-    expect(resumeSnapshot).toBeDefined();
-
-    const idlePatch = afterResumePatch.find(
-      (p) =>
-        p.type === 'agent-live-state-updated-v2' && p.live.status === 'idle'
-    );
-    expect(idlePatch).toBeDefined();
-
-    await adapter.disconnect();
-  });
-
-  it('resumeSession sets claudeSessionId without waiting for an init message', async () => {
-    const queryFn = makeScriptedQuery();
-    const adapter = new ClaudeProtocolAdapter(queryFn());
-    const patches = collectPatches(adapter);
-
-    await adapter.connect(config);
-    await adapter.resumeSession('pre-stored-session');
-
-    // Snapshot must carry providerSession immediately — no init message needed
-    const resumeSnapshot = patches
-      .slice(
-        patches.findIndex((p) => p.type === 'agent-session-snapshot-v2') + 1
+      assistantMsgs.map((item) =>
+        item.type === 'assistantMessage' ? item.text : ''
       )
-      .find((p) => p.type === 'agent-session-snapshot-v2');
-    expect(resumeSnapshot).toMatchObject({
-      session: expect.objectContaining({
-        providerSession: { claudeSessionId: 'pre-stored-session' },
-      }),
-    });
+    ).toEqual(['synthetic first', 'synthetic second']);
+    expect(new Set(assistantMsgs.map((item) => item.id)).size).toBe(2);
 
     await adapter.disconnect();
   });
 });
-// Suppress unused vitest helper warning when no top-level mocks are needed.
-void vi;
+
+// Reduce a patch stream to a session, asserting reducer legality along the way.
+function reduce(patches: AgentPatchV2[]): AgentSessionV2 {
+  let session: AgentSessionV2 = emptyAgentSessionV2({
+    id: 'session-1',
+    provider: 'claude',
+    cwd: '/tmp/repo',
+  });
+  for (const patch of patches) {
+    expect(isAgentPatchV2(patch)).toBe(true);
+    session = applyAgentPatchV2(session, patch);
+  }
+  return session;
+}

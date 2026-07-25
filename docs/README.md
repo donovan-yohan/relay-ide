@@ -22,7 +22,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
 | Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission        |
 | WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                      |
-| Web chat              | `WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)          |
+| Channel chat          | `CHANNEL_CHAT.md`                       | Slack-style workspace chat vision (epic #1163): channel=conversation, agents-as-participants  |
 | Provider guide        | `provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)        |
 | Terminal backend      | `TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics         |
 | Review                | `REVIEW_GUIDANCE.md`                    | Reviewer prompts, risk areas, escape log                                                     |

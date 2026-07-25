@@ -38,7 +38,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Terminal backend     | `docs/TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics                                     |
 | Review               | `docs/REVIEW_GUIDANCE.md`                    | Review agent config, question bank, escape log                                                                           |
 | Deployment           | `docs/references/deployment.md`              | Publishing + branching (nightly/master + tags)                                                                           |
-| Devbox deploy        | `docs/references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene                                  |
+| Devbox deploy        | `docs/references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene; channel-era daily-driver hub (`relay-daily-hub` systemd unit, `/healthz`, wedge/duplicate-row recovery) |
 | Dogfood recovery     | `docs/references/dogfood-recovery.md`        | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate                                              |
 | Self-hosting         | `docs/SELF_HOSTING.md`                       | Build Relay with Relay using isolated dev config/ports/process identity                                                  |
 | Security policy      | `docs/SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary, exact-operation approvals, handshake grants |
@@ -52,7 +52,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Federated Relay      | `docs/federated-relay.md`                    | Hub/node architecture, pairing, routing, ADRs                                                                            |
 | CLI gateway          | `docs/CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` contract for external agent adapters                                                 |
 | Agent view artifacts | `docs/AGENT_VIEW_ARTIFACTS.md`               | Agent-authored static HTML/CSS WorkContext artifact contract, viewer package route, security model                       |
-| Web chat             | `docs/WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)                                      |
+| Channel chat         | `docs/CHANNEL_CHAT.md`                       | Slack-style workspace chat vision (epic #1163): channel=conversation, agents-as-participants, native Claude subprocess    |
 | Provider guide       | `docs/provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)                                    |
 | Handoff template     | `docs/pipeline-handoff-artifact-template.md` | PipelineHandoffArtifact authoring template: stages, evidence dispositions, exact-head fields                             |
 | ADRs                 | `docs/adrs/`                                 | Accepted ADRs (latest: ADR-017 brain-as-peer, ADR-018 command-mediated handoff, ADR-019 context-packet storage)          |

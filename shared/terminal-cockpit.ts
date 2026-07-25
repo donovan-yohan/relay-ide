@@ -11,6 +11,7 @@ export type TerminalCockpitNodeStatus =
 
 export interface TerminalCockpitSessionInput {
   id: string;
+  spawnedBySessionId?: string;
   nodeId: string;
   globalSessionId?: string;
   tabKind?: string;
@@ -109,6 +110,7 @@ export interface TerminalCockpitItem {
   };
   session: {
     id: string;
+    spawnedBySessionId?: string;
     globalSessionId?: string;
     displayName?: string;
     type?: string;
@@ -127,7 +129,9 @@ export interface TerminalCockpitItem {
     controlFreshness?: 'fresh' | 'stale' | 'unknown';
     controlReason?: string;
     activeActors?: Array<Pick<ControlActor, 'kind' | 'id' | 'displayName'>>;
-    activeWorker?: Pick<ControlActor, 'kind' | 'id' | 'displayName'> | undefined;
+    activeWorker?:
+      | Pick<ControlActor, 'kind' | 'id' | 'displayName'>
+      | undefined;
     lastActivity?: string;
     associatedAt?: string;
   };
@@ -193,7 +197,8 @@ function durabilityDisabledReason(
     return 'stale node — live controls disabled until the node is fresh';
   }
   if (state === 'ended') return 'session ended — no process to control';
-  if (state === 'error') return 'session in error state — live controls disabled';
+  if (state === 'error')
+    return 'session in error state — live controls disabled';
   return null;
 }
 
@@ -209,7 +214,8 @@ function activeWorkAttentionPriority(
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 1;
   if (group.node.status === 'stale' || group.staleReadModel) return 2;
-  if (group.sessions.some((session) => session.agentState === 'error')) return 3;
+  if (group.sessions.some((session) => session.agentState === 'error'))
+    return 3;
   if (group.sessions.some((session) => session.agentState === 'processing'))
     return 4;
   if (group.sessions.some((session) => session.live)) return 5;
@@ -232,9 +238,13 @@ function primarySession(
 }
 
 function stateLabel(group: TerminalCockpitActiveGroupInput): string {
-  if (group.sessions.some((session) => session.agentState === 'permission-prompt'))
+  if (
+    group.sessions.some((session) => session.agentState === 'permission-prompt')
+  )
     return 'needs approval';
-  if (group.sessions.some((session) => session.agentState === 'waiting-for-input'))
+  if (
+    group.sessions.some((session) => session.agentState === 'waiting-for-input')
+  )
     return 'needs input';
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 'offline';
@@ -253,8 +263,10 @@ function attentionReasons(
   session: TerminalCockpitSessionInput
 ): string[] {
   const reasons: string[] = [];
-  if (session.agentState === 'permission-prompt') reasons.push('permission-prompt');
-  if (session.agentState === 'waiting-for-input') reasons.push('waiting-for-input');
+  if (session.agentState === 'permission-prompt')
+    reasons.push('permission-prompt');
+  if (session.agentState === 'waiting-for-input')
+    reasons.push('waiting-for-input');
   if (session.agentState === 'error') reasons.push('error');
   if (group.node.status !== 'online') reasons.push(`${group.node.status}-node`);
   if (group.staleReadModel) reasons.push('stale-read-model');
@@ -341,7 +353,7 @@ export function buildTerminalCockpitView(input: {
   );
   const limited =
     input.limit && input.limit > 0 ? sorted.slice(0, input.limit) : sorted;
-  // eslint-disable-next-line complexity -- Terminal cockpit projection keeps one bounded, redaction-safe output mapper.
+
   const items = limited.map(({ group, session, priority }, index) => {
     const context = group.context;
     const liveReason = liveControlDisabledReason(group, session);
@@ -373,14 +385,18 @@ export function buildTerminalCockpitView(input: {
         artifacts: {
           count: context?.artifacts?.length ?? 0,
           latest: [...(context?.artifacts ?? [])]
-            .sort((a, b) => (b.producedAt ?? '').localeCompare(a.producedAt ?? ''))
+            .sort((a, b) =>
+              (b.producedAt ?? '').localeCompare(a.producedAt ?? '')
+            )
             .slice(0, 3)
             .map((artifact) => ({
               id: artifact.id,
               kind: artifact.kind,
               ...(artifact.title ? { title: artifact.title } : {}),
               ...(artifact.summary ? { summary: artifact.summary } : {}),
-              ...(artifact.producedAt ? { producedAt: artifact.producedAt } : {}),
+              ...(artifact.producedAt
+                ? { producedAt: artifact.producedAt }
+                : {}),
               ...(artifact.uri ? { uri: artifact.uri } : {}),
               ...(artifact.path ? { path: artifact.path } : {}),
             })),
@@ -390,12 +406,19 @@ export function buildTerminalCockpitView(input: {
         id: group.node.nodeId,
         status: group.node.status,
         freshness: nodeFreshness(group.node.status),
-        ...(group.node.displayName ? { displayName: group.node.displayName } : {}),
+        ...(group.node.displayName
+          ? { displayName: group.node.displayName }
+          : {}),
         ...(group.node.lastSeenAt ? { lastSeenAt: group.node.lastSeenAt } : {}),
       },
       session: {
         id: session.id,
-        ...(session.globalSessionId ? { globalSessionId: session.globalSessionId } : {}),
+        ...(session.spawnedBySessionId !== undefined
+          ? { spawnedBySessionId: session.spawnedBySessionId }
+          : {}),
+        ...(session.globalSessionId
+          ? { globalSessionId: session.globalSessionId }
+          : {}),
         ...(session.displayName ? { displayName: session.displayName } : {}),
         ...(session.type ? { type: session.type } : {}),
         ...(session.mode ? { mode: session.mode } : {}),
@@ -415,13 +438,17 @@ export function buildTerminalCockpitView(input: {
         ...(session.controlFreshness
           ? { controlFreshness: session.controlFreshness }
           : {}),
-        ...(session.controlReason ? { controlReason: session.controlReason } : {}),
+        ...(session.controlReason
+          ? { controlReason: session.controlReason }
+          : {}),
         ...(session.activeActors
           ? {
               activeActors: session.activeActors.map((actor) => ({
                 kind: actor.kind,
                 ...(actor.id ? { id: actor.id } : {}),
-                ...(actor.displayName ? { displayName: actor.displayName } : {}),
+                ...(actor.displayName
+                  ? { displayName: actor.displayName }
+                  : {}),
               })),
             }
           : {}),
@@ -435,7 +462,9 @@ export function buildTerminalCockpitView(input: {
         attach: {
           enabled: liveReason === null,
           ...(liveReason === null
-            ? { command: `relay-ide v1 sessions attach --id ${sessionKey} --json` }
+            ? {
+                command: `relay-ide v1 sessions attach --id ${sessionKey} --json`,
+              }
             : {}),
           disabledReason: liveReason,
         },
@@ -447,7 +476,8 @@ export function buildTerminalCockpitView(input: {
         },
         destructive: {
           enabled: false,
-          disabledReason: 'destructive controls are outside the terminal cockpit MVP',
+          disabledReason:
+            'destructive controls are outside the terminal cockpit MVP',
         },
       },
     } satisfies TerminalCockpitItem;
@@ -471,7 +501,9 @@ function cockpitActionHints(
   const attach = commandHint({
     id: 'sessions.attach',
     label: 'attach to live session',
-    ...(item.actions.attach.command ? { command: item.actions.attach.command } : {}),
+    ...(item.actions.attach.command
+      ? { command: item.actions.attach.command }
+      : {}),
     enabled: item.actions.attach.enabled,
     disabledReason: item.actions.attach.disabledReason,
     safety: 'attach',
@@ -618,7 +650,10 @@ function fmt(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : 'n/a';
 }
 
-function renderHints(title: string, hints: TerminalCockpitCommandHint[]): string[] {
+function renderHints(
+  title: string,
+  hints: TerminalCockpitCommandHint[]
+): string[] {
   const lines = [`${title}:`];
   for (const hint of hints) {
     lines.push(
@@ -628,7 +663,9 @@ function renderHints(title: string, hints: TerminalCockpitCommandHint[]): string
   return lines;
 }
 
-export function renderTerminalCockpitDetail(detail: TerminalCockpitDetail): string {
+export function renderTerminalCockpitDetail(
+  detail: TerminalCockpitDetail
+): string {
   const item = detail.item;
   const lines = [
     'Relay terminal cockpit detail',
@@ -653,7 +690,10 @@ export function renderTerminalCockpitDetail(detail: TerminalCockpitDetail): stri
   if (item.workContext.taskRefs.length > 0) {
     lines.push(
       `task: ${item.workContext.taskRefs
-        .map((task) => `${task.kind}:${task.id}${task.status ? ` (${task.status})` : ''}`)
+        .map(
+          (task) =>
+            `${task.kind}:${task.id}${task.status ? ` (${task.status})` : ''}`
+        )
         .join(', ')}`
     );
   }
@@ -682,8 +722,11 @@ export function renderTerminalCockpit(view: TerminalCockpitView): string {
   lines.push(`Next: ${view.next.workContext.id} / ${view.next.session.id}`);
   lines.push('');
   for (const item of view.items) {
-    lines.push(`#${item.rank} ${item.attention.label} — ${item.workContext.id}`);
-    if (item.workContext.title) lines.push(`  title: ${item.workContext.title}`);
+    lines.push(
+      `#${item.rank} ${item.attention.label} — ${item.workContext.id}`
+    );
+    if (item.workContext.title)
+      lines.push(`  title: ${item.workContext.title}`);
     lines.push(
       `  why: ${item.attention.reasons.length ? item.attention.reasons.join(', ') : item.attention.label}`
     );
@@ -699,7 +742,10 @@ export function renderTerminalCockpit(view: TerminalCockpitView): string {
     if (item.workContext.taskRefs.length > 0) {
       lines.push(
         `  task: ${item.workContext.taskRefs
-          .map((task) => `${task.kind}:${task.id}${task.status ? ` (${task.status})` : ''}`)
+          .map(
+            (task) =>
+              `${task.kind}:${task.id}${task.status ? ` (${task.status})` : ''}`
+          )
           .join(', ')}`
       );
     }

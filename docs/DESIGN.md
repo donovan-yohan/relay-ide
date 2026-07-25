@@ -104,7 +104,7 @@ Sessions are typed as `'agent' | 'terminal'`. In the current implementation, loc
   3. **agent-suggested** — first line of stdout from the configured renamer tool (default: `claude -p --model haiku`); tool choice is `Config.renamerTool` (`'claude' | 'codex' | 'none' | 'custom-script'`); custom-script receives the prompt via `RELAY_RENAME_PROMPT` env var and must have an absolute path; branch name comes from the second line of output
   4. **heuristic** — derived from `repoName/branchName`, `repoName`, `branchName`, or `path.basename(cwd)` (in that order of availability)
   5. **default** — ISO timestamp + repo context (last resort)
-     The resolver logs which branch fired (`[rename] source=<branch>`). Telemetry: each call emits a structured log line identifying the winning branch. Phase 3 (per-Workspace overrides, blocked by #444) and Phase 4 (web-interface metadata, blocked by #300/#301) are deferred.
+     The resolver logs which branch fired (`[rename] source=<branch>`). Telemetry: each call emits a structured log line identifying the winning branch. Phase 3 (per-Workspace overrides, blocked by #444) and Phase 4 (web-interface metadata, blocked by #301) are deferred.
 - **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted. Returns 409 if active sessions exist in the worktree (use `force: true` to kill sessions first). `GET /worktrees/status` provides pre-cleanup checks (active sessions, uncommitted changes) and validates that the path is a recognized worktree directory.
 
 ## Session State Detection

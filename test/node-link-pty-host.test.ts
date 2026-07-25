@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import type { WebSocket } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { setupWebSocket } from '../server/ws.js';
@@ -418,8 +418,10 @@ describe('node link pty host (integration)', () => {
       sessionId: string;
       data: string;
     }> = [];
+    const releaseRoutedPtyControlSession = vi.fn();
     const linkManager = createHubNodeLinkManager({
       ptyInputRecorder: (input) => remoteInputRecords.push(input),
+      releaseRoutedPtyControlSession,
     });
     const server = http.createServer(express());
     setupWebSocket(
@@ -538,5 +540,52 @@ describe('node link pty host (integration)', () => {
         data: 'echo hi',
       },
     ]);
+
+    const firstStreamId = Array.from(
+      (
+        linkManager as unknown as {
+          ptyStreams: Map<string, unknown>;
+        }
+      ).ptyStreams.keys()
+    )[0]!;
+    expect(
+      linkManager.handleEnvelope({
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId: exchanged.credential.nodeId,
+        channel: 'pty',
+        type: 'pty.error',
+        streamId: firstStreamId,
+        timestamp: new Date().toISOString(),
+        error: {
+          code: 'INTERNAL',
+          message: 'transient input error',
+          retryable: true,
+        },
+      })
+    ).toBe(true);
+    expect(releaseRoutedPtyControlSession).not.toHaveBeenCalled();
+
+    linkManager.attachPty(
+      exchanged.credential.nodeId,
+      'session-int',
+      browserStub
+    );
+    await expect
+      .poll(() => factory.attachments.length, { timeout: 2_000 })
+      .toBe(2);
+    factory.exit({ exitCode: 0 });
+    await expect
+      .poll(() => releaseRoutedPtyControlSession.mock.calls.length, {
+        timeout: 2_000,
+      })
+      .toBe(1);
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledWith(
+      exchanged.credential.nodeId,
+      'session-int'
+    );
+    factory.exit({ exitCode: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(releaseRoutedPtyControlSession).toHaveBeenCalledOnce();
   });
 });

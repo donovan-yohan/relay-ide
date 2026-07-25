@@ -34,6 +34,205 @@ afterEach(async () => {
   createdIds.length = 0;
 });
 
+describe('buildAgentArgs cold-resume claudeArgs leak gate', () => {
+  type SerializedSession = Parameters<typeof sessions.buildAgentArgs>[0];
+  // config.claudeArgs (persisted as the session's claudeArgs) are Claude-only
+  // flags. Replaying them into a codex resume exits the CLI with code 2.
+  const claudeArgs = ['--model', 'opus', '--effort', 'high'];
+  const base = {
+    id: 's1',
+    type: 'agent' as const,
+    cwd: '/tmp',
+    displayName: 'Agent',
+    createdAt: new Date().toISOString(),
+    lastActivity: new Date().toISOString(),
+    customCommand: null,
+  };
+
+  it('drops serialized claudeArgs when restoring a codex session', () => {
+    const args = sessions.buildAgentArgs({
+      ...base,
+      agent: 'codex',
+      claudeArgs,
+      yolo: false,
+    } as SerializedSession);
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--effort');
+    // Codex resume still gets its own continue args, never the claudeArgs.
+    expect(args).toEqual([...(AGENT_CONTINUE_ARGS['codex'] ?? [])]);
+  });
+
+  it('replays serialized claudeArgs when restoring a claude session', () => {
+    const args = sessions.buildAgentArgs({
+      ...base,
+      agent: 'claude',
+      claudeArgs,
+      yolo: false,
+    } as SerializedSession);
+    expect(args).toEqual([
+      ...(AGENT_CONTINUE_ARGS['claude'] ?? []),
+      ...claudeArgs,
+    ]);
+  });
+});
+
+describe('routed PTY control-session cleanup', () => {
+  it('releases a routed control session idempotently', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-cleanup',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSession(
+        'remote-cleanup',
+        'session-one'
+      )
+    ).toBe(true);
+    expect(
+      sessions.releaseRoutedPtyControlSession(
+        'remote-cleanup',
+        'session-one'
+      )
+    ).toBe(false);
+  });
+
+  it('releases every routed control session owned by a revoked node', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-two',
+      data: 'y',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(2);
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(0);
+  });
+});
+
+describe('initial prompt delivery', () => {
+  it('passes a Codex initial prompt as the final distinct argv element', async () => {
+    const probeDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-codex-argv-')
+    );
+    const probePath = path.join(probeDir, 'argv-probe.mjs');
+    fs.writeFileSync(
+      probePath,
+      [
+        "process.stdout.write('ARGV=' + JSON.stringify(process.argv.slice(2)));",
+        'setTimeout(() => {}, 10_000);',
+      ].join('\n'),
+      'utf-8'
+    );
+    const initialPrompt = 'fix spaces; $(never-shell-interpolate) && verify';
+    const cases = [
+      {
+        name: 'fresh',
+        args: ['--ask-for-approval', 'never'],
+      },
+      {
+        name: 'resume',
+        args: ['resume', '--last', '--ask-for-approval', 'never'],
+      },
+    ];
+
+    try {
+      for (const testCase of cases) {
+        const result = sessions.create({
+          repoName: `codex-${testCase.name}`,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          agent: 'codex',
+          command: process.execPath,
+          args: [probePath, ...testCase.args],
+          initialPrompt,
+        });
+        createdIds.push(result.id);
+
+        let output = '';
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          output =
+            (
+              sessions.get(result.id) as PtySession | undefined
+            )?.scrollback.join('') ?? '';
+          if (output.includes('ARGV=')) break;
+          await delay(10);
+        }
+
+        expect(output).toContain(
+          `ARGV=${JSON.stringify([...testCase.args, initialPrompt])}`
+        );
+        expect(
+          (sessions.get(result.id) as PtySession | undefined)?.initialPrompt
+        ).toBeUndefined();
+      }
+    } finally {
+      fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('schedules typed injection for Claude but not Codex', () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const codex = sessions.create({
+        repoName: 'codex-native-prompt',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'codex',
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 10_000);'],
+        initialPrompt: 'native prompt',
+      });
+      createdIds.push(codex.id);
+
+      expect(timeoutSpy.mock.calls.some((call) => call[1] === 8000)).toBe(
+        false
+      );
+      expect(
+        (sessions.get(codex.id) as PtySession | undefined)?.initialPrompt
+      ).toBeUndefined();
+
+      timeoutSpy.mockClear();
+      const claude = sessions.create({
+        repoName: 'claude-typed-prompt',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'claude',
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 10_000);'],
+        initialPrompt: 'typed prompt',
+      });
+      createdIds.push(claude.id);
+
+      const fallbackCallIndex = timeoutSpy.mock.calls.findIndex(
+        (call) => call[1] === 8000
+      );
+      expect(fallbackCallIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        (sessions.get(claude.id) as PtySession | undefined)?.initialPrompt
+      ).toBe('typed prompt');
+
+      const fallbackTimer = timeoutSpy.mock.results[fallbackCallIndex]
+        ?.value as ReturnType<typeof setTimeout> | undefined;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+});
+
 describe('sessions', () => {
   it('list returns empty array initially', () => {
     const result = sessions.list();
@@ -86,6 +285,43 @@ describe('sessions', () => {
       intent: { kind: LOCAL_COMPATIBILITY_SESSION_INTENT },
       scope: { kind: 'local-compatibility', cwd: '/tmp' },
     });
+  });
+
+  it('records optional best-effort session lineage without requiring the parent to exist', () => {
+    const child = sessions.create({
+      spawnedBySessionId: 'unknown-parent-session',
+      repoName: 'lineage-child',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(child.id);
+
+    expect(child.spawnedBySessionId).toBe('unknown-parent-session');
+    expect(sessions.get(child.id)?.spawnedBySessionId).toBe(
+      'unknown-parent-session'
+    );
+    expect(
+      sessions.list().find((session) => session.id === child.id)
+        ?.spawnedBySessionId
+    ).toBe('unknown-parent-session');
+
+    const topLevel = sessions.create({
+      repoName: 'lineage-top-level',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(topLevel.id);
+    expect(topLevel).not.toHaveProperty('spawnedBySessionId');
+    expect(sessions.get(topLevel.id)).not.toHaveProperty('spawnedBySessionId');
+    expect(
+      sessions.list().find((session) => session.id === topLevel.id)
+    ).not.toHaveProperty('spawnedBySessionId');
   });
 
   it('does not synthesize repo instance identity without repoPath', () => {
@@ -1009,6 +1245,7 @@ describe('session persistence', () => {
       command: '/bin/cat',
       args: [],
       displayName: 'my-session',
+      spawnedBySessionId: 'orchestrator-session',
     });
     const originalId = s.id;
 
@@ -1018,6 +1255,12 @@ describe('session persistence', () => {
     (session as PtySession).scrollback.push('saved output');
 
     serializeAll(configDir);
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    ) as { sessions: Array<{ spawnedBySessionId?: string }> };
+    expect(serialized.sessions[0]?.spawnedBySessionId).toBe(
+      'orchestrator-session'
+    );
 
     // Kill the original session
     sessions.kill(originalId);
@@ -1033,6 +1276,11 @@ describe('session persistence', () => {
     expect(restoredSession!.cwd).toBe('/tmp');
     expect(restoredSession!.repoPath).toBe('/tmp');
     expect(restoredSession!.displayName).toBe('my-session');
+    expect(restoredSession!.spawnedBySessionId).toBe('orchestrator-session');
+    expect(
+      sessions.list().find((entry) => entry.id === originalId)
+        ?.spawnedBySessionId
+    ).toBe('orchestrator-session');
 
     // Scrollback should be restored
     expect(restoredSession!.mode).toBe('pty');

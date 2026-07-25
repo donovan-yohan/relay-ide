@@ -17,9 +17,7 @@ import type {
   ResolvedRemoteIdentity,
 } from '../shared/repo-identity.js';
 import type { OutputParser } from './output-parsers/index.js';
-import type { ProtocolAdapter } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
-import type { ChatEvent } from '../shared/chat-events.js';
 import type {
   AgentPatchV2,
   AgentSessionV2,
@@ -59,6 +57,7 @@ export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
+export type SessionRestoreState = 'restoring' | 'reattach-failed';
 export type SessionMode = 'pty' | 'web';
 export type TerminalBackend = 'relay-pty';
 
@@ -124,14 +123,12 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       // gateway at launch (#955). Other providers stay opted out until their
       // own append-prompt mechanism is verified (see provider-guide §12).
       supportsCollaborationPrompt: true,
-      // De-advertised pending end-to-end verification of the Claude web
-      // session protocol. See issue #300. The ClaudeProtocolAdapter exists
-      // in server/protocol-adapters/claude-adapter.ts but has not been
-      // verified for real assistant text streaming and round-trip behavior.
-      // Re-enable only after: real protocol verification (no synthetic
-      // event sources), assistant text streaming, and an end-to-end
-      // round-trip test all pass.
-      supportsWebSessions: false,
+      // Web sessions run the persistent-subprocess adapter over stream-json
+      // (server/protocol-adapters/claude-adapter.ts + server/claude-stream-client.ts).
+      // Re-enabled by #1168 (closes #300): no Agent SDK, real assistant-text
+      // streaming, fixture-replayed end-to-end round-trip, and one live
+      // hello-world proof. See the #1168 PR for verification evidence.
+      supportsWebSessions: true,
     },
   },
   codex: {
@@ -148,13 +145,16 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
-      // De-advertised pending full web-session implementation. See issue #301:
-      // the Codex protocol adapter maps lifecycle/tool events but does not
-      // stream assistant text deltas as `chat:text-delta`, so the web mode
-      // appeared installed but produced no chat output. Flip back to true
-      // only after (1) assistant text streaming is mapped end-to-end and
-      // (2) an e2e round-trip test covers prompt → text-delta → completion.
-      supportsWebSessions: false,
+      // Web sessions run the native `codex app-server` JSON-RPC adapter
+      // (server/protocol-adapters/codex-native-adapter.ts +
+      // server/codex-app-server-client.ts). Re-advertised by #1169 (closes
+      // #301): the adapter maps assistant text end-to-end
+      // (`item/agentMessage/delta` → `agent-item-delta-v2`, plus item
+      // started/completed and `turn/completed`), the fake-app-server unit suite
+      // asserts the prompt → text-delta → completion round-trip, and one live
+      // hello-world proof drove the built adapter through a real thread. The
+      // old `chat:text-delta` gap belonged to the retired hook-based adapter.
+      supportsWebSessions: true,
     },
   },
   opencode: {
@@ -321,6 +321,12 @@ export function collaborationPromptArgsForFramework(
 // Session types — discriminated union on `mode`
 interface BaseSession {
   id: string;
+  /**
+   * Canonical Relay session-lineage key. Hermes metadata uses
+   * `parentSessionId` for its event-local child reference, but persisted Relay
+   * sessions use `spawnedBySessionId` to name the create-time provenance.
+   */
+  spawnedBySessionId?: string;
   /** Execution node that owns this live session. */
   nodeId?: NodeId;
   type: SessionType;
@@ -347,6 +353,8 @@ interface BaseSession {
   idle: boolean;
   customCommand: string | null;
   status: SessionStatus;
+  /** Background provider reattach state for sessions materialized at boot. */
+  restoreState?: SessionRestoreState;
   needsBranchRename: boolean;
   agentState: AgentState;
   workspaceId?: string;
@@ -412,8 +420,6 @@ export interface PtySession extends BaseSession {
 
 export interface WebSession extends BaseSession {
   mode: 'web';
-  /** Active protocol adapter for this agent backend */
-  adapter: ProtocolAdapter;
   /** Native v2 protocol adapter for web-chat sessions. */
   adapterV2: ProtocolAdapterV2;
   /** Canonical v2 web-chat state. */
@@ -428,13 +434,6 @@ export interface WebSession extends BaseSession {
    * can reference it without dereferencing the adapter object.
    */
   adapterType: string;
-  /**
-   * In-memory event buffer for replay on reconnect.
-   * Cap: 1000 events, FIFO eviction (approval events never dropped).
-   * TODO(PR#213): Enforce the cap when adapters start pushing events — use a bounded
-   * buffer helper rather than raw array push to guarantee the eviction policy.
-   */
-  messages: ChatEvent[];
   /** Currently active turn ID, or null when idle */
   currentTurnId: string | null;
   /** Who owns the agent runtime process */
@@ -450,6 +449,8 @@ export type Session = PtySession | WebSession;
 // Summary type for REST API responses (no internal handles)
 export interface SessionSummary {
   id: string;
+  /** Parent Relay session supplied by the spawner, when known. */
+  spawnedBySessionId?: string;
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
@@ -493,6 +494,8 @@ export interface SessionSummary {
   /** PTY sessions only */
   terminalBackend?: TerminalBackend;
   status: SessionStatus;
+  /** Background provider reattach state for sessions materialized at boot. */
+  restoreState?: SessionRestoreState;
   /**
    * Derived durability state (#614). Coarse `status` stays for backward
    * compatibility; consumers reasoning about reattach/process ownership

@@ -1,10 +1,5 @@
 import { create } from 'zustand';
-import {
-  DEFAULT_VIEW_LENS,
-  type SavedView,
-  type ViewLens,
-} from '../state/view-tree.js';
-import { createBrowserId } from '../browserId.js';
+import type { ChannelMessageId } from '../../../../shared/channel-chat-protocol.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
@@ -22,17 +17,6 @@ const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
 // substrate surfaces (nodes/active-work tabs, analytics icon) from primary
 // chrome by default; each surface stays reachable one-off via a palette action.
 const ADVANCED_MODE_KEY = 'relay-advanced-mode';
-// Flag-gated six-layer navigation surface. Set
-// `localStorage.relay-view-spine = '1'` and reload to opt into the tree.
-const VIEW_SPINE_KEY = 'relay-view-spine';
-// #738: persistent View layer (FE-only, localStorage). All three ride the same
-// `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern as the flag above.
-//   - active lens, restored across reload (the #727 lens was ephemeral).
-//   - pinned ids (mixed Project/Bench/Workspace stable ids) — pinned-to-top.
-//   - saved/named Views (an array of {id,name,lens}).
-const VIEW_SPINE_LENS_KEY = 'relay-view-spine-lens';
-const VIEW_SPINE_PINS_KEY = 'relay-view-spine-pins';
-const VIEW_SPINE_SAVED_VIEWS_KEY = 'relay-view-spine-saved-views';
 
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
@@ -68,6 +52,13 @@ export type OrgDashboardTab =
   | 'prs'
   | 'tickets'
   | 'audit';
+
+export type RepoDashboardTab = 'overview' | 'tickets' | 'evidence';
+
+export interface RepoDashboardTabIntent {
+  repoPath: string;
+  tab: RepoDashboardTab;
+}
 
 export interface WorkspaceReviewState {
   activeFilePath: string | null;
@@ -193,81 +184,9 @@ function loadDiffViewMode(): DiffViewMode {
   return 'unified';
 }
 
-function loadViewSpineEnabled(): boolean {
-  // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
-  return ls(VIEW_SPINE_KEY) === '1';
-}
-
 function loadAdvancedMode(): boolean {
   // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
   return ls(ADVANCED_MODE_KEY) === '1';
-}
-
-// ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
-// All fail soft: missing/corrupt localStorage → safe defaults, never throw.
-
-const VIEW_LENSES: ReadonlyArray<ViewLens> = ['recent', 'all', 'this-host'];
-
-function isViewLens(value: unknown): value is ViewLens {
-  return typeof value === 'string' && VIEW_LENSES.includes(value as ViewLens);
-}
-
-/** Restore the persisted active lens; default `recent` on missing/unknown. */
-export function loadViewSpineLens(): ViewLens {
-  const stored = ls(VIEW_SPINE_LENS_KEY);
-  return isViewLens(stored) ? stored : DEFAULT_VIEW_LENS;
-}
-
-/** Restore the persisted pinned-id set; empty on missing/corrupt. Drops any
- *  non-string / blank entry so a malformed record can't poison the set. */
-export function loadViewSpinePins(): Set<string> {
-  try {
-    const stored = ls(VIEW_SPINE_PINS_KEY);
-    if (!stored) return new Set();
-    const parsed = JSON.parse(stored) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed.filter(
-        (id): id is string => typeof id === 'string' && id.length > 0
-      )
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-/** A persisted saved View is well-formed only when it has a non-blank id + name
- *  and a recognized lens. Anything else is dropped (fail soft). */
-function normalizeSavedView(value: unknown): SavedView | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const id = typeof record.id === 'string' ? record.id.trim() : '';
-  const name = typeof record.name === 'string' ? record.name.trim() : '';
-  if (!id || !name) return null;
-  if (!isViewLens(record.lens)) return null;
-  return { id, name, lens: record.lens };
-}
-
-/** Restore the persisted saved Views; empty on missing/corrupt. Drops malformed
- *  entries and de-dupes by id (first wins). */
-export function loadViewSpineSavedViews(): SavedView[] {
-  try {
-    const stored = ls(VIEW_SPINE_SAVED_VIEWS_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const views: SavedView[] = [];
-    for (const raw of parsed) {
-      const view = normalizeSavedView(raw);
-      if (!view || seen.has(view.id)) continue;
-      seen.add(view.id);
-      views.push(view);
-    }
-    return views;
-  } catch {
-    return [];
-  }
 }
 
 function loadTerminalFontSize(): number {
@@ -644,6 +563,8 @@ export interface UiState {
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
   orgDashboardTab: OrgDashboardTab;
+  /** One-shot, repo-scoped handoff into an existing RepoDashboard tab. */
+  repoDashboardTabIntent: RepoDashboardTabIntent | null;
   /**
    * #1058: the chat/topic spine is the default no-session/no-repo landing.
    * The legacy WorkContext cockpit (`OrgDashboard`) stays reachable via the
@@ -660,10 +581,18 @@ export interface UiState {
    * sidebar selection). Session-transient; never persisted.
    */
   topicComposerOpen: boolean;
+  /**
+   * #1166: the id of the channel (persisted workspace_topic) currently open in
+   * the main chat pane. Takes priority over topicComposerOpen and the legacy
+   * web-mode session surface in `resolveAppViewMode`. Mutually exclusive with an
+   * active session (App.tsx clears one when the other is set). Session-transient;
+   * never persisted (a fresh reload lands on the chat home, not a stale channel).
+   */
+  activeChannelId: string | null;
+  /** #1170: currently open channel thread. Session-transient; never persisted. */
+  activeThreadRootId: ChannelMessageId | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
-  /** Six-layer navigation surface flag. Default false; backed by localStorage. */
-  viewSpineEnabled: boolean;
   /**
    * #1058: hides mechanics-heavy substrate surfaces (nodes/active-work tabs
    * in the work cockpit, sidebar analytics icon) from primary chrome.
@@ -672,12 +601,6 @@ export interface UiState {
    */
   advancedMode: boolean;
 
-  /** #738: active Views lens, persisted across reload (default `recent`). */
-  viewSpineLens: ViewLens;
-  /** #738: pinned Project/Bench/Workspace stable ids (pinned-to-top). */
-  viewSpinePins: Set<string>;
-  /** #738: user-saved, named Views (each captures a lens). */
-  viewSpineSavedViews: SavedView[];
   // Actions
   openSidebar: () => void;
   closeSidebar: () => void;
@@ -713,27 +636,17 @@ export interface UiState {
   setLastChangedFiles: (files: string[]) => void;
   setAnalyticsView: (v: AnalyticsView) => void;
   setOrgDashboardTab: (tab: OrgDashboardTab) => void;
+  requestRepoDashboardTab: (repoPath: string, tab: RepoDashboardTab) => void;
+  consumeRepoDashboardTabIntent: (repoPath: string) => void;
   setForceOrgCockpit: (v: boolean) => void;
   setTopicComposerOpen: (v: boolean) => void;
+  setActiveChannelId: (v: string | null) => void;
+  setActiveThreadRootId: (v: ChannelMessageId | null) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
-  setViewSpineEnabled: (enabled: boolean) => void;
-  toggleViewSpineEnabled: () => void;
   setAdvancedMode: (enabled: boolean) => void;
   toggleAdvancedMode: () => void;
-
-  /** #738: persist + set the active lens. */
-  setViewSpineLens: (lens: ViewLens) => void;
-  /** #738: toggle a pin by stable id (Project/Bench/Workspace); persists. */
-  toggleViewSpinePin: (id: string) => void;
-  /** #738: save the current lens as a named View; persists. No-op on a blank
-   *  name (trimmed). Returns the created View, or null when the name was blank. */
-  saveViewSpineView: (name: string) => SavedView | null;
-  /** #738: delete a saved View by id; persists. */
-  deleteViewSpineView: (id: string) => void;
-  /** #738: apply a saved View (restores its lens). No-op on an unknown id. */
-  applyViewSpineSavedView: (id: string) => void;
 }
 
 export const useUiStore = create<UiState>()((set, get) => ({
@@ -765,17 +678,15 @@ export const useUiStore = create<UiState>()((set, get) => ({
   // #1058: 'active-work' is a substrate tab hidden unless advancedMode is on;
   // default to 'prs' so a fresh session never lands on a hidden tab's content.
   orgDashboardTab: loadAdvancedMode() ? 'active-work' : 'prs',
+  repoDashboardTabIntent: null,
   forceOrgCockpit: false,
   topicComposerOpen: false,
+  activeChannelId: null,
+  activeThreadRootId: null,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
-  viewSpineEnabled: loadViewSpineEnabled(),
   advancedMode: loadAdvancedMode(),
-
-  viewSpineLens: loadViewSpineLens(),
-  viewSpinePins: loadViewSpinePins(),
-  viewSpineSavedViews: loadViewSpineSavedViews(),
 
   openSidebar: () => set({ sidebarOpen: true }),
   closeSidebar: () => set({ sidebarOpen: false }),
@@ -1193,8 +1104,18 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
   setAnalyticsView: (v) => set({ analyticsView: v }),
   setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
+  requestRepoDashboardTab: (repoPath, tab) =>
+    set({ repoDashboardTabIntent: { repoPath, tab } }),
+  consumeRepoDashboardTabIntent: (repoPath) => {
+    if (get().repoDashboardTabIntent?.repoPath === repoPath) {
+      set({ repoDashboardTabIntent: null });
+    }
+  },
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
   setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
+  setActiveChannelId: (v) =>
+    set({ activeChannelId: v, activeThreadRootId: null }),
+  setActiveThreadRootId: (v) => set({ activeThreadRootId: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>
@@ -1381,14 +1302,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   isWorkspaceCollapsed: (path) => get().collapsedWorkspaces.has(path),
 
-  setViewSpineEnabled: (enabled) => {
-    if (enabled) lsSave(VIEW_SPINE_KEY, '1');
-    else lsRemove(VIEW_SPINE_KEY);
-    set({ viewSpineEnabled: enabled });
-  },
-  toggleViewSpineEnabled: () => {
-    get().setViewSpineEnabled(!get().viewSpineEnabled);
-  },
   setAdvancedMode: (enabled) => {
     if (enabled) lsSave(ADVANCED_MODE_KEY, '1');
     else lsRemove(ADVANCED_MODE_KEY);
@@ -1405,47 +1318,5 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
   toggleAdvancedMode: () => {
     get().setAdvancedMode(!get().advancedMode);
-  },
-  setViewSpineLens: (lens) => {
-    lsSave(VIEW_SPINE_LENS_KEY, lens);
-    set({ viewSpineLens: lens });
-  },
-
-  toggleViewSpinePin: (id) => {
-    if (!id) return;
-    const next = new Set(get().viewSpinePins);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    if (next.size === 0) lsRemove(VIEW_SPINE_PINS_KEY);
-    else lsSave(VIEW_SPINE_PINS_KEY, JSON.stringify([...next]));
-    set({ viewSpinePins: next });
-  },
-
-  saveViewSpineView: (name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return null;
-    const view: SavedView = {
-      id: createBrowserId('sv'),
-      name: trimmed,
-      lens: get().viewSpineLens,
-    };
-    const next = [...get().viewSpineSavedViews, view];
-    lsSave(VIEW_SPINE_SAVED_VIEWS_KEY, JSON.stringify(next));
-    set({ viewSpineSavedViews: next });
-    return view;
-  },
-
-  deleteViewSpineView: (id) => {
-    const next = get().viewSpineSavedViews.filter((v) => v.id !== id);
-    if (next.length === get().viewSpineSavedViews.length) return;
-    if (next.length === 0) lsRemove(VIEW_SPINE_SAVED_VIEWS_KEY);
-    else lsSave(VIEW_SPINE_SAVED_VIEWS_KEY, JSON.stringify(next));
-    set({ viewSpineSavedViews: next });
-  },
-
-  applyViewSpineSavedView: (id) => {
-    const match = get().viewSpineSavedViews.find((v) => v.id === id);
-    if (!match) return;
-    get().setViewSpineLens(match.lens);
   },
 }));

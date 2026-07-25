@@ -1,9 +1,8 @@
-// #738: saved/named Views + pins/favorites + lens persistence.
-// Covers the PURE logic (`applyPins`, `applyPinsToGrouped`, `savedViewLens`) and
-// the localStorage load/normalize/fail-soft helpers in the ui store. No DOM
-// beyond a tiny in-memory localStorage shim.
+// #738: saved/named Views + pins/favorites + lens logic — the PURE view-tree
+// helpers (`applyPins`, `applyPinsToGrouped`, `savedViewLens`, `applyLens`).
+// No DOM, no persistence.
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import { createInstanceId, createProjectId } from '../shared/project.js';
@@ -24,28 +23,6 @@ import type {
   SessionSummary,
   WorktreeInfo,
 } from '../frontend/src/lib/types.js';
-
-// ── in-memory localStorage shim (must be installed BEFORE importing the store) ──
-const storage: Record<string, string> = {};
-Object.defineProperty(globalThis, 'localStorage', {
-  value: {
-    getItem: (key: string) => storage[key] ?? null,
-    setItem: (key: string, value: string) => {
-      storage[key] = value;
-    },
-    removeItem: (key: string) => {
-      delete storage[key];
-    },
-  },
-  configurable: true,
-});
-
-// Imported after the shim so module-load-time reads see the shim.
-const {
-  loadViewSpineLens,
-  loadViewSpinePins,
-  loadViewSpineSavedViews,
-} = await import('../frontend/src/lib/stores/ui.js');
 
 // ── builders (mirror test/view-tree.test.ts) ───────────────────────────────────
 function repo(overrides: Partial<Repo> = {}): Repo {
@@ -87,7 +64,10 @@ const RELAY_PROJECT_ID = createProjectId({
   kind: 'repo',
   remote: 'github.com/donovan-yohan/relay-ide',
 });
-const RELAY_INSTANCE_ID = createInstanceId(RELAY_PROJECT_ID, DEFAULT_LOCAL_NODE_ID);
+const RELAY_INSTANCE_ID = createInstanceId(
+  RELAY_PROJECT_ID,
+  DEFAULT_LOCAL_NODE_ID
+);
 
 describe('#738 applyPins — pinned items float to top of their parent', () => {
   it('is identity for an empty pin set (same object reference)', () => {
@@ -113,7 +93,11 @@ describe('#738 applyPins — pinned items float to top of their parent', () => {
     const cId = createProjectId({ kind: 'repo', remote: 'r/c' });
     const pinned = applyPins(tree, new Set([cId]));
     // c floats to front; a, b keep their relative order.
-    expect(pinned.ungroupedProjects.map((p) => p.label)).toEqual(['c', 'a', 'b']);
+    expect(pinned.ungroupedProjects.map((p) => p.label)).toEqual([
+      'c',
+      'a',
+      'b',
+    ]);
   });
 
   it('floats pinned benches to the top within their instance, preserving order', () => {
@@ -163,8 +147,14 @@ describe('#738 applyPins — pinned items float to top of their parent', () => {
         repo({ path: '/repos/b', name: 'b', repoIdentity: 'r/b' }),
       ],
       sessions: [
-        { ...session({ id: 's-a', cwd: '/repos/a', repoPath: '/repos/a' }), lastActivity: '2026-05-01T00:00:00.000Z' },
-        { ...session({ id: 's-b', cwd: '/repos/b', repoPath: '/repos/b' }), lastActivity: '2026-05-27T00:00:00.000Z' },
+        {
+          ...session({ id: 's-a', cwd: '/repos/a', repoPath: '/repos/a' }),
+          lastActivity: '2026-05-01T00:00:00.000Z',
+        },
+        {
+          ...session({ id: 's-b', cwd: '/repos/b', repoPath: '/repos/b' }),
+          lastActivity: '2026-05-27T00:00:00.000Z',
+        },
       ],
     });
     // recent lens: b (newer) before a.
@@ -224,9 +214,15 @@ describe('#738 applyPinsToGrouped — re-rank after persisted grouping', () => {
     const grouped = groupProjectsByWorkspace(tree.ungroupedProjects, [
       { id: 'ws:one', name: 'one', order: 0, projectIds: [aId, bId] },
     ]);
-    expect(grouped.workspaces[0]!.projects.map((p) => p.label)).toEqual(['a', 'b']);
+    expect(grouped.workspaces[0]!.projects.map((p) => p.label)).toEqual([
+      'a',
+      'b',
+    ]);
     const reranked = applyPinsToGrouped(grouped, new Set([bId]));
-    expect(reranked.workspaces[0]!.projects.map((p) => p.label)).toEqual(['b', 'a']);
+    expect(reranked.workspaces[0]!.projects.map((p) => p.label)).toEqual([
+      'b',
+      'a',
+    ]);
   });
 
   it('is identity for an empty pin set', () => {
@@ -249,72 +245,5 @@ describe('#738 savedViewLens — restores a saved View lens', () => {
   it('returns null for an unknown id (deleted / corrupt reference)', () => {
     expect(savedViewLens(views, 'nope')).toBeNull();
     expect(savedViewLens([], 'v1')).toBeNull();
-  });
-});
-
-// Keys must match ui.ts. Re-declared here to keep the test independent of the
-// store's private constants.
-const LENS_KEY = 'relay-view-spine-lens';
-const PINS_KEY = 'relay-view-spine-pins';
-const SAVED_KEY = 'relay-view-spine-saved-views';
-
-describe('#738 localStorage load/save round-trip + fail-soft', () => {
-  beforeEach(() => {
-    for (const key of Object.keys(storage)) delete storage[key];
-  });
-
-  it('lens: default recent when missing; round-trips a valid value', () => {
-    expect(loadViewSpineLens()).toBe('recent');
-    storage[LENS_KEY] = 'this-host';
-    expect(loadViewSpineLens()).toBe('this-host');
-  });
-
-  it('lens: unknown / corrupt value falls back to default', () => {
-    storage[LENS_KEY] = 'bogus';
-    expect(loadViewSpineLens()).toBe('recent');
-    storage[LENS_KEY] = '{not json';
-    expect(loadViewSpineLens()).toBe('recent');
-  });
-
-  it('pins: empty when missing; round-trips a JSON array', () => {
-    expect(loadViewSpinePins()).toEqual(new Set());
-    storage[PINS_KEY] = JSON.stringify(['p:a', 'b:x', 'ws:one']);
-    expect(loadViewSpinePins()).toEqual(new Set(['p:a', 'b:x', 'ws:one']));
-  });
-
-  it('pins: corrupt / non-array / non-string entries fail soft', () => {
-    storage[PINS_KEY] = '{not json';
-    expect(loadViewSpinePins()).toEqual(new Set());
-    storage[PINS_KEY] = JSON.stringify({ not: 'an array' });
-    expect(loadViewSpinePins()).toEqual(new Set());
-    storage[PINS_KEY] = JSON.stringify(['ok', 42, null, '', 'ok2']);
-    expect(loadViewSpinePins()).toEqual(new Set(['ok', 'ok2']));
-  });
-
-  it('saved views: empty when missing; round-trips well-formed entries', () => {
-    expect(loadViewSpineSavedViews()).toEqual([]);
-    const views: SavedView[] = [
-      { id: 'v1', name: 'Mine', lens: 'this-host' },
-      { id: 'v2', name: 'Everything', lens: 'all' },
-    ];
-    storage[SAVED_KEY] = JSON.stringify(views);
-    expect(loadViewSpineSavedViews()).toEqual(views);
-  });
-
-  it('saved views: drops malformed entries, de-dupes by id, fails soft on garbage', () => {
-    storage[SAVED_KEY] = '{not json';
-    expect(loadViewSpineSavedViews()).toEqual([]);
-
-    storage[SAVED_KEY] = JSON.stringify([
-      { id: 'v1', name: 'Good', lens: 'recent' },
-      { id: '', name: 'no id', lens: 'all' }, // dropped: blank id
-      { id: 'v2', name: '', lens: 'all' }, // dropped: blank name
-      { id: 'v3', name: 'Bad lens', lens: 'nope' }, // dropped: bad lens
-      { id: 'v1', name: 'Dup', lens: 'all' }, // dropped: dup id
-      'not an object', // dropped
-    ]);
-    expect(loadViewSpineSavedViews()).toEqual([
-      { id: 'v1', name: 'Good', lens: 'recent' },
-    ]);
   });
 });

@@ -35,6 +35,7 @@ const createSessionAllowedFields = new Set([
   'rows',
   'branchName',
   'displayName',
+  'spawnedBySessionId',
   'initialPrompt',
   'continuePolicy',
   'workContextId',
@@ -79,6 +80,7 @@ const stringFields = [
   'terminalBackend',
   'branchName',
   'displayName',
+  'spawnedBySessionId',
   'initialPrompt',
   'workContextId',
   'workspaceTopicId',
@@ -106,6 +108,7 @@ const localCreateSupportedFields = [
   'rows',
   'branchName',
   'displayName',
+  'spawnedBySessionId',
   'initialPrompt',
   'continuePolicy',
   'workContextId',
@@ -607,13 +610,16 @@ export function validateAndSanitizeLocalGatewayCreateInput(
   if (validated.input['environment'] !== undefined) {
     return unsupportedCreateInput(
       'local /sessions gateway creation cannot accept the typed environment object; use routed node creation through /hub/nodes/:nodeId/sessions',
-      { field: 'environment', supported: ['repoPath', 'worktreePath'] }
+      {
+        field: 'environment',
+        supported: ['repoPath', 'worktreePath', 'cwd'],
+      }
     );
   }
   if (validated.nodeId) {
     return unsupportedCreateInput(
       'local /sessions gateway creation cannot accept nodeId; use routed node creation through /hub/nodes/:nodeId/sessions',
-      { field: 'nodeId', supported: ['repoPath', 'worktreePath'] }
+      { field: 'nodeId', supported: ['repoPath', 'worktreePath', 'cwd'] }
     );
   }
   return validated;

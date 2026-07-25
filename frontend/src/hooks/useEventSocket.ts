@@ -8,6 +8,8 @@ import { resolveSessionByKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import { useChannelActivityStore } from '../lib/stores/channel-activity.js';
+import { useChannelAgentStatusStore } from '../lib/stores/channel-agent-status.js';
 import type { AccountTelemetry, SessionTelemetry } from '../lib/types.js';
 import type { SessionEventScope } from '../../../shared/node-boundary.js';
 import type {
@@ -407,6 +409,16 @@ export function useEventSocket({
           .handleAccountTelemetryEvent(
             msg.data as AccountTelemetry | Record<string, unknown> | null
           );
+      },
+      'channel-activity': (msg) => {
+        useChannelActivityStore
+          .getState()
+          .recordActivity(msg.channelId, msg.latestSeq);
+      },
+      'channel-agent-status': (msg) => {
+        useChannelAgentStatusStore
+          .getState()
+          .recordStatus(msg.channelId, msg.agentId, msg.status, msg.sessionId);
       },
       'browser-tab-opened': (msg) => {
         useUiStore.getState().openHtmlTab(msg.filePath, msg.token);

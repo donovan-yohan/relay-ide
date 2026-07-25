@@ -26,7 +26,9 @@ import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import {
   createWebSession,
-  reconnectWebSession,
+  reconnectWebSessionAdapter,
+  retireWebSessionAdapter,
+  setWebSessionRestoreSnapshotFence,
   continueHereWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
@@ -52,6 +54,7 @@ import {
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import type { AdapterConfig } from './protocol-adapter.js';
 import {
   deriveSessionDurability,
   type SessionDurabilityNodeStatus,
@@ -195,6 +198,7 @@ function enforceGlobalScrollbackCap(
 
 interface SerializedPtySession {
   id: string;
+  spawnedBySessionId?: string;
   type: SessionType;
   agent: AgentType;
   repoPath?: string;
@@ -245,6 +249,7 @@ const UNSUPPORTED_TMUX_SESSIONS_FILE = 'unsupported-tmux-sessions.json';
 
 export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   id?: string;
+  spawnedBySessionId?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   initialPrompt?: string;
@@ -626,6 +631,7 @@ export function fireBackendStateIfChanged(session: Session): void {
 
 function create({
   id: providedId,
+  spawnedBySessionId,
   needsBranchRename,
   branchRenamePrompt,
   initialPrompt,
@@ -641,6 +647,8 @@ function create({
   ...rest
 }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
+  const nativeInitialPrompt =
+    agent === 'codex' && initialPrompt ? initialPrompt : undefined;
 
   const ptyParams: CreatePtyParams = {
     ...rest,
@@ -648,7 +656,11 @@ function create({
     agent,
     cols,
     rows,
-    args,
+    // Codex accepts the first turn as a native positional argument for both
+    // fresh (`codex [flags] <PROMPT>`) and resumed
+    // (`codex resume --last [flags] <PROMPT>`) sessions. Keep it as a
+    // distinct argv element so the TUI never has to receive a typed fallback.
+    args: nativeInitialPrompt ? [...args, nativeInitialPrompt] : args,
     port: port ?? defaultPort,
     forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
     configDir: rest.configDir ?? defaultConfigDir,
@@ -708,7 +720,7 @@ function create({
   if (branchRenamePrompt) {
     ptySession.branchRenamePrompt = branchRenamePrompt;
   }
-  if (initialPrompt) {
+  if (initialPrompt && !nativeInitialPrompt) {
     ptySession.initialPrompt = initialPrompt;
   }
   if (workspaceId) {
@@ -716,6 +728,9 @@ function create({
   }
   if (additionalDirs?.length) {
     ptySession.additionalDirs = additionalDirs;
+  }
+  if (spawnedBySessionId !== undefined) {
+    ptySession.spawnedBySessionId = spawnedBySessionId;
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   // Record session start for analytics
@@ -729,7 +744,7 @@ function create({
     agentType: agent,
     startedAt: new Date().toISOString(),
   });
-  if (initialPrompt) {
+  if (initialPrompt && !nativeInitialPrompt) {
     // One-shot injection, guarded by ptySession.initialPrompt. The submit CR
     // is a second deferred write (canonical Enter, CR not LF): TUI input
     // loops coalesce a text+newline chunk into a paste and leave the prompt
@@ -772,6 +787,7 @@ function create({
   }
   const summary = withLocalIdentity({
     ...result,
+    ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
     needsBranchRename: !!ptySession.needsBranchRename,
   });
   ptySession.sessionEnvelope = summary.sessionEnvelope;
@@ -781,6 +797,16 @@ function create({
 
 function get(id: string): Session | undefined {
   return sessions.get(id);
+}
+
+/**
+ * Ids of every session currently in the in-memory map — live/connected AND
+ * disconnected-but-retained. The relay-state-db age-reaper (#1248) treats these
+ * as protected so an idle-but-in-memory session (a channel binding still points
+ * at these to rebind) is never evicted from disk regardless of its age.
+ */
+function liveSessionIds(): string[] {
+  return [...sessions.keys()];
 }
 
 function sessionScrollbackCapacityMetadata(session: PtySession): {
@@ -1044,6 +1070,9 @@ function list(): SessionSummary[] {
       const durability = emitDurabilityIfChanged(s);
       const summary = withLocalIdentity({
         id: s.id,
+        ...(s.spawnedBySessionId !== undefined
+          ? { spawnedBySessionId: s.spawnedBySessionId }
+          : {}),
         type: s.type,
         agent: s.agent,
         mode: s.mode,
@@ -1060,6 +1089,9 @@ function list(): SessionSummary[] {
         idle: s.idle,
         customCommand: s.customCommand,
         status: s.status,
+        ...(s.restoreState !== undefined
+          ? { restoreState: s.restoreState }
+          : {}),
         durability,
         needsBranchRename: !!s.needsBranchRename,
         agentState: s.agentState,
@@ -1149,11 +1181,9 @@ function kill(id: string): void {
   if (session.mode === 'pty') {
     void terminatePtySession(session, 'explicit-session-kill');
   } else {
+    supersedeWebSessionRestore(session);
     // Web session: disconnect adapter (tears down network connections and event handlers)
     session.adapterV2?.disconnect().catch(() => {
-      // Adapter may already be disconnected — still proceed with cleanup
-    });
-    session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected — still proceed with cleanup
     });
   }
@@ -1206,9 +1236,6 @@ function detachForRestart(id: string): void {
     }
   } else {
     session.adapterV2?.disconnect().catch(() => {
-      // Adapter may already be disconnected during shutdown.
-    });
-    session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected during shutdown.
     });
   }
@@ -1393,6 +1420,25 @@ function recordRoutedPtyInput(input: {
   const session = routedPtyControlSession(input.nodeId, input.sessionId);
   session.lastActivity = new Date().toISOString();
   recordHumanPtyInput(session, input.data, controlEngineOptions());
+}
+
+function releaseRoutedPtyControlSession(
+  nodeId: string,
+  sessionId: string
+): boolean {
+  return routedPtyControlSessions.delete(
+    createGlobalSessionId(nodeId, sessionId)
+  );
+}
+
+function releaseRoutedPtyControlSessionsForNode(nodeId: string): number {
+  let released = 0;
+  for (const [globalSessionId, session] of routedPtyControlSessions) {
+    if (session.nodeId !== nodeId) continue;
+    routedPtyControlSessions.delete(globalSessionId);
+    released++;
+  }
+  return released;
 }
 
 function controlAction(
@@ -1648,6 +1694,9 @@ function serializePtySession(
 
   return {
     id: session.id,
+    ...(session.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: session.spawnedBySessionId }
+      : {}),
     type: session.type,
     agent: session.agent,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
@@ -1833,7 +1882,7 @@ function loadScrollback(
   return undefined;
 }
 
-function buildAgentArgs(
+export function buildAgentArgs(
   s: SerializedPtySession,
   frameworks?: Record<string, Partial<AgentFramework>>
 ): string[] {
@@ -1853,7 +1902,10 @@ function buildAgentArgs(
   }
   return [
     ...continueArgsList,
-    ...(s.claudeArgs ?? []),
+    // Serialized claudeArgs are Claude-specific flags (--model/--effort). On
+    // cold resume they must not be replayed into codex/opencode/hermes spawns,
+    // which exit code 2 within ~1s. Gate to the claude agent only.
+    ...(s.agent === 'claude' ? (s.claudeArgs ?? []) : []),
     ...(s.yolo ? yoloArgsList : []),
   ];
 }
@@ -1963,6 +2015,9 @@ function restoreSession(
 ): void {
   const createParams: CreateParams = {
     id: s.id,
+    ...(s.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: s.spawnedBySessionId }
+      : {}),
     type: s.type,
     agent: s.agent,
     repoName: s.repoName,
@@ -1993,8 +2048,24 @@ function restoreSession(
   create(createParams);
 }
 
+const DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS = 15_000;
+const webSessionRestoreAttempts = new Map<
+  string,
+  {
+    generation: number;
+    adapter: WebSession['adapterV2'];
+    session: WebSession;
+  }
+>();
+let webSessionRestoreShutdown = false;
+
+interface RestoreFromDiskOptions {
+  webSessionReattachTimeoutMs?: number;
+}
+
 async function restoreWebSessionFromDb(
-  row: import('./relay-state-db.js').LoadedWebSessionRow
+  row: import('./relay-state-db.js').LoadedWebSessionRow,
+  reattachTimeoutMs: number
 ): Promise<void> {
   // Restore persisted adapter runtime settings so the reconnected session
   // matches what was originally running rather than reverting to defaults.
@@ -2003,6 +2074,9 @@ async function restoreWebSessionFromDb(
     row.repoPath !== null && row.repoPath.length > 0 ? row.repoPath : undefined;
   const createParams: CreateWebParams = {
     id: row.id,
+    ...(row.meta.spawnedBySessionId !== undefined
+      ? { spawnedBySessionId: row.meta.spawnedBySessionId }
+      : {}),
     agentType: row.meta.adapterType,
     cwd: row.cwd,
     ...(restoredRepoPath !== undefined
@@ -2038,15 +2112,20 @@ async function restoreWebSessionFromDb(
   // persisted DB row with a freshly-initialized blank transcript before we
   // copy back agentSessionV2 below — a process death in that window would
   // lose the session.
-  const { session } = await createWebSession(
+  const { session, config } = await createWebSession(
     createParams,
     sessions,
     fireBackendStateIfChanged,
-    { skipInitialPersist: true }
+    { skipInitialPersist: true, deferConnect: true }
   );
 
   // Replace the freshly-created blank transcript with the persisted one.
-  session.agentSessionV2 = row.agentSessionV2;
+  const persistedAgentSessionV2 = structuredClone(row.agentSessionV2);
+  const persistedProviderSession =
+    persistedAgentSessionV2.providerSession === undefined
+      ? undefined
+      : { ...persistedAgentSessionV2.providerSession };
+  session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
   session.customCommand = row.meta.customCommand;
   if (row.meta.needsBranchRename) {
     session.needsBranchRename = true;
@@ -2058,6 +2137,7 @@ async function restoreWebSessionFromDb(
   session.createdAt = new Date(row.createdAt).toISOString();
   session.lastActivity = new Date(row.lastActivity).toISOString();
   session.status = row.status === 'archived' ? 'disconnected' : row.status;
+  session.restoreState = 'restoring';
 
   // Derive runtime state from the persisted live snapshot, mirroring the
   // mapping in web-session-handler's adapter listener.
@@ -2083,14 +2163,165 @@ async function restoreWebSessionFromDb(
   // (vendor may not assign a new id, but live status flips).
   upsertWebSessionNow(session);
 
-  // If the adapter supports resume and we have a stored vendor session ID,
-  // reconnect via resumeSession so the provider continues the conversation.
-  // On failure, surface a single client-source errorMessage into the timeline
-  // and leave session disconnected — user must start a fresh session.
+  // Provider transport startup and resume are deliberately detached from the
+  // restore caller. The HTTP listener is already accepting requests when this
+  // function is invoked, and a dead provider can therefore never block auth or
+  // health request handling during boot.
+  void reattachRestoredWebSession(
+    session,
+    config,
+    reattachTimeoutMs,
+    persistedAgentSessionV2,
+    persistedProviderSession
+  ).catch((err) => {
+    if (webSessionRestoreShutdown) return;
+    logger.error(`Detached reattach failed for web session ${session.id}`, err);
+  });
+}
+
+async function reattachRestoredWebSession(
+  session: WebSession,
+  config: AdapterConfig,
+  timeoutMs: number,
+  persistedAgentSessionV2: WebSession['agentSessionV2'],
+  persistedProviderSession: Record<string, string> | undefined
+): Promise<void> {
+  if (webSessionRestoreShutdown) return;
+  const priorAttempt = webSessionRestoreAttempts.get(session.id);
+  const generation = (priorAttempt?.generation ?? 0) + 1;
+  const attemptAdapter = session.adapterV2;
+  webSessionRestoreAttempts.set(session.id, {
+    generation,
+    adapter: attemptAdapter,
+    session,
+  });
+
+  const deleteOwnAttempt = (): void => {
+    const current = webSessionRestoreAttempts.get(session.id);
+    if (
+      current?.generation === generation &&
+      current.adapter === attemptAdapter &&
+      current.session === session
+    ) {
+      webSessionRestoreAttempts.delete(session.id);
+    }
+  };
+
+  const isCurrentAttempt = (): boolean =>
+    !webSessionRestoreShutdown &&
+    sessions.get(session.id) === session &&
+    webSessionRestoreAttempts.get(session.id)?.generation === generation &&
+    webSessionRestoreAttempts.get(session.id)?.adapter === attemptAdapter &&
+    webSessionRestoreAttempts.get(session.id)?.session === session &&
+    session.adapterV2 === attemptAdapter &&
+    session.restoreState === 'restoring';
+
+  setWebSessionRestoreSnapshotFence(attemptAdapter, true);
+  const attempt = (async () => {
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    await attemptAdapter.connect(config);
+    // Timeout/failure fencing: a late transport connect must not continue into
+    // provider resume after this attempt has already been declared failed.
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    // Provider connect snapshots describe a blank transport wrapper, not the
+    // durable Relay transcript. Restore the captured state (including the
+    // provider resume identity) before resume chooses its vendor session id.
+    session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
+    if (persistedProviderSession !== undefined) {
+      session.agentSessionV2.providerSession = {
+        ...persistedProviderSession,
+      };
+    } else {
+      delete session.agentSessionV2.providerSession;
+    }
+    upsertWebSessionNow(session);
+    await reconnectWebSessionAdapter(session, attemptAdapter);
+    // Resume may ignore disconnect and settle after its deadline. Check the
+    // generation again before allowing the adapter to remain connected.
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      await attemptAdapter.disconnect().catch(() => {});
+    }
+  })();
+
+  // Promise.race observes rejection, while this continuation guarantees a
+  // late successful handshake is torn down instead of becoming an orphaned
+  // live transport after the timeout path returned.
+  void attempt.then(
+    () => {
+      if (!isCurrentAttempt()) {
+        deleteOwnAttempt();
+        void attemptAdapter.disconnect().catch(() => {});
+      }
+    },
+    () => {}
+  );
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(
+        new Error(`provider reattach timed out after ${String(timeoutMs)}ms`)
+      );
+    }, timeoutMs);
+    timeout.unref();
+  });
+
   try {
-    await reconnectWebSession(session);
+    await Promise.race([attempt, timedOut]);
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    deleteOwnAttempt();
+    delete session.restoreState;
+    fireBackendStateIfChanged(session);
+    upsertWebSessionNow(session);
   } catch (err) {
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    deleteOwnAttempt();
+    session.restoreState = 'reattach-failed';
+    // Best effort cancellation makes a hung provider release its transport.
+    // Do not await disconnect: failure state must become visible immediately,
+    // even when the provider's cleanup path is itself wedged.
+    void attemptAdapter.disconnect().catch(() => {});
     surfaceResumeFailure(session, err);
+  } finally {
+    setWebSessionRestoreSnapshotFence(attemptAdapter, false);
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function supersedeWebSessionRestore(session: WebSession): void {
+  const attempt = webSessionRestoreAttempts.get(session.id);
+  const adapter =
+    attempt?.session === session ? attempt.adapter : session.adapterV2;
+  if (attempt?.session === session) {
+    webSessionRestoreAttempts.delete(session.id);
+  }
+  // Failure/timeout transitions remove their attempt record before the old
+  // transport necessarily settles. Retire the live adapter regardless so
+  // deleting restoreState cannot briefly reopen its patch handler.
+  retireWebSessionAdapter(adapter);
+  void adapter.disconnect().catch(() => {});
+}
+
+function cancelBackgroundRestores(): void {
+  webSessionRestoreShutdown = true;
+  const attempts = Array.from(webSessionRestoreAttempts.values());
+  webSessionRestoreAttempts.clear();
+  for (const { adapter } of attempts) {
+    retireWebSessionAdapter(adapter);
+    void adapter.disconnect().catch(() => {});
   }
 }
 
@@ -2400,13 +2631,19 @@ async function restorePendingSessionsFromDisk(
   );
 }
 
-async function restoreWebSessionsFromDb(): Promise<number> {
+async function restoreWebSessionsFromDb(
+  reattachTimeoutMs: number
+): Promise<number> {
   let restored = 0;
-  // Web sessions live in relay-state.db. No staleness wipe — DB rows persist
-  // until user archives or closes the session.
+  // Web sessions live in relay-state.db. Rows persist until the user archives or
+  // closes the session, OR until the relay-state-db age-reaper (#1248) evicts a
+  // row idle past its retention window — but never one that is live in-memory or
+  // still bound to an open channel, so resume anchors survive. loadAllWebSessions
+  // restores ALL non-archived rows (no restore cap); the reaper bounds count.
   for (const row of loadAllWebSessions()) {
+    if (webSessionRestoreShutdown) break;
     try {
-      await restoreWebSessionFromDb(row);
+      await restoreWebSessionFromDb(row, reattachTimeoutMs);
       restored++;
     } catch (err) {
       logger.error(
@@ -2421,14 +2658,19 @@ async function restoreWebSessionsFromDb(): Promise<number> {
 async function restoreFromDisk(
   configDir: string,
   workspaces?: string[],
-  frameworks?: Record<string, Partial<AgentFramework>>
+  frameworks?: Record<string, Partial<AgentFramework>>,
+  options: RestoreFromDiskOptions = {}
 ): Promise<number> {
+  webSessionRestoreShutdown = false;
   const restoredPty = await restorePendingSessionsFromDisk(
     configDir,
     workspaces,
     frameworks
   );
-  const restoredWeb = await restoreWebSessionsFromDb();
+  const restoredWeb = await restoreWebSessionsFromDb(
+    options.webSessionReattachTimeoutMs ??
+      DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS
+  );
   syncDisplayNameCounters();
   return restoredPty + restoredWeb;
 }
@@ -2557,8 +2799,10 @@ async function continueHereWeb(sessionId: string): Promise<void> {
   // Only allow the recovery flow when the session is in a disconnected/failed
   // state. An active or waiting session should not have its adapter torn down
   // by a stale or unexpected client command.
+  const replaceRestoreAdapter = session.restoreState !== undefined;
   const liveStatus = session.agentSessionV2.live.status;
   const isDisconnected =
+    replaceRestoreAdapter ||
     liveStatus === 'disconnected' ||
     session.adapterV2.status === 'disconnected';
   if (!isDisconnected) {
@@ -2572,6 +2816,14 @@ async function continueHereWeb(sessionId: string): Promise<void> {
     );
     return;
   }
+
+  if (replaceRestoreAdapter) {
+    supersedeWebSessionRestore(session);
+  }
+  // Manual cold recovery supersedes the failed boot-reattach fence. The
+  // continue-here flow disconnects and re-registers adapter listeners before
+  // establishing its fresh provider session.
+  delete session.restoreState;
 
   const config = {
     cwd: session.cwd,
@@ -2590,7 +2842,9 @@ async function continueHereWeb(sessionId: string): Promise<void> {
       : {}),
   };
 
-  await continueHereWebSession(session, config, fireBackendStateIfChanged);
+  await continueHereWebSession(session, config, fireBackendStateIfChanged, {
+    replaceAdapter: replaceRestoreAdapter,
+  });
 }
 
 export {
@@ -2599,6 +2853,7 @@ export {
   renew,
   createWeb,
   get,
+  liveSessionIds,
   list,
   kill,
   detachForRestart,
@@ -2610,6 +2865,8 @@ export {
   write,
   supervisorWrite,
   recordRoutedPtyInput,
+  releaseRoutedPtyControlSession,
+  releaseRoutedPtyControlSessionsForNode,
   controlAction,
   acknowledgeInterventions,
   handBackToAgent,
@@ -2628,6 +2885,7 @@ export {
   nextAgentName,
   serializeAll,
   restoreFromDisk,
+  cancelBackgroundRestores,
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,

@@ -18,15 +18,13 @@ vi.mock('../frontend/src/components/Terminal.js', () => ({
   Terminal: () => null,
 }));
 
-vi.mock('../frontend/src/components/chat/ChatView.js', () => ({
-  ChatView: () => null,
-}));
-
 vi.mock('../frontend/src/components/TerminalNodePicker.js', () => ({
   TerminalNodePicker: () => null,
 }));
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const originalRefreshAll = useSessionsStore.getState().refreshAll;
 
@@ -168,9 +166,14 @@ describe('WorkspaceArea session tab close routing', () => {
     resetWorkspaceAreaTestStores([session]);
     useSessionsStore.setState({ refreshAll: vi.fn(async () => {}) });
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -215,10 +218,7 @@ describe('WorkspaceArea session tab close routing', () => {
       ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'
     );
     expect(deleteCalls).toEqual([
-      [
-        '/hub/nodes/node-a/sessions/remote-session-1',
-        { method: 'DELETE' },
-      ],
+      ['/hub/nodes/node-a/sessions/remote-session-1', { method: 'DELETE' }],
     ]);
     expect(fetchMock).not.toHaveBeenCalledWith(
       '/sessions/node-a%3Aremote-session-1',

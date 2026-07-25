@@ -1,0 +1,19 @@
+html,
+body,
+#app,
+.ch-thread-fixture {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.ch-thread-fixture {
+  display: flex;
+  background: var(--bg);
+}
+
+.ch-thread-fixture > .ch-view {
+  flex: 1;
+  min-width: 0;
+}

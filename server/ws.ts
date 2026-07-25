@@ -14,6 +14,7 @@ import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { validateScopedToken } from './browser-content.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
+import { onWebSessionPatch } from './web-session-handler.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
@@ -54,6 +55,16 @@ import {
   policyDecisionToRelayError,
 } from './hub-policy-evaluator.js';
 import { sourceTupleFromIncomingMessage } from './node-source-diagnostics.js';
+import type { ChannelHub } from './channel-hub.js';
+import { isWorkspaceTopicId } from '../shared/workspace-topics.js';
+import {
+  createWsHeartbeatMonitor,
+  deliverDelta,
+  deliverTerminalEnvelope,
+  sendWithBackpressure,
+  type DeltaLaneState,
+  type TerminalLaneState,
+} from './ws-backpressure.js';
 
 const logger = createLogger('ws');
 
@@ -61,11 +72,23 @@ function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
 }
 
-function sendTerminalStreamEnvelope(
+/**
+ * #1249: fan out one terminal-stream envelope to a browser terminal socket with
+ * per-connection send-queue backpressure. `data` envelopes are replayable deltas
+ * (the client re-fetches from server scrollback via `?cursor=`), so they are shed
+ * above the soft watermark to a lagging socket rather than queued off-heap;
+ * coarse envelopes (metadata/resize/replay markers/lag) must arrive intact. Above
+ * the hard watermark the socket is closed 4409 and its `close` handler splices the
+ * subscriber. Exported so the leak-reproduction test can drive it against a
+ * stalled fake socket.
+ */
+export function sendTerminalStreamEnvelope(
   ws: WebSocket,
   envelope: TerminalStreamEnvelope
 ): void {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(envelope));
+  sendWithBackpressure(ws, () => JSON.stringify(envelope), {
+    droppable: envelope.kind === 'data',
+  });
 }
 
 // Application close code (4000-4999 range) for a terminal WS that wrote/resized
@@ -574,7 +597,8 @@ function setupWebSocket(
   nodeLinks?: HubNodeLinkManager,
   sessionEnvelopes: InMemorySessionEnvelopeRegistry = sessionEnvelopeRegistry,
   auditSink?: RoutedSessionAuditSink,
-  sourceDiagnostics?: NodeLinkSourceDiagnosticsOptions
+  sourceDiagnostics?: NodeLinkSourceDiagnosticsOptions,
+  channelHub?: ChannelHub
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -585,6 +609,14 @@ function setupWebSocket(
     sourceDiagnostics?.strictDeny ??
     process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1';
   const eventClients = new Set<WebSocket>();
+
+  // #1249: one shared half-open socket reaper for every server→client lane
+  // (terminal PTY stream, agent web-session patches, /ws/events, routed-node
+  // PTY relay). A backgrounded/sleeping/dead-but-OPEN socket never fires `close`,
+  // so its subscriber is never spliced and its off-heap send queue grows forever;
+  // the reaper pings each tracked socket and terminates the ones that stop
+  // ponging, running their cleanup. Interval is unref()'d + cleared on shutdown.
+  const heartbeat = createWsHeartbeatMonitor();
 
   function isAuthenticated(cookieHeader: string | undefined): boolean {
     const cookies = parseCookies(cookieHeader);
@@ -652,12 +684,20 @@ function setupWebSocket(
 
   function broadcastEvent(type: string, data?: Record<string, unknown>): void {
     const msg = JSON.stringify({ type, ...scopedEventPayload(data) });
-    for (const client of eventClients) {
-      if (client.readyState === client.OPEN) {
-        client.send(msg);
-      }
+    // #1249: events are coarse, irreplaceable fan-out (a subscriber cannot
+    // re-derive a single dropped event), so a soft-lagging client is treated as
+    // dead and closed 4409 (its `close` handler removes it from `eventClients`
+    // and untracks the heartbeat) rather than accumulating frames off-heap.
+    // Iterate a snapshot because the close handler mutates `eventClients`.
+    for (const client of [...eventClients]) {
+      sendWithBackpressure(client, () => msg, { closeWhenLagging: true });
     }
   }
+
+  // Sidebar badges ride the existing /ws/events broadcast as coarse
+  // `channel-activity` notifications (never deltas — that lane has no
+  // subscription filter and would flood all tabs).
+  channelHub?.setBadgeBroadcaster(broadcastEvent);
 
   function broadcastBranchChanged(cwdPath: string, branchName: string): void {
     const matchingSessions = sessions
@@ -701,6 +741,7 @@ function setupWebSocket(
   server.on('close', () => {
     unsubscribeNodeStatus?.();
     if (nodeStatusRefreshTimer) clearInterval(nodeStatusRefreshTimer);
+    heartbeat.stop();
   });
 
   function handleNodeLinkUpgrade(
@@ -860,6 +901,13 @@ function setupWebSocket(
       wss.handleUpgrade(request, socket, head, (ws) => {
         try {
           nodeLinks.attachPty(nodeId, sessionId, ws);
+          // #1249: reap a half-open routed browser socket. `terminate()` fires
+          // its `close` handler (installed by attachPty) which sends pty.detach
+          // and drops the ptyStream, freeing the relay send queue.
+          heartbeat.track(ws, () => heartbeat.untrack(ws));
+          const untrack = () => heartbeat.untrack(ws);
+          ws.on('close', untrack);
+          ws.on('error', untrack);
         } catch {
           ws.close(1011);
         }
@@ -870,10 +918,17 @@ function setupWebSocket(
     // Event channel: /ws/events
     if (request.url === '/ws/events') {
       wss.handleUpgrade(request, socket, head, (ws) => {
+        let cleanedUp = false;
         const cleanup = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
           eventClients.delete(ws);
+          heartbeat.untrack(ws);
         };
         eventClients.add(ws);
+        // #1249: reap a half-open events socket so it is removed from
+        // `eventClients` and stops accumulating broadcast frames off-heap.
+        heartbeat.track(ws, cleanup);
         ws.on('message', (msg) => {
           try {
             const parsed = JSON.parse(msg.toString());
@@ -884,6 +939,34 @@ function setupWebSocket(
         });
         ws.on('close', cleanup);
         ws.on('error', cleanup);
+      });
+      return;
+    }
+
+    // Channel fan-out lane: /ws/channels/:channelId?sinceSeq=N (server→client
+    // only; all writes are REST). Checked before the /ws/:sessionId fallback.
+    const channelMatch = requestPath.match(/^\/ws\/channels\/([^/]+)$/);
+    if (channelMatch) {
+      let channelId: string;
+      try {
+        channelId = decodeURIComponent(channelMatch[1]!);
+      } catch {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (!channelHub || !isWorkspaceTopicId(channelId)) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const sinceSeq = parseReplayCursor(
+        requestUrl.searchParams.get('sinceSeq')
+      );
+      // Upgrade first, then let the hub validate channel existence and close
+      // with app code 4404 if unknown (app close codes are only valid post-upgrade).
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        channelHub.handleConnection(ws, { channelId, sinceSeq });
       });
       return;
     }
@@ -921,11 +1004,41 @@ function setupWebSocket(
         resizeOwner: 'active' as const,
       };
       const terminalStream = ensureTerminalStreamState(session);
+      // #1250: per-subscriber gap-heal state for the terminal `data` lane. A shed
+      // `data` envelope must NOT let the client's cursor advance past the gap
+      // (that made a `?cursor=` reconnect skip the shed range — silent, permanent
+      // output loss + split-escape xterm corruption). While lagging every envelope
+      // is suppressed; a drain below the low watermark replays the missed byte
+      // range from server scrollback so the client's cursor only advances over
+      // bytes it actually receives. Mirrors the agent `deliverDelta` lane.
+      const terminalLane: TerminalLaneState = {
+        lagging: false,
+        gapStartCursor: 0,
+      };
       const terminalStreamSubscriber = (envelope: TerminalStreamEnvelope) => {
-        sendTerminalStreamEnvelope(ws, envelope);
+        deliverTerminalEnvelope(
+          ws,
+          terminalLane,
+          {
+            droppable: envelope.kind === 'data',
+            // Gap starts at the first shed byte == the client's current cursor
+            // for a contiguously delivered `data` stream.
+            gapStart:
+              envelope.kind === 'data'
+                ? envelope.payload.range.start
+                : envelope.cursor,
+            serialize: () => JSON.stringify(envelope),
+          },
+          (gapStartCursor) =>
+            buildTerminalStreamReplay(terminalStream, gapStartCursor).map(
+              (env) => JSON.stringify(env)
+            )
+        );
       };
       session.terminalStreamSubscribers?.push(terminalStreamSubscriber);
 
+      // Connect-time replay is bounded by scrollback (≤ soft watermark) on a fresh
+      // socket, so it never sheds — send it directly rather than through the lane.
       for (const envelope of buildTerminalStreamReplay(
         terminalStream,
         attachContext.replayCursor
@@ -1034,7 +1147,14 @@ function setupWebSocket(
         }
       });
 
+      // #1249: idempotent — invoked by both the ws `close`/`error` events and,
+      // for a half-open socket, directly by the heartbeat reaper (which also
+      // terminate()s the socket). Splicing the subscriber frees its send queue.
+      let cleanedUp = false;
       const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        heartbeat.untrack(ws);
         exitDisposable?.dispose();
         const subscriberIdx = session.terminalStreamSubscribers?.indexOf(
           terminalStreamSubscriber
@@ -1047,27 +1167,52 @@ function setupWebSocket(
       };
       ws.on('close', cleanup);
       ws.on('error', cleanup);
+      // #1249: reap this terminal socket if it goes half-open (OPEN but dead) so
+      // its subscriber is spliced instead of the highest-volume lane (raw PTY
+      // stdout) queuing frames off-heap forever.
+      heartbeat.track(ws, cleanup);
     } else {
       // Web session — JSON relay
       const patchReplayStart = session.agentPatchesV2.length;
       const snapshotPatch = createAgentSessionSnapshotPatch(session);
-      const unlistenV2 = session.adapterV2.onPatch((patch) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
+      // #1249: agent patches are replayable deltas (client re-derives from
+      // `session.agentPatchesV2` on reconnect), so shed them to a lagging socket
+      // above the soft watermark and heal the gap with a fresh snapshot patch once
+      // the queue drains, mirroring channel-hub. Above the hard watermark the
+      // socket is closed 4409 and cleanup runs.
+      const patchLane: DeltaLaneState = { lagging: false };
+      const unlistenV2 = onWebSessionPatch(session, (patch) => {
+        deliverDelta(
+          ws,
+          patchLane,
+          () => JSON.stringify(patch),
+          () => JSON.stringify(createAgentSessionSnapshotPatch(session))
+        );
       });
 
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(snapshotPatch));
+      // Connect-time snapshot + buffered replay must arrive intact (not
+      // droppable); still bounded — the hard watermark closes a socket that
+      // cannot even absorb its own attach backlog.
+      sendWithBackpressure(ws, () => JSON.stringify(snapshotPatch));
       for (const patch of session.agentPatchesV2.slice(patchReplayStart)) {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
+        sendWithBackpressure(ws, () => JSON.stringify(patch));
       }
 
       ws.on('message', (msg) => handleWebSessionMessage(ws, session, msg));
 
+      let cleanedUp = false;
       const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        heartbeat.untrack(ws);
         unlistenV2();
         sessionMap.delete(ws);
       };
       ws.on('close', cleanup);
       ws.on('error', cleanup);
+      // #1249: reap a half-open agent socket so its patch listener is removed and
+      // stops queuing patch frames off-heap.
+      heartbeat.track(ws, cleanup);
     }
   });
 

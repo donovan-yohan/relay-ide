@@ -103,7 +103,8 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       'POST /webhooks/manage/backfill',
     ],
     acceptedLanes: ['browser-session'],
-    middleware: 'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
+    middleware:
+      'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
     notes:
       'Webhook management is a browser/operator surface mounted with requireAuth; it is distinct from the secret-protected webhook receiver.',
   },
@@ -200,6 +201,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     surface: 'public local setup and callbacks',
     routes: [
       '/health',
+      '/healthz',
       '/auth/status',
       'POST /auth/setup',
       'POST /auth',
@@ -208,7 +210,8 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '/static frontend assets',
     ],
     acceptedLanes: ['public-local-only'],
-    middleware: 'public setup/login, localhost hook callback, webhook secret, or static file serving',
+    middleware:
+      'public setup/login, localhost hook callback, webhook secret, or static file serving',
     notes:
       'Setup/login/readiness/local hook/static surfaces intentionally sit outside browser-session auth and must not expose private session, repo, node, or credential state; the webhook receiver relies on GitHub signature validation and is separate from authenticated /webhooks/manage routes.',
   },

@@ -17,8 +17,10 @@ import {
   createAgentSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
+import { getOrCreateDmChannel } from '../hooks/useTopicRoomCreate.js';
 import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
+import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import { TerminalNodePicker } from './TerminalNodePicker.js';
 import DialogShell, { type DialogShellHandle } from './dialogs/DialogShell.js';
@@ -51,7 +53,7 @@ import {
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
-import { ChatView } from './chat/ChatView.js';
+import EmptyState from './EmptyState.js';
 import CodeMirrorFileEditor from './CodeMirrorFileEditor.js';
 import './WorkspaceArea.css';
 
@@ -492,9 +494,17 @@ function SessionContentMount({
   onFilePathClick,
 }: SessionContentMountProps) {
   if (session.mode === 'web') {
+    // #1224: the legacy per-session web-chat surface (ChatView/Turn) is
+    // retired. A `mode:'web'` row that reaches the WorkContext cockpit now
+    // renders an explicit archived-state tombstone instead of the deleted
+    // chat surface; the transcript row is preserved, not discarded.
     return (
       <div className="ws-session-mount ws-session-mount--web">
-        <ChatView sessionId={session.id} />
+        <EmptyState
+          icon="⌁"
+          heading="This chat session has been archived"
+          description="The legacy per-session web chat surface has been retired. New work happens in channels."
+        />
       </div>
     );
   }
@@ -650,7 +660,6 @@ export function WorkspaceArea({
   const layout = useWorkspaceLayoutStore((s) => s.layout);
   const activePaneId = useWorkspaceLayoutStore((s) => s.activePaneId);
   const addTab = useWorkspaceLayoutStore((s) => s.addTab);
-  const openTabBeside = useWorkspaceLayoutStore((s) => s.openTabBeside);
   const closeTab = useWorkspaceLayoutStore((s) => s.closeTab);
   const selectTab = useWorkspaceLayoutStore((s) => s.selectTab);
   const resetLayout = useWorkspaceLayoutStore((s) => s.resetLayout);
@@ -900,46 +909,42 @@ export function WorkspaceArea({
     [pendingRemoteTerminal, remoteTerminalCreating]
   );
 
-  // #1076/#1077: spawn a native Hermes chat and place it in a split pane
-  // beside the pane whose control was used, so agents can be watched together.
+  // #1166/#1178: the pane-header '+chat' button opens a Hermes DM channel, not a
+  // mode:'web' session that renders the retired ChatView. Route it through the
+  // same get-or-create DM channel flow as every other entry point (TopicComposer,
+  // CustomizeSessionDialog) so no UI path can still mint a web session. A channel
+  // is a full-surface view, so this activates ChannelView directly rather than a
+  // split pane (the old "beside" placement no longer applies).
   const spawnHermesBeside = useCallback(
     async (paneId: string) => {
-      const { currentActiveWorkspace, currentWorktreePath } =
-        getCurrentSessionContext();
+      const { currentActiveWorkspace } = getCurrentSessionContext();
       if (!currentActiveWorkspace) {
         useUiStore.getState().setActiveModal({ modal: 'env-picker' });
         return;
       }
       setActivePane(paneId);
-      const { session, error } = await createAgentSession({
-        agent: 'hermes',
-        type: 'agent',
-        mode: 'web',
-        repoPath: currentActiveWorkspace.path,
-        worktreePath: currentWorktreePath,
-        sessionLane: 'local-repo',
-      });
-      if (error && !(error instanceof ConflictError)) {
-        workspaceLogger.error('failed to create hermes chat', error);
+      try {
+        const framework = useConfigStore
+          .getState()
+          .frameworks.find((f) => f.id === 'hermes');
+        const topic = await getOrCreateDmChannel({
+          providerId: 'hermes',
+          providerDisplayName: framework?.displayName ?? 'Hermes',
+          workspaceId: useUiStore.getState().activeWorkspaceId,
+        });
+        useUiStore.getState().setActiveChannelId(topic.id);
+      } catch (error) {
+        workspaceLogger.error('failed to open hermes chat', error);
         useToastStore
           .getState()
           .showToast(
             error instanceof Error
               ? error.message
-              : 'failed to create hermes chat'
+              : 'failed to open hermes chat'
           );
-        return;
-      }
-      if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
-        openTabBeside({
-          kind: 'session',
-          sessionId: session.id,
-          sessionType: 'agent',
-        });
       }
     },
-    [setActivePane, openTabBeside]
+    [setActivePane]
   );
 
   const renderAddControl = useCallback(

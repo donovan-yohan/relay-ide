@@ -1248,6 +1248,7 @@ export function createPtySession(
         session.restored = false;
         if (idleTimer) clearTimeout(idleTimer);
         if (metaFlushTimer) clearTimeout(metaFlushTimer);
+        releasePtySessionResources(session, id);
         return;
       }
 
@@ -1388,7 +1389,20 @@ function runExitCleanup(
     }
   }
   sessionsMap.delete(id);
+  releasePtySessionResources(session, id);
+}
+
+/**
+ * Release the heavyweight live PTY/vt state while leaving session metadata and
+ * scrollback available to cold-resume callers. Idempotent for overlapping
+ * explicit-kill and PTY-exit cleanup.
+ */
+function releasePtySessionResources(session: PtySession, id: string): void {
   session.terminalModel?.dispose();
+  delete session.terminalModel;
+  delete session.terminalStream;
+  session.terminalStreamSubscribers?.splice(0);
+  delete session.terminalStreamSubscribers;
   if (!session.preserveRuntimeFilesOnExit) {
     const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
     fs.rm(tmpDir, { recursive: true, force: true }, () => {});

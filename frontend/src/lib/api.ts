@@ -1,4 +1,5 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
+import type { AgentRoster } from '../../../shared/agent-roster.js';
 import type {
   AnchorRef,
   AnchorState,
@@ -40,6 +41,12 @@ import type {
   WorkspaceTopicListResponse,
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
+import type {
+  ChannelImagePart,
+  ChannelMessage,
+  ChannelMessageId,
+  ChannelMessagePart,
+} from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
   WorkflowRunState,
@@ -1269,65 +1276,6 @@ export async function deleteIaWorkspace(id: string): Promise<void> {
   }
 }
 
-// ── #735 Bench overlay CRUD (`/hub/ia/benches`) ──────────────────────────────
-// The PERSISTED, user-authored overlay layer (cwd + env + optional label) on
-// top of the DERIVED bench. C1 (from #735 review): a bench `cwd` is sent and
-// displayed VERBATIM — never `decodeURIComponent`-ed — so the raw absolute path
-// the caller chose is the path the hub mints the BenchId from.
-
-/** Persisted bench overlay row, as returned by `/hub/ia/benches`. Mirrors the
- *  server `BenchOverlay` (ia-store.ts). `label === null` means "use derived". */
-export interface IaBench {
-  id: string;
-  instanceId: string;
-  cwd: string;
-  label: string | null;
-  envOverrides: Record<string, string>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-const IA_BENCHES_PATH = '/hub/ia/benches';
-
-/** List bench overlays, optionally filtered to a single instance. Returns []
- *  (never throws on empty) for an instance with no overlays. */
-export async function fetchIaBenches(instanceId?: string): Promise<IaBench[]> {
-  const url =
-    instanceId && instanceId.length > 0
-      ? `${IA_BENCHES_PATH}?instanceId=${encodeURIComponent(instanceId)}`
-      : IA_BENCHES_PATH;
-  const data = await json<{ benches?: IaBench[] }>(await fetch(url));
-  return Array.isArray(data.benches) ? data.benches : [];
-}
-
-/** Create a bench overlay. `cwd` MUST be the raw absolute path (C1: not
- *  decoded). The hub mints the BenchId from `instanceId` + `cwd`. */
-export async function createIaBench(input: {
-  instanceId: string;
-  cwd: string;
-  label?: string;
-  envOverrides?: Record<string, string>;
-}): Promise<IaBench> {
-  const data = await json<{ bench: IaBench }>(
-    await fetch(IA_BENCHES_PATH, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    })
-  );
-  return data.bench;
-}
-
-/** Delete a bench overlay by its (opaque) id. */
-export async function deleteIaBench(id: string): Promise<void> {
-  const res = await fetch(`${IA_BENCHES_PATH}/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    throw await httpErrorFromResponse(res, 'Failed to delete bench');
-  }
-}
-
 function normalizeTelemetryMapEntry(
   mapKey: string,
   raw: Record<string, unknown>
@@ -1737,6 +1685,340 @@ export async function restoreWorkspaceTopic(
     })
   );
   return data.topic;
+}
+
+/** Fetch a single workspace topic by id (GET /workspace-topics/:id). */
+export async function fetchWorkspaceTopic(id: string): Promise<WorkspaceTopic> {
+  const data = await json<{ topic: WorkspaceTopic }>(
+    await fetch(`/workspace-topics/${encodeURIComponent(id)}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return data.topic;
+}
+
+/**
+ * Create a bare workspace topic (POST /workspace-topics) with no attached
+ * WorkContext — used by the DM-as-channel flow (#1166), which needs only the
+ * topic/channel identity, not the full room + WorkContext of a session launch.
+ */
+export async function createWorkspaceTopic(
+  input: WorkspaceTopicCreateInput
+): Promise<WorkspaceTopic> {
+  const data = await json<{ topic?: WorkspaceTopic }>(
+    await fetch('/workspace-topics', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  if (!data.topic) throw new Error('workspace topic response missing topic');
+  return data.topic;
+}
+
+// ── Channel chat (#1166, epic #1163) ────────────────────────────────────────
+// REST client over the already-shipped channel core. Channel identity == topic
+// id. All writes go through POST /channels/:id/messages; the socket
+// (`useChannelChatSocket`) is read-only. Sender is always server-derived — never
+// send a `sender` field.
+
+export interface ChannelSummaryView {
+  id: string;
+  title: string;
+  kind?: string;
+  visibility: 'default' | 'private' | 'shared';
+  archived: boolean;
+  latestSeq: number;
+  messageCount: number;
+  lastMessage: {
+    id: string;
+    seq: number;
+    preview: string;
+    senderId: string;
+    senderKind: 'human' | 'agent' | 'system';
+    status: string;
+    createdAt: string;
+  } | null;
+  members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+}
+
+export async function fetchChannel(
+  channelId: string
+): Promise<ChannelSummaryView> {
+  const data = await json<{ channel: ChannelSummaryView }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return data.channel;
+}
+
+export interface ChannelHistoryPage {
+  messages: ChannelMessage[];
+  hasMore: boolean;
+  nextCursor?: { afterSeq?: number; beforeSeq?: number };
+}
+
+export async function fetchChannelHistory(
+  channelId: string,
+  filter: {
+    beforeSeq?: number;
+    afterSeq?: number;
+    limit?: number;
+    threadId?: string;
+  } = {}
+): Promise<ChannelHistoryPage> {
+  const params = new URLSearchParams();
+  if (filter.beforeSeq !== undefined)
+    params.set('beforeSeq', String(filter.beforeSeq));
+  if (filter.afterSeq !== undefined)
+    params.set('afterSeq', String(filter.afterSeq));
+  if (filter.limit !== undefined) params.set('limit', String(filter.limit));
+  if (filter.threadId !== undefined) params.set('threadId', filter.threadId);
+  const query = params.toString();
+  const data = await json<ChannelHistoryPage>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages${query ? `?${query}` : ''}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    )
+  );
+  return {
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    hasMore: Boolean(data.hasMore),
+    ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+  };
+}
+
+/**
+ * Fetch one root-inclusive thread page. This intentionally uses the dedicated
+ * thread-history route rather than the unrelated `threadId` filter on channel
+ * history: the server validates the root and preserves its cursor semantics.
+ */
+export async function fetchChannelThreadHistory(
+  channelId: string,
+  rootMessageId: ChannelMessageId,
+  filter: {
+    beforeSeq?: number;
+    afterSeq?: number;
+    limit?: number;
+  } = {}
+): Promise<ChannelHistoryPage> {
+  const params = new URLSearchParams();
+  if (filter.beforeSeq !== undefined)
+    params.set('beforeSeq', String(filter.beforeSeq));
+  if (filter.afterSeq !== undefined)
+    params.set('afterSeq', String(filter.afterSeq));
+  if (filter.limit !== undefined) params.set('limit', String(filter.limit));
+  const query = params.toString();
+  const data = await json<ChannelHistoryPage>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/threads/${encodeURIComponent(rootMessageId)}${query ? `?${query}` : ''}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    )
+  );
+  return {
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    hasMore: Boolean(data.hasMore),
+    ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+  };
+}
+
+export async function postChannelMessage(
+  channelId: string,
+  input: {
+    text: string;
+    format?: 'markdown' | 'text';
+    parts?: ChannelMessagePart[];
+    threadId?: string;
+    parentMessageId?: string;
+    clientMessageId: string;
+  }
+): Promise<ChannelMessage> {
+  const data = await json<{ message: ChannelMessage }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.message;
+}
+
+/**
+ * Upload channel images into the durable attachment lane. The browser never
+ * supplies attachment metadata: the server sniffs, sanitizes, measures, and
+ * returns canonical sender-neutral image parts.
+ */
+export async function uploadChannelImages(
+  channelId: string,
+  files: readonly File[]
+): Promise<ChannelImagePart[]> {
+  const form = new FormData();
+  for (const file of files) form.append('images', file, file.name || 'image');
+  const data = await json<{ attachments: ChannelImagePart[] }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/attachments`, {
+      method: 'POST',
+      headers: { 'x-relay-capabilities': 'context:write' },
+      body: form,
+    })
+  );
+  return Array.isArray(data.attachments) ? data.attachments : [];
+}
+
+/**
+ * Capability headers cannot be attached by a plain <img src>. Fetch the
+ * authenticated binary explicitly, then let the caller render an object URL.
+ */
+export async function fetchChannelAttachmentBlob(
+  channelId: string,
+  attachmentId: string,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await fetch(
+    `/channels/${encodeURIComponent(channelId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    {
+      headers: { 'x-relay-capabilities': 'context:read' },
+      ...(signal ? { signal } : {}),
+    }
+  );
+  if (!response.ok) {
+    throw await httpErrorFromResponse(response, 'image unavailable');
+  }
+  return response.blob();
+}
+
+// ── Channel agent roster + control (#1167, slice 4) ─────────────────────────
+// The roster lists the frameworks that can be @-mentioned in a channel, with
+// their live binding/status. Interrupt + approval are per-agent control writes.
+
+/** Live agent status within a channel (framework-id keyed). */
+export type ChannelAgentStatus =
+  | 'spawning'
+  | 'thinking'
+  | 'streaming'
+  | 'waiting'
+  | 'idle';
+
+/** One row of the channel @-mention roster (GET /channels/:id/roster). */
+export interface RosterEntry {
+  /** Framework id (e.g. `claude`, `codex`, `mock`) — what a mention resolves to. */
+  id: string;
+  displayName: string;
+  kind: 'framework';
+  /** False when the framework cannot currently be routed to (see `reason`). */
+  available: boolean;
+  reason: string | null;
+  /** Present when a live session is bound to this agent in the channel. */
+  binding: { sessionId: string; status: ChannelAgentStatus } | null;
+}
+
+export async function fetchChannelRoster(
+  channelId: string
+): Promise<RosterEntry[]> {
+  const data = await json<{ roster: RosterEntry[] }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/roster`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return Array.isArray(data.roster) ? data.roster : [];
+}
+
+/**
+ * Read the redaction-safe global agent roster. The HTTP route predates the
+ * shared `AgentRoster` envelope and names its entries field `roster`; normalize
+ * that transport detail here so frontend consumers use the shared contract.
+ */
+export async function fetchAgentRoster(
+  options: {
+    includeTerminals?: boolean;
+    needsAttention?: boolean;
+    limit?: number;
+  } = {}
+): Promise<AgentRoster> {
+  const params = new URLSearchParams();
+  params.set('includeTerminals', String(options.includeTerminals ?? false));
+  if (options.needsAttention !== undefined) {
+    params.set('needsAttention', String(options.needsAttention));
+  }
+  const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 200)));
+  params.set('limit', String(limit));
+  const data = await json<{
+    roster?: AgentRoster['entries'];
+    generatedAt?: string;
+    count?: number;
+    nodeId?: string;
+  }>(
+    await fetch(`/roster?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': 'session:read' },
+    })
+  );
+  const entries = Array.isArray(data.roster) ? data.roster : [];
+  return {
+    generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : '',
+    count: typeof data.count === 'number' ? data.count : entries.length,
+    entries,
+    ...(typeof data.nodeId === 'string' ? { nodeId: data.nodeId } : {}),
+  };
+}
+
+/**
+ * Interrupt the given agent's active turn in a channel. Lets `HttpError`
+ * propagate: callers ignore 404 (no live binding) / 409 (NO_ACTIVE_TURN, agent
+ * idle) since both mean "nothing to interrupt".
+ */
+export async function interruptChannelAgent(
+  channelId: string,
+  agentId: string
+): Promise<void> {
+  await json<{ ok: true }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(
+        agentId
+      )}/interrupt`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+  );
+}
+
+/**
+ * Respond to a channel agent's pending approval request. `decision` is an
+ * `AgentApprovalDecisionV2` (accept/decline/cancel) — kept `unknown` here so the
+ * caller owns the exact shape.
+ */
+export async function respondChannelApproval(
+  channelId: string,
+  agentId: string,
+  requestId: string,
+  decision: unknown
+): Promise<void> {
+  await json<{ ok: true }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(
+        agentId
+      )}/approvals`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ requestId, decision }),
+      }
+    )
+  );
 }
 
 export interface WorkContextCreateBody {

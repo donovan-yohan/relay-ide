@@ -520,6 +520,26 @@
   border-bottom: 1px solid var(--border);
 }
 
+.topic-room__evidence-link {
+  margin-left: auto;
+  padding: 2px 5px;
+  border: 1px solid var(--status-info);
+  background: transparent;
+  color: var(--status-info);
+  font: inherit;
+  cursor: pointer;
+}
+
+.topic-room__evidence-link:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+}
+
+.topic-room__evidence-link:focus-visible {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  outline: 1px solid var(--status-info);
+  outline-offset: 2px;
+}
+
 .topic-room-session-group,
 .topic-room-session-group ul,
 .topic-orchestration-list,
@@ -1077,9 +1097,35 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 10px 2px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .topic-mobile-group__header--static {
+    cursor: default;
+  }
+
+  .topic-mobile-group__toggle {
+    margin-left: auto;
+    color: var(--text-muted);
+  }
+
+  .topic-mobile-group__dm-header {
+    min-height: 28px;
+    padding: 8px 10px 4px;
     color: var(--text-muted);
     font-size: var(--font-size-xs);
+    text-transform: lowercase;
   }
 
   .topic-mobile-group__name {
@@ -1090,12 +1136,13 @@
 
   .topic-mobile-row {
     display: grid;
-    grid-template-columns: var(--topic-badge-size) minmax(0, 1fr) auto 18px;
+    grid-template-columns: var(--icon-slot-width) minmax(0, 1fr) auto 18px;
     align-items: center;
     gap: 8px;
     width: 100%;
     min-height: 44px;
-    padding: 5px 8px;
+    padding: 5px 8px 5px
+      calc(8px + (var(--topic-depth, 0) * var(--icon-slot-width)));
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -1103,6 +1150,25 @@
     font-family: inherit;
     text-align: left;
     touch-action: manipulation;
+  }
+
+  .topic-mobile-row-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .topic-mobile-row-shell .topic-mobile-row {
+    width: auto;
+  }
+
+  .topic-mobile-row-shell .topic-cockpit__attention-actions {
+    grid-column: 2;
+  }
+
+  .topic-mobile-row-shell .topic-cockpit__nudge,
+  .topic-mobile-row-shell .topic-cockpit__nudge-status {
+    grid-column: 1 / -1;
   }
 
   .topic-mobile-row.selected,
@@ -1131,6 +1197,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .topic-mobile-row__trail {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 5px;
   }
 
   .topic-mobile-row__title {
@@ -1272,6 +1345,44 @@
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+/* #1166: DM sub-section header under a workspace group. Matches the muted,
+   lowercase participants-header treatment with a top border to separate it
+   from the channel list above. */
+.topic-workspace-group__dm-header {
+  padding: 6px 10px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+  opacity: 0.7;
+}
+
+.topic-tree__list--dm {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* #1235: DM row badge is the Relay-native AgentAvatar (initials on the vendor
+   sender color, #1234). It fills the fixed badge cell and self-centers in the
+   row grid; the avatar owns its own outline ring + radius. */
+.topic-row__dm-avatar {
+  align-self: center;
+}
+
+/* #1166: presence-only unread-activity dot (not a count badge). */
+.topic-row__activity-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--status-info);
+  flex: 0 0 6px;
 }
 
 /* #1084: search scope toggle */

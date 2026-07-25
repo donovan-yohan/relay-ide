@@ -125,6 +125,7 @@ describe('node-link-rpc-host', () => {
         type: 'terminal',
         cwd: '/home/user',
         sessionLane: 'remote-cwd',
+        spawnedBySessionId: 'unknown-parent-session',
       }),
       ctx
     );
@@ -137,6 +138,7 @@ describe('node-link-rpc-host', () => {
       type: 'terminal',
       cwd: '/home/user',
       sessionLane: 'remote-cwd',
+      spawnedBySessionId: 'unknown-parent-session',
     });
     expect(sent).toHaveLength(1);
     const reply = sent[0]!;
@@ -155,7 +157,8 @@ describe('node-link-rpc-host', () => {
 
     const writes: string[] = [];
     const localRelayNode = fakeLocalNode({
-      get: (id) => (id === 'sess-1' ? ({ id, mode: 'pty' } as never) : undefined),
+      get: (id) =>
+        id === 'sess-1' ? ({ id, mode: 'pty' } as never) : undefined,
       write: (_id, data) => writes.push(data),
     });
     const host = createNodeLinkRpcHost({ localRelayNode });

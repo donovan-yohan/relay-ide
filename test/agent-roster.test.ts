@@ -90,6 +90,7 @@ describe('deriveRosterAttention', () => {
 describe('projectRosterEntry', () => {
   const session: RosterSessionInput = {
     id: 'sess-1',
+    spawnedBySessionId: 'orchestrator-1',
     globalSessionId: 'node-a:sess-1',
     nodeId: 'node-a',
     agent: 'claude',
@@ -115,6 +116,7 @@ describe('projectRosterEntry', () => {
     });
     expect(entry).toMatchObject({
       sessionId: 'sess-1',
+      spawnedBySessionId: 'orchestrator-1',
       globalSessionId: 'node-a:sess-1',
       provider: 'claude',
       role: 'implementer',
@@ -172,6 +174,7 @@ describe('projectRosterEntry', () => {
       capabilities: [],
     });
     expect(entry.attention.needsAttention).toBe(false);
+    expect(entry).not.toHaveProperty('spawnedBySessionId');
   });
 });
 

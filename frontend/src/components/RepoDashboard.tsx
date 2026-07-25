@@ -10,6 +10,7 @@ import type {
   AnyIssue,
 } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { useUiStore, type RepoDashboardTab } from '../lib/stores/ui.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { TuiButton } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
@@ -35,8 +36,6 @@ export interface RepoDashboardProps {
   onSessionCreated?: (sessionId: string) => void;
   hint?: React.ReactNode;
 }
-
-type ActiveTab = 'overview' | 'tickets' | 'evidence';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -369,7 +368,11 @@ export function RepoDashboard({
   );
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
+  const [activeTab, setActiveTab] = useState<RepoDashboardTab>('overview');
+  const tabIntent = useUiStore((state) => state.repoDashboardTabIntent);
+  const consumeTabIntent = useUiStore(
+    (state) => state.consumeRepoDashboardTabIntent
+  );
   const [startWorkIssue, setStartWorkIssue] = useState<AnyIssue | null>(null);
   const [creatingTerminal, setCreatingTerminal] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -400,7 +403,14 @@ export function RepoDashboard({
     if (data && !data.isGitRepo) setActiveTab('evidence');
   }, [data]);
 
-  const pickTab = (tab: ActiveTab) => {
+  useEffect(() => {
+    if (tabIntent?.repoPath !== repoPath) return;
+    tabManuallyPicked.current = true;
+    setActiveTab(tabIntent.tab);
+    consumeTabIntent(repoPath);
+  }, [consumeTabIntent, repoPath, tabIntent]);
+
+  const pickTab = (tab: RepoDashboardTab) => {
     tabManuallyPicked.current = true;
     setActiveTab(tab);
   };

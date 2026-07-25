@@ -51,6 +51,27 @@ describe('buildResponsesInput', () => {
       },
     ]);
   });
+
+  it('states a file-read failure instead of silently omitting the image', () => {
+    const input = buildResponsesInput(
+      'inspect',
+      [{ type: 'image', path: '/tmp/missing.png', mimeType: 'image/png' }],
+      () => {
+        throw new Error('gone');
+      }
+    );
+    expect(input).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'inspect\n\n[image attachment not deliverable to hermes: missing.png, dimensions unavailable]',
+          },
+        ],
+      },
+    ]);
+  });
 });
 
 describe('attachmentToResponsesImageUrl', () => {

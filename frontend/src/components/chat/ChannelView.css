@@ -1,0 +1,795 @@
+/* Channel timeline view (#1166). A near-1:1 density/type match to ChatView.css
+   so the channel surface reads as the same product — same font sizes, spacing
+   scale, and tokens — over a different (multi-sender) data model. No new spacing
+   values; all pulled from DESIGN.md's 4px scale and existing tokens. */
+
+.ch-view {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.ch-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.ch-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* header — title + kind/DM glyph + member/partner label + connection dot */
+.ch-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.ch-header__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.ch-header__title {
+  color: var(--text);
+  font-weight: 700;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-header__meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-header__spacer {
+  margin-left: auto;
+}
+
+/* agent presence chips (#1167) — one per bound/active agent, glyph + status dot
+   + optional interrupt button. Status color: grey idle, pulsing amber busy,
+   green streaming. Only DESIGN.md tokens. */
+.ch-header__agents {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ch-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-agent-chip__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 12px;
+  height: 12px;
+}
+
+.ch-agent-chip__dot {
+  /* #1191: the header keeps its legacy status colors; the mobile cockpit uses
+     cockpit-presence.ts (streaming -> working/warning, waiting -> blocked/error). */
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ch-agent-chip--streaming .ch-agent-chip__dot {
+  background: var(--status-success);
+}
+
+.ch-agent-chip--thinking .ch-agent-chip__dot,
+.ch-agent-chip--spawning .ch-agent-chip__dot,
+.ch-agent-chip--waiting .ch-agent-chip__dot {
+  background: var(--status-warning);
+  animation: ch-agent-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ch-agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.ch-agent-chip__name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12ch;
+}
+
+.ch-agent-chip__stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ch-agent-chip__stop:hover {
+  color: var(--status-error, var(--accent));
+}
+
+.ch-conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.ch-conn-dot--on {
+  background: var(--status-success);
+}
+
+.ch-conn-dot--off {
+  background: var(--status-error, var(--text-muted));
+}
+
+/* manual reconnect affordance shown when reconnect backoff has given up */
+.ch-reconnect-btn {
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-reconnect-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Timeline shell owns floating scroll affordances without making them part of
+   the scrollable geometry. */
+.ch-tl-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* timeline scroll container — mirrors .tl */
+.ch-tl {
+  height: 100%;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ch-tl::-webkit-scrollbar {
+  width: 4px;
+}
+.ch-tl::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.ch-tl-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Square, outline-only floating affordance per DESIGN.md. Info matches the
+   unread-divider semantics. */
+.ch-new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 6;
+  transform: translateX(-50%);
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--status-info);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ch-new-messages:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, var(--surface));
+}
+
+/* day divider — mirrors .tl-session-break, centered muted label + rule */
+.ch-day-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-day-divider::before,
+.ch-day-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.ch-day-divider__label {
+  white-space: nowrap;
+}
+
+/* unread line — 1px info rule + right-aligned "new" label */
+.ch-unread-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-unread-line::before {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--status-info);
+}
+
+.ch-unread-line__label {
+  white-space: nowrap;
+}
+
+/* system message — full-width centered muted, own row (never in a group) */
+.ch-system-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+/* approval controls on an actionable system row (#1167) */
+.ch-system-msg__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ch-system-msg__btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-system-msg__btn--approve:hover {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.ch-system-msg__btn--deny:hover {
+  border-color: var(--status-error, var(--accent));
+  color: var(--status-error, var(--accent));
+}
+
+/* message group — one sender header + tightly-stacked bodies */
+.ch-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ch-group__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.ch-group__avatar {
+  /* baseline-aligned header row → pull the badge to optical center of the name */
+  align-self: center;
+}
+
+.ch-group__name {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.ch-group__time {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.ch-group__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* single message row */
+.ch-msg {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 2px solid transparent;
+  padding-left: 8px;
+  margin-left: -8px;
+}
+
+.ch-msg--streaming,
+.ch-msg--truncated,
+.ch-msg--interrupted,
+.ch-msg--failed {
+  border-left-width: 2px;
+  border-left-style: solid;
+}
+
+.ch-msg--truncated {
+  border-left-color: var(--status-warning);
+}
+
+.ch-msg--interrupted {
+  border-left-color: var(--status-warning);
+}
+
+.ch-msg--failed {
+  border-left-color: var(--status-error);
+}
+
+/* message body text — matches .tl-text scale */
+.ch-msg__text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* human message bubble — reuses .tl-text--user treatment (right-aligned) */
+.ch-msg--user .ch-msg__body {
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  margin: 0 0 0 auto;
+  max-width: 75%;
+  width: fit-content;
+  align-self: flex-end;
+}
+
+.ch-msg--user {
+  align-items: flex-end;
+  border-left: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+
+/* streaming block cursor — DESIGN.md motion effect 4 (solid while active,
+   blinks after 530ms idle, opacity 0.7 when visible) */
+.ch-msg__cursor {
+  display: inline-block;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+.ch-msg__cursor--blinking {
+  animation: ch-cursor-blink 1s step-end infinite;
+}
+
+@keyframes ch-cursor-blink {
+  0%,
+  50% {
+    opacity: 0.7;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* trailing status tags — interrupted / failed / truncated */
+.ch-msg__tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  margin-left: 6px;
+  opacity: 0.85;
+}
+
+.ch-msg__tag--interrupted {
+  color: var(--status-warning);
+}
+
+.ch-msg__tag--failed {
+  color: var(--status-error);
+}
+
+.ch-msg__tag--truncated {
+  color: var(--status-warning);
+}
+
+/* Thread entry point: outline-only informational navigation, matching the
+   compact agent-chip vocabulary and DESIGN.md's square control law. */
+.ch-msg__thread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  align-self: flex-start;
+  margin-top: var(--space-xs, 4px);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg--user .ch-msg__thread-chip {
+  align-self: flex-end;
+}
+
+.ch-msg__thread-chip:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  border-color: var(--status-info);
+}
+
+.ch-msg__thread-chip__count {
+  color: var(--status-info);
+  font-weight: 700;
+}
+
+.ch-msg__thread-chip__hint {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* Thread panel is structural on desktop: pure-black attached column, not a
+   floating surface. It owns its history backfill but projects live rows from
+   the channel reducer/socket. */
+.ch-thread {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.ch-thread__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-transform: lowercase;
+}
+
+.ch-thread__title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.ch-thread__count {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ch-thread__close {
+  min-width: 28px;
+  min-height: 28px;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-thread__close:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.ch-thread__close-mobile {
+  display: none;
+}
+
+.ch-thread__root {
+  flex-shrink: 0;
+  padding: 16px 24px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.ch-thread__root-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-thread__root-divider::before,
+.ch-thread__root-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.ch-thread__root-divider > span {
+  white-space: nowrap;
+}
+
+.ch-thread__scroll-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.ch-thread__scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 16px 24px;
+}
+
+.ch-thread__scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ch-thread__scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.ch-thread__content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ch-thread__state {
+  padding: 8px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  text-transform: lowercase;
+}
+
+/* empty / unavailable / paging chrome */
+.ch-empty,
+.ch-unavailable {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.ch-back-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-back-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-loading-older,
+.ch-top-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-history-paused {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-history-continue {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-history-continue:hover {
+  border-color: var(--status-info);
+  color: var(--status-info);
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+}
+
+/* catch-up banner — mirrors .tl-resume-banner, sticky at top of scroll area */
+.ch-catchup-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ch-catchup-banner__btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-catchup-banner__btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 767px) {
+  .ch-header {
+    padding: 8px 10px;
+  }
+
+  .ch-tl {
+    padding: 10px 6px;
+    gap: 12px;
+  }
+
+  .ch-tl-content {
+    gap: 12px;
+  }
+
+  .ch-msg--user .ch-msg__body {
+    max-width: 92%;
+  }
+
+  .ch-thread {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    width: auto;
+    border-left: 0;
+    background: var(--bg);
+  }
+
+  .ch-thread__header {
+    padding: 8px 10px;
+  }
+
+  .ch-thread__close {
+    order: -1;
+    margin-right: 4px;
+    margin-left: 0;
+  }
+
+  .ch-thread__close-desktop {
+    display: none;
+  }
+
+  .ch-thread__close-mobile {
+    display: inline;
+  }
+
+  .ch-thread__root,
+  .ch-thread__scroll {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+}

@@ -2,7 +2,10 @@ import * as crypto from 'node:crypto';
 import type * as http from 'node:http';
 import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import type { CredentialAuthContext, HubNodeRegistry } from './hub-node-registry.js';
+import type {
+  CredentialAuthContext,
+  HubNodeRegistry,
+} from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -11,6 +14,7 @@ import {
   type RelayNodeEnvelope,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
+import { sendWithBackpressure } from './ws-backpressure.js';
 
 interface AuthenticatedNodeLink {
   node: HubNodeSummary;
@@ -121,7 +125,11 @@ export function authenticateHubNodeLink(
   if (auth.ok) {
     return {
       ok: true,
-      authenticated: { node: auth.node, token, credentialId: auth.credentialId },
+      authenticated: {
+        node: auth.node,
+        token,
+        credentialId: auth.credentialId,
+      },
     };
   }
   const error = auth.ok === false ? auth.error : undefined;
@@ -251,9 +259,15 @@ export type HubNodePtyInputRecorder = (input: {
   data: string;
 }) => void;
 
+export type HubNodePtyControlSessionReleaser = (
+  nodeId: string,
+  sessionId: string
+) => void;
+
 export interface HubNodeLinkManagerOptions {
   inventoryValidator?: HubNodeLinkInventoryValidator;
   ptyInputRecorder?: HubNodePtyInputRecorder;
+  releaseRoutedPtyControlSession?: HubNodePtyControlSessionReleaser;
 }
 
 export class HubNodeLinkManager {
@@ -264,6 +278,7 @@ export class HubNodeLinkManager {
   private readonly eventHandlers = new Set<NodeEventHandler>();
   private readonly inventoryValidator?: HubNodeLinkInventoryValidator;
   private readonly ptyInputRecorder?: HubNodePtyInputRecorder;
+  private readonly releaseRoutedPtyControlSession?: HubNodePtyControlSessionReleaser;
 
   constructor(options: HubNodeLinkManagerOptions = {}) {
     if (options.inventoryValidator) {
@@ -271,6 +286,10 @@ export class HubNodeLinkManager {
     }
     if (options.ptyInputRecorder) {
       this.ptyInputRecorder = options.ptyInputRecorder;
+    }
+    if (options.releaseRoutedPtyControlSession) {
+      this.releaseRoutedPtyControlSession =
+        options.releaseRoutedPtyControlSession;
     }
   }
 
@@ -535,11 +554,17 @@ export class HubNodeLinkManager {
       this.openStream(stream, message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.chunk' || message.type === 'fs.tail.chunk') {
+    if (
+      message.type === 'logs.tail.chunk' ||
+      message.type === 'fs.tail.chunk'
+    ) {
       stream.onChunk(message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.error' || message.type === 'fs.tail.error') {
+    if (
+      message.type === 'logs.tail.error' ||
+      message.type === 'fs.tail.error'
+    ) {
       const error = payloadRecord(message.payload)['error'];
       if (typeof error === 'object' && error !== null) {
         stream.onError?.(error as RelayNodeError);
@@ -584,13 +609,21 @@ export class HubNodeLinkManager {
     const browserWs = stream.browserWs;
     if (message.type === 'pty.data') {
       const data = payloadRecord(message.payload)['data'];
-      if (typeof data === 'string' && browserWs.readyState === browserWs.OPEN) {
-        browserWs.send(data);
+      if (typeof data === 'string') {
+        // #1249: routed PTY stdout is a replayable delta (browser reconnect
+        // re-attaches and the node re-streams), so shed it to a lagging browser
+        // socket above the soft watermark rather than queuing frames off-heap;
+        // above the hard watermark close 4409 (cleanup sends pty.detach).
+        sendWithBackpressure(browserWs, () => data, { droppable: true });
       }
       return true;
     }
     if (message.type === 'pty.exit') {
       this.ptyStreams.delete(message.streamId!);
+      this.releaseRoutedPtyControlSession?.(
+        stream.nodeId,
+        stream.sessionId
+      );
       if (browserWs.readyState === browserWs.OPEN) browserWs.close(1000);
       return true;
     }
@@ -637,6 +670,10 @@ export class HubNodeLinkManager {
     for (const [streamId, stream] of Array.from(this.ptyStreams)) {
       if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;
       this.ptyStreams.delete(streamId);
+      // An ungraceful link drop is terminal for the stream — release the routed
+      // control-session entry too, so it doesn't leak until an explicit node
+      // revoke (#1244 item 3 review). Idempotent; a same-id reconnect recreates.
+      this.releaseRoutedPtyControlSession?.(stream.nodeId, stream.sessionId);
       if (stream.browserWs.readyState === stream.browserWs.OPEN) {
         stream.browserWs.close(1011, 'node link closed');
       }
@@ -659,7 +696,8 @@ export function handleHubNodeLink(
   const authenticatedNodeId = authenticated.node.nodeId;
   nodeLinks?.registerNodeLink(authenticatedNodeId, ws);
   const unsubscribeStatus = registry.onNodeStatus((event) => {
-    if (event.nodeId !== authenticatedNodeId || event.status !== 'revoked') return;
+    if (event.nodeId !== authenticatedNodeId || event.status !== 'revoked')
+      return;
     sendJson(
       ws,
       errorEnvelope(

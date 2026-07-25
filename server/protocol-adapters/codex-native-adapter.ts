@@ -24,31 +24,77 @@ import {
   type CodexServerRequest,
 } from '../codex-app-server-client.js';
 import { createLogger } from '../logger.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const logger = createLogger('codex-native-adapter');
 
+type CodexTurnInput =
+  | { type: 'text'; text: string }
+  | { type: 'localImage'; path: string };
+
+/**
+ * Convert Relay's established local-path image attachment lane to the Codex
+ * app-server v2 `UserInput` contract. Channel image payloads are always local
+ * content-addressed files; URL fetching is deliberately out of scope here.
+ * Any attachment that cannot be represented stays visible as a text note.
+ */
+export function buildCodexTurnInput(
+  content: string,
+  attachments: AgentSendMessageInputV2['attachments'] = []
+): CodexTurnInput[] {
+  const inputs: CodexTurnInput[] = [{ type: 'text', text: content }];
+  const unavailable: string[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.type !== 'image') continue;
+    const localPath = attachment.path;
+    let usable = path.isAbsolute(localPath);
+    if (usable) {
+      try {
+        usable = fs.statSync(localPath).isFile();
+      } catch {
+        usable = false;
+      }
+    }
+    if (usable) {
+      inputs.push({ type: 'localImage', path: localPath });
+    } else {
+      unavailable.push(path.basename(localPath) || 'image');
+    }
+  }
+
+  if (unavailable.length > 0) {
+    const text = inputs[0];
+    if (text?.type === 'text') {
+      text.text += unavailable
+        .map(
+          (name) => `\n\n[Relay image attachment unavailable to Codex: ${name}]`
+        )
+        .join('');
+    }
+  }
+  return inputs;
+}
+
 // ── Web-session capability status ──────────────────────────────────────────
 //
-// The Codex framework is currently advertised with `supportsWebSessions: false`
-// in `server/types.ts`. The adapter maps lifecycle events (turn started/ended,
-// tool calls, command execution, file changes) and reasoning deltas, but the
-// browser chat surface never receives assistant text as `chat:text-delta`
-// events, so a user typing a prompt sees no response in web mode.
+// Codex web sessions are advertised (`supportsWebSessions: true` in
+// `server/types.ts`) as of #1169 (closes #301). This adapter drives the native
+// `codex app-server` JSON-RPC transport (server/codex-app-server-client.ts) and
+// maps assistant text end-to-end into the V2 chat protocol:
+//   - `item/started` (agentMessage) → `agent-item-started-v2` (assistantMessage)
+//   - `item/agentMessage/delta`     → `agent-item-delta-v2` `{ delta: { text } }`
+//   - `item/completed` (agentMessage) → `agent-item-updated-v2` (final text)
+//   - `turn/completed`              → `agent-turn-completed-v2`
+// alongside reasoning deltas, tool/command/file-change items, and approvals.
 //
-// Issue: https://github.com/donovan-yohan/relay-ide/issues/301
-//
-// To re-advertise web sessions, both criteria must be met:
-//   1. Assistant text streaming is mapped end-to-end:
-//      `item/agentMessage/delta` → `chat:text-delta` (with matching
-//      `chat:text-start` / `chat:text-end` lifecycle events) so the UI can
-//      render incremental assistant output the same way it does for Claude.
-//   2. An e2e round-trip test (test/protocol-adapters/codex-*.test.ts or
-//      test/web-session-*.test.ts) asserts: prompt submitted → text-delta
-//      stream observed → completion patch emitted.
-//
-// The adapter is intentionally retained — only the capability advertisement
-// is flipped — so future work can pick up from here instead of re-deriving
-// the JSON-RPC plumbing.
+// The round-trip (prompt submitted → text-delta stream → completion patch) is
+// covered by the fake-app-server unit suite in
+// test/server/protocol-adapters/codex-native-adapter.test.ts (no real codex
+// invocations), and was validated once against the real logged-in `codex` CLI
+// via test/manual/codex-live-proof.mjs. The old `chat:text-delta` gap belonged
+// to the retired hook-based `codex-adapter.ts`, not this native adapter.
 
 // ── Capability set ─────────────────────────────────────────────────────────
 
@@ -223,16 +269,30 @@ function stringField(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function diffCounts(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
 /**
- * Flatten codex's reasoning array shapes into a single string. Both
- * `summary: Vec<ReasoningItemReasoningSummary>` and
- * `content: Vec<ReasoningItemContent>` use `{ type, text }` entries.
+ * Flatten Codex's reasoning arrays into a single string. Current app-server
+ * emits `string[]`; older versions used `{ type, text }[]` entries.
  */
 function flattenReasoningTextEntries(value: unknown): string {
   if (!Array.isArray(value)) return '';
   return value
-    .filter(isRecord)
-    .map((entry) => stringField(entry['text']))
+    .map((entry) =>
+      typeof entry === 'string'
+        ? entry
+        : isRecord(entry)
+          ? stringField(entry['text'])
+          : ''
+    )
     .filter((text) => text.length > 0)
     .join('\n\n');
 }
@@ -394,6 +454,22 @@ export type CodexClientFactory = (
   options: CodexAppServerClientOptions
 ) => CodexAppServerClient;
 
+/**
+ * Native Codex can notify `turn/completed` before the last agentMessage's
+ * `item/completed`. Keep the Relay turn alive briefly so that terminal output
+ * item remains observable (and durably persisted by channel listeners) before
+ * teardown clears native item identity.
+ */
+export const CODEX_TERMINAL_ITEM_GRACE_MS = 250;
+
+interface DeferredTurnCompletion {
+  status: 'completed';
+  usage?: AgentUsageV2;
+  error?: string;
+  nativeDurationMs?: number;
+  timer: NodeJS.Timeout;
+}
+
 // ── Main adapter class ─────────────────────────────────────────────────────
 
 export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
@@ -433,6 +509,13 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   // Item tracking
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
+  private readonly openAgentMessageNativeIds = new Set<string>();
+  private readonly openReasoningByRelayId = new Map<string, string>();
+  private deferredTurnCompletion: DeferredTurnCompletion | null = null;
+  private readonly toolArgumentsByNativeId = new Map<
+    string,
+    Record<string, unknown>
+  >();
   private pendingModelOverride: string | null = null;
 
   // Reasoning streaming buffers, keyed by relayItemId. Used to preserve the
@@ -621,6 +704,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const resolver = this.pendingApprovals.get(input.requestId);
     if (!resolver) return;
     this.pendingApprovals.delete(input.requestId);
+    this.approvalMeta.delete(input.requestId);
     resolver(input.decision);
   }
 
@@ -629,6 +713,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const resolver = this.pendingInputRequests.get(requestId);
     if (!resolver) return;
     this.pendingInputRequests.delete(requestId);
+    this.inputRequestMeta.delete(requestId);
     resolver({ answers: input.answers });
   }
 
@@ -643,6 +728,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeTurnId = input.turnId;
     this.activeStartedAt = startedAt;
     this.completedActiveTurn = false;
+    this.openAgentMessageNativeIds.clear();
+    this.openReasoningByRelayId.clear();
+    this.clearDeferredTurnCompletion();
 
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -683,7 +771,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       await this.client.call('turn/start', {
         threadId: this.providerSessionId,
-        input: [{ type: 'text', text: input.content }],
+        input: buildCodexTurnInput(input.content, input.attachments),
         ...(this.pendingModelOverride
           ? { model: this.pendingModelOverride }
           : {}),
@@ -710,9 +798,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     nativeDurationMs?: number
   ): void {
     if (this.completedActiveTurn || this.activeTurnId === null) return;
+    this.clearDeferredTurnCompletion();
     this.completedActiveTurn = true;
     const turnId = this.activeTurnId;
     const completedAt = nowIso();
+    this.terminalizeOpenReasoningItems(status, completedAt);
     // Prefer native durationMs if provided, else compute from startedAt
     const durationMs =
       nativeDurationMs ??
@@ -732,6 +822,18 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       ...(error !== undefined ? { error } : {}),
     });
 
+    // These maps translate provider output ids only while the current turn is
+    // live. The canonical V2 transcript owns completed items; retaining native
+    // ids and streamed reasoning/token buffers across turns grows without bound
+    // on an always-on channel binding.
+    this.itemMap.clear();
+    this.openAgentMessageNativeIds.clear();
+    this.openReasoningByRelayId.clear();
+    this.toolArgumentsByNativeId.clear();
+    this.tokenUsageBuffer.clear();
+    this.reasoningSummaryBuffers.clear();
+    this.reasoningDetailBuffers.clear();
+
     this.activeTurnId = null;
     this.nativeActiveTurnId = null;
     this.activeStartedAt = null;
@@ -744,6 +846,100 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
       error: error ?? null,
     });
+  }
+
+  private clearDeferredTurnCompletion(): void {
+    if (!this.deferredTurnCompletion) return;
+    clearTimeout(this.deferredTurnCompletion.timer);
+    this.deferredTurnCompletion = null;
+  }
+
+  private flushDeferredTurnCompletion(): boolean {
+    const pending = this.deferredTurnCompletion;
+    if (!pending) return false;
+    this.deferredTurnCompletion = null;
+    clearTimeout(pending.timer);
+    this.completeActiveTurn(
+      pending.status,
+      pending.usage,
+      pending.error,
+      pending.nativeDurationMs
+    );
+    return true;
+  }
+
+  private deferCompletedTurnUntilTerminalItems(
+    usage?: AgentUsageV2,
+    error?: string,
+    nativeDurationMs?: number
+  ): boolean {
+    if (
+      this.openAgentMessageNativeIds.size === 0 &&
+      this.openReasoningByRelayId.size === 0
+    ) {
+      return false;
+    }
+    this.clearDeferredTurnCompletion();
+    const timer = setTimeout(() => {
+      if (this.flushDeferredTurnCompletion()) this.drainQueue();
+    }, CODEX_TERMINAL_ITEM_GRACE_MS);
+    timer.unref?.();
+    this.deferredTurnCompletion = {
+      status: 'completed',
+      ...(usage !== undefined ? { usage } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(nativeDurationMs !== undefined ? { nativeDurationMs } : {}),
+      timer,
+    };
+    return true;
+  }
+
+  private completeDeferredTurnIfReady(): void {
+    if (
+      this.openAgentMessageNativeIds.size > 0 ||
+      this.openReasoningByRelayId.size > 0 ||
+      !this.deferredTurnCompletion
+    ) {
+      return;
+    }
+    if (this.flushDeferredTurnCompletion()) this.drainQueue();
+  }
+
+  private terminalizeOpenReasoningItems(
+    turnStatus: 'completed' | 'interrupted' | 'failed',
+    completedAt: string
+  ): void {
+    if (!this.config || this.activeTurnId === null) return;
+    const status =
+      turnStatus === 'completed'
+        ? 'completed'
+        : turnStatus === 'failed'
+          ? 'failed'
+          : 'cancelled';
+
+    for (const [relayId, nativeId] of this.openReasoningByRelayId) {
+      const summary = this.reasoningSummaryBuffers.get(relayId) ?? '';
+      const detail = this.reasoningDetailBuffers.get(relayId) ?? '';
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.config.sessionId,
+        timestamp: completedAt,
+        turnId: this.activeTurnId,
+        item: {
+          type: 'reasoning',
+          id: relayId,
+          summary,
+          ...(detail ? { detail } : {}),
+          visibility: 'summary',
+          status,
+          completedAt,
+          ...(nativeId ? { providerItemId: nativeId } : {}),
+        },
+      });
+      this.reasoningSummaryBuffers.delete(relayId);
+      this.reasoningDetailBuffers.delete(relayId);
+    }
+    this.openReasoningByRelayId.clear();
   }
 
   private drainQueue(): void {
@@ -815,7 +1011,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       if (this._status === 'connected') {
         const turnId = this.activeTurnId;
         if (turnId !== null && !this.completedActiveTurn) {
-          this.completeActiveTurn('interrupted');
+          const flushedDeferredCompletion = this.flushDeferredTurnCompletion();
+          if (!flushedDeferredCompletion) {
+            this.completeActiveTurn('interrupted');
+          }
         }
         this._status = 'disconnected';
         this.client = null;
@@ -837,6 +1036,20 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.approvalMeta.clear();
     this.inputRequestMeta.clear();
 
+    // A provider-completed turn waiting only on the terminal-item grace still
+    // owns its authoritative usage/boundary. Publish it before client.stop()
+    // can emit close and before teardown clears the deferred record. Otherwise
+    // an explicitly disconnected active turn is interrupted here so open
+    // reasoning cards become terminal before their identity/buffers are lost.
+    const flushedDeferredCompletion = this.flushDeferredTurnCompletion();
+    if (
+      !flushedDeferredCompletion &&
+      this.activeTurnId !== null &&
+      !this.completedActiveTurn
+    ) {
+      this.completeActiveTurn('interrupted');
+    }
+
     if (this.client) {
       try {
         await this.client.stop('SIGTERM');
@@ -853,6 +1066,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.providerSessionId = null;
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
+    this.openAgentMessageNativeIds.clear();
+    this.openReasoningByRelayId.clear();
+    this.clearDeferredTurnCompletion();
+    this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
     this.reasoningDetailBuffers.clear();
@@ -1073,12 +1290,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       if (nativeTurnId) this.tokenUsageBuffer.delete(nativeTurnId);
     }
 
-    this.completeActiveTurn(
-      status,
-      usage,
-      errorMessage || undefined,
-      nativeDurationMs
-    );
+    const error = errorMessage || undefined;
+    if (
+      status === 'completed' &&
+      this.deferCompletedTurnUntilTerminalItems(usage, error, nativeDurationMs)
+    ) {
+      return;
+    }
+    this.completeActiveTurn(status, usage, error, nativeDurationMs);
     this.drainQueue();
   }
 
@@ -1171,6 +1390,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'agentMessage': {
         const relayId = `msg-${this.activeTurnId}-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        if (nativeId) this.openAgentMessageNativeIds.add(nativeId);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1192,6 +1412,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'reasoning': {
         const relayId = `reasoning-${this.activeTurnId}-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        this.openReasoningByRelayId.set(relayId, nativeId);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1292,6 +1513,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'mcpToolCall': {
         const relayId = `mcp-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1303,7 +1526,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             server: stringField(item['server']),
             tool: stringField(item['tool']),
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1314,6 +1537,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'dynamicToolCall': {
         const relayId = `tool-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1325,7 +1550,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool: stringField(item['tool']),
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1337,6 +1562,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         const relayId = `collab-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
         const nativeTool = stringField(item['tool']);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1348,7 +1575,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool: `collab:${nativeTool}`,
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1432,13 +1659,18 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             ...(nativeId ? { providerItemId: nativeId } : {}),
           },
         });
+        // Listener delivery is synchronous: only after the terminal item patch
+        // is observable (and channel listeners have persisted it) may the
+        // deferred turn boundary release item identity and live state.
+        this.openAgentMessageNativeIds.delete(nativeId);
+        this.completeDeferredTurnIfReady();
         break;
 
       case 'reasoning': {
-        // Codex ships ReasoningItem with `summary: Vec<ReasoningItemReasoningSummary>`
-        // and optional `content: Vec<ReasoningItemContent>`. Each entry has a
-        // `text` field. Flatten to plain strings; fall back to streamed buffers
-        // when the completion payload omits them.
+        if (!this.openReasoningByRelayId.has(relayId)) break;
+        // Current Codex app-server ships `summary` / `content` as string[];
+        // older versions used `{ type, text }[]`. Flatten either shape and
+        // fall back to streamed buffers when completion omits them.
         const summaryFromPayload = flattenReasoningTextEntries(item['summary']);
         const detailFromPayload = flattenReasoningTextEntries(item['content']);
         const summary =
@@ -1460,8 +1692,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             visibility: 'summary',
             status: 'completed',
             completedAt,
+            ...(nativeId ? { providerItemId: nativeId } : {}),
           },
         });
+        this.openReasoningByRelayId.delete(relayId);
+        this.completeDeferredTurnIfReady();
         break;
       }
 
@@ -1513,6 +1748,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             status: kindType || 'edited',
           };
         });
+        // `item/completed` is authoritative and replaces the reducer entity.
+        // Carry the final apply-patch payload forward; otherwise the preceding
+        // patchUpdated delta is discarded and a completed diff card goes blank.
+        const patch = changes
+          .filter(isRecord)
+          .map((change) => stringField(change['diff']))
+          .filter(Boolean)
+          .join('\n');
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1526,6 +1769,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
               paths.length > 0
                 ? paths
                 : [{ path: 'unknown', status: 'edited' }],
+            ...(patch ? { patch } : {}),
             applyStatus,
             status: 'completed',
             completedAt,
@@ -1534,7 +1778,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
       }
 
-      case 'mcpToolCall':
+      case 'mcpToolCall': {
+        const args = isRecord(item['arguments'])
+          ? item['arguments']
+          : (this.toolArgumentsByNativeId.get(nativeId) ?? {});
+        this.toolArgumentsByNativeId.delete(nativeId);
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1546,12 +1794,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             server: stringField(item['server']),
             tool: stringField(item['tool']),
+            arguments: args,
             result: item['result'],
             status: 'completed',
             completedAt,
           },
         });
         break;
+      }
 
       case 'dynamicToolCall':
       case 'collabAgentToolCall': {
@@ -1559,6 +1809,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           itemType === 'collabAgentToolCall'
             ? `collab:${stringField(item['tool'])}`
             : stringField(item['tool']);
+        const args = isRecord(item['arguments'])
+          ? item['arguments']
+          : (this.toolArgumentsByNativeId.get(nativeId) ?? {});
+        this.toolArgumentsByNativeId.delete(nativeId);
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1570,6 +1824,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool,
+            arguments: args,
             result: item['result'],
             status: 'completed',
             completedAt,
@@ -1726,7 +1981,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { patch: combinedPatch },
+      mode: 'replace',
+      delta: { patch: combinedPatch, card: diffCounts(combinedPatch) },
     });
   }
 
