@@ -18,7 +18,8 @@ let db: Database.Database | null = null;
 let upsertWebStmt: Database.Statement | null = null;
 let deleteWebStmt: Database.Statement | null = null;
 let markStatusStmt: Database.Statement | null = null;
-let loadAllWebStmt: Database.Statement | null = null;
+let loadWebSessionIdsStmt: Database.Statement | null = null;
+let loadWebSessionByIdStmt: Database.Statement | null = null;
 let reapCandidatesStmt: Database.Statement | null = null;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 /**
@@ -140,6 +141,23 @@ export interface LoadedWebSessionRow {
   status: 'active' | 'disconnected' | 'archived';
 }
 
+interface StoredWebSessionRow {
+  id: string;
+  vendor: string;
+  vendor_session_id: string | null;
+  cwd: string;
+  repo_path: string | null;
+  worktree_path: string | null;
+  branch_name: string | null;
+  display_name: string | null;
+  workspace_id: string | null;
+  agent_session_v2_json: string;
+  meta_json: string;
+  created_at: number;
+  last_activity: number;
+  status: 'active' | 'disconnected' | 'archived';
+}
+
 export function initRelayStateDb(configDir: string): void {
   if (db) closeRelayStateDb();
 
@@ -202,13 +220,18 @@ export function initRelayStateDb(configDir: string): void {
   // with a new providerSession) and orphaned direct sessions past the cap. The
   // per-session transcript cap already bounds each row's memory; total row count
   // is bounded instead by the age-reaper below.
-  loadAllWebStmt = db.prepare(
+  loadWebSessionIdsStmt = db.prepare(
+    `SELECT id
+     FROM web_sessions
+     WHERE status != 'archived'
+     ORDER BY last_activity ASC`
+  );
+  loadWebSessionByIdStmt = db.prepare(
     `SELECT id, vendor, vendor_session_id, cwd, repo_path, worktree_path,
             branch_name, display_name, workspace_id, agent_session_v2_json,
             meta_json, created_at, last_activity, status
      FROM web_sessions
-     WHERE status != 'archived'
-     ORDER BY last_activity ASC`
+     WHERE id = ? AND status != 'archived'`
   );
   reapCandidatesStmt = db.prepare(
     `SELECT id FROM web_sessions
@@ -335,7 +358,8 @@ export function closeRelayStateDb(): void {
     upsertWebStmt = null;
     deleteWebStmt = null;
     markStatusStmt = null;
-    loadAllWebStmt = null;
+    loadWebSessionIdsStmt = null;
+    loadWebSessionByIdStmt = null;
     reapCandidatesStmt = null;
   }
 }
@@ -532,28 +556,22 @@ export function markWebSessionStatus(
   }
 }
 
-export function loadAllWebSessions(): LoadedWebSessionRow[] {
-  if (!db || !loadAllWebStmt) return [];
+/**
+ * Snapshot the established restore order as lightweight IDs, then load and
+ * deserialize each full row separately. The individual SELECT completes before
+ * yielding, so resume may persist a row or close the DB between sessions.
+ */
+export function* iterateWebSessions(): IterableIterator<LoadedWebSessionRow> {
+  if (!db || !loadWebSessionIdsStmt) return;
 
-  const rows = loadAllWebStmt.all() as Array<{
-    id: string;
-    vendor: string;
-    vendor_session_id: string | null;
-    cwd: string;
-    repo_path: string | null;
-    worktree_path: string | null;
-    branch_name: string | null;
-    display_name: string | null;
-    workspace_id: string | null;
-    agent_session_v2_json: string;
-    meta_json: string;
-    created_at: number;
-    last_activity: number;
-    status: 'active' | 'disconnected' | 'archived';
-  }>;
-
-  const out: LoadedWebSessionRow[] = [];
-  for (const row of rows) {
+  const ids = loadWebSessionIdsStmt.all() as Array<{ id: string }>;
+  for (const { id } of ids) {
+    // The generator can be paused after yielding a row. Do not use a prepared
+    // statement after a shutdown has cleared it.
+    const row = loadWebSessionByIdStmt?.get(id) as
+      | StoredWebSessionRow
+      | undefined;
+    if (!row) continue;
     try {
       // Cap the parsed blob before it is cloned into the live session (#1243).
       // A row persisted before this fix landed can still be the observed 14.9MB
@@ -564,7 +582,7 @@ export function loadAllWebSessions(): LoadedWebSessionRow[] {
         JSON.parse(row.agent_session_v2_json) as AgentSessionV2
       );
       const meta = JSON.parse(row.meta_json) as WebSessionMeta;
-      out.push({
+      yield {
         id: row.id,
         vendor: row.vendor,
         vendorSessionId: row.vendor_session_id,
@@ -579,12 +597,15 @@ export function loadAllWebSessions(): LoadedWebSessionRow[] {
         createdAt: row.created_at,
         lastActivity: row.last_activity,
         status: row.status,
-      });
+      };
     } catch (err) {
       logger.warn('failed to parse row %s: %s', row.id, err);
     }
   }
-  return out;
+}
+
+export function loadAllWebSessions(): LoadedWebSessionRow[] {
+  return Array.from(iterateWebSessions());
 }
 
 function pickVendorSessionId(session: AgentSessionV2): string | null {

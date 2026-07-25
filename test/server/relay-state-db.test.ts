@@ -9,6 +9,7 @@ import {
   upsertWebSessionNow,
   scheduleWebSessionUpsert,
   flushAllPendingWrites,
+  iterateWebSessions,
   loadAllWebSessions,
   deleteWebSession,
   markWebSessionStatus,
@@ -117,6 +118,46 @@ describe('relay-state-db', () => {
     const rows = loadAllWebSessions();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.displayName).toBe('Renamed');
+  });
+
+  it('snapshots restore IDs without holding a SQLite cursor between rows', () => {
+    for (let i = 0; i < 3; i++) {
+      upsertWebSessionNow(
+        fakeWebSession({
+          id: `iter-${i}`,
+          displayName: `Before ${i}`,
+          lastActivity: new Date(
+            Date.parse('2026-04-29T00:00:00Z') + i * 1000
+          ).toISOString(),
+        })
+      );
+    }
+
+    const iterator = iterateWebSessions();
+    const first = iterator.next();
+    expect(first.value?.id).toBe('iter-0');
+
+    // A write must complete while the iterator is paused; the remaining row is
+    // fetched by ID only after the write, not from a long-lived SQLite cursor.
+    upsertWebSessionNow(
+      fakeWebSession({
+        id: 'iter-1',
+        displayName: 'Updated between rows',
+        lastActivity: new Date('2026-04-29T00:00:01Z').toISOString(),
+      })
+    );
+    const remaining = Array.from(iterator);
+    expect([first.value, ...remaining].map((row) => row!.id)).toEqual([
+      'iter-0',
+      'iter-1',
+      'iter-2',
+    ]);
+    expect(remaining[0]!.displayName).toBe('Updated between rows');
+
+    const closeIterator = iterateWebSessions();
+    expect(closeIterator.next().value?.id).toBe('iter-0');
+    expect(() => closeRelayStateDb()).not.toThrow();
+    expect(closeIterator.next().done).toBe(true);
   });
 
   it('debounces scheduled upserts and flushes on demand', async () => {

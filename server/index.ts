@@ -2127,8 +2127,17 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+  // Session resume starts after the listener is bound. Keep this separate from
+  // health status: callers can observe readiness without making /healthz wait.
+  const startupResume = {
+    inProgress: false,
+    complete: false,
+    restored: 0,
+    failed: false,
+  };
   const healthMonitor = createHealthMonitor({
     disabledStores: persistenceState.disabledStores,
+    getResumeReadiness: () => startupResume,
   });
   app.get('/healthz', healthMonitor.handler);
 
@@ -6437,6 +6446,7 @@ async function main(): Promise<void> {
       ? (positiveIntegerEnv('RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS') ?? 0)
       : 0;
   async function restoreStartupSessions(): Promise<number> {
+    startupResume.inProgress = true;
     if (testStartupRestoreHoldMs > 0) {
       await new Promise<void>((resolve) =>
         setTimeout(resolve, testStartupRestoreHoldMs)
@@ -6456,6 +6466,9 @@ async function main(): Promise<void> {
     restoreStartupSessions,
     {
       restored: (restoredCount) => {
+        startupResume.inProgress = false;
+        startupResume.complete = true;
+        startupResume.restored = restoredCount;
         if (restoredCount === 0) return;
         logger.info(
           `Restored ${restoredCount} session(s) from previous update.`
@@ -6465,6 +6478,9 @@ async function main(): Promise<void> {
         }
       },
       failed: (err) => {
+        startupResume.inProgress = false;
+        startupResume.complete = true;
+        startupResume.failed = true;
         logger.error(
           'Background session restore failed:',
           err instanceof Error ? err.message : String(err)
