@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import Database from 'better-sqlite3';
-import sharp, { type Sharp } from 'sharp';
+import type { Sharp } from 'sharp';
 
 import {
   CHANNEL_IMAGE_ALT_MAX_LENGTH,
@@ -165,6 +165,11 @@ async function sanitizeImage(input: ChannelAttachmentIngestInput): Promise<{
 
   let format: keyof typeof MIME_BY_FORMAT;
   let animated: boolean;
+  // Lazy-load sharp's native binding only when actually decoding an image, so
+  // importing this module (transitively reached from the CLI via local-node)
+  // never eagerly loads the native addon at module-eval — that eager load raced
+  // under parallel CLI spawns and intermittently threw during ESM load (#1263).
+  const sharp = (await import('sharp')).default;
   try {
     const metadata = await sharp(input.bytes, {
       animated: true,
