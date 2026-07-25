@@ -56,6 +56,10 @@ import type {
   PipelineHandoffStageName,
 } from '../../../shared/pipeline-handoff-artifact.js';
 import type { ViewArtifactPackage } from '../../../shared/agent-view-artifact.js';
+import type {
+  AgentProfile,
+  AgentProfileRespondTo,
+} from '../../../shared/agent-profile.js';
 import type { TaskRef, WorkContext } from '../../../shared/work-context.js';
 import type {
   PipelineHandoffArtifactEnvelope,
@@ -3556,6 +3560,82 @@ export async function fetchFrameworks(): Promise<FrameworkInfo[]> {
     await fetch('/api/frameworks')
   );
   return data.frameworks;
+}
+
+// ── Agent profiles ──────────────────────────────────────────────────────────
+
+/**
+ * The editable, vendor-neutral overlay fields for an AgentProfile. Framework
+ * facts remain in `/api/frameworks`, keyed by `providerId`.
+ */
+export interface AgentProfileWriteInput {
+  providerId: string;
+  displayName?: string;
+  systemPrompt?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  effort?: string | null;
+  envVars?: Record<string, string> | null;
+  namePool?: string[] | null;
+  respondTo?: AgentProfileRespondTo;
+  respondToAllowlist?: string[] | null;
+}
+
+const AGENT_PROFILES_PATH = '/agent-profiles';
+
+export async function fetchAgentProfiles(): Promise<AgentProfile[]> {
+  const data = await json<{ profiles?: AgentProfile[] }>(
+    await fetch(AGENT_PROFILES_PATH)
+  );
+  return Array.isArray(data.profiles) ? data.profiles : [];
+}
+
+export async function createAgentProfile(
+  input: AgentProfileWriteInput
+): Promise<AgentProfile> {
+  const data = await json<{ profile: AgentProfile }>(
+    await fetch(AGENT_PROFILES_PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.profile;
+}
+
+export async function updateAgentProfile(
+  id: string,
+  input: AgentProfileWriteInput
+): Promise<AgentProfile> {
+  const data = await json<{ profile: AgentProfile }>(
+    await fetch(`${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.profile;
+}
+
+export async function deleteAgentProfile(id: string): Promise<void> {
+  const response = await fetch(
+    `${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+    }
+  );
+  if (!response.ok) throw await httpErrorFromResponse(response);
+}
+
+export async function setDefaultAgentProfile(
+  id: string
+): Promise<AgentProfile> {
+  const data = await json<{ profile: AgentProfile }>(
+    await fetch(`${AGENT_PROFILES_PATH}/${encodeURIComponent(id)}/default`, {
+      method: 'POST',
+    })
+  );
+  return data.profile;
 }
 
 // ── Workspace branch operations ───────────────────────────────────────────────

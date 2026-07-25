@@ -233,6 +233,7 @@ import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAutomationRunRouter } from './features/automation-run-router.js';
 import { createPrOverseerRouter } from './features/pr-overseer-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
+import { createAgentProfileRouter } from './agent-profile-router.js';
 import {
   AGENT_ROLES,
   buildAttentionEventInput,
@@ -3164,6 +3165,17 @@ async function main(): Promise<void> {
   // non-destructive). Consumes the `iaStore` handle wired above; degrades to
   // 503 if the store failed to init.
   app.use(createIaWorkspaceRouter({ requireAuth, iaStore }));
+  // AgentProfile CRUD (#1232): local browser/operator configuration only. The
+  // router resolves provider ids through the live configured framework catalog;
+  // it never receives or logs framework environment-variable values.
+  app.use(
+    createAgentProfileRouter({
+      store: agentProfileStore,
+      listConfiguredFrameworks: () =>
+        listConfiguredFrameworks(getConfig().frameworks),
+      requireAuth,
+    })
+  );
   app.use(
     createWorkspaceEvidenceRouter({
       requireAuth,

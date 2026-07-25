@@ -241,6 +241,7 @@ const expectedInventoryCoverage = [
       '/api/analytics/*',
       '/telemetry/*',
       '/work-contexts/*',
+      '/agent-profiles/*',
     ],
   },
   {
