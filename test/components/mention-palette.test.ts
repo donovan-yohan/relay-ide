@@ -8,9 +8,11 @@ import { buildMentionContacts } from '../../frontend/src/lib/chat/mention-contac
 import {
   annotateMentionCollisions,
   filterMentionContacts,
+  mentionInsertText,
   type MentionContact,
 } from '../../shared/mention-contacts.js';
 import { builtInAgentProfileId } from '../../shared/agent-profile.js';
+import { parseMentions } from '../../shared/channel-chat-protocol.js';
 import type { RosterEntry } from '../../frontend/src/lib/api.js';
 
 (
@@ -19,7 +21,10 @@ import type { RosterEntry } from '../../frontend/src/lib/api.js';
 
 const roster: RosterEntry[] = [
   {
-    id: 'claude',
+    id: builtInAgentProfileId('claude'),
+    providerId: 'claude',
+    isDefault: true,
+    isBuiltIn: true,
     displayName: 'Claude',
     kind: 'framework',
     available: true,
@@ -27,7 +32,10 @@ const roster: RosterEntry[] = [
     binding: null,
   },
   {
-    id: 'codex',
+    id: builtInAgentProfileId('codex'),
+    providerId: 'codex',
+    isDefault: true,
+    isBuiltIn: true,
     displayName: 'Codex',
     kind: 'framework',
     available: false,
@@ -35,7 +43,10 @@ const roster: RosterEntry[] = [
     binding: null,
   },
   {
-    id: 'hermes',
+    id: builtInAgentProfileId('hermes'),
+    providerId: 'hermes',
+    isDefault: true,
+    isBuiltIn: true,
     displayName: 'Hermes',
     kind: 'framework',
     available: true,
@@ -45,7 +56,7 @@ const roster: RosterEntry[] = [
 ];
 
 describe('buildMentionContacts', () => {
-  it('synthesizes a vendor-default profile per framework, keyed on the built-in id', () => {
+  it('keeps roster-provided built-in profile identities intact', () => {
     const contacts = buildMentionContacts(roster);
     expect(contacts.map((c) => c.id)).toEqual([
       builtInAgentProfileId('claude'),
@@ -75,6 +86,39 @@ describe('buildMentionContacts', () => {
     expect(human.providerId).toBe('human');
     // agent members are not folded in as humans.
     expect(contacts.filter((c) => c.kind === 'human')).toHaveLength(1);
+  });
+
+  it('preserves same-provider custom profile ids and insert-text round trips', () => {
+    const customId = 'agent-profile:claude:reviewer';
+    const contacts = buildMentionContacts([
+      ...roster,
+      {
+        id: customId,
+        providerId: 'claude',
+        displayName: 'Reviewer',
+        isDefault: false,
+        isBuiltIn: false,
+        kind: 'framework',
+        available: true,
+        reason: null,
+        binding: null,
+      },
+    ]);
+    const custom = contacts.find((contact) => contact.id === customId)!;
+    expect(custom).toMatchObject({
+      providerId: 'claude',
+      kind: 'profile',
+      owner: 'user',
+      isDefault: false,
+      isBuiltIn: false,
+    });
+    expect(
+      parseMentions(
+        mentionInsertText(custom),
+        ['claude'],
+        contacts
+      )[0]?.profileId
+    ).toBe(customId);
   });
 });
 

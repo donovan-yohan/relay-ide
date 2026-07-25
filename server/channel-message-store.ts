@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import { createLogger } from './logger.js';
 
 import {
@@ -41,7 +42,7 @@ import {
 //    row deletion — that would break gap-free seq. Future mutation lands as new
 //    events over retained rows.
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -135,12 +136,13 @@ CREATE TABLE IF NOT EXISTS channel_members (
 
 CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   channel_id            TEXT NOT NULL,
+  profile_actor_id      TEXT NOT NULL,
   agent_framework       TEXT NOT NULL,
   session_id            TEXT,
   provider_session_json TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
-  PRIMARY KEY (channel_id, agent_framework)
+  PRIMARY KEY (channel_id, profile_actor_id)
 );
 `;
 
@@ -178,6 +180,7 @@ interface MemberRow {
 
 interface BindingRow {
   channel_id: string;
+  profile_actor_id: string;
   agent_framework: string;
   session_id: string | null;
   provider_session_json: string;
@@ -268,6 +271,9 @@ export interface ChannelHistoryFilter {
 
 export interface ChannelBinding {
   channelId: string;
+  /** Durable AgentProfile actor identity; binding/session ownership key. */
+  profileActorId: string;
+  /** Provider/framework spawn selector retained independently of the profile. */
   agentFramework: string;
   sessionId: string | null;
   providerSession: Record<string, unknown>;
@@ -346,7 +352,7 @@ export interface ChannelMessageStore {
   }): ChannelMemberRef;
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
-  getBinding(channelId: string, agentFramework: string): ChannelBinding | null;
+  getBinding(channelId: string, profileActorId: string): ChannelBinding | null;
   /**
    * Distinct non-null `session_id`s across every channel binding. Feeds the
    * relay-state-db age-reaper's protection set (#1248) so a web_session still
@@ -356,6 +362,8 @@ export interface ChannelMessageStore {
   listBoundSessionIds(): string[];
   upsertBinding(input: {
     channelId: string;
+    /** Omit only for legacy callers; normalizes to the provider's built-in profile. */
+    profileActorId?: string;
     agentFramework: string;
     sessionId?: string | null;
     providerSession?: Record<string, unknown>;
@@ -824,6 +832,41 @@ function runMigrations(db: Database.Database): void {
       );
     }
   }
+  if (current < 3) {
+    db.transaction(() => {
+      // Bindings used to be keyed by framework, which made two profiles of one
+      // provider overwrite and reuse one another. Rebuild the small table so the
+      // durable Actor id is the primary key. Every legacy row is deterministically
+      // backfilled to that provider's built-in/default profile; the transaction
+      // makes this fail-safe and an already-complete v3 reopen a no-op.
+      db.exec(`
+        CREATE TABLE channel_agent_bindings_v3 (
+          channel_id            TEXT NOT NULL,
+          profile_actor_id      TEXT NOT NULL,
+          agent_framework       TEXT NOT NULL,
+          session_id            TEXT,
+          provider_session_json TEXT NOT NULL DEFAULT '{}',
+          created_at            TEXT NOT NULL,
+          updated_at            TEXT NOT NULL,
+          PRIMARY KEY (channel_id, profile_actor_id)
+        );
+        INSERT INTO channel_agent_bindings_v3
+          (channel_id, profile_actor_id, agent_framework, session_id,
+           provider_session_json, created_at, updated_at)
+        SELECT channel_id,
+               'agent-profile:' || agent_framework || ':default',
+               agent_framework,
+               session_id,
+               provider_session_json,
+               created_at,
+               updated_at
+          FROM channel_agent_bindings;
+        DROP TABLE channel_agent_bindings;
+        ALTER TABLE channel_agent_bindings_v3 RENAME TO channel_agent_bindings;
+      `);
+      db.prepare('UPDATE schema_version SET version = 3').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -1035,14 +1078,21 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
   function getBindingImpl(
     channelId: string,
-    agentFramework: string
+    profileActorId: string
   ): ChannelBinding | null {
-    const row = db
+    const select = db
       .prepare(
-        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND agent_framework = ?'
-      )
-      .get(channelId, agentFramework) as BindingRow | undefined;
-    return row ? bindingRowToRecord(row) : null;
+        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+      );
+    const row = select.get(channelId, profileActorId) as BindingRow | undefined;
+    if (row) return bindingRowToRecord(row);
+    // Compatibility only after an exact Actor lookup misses: older callers sent
+    // bare provider ids, whose durable binding migrated to the built-in profile.
+    const legacy = select.get(
+      channelId,
+      builtInAgentProfileId(profileActorId)
+    ) as BindingRow | undefined;
+    return legacy ? bindingRowToRecord(legacy) : null;
   }
 
   return {
@@ -1466,8 +1516,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       return row?.channel_id ?? null;
     },
 
-    getBinding(channelId, agentFramework) {
-      return getBindingImpl(channelId, agentFramework);
+    getBinding(channelId, profileActorId) {
+      return getBindingImpl(channelId, profileActorId);
     },
 
     listBoundSessionIds() {
@@ -1481,25 +1531,29 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
     upsertBinding(input) {
       const now = nowIso();
+      const profileActorId =
+        input.profileActorId ?? builtInAgentProfileId(input.agentFramework);
       const existing = db
         .prepare(
-          'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND agent_framework = ?'
+          'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
         )
-        .get(input.channelId, input.agentFramework) as BindingRow | undefined;
+        .get(input.channelId, profileActorId) as BindingRow | undefined;
       const providerSessionJson = JSON.stringify(
         input.providerSession ??
           (existing ? JSON.parse(existing.provider_session_json) : {})
       );
       db.prepare(
         `INSERT INTO channel_agent_bindings
-           (channel_id, agent_framework, session_id, provider_session_json, created_at, updated_at)
-         VALUES (@channelId, @agentFramework, @sessionId, @providerSessionJson, @createdAt, @updatedAt)
-         ON CONFLICT(channel_id, agent_framework) DO UPDATE SET
+           (channel_id, profile_actor_id, agent_framework, session_id, provider_session_json, created_at, updated_at)
+         VALUES (@channelId, @profileActorId, @agentFramework, @sessionId, @providerSessionJson, @createdAt, @updatedAt)
+         ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
+           agent_framework = excluded.agent_framework,
            session_id = excluded.session_id,
            provider_session_json = excluded.provider_session_json,
            updated_at = excluded.updated_at`
       ).run({
         channelId: input.channelId,
+        profileActorId,
         agentFramework: input.agentFramework,
         sessionId:
           input.sessionId !== undefined
@@ -1509,7 +1563,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         createdAt: existing?.created_at ?? now,
         updatedAt: now,
       });
-      return getBindingImpl(input.channelId, input.agentFramework)!;
+      return getBindingImpl(input.channelId, profileActorId)!;
     },
 
     sweepStaleStreaming() {
@@ -1644,6 +1698,7 @@ function bindingRowToRecord(row: BindingRow): ChannelBinding {
   }
   return {
     channelId: row.channel_id,
+    profileActorId: row.profile_actor_id,
     agentFramework: row.agent_framework,
     sessionId: row.session_id,
     providerSession,

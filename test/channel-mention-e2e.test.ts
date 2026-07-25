@@ -550,16 +550,23 @@ describe('mention routing — end-to-end via the router', () => {
   it('the roster verb reports availability + reasons', async () => {
     const h = await harness();
     const res = await req<{
-      roster: Array<{ id: string; available: boolean; reason: string | null }>;
+      roster: Array<{
+        id: string;
+        providerId: string;
+        available: boolean;
+        reason: string | null;
+      }>;
     }>({
       port: h.port,
       method: 'GET',
       url: `/channels/${encodeURIComponent(h.channelId)}/roster`,
     });
     expect(res.status).toBe(200);
-    const mock = res.body.roster.find((r) => r.id === 'mock')!;
+    // #1232 slice 5: roster entries are keyed by profile actor id; the vendor is
+    // carried on the explicit providerId field (never derived from id).
+    const mock = res.body.roster.find((r) => r.providerId === 'mock')!;
     expect(mock.available).toBe(true);
-    const codex = res.body.roster.find((r) => r.id === 'codex')!;
+    const codex = res.body.roster.find((r) => r.providerId === 'codex')!;
     expect(codex.available).toBe(false);
     expect(codex.reason).toContain('#301');
   });

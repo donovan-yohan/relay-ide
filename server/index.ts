@@ -2162,6 +2162,7 @@ async function main(): Promise<void> {
         attachmentStore: channelAttachmentStore,
         hub: channelHub,
         topicStore: workspaceTopicStore,
+        agentProfileStore,
         sessions: {
           createWeb: sessions.createWeb,
           get: sessions.get,

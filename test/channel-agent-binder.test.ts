@@ -16,6 +16,11 @@ import {
 } from '../server/protocol-adapter-v2.js';
 import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import {
+  createAgentProfileStore,
+  type AgentProfileStore,
+} from '../server/agent-profile-store.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -777,7 +782,8 @@ interface SessionsHarness {
   registerRestoredWebSession: (
     sessionId: string,
     agentType: string,
-    role: AgentRole
+    role: AgentRole,
+    profileId?: string
   ) => Promise<void>;
   lastCreateParams: () => CreateWebParams | undefined;
 }
@@ -812,6 +818,7 @@ function makeSessions(
         id,
         mode: 'web',
         agent: params.agentType,
+        ...(params.profileId !== undefined ? { profileId: params.profileId } : {}),
         ...(params.role !== undefined ? { role: params.role } : {}),
         adapterV2: adapter,
         cwd: params.cwd,
@@ -848,7 +855,7 @@ function makeSessions(
         session: { id, role } as unknown as WebSession,
       });
     },
-    registerRestoredWebSession: async (id, agentType, role) => {
+    registerRestoredWebSession: async (id, agentType, role, profileId) => {
       const adapter = build(agentType);
       await adapter.connect({
         cwd: '/tmp',
@@ -862,6 +869,7 @@ function makeSessions(
           id,
           mode: 'web',
           agent: agentType,
+          ...(profileId !== undefined ? { profileId } : {}),
           role,
           adapterV2: adapter,
           cwd: '/tmp',
@@ -892,6 +900,7 @@ function makeBinder(cfg: {
   yolo?: boolean;
   gate?: Promise<void>;
   attachmentStore?: ChannelAttachmentStore;
+  agentProfileStore?: AgentProfileStore | null;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -908,6 +917,9 @@ function makeBinder(cfg: {
     ...(cfg.attachmentStore ? { attachmentStore: cfg.attachmentStore } : {}),
     hub,
     topicStore: cfg.topicStore ?? null,
+    ...(cfg.agentProfileStore !== undefined
+      ? { agentProfileStore: cfg.agentProfileStore }
+      : {}),
     sessions: sessions.sessions,
     knownProviderIds: cfg.knownProviderIds,
     mentionTargets: async () => cfg.targets,
@@ -923,6 +935,146 @@ function makeBinder(cfg: {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe('channel-agent-binder — lifecycle', () => {
+  it('keeps same-provider profiles isolated: bindings, sessions, replies, roster, and status all use profile actor ids', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const backend = profiles.create({
+      id: 'agent-profile:mock:backend',
+      providerId: 'mock',
+      displayName: 'Backend',
+      model: 'mock-model',
+      provider: 'mock-provider',
+      effort: 'high',
+      envVars: { PROFILE_TEST_FLAG: '1' },
+      systemPrompt: 'Review the backend boundary.',
+    });
+    const reviewer = profiles.create({
+      id: 'agent-profile:mock:reviewer',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    const statusAgentIds = new Set<string>();
+    binder.setStatusBroadcaster((_type, data) => {
+      if (typeof data['agentId'] === 'string') statusAgentIds.add(data['agentId']);
+    });
+
+    post(store, binder, '@Backend one', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()).toMatchObject({
+      agentType: 'mock',
+      profileId: backend.id,
+      model: 'mock-model',
+      processEnv: { PROFILE_TEST_FLAG: '1' },
+      systemPrompt: 'Review the backend boundary.',
+      extra: { provider: 'mock-provider', effort: 'high' },
+    });
+    post(store, binder, '@Reviewer two', ['mock']);
+    await waitFor(() => sessions.spawns() === 2);
+    expect(store.getBinding(CH, backend.id)?.sessionId).toBeTruthy();
+    expect(store.getBinding(CH, reviewer.id)?.sessionId).toBeTruthy();
+
+    // A second mention of Backend reuses only Backend's pinned profile session.
+    post(store, binder, '@Backend again', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 3);
+    expect(sessions.spawns()).toBe(2);
+    expect(agentReplies(store, 'mock').map((reply) => reply.sender.id)).toEqual(
+      expect.arrayContaining([backend.id, reviewer.id])
+    );
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining([backend.id, reviewer.id])
+    );
+    expect(statusAgentIds.has(backend.id)).toBe(true);
+    expect(statusAgentIds.has(reviewer.id)).toBe(true);
+  });
+
+  it('keeps the default-only provider path on one reusable built-in profile identity', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const defaultId = builtInAgentProfileId('mock');
+    const statusIds = new Set<string>();
+    binder.setStatusBroadcaster((_type, data) => {
+      if (typeof data['agentId'] === 'string') statusIds.add(data['agentId']);
+    });
+    post(store, binder, '@mock first', ['mock']);
+    post(store, binder, '@mock second', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    expect(sessions.spawns()).toBe(1);
+    expect(store.getBinding(CH, defaultId)?.sessionId).toBeTruthy();
+    expect(agentReplies(store, 'mock').every((row) => row.sender.id === defaultId)).toBe(true);
+    expect((await binder.rosterForChannel(CH)).find((row) => row.id === defaultId)?.binding).not.toBeNull();
+    expect(statusIds.has(defaultId)).toBe(true);
+  });
+
+  it('routes a named profile mention from the assistant-finalized contacts parser path', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    profiles.create({
+      id: 'agent-profile:mock:backend-finalizer',
+      providerId: 'mock',
+      displayName: 'Backend',
+    });
+    const reviewer = profiles.create({
+      id: 'agent-profile:mock:reviewer-finalizer',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: '@Reviewer take this.' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+
+    post(store, binder, '@Backend begin', ['mock']);
+    await waitFor(() => sessions.spawns() === 2);
+    expect(store.getBinding(CH, reviewer.id)?.sessionId).toBeTruthy();
+  });
+
+  it('keeps a persisted profile mention pinned across a rename/collision reparse', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const pinned = profiles.create({
+      id: 'agent-profile:mock:renamed',
+      providerId: 'mock',
+      displayName: 'Backend',
+    });
+    profiles.create({
+      id: 'agent-profile:mock:current-reviewer',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    const message = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@Reviewer please inspect',
+      mentions: [{ raw: '@Reviewer', providerId: 'mock', profileId: pinned.id }],
+    });
+    binder.handleMessagePosted(message, message.mentions ?? []);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(store.getBinding(CH, pinned.id)?.sessionId).toBeTruthy();
+    expect(store.getBinding(CH, 'agent-profile:mock:current-reviewer')).toBeNull();
+  });
+
   it('designates an orchestrator without submitting a turn', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
@@ -962,6 +1114,114 @@ describe('channel-agent-binder — lifecycle', () => {
 
     expect(binding.sessionId).toBe(sessionId);
     expect(sessions.spawns()).toBe(0);
+  });
+
+  it('reuses an explicitly selected profile-pinned restored orchestrator', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const reviewer = profiles.create({
+      id: 'reviewer',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    const sessionId = 'session:restored-profile';
+    await sessions.registerRestoredWebSession(
+      sessionId,
+      'mock',
+      'orchestrator',
+      reviewer.id
+    );
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId: reviewer.id,
+      agentFramework: 'mock',
+      sessionId,
+    });
+
+    expect((await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).sessionId).toBe(sessionId);
+    expect(sessions.spawns()).toBe(0);
+    // Exact custom actor ids are accepted by the control lookup; a legacy
+    // prefix rewrite would miss this live binding as "not found".
+    await expect(binder.interrupt(CH, reviewer.id)).rejects.toThrow(
+      /no active turn/
+    );
+  });
+
+  it('does not reuse an unpinned legacy session for a custom profile', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const reviewer = profiles.create({
+      id: 'reviewer',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    await sessions.registerRestoredWebSession('session:legacy', 'mock', 'orchestrator');
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId: reviewer.id,
+      agentFramework: 'mock',
+      sessionId: 'session:legacy',
+    });
+
+    expect((await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).sessionId).not.toBe('session:legacy');
+    expect(sessions.spawns()).toBe(1);
+  });
+
+  it('does not reuse a different custom profile restored session for the same provider', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const profileA = profiles.create({
+      id: 'profile-a',
+      providerId: 'mock',
+      displayName: 'Reviewer A',
+    });
+    const profileB = profiles.create({
+      id: 'profile-b',
+      providerId: 'mock',
+      displayName: 'Reviewer B',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+    await sessions.registerRestoredWebSession(
+      'session:profile-a',
+      'mock',
+      'orchestrator',
+      profileA.id
+    );
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId: profileB.id,
+      agentFramework: 'mock',
+      sessionId: 'session:profile-a',
+    });
+
+    const binding = await binder.ensureOrchestrator(CH, 'mock', profileB.id);
+    expect(binding.sessionId).not.toBe('session:profile-a');
+    expect(sessions.spawns()).toBe(1);
+    expect(sessions.lastCreateParams()).toMatchObject({ profileId: profileB.id });
+    expect(store.getBinding(CH, profileB.id)).toMatchObject({
+      profileActorId: profileB.id,
+      sessionId: binding.sessionId,
+    });
   });
 
   it('rejects a restored healthy non-orchestrator binding', async () => {
@@ -1270,13 +1530,23 @@ describe('channel-agent-binder — lifecycle', () => {
   });
 
   it('surfaces an agent error received while the binding is idle', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    profiles.create({
+      id: 'agent-profile:mock:backend-error',
+      providerId: 'mock',
+      displayName: 'Backend',
+    });
     const { binder, store, sessions } = makeBinder({
       build: (agentType) => new ManualBareIdleAdapter(agentType),
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
     });
-    post(store, binder, '@mock idle', ['mock']);
+    post(store, binder, '@Backend idle', ['mock']);
     await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()?.displayName).toBe(`#${CH} · Backend`);
     const adapter = sessions.adapterFor(
       sessions.firstSessionId()
     ) as ManualBareIdleAdapter;
@@ -1284,7 +1554,7 @@ describe('channel-agent-binder — lifecycle', () => {
     adapter.emitError('idle failure');
     await waitFor(() =>
       systemRows(store).some((row) =>
-        row.body.text.includes('@mock errored: idle failure')
+        row.body.text === '@Backend errored: idle failure'
       )
     );
   });
@@ -1559,7 +1829,7 @@ describe('channel-agent-binder — delivery + idempotency', () => {
       sessions.firstSessionId()
     ) as ScriptedAdapter;
     expect(adapter.sendCalls).toHaveLength(2); // rejected once, then retried
-    const expected = `chturn-${trigger.id}-x`;
+    const expected = `chturn-${trigger.id}-${builtInAgentProfileId('x')}`;
     expect(adapter.sendCalls[0]).toBe(expected);
     expect(adapter.sendCalls[1]).toBe(expected); // retry reuses the SAME turnId
     expect(sessions.spawns()).toBe(1);
@@ -2008,6 +2278,37 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
 });
 
 describe('channel-agent-binder — roster + availability', () => {
+  it('includes the default profile for an unseeded target provider without duplicating stored providers', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        ...MOCK_TARGETS,
+        {
+          id: 'worker',
+          displayName: 'Worker',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['mock', 'worker'],
+      agentProfileStore: profiles,
+    });
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster.filter((entry) => entry.providerId === 'mock')).toHaveLength(1);
+    expect(roster).toContainEqual(
+      expect.objectContaining({
+        id: builtInAgentProfileId('worker'),
+        providerId: 'worker',
+        isDefault: true,
+      })
+    );
+  });
+
   it('surfaces bound session roles in the channel roster', async () => {
     const { binder, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
@@ -2028,10 +2329,10 @@ describe('channel-agent-binder — roster + availability', () => {
     await binder.ensureBinding(CH, 'worker');
 
     const roster = await binder.rosterForChannel(CH);
-    expect(roster.find((entry) => entry.id === 'mock')?.role).toBe(
+    expect(roster.find((entry) => entry.id === builtInAgentProfileId('mock'))?.role).toBe(
       'orchestrator'
     );
-    expect(roster.find((entry) => entry.id === 'worker')?.role).toBeUndefined();
+    expect(roster.find((entry) => entry.id === builtInAgentProfileId('worker'))?.role).toBeUndefined();
     expect(sessions.spawns()).toBe(2);
   });
 
@@ -2052,16 +2353,16 @@ describe('channel-agent-binder — roster + availability', () => {
       knownProviderIds: ['mock', 'codex'],
     });
     let roster = await binder.rosterForChannel(CH);
-    const codex = roster.find((r) => r.id === 'codex')!;
+    const codex = roster.find((r) => r.id === builtInAgentProfileId('codex'))!;
     expect(codex.available).toBe(false);
     expect(codex.reason).toContain('#301');
-    expect(roster.find((r) => r.id === 'mock')!.binding).toBeNull();
+    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding).toBeNull();
 
     post(store, binder, '@mock hi', ['mock', 'codex']);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     roster = await binder.rosterForChannel(CH);
-    expect(roster.find((r) => r.id === 'mock')!.binding).not.toBeNull();
-    expect(roster.find((r) => r.id === 'mock')!.binding?.status).toBe('idle');
+    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding).not.toBeNull();
+    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding?.status).toBe('idle');
   });
 
   it('clears presence to idle when a turn finalizes with an idle live-state and no turn-completed (#1181)', async () => {
@@ -2080,7 +2381,7 @@ describe('channel-agent-binder — roster + availability', () => {
     });
     const statuses: string[] = [];
     binder.setStatusBroadcaster((_type, data) => {
-      if (data['agentId'] === 'hermes') statuses.push(String(data['status']));
+      if (data['agentId'] === builtInAgentProfileId('hermes')) statuses.push(String(data['status']));
     });
     post(store, binder, '@hermes hi', ['hermes']);
     // The turn must reach 'thinking' (proving it was delivered) and then settle
@@ -2094,7 +2395,15 @@ describe('channel-agent-binder — roster + availability', () => {
     expect(statuses.at(-1)).toBe('idle');
   });
 
-  it('an unavailable framework posts a de-advertise row, rate-limited', async () => {
+  it('an unavailable named profile posts a de-advertise row, rate-limited', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'codex' }]);
+    profiles.create({
+      id: 'agent-profile:codex:backend-unavailable',
+      providerId: 'codex',
+      displayName: 'Backend',
+    });
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2(),
       targets: [
@@ -2108,6 +2417,7 @@ describe('channel-agent-binder — roster + availability', () => {
         },
       ],
       knownProviderIds: ['codex'],
+      agentProfileStore: profiles,
     });
     const root = store.appendComplete({
       channelId: CH,
@@ -2117,7 +2427,7 @@ describe('channel-agent-binder — roster + availability', () => {
     const trigger = post(
       store,
       binder,
-      '@codex fix it',
+      '@Backend fix it',
       ['codex'],
       OPERATOR,
       root.id
@@ -2128,7 +2438,7 @@ describe('channel-agent-binder — roster + availability', () => {
     const secondTrigger = post(
       store,
       binder,
-      '@codex fix it again',
+      '@Backend fix it again',
       ['codex'],
       OPERATOR,
       root.id
@@ -2143,6 +2453,9 @@ describe('channel-agent-binder — roster + availability', () => {
         m.body.text.includes('not available') &&
         m.parentMessageId === trigger.id
     )!;
+    expect(unavailable.body.text).toBe(
+      '@Backend is not available in channels yet — Codex web sessions do not yet stream chat responses (see issue #301).'
+    );
     expect(unavailable.threadId).toBe(root.id);
     expect(unavailable.parentMessageId).toBe(trigger.id);
     expect(
@@ -2248,6 +2561,35 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
 // ── #1180 review findings ─────────────────────────────────────────────────────
 
 describe('channel-agent-binder — gateway agent-sender loop brake (P1 #1180)', () => {
+  it('does not route a provider-default gateway self mention', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'claude',
+          displayName: 'Claude',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['claude'],
+    });
+
+    const gatewayPost = post(store, binder, '@claude', ['claude'], {
+      kind: 'agent',
+      id: 'agent:claude',
+      providerId: 'claude',
+      displayName: 'Claude',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sessions.spawns()).toBe(0);
+    expect(
+      agentReplies(store, 'claude').filter((message) => message.id !== gatewayPost.id)
+    ).toHaveLength(0);
+  });
+
   it('agent-sender posts count toward the cap and pause; a human post resets', async () => {
     const { binder, store } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
@@ -2413,7 +2755,7 @@ describe('channel-agent-binder — send-failure rebind clobber guard (P2 #1180)'
     const m1 = post(store, binder, '@mock one', ['mock']);
     await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
     const a1 = built[0]!;
-    const t1 = `chturn-${m1.id}-mock`;
+    const t1 = `chturn-${m1.id}-${builtInAgentProfileId('mock')}`;
     expect(a1.sendCalls).toEqual([t1]);
     const sid1 = sessions.firstSessionId();
 
@@ -2424,7 +2766,7 @@ describe('channel-agent-binder — send-failure rebind clobber guard (P2 #1180)'
     const m2 = post(store, binder, '@mock two', ['mock']);
     await waitFor(() => built.length === 2 && built[1]!.sendCalls.length === 1);
     const a2 = built[1]!;
-    const t2 = `chturn-${m2.id}-mock`;
+    const t2 = `chturn-${m2.id}-${builtInAgentProfileId('mock')}`;
     expect(a2.sendCalls).toEqual([t2]);
 
     // Reject T1's original send: handleSendFailure rebinds → binding with T2
@@ -2559,14 +2901,14 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('requests approval'))
     );
-    const turnId = `chturn-${trigger.id}-mock`;
+    const turnId = `chturn-${trigger.id}-${builtInAgentProfileId('mock')}`;
     const requestId = `appr-${turnId}`;
     const approvalRow = systemRows(store).find((m) =>
       m.body.text.includes('requests approval')
     )!;
     expect(approvalRow.meta).toMatchObject({
       approvalRequestId: requestId,
-      agentId: 'mock',
+      agentId: builtInAgentProfileId('mock'),
     });
     expect(approvalRow.meta?.['sessionId']).toBe(sessions.firstSessionId());
     expect(approvalRow.threadId).toBe(root.id);
@@ -2616,7 +2958,7 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     await new Promise((r) => setTimeout(r, 90));
     expect(a.sendCalls).toHaveLength(1); // PAUSED: T2 not pumped
 
-    const requestId = `appr-chturn-${t1msg.id}-mock`;
+    const requestId = `appr-chturn-${t1msg.id}-${builtInAgentProfileId('mock')}`;
     await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
     await waitFor(() => a.sendCalls.length === 2, 4000); // resumes → T2 drains
     expect(a.sendCalls).toHaveLength(2);
@@ -2679,12 +3021,12 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     expect(a.sendCalls).toHaveLength(1); // T2 NOT pumped — turn stayed parked
     // Presence stayed 'waiting' — never flipped to idle/thinking mid-approval.
     expect(
-      (await binder.rosterForChannel(CH)).find((r) => r.id === 'mock')!.binding
+      (await binder.rosterForChannel(CH)).find((r) => r.id === builtInAgentProfileId('mock'))!.binding
         ?.status
     ).toBe('waiting');
 
     // Resolving the approval resumes the turn: it completes normally, then T2 drains.
-    const requestId = `appr-chturn-${t1.id}-mock`;
+    const requestId = `appr-chturn-${t1.id}-${builtInAgentProfileId('mock')}`;
     await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
     await waitFor(() => agentReplies(store, 'mock').length === 1, 4000);
     expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');

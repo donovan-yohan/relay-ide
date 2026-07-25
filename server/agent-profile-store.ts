@@ -136,6 +136,7 @@ export interface AgentProfileStore {
   getDefaultForProvider(providerId: string): AgentProfile | null;
   /** Atomically make `profileId` the sole default for its providerId. */
   setDefault(profileId: string): AgentProfile;
+  /** Refuses to delete the built-in default profile for a provider (409). */
   delete(id: string): boolean;
   /**
    * Seed/repair exactly one `isBuiltIn`+`isDefault` profile per configured
@@ -442,6 +443,14 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
     },
 
     delete(id: string): boolean {
+      const profile = getById(id);
+      if (profile?.isBuiltIn && profile.isDefault) {
+        throw new AgentProfileStoreError(
+          409,
+          'agent_profile_builtin_default_delete_forbidden',
+          'The built-in default profile cannot be deleted.'
+        );
+      }
       return deleteById.run(id).changes > 0;
     },
 

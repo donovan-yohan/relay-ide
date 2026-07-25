@@ -313,17 +313,17 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     return () => clearChannel(channelId);
   }, [channelId]);
 
-  const streamingProviderIds = useMemo(() => {
-    const ids = new Set<string>();
+  const streamingProfileProviders = useMemo(() => {
+    const providers = new Map<string, string | undefined>();
     for (const message of reducer.messages) {
       if (message.status !== 'streaming' || message.sender.kind !== 'agent')
         continue;
-      // providerId is authoritative from the explicit field — the id is now a
-      // profile Actor id, not `agent:<framework>`, so never strip it (#1234).
-      const providerId = message.sender.providerId;
-      if (providerId) ids.add(providerId);
+      // Agent sender ids are profile Actor ids. Keep stream state in the same
+      // identity namespace as roster/status rather than collapsing profiles by
+      // provider.
+      providers.set(message.sender.id, message.sender.providerId);
     }
-    return ids;
+    return providers;
   }, [reducer.messages]);
 
   const rosterUpdatedAt = rosterChipsQuery.dataUpdatedAt;
@@ -338,7 +338,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     for (const key of Object.keys(statusMap)) {
       if (key.startsWith(prefix)) candidateIds.add(key.slice(prefix.length));
     }
-    for (const providerId of streamingProviderIds) candidateIds.add(providerId);
+    for (const profileId of streamingProfileProviders.keys())
+      candidateIds.add(profileId);
 
     const chips: Array<{
       agentId: string;
@@ -349,7 +350,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     for (const agentId of candidateIds) {
       const entry = rosterById.get(agentId);
       const key = channelAgentStatusKey(channelId, agentId);
-      const streaming = streamingProviderIds.has(agentId);
+      const streaming = streamingProfileProviders.has(agentId);
       const status = resolveEffectiveAgentStatus({
         socketStatus: statusMap[key],
         socketUpdatedAt: statusUpdatedAtMap[key],
@@ -361,12 +362,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       // active/streaming — but drop an unbound agent whose only signal is a stale
       // socket status the roster has since superseded to idle.
       if (entry?.binding == null && status === 'idle' && !streaming) continue;
+      const providerId =
+        entry?.providerId ?? streamingProfileProviders.get(agentId);
       const identity = resolveSenderIdentity({
         kind: 'agent',
-        // Roster/presence chips represent a vendor's DEFAULT profile — key on the
-        // profile Actor id so the chip keeps the curated vendor token (#1234).
-        id: builtInAgentProfileId(agentId),
-        providerId: agentId,
+        id: agentId,
+        ...(providerId ? { providerId } : {}),
         ...(entry?.displayName ? { displayName: entry.displayName } : {}),
       });
       chips.push({
@@ -382,7 +383,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     rosterUpdatedAt,
     statusMap,
     statusUpdatedAtMap,
-    streamingProviderIds,
+    streamingProfileProviders,
     channelId,
   ]);
 

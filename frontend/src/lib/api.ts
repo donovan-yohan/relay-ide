@@ -1901,7 +1901,7 @@ export async function fetchChannelAttachmentBlob(
 // The roster lists the frameworks that can be @-mentioned in a channel, with
 // their live binding/status. Interrupt + approval are per-agent control writes.
 
-/** Live agent status within a channel (framework-id keyed). */
+/** Live agent status within a channel (profile-actor-id keyed). */
 export type ChannelAgentStatus =
   | 'spawning'
   | 'thinking'
@@ -1911,9 +1911,13 @@ export type ChannelAgentStatus =
 
 /** One row of the channel @-mention roster (GET /channels/:id/roster). */
 export interface RosterEntry {
-  /** Framework id (e.g. `claude`, `codex`, `mock`) — what a mention resolves to. */
+  /** Durable AgentProfile actor id — what a mention resolves to. */
   id: string;
   displayName: string;
+  /** Provider/framework spawn selector for this profile. */
+  providerId: string;
+  isDefault: boolean;
+  isBuiltIn: boolean;
   kind: 'framework';
   /** False when the framework cannot currently be routed to (see `reason`). */
   available: boolean;

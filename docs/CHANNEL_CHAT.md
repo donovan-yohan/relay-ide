@@ -44,14 +44,14 @@ wiring over it. Verified 2026-07-17 against source:
 | Workspace       | `ia_workspaces` (`server/ia-store.ts`, epic #1021)                                  | Rail entries: `status`, `pinned`, `color`, `icon`, `default_repo_path`, `default_node_id`.                                                                                                                                                                 |
 | Channel         | `workspace_topics` (`server/workspace-topics.ts`)                                   | Record carries `routingDefaults`, `promptDefaults`, and channel `kind` = repo/product-area/journal/ops/research/topic. Channel identity = topic id.                                                                                                        |
 | Message store   | `channel_messages` (`server/channel-message-store.ts`, #1165 SHIPPED)               | New durable `channel-chat.db`: per-channel gap-free `seq`, streaming lifecycle, `sender_kind`/`sender_id`, `thread_id`/`parent_message_id`, `source_*` bridge provenance. `work_context_messages` is agent-mail (#945), a deliberately separate substrate. |
-| Mention targets | Agent roster (`shared/agent-roster.ts`, #952/#953)                                  | `RosterEntry.provider` = framework id (`claude`/`codex`/`hermes`); derived per live session.                                                                                                                                                               |
+| Mention targets | Channel AgentProfile roster (`server/channel-agent-binder.ts`, #1232)               | `entry.id` is the durable `AgentProfile` Actor identity; `entry.providerId` is the vendor selector (`claude`/`codex`/`hermes`). Profiles also carry `isDefault`, `isBuiltIn`, and collaboration `role`.                                                |
 | Agent transport | `ProtocolAdapterV2` (`server/protocol-adapter-v2.ts`, `protocol-adapters/index.ts`) | v2 registry: `mock`, `claude`, `codex` (native), `opencode`/`hermes` via legacy bridge.                                                                                                                                                                    |
 
-**Verification nuance:** the roster is _derived from live sessions_ and keyed by
-`sessionId` + `provider`, not a persistent per-agent handle registry. So
-`@claude` resolves to a framework/provider id, and spawn-on-first-mention must
-bind `(channel, agent-framework)` and create the session — it cannot assume a
-roster row already exists. This is new wiring, not a contradiction.
+**Verification nuance:** the channel roster is derived per request from durable
+`AgentProfile` rows plus current framework availability and live binding status;
+its identity is the profile Actor id, not `sessionId` + provider. Mention
+`@<providerId>` or `@<profileName>`, never `@<id>`; spawn-on-first-mention binds
+`(channel, profileActorId)` and creates that profile's session when needed.
 
 ## Claude integration decision (HARD — do not soften)
 
@@ -115,15 +115,15 @@ agent mail, and every adapter are untouched):
   `complete`), and an optional `onAssistantMessageFinalized` hook fires on cleanly
   completed rows to drive agent-to-agent mentions.
 - **@-mention routing (#1167)** `server/channel-agent-binder.ts`: one module owns
-  the loop — subscribe `hub.onMessagePosted` → resolve mentions (`providerId` only)
-  → single-flight ensure a `(channel, framework)` web session (spawn | reuse |
+  the loop — subscribe `hub.onMessagePosted` → resolve provider/profile-name mentions
+  → single-flight ensure a `(channel, profileActorId)` web session (spawn | reuse |
   rebind) → wire the bridge → build a context packet (`server/channel-context-packet.ts`,
   pure) → `adapter.sendMessage`. Browser posts and CLI-gateway-actor posts route
   identically. Spawns default to **yolo/permission-bypass** (MVP constant
   `CHANNEL_BINDING_YOLO_DEFAULT`) so routing never wedges on an approval; the
   approval-render path stays wired. Per-binding FIFO turn queue (cap 8), a per-turn
   watchdog that pauses on `waitingOn` (never force-drains a human approval), a
-  single-node cross-node guard, deterministic `turnId = chturn-<messageId>-<framework>`
+  single-node cross-node guard, deterministic `turnId = chturn-<messageId>-<profileActorId>`
   (retry reuses it), an at-least-once delivery cursor
   (`binding.providerSession.lastDeliveredSeq`, advanced only on send acceptance),
   and a per-channel **consecutive-agent-turn brake** (`MAX_CONSECUTIVE_AGENT_TURNS=4`,
@@ -139,6 +139,11 @@ agent mail, and every adapter are untouched):
     (`channels.interrupt`) and `POST .../approvals` (`channels.respond-approval`),
     both `context:write`. Status transitions ride `/ws/events` as
     `channel-agent-status`.
+  - **Roster identity:** `entry.id` is the durable `AgentProfile` Actor id and
+    unique identity; `entry.providerId` is the vendor / mention selector. Mention
+    `@<providerId>` or `@<profileName>`, never `@<id>`; `isDefault` identifies a
+    provider default, `isBuiltIn` a catalog-seeded profile, and `role` a
+    collaboration hint.
 
 **Privacy note:** channel message bodies are stored **raw**, with no redaction
 pipeline (unlike the `work_context_messages` sanitizer,

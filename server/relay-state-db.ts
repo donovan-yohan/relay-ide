@@ -110,6 +110,7 @@ ON CONFLICT(id) DO UPDATE SET
 export interface WebSessionMeta {
   type: string;
   agent: string;
+  profileId?: string;
   role?: AgentRole;
   spawnedBySessionId?: string;
   repoName?: string;
@@ -451,6 +452,7 @@ function writeUpsert(session: WebSession): void {
   const meta: WebSessionMeta = {
     type: session.type,
     agent: session.agent,
+    ...(session.profileId !== undefined ? { profileId: session.profileId } : {}),
     ...(session.role !== undefined ? { role: session.role } : {}),
     ...(session.spawnedBySessionId !== undefined
       ? { spawnedBySessionId: session.spawnedBySessionId }

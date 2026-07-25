@@ -1214,6 +1214,9 @@ function list(): SessionSummary[] {
         agent: s.agent,
         ...(s.role !== undefined ? { role: s.role } : {}),
         mode: s.mode,
+        ...(s.mode === 'web' && s.profileId !== undefined
+          ? { profileId: s.profileId }
+          : {}),
         ...(s.repoPath ? { repoPath: s.repoPath } : {}),
         ...(s.worktreePath !== undefined
           ? { worktreePath: s.worktreePath }
@@ -2218,6 +2221,7 @@ async function restoreWebSessionFromDb(
       ? { spawnedBySessionId: row.meta.spawnedBySessionId }
       : {}),
     agentType: row.meta.adapterType,
+    ...(row.meta.profileId !== undefined ? { profileId: row.meta.profileId } : {}),
     ...(row.meta.role !== undefined ? { role: row.meta.role } : {}),
     cwd: row.cwd,
     ...(restoredRepoPath !== undefined
