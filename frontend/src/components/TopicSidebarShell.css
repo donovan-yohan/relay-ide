@@ -952,6 +952,139 @@
   font-size: 0.58rem;
 }
 
+/* #1242: Session lineage is deliberately separate from workflow-run lanes.
+   Every row follows DESIGN.md's sidebar grid: padding / 24px icon / content /
+   36px action / padding. A worker's entire grid moves exactly one icon slot. */
+.session-lineage-tree {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.session-lineage-tree__header,
+.session-lineage-tree__bucket-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 var(--sidebar-padding-x);
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.session-lineage-tree__header > span:first-child,
+.session-lineage-tree__bucket-label {
+  color: var(--accent);
+}
+
+.session-lineage-tree__list,
+.session-lineage-tree__branch,
+.session-lineage-tree__bucket {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-lineage-tree__bucket {
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.session-lineage-tree__item {
+  margin: 0;
+  padding: 0;
+}
+
+.session-lineage-tree__row {
+  display: grid;
+  grid-template-columns:
+    var(--icon-slot-width) minmax(0, 1fr)
+    var(--action-slot-width);
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--sidebar-padding-x) 0
+    calc(
+      var(--sidebar-padding-x) +
+        (var(--session-lineage-depth, 0) * var(--icon-slot-width))
+    );
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+
+.session-lineage-tree__row:not(:disabled) {
+  cursor: pointer;
+}
+
+.session-lineage-tree__row:hover:not(:disabled),
+.session-lineage-tree__row:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.session-lineage-tree__row:disabled {
+  cursor: default;
+}
+
+.session-lineage-tree__icon,
+.session-lineage-tree__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.session-lineage-tree__content {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.session-lineage-tree__name,
+.session-lineage-tree__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-lineage-tree__name {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.session-lineage-tree__meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.session-lineage-tree__role {
+  color: var(--accent);
+}
+
+.session-lineage-tree__action {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.session-lineage-tree__row--active .session-lineage-tree__action {
+  color: var(--status-info);
+}
+
 .topic-shell-state {
   padding: 16px 12px;
   color: var(--text-muted);

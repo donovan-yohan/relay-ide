@@ -163,6 +163,8 @@ export interface SessionSummary {
   agent: AgentType;
   /** Durable collaboration role. A hint for routing/UI, not authorization. */
   role?: AgentRole;
+  /** Session that spawned this worker, when the backend retained its lineage. */
+  spawnedBySessionId?: string;
   mode?: 'pty' | 'web' | undefined;
   repoName?: string;
   repoPath?: string;

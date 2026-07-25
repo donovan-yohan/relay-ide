@@ -418,6 +418,81 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('global:worker');
   });
 
+  it('renders an orchestrator with nested workers and selects the exact worker session', async () => {
+    await renderView(
+      {
+        showAdvancedDetail: true,
+        sessions: [
+          makeSession({
+            id: 'orch',
+            nodeId: 'node-a',
+            displayName: 'persistent planner',
+            role: 'orchestrator',
+            idle: false,
+          }),
+          makeSession({
+            id: 'worker-a',
+            nodeId: 'node-b',
+            displayName: 'alpha worker',
+            spawnedBySessionId: 'orch',
+          }),
+          makeSession({
+            id: 'worker-b',
+            nodeId: 'node-b',
+            globalSessionId: 'global:worker-b',
+            displayName: 'beta worker',
+            spawnedBySessionId: 'orch',
+          }),
+        ],
+        surfaces: [],
+      },
+      { advancedMode: true }
+    );
+
+    const tree = container.querySelector(
+      '.topic-room .session-lineage-tree'
+    ) as HTMLElement;
+    expect(tree).not.toBeNull();
+    expect(tree.textContent).toContain('persistent planner');
+    expect(tree.textContent).toContain('orchestrator');
+    expect(tree.textContent).toContain('alpha worker');
+    expect(tree.textContent).toContain('beta worker');
+    expect(
+      container.querySelector('.topic-mobile-cockpit .session-lineage-tree')
+    ).not.toBeNull();
+    expect(
+      tree
+        .querySelector('[data-session-id="worker-a"]')
+        ?.parentElement?.style.getPropertyValue('--session-lineage-depth')
+    ).toBe('1');
+
+    const worker = tree.querySelector(
+      '[data-session-id="worker-b"]'
+    ) as HTMLButtonElement;
+    await act(async () => worker.click());
+    expect(onSelectSession).toHaveBeenCalledWith('global:worker-b');
+  });
+
+  it('keeps sessions flat when no orchestrator lineage is available', async () => {
+    await renderView(
+      {
+        showAdvancedDetail: true,
+        sessions: [
+          makeSession({ id: 'standalone', displayName: 'plain session' }),
+        ],
+        surfaces: [],
+      },
+      { advancedMode: true }
+    );
+
+    const tree = container.querySelector(
+      '.topic-room .session-lineage-tree'
+    ) as HTMLElement;
+    expect(tree.className).toContain('session-lineage-tree--flat');
+    expect(tree.textContent).toContain('plain session');
+    expect(tree.textContent).not.toContain('orchestrator');
+  });
+
   it('does not fetch WorkContext workflow runs until advanced mode is enabled', async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({ workflowRuns: [] })
