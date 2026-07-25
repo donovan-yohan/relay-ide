@@ -115,6 +115,24 @@ function captureOutput(child: ChildProcess): {
   };
 }
 
+async function waitForChildExit(
+  child: ChildProcess,
+  timeoutMs = 10_000
+): Promise<number | null> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return child.exitCode;
+  }
+  return new Promise<number | null>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Server did not exit within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.once('exit', (code) => {
+      clearTimeout(timeout);
+      resolve(code);
+    });
+  });
+}
+
 function seedHangingCodexSession(configDir: string): void {
   const id = 'startup-hanging-codex';
   const now = new Date().toISOString();
@@ -272,7 +290,7 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
 
     const health = await fetch(`http://127.0.0.1:${port}/healthz`);
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({
+    await expect(health.json()).resolves.toEqual({
       status: 'ok',
       lagMs: expect.any(Number),
       rss: expect.any(Number),
@@ -282,7 +300,73 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
     const res = await fetch(`http://127.0.0.1:${port}/auth/status`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { hasPIN: boolean };
-    expect(body.hasPIN).toBe(false);
+    expect(body).toEqual({ hasPIN: false });
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('fatal persistence failure exits before listening without degraded opt-in', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-persistence-fatal-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ port: 0, host: '127.0.0.1' }));
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      NODE_ENV: 'test',
+      RELAY_IDE_TEST_FAIL_PERSISTENCE_STORES: 'channel-messages',
+    },
+  });
+
+  try {
+    await expect(waitForChildExit(child, 1_000)).resolves.toBe(1);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      await killAndWait(child);
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('allow-degraded boot reports disabled persistence through health and auth', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-persistence-degraded-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ port: 0, host: '127.0.0.1' }));
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      NODE_ENV: 'test',
+      RELAY_IDE_ALLOW_DEGRADED: '1',
+      RELAY_IDE_TEST_FAIL_PERSISTENCE_STORES: 'channel-messages,analytics',
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const baseUrl = `http://127.0.0.1:${String(port)}`;
+    const [health, authStatus] = await Promise.all([
+      fetch(`${baseUrl}/healthz`),
+      fetch(`${baseUrl}/auth/status`),
+    ]);
+
+    expect(health.status).toBe(503);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'degraded',
+      disabledStores: ['channel-messages', 'analytics'],
+    });
+    expect(authStatus.status).toBe(200);
+    await expect(authStatus.json()).resolves.toEqual({
+      hasPIN: false,
+      status: 'degraded',
+      disabledStores: ['channel-messages', 'analytics'],
+    });
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });

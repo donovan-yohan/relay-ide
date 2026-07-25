@@ -19,6 +19,8 @@ export interface HealthMonitor {
 }
 
 export interface HealthMonitorOptions {
+  /** Finalized disabled persistence stores for this hub process, if any. */
+  disabledStores?: readonly string[];
   lagThresholdMs?: number;
   probeIntervalMs?: number;
   memoryLogIntervalMs?: number;
@@ -84,15 +86,17 @@ export function createHealthMonitor(
 
   const getLagMs = (): number =>
     Math.max(0, options.getLagMs?.() ?? measuredLagMs);
+  const disabledStores = options.disabledStores ?? [];
 
   const handler: RequestHandler = (_req, res) => {
     const lagMs = Math.round(getLagMs());
     const { rss } = readHealthMemorySnapshot(memoryUsage);
-    const healthy = lagMs <= lagThresholdMs;
+    const healthy = lagMs <= lagThresholdMs && disabledStores.length === 0;
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'ok' : 'degraded',
       lagMs,
       rss,
+      ...(disabledStores.length > 0 ? { disabledStores } : {}),
     });
   };
 
