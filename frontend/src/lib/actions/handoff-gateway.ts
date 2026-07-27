@@ -19,30 +19,19 @@ import {
 import type {
   HandoffPlan,
   HandoffRequest,
-  HandoffRequiredGrant,
-  HandoffRun,
 } from '../../../../shared/handoff.js';
-import {
-  isHandoffPlan,
-  isHandoffRun,
-} from '../../../../shared/handoff.js';
+import { isHandoffPlan } from '../../../../shared/handoff.js';
 import {
   relayCommandDefinition,
   type RelayCommandDefinition,
 } from '../../../../shared/relay-command-manifest.js';
 
 const HANDOFFS_PLAN_COMMAND = relayCommandDefinition('handoffs.plan');
-const HANDOFFS_CREATE_COMMAND = relayCommandDefinition('handoffs.create');
 
 export interface HandoffPlanResponse {
   plan: HandoffPlan;
   dryRun?: unknown;
   readOnly?: boolean;
-}
-
-export interface HandoffCreateResponse {
-  run: HandoffRun;
-  artifacts: Record<string, unknown>[];
 }
 
 export interface HandoffPlanActionInput {
@@ -52,19 +41,12 @@ export interface HandoffPlanActionInput {
   sourceBranchName?: string;
 }
 
-export interface HandoffCreateActionInput {
-  planId?: string;
-  plan?: HandoffPlan;
-  confirmedGrants?: HandoffRequiredGrant[];
-  sourceRepoPath?: string;
-  destinationRepoPath?: string;
-  approvedUntrackedPaths?: string[];
-  actorId?: string;
-}
-
-export type HandoffPlanActionResult = RelayCliGatewayEnvelope<HandoffPlanResponse>;
-export type HandoffCreateActionResult = RelayCliGatewayEnvelope<HandoffCreateResponse>;
-export type HandoffFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type HandoffPlanActionResult =
+  RelayCliGatewayEnvelope<HandoffPlanResponse>;
+export type HandoffFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit
+) => Promise<Response>;
 
 function commandAvailability(
   command: RelayCommandDefinition,
@@ -78,18 +60,11 @@ function commandAvailability(
 }
 
 export function handoffsPlanActionDescriptor(
-  availability: RelayActionAvailability = commandAvailability(HANDOFFS_PLAN_COMMAND)
+  availability: RelayActionAvailability = commandAvailability(
+    HANDOFFS_PLAN_COMMAND
+  )
 ): RelayActionDescriptor {
   return relayActionDescriptorFromCommandDefinition(HANDOFFS_PLAN_COMMAND, {
-    availability,
-    surfaces: ['cli', 'agent', 'web', 'command-center'],
-  });
-}
-
-export function handoffsCreateActionDescriptor(
-  availability: RelayActionAvailability = commandAvailability(HANDOFFS_CREATE_COMMAND)
-): RelayActionDescriptor {
-  return relayActionDescriptorFromCommandDefinition(HANDOFFS_CREATE_COMMAND, {
     availability,
     surfaces: ['cli', 'agent', 'web', 'command-center'],
   });
@@ -99,15 +74,13 @@ export function handoffsPlanCommandDefinition(): RelayCommandDefinition {
   return HANDOFFS_PLAN_COMMAND;
 }
 
-export function handoffsCreateCommandDefinition(): RelayCommandDefinition {
-  return HANDOFFS_CREATE_COMMAND;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function parseJsonRecord(res: Response): Promise<Record<string, unknown> | null> {
+async function parseJsonRecord(
+  res: Response
+): Promise<Record<string, unknown> | null> {
   try {
     const data = await res.json();
     return isRecord(data) ? data : null;
@@ -116,7 +89,9 @@ async function parseJsonRecord(res: Response): Promise<Record<string, unknown> |
   }
 }
 
-function safeRecordArray(value: unknown): Record<string, unknown>[] | undefined {
+function safeRecordArray(
+  value: unknown
+): Record<string, unknown>[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const records = value.filter(isRecord);
   return records.length ? records : undefined;
@@ -128,7 +103,9 @@ function errorDetailsWithHandoffSummaries(
 ): Record<string, unknown> {
   const details = sanitizedGatewayErrorDetails(status, upstream ?? undefined);
   const error = isRecord(upstream?.['error']) ? upstream['error'] : null;
-  const upstreamDetails = isRecord(error?.['details']) ? error['details'] : null;
+  const upstreamDetails = isRecord(error?.['details'])
+    ? error['details']
+    : null;
   const conflicts = safeRecordArray(upstreamDetails?.['conflicts']);
   if (conflicts) details['conflicts'] = conflicts;
   if (isRecord(upstream?.['run'])) details['run'] = upstream['run'];
@@ -157,24 +134,6 @@ function invalidPlanResponse(): HandoffPlanActionResult {
   });
 }
 
-function invalidCreateResponse(): HandoffCreateActionResult {
-  return gatewayError('handoffs.create', {
-    code: 'UPSTREAM_ERROR',
-    message: 'handoffs.create response did not include a valid run and artifacts list',
-    retryable: false,
-    details: { reasonCode: 'INVALID_CREATE_RESPONSE' },
-  });
-}
-
-function isHandoffCreateResponse(value: unknown): value is HandoffCreateResponse {
-  if (!isRecord(value)) return false;
-  return (
-    isHandoffRun(value['run']) &&
-    Array.isArray(value['artifacts']) &&
-    value['artifacts'].every(isRecord)
-  );
-}
-
 export async function executeHandoffsPlanAction(
   input: HandoffPlanActionInput,
   fetchImpl: HandoffFetch = (url, init) => fetch(url, init)
@@ -185,22 +144,11 @@ export async function executeHandoffsPlanAction(
     body: JSON.stringify(input),
   });
   const body = await parseJsonRecord(res);
-  if (!res.ok) return gatewayError('handoffs.plan', gatewayErrorFromResponse('handoffs.plan', res, body));
+  if (!res.ok)
+    return gatewayError(
+      'handoffs.plan',
+      gatewayErrorFromResponse('handoffs.plan', res, body)
+    );
   if (!isHandoffPlan(body?.['plan'])) return invalidPlanResponse();
   return gatewayOk('handoffs.plan', body as unknown as HandoffPlanResponse);
-}
-
-export async function executeHandoffsCreateAction(
-  input: HandoffCreateActionInput,
-  fetchImpl: HandoffFetch = (url, init) => fetch(url, init)
-): Promise<HandoffCreateActionResult> {
-  const res = await fetchImpl('/handoffs/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  const body = await parseJsonRecord(res);
-  if (!res.ok) return gatewayError('handoffs.create', gatewayErrorFromResponse('handoffs.create', res, body));
-  if (!isHandoffCreateResponse(body)) return invalidCreateResponse();
-  return gatewayOk('handoffs.create', body);
 }

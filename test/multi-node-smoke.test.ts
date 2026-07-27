@@ -105,7 +105,6 @@ function remoteSession(nodeId: string, hostname: string): SessionSummary {
   return {
     id: LOCAL_SESSION_ID,
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath,
     worktreePath: null,
@@ -122,7 +121,7 @@ function remoteSession(nodeId: string, hostname: string): SessionSummary {
     repoInstanceId: `${encodeURIComponent(nodeId)}:${encodeURIComponent(repoPath)}`,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 

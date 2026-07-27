@@ -135,7 +135,6 @@ export default function TopicComposer({
     providerOptions,
     selectedProviderId,
     selectedProviderOption,
-    launchMode,
     nodeOptions,
     repoPathOptions,
     worktreePathOptions,
@@ -172,16 +171,17 @@ export default function TopicComposer({
           draft.templateKind === 'note' ? 'create-only' : 'create-and-launch',
         templateKind: draft.templateKind,
         launchOverrides: {
-          type: launchTypeForTemplate(draft.templateKind) ?? 'agent',
-          mode: launchMode ?? 'pty',
-          agent: previewCreate.routingDefaults?.providerId,
+          ...(launchTypeForTemplate(draft.templateKind)
+            ? { type: 'terminal' as const }
+            : {}),
+          mode: 'pty',
           nodeId: previewCreate.routingDefaults?.nodeId,
           repoPath: previewCreate.routingDefaults?.repoPath,
           worktreePath: previewCreate.routingDefaults?.worktreePath,
           cwd: previewCreate.routingDefaults?.cwd,
         },
       }),
-    [draft.templateKind, launchMode, previewCreate]
+    [draft.templateKind, previewCreate]
   );
   const launchDisabled = draft.templateKind === 'note';
   // Notes are rooms without a session — the primary action degrades to
@@ -445,7 +445,7 @@ export default function TopicComposer({
           {launchFailure ? (
             <div className="topic-composer__failure" role="alert">
               {launchFailure.stage === 'session'
-                ? 'chat created, but agent launch failed'
+                ? 'chat created, but terminal launch failed'
                 : 'could not create chat'}{' '}
               — {launchFailure.message}
             </div>

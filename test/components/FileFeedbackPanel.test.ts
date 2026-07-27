@@ -33,7 +33,6 @@ function session(
   return {
     id,
     type,
-    agent: type === 'agent' ? 'claude' : 'shell',
     cwd: '/repo',
     displayName: id,
     createdAt: '2026-05-28T00:00:00.000Z',
@@ -110,7 +109,9 @@ describe('FileFeedbackPanel live target send guard', () => {
 
     await act(async () => {
       flushSync(() => {
-        root.render(React.createElement(FileFeedbackPanel, props({ sessions: [] })));
+        root.render(
+          React.createElement(FileFeedbackPanel, props({ sessions: [] }))
+        );
       });
 
       expect(sendButton().disabled).toBe(true);

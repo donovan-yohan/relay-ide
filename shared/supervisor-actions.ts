@@ -115,13 +115,13 @@ export type SupervisorSubmitStep = 'clear-input' | 'type-text' | 'submit';
 /**
  * Best-effort, derived post-submit session state (#958). Populated from the
  * last-known session snapshot after a real submit; `available: false` when the
- * backend does not expose a derived agent state (e.g. dry-run, mock, or a
+ * backend does not expose a derived activity state (e.g. dry-run, mock, or a
  * session that has not been classified yet). Never carries raw transcript or
  * provider-private bytes.
  */
 export interface SupervisorSubmitObservation {
   available: boolean;
-  agentState?: string;
+  activityState?: string;
   idle?: boolean;
   source?: 'session-snapshot';
   observedAt?: string;

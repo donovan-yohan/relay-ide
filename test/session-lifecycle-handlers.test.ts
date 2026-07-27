@@ -32,8 +32,7 @@ function makeSession(
 ): SessionSummary {
   return {
     id: overrides.id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
     repoPath: '/repo/relay-ide',
@@ -239,12 +238,8 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
-        // 'web' keeps this assertion discriminating: a stale cockpit flag
-        // would force 'session', a cleared one routes web sessions to 'chat'.
-        // (PTY sessions now route to 'session' regardless of the flag.)
-        activeSessionMode: 'web',
       })
-    ).toBe('chat');
+    ).toBe('session');
   });
 
   it('clears a stale forced cockpit flag when browser history activates a session', async () => {
@@ -285,12 +280,8 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
-        // 'web' keeps this assertion discriminating: a stale cockpit flag
-        // would force 'session', a cleared one routes web sessions to 'chat'.
-        // (PTY sessions now route to 'session' regardless of the flag.)
-        activeSessionMode: 'web',
       })
-    ).toBe('chat');
+    ).toBe('session');
   });
 
   it('clears a stale forced cockpit flag when selecting an existing session', async () => {
@@ -333,12 +324,8 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
-        // 'web' keeps this assertion discriminating: a stale cockpit flag
-        // would force 'session', a cleared one routes web sessions to 'chat'.
-        // (PTY sessions now route to 'session' regardless of the flag.)
-        activeSessionMode: 'web',
       })
-    ).toBe('chat');
+    ).toBe('session');
   });
 
   it('clears a stale forced cockpit flag when resuming a session by id', async () => {
@@ -381,12 +368,8 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
-        // 'web' keeps this assertion discriminating: a stale cockpit flag
-        // would force 'session', a cleared one routes web sessions to 'chat'.
-        // (PTY sessions now route to 'session' regardless of the flag.)
-        activeSessionMode: 'web',
       })
-    ).toBe('chat');
+    ).toBe('session');
   });
 
   it('routes tab close for remote sessions through the owning node', async () => {
@@ -592,12 +575,11 @@ describe('session lifecycle handlers', () => {
             sessions: [
               {
                 id: 'next-attention-session-1',
-                type: 'agent',
-                agent: 'claude',
+                type: 'terminal',
                 repoPath: '/repo/relay-ide',
                 cwd: '/repo/relay-ide',
                 live: true,
-                agentState: 'waiting-for-input',
+                activityState: 'waiting-for-input',
                 controlFreshness: 'fresh',
                 durability: 'running-attached',
                 associatedAt: '2026-05-14T00:00:00.000Z',
@@ -643,12 +625,8 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
-        // 'web' keeps this assertion discriminating: a stale cockpit flag
-        // would force 'session', a cleared one routes web sessions to 'chat'.
-        // (PTY sessions now route to 'session' regardless of the flag.)
-        activeSessionMode: 'web',
       })
-    ).toBe('chat');
+    ).toBe('session');
   });
 
   it('routes command-palette kill for remote sessions through the owning node', async () => {

@@ -44,6 +44,22 @@ function message(
   };
 }
 
+function detailMessage(seq: number): ChannelMessage {
+  return {
+    ...message(seq, ''),
+    body: { text: '', format: 'markdown' },
+    agentDetail: {
+      itemId: `detail-${seq}`,
+      card: {
+        kind: 'output',
+        title: 'durable output',
+        status: 'completed',
+        content: 'expanded durable card content',
+      },
+    },
+  };
+}
+
 let host: HTMLDivElement;
 let root: Root;
 let timelineScrollHeight = 1_000;
@@ -213,6 +229,55 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     await userScroll(200);
     timelineClientHeight = 180;
     await act(async () => resizeCallback?.([], {} as ResizeObserver));
+    expect(timeline().scrollTop).toBe(200);
+  });
+
+  it('keeps follow when content growth emits scroll before ResizeObserver', async () => {
+    await render([message(1), message(2)]);
+    await userScroll(700);
+
+    timelineScrollHeight = 1_320;
+    await userScroll(700);
+
+    expect(timeline().scrollTop).toBe(1_320);
+  });
+
+  it('does not treat a reader-away growth scroll as follow intent', async () => {
+    await render([message(1), message(2)]);
+    await userScroll(200);
+
+    timelineScrollHeight = 1_320;
+    await userScroll(200);
+    await act(async () => resizeCallback?.([], {} as ResizeObserver));
+
+    expect(timeline().scrollTop).toBe(200);
+  });
+
+  it('bottom-anchors card expansion only while following', async () => {
+    await render([message(1), detailMessage(2)]);
+    await userScroll(700);
+    const toggle = host.querySelector<HTMLButtonElement>(
+      '.ch-agent-card__toggle'
+    );
+    if (!toggle) throw new Error('missing durable card toggle');
+
+    await act(async () => {
+      toggle.click();
+      timelineScrollHeight = 1_320;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve())
+      );
+    });
+    expect(timeline().scrollTop).toBe(1_320);
+
+    await userScroll(200);
+    await act(async () => {
+      toggle.click();
+      timelineScrollHeight = 1_000;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve())
+      );
+    });
     expect(timeline().scrollTop).toBe(200);
   });
 

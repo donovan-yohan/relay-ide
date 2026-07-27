@@ -70,11 +70,9 @@ function sendGatewayError(
             : code === 'INTERNAL'
               ? 500
               : 400;
-  res
-    .status(status)
-    .json({
-      error: { code, message, retryable, ...(details ? { details } : {}) },
-    });
+  res.status(status).json({
+    error: { code, message, retryable, ...(details ? { details } : {}) },
+  });
 }
 
 function denyMissingCapability(
@@ -186,11 +184,8 @@ function emitRunEvent(
   run: WorkflowRunProjection,
   previousState?: WorkflowRunState
 ): void {
-  const sessionId =
-    run.orchestration?.planner?.sessionId ?? run.links?.sessionIds?.[0];
-  const globalSessionId =
-    run.orchestration?.planner?.globalSessionId ??
-    run.links?.globalSessionIds?.[0];
+  const sessionId = run.links?.sessionIds?.[0];
+  const globalSessionId = run.links?.globalSessionIds?.[0];
   events?.publish({
     topic: 'workflow-runs',
     type,

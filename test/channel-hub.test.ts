@@ -235,7 +235,7 @@ describe('channel-hub fan-out', () => {
       channelId: 'topic:c',
       sender: { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
       source: {
-        sessionId: 'session_synthetic_codex',
+        runtimeId: 'runtime_synthetic_codex',
         turnId: 'turn_synthetic_codex',
         itemId: 'reason_synthetic_codex',
       },
@@ -335,7 +335,7 @@ describe('channel-hub fan-out', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess' },
+      source: { runtimeId: 'runtime' },
     });
     const sock = fakeSocket();
     hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
@@ -365,7 +365,7 @@ describe('channel-hub fan-out', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess' },
+      source: { runtimeId: 'runtime' },
     });
     hub.beginStreamBroadcast(streaming);
     hub.pushDelta(streaming.id, 'hello');
@@ -397,7 +397,7 @@ describe('channel-hub snapshot correctness', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess' },
+      source: { runtimeId: 'runtime' },
     });
     hub.beginStreamBroadcast(streaming);
 
@@ -437,7 +437,7 @@ describe('channel-hub snapshot correctness', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess', turnId: 't1', itemId: 'a1' },
+      source: { runtimeId: 'runtime', turnId: 't1', itemId: 'a1' },
       text: 'partial',
     });
     hub.beginStreamBroadcast(streaming);
@@ -481,7 +481,7 @@ describe('channel-hub snapshot correctness', () => {
       s.appendComplete({
         channelId: 'topic:c',
         sender: AGENT,
-        source: { sessionId: `resync-${index}` },
+        source: { runtimeId: `resync-${index}` },
         text: resyncText,
       });
     }
@@ -530,17 +530,19 @@ describe('channel-hub snapshot correctness', () => {
       s.appendComplete({
         channelId: 'topic:c',
         sender: AGENT,
-        source: { sessionId: `resync-${index}` },
+        source: { runtimeId: `resync-${index}` },
         text: 'r'.repeat(1_000),
       });
     }
     const sinceSeq = s.latestSeq('topic:c');
     const resync = s.listResyncRows('topic:c', sinceSeq, 500);
-    const snapshotMaxBytes = resync.slice(-2).reduce(
-      (total, message) =>
-        total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
-      0
-    );
+    const snapshotMaxBytes = resync
+      .slice(-2)
+      .reduce(
+        (total, message) =>
+          total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+        0
+      );
     const hub = hubWith(s, { snapshotMaxBytes });
     const sock = fakeSocket();
     hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
@@ -558,7 +560,7 @@ describe('channel-hub snapshot correctness', () => {
     s.appendComplete({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'resync' },
+      source: { runtimeId: 'resync' },
       text: 'resync',
     });
     const sinceSeq = s.latestSeq('topic:c');
@@ -569,11 +571,13 @@ describe('channel-hub snapshot correctness', () => {
         text: `fresh-${index}-${'f'.repeat(1_000)}`,
       })
     );
-    const snapshotMaxBytes = fresh.slice(0, 2).reduce(
-      (total, message) =>
-        total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
-      0
-    );
+    const snapshotMaxBytes = fresh
+      .slice(0, 2)
+      .reduce(
+        (total, message) =>
+          total + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1,
+        0
+      );
     const hub = hubWith(s, { snapshotMaxBytes });
     const sock = fakeSocket();
     hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq });
@@ -600,7 +604,7 @@ describe('channel-hub snapshot correctness', () => {
     s.appendComplete({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'resync' },
+      source: { runtimeId: 'resync' },
       text: 'resync',
     });
     const sinceSeq = s.latestSeq('topic:c');
@@ -635,7 +639,7 @@ describe('channel-hub snapshot correctness', () => {
       s.appendComplete({
         channelId: 'topic:c',
         sender: AGENT,
-        source: { sessionId: `resync-${index}` },
+        source: { runtimeId: `resync-${index}` },
         text: `resync-${index}`,
       });
     }
@@ -735,7 +739,7 @@ describe('channel-hub backpressure', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess' },
+      source: { runtimeId: 'runtime' },
     });
     const sock = fakeSocket();
     hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
@@ -786,7 +790,7 @@ describe('channel-hub backpressure', () => {
     const streaming = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess' },
+      source: { runtimeId: 'runtime' },
     });
     const sock = fakeSocket();
     hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });

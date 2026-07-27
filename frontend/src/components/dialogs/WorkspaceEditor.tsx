@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import TuiCheckbox from '../TuiCheckbox.js';
 import type { BranchInfo } from '../../lib/types.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
@@ -10,12 +9,6 @@ export interface WorkspaceEditorValues {
   remote: string;
   branchPrefix: string;
   defaultAgent: string;
-  defaultContinue: boolean;
-  defaultYolo: boolean;
-  promptCodeReview: string;
-  promptCreatePr: string;
-  promptBranchRename: string;
-  promptGeneral: string;
   portVariables: string[];
 }
 
@@ -27,7 +20,6 @@ type ChangeHandler = <K extends keyof WorkspaceEditorValues>(
 export const WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS = {
   remote: 'default: origin',
   branchPrefix: 'default: none',
-  prompt: 'default: none',
   portVariable: 'additional var (default: PORT)',
 } as const;
 
@@ -39,45 +31,6 @@ interface Props {
   error?: string;
   /** Called when validation state changes, with map of field -> error message (empty if valid) */
   onValidationChange?: (errors: Record<string, string>) => void;
-}
-
-interface PromptGroupProps {
-  label: string;
-  value: string;
-  placeholder: string;
-  onChange: (v: string) => void;
-}
-
-function PromptGroup({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: PromptGroupProps) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="workspace-editor__prompt-group">
-      <button
-        className="workspace-editor__prompt-toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        <span className="workspace-editor__prompt-arrow">
-          {open ? '▾' : '▸'}
-        </span>
-        {label}
-      </button>
-      {open && (
-        <textarea
-          className="workspace-editor__prompt-textarea"
-          rows={3}
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.currentTarget.value)}
-        />
-      )}
-    </div>
-  );
 }
 
 interface GitSectionProps {
@@ -150,7 +103,7 @@ function GitSettingsSection({ values, branches, onChange }: GitSectionProps) {
   );
 }
 
-const SESSION_DEFAULT_KEYS = ['defaultAgent', 'defaultContinue', 'defaultYolo'];
+const SESSION_DEFAULT_KEYS = ['defaultAgent'];
 
 interface SessionDefaultsSectionProps {
   values: WorkspaceEditorValues;
@@ -170,7 +123,7 @@ function SessionDefaultsSection({
   return (
     <section className="workspace-editor__section">
       <h3 className="workspace-editor__section-label">
-        session defaults
+        chat defaults
         {hasOverride && (
           <span className="workspace-editor__override-badge">overridden</span>
         )}
@@ -213,57 +166,6 @@ function SessionDefaultsSection({
           ))}
         </select>
       </div>
-      <div className="workspace-editor__checkbox-row">
-        <TuiCheckbox
-          checked={values.defaultContinue}
-          onChange={(v) => onChange('defaultContinue', v)}
-        >
-          Continue
-        </TuiCheckbox>
-        <TuiCheckbox
-          checked={values.defaultYolo}
-          onChange={(v) => onChange('defaultYolo', v)}
-        >
-          YOLO
-        </TuiCheckbox>
-      </div>
-    </section>
-  );
-}
-
-interface PromptsSectionProps {
-  values: WorkspaceEditorValues;
-  onChange: ChangeHandler;
-}
-
-function PromptsSection({ values, onChange }: PromptsSectionProps) {
-  return (
-    <section className="workspace-editor__section">
-      <h3 className="workspace-editor__section-label">prompts</h3>
-      <PromptGroup
-        label="Code review preferences"
-        value={values.promptCodeReview}
-        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
-        onChange={(v) => onChange('promptCodeReview', v)}
-      />
-      <PromptGroup
-        label="Create PR preferences"
-        value={values.promptCreatePr}
-        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
-        onChange={(v) => onChange('promptCreatePr', v)}
-      />
-      <PromptGroup
-        label="Branch rename preferences"
-        value={values.promptBranchRename}
-        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
-        onChange={(v) => onChange('promptBranchRename', v)}
-      />
-      <PromptGroup
-        label="General preferences"
-        value={values.promptGeneral}
-        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
-        onChange={(v) => onChange('promptGeneral', v)}
-      />
     </section>
   );
 }
@@ -444,8 +346,6 @@ export default function WorkspaceEditor({
         onChange={onChange}
         onValidationChange={onValidationChange}
       />
-      <div className="workspace-editor__divider" />
-      <PromptsSection values={values} onChange={onChange} />
     </div>
   );
 }

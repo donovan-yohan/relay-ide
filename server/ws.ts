@@ -1,5 +1,4 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import type { RawData } from 'ws';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { URL } from 'node:url';
@@ -7,23 +6,15 @@ import type { IPty } from 'node-pty';
 import * as sessions from './sessions.js';
 import { WorktreeWatcher } from './watcher.js';
 import type { Session } from './types.js';
-import type { Attachment } from './protocol-adapter.js';
 import { trackEvent } from './analytics.js';
 import { createLogger } from './logger.js';
 import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { validateScopedToken } from './browser-content.js';
-import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
-import { onWebSessionPatch } from './web-session-handler.js';
-import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   parseGlobalSessionId,
 } from '../shared/identity.js';
-import {
-  MAX_PROMPT_ATTACHMENTS_PER_MESSAGE,
-  parsePromptAttachmentList,
-} from '../shared/prompt-attachment.js';
 import type { LocalRelayNode } from './local-node.js';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -59,10 +50,8 @@ import type { ChannelHub } from './channel-hub.js';
 import { isWorkspaceTopicId } from '../shared/workspace-topics.js';
 import {
   createWsHeartbeatMonitor,
-  deliverDelta,
   deliverTerminalEnvelope,
   sendWithBackpressure,
-  type DeltaLaneState,
   type TerminalLaneState,
 } from './ws-backpressure.js';
 
@@ -297,276 +286,6 @@ function auditAttachDenial(
   });
 }
 
-function sendAgentErrorV2(
-  ws: WebSocket,
-  sessionId: string,
-  context: string,
-  err: unknown
-): void {
-  if (ws.readyState !== ws.OPEN) return;
-  const message = err instanceof Error ? err.message : String(err);
-  ws.send(
-    JSON.stringify({
-      type: 'agent-error-v2',
-      sessionId,
-      timestamp: new Date().toISOString(),
-      message: `${context}: ${message}`,
-    })
-  );
-}
-
-function handleAgentCommandV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  switch (parsed['type']) {
-    case 'agent-send-message-v2':
-      sendAgentMessageV2(ws, session, parsed);
-      break;
-    case 'agent-interrupt-v2':
-      interruptAgentV2(ws, session, parsed);
-      break;
-    case 'agent-approve-v2':
-      approveAgentV2(ws, session, parsed);
-      break;
-    case 'agent-answer-v2':
-      answerAgentV2(ws, session, parsed);
-      break;
-    case 'agent-resume-v2':
-      resumeAgentV2(ws, session, parsed);
-      break;
-    case 'agent-continue-here-v2':
-      continueHereAgentV2(ws, session);
-      break;
-  }
-}
-
-function sendAgentMessageV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  const rawPromptAttachments = Array.isArray(parsed['promptAttachments'])
-    ? (parsed['promptAttachments'] as unknown[])
-    : [];
-  if (rawPromptAttachments.length > MAX_PROMPT_ATTACHMENTS_PER_MESSAGE) {
-    sendAgentErrorV2(
-      ws,
-      session.id,
-      `prompt attachments exceed cap (${rawPromptAttachments.length} > ${MAX_PROMPT_ATTACHMENTS_PER_MESSAGE})`,
-      new Error('promptAttachments exceeds allowed maximum')
-    );
-    return;
-  }
-  const promptAttachments = parsePromptAttachmentList(rawPromptAttachments);
-  if (
-    rawPromptAttachments.length > 0 &&
-    promptAttachments.length !== rawPromptAttachments.length
-  ) {
-    logger.warn(
-      `v2 sendMessage dropped ${rawPromptAttachments.length - promptAttachments.length} malformed prompt attachments`
-    );
-  }
-  const input = {
-    turnId: String(parsed['turnId'] ?? ''),
-    content: String(parsed['content'] ?? ''),
-    ...(parsed['attachments'] !== undefined
-      ? { attachments: parsed['attachments'] as Attachment[] }
-      : {}),
-    ...(promptAttachments.length > 0 ? { promptAttachments } : {}),
-    ...(typeof parsed['clientMessageId'] === 'string'
-      ? { clientMessageId: parsed['clientMessageId'] }
-      : {}),
-  };
-  session.adapterV2.sendMessage(input).catch((err: unknown) => {
-    logger.error('v2 sendMessage error:', err);
-    sendAgentErrorV2(ws, session.id, 'v2 sendMessage failed', err);
-  });
-}
-
-function interruptAgentV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  const input =
-    typeof parsed['turnId'] === 'string' ? { turnId: parsed['turnId'] } : {};
-  session.adapterV2.interrupt(input).catch((err: unknown) => {
-    logger.error('v2 interrupt error:', err);
-    sendAgentErrorV2(ws, session.id, 'v2 interrupt failed', err);
-  });
-}
-
-function parseApprovalDecision(
-  parsed: Record<string, unknown>
-): AgentApprovalDecisionV2 | null {
-  const decision = parsed['decision'];
-  if (typeof decision !== 'object' || decision === null) return null;
-  const d = decision as Record<string, unknown>;
-  const kind = d['kind'];
-  if (kind === 'decline') return { kind: 'decline' };
-  if (kind === 'cancel') return { kind: 'cancel' };
-  if (kind === 'accept') {
-    const scope = d['scope'];
-    const result: Extract<AgentApprovalDecisionV2, { kind: 'accept' }> = {
-      kind: 'accept',
-    };
-    if (
-      scope === 'once' ||
-      scope === 'session' ||
-      scope === 'turn' ||
-      scope === 'permanent'
-    ) {
-      result.scope = scope;
-    }
-    const amendments = d['amendments'];
-    if (Array.isArray(amendments)) {
-      result.amendments = amendments as AgentApprovalDecisionV2 extends {
-        amendments?: infer A;
-      }
-        ? NonNullable<A>
-        : never;
-    }
-    return result;
-  }
-  return null;
-}
-
-function approveAgentV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  const decision = parseApprovalDecision(parsed);
-  if (decision === null) {
-    logger.warn('ws: invalid v2 approval decision', {
-      decision: parsed['decision'],
-    });
-    return;
-  }
-
-  session.adapterV2
-    .respondToApproval({
-      requestId: String(parsed['requestId'] ?? ''),
-      decision,
-    })
-    .catch((err: unknown) => {
-      logger.error('v2 respondToApproval error:', err);
-      sendAgentErrorV2(ws, session.id, 'v2 approval delivery failed', err);
-    });
-}
-
-function answerAgentV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  const answers =
-    (parsed['answers'] as Record<string, string[]> | undefined) ?? {};
-
-  session.adapterV2
-    .respondToInput({
-      requestId: String(parsed['requestId'] ?? ''),
-      answers,
-    })
-    .catch((err: unknown) => {
-      logger.error('v2 respondToInput error:', err);
-      sendAgentErrorV2(ws, session.id, 'v2 input delivery failed', err);
-    });
-}
-
-function resumeAgentV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  parsed: Record<string, unknown>
-): void {
-  const providerSessionId =
-    typeof parsed['providerSessionId'] === 'string'
-      ? parsed['providerSessionId']
-      : undefined;
-
-  if (!session.adapterV2.capabilities.resume) {
-    sendAgentErrorV2(
-      ws,
-      session.id,
-      'agent-resume-v2 rejected',
-      new Error(`${session.adapterType} does not support resume`)
-    );
-    return;
-  }
-
-  // Resolve the provider session ID: prefer the one sent by the client
-  // (which may come from the UI's persisted state), fall back to the
-  // server-side providerSession stored on the session.
-  const storedProviderSession = session.agentSessionV2.providerSession;
-  const resolvedId =
-    providerSessionId ??
-    (session.adapterType === 'claude'
-      ? storedProviderSession?.['claudeSessionId']
-      : session.adapterType === 'codex'
-        ? storedProviderSession?.['threadId']
-        : undefined);
-
-  if (!resolvedId) {
-    sendAgentErrorV2(
-      ws,
-      session.id,
-      'agent-resume-v2 rejected',
-      new Error('No provider session ID available for resume')
-    );
-    return;
-  }
-
-  session.adapterV2.resumeSession(resolvedId).catch((err: unknown) => {
-    logger.error('v2 resumeSession error:', err);
-    sendAgentErrorV2(ws, session.id, 'v2 resume failed', err);
-  });
-}
-
-function continueHereAgentV2(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>
-): void {
-  sessions.continueHereWeb(session.id).catch((err: unknown) => {
-    logger.error('v2 continueHere error:', err);
-    sendAgentErrorV2(ws, session.id, 'v2 continue-here failed', err);
-  });
-}
-
-function handleWebSessionMessage(
-  ws: WebSocket,
-  session: Extract<Session, { mode: 'web' }>,
-  msg: RawData
-): void {
-  const body = msg.toString();
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(body) as Record<string, unknown>;
-  } catch {
-    logger.warn('ws: invalid JSON for web session', {
-      sessionId: session.id,
-      preview: body.slice(0, 200),
-    });
-    return;
-  }
-
-  if (parsed['type'] === 'ping') {
-    replyPing(ws);
-    return;
-  }
-
-  if (typeof parsed['type'] === 'string' && parsed['type'].endsWith('-v2')) {
-    handleAgentCommandV2(ws, session, parsed);
-    return;
-  }
-
-  logger.warn('ws: ignoring legacy web command for v2-only web session', {
-    sessionId: session.id,
-    type: parsed['type'],
-  });
-}
-
 function parseCookies(
   cookieHeader: string | undefined
 ): Record<string, string> {
@@ -611,8 +330,8 @@ function setupWebSocket(
   const eventClients = new Set<WebSocket>();
 
   // #1249: one shared half-open socket reaper for every server→client lane
-  // (terminal PTY stream, agent web-session patches, /ws/events, routed-node
-  // PTY relay). A backgrounded/sleeping/dead-but-OPEN socket never fires `close`,
+  // (terminal PTY stream, /ws/events, routed-node PTY relay). A
+  // backgrounded/sleeping/dead-but-OPEN socket never fires `close`,
   // so its subscriber is never spliced and its off-heap send queue grows forever;
   // the reaper pings each tracked socket and terminates the ones that stop
   // ponging, running their cleanup. Interval is unref()'d + cleared on shutdown.
@@ -997,223 +716,179 @@ function setupWebSocket(
     const session = sessionMap.get(ws);
     if (!session) return;
 
-    if (session.mode === 'pty') {
-      const attachContext = localPtyAttachContext.get(ws) ?? {
-        replayCursor: null,
-        clientId: createTerminalStreamClientId(),
-        resizeOwner: 'active' as const,
-      };
-      const terminalStream = ensureTerminalStreamState(session);
-      // #1250: per-subscriber gap-heal state for the terminal `data` lane. A shed
-      // `data` envelope must NOT let the client's cursor advance past the gap
-      // (that made a `?cursor=` reconnect skip the shed range — silent, permanent
-      // output loss + split-escape xterm corruption). While lagging every envelope
-      // is suppressed; a drain below the low watermark replays the missed byte
-      // range from server scrollback so the client's cursor only advances over
-      // bytes it actually receives. Mirrors the agent `deliverDelta` lane.
-      const terminalLane: TerminalLaneState = {
-        lagging: false,
-        gapStartCursor: 0,
-      };
-      const terminalStreamSubscriber = (envelope: TerminalStreamEnvelope) => {
-        deliverTerminalEnvelope(
-          ws,
-          terminalLane,
-          {
-            droppable: envelope.kind === 'data',
-            // Gap starts at the first shed byte == the client's current cursor
-            // for a contiguously delivered `data` stream.
-            gapStart:
-              envelope.kind === 'data'
-                ? envelope.payload.range.start
-                : envelope.cursor,
-            serialize: () => JSON.stringify(envelope),
-          },
-          (gapStartCursor) =>
-            buildTerminalStreamReplay(terminalStream, gapStartCursor).map(
-              (env) => JSON.stringify(env)
-            )
-        );
-      };
-      session.terminalStreamSubscribers?.push(terminalStreamSubscriber);
+    const attachContext = localPtyAttachContext.get(ws) ?? {
+      replayCursor: null,
+      clientId: createTerminalStreamClientId(),
+      resizeOwner: 'active' as const,
+    };
+    const terminalStream = ensureTerminalStreamState(session);
+    // #1250: per-subscriber gap-heal state for the terminal `data` lane. A shed
+    // `data` envelope must NOT let the client's cursor advance past the gap
+    // (that made a `?cursor=` reconnect skip the shed range — silent, permanent
+    // output loss + split-escape xterm corruption). While lagging every envelope
+    // is suppressed; a drain below the low watermark replays the missed byte
+    // range from server scrollback so the client's cursor only advances over
+    // bytes it actually receives. Mirrors the agent `deliverDelta` lane.
+    const terminalLane: TerminalLaneState = {
+      lagging: false,
+      gapStartCursor: 0,
+    };
+    const terminalStreamSubscriber = (envelope: TerminalStreamEnvelope) => {
+      deliverTerminalEnvelope(
+        ws,
+        terminalLane,
+        {
+          droppable: envelope.kind === 'data',
+          // Gap starts at the first shed byte == the client's current cursor
+          // for a contiguously delivered `data` stream.
+          gapStart:
+            envelope.kind === 'data'
+              ? envelope.payload.range.start
+              : envelope.cursor,
+          serialize: () => JSON.stringify(envelope),
+        },
+        (gapStartCursor) =>
+          buildTerminalStreamReplay(terminalStream, gapStartCursor).map((env) =>
+            JSON.stringify(env)
+          )
+      );
+    };
+    session.terminalStreamSubscribers?.push(terminalStreamSubscriber);
 
-      // Connect-time replay is bounded by scrollback (≤ soft watermark) on a fresh
-      // socket, so it never sheds — send it directly rather than through the lane.
-      for (const envelope of buildTerminalStreamReplay(
-        terminalStream,
-        attachContext.replayCursor
-      )) {
-        sendTerminalStreamEnvelope(ws, envelope);
-      }
-
-      let exitDisposable: { dispose(): void } | null = null;
-
-      const attachToPty = (ptyProcess: IPty): void => {
-        // Terminal bytes are emitted through TerminalStreamEnvelope subscribers;
-        // this listener only tracks process exit for the attach handle.
-        exitDisposable?.dispose();
-        exitDisposable = ptyProcess.onExit(() => {
-          if (ws.readyState === ws.OPEN) ws.close(1000);
-        });
-      };
-
-      attachToPty(session.pty);
-
-      const ptyReplacedHandler = (newPty: IPty) => attachToPty(newPty);
-      session.onPtyReplacedCallbacks.push(ptyReplacedHandler);
-
-      let lastActivityBroadcast = 0;
-
-      ws.on('message', (msg) => {
-        const str = msg.toString();
-        // Parse control frames (ping/resize) separately so a malformed JSON
-        // payload falls through to the raw-input write path. Side effects that
-        // reach into the session (resize/write) are deferred until after parsing
-        // so the parse-error catch never masks a session-not-found throw.
-        let pendingResize: {
-          cols: number;
-          rows: number;
-          owner: TerminalStreamResizeOwner;
-          clientId: string | null;
-        } | null = null;
-        try {
-          const parsed = JSON.parse(str);
-          if (parsed && typeof parsed === 'object') {
-            const payload = parsed as Record<string, unknown>;
-            if (payload['type'] === 'ping') {
-              replyPing(ws);
-              return;
-            }
-            if (payload['type'] === 'resize') {
-              const cols = parseResizeDimension(payload['cols']);
-              const rows = parseResizeDimension(payload['rows']);
-              if (cols === null || rows === null) return;
-              pendingResize = {
-                cols,
-                rows,
-                owner: parseResizeOwner(
-                  payload['owner'] ?? attachContext.resizeOwner
-                ),
-                clientId: parseClientId(payload['clientId']),
-              };
-            }
-          }
-        } catch (_) {
-          // Non-JSON payload — treated as raw terminal input below.
-        }
-
-        // Writes/resizes against a reaped session throw synchronously from
-        // sessions.write/resize. An uncaught throw in this ws callback would
-        // take down the whole hub (#905); applyTerminalPtyMessage guards the
-        // session-touching path and closes the socket with a typed code instead.
-        if (pendingResize) {
-          const resizeEnvelope = recordTerminalStreamResize(terminalStream, {
-            cols: pendingResize.cols,
-            rows: pendingResize.rows,
-            owner: pendingResize.owner,
-            sourceClientId: pendingResize.clientId ?? attachContext.clientId,
-          });
-          const outcome = applyTerminalPtyMessage(ws, session.id, sessions, {
-            kind: 'resize',
-            cols: pendingResize.cols,
-            rows: pendingResize.rows,
-            apply: resizeEnvelope.payload.applied,
-          });
-          if (outcome === 'session-not-found') return;
-          for (const cb of session.terminalStreamSubscribers ?? []) {
-            cb(resizeEnvelope);
-          }
-          return;
-        }
-        // Route browser PTY input through the session write path so control
-        // interventions are recorded before the active PTY receives input.
-        if (
-          applyTerminalPtyMessage(ws, session.id, sessions, {
-            kind: 'write',
-            data: str,
-          }) === 'session-not-found'
-        ) {
-          return;
-        }
-        // Update activity timestamp on user input (throttled broadcast to avoid storm)
-        const now = Date.now();
-        session.lastActivity = new Date(now).toISOString();
-        if (now - lastActivityBroadcast >= 2000) {
-          lastActivityBroadcast = now;
-          broadcastEvent('session-activity-changed', {
-            sessionId: session.id,
-            timestamp: session.lastActivity,
-          });
-        }
-      });
-
-      // #1249: idempotent — invoked by both the ws `close`/`error` events and,
-      // for a half-open socket, directly by the heartbeat reaper (which also
-      // terminate()s the socket). Splicing the subscriber frees its send queue.
-      let cleanedUp = false;
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        heartbeat.untrack(ws);
-        exitDisposable?.dispose();
-        const subscriberIdx = session.terminalStreamSubscribers?.indexOf(
-          terminalStreamSubscriber
-        );
-        if (subscriberIdx !== undefined && subscriberIdx !== -1) {
-          session.terminalStreamSubscribers?.splice(subscriberIdx, 1);
-        }
-        const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
-        if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
-      };
-      ws.on('close', cleanup);
-      ws.on('error', cleanup);
-      // #1249: reap this terminal socket if it goes half-open (OPEN but dead) so
-      // its subscriber is spliced instead of the highest-volume lane (raw PTY
-      // stdout) queuing frames off-heap forever.
-      heartbeat.track(ws, cleanup);
-    } else {
-      // Web session — JSON relay
-      const patchReplayStart = session.agentPatchesV2.length;
-      const snapshotPatch = createAgentSessionSnapshotPatch(session);
-      // #1249: agent patches are replayable deltas (client re-derives from
-      // `session.agentPatchesV2` on reconnect), so shed them to a lagging socket
-      // above the soft watermark and heal the gap with a fresh snapshot patch once
-      // the queue drains, mirroring channel-hub. Above the hard watermark the
-      // socket is closed 4409 and cleanup runs.
-      const patchLane: DeltaLaneState = { lagging: false };
-      const unlistenV2 = onWebSessionPatch(session, (patch) => {
-        deliverDelta(
-          ws,
-          patchLane,
-          () => JSON.stringify(patch),
-          () => JSON.stringify(createAgentSessionSnapshotPatch(session))
-        );
-      });
-
-      // Connect-time snapshot + buffered replay must arrive intact (not
-      // droppable); still bounded — the hard watermark closes a socket that
-      // cannot even absorb its own attach backlog.
-      sendWithBackpressure(ws, () => JSON.stringify(snapshotPatch));
-      for (const patch of session.agentPatchesV2.slice(patchReplayStart)) {
-        sendWithBackpressure(ws, () => JSON.stringify(patch));
-      }
-
-      ws.on('message', (msg) => handleWebSessionMessage(ws, session, msg));
-
-      let cleanedUp = false;
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        heartbeat.untrack(ws);
-        unlistenV2();
-        sessionMap.delete(ws);
-      };
-      ws.on('close', cleanup);
-      ws.on('error', cleanup);
-      // #1249: reap a half-open agent socket so its patch listener is removed and
-      // stops queuing patch frames off-heap.
-      heartbeat.track(ws, cleanup);
+    // Connect-time replay is bounded by scrollback (≤ soft watermark) on a fresh
+    // socket, so it never sheds — send it directly rather than through the lane.
+    for (const envelope of buildTerminalStreamReplay(
+      terminalStream,
+      attachContext.replayCursor
+    )) {
+      sendTerminalStreamEnvelope(ws, envelope);
     }
+
+    let exitDisposable: { dispose(): void } | null = null;
+
+    const attachToPty = (ptyProcess: IPty): void => {
+      // Terminal bytes are emitted through TerminalStreamEnvelope subscribers;
+      // this listener only tracks process exit for the attach handle.
+      exitDisposable?.dispose();
+      exitDisposable = ptyProcess.onExit(() => {
+        if (ws.readyState === ws.OPEN) ws.close(1000);
+      });
+    };
+
+    attachToPty(session.pty);
+
+    const ptyReplacedHandler = (newPty: IPty) => attachToPty(newPty);
+    session.onPtyReplacedCallbacks.push(ptyReplacedHandler);
+
+    let lastActivityBroadcast = 0;
+
+    ws.on('message', (msg) => {
+      const str = msg.toString();
+      // Parse control frames (ping/resize) separately so a malformed JSON
+      // payload falls through to the raw-input write path. Side effects that
+      // reach into the session (resize/write) are deferred until after parsing
+      // so the parse-error catch never masks a session-not-found throw.
+      let pendingResize: {
+        cols: number;
+        rows: number;
+        owner: TerminalStreamResizeOwner;
+        clientId: string | null;
+      } | null = null;
+      try {
+        const parsed = JSON.parse(str);
+        if (parsed && typeof parsed === 'object') {
+          const payload = parsed as Record<string, unknown>;
+          if (payload['type'] === 'ping') {
+            replyPing(ws);
+            return;
+          }
+          if (payload['type'] === 'resize') {
+            const cols = parseResizeDimension(payload['cols']);
+            const rows = parseResizeDimension(payload['rows']);
+            if (cols === null || rows === null) return;
+            pendingResize = {
+              cols,
+              rows,
+              owner: parseResizeOwner(
+                payload['owner'] ?? attachContext.resizeOwner
+              ),
+              clientId: parseClientId(payload['clientId']),
+            };
+          }
+        }
+      } catch (_) {
+        // Non-JSON payload — treated as raw terminal input below.
+      }
+
+      // Writes/resizes against a reaped session throw synchronously from
+      // sessions.write/resize. An uncaught throw in this ws callback would
+      // take down the whole hub (#905); applyTerminalPtyMessage guards the
+      // session-touching path and closes the socket with a typed code instead.
+      if (pendingResize) {
+        const resizeEnvelope = recordTerminalStreamResize(terminalStream, {
+          cols: pendingResize.cols,
+          rows: pendingResize.rows,
+          owner: pendingResize.owner,
+          sourceClientId: pendingResize.clientId ?? attachContext.clientId,
+        });
+        const outcome = applyTerminalPtyMessage(ws, session.id, sessions, {
+          kind: 'resize',
+          cols: pendingResize.cols,
+          rows: pendingResize.rows,
+          apply: resizeEnvelope.payload.applied,
+        });
+        if (outcome === 'session-not-found') return;
+        for (const cb of session.terminalStreamSubscribers ?? []) {
+          cb(resizeEnvelope);
+        }
+        return;
+      }
+      // Route browser PTY input through the session write path so control
+      // interventions are recorded before the active PTY receives input.
+      if (
+        applyTerminalPtyMessage(ws, session.id, sessions, {
+          kind: 'write',
+          data: str,
+        }) === 'session-not-found'
+      ) {
+        return;
+      }
+      // Update activity timestamp on user input (throttled broadcast to avoid storm)
+      const now = Date.now();
+      session.lastActivity = new Date(now).toISOString();
+      if (now - lastActivityBroadcast >= 2000) {
+        lastActivityBroadcast = now;
+        broadcastEvent('session-activity-changed', {
+          sessionId: session.id,
+          timestamp: session.lastActivity,
+        });
+      }
+    });
+
+    // #1249: idempotent — invoked by both the ws `close`/`error` events and,
+    // for a half-open socket, directly by the heartbeat reaper (which also
+    // terminate()s the socket). Splicing the subscriber frees its send queue.
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      heartbeat.untrack(ws);
+      exitDisposable?.dispose();
+      const subscriberIdx = session.terminalStreamSubscribers?.indexOf(
+        terminalStreamSubscriber
+      );
+      if (subscriberIdx !== undefined && subscriberIdx !== -1) {
+        session.terminalStreamSubscribers?.splice(subscriberIdx, 1);
+      }
+      const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
+      if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
+    };
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
+    // #1249: reap this terminal socket if it goes half-open (OPEN but dead) so
+    // its subscriber is spliced instead of the highest-volume lane (raw PTY
+    // stdout) queuing frames off-heap forever.
+    heartbeat.track(ws, cleanup);
   });
 
   sessions.onControlEvent((event) => {

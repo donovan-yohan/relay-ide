@@ -197,9 +197,9 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   }
 
   /**
-   * Compatibility path for older plugin-style hook events. Web sessions now use
-   * OpenCode's HTTP/SSE server transport, but the hooks router and legacy unit
-   * tests can still deliver these events directly.
+   * Compatibility path for plugin-style hook events. Private channel runtimes
+   * use OpenCode's HTTP/SSE server transport, while the runtime hook router can
+   * still deliver these events directly.
    */
   handleHookEvent(payload: LegacyHookEventPayload): void {
     switch (payload.type) {
@@ -473,7 +473,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   private async createOpenCodeSession(): Promise<string> {
     const title = this._config?.sessionId
       ? `Relay ${this._config.sessionId}`
-      : 'Relay web session';
+      : 'Relay channel agent';
     const res = await fetch(`${this._endpoint}/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

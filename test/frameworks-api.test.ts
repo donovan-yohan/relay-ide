@@ -150,13 +150,13 @@ describe('GET /api/frameworks', () => {
     expect(opencode!.eventSource).toBe('plugin');
   });
 
-  it('surfaces Hermes web runtime availability from the async route', async () => {
+  it('surfaces Hermes channel runtime availability from the async route', async () => {
     const res = await fetch(url('/api/frameworks'));
     const body = (await res.json()) as {
       frameworks: Array<{
         id: string;
         availability?: { installed: boolean; path?: string };
-        webAvailability?: {
+        channelAvailability?: {
           available: boolean;
           endpoint?: string;
           reason?: string;
@@ -167,11 +167,11 @@ describe('GET /api/frameworks', () => {
     expect(hermes).toBeTruthy();
     expect(hermes!.availability?.installed).toBe(true);
     expect(hermes!.availability?.path).toBe(path.join(fakeBinDir, 'hermes'));
-    expect(hermes!.webAvailability).toMatchObject({
+    expect(hermes!.channelAvailability).toMatchObject({
       available: false,
       endpoint: hermesProbeUrl,
     });
-    expect(hermes!.webAvailability?.reason).toContain(
+    expect(hermes!.channelAvailability?.reason).toContain(
       'Responses API is not enabled'
     );
   });

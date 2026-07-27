@@ -670,38 +670,6 @@ async function cmdAgent(agentArgs: string[]): Promise<void> {
   await cmdAgentPreturn(agentArgs.slice(1));
 }
 
-// ── subcommand: agents ─────────────────────────────────────────────────────
-
-async function cmdAgents(agentArgs: string[]): Promise<void> {
-  const sub = agentArgs[0];
-  if (sub !== 'list') {
-    die(`unknown agents subcommand: ${sub ?? '(none)'}. supported: list`);
-  }
-  const hubUrl = requireEnv('RELAY_HUB_URL');
-  const body = await fetchGatewayJson<unknown>(
-    `${hubUrl}/sessions`,
-    gatewayHeaders('sessions.list'),
-    {
-      reachabilityMessage: `failed to reach hub at ${hubUrl}`,
-      forbiddenMessage:
-        'relayctl: capability denied: session lacks session:read',
-    }
-  );
-  const sessions = normalizeSessionsBody(body);
-  const agents = sessions.filter((session) => session.type === 'agent');
-  if (agentArgs.includes('--json')) {
-    console.log(JSON.stringify({ agents }, null, 2));
-    return;
-  }
-  for (const agent of agents) {
-    const id = String(agent.id ?? '(unknown)');
-    const name = typeof agent.displayName === 'string' ? agent.displayName : '';
-    const state = typeof agent.status === 'string' ? agent.status : '';
-    const cwd = typeof agent.cwd === 'string' ? agent.cwd : '';
-    console.log([id, name, state, cwd].filter(Boolean).join('\t'));
-  }
-}
-
 function parseFlagValue(input: string[], name: string): string | undefined {
   const index = input.indexOf(name);
   if (index === -1) return undefined;
@@ -956,7 +924,6 @@ async function main(): Promise<void> {
         '',
         'subcommands:',
         '  whoami [--json]                 print session identity',
-        '  agents list [--json]            list active agent sessions',
         '  msg send --to <session> <text>  send an inbox message',
         '  msg read [--session <id>]       read this session inbox once',
         '  msg watch [--session <id>]      watch this session inbox',
@@ -980,9 +947,6 @@ async function main(): Promise<void> {
   switch (subcommand) {
     case 'whoami':
       await cmdWhoami(args.slice(1));
-      break;
-    case 'agents':
-      await cmdAgents(args.slice(1));
       break;
     case 'msg':
       await cmdMsg(args.slice(1));

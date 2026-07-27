@@ -4,10 +4,8 @@ import path from 'node:path';
 
 import {
   WORKFLOW_RUN_SCHEMA_VERSION,
-  WorkflowRunValidationError,
   parseWorkflowRunPublishInput,
   parseWorkflowRunUpdateInput,
-  type WorkflowRunOrchestration,
   type WorkflowRunProjection,
   type WorkflowRunState,
 } from '../shared/workflow-run.js';
@@ -82,18 +80,6 @@ function cleanLimit(limit: number | undefined): number {
   return Math.min(limit, 100);
 }
 
-function mergeOrchestration(
-  existing: WorkflowRunOrchestration | undefined,
-  patch: WorkflowRunOrchestration
-): WorkflowRunOrchestration {
-  return {
-    ...(existing?.planner ? { planner: existing.planner } : {}),
-    ...(existing?.children ? { children: existing.children } : {}),
-    ...(patch.planner ? { planner: patch.planner } : {}),
-    ...(patch.children ? { children: patch.children } : {}),
-  };
-}
-
 export function createWorkflowRunStore(input: {
   dbPath: string;
 }): WorkflowRunStore {
@@ -136,7 +122,6 @@ export function createWorkflowRunStore(input: {
         id,
         runId: parsed.runId,
         providerRuntime: parsed.providerRuntime,
-        ...(parsed.runKind ? { runKind: parsed.runKind } : {}),
         workContextId: parsed.workContextId,
         definition: parsed.definition,
         state: parsed.state ?? 'queued',
@@ -149,9 +134,6 @@ export function createWorkflowRunStore(input: {
         ...(parsed.errorSummary ? { errorSummary: parsed.errorSummary } : {}),
         ...(parsed.journal ? { journal: parsed.journal } : {}),
         ...(parsed.links ? { links: parsed.links } : {}),
-        ...(parsed.orchestration
-          ? { orchestration: parsed.orchestration }
-          : {}),
         createdAt,
         updatedAt,
         version: 1,
@@ -198,12 +180,6 @@ export function createWorkflowRunStore(input: {
         );
       }
       const parsed = parseWorkflowRunUpdateInput(rawInput);
-      if (parsed.orchestration && existing.runKind === 'provider-runtime') {
-        throw new WorkflowRunValidationError(
-          'runKind must be relay-orchestration when orchestration is present',
-          { field: 'runKind' }
-        );
-      }
       if (
         parsed.expectedVersion !== undefined &&
         parsed.expectedVersion !== existing.version
@@ -220,16 +196,8 @@ export function createWorkflowRunStore(input: {
         );
       }
       const updatedAt = parsed.updatedAt ?? nowIso();
-      const orchestration = parsed.orchestration
-        ? mergeOrchestration(existing.orchestration, parsed.orchestration)
-        : undefined;
-      const runKind =
-        orchestration && !existing.runKind
-          ? 'relay-orchestration'
-          : existing.runKind;
       const next: WorkflowRunProjection = {
         ...existing,
-        ...(runKind ? { runKind } : {}),
         ...(parsed.state ? { state: parsed.state } : {}),
         ...(parsed.progress ? { progress: parsed.progress } : {}),
         ...(parsed.phases ? { phases: parsed.phases } : {}),
@@ -240,7 +208,6 @@ export function createWorkflowRunStore(input: {
         ...(parsed.errorSummary ? { errorSummary: parsed.errorSummary } : {}),
         ...(parsed.journal ? { journal: parsed.journal } : {}),
         ...(parsed.links ? { links: parsed.links } : {}),
-        ...(orchestration ? { orchestration } : {}),
         updatedAt,
         version: existing.version + 1,
         redaction: {

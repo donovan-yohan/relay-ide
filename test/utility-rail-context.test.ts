@@ -16,8 +16,7 @@ function repo(overrides: Partial<Repo> = {}): Repo {
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 's1',
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     repoName: 'repo',
     repoPath: '/hub/repo',
     worktreePath: null,
@@ -36,7 +35,10 @@ describe('deriveUtilityRailContext', () => {
     const context = deriveUtilityRailContext({
       activeRepoPath: '/hub/repo',
       activeWorkspace: repo(),
-      activeSession: session({ worktreePath: '/hub/repo/.worktrees/feature', cwd: '/hub/repo/.worktrees/feature' }),
+      activeSession: session({
+        worktreePath: '/hub/repo/.worktrees/feature',
+        cwd: '/hub/repo/.worktrees/feature',
+      }),
     });
 
     expect(context.stateKey).toBe('/hub/repo/.worktrees/feature');
@@ -76,12 +78,20 @@ describe('deriveUtilityRailContext', () => {
     const a = deriveUtilityRailContext({
       activeRepoPath: '/hub/repo',
       activeWorkspace: repo(),
-      activeSession: session({ nodeId: 'node-a', repoPath: undefined, cwd: '/src/repo' }),
+      activeSession: session({
+        nodeId: 'node-a',
+        repoPath: undefined,
+        cwd: '/src/repo',
+      }),
     });
     const b = deriveUtilityRailContext({
       activeRepoPath: '/hub/repo',
       activeWorkspace: repo(),
-      activeSession: session({ nodeId: 'node-b', repoPath: undefined, cwd: '/src/repo' }),
+      activeSession: session({
+        nodeId: 'node-b',
+        repoPath: undefined,
+        cwd: '/src/repo',
+      }),
     });
 
     expect(a.stateKey).toBe('node:node-a:/src/repo');
@@ -113,7 +123,12 @@ describe('deriveUtilityRailContext', () => {
   it('treats selected non-git repos as file-browsable but not git-capable', () => {
     const context = deriveUtilityRailContext({
       activeRepoPath: '/folders/plain',
-      activeWorkspace: repo({ path: '/folders/plain', isGitRepo: false, currentBranch: null, defaultBranch: null }),
+      activeWorkspace: repo({
+        path: '/folders/plain',
+        isGitRepo: false,
+        currentBranch: null,
+        defaultBranch: null,
+      }),
       activeSession: undefined,
     });
 

@@ -29,12 +29,11 @@ export interface TopicNavSessionRef {
   selectKey: string;
   label: string;
   type: SessionSummary['type'];
-  agent: SessionSummary['agent'];
   mode: SessionSummary['mode'] | null;
   status: SessionSummary['status'] | null;
   tone: TopicNavTone;
   displayState: DisplayState;
-  agentState: SessionSummary['agentState'] | null;
+  activityState: SessionSummary['activityState'] | null;
   permissionType: SessionSummary['permissionType'] | null;
   branch: string | null;
   /** Raw routing node id — only for functional routing, never render directly. */
@@ -42,7 +41,6 @@ export interface TopicNavSessionRef {
   /** Friendly node display name, resolved against the known node roster; null when unresolved (never a raw id). */
   nodeLabel: string | null;
   cwd: string;
-  controlFreshness: SessionSummary['controlFreshness'] | null;
   durability: SessionSummary['durability'] | null;
   currentActivity: SessionSummary['currentActivity'] | null;
   lastActivity: string | null;
@@ -62,7 +60,6 @@ export interface TopicNavParticipantRef {
   nodeLabel: string | null;
   tone: TopicNavTone;
   statusLabel: string;
-  controlLabel: string;
   summaryLabel: string | null;
   lastActivity: string | null;
 }
@@ -267,14 +264,13 @@ function sessionSelectKey(session: SessionSummary): string {
 }
 
 function sessionTone(session: SessionSummary): TopicNavTone {
-  if (session.agentState === 'error') return 'error';
-  if (session.agentState === 'permission-prompt') return 'attention';
-  if (session.agentState === 'waiting-for-input') return 'attention';
+  if (session.activityState === 'error') return 'error';
+  if (session.activityState === 'permission-prompt') return 'attention';
+  if (session.activityState === 'waiting-for-input') return 'attention';
   if (session.status === 'disconnected') return 'error';
-  if (session.controlFreshness === 'stale') return 'attention';
   if (
-    session.agentState === 'processing' ||
-    session.agentState === 'initializing'
+    session.activityState === 'processing' ||
+    session.activityState === 'initializing'
   ) {
     return 'active';
   }
@@ -282,16 +278,16 @@ function sessionTone(session: SessionSummary): TopicNavTone {
 }
 
 function sessionDisplayState(session: SessionSummary): DisplayState {
-  if (session.agentState === 'permission-prompt') {
+  if (session.activityState === 'permission-prompt') {
     return session.permissionType === 'question'
       ? 'needs-answer'
       : 'permission';
   }
-  if (session.agentState === 'waiting-for-input') return 'needs-answer';
-  if (session.agentState === 'error') return 'error';
+  if (session.activityState === 'waiting-for-input') return 'needs-answer';
+  if (session.activityState === 'error') return 'error';
   if (session.status === 'disconnected') return 'error';
-  if (session.agentState === 'processing') return 'running';
-  if (session.agentState === 'initializing') return 'initializing';
+  if (session.activityState === 'processing') return 'running';
+  if (session.activityState === 'initializing') return 'initializing';
   return 'seen-idle';
 }
 
@@ -402,61 +398,12 @@ export function formatTaskRefLabel(taskRef: {
   return taskRef.id;
 }
 
-type TopicParticipantRole = {
-  label: string;
-  patterns: RegExp[];
-};
-
-const TOPIC_PARTICIPANT_ROLES: TopicParticipantRole[] = [
-  { label: 'product', patterns: [/\bkoi\b/i, /product/i] },
-  { label: 'planner', patterns: [/\btako\b/i, /planner/i, /plan/i] },
-  { label: 'frontend', patterns: [/\bika\b/i, /front.?end/i, /ui/i] },
-  { label: 'backend', patterns: [/\bkani\b/i, /back.?end/i, /server/i] },
-  { label: 'qa', patterns: [/\bkame\b/i, /\bqa\b/i, /test/i] },
-  { label: 'review', patterns: [/\bfugu\b/i, /review/i] },
-  { label: 'ops', patterns: [/\bkujira\b/i, /ops/i, /release/i] },
-  { label: 'design', patterns: [/\bhotate\b/i, /design/i] },
-];
-
-function actorLabel(
-  actor: NonNullable<SessionSummary['activeActors']>[number] | undefined
-): string | null {
-  if (!actor) return null;
-  return actor.displayName ?? actor.id ?? actor.kind ?? null;
-}
-
-function sessionRoleLabel(session: SessionSummary): string {
-  const peer = session.sessionEnvelope?.peerIdentity;
-  const candidates = [
-    actorLabel(session.activeWorker),
-    ...((session.activeActors ?? [])
-      .map(actorLabel)
-      .filter(Boolean) as string[]),
-    peer && 'displayName' in peer ? peer.displayName : undefined,
-    peer && 'id' in peer ? peer.id : undefined,
-    peer && 'adapter' in peer ? peer.adapter : undefined,
-    session.displayName,
-    session.agent,
-  ].filter((value): value is string => Boolean(value));
-
-  for (const candidate of candidates) {
-    for (const role of TOPIC_PARTICIPANT_ROLES) {
-      if (role.patterns.some((pattern) => pattern.test(candidate))) {
-        return role.label;
-      }
-    }
-  }
-
-  if (session.type === 'terminal') return 'terminal';
-  return 'agent';
+function sessionRoleLabel(_session: SessionSummary): string {
+  return 'terminal';
 }
 
 function sessionProviderLabel(session: SessionSummary): string {
-  const peer = session.sessionEnvelope?.peerIdentity;
-  if (peer?.kind === 'agent') return peer.adapter;
-  if (peer?.kind === 'local-user') return 'local user';
-  if (peer?.kind === 'relay-node') return 'relay node';
-  return session.agent || session.type;
+  return sessionParticipantStatus(session).label;
 }
 
 function sessionRuntimeLabel(session: SessionSummary): string {
@@ -477,13 +424,7 @@ function sessionParticipantStatus(session: SessionSummary): {
   if (session.status === 'disconnected') {
     return { label: 'offline', summary: 'session disconnected' };
   }
-  if (session.controlFreshness === 'stale') {
-    return {
-      label: 'stale',
-      summary: boundedSummary(session.controlReason) ?? 'stale control state',
-    };
-  }
-  if (session.agentState === 'permission-prompt') {
+  if (session.activityState === 'permission-prompt') {
     return {
       label:
         session.permissionType === 'question'
@@ -494,7 +435,7 @@ function sessionParticipantStatus(session: SessionSummary): {
       ),
     };
   }
-  if (session.agentState === 'waiting-for-input') {
+  if (session.activityState === 'waiting-for-input') {
     return {
       label: 'needs input',
       summary: boundedSummary(
@@ -502,10 +443,15 @@ function sessionParticipantStatus(session: SessionSummary): {
       ),
     };
   }
-  if (session.agentState === 'error') {
-    return { label: 'error', summary: boundedSummary(session.controlReason) };
+  if (session.activityState === 'error') {
+    return {
+      label: 'error',
+      summary: boundedSummary(
+        session.currentActivity?.detail ?? session.currentActivity?.tool
+      ),
+    };
   }
-  if (session.agentState === 'processing') {
+  if (session.activityState === 'processing') {
     return {
       label: 'running',
       summary: boundedSummary(
@@ -513,21 +459,15 @@ function sessionParticipantStatus(session: SessionSummary): {
       ),
     };
   }
-  if (session.agentState === 'initializing') {
+  if (session.activityState === 'initializing') {
     return { label: 'starting', summary: 'initializing session' };
   }
   return {
     label: session.idle ? 'idle' : 'active',
     summary: boundedSummary(
-      session.currentActivity?.detail ?? session.controlReason
+      session.currentActivity?.detail ?? session.currentActivity?.tool
     ),
   };
-}
-
-function sessionControlLabel(session: SessionSummary): string {
-  if (session.controlFreshness === 'stale') return 'control stale';
-  if (session.controlFreshness === 'unknown') return 'control unknown';
-  return session.controlMode ?? 'control unknown';
 }
 
 function topicParticipantRef(
@@ -548,7 +488,6 @@ function topicParticipantRef(
     nodeLabel: nodeLabelFor(session.nodeId, nodeNameById),
     tone: sessionTone(session),
     statusLabel: status.label,
-    controlLabel: sessionControlLabel(session),
     summaryLabel: status.summary,
     lastActivity: session.lastActivity ?? null,
   };
@@ -671,18 +610,16 @@ export function buildTopicNavModel(input: {
           selectKey: sessionSelectKey(session),
           label: session.displayName || basename(session.cwd) || session.id,
           type: session.type,
-          agent: session.agent,
           mode: session.mode ?? null,
           status: session.status ?? null,
           tone: sessionTone(session),
           displayState: sessionDisplayState(session),
-          agentState: session.agentState ?? null,
+          activityState: session.activityState ?? null,
           permissionType: session.permissionType ?? null,
           branch: session.branchName ?? null,
           nodeId: session.nodeId ?? null,
           nodeLabel: nodeLabelFor(session.nodeId, nodeNameById),
           cwd: session.cwd,
-          controlFreshness: session.controlFreshness ?? null,
           durability: session.durability ?? null,
           currentActivity: session.currentActivity ?? null,
           lastActivity: session.lastActivity ?? null,

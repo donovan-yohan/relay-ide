@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,13 +6,6 @@ import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
 import { hashPin } from '../server/auth.js';
-import {
-  closeRelayStateDb,
-  initRelayStateDb,
-  upsertWebSessionNow,
-} from '../server/relay-state-db.js';
-import type { SessionSummary, WebSession } from '../server/types.js';
-import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
@@ -25,12 +18,6 @@ const SERVER_SCRIPT = path.resolve(
   'server',
   'index.js'
 );
-const HANGING_CODEX_APP_SERVER = path.resolve(
-  import.meta.dirname,
-  'fixtures',
-  'hanging-codex-app-server.mjs'
-);
-
 if (!fs.existsSync(SERVER_SCRIPT)) {
   throw new Error('dist/server/index.js missing — run npm run build first');
 }
@@ -97,24 +84,6 @@ function startServer(opts: StartServerOpts): ChildProcess {
   });
 }
 
-function captureOutput(child: ChildProcess): {
-  stdout(): string;
-  stderr(): string;
-} {
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk: Buffer) => {
-    stdout += chunk.toString();
-  });
-  child.stderr?.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
-  return {
-    stdout: () => stdout,
-    stderr: () => stderr,
-  };
-}
-
 async function waitForChildExit(
   child: ChildProcess,
   timeoutMs = 10_000
@@ -131,82 +100,6 @@ async function waitForChildExit(
       resolve(code);
     });
   });
-}
-
-function seedHangingCodexSession(configDir: string): void {
-  const id = 'startup-hanging-codex';
-  const now = new Date().toISOString();
-  const session = {
-    mode: 'web',
-    id,
-    type: 'agent',
-    agent: 'codex',
-    cwd: configDir,
-    displayName: 'Restored hanging Codex',
-    createdAt: now,
-    lastActivity: now,
-    idle: true,
-    customCommand: null,
-    status: 'active',
-    needsBranchRename: false,
-    agentState: 'idle',
-    adapterV2: {
-      disconnect: async () => {},
-    },
-    adapterType: 'codex',
-    agentSessionV2: emptyAgentSessionV2({
-      id,
-      provider: 'codex',
-      cwd: configDir,
-      capabilities: { resume: true },
-      providerSession: { threadId: 'thread-that-never-reattaches' },
-      config: {
-        providerOptions: {
-          command: process.execPath,
-          args: [HANGING_CODEX_APP_SERVER],
-        },
-      },
-    }),
-    agentPatchesV2: [],
-    protocolVersion: 2,
-    currentTurnId: null,
-    runtimeOwnership: 'spawned',
-    hookToken: 'startup-hanging-codex-hook',
-    hooksActive: true,
-  } as unknown as WebSession;
-
-  initRelayStateDb(configDir);
-  try {
-    upsertWebSessionNow(session);
-  } finally {
-    closeRelayStateDb();
-  }
-}
-
-async function waitForRestoredSession(
-  baseUrl: string,
-  cookie: string,
-  predicate: (session: SessionSummary) => boolean,
-  timeoutMs = 5_000
-): Promise<SessionSummary> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const response = await fetch(`${baseUrl}/sessions`, {
-      headers: { cookie },
-    });
-    if (response.ok) {
-      const sessions = (await response.json()) as SessionSummary[];
-      const session = sessions.find(
-        (candidate) =>
-          candidate.id === 'startup-hanging-codex' && predicate(candidate)
-      );
-      if (session) return session;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(
-    'restored hanging Codex session did not reach expected state'
-  );
 }
 
 function cookieFromSetCookie(headers: Headers): string {
@@ -374,117 +267,6 @@ test('allow-degraded boot reports disabled persistence through health and auth',
       status: 'degraded',
       disabledStores: ['channel-messages', 'analytics'],
     });
-  } finally {
-    await killAndWait(child);
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-});
-
-test('real server listens before a hanging serialized-session restore', async () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'relay-listen-before-restore-')
-  );
-  const configPath = path.join(tmpDir, 'config.json');
-  const pin = '246810';
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      port: 0,
-      host: '127.0.0.1',
-      pinHash: await hashPin(pin),
-      cookieTTL: '1h',
-    })
-  );
-  seedHangingCodexSession(tmpDir);
-
-  const child = startServer({
-    env: {
-      RELAY_IDE_CONFIG: configPath,
-      RELAY_IDE_PORT: '0',
-      RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS: '500',
-      RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS: '1000',
-      NODE_ENV: 'test',
-      HOME: tmpDir,
-    },
-  });
-  const output = captureOutput(child);
-
-  try {
-    const port = await waitForListeningPort(child);
-    const baseUrl = `http://127.0.0.1:${String(port)}`;
-
-    const [health, authStatus] = await Promise.all([
-      fetch(`${baseUrl}/healthz`),
-      fetch(`${baseUrl}/auth/status`),
-    ]);
-    expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({
-      status: 'ok',
-      ready: false,
-      resume: {
-        inProgress: true,
-        complete: false,
-        restored: 0,
-        failed: false,
-      },
-    });
-    expect(authStatus.status).toBe(200);
-    await expect(authStatus.json()).resolves.toEqual({ hasPIN: true });
-    // The real startup restore function is still held. This proves both public
-    // routes answered while restore remained incomplete.
-    expect(output.stdout()).not.toContain(
-      'Restored 1 session(s) from previous update.'
-    );
-
-    const login = await fetch(`${baseUrl}/auth`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pin }),
-    });
-    expect(login.status).toBe(200);
-    const cookie = cookieFromSetCookie(login.headers);
-
-    await waitForRestoredSession(
-      baseUrl,
-      cookie,
-      (session) => session.restoreState === 'restoring'
-    );
-    const failed = await waitForRestoredSession(
-      baseUrl,
-      cookie,
-      (session) => session.restoreState === 'reattach-failed'
-    );
-    expect(failed).toMatchObject({
-      status: 'disconnected',
-      agentState: 'error',
-      restoreState: 'reattach-failed',
-    });
-
-    await vi.waitFor(() =>
-      expect(output.stdout()).toContain(
-        'Restored 1 session(s) from previous update.'
-      )
-    );
-    const resumedHealth = await fetch(`${baseUrl}/healthz`);
-    expect(resumedHealth.status).toBe(200);
-    await expect(resumedHealth.json()).resolves.toMatchObject({
-      status: 'ok',
-      ready: true,
-      resume: {
-        inProgress: false,
-        complete: true,
-        restored: 1,
-        failed: false,
-      },
-    });
-    const listeningAt = output
-      .stdout()
-      .indexOf('relay-ide listening on 127.0.0.1:');
-    const restoredAt = output
-      .stdout()
-      .indexOf('Restored 1 session(s) from previous update.');
-    expect(listeningAt, output.stderr()).toBeGreaterThanOrEqual(0);
-    expect(restoredAt, output.stderr()).toBeGreaterThan(listeningAt);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -745,7 +527,7 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
   }
 });
 
-test('scoped actor sessions.create spawns an in-scope controlled worker and rejects an out-of-scope cwd', async () => {
+test('scoped actor sessions.create launches only in-scope terminals and rejects an out-of-scope cwd', async () => {
   const tmpDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'relay-cli-actor-session-create-')
   );
@@ -822,7 +604,7 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
     const base = `http://127.0.0.1:${port}`;
     const canonicalRepoPath = fs.realpathSync(tmpDir);
     const canonicalAuthorizedPath = fs.realpathSync(authorizedDir);
-    const orchestratorSessionId = 'orchestrator-session-1257';
+    const forgedParentSessionId = 'forged-public-session-1257';
 
     const login = await fetch(`${base}/auth`, {
       method: 'POST',
@@ -838,14 +620,13 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       body: JSON.stringify({
         actor: {
           type: 'agent',
-          id: 'orchestrator-1257',
+          id: 'agent-profile:claude:orchestrator-1257',
           displayName: 'Issue 1257 orchestrator',
         },
         issuer: { id: 'browser-operator-test' },
         audience: CLI_GATEWAY_ACTOR_AUDIENCE,
-        capabilities: ['session:create:agent'],
+        capabilities: ['session:create:terminal'],
         scope: {
-          sessionIds: [orchestratorSessionId],
           pathPrefixes: [canonicalAuthorizedPath],
         },
         ttlMs: 60_000,
@@ -879,12 +660,11 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
         audience: CLI_GATEWAY_ACTOR_AUDIENCE,
         actor: {
           type: 'agent',
-          id: 'orchestrator-1257',
+          id: 'agent-profile:claude:orchestrator-1257',
           displayName: 'Issue 1257 orchestrator',
         },
-        capabilities: ['session:create:agent'],
+        capabilities: ['session:create:terminal'],
         scope: {
-          sessionIds: [orchestratorSessionId],
           pathPrefixes: [canonicalAuthorizedPath],
         },
         ttlMs: 60_000,
@@ -915,19 +695,17 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       headers: actorHeaders,
       body: JSON.stringify({
         cwd: authorizedLink,
-        type: 'agent',
-        mode: 'web',
-        agent: 'hermes',
-        spawnedBySessionId: orchestratorSessionId,
+        type: 'terminal',
       }),
     });
     const actorHermes = await expectJsonStatus<{
       id: string;
-      agent: string;
-      role?: string;
-    }>(actorHermesCreate, 201, 'actor Hermes web worker create');
-    expect(actorHermes.agent).toBe('hermes');
-    expect(actorHermes.role).toBeUndefined();
+      type: string;
+      activityState: string;
+    }>(actorHermesCreate, 201, 'actor terminal create');
+    expect(actorHermes.type).toBe('terminal');
+    expect(actorHermes).not.toHaveProperty('role');
+    expect(actorHermes).not.toHaveProperty('spawnedBySessionId');
     const credentialsAfterHermes = await fetch(
       `${base}/cli-gateway/actor-credentials`,
       { headers: { cookie } }
@@ -951,53 +729,24 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       headers: actorHeaders,
       body: JSON.stringify({
         cwd: authorizedLink,
-        type: 'agent',
-        mode: 'web',
-        agent: 'claude',
-        spawnedBySessionId: orchestratorSessionId,
+        type: 'terminal',
       }),
     });
     const actorClaude = await expectJsonStatus<{
-      agent: string;
-      role?: string;
-    }>(actorClaudeCreate, 201, 'actor Claude web worker create');
-    expect(actorClaude).toMatchObject({ agent: 'claude' });
-    expect(actorClaude.role).toBeUndefined();
-
-    const explicitOrchestratorCreate = await fetch(`${base}/sessions`, {
-      method: 'POST',
-      headers: actorHeaders,
-      body: JSON.stringify({
-        cwd: authorizedLink,
-        type: 'agent',
-        mode: 'web',
-        agent: 'claude',
-        role: 'orchestrator',
-        spawnedBySessionId: orchestratorSessionId,
-      }),
-    });
-    await expectJsonStatus<{
-      error: { code: string; reasonCode: string };
-    }>(
-      explicitOrchestratorCreate,
-      403,
-      'actor explicit orchestrator role create'
-    ).then((body) => {
-      expect(body.error).toMatchObject({
-        code: 'FORBIDDEN',
-        reasonCode: 'CLI_ACTOR_ORCHESTRATOR_ROLE_UNSUPPORTED',
-      });
-    });
+      type: string;
+      activityState: string;
+    }>(actorClaudeCreate, 201, 'second actor terminal create');
+    expect(actorClaude).toMatchObject({ type: 'terminal' });
+    expect(actorClaude).not.toHaveProperty('role');
+    expect(actorClaude).not.toHaveProperty('spawnedBySessionId');
 
     const inScopeCreate = await fetch(`${base}/sessions`, {
       method: 'POST',
       headers: actorHeaders,
       body: JSON.stringify({
         cwd: authorizedLink,
-        type: 'agent',
-        agent: 'codex',
-        displayName: 'Scoped worker',
-        spawnedBySessionId: orchestratorSessionId,
+        type: 'terminal',
+        displayName: 'Scoped terminal',
       }),
     });
     const created = await expectJsonStatus<{
@@ -1005,26 +754,26 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       cwd: string;
       spawnedBySessionId?: string;
       role?: string;
-      activeActors?: Array<{
-        kind: string;
-        id?: string;
-        sessionId?: string;
-      }>;
-      activeWorker?: { id?: string };
-    }>(inScopeCreate, 201, 'in-scope actor sessions.create');
+    }>(inScopeCreate, 201, 'in-scope actor terminal create');
     expect(created.cwd).toBe(canonicalAuthorizedPath);
-    expect(created.spawnedBySessionId).toBe(orchestratorSessionId);
+    expect(created.spawnedBySessionId).toBeUndefined();
     expect(created.role).toBeUndefined();
-    expect(created.activeWorker?.id).toBe(created.id);
-    expect(created.activeActors).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'agent', id: created.id }),
-        expect.objectContaining({
-          kind: 'agent',
-          id: 'agent:orchestrator-1257',
-          sessionId: orchestratorSessionId,
-        }),
-      ])
+
+    const forgedLineageCreate = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        cwd: authorizedLink,
+        type: 'terminal',
+        spawnedBySessionId: forgedParentSessionId,
+      }),
+    });
+    await expectJsonStatus<{
+      error: { code: string; reasonCode: string };
+    }>(forgedLineageCreate, 403, 'forged actor terminal lineage').then(
+      (body) => {
+        expect(body.error.code).toBe('FORBIDDEN');
+      }
     );
 
     const topicCreate = await fetch(`${base}/workspace-topics`, {
@@ -1056,9 +805,8 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       body: JSON.stringify({
         cwd: authorizedLink,
         workspaceTopicId: 'topic:actor-scope-bypass-1257',
-        type: 'agent',
-        agent: 'codex',
-        spawnedBySessionId: orchestratorSessionId,
+        type: 'terminal',
+        spawnedBySessionId: forgedParentSessionId,
       }),
     });
     await expectJsonStatus<{
@@ -1077,8 +825,7 @@ test('scoped actor sessions.create spawns an in-scope controlled worker and reje
       headers: actorHeaders,
       body: JSON.stringify({
         cwd: fs.realpathSync(outsideDir),
-        type: 'agent',
-        agent: 'codex',
+        type: 'terminal',
       }),
     });
     await expectJsonStatus<{

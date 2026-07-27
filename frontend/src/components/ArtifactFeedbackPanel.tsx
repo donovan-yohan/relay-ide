@@ -210,8 +210,7 @@ export function ArtifactFeedbackPanel({
                   key={scopedSessionKey(session)}
                   value={scopedSessionKey(session)}
                 >
-                  {session.displayName || session.id} ·{' '}
-                  {session.agent || session.type}
+                  {session.displayName || session.id} · {session.type}
                 </option>
               ))
             )}
@@ -222,7 +221,7 @@ export function ArtifactFeedbackPanel({
           <textarea
             value={note}
             onChange={(event) => setNote(event.target.value)}
-            placeholder="what should the agent do with this artifact?"
+            placeholder="what should the terminal session do with this artifact?"
             rows={2}
             disabled={!hasLiveTarget}
           />
@@ -271,9 +270,7 @@ export function ArtifactFeedbackPanel({
               <div className="artifact-feedback__message-actions">
                 <button
                   onClick={() => transitionMessage(message.id, 'ack')}
-                  disabled={
-                    message.state !== 'delivered'
-                  }
+                  disabled={message.state !== 'delivered'}
                 >
                   ack
                 </button>

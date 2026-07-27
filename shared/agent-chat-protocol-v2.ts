@@ -1026,10 +1026,9 @@ export function applyAgentPatchV2(
 // ── Transcript FIFO cap (#1243) ───────────────────────────────────────────
 //
 // `AgentSessionV2.turns` is otherwise unbounded: every streamed delta appends
-// to `turns[].items[]`, so a long-lived channel-agent web session grows the
-// persisted `agent_session_v2_json` blob (and the boot-time restore that
-// JSON.parses + structuredClones it) without limit. We bound the transcript to
-// a FIFO byte budget, mirroring the 256KB PTY scrollback / 256KB
+// to `turns[].items[]`, so a long-lived channel runtime grows its in-memory
+// transcript without limit. We bound the transcript to a FIFO byte budget,
+// mirroring the 256KB PTY scrollback / 256KB
 // MAX_IMPORT_TRANSCRIPT_BYTES import discipline: the most-recent tail (what
 // resume + rendering actually need — provider resume rides the resume id, not
 // this display transcript) is preserved, oldest turns/items are trimmed first,

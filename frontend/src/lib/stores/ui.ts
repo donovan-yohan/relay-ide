@@ -583,10 +583,9 @@ export interface UiState {
   topicComposerOpen: boolean;
   /**
    * #1166: the id of the channel (persisted workspace_topic) currently open in
-   * the main chat pane. Takes priority over topicComposerOpen and the legacy
-   * web-mode session surface in `resolveAppViewMode`. Mutually exclusive with an
-   * active session (App.tsx clears one when the other is set). Session-transient;
-   * never persisted (a fresh reload lands on the chat home, not a stale channel).
+   * the main chat pane. Takes priority over topicComposerOpen and any active
+   * terminal session. Mutually exclusive with an active session (App.tsx clears
+   * one when the other is set). Session-transient; never persisted.
    */
   activeChannelId: string | null;
   /** #1170: currently open channel thread. Session-transient; never persisted. */

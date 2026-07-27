@@ -34,11 +34,11 @@ test('claude framework has correct values', () => {
 
 // #1168 (closes #300): the persistent-subprocess adapter over stream-json
 // (server/protocol-adapters/claude-adapter.ts + server/claude-stream-client.ts)
-// re-enables claude web sessions — no Agent SDK, real streaming, fixture-replayed
+// enables Claude channel agents — no Agent SDK, real streaming, fixture-replayed
 // round-trip, and one live hello-world proof.
-test('claude advertises the web-session capability (#1168)', () => {
+test('claude advertises the channel-agent capability (#1168)', () => {
   const claude = BUILTIN_FRAMEWORKS['claude'];
-  expect(claude.capabilities.supportsWebSessions).toBe(true);
+  expect(claude.capabilities.supportsChannelAgents).toBe(true);
 });
 
 test('codex framework has correct values', () => {
@@ -59,10 +59,10 @@ test('codex framework has correct values', () => {
   expect(codex.capabilities.supportsContinue).toBe(true);
   expect(codex.capabilities.supportsYolo).toBe(true);
   expect(codex.capabilities.supportsTelemetry).toBe(false);
-  // #1169 (closes #301): Codex web sessions are advertised. The native
+  // #1169 (closes #301): Codex channel agents are advertised. The native
   // `codex app-server` adapter maps assistant text end-to-end and the
   // fake-app-server suite asserts prompt → text-delta → completion.
-  expect(codex.capabilities.supportsWebSessions).toBe(true);
+  expect(codex.capabilities.supportsChannelAgents).toBe(true);
 });
 
 test('opencode framework has correct values', () => {
@@ -94,7 +94,7 @@ test('hermes framework has correct values', () => {
   expect(hermes.capabilities.supportsYolo).toBe(true);
   expect(hermes.capabilities.supportsTelemetry).toBe(true);
   expect(hermes.capabilities.supportsAttachedRuntime).toBe(true);
-  expect(hermes.capabilities.supportsWebSessions).toBe(true);
+  expect(hermes.capabilities.supportsChannelAgents).toBe(true);
 });
 
 test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', () => {

@@ -4,7 +4,7 @@ import type { ActionMeta } from '../types.js';
 export function createFrameworkAction(framework: FrameworkInfo): ActionMeta {
   return {
     id: `session.new-${framework.id}`,
-    label: `new ${framework.displayName.toLowerCase()} session`,
+    label: `open ${framework.displayName.toLowerCase()} chat`,
     category: 'session',
     icon: '+',
     when: (ctx) => !!ctx.workspacePath,

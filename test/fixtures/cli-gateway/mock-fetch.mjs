@@ -22,9 +22,9 @@ globalThis.fetch = async (url, init = {}) => {
     ? { message: { id: 'chm:test' } }
     : {
         id: 'worker-session',
-        type: 'agent',
-        mode: 'web',
-        agent: 'claude',
+        type: 'terminal',
+        mode: 'pty',
+        agent: 'terminal',
         cwd: '/repo',
         status: 'active',
       };

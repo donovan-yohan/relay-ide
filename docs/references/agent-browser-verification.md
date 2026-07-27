@@ -1,4 +1,4 @@
-# Agent Browser Verification Pipeline
+# Browser verification pipeline
 
 Verified end-to-end pipeline for agents working in git worktrees to launch an isolated Relay IDE instance, screenshot the UI, and validate changes without colliding with the globally installed `relay-ide`.
 
@@ -41,7 +41,7 @@ RELAY_IDE_URL=http://127.0.0.1:3457 npx relay-ide-browser validate
 2. Discovers a free port (3456-3556 range) or uses the one you specify
 3. Writes a config JSON with `host: 127.0.0.1` and your `workspacePath` as the only repo
 4. **Bootstraps the frontend build** from the main repo if the worktree doesn't have one (see below)
-5. Spawns `node dist/server/index.js` with `RELAY_IDE_DEV_INSTANCE=1`, `RELAY_IDE_TMUX_PREFIX=relay-sandbox-`, and the ephemeral config
+5. Spawns `node dist/server/index.js` with `RELAY_IDE_DEV_INSTANCE=1` and the ephemeral config
 6. Polls `/health` every 200ms until the server is ready (30s timeout)
 7. Returns `{ url, port, configPath, dataDir, process, teardown }`
 
@@ -55,13 +55,14 @@ Worktrees share `node_modules` with the main repo via git-worktree mechanics, bu
 
 The `relay-ide-browser` binary (registered in `package.json` `bin`) provides three commands:
 
-| Command | Purpose |
-|---|---|
-| `open [url]` | Launch Chrome and keep it open until Ctrl+C |
-| `screenshot [url] --out <path>` | Full-page screenshot via Playwright |
-| `validate [url]` | Load page, wait 500ms, report console errors as JSON |
+| Command                         | Purpose                                              |
+| ------------------------------- | ---------------------------------------------------- |
+| `open [url]`                    | Launch Chrome and keep it open until Ctrl+C          |
+| `screenshot [url] --out <path>` | Full-page screenshot via Playwright                  |
+| `validate [url]`                | Load page, wait 500ms, report console errors as JSON |
 
 Environment:
+
 - `RELAY_IDE_URL` — default URL if none provided on the command line
 - Falls back to `http://127.0.0.1:3456` if neither is set
 
@@ -69,7 +70,9 @@ Environment:
 
 - **Port:** Each sandbox gets its own ephemeral port. The global `relay-ide` (if running) typically uses 3456; sandboxes use 3457+.
 - **Config:** Each sandbox writes its own `config.json` in a temp dir, so there's no conflict over `~/.config/relay-ide/config.json`.
-- **Tmux:** The sandbox runs with an explicit `relay-sandbox-` tmux prefix, keeping sessions isolated from production `relay-ide-` and ordinary dev `relay-dev-` prefixes.
+- **Processes:** The sandbox server is a separate child process. Any terminal
+  it creates uses the supported `relay-pty` backend inside that sandbox
+  process; no external terminal daemon namespace is involved.
 
 ## API Reference
 
@@ -79,12 +82,12 @@ Environment:
 import { startSandbox } from './server/sandbox.js';
 
 const sandbox = await startSandbox({
-  port: 19997,        // optional — uses this exact port
+  port: 19997, // optional — uses this exact port
   workspacePath: '.', // optional — defaults to process.cwd()
 });
 
-console.log(sandbox.url);     // http://127.0.0.1:19997
-console.log(sandbox.port);    // 19997
+console.log(sandbox.url); // http://127.0.0.1:19997
+console.log(sandbox.port); // 19997
 
 // later
 await sandbox.teardown(); // kills process, removes temp dir
@@ -93,9 +96,16 @@ await sandbox.teardown(); // kills process, removes temp dir
 ### Browser automation
 
 ```typescript
-import { launchBrowser, screenshot, validatePage, closeBrowser } from './server/agent-browser.js';
+import {
+  launchBrowser,
+  screenshot,
+  validatePage,
+  closeBrowser,
+} from './server/agent-browser.js';
 
-const session = await launchBrowser('http://127.0.0.1:3457', { headless: true });
+const session = await launchBrowser('http://127.0.0.1:3457', {
+  headless: true,
+});
 await screenshot(session, 'out.png');
 const result = await validatePage(session); // { ok: boolean, errors: string[] }
 await closeBrowser(session);
@@ -116,12 +126,12 @@ Tests skip gracefully when Playwright Chromium binaries are missing (run `npx pl
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
+| Symptom                                                  | Fix                                                                                                                                                                                                                    |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Frontend build failed: Could not load .../addon-webgpu` | This is expected in worktrees. The sandbox auto-copies the main repo's `dist/frontend/`. If you changed frontend code, run `npm run build` in the main repo first, or build in the worktree after fixing node_modules. |
-| `Sandbox server did not start within 30000ms` | Check that `dist/server/index.js` exists (`npm run build:server`). Verify the port isn't already bound. |
-| `Playwright is unavailable` | Run `npm install` then `npx playwright install` to download Chromium binaries. |
-| Screenshot is blank / white | The page may still be loading. `validate` waits 500ms; for screenshots you may want to add an explicit `page.waitForSelector()` call in your script. |
+| `Sandbox server did not start within 30000ms`            | Check that `dist/server/index.js` exists (`npm run build:server`). Verify the port isn't already bound.                                                                                                                |
+| `Playwright is unavailable`                              | Run `npm install` then `npx playwright install` to download Chromium binaries.                                                                                                                                         |
+| Screenshot is blank / white                              | The page may still be loading. `validate` waits 500ms; for screenshots you may want to add an explicit `page.waitForSelector()` call in your script.                                                                   |
 
 ## Future Work
 

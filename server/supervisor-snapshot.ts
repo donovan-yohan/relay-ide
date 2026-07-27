@@ -6,7 +6,13 @@ import {
   type ControlStateSummary,
 } from '../shared/control-state.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
-import type { AgentState, SessionMode, SessionStatus, SessionSummary, SessionType } from './types.js';
+import type {
+  SessionMode,
+  SessionStatus,
+  SessionSummary,
+  SessionType,
+  TerminalActivityState,
+} from './types.js';
 
 export const SUPERVISOR_SNAPSHOT_COMMAND_ID = 'supervisor.snapshot' as const;
 export const SUPERVISOR_SNAPSHOT_REQUIRED_CAPABILITIES = [
@@ -57,14 +63,6 @@ export interface SupervisorSnapshotInput {
     | Promise<readonly SupervisorRedactedInterventionSummary[]>;
 }
 
-export interface SupervisorProviderSnapshot {
-  providerId: string;
-  mode: SessionMode;
-  capabilityBoundary: 'relay-command-contract';
-  readOnlyAdapterState: boolean;
-  rawProviderStateStored: false;
-}
-
 export interface SupervisorSessionSnapshot {
   command: typeof SUPERVISOR_SNAPSHOT_COMMAND_ID;
   capturedAt: string;
@@ -73,17 +71,15 @@ export interface SupervisorSessionSnapshot {
     globalSessionId?: string;
     nodeId?: string;
     type: SessionType;
-    agent: string;
     mode: SessionMode;
     status: SessionStatus;
-    agentState: AgentState;
+    activityState: TerminalActivityState;
     cwd: string;
     repoPath?: string;
     worktreePath?: string | null;
     workContextId?: string;
   };
   control: ControlStateSummary;
-  provider: SupervisorProviderSnapshot;
   interventions: {
     available: boolean;
     items: SupervisorRedactedInterventionSummary[];
@@ -124,14 +120,25 @@ export interface SupervisorSnapshotAuditSummary {
 }
 
 export type SupervisorSnapshotResult =
-  | { ok: true; snapshot: SupervisorSessionSnapshot; audit: SupervisorSnapshotAuditSummary }
+  | {
+      ok: true;
+      snapshot: SupervisorSessionSnapshot;
+      audit: SupervisorSnapshotAuditSummary;
+    }
   | {
       ok: false;
-      error: { code: SupervisorSnapshotErrorCode; message: string; retryable: boolean };
+      error: {
+        code: SupervisorSnapshotErrorCode;
+        message: string;
+        retryable: boolean;
+      };
       audit: SupervisorSnapshotAuditSummary;
     };
 
-function hasCapability(granted: readonly string[] | ReadonlySet<string>, capability: string): boolean {
+function hasCapability(
+  granted: readonly string[] | ReadonlySet<string>,
+  capability: string
+): boolean {
   if (typeof (granted as ReadonlySet<string>).has === 'function') {
     return (granted as ReadonlySet<string>).has(capability);
   }
@@ -154,7 +161,6 @@ function controlStateFromSession(session: SessionSummary): ControlStateSummary {
   return normalizeControlStateSummary({
     controlMode: session.controlMode,
     activeActors: session.activeActors,
-    activeWorker: session.activeWorker,
     lastInterventionAt: session.lastInterventionAt,
     lastInterventionBy: session.lastInterventionBy,
     lastInterventionEventId: session.lastInterventionEventId,
@@ -177,17 +183,25 @@ function auditSummary(input: {
     ...(input.actorId ? { actorId: input.actorId } : {}),
     target: {
       ...(input.session?.id ? { sessionId: input.session.id } : {}),
-      ...(input.session?.globalSessionId ? { globalSessionId: input.session.globalSessionId } : {}),
+      ...(input.session?.globalSessionId
+        ? { globalSessionId: input.session.globalSessionId }
+        : {}),
       ...(input.session?.nodeId ? { nodeId: input.session.nodeId } : {}),
     },
     requiredCapabilities: SUPERVISOR_SNAPSHOT_REQUIRED_CAPABILITIES,
     missingCapabilities: input.missing ?? [],
-    ...(input.control?.controlMode ? { controlMode: input.control.controlMode } : {}),
+    ...(input.control?.controlMode
+      ? { controlMode: input.control.controlMode }
+      : {}),
     ...(input.control?.controlFreshness
       ? { controlFreshness: input.control.controlFreshness }
       : {}),
     ...(input.control?.lastInterventionEventId
-      ? { latestInterventionEventIdHash: hash(input.control.lastInterventionEventId) }
+      ? {
+          latestInterventionEventIdHash: hash(
+            input.control.lastInterventionEventId
+          ),
+        }
       : {}),
     partialFailureCount: input.partialFailureCount ?? 0,
     redaction: {
@@ -205,7 +219,11 @@ export async function createSupervisorSnapshot(
   if (!input.session) {
     return {
       ok: false,
-      error: { code: 'NOT_FOUND', message: 'session not found', retryable: false },
+      error: {
+        code: 'NOT_FOUND',
+        message: 'session not found',
+        retryable: false,
+      },
       audit: auditSummary({
         session: input.session,
         actorId: input.actorId,
@@ -221,7 +239,8 @@ export async function createSupervisorSnapshot(
       ok: false,
       error: {
         code: 'FORBIDDEN',
-        message: 'supervisor snapshot requires session read and intervention read capabilities',
+        message:
+          'supervisor snapshot requires session read and intervention read capabilities',
         retryable: false,
       },
       audit: auditSummary({
@@ -236,13 +255,15 @@ export async function createSupervisorSnapshot(
 
   if (
     input.policy?.expectedControlMode &&
-    (control.controlFreshness !== 'fresh' || control.controlMode !== input.policy.expectedControlMode)
+    (control.controlFreshness !== 'fresh' ||
+      control.controlMode !== input.policy.expectedControlMode)
   ) {
     return {
       ok: false,
       error: {
         code: 'CONTROL_STATE_STALE',
-        message: 'target session control state changed since the caller snapshot',
+        message:
+          'target session control state changed since the caller snapshot',
         retryable: true,
       },
       audit: auditSummary({
@@ -256,13 +277,15 @@ export async function createSupervisorSnapshot(
 
   if (
     control.lastInterventionEventId &&
-    input.policy?.latestSeenInterventionEventId !== control.lastInterventionEventId
+    input.policy?.latestSeenInterventionEventId !==
+      control.lastInterventionEventId
   ) {
     return {
       ok: false,
       error: {
         code: 'INTERVENTION_ACK_REQUIRED',
-        message: 'latest human intervention must be observed before supervisor actions continue',
+        message:
+          'latest human intervention must be observed before supervisor actions continue',
         retryable: true,
       },
       audit: auditSummary({
@@ -283,7 +306,10 @@ export async function createSupervisorSnapshot(
       partialFailures.push({
         source: 'interventions',
         code: 'UPSTREAM_ERROR',
-        message: error instanceof Error ? error.message : 'failed to read redacted interventions',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'failed to read redacted interventions',
       });
     }
   }
@@ -293,28 +319,24 @@ export async function createSupervisorSnapshot(
     capturedAt: (input.now ?? new Date()).toISOString(),
     session: {
       sessionId: input.session.id,
-      ...(input.session.globalSessionId ? { globalSessionId: input.session.globalSessionId } : {}),
+      ...(input.session.globalSessionId
+        ? { globalSessionId: input.session.globalSessionId }
+        : {}),
       ...(input.session.nodeId ? { nodeId: input.session.nodeId } : {}),
       type: input.session.type,
-      agent: input.session.agent,
       mode: input.session.mode,
       status: input.session.status,
-      agentState: input.session.agentState,
+      activityState: input.session.activityState,
       cwd: input.session.cwd,
       ...(input.session.repoPath ? { repoPath: input.session.repoPath } : {}),
       ...(input.session.worktreePath !== undefined
         ? { worktreePath: input.session.worktreePath }
         : {}),
-      ...(input.session.workContextId ? { workContextId: input.session.workContextId } : {}),
+      ...(input.session.workContextId
+        ? { workContextId: input.session.workContextId }
+        : {}),
     },
     control,
-    provider: {
-      providerId: input.session.agent,
-      mode: input.session.mode,
-      capabilityBoundary: 'relay-command-contract',
-      readOnlyAdapterState: true,
-      rawProviderStateStored: false,
-    },
     interventions: {
       available: partialFailures.length === 0,
       items: interventions,

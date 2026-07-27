@@ -1,77 +1,54 @@
 ---
 name: add-provider
-description: Add or port a relay-ide web-chat provider to AgentPatchV2. Use when implementing Codex, OpenCode, Hermes, or any new provider adapter for the web UI.
+description: Add or port an agent provider into Relay channels through ProtocolAdapterV2, ChannelAgentRuntime, the channel binder, and the channel bridge.
 ---
 
-# Add AgentPatchV2 Provider
+# Add a channel agent provider
 
-Use this skill to port a provider to the normalized Agent Chat Protocol V2 web-chat path.
+Use this skill when adding Claude, Codex, OpenCode, Hermes, or a custom agent
+provider to Relay's channel-first product.
 
 ## Required reading
 
-Before touching code, read:
-
 1. `docs/provider-guide.md`
-2. `docs/plans/2026-04-27-multi-provider-roadmap.md`
-3. `shared/agent-chat-protocol-v2.ts`
-4. `server/protocol-adapter-v2.ts`
-5. The most recent working provider adapter, currently `server/protocol-adapters/claude-adapter.ts`
+2. `docs/CHANNEL_CHAT.md`
+3. `server/protocol-adapter-v2.ts`
+4. `shared/agent-chat-protocol-v2.ts`
+5. `server/channel-agent-runtime.ts`
+6. `server/channel-agent-binder.ts`
+7. `server/channel-agent-bridge.ts`
 
-## Inputs
+## Workflow
 
-Collect these facts:
+1. Capture and redact one real native event stream.
+2. Write a deterministic native-event → `AgentPatchV2` mapping table.
+3. Implement or update the `ProtocolAdapterV2` adapter.
+4. Preserve stable native ids; use deterministic fallback ids only when needed.
+5. Declare exact capabilities for resume, queue, approvals, questions, images,
+   and runtime environment refresh.
+6. Register the adapter in `server/protocol-adapters/index.ts`.
+7. Map common output to canonical detail cards.
+8. Add a bounded provider extension only when canonical items are insufficient.
+9. Prove mention → private runtime → durable channel row through binder/bridge
+   integration tests.
+10. Delete replaced compatibility code and tests in the same change.
 
-- Provider name and registry key.
-- Native transport: SDK, JSON-RPC, SSE, gateway, or process.
-- Native event inventory.
-- Capability set.
-- Approval/permission mechanism.
-- Interrupt mechanism.
-- Queue/cancel support.
-- Session resume identifier.
+## Identity rules
 
-## Mapping table
-
-Write a provider-specific mapping table before implementation:
-
-```markdown
-| Native event | V2 patch | Item type | Correlation key | Notes |
-| ------------ | -------- | --------- | --------------- | ----- |
-```
-
-Every native event must either map to a core V2 item/patch or to `providerExtension`.
-
-## Implementation steps
-
-1. Create `test/server/protocol-adapters/<provider>-adapter.test.ts`.
-2. Write failing golden trace tests for capabilities, init, text, tools, approvals, errors, queue, and unknown events.
-3. Implement `server/protocol-adapters/<provider>-adapter.ts` as a `BaseProtocolAdapterV2` subclass.
-4. Add a deterministic transport seam so tests never spawn the real CLI/server.
-5. Register the provider in `v2Adapters` in `server/protocol-adapters/index.ts`.
-6. Add provider extension renderers under `frontend/src/components/chat/extensions/<provider>/` only for provider-specific payloads.
-7. Restore/rewrite provider web-session tests to assert V2 patches, not V1 `ChatEvent`s.
-8. Delete replaced V1 code in the same PR when the adapter is fully native.
+- The agent profile actor id is the channel participant.
+- The provider id chooses the adapter.
+- The private runtime id is not a conversation or public session.
+- Provider session ids are opaque resume state.
+- Never attribute visible messages to a transient runtime id.
 
 ## Verification
 
-Run:
-
 ```bash
 npm test -- test/server/protocol-adapters/<provider>-adapter.test.ts
-npm test -- test/web-session-handler.test.ts test/web-session-v2.test.ts
+npm test -- test/channel-agent-binder.test.ts test/channel-agent-bridge.test.ts
 npm run check
 npm run build
 ```
 
-Before opening PR, also run the pre-push hook by pushing from the provider worktree.
-
-## PR requirements
-
-The PR body must include:
-
-- Provider transport and event source.
-- Mapping coverage summary.
-- Capability set.
-- Verification output.
-- Any temporary bridge/deletion debt.
-- Stack base and next stack branch.
+Exercise a real installed provider when possible. Any new row/card shape also
+needs proof through `ChannelMessageRow` or the live channel fixture.

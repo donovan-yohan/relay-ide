@@ -39,8 +39,7 @@ const LIVENESS_IDLE_THRESHOLD_MS = 120_000;
 
 /**
  * Read-only WebSocket + REST hook for a single channel (#1166). Mirrors
- * `useAgentChatSocket`'s reconnect/unmountedRef/wsRef structure but is
- * server→client-only over the socket — posting is REST (`post()`), and the
+ * The channel socket is server→client-only — posting is REST (`post()`), and the
  * channel WS hub carries no application ping/pong (it never registers an inbound
  * `message` handler), so no pong-timeout health check is used. Recovery leans on
  * the reducer's own `needsCatchup` self-diagnosis (reconnect with

@@ -16,7 +16,7 @@ export type HandoffFixtureKey =
   | 'stale-source'
   | 'offline-hub'
   | 'non-git-snapshot'
-  | 'summary-only-agent-continuation';
+  | 'summary-only-continuation';
 
 export type HandoffSourceSessionOutcome =
   | 'left running locally'
@@ -47,15 +47,22 @@ const NOW = '2026-05-22T03:00:00.000Z';
 const SOURCE_NODE = 'local';
 const HUB_NODE = 'hub';
 const SOURCE_CWD = '/Users/dev/relay-ide/.worktrees/692-handoff-ui-dry-run';
-const DESTINATION_CWD = '/srv/relay/workspaces/relay-ide/692-handoff-ui-dry-run';
+const DESTINATION_CWD =
+  '/srv/relay/workspaces/relay-ide/692-handoff-ui-dry-run';
 const WORK_CONTEXT_ID = 'wc:issue-692';
 const REQUEST_ID = 'handoff-request:fixture';
 
-function conflict(code: HandoffConflict['code'], message: string): HandoffConflict {
+function conflict(
+  code: HandoffConflict['code'],
+  message: string
+): HandoffConflict {
   return { code, message, nodeId: HUB_NODE };
 }
 
-function grant(leg: HandoffRequiredGrant['leg'], capability: HandoffRequiredGrant['capability']): HandoffRequiredGrant {
+function grant(
+  leg: HandoffRequiredGrant['leg'],
+  capability: HandoffRequiredGrant['capability']
+): HandoffRequiredGrant {
   return {
     leg,
     nodeId: leg === 'source-read' ? SOURCE_NODE : HUB_NODE,
@@ -87,7 +94,10 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
       workContextId: WORK_CONTEXT_ID,
     },
     transferMode,
-    includedGroups: transferMode === 'metadata-only' ? ['source-summary'] : ['tracked-patch', 'staged-metadata'],
+    includedGroups:
+      transferMode === 'metadata-only'
+        ? ['source-summary']
+        : ['tracked-patch', 'staged-metadata'],
     excludedGroups: ['excluded-secret', 'excluded-cache'],
     fileCount: transferMode === 'metadata-only' ? 0 : 12,
     byteCount: transferMode === 'metadata-only' ? 0 : 18432,
@@ -100,21 +110,33 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
       action: 'create-worktree',
       sourceCwd: SOURCE_CWD,
       sourceNodeId: SOURCE_NODE,
-      summary: 'create a hub worktree from nightly, then apply selected working state',
+      summary:
+        'create a hub worktree from nightly, then apply selected working state',
     },
     pathMappings: [
       {
         kind: 'patch',
         source: { nodeId: SOURCE_NODE, path: SOURCE_CWD },
-        destination: { nodeId: HUB_NODE, path: DESTINATION_CWD, mode: 'create' },
+        destination: {
+          nodeId: HUB_NODE,
+          path: DESTINATION_CWD,
+          mode: 'create',
+        },
         bytes: 16384,
         sha256: 'sha256:tracked-fixture',
         summary: 'tracked patch for frontend handoff dry-run surface',
       },
       {
         kind: 'file',
-        source: { nodeId: SOURCE_NODE, path: `${SOURCE_CWD}/notes/handoff-plan.md` },
-        destination: { nodeId: HUB_NODE, path: `${DESTINATION_CWD}/notes/handoff-plan.md`, mode: 'create' },
+        source: {
+          nodeId: SOURCE_NODE,
+          path: `${SOURCE_CWD}/notes/handoff-plan.md`,
+        },
+        destination: {
+          nodeId: HUB_NODE,
+          path: `${DESTINATION_CWD}/notes/handoff-plan.md`,
+          mode: 'create',
+        },
         bytes: 2048,
         sha256: 'sha256:approved-untracked-fixture',
         summary: 'operator-approved untracked handoff notes',
@@ -122,18 +144,6 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
     ],
     conflicts: [],
     requiredGrants: [],
-    launchPreview: {
-      nodeId: HUB_NODE,
-      cwd: DESTINATION_CWD,
-      runtime: {
-        kind: 'agent',
-        providerId: 'claude',
-        commandSummary: 'start a new hub-side agent session from the transferred workcontext',
-        requiredCapabilities: ['session:create:agent', 'rpc:fs:write', 'rpc:git:write'],
-      },
-      summary: 'start a new hub-side claude session with the same workcontext after transfer',
-      workContextId: WORK_CONTEXT_ID,
-    },
     ...overrides,
   };
 }
@@ -148,45 +158,58 @@ function fixture(
     status: 'ready',
     statusCopy: 'fixture dry run only; #691 live execute wiring is unavailable',
     confirmLabel: 'start on hub',
-    confirmDisabledReason: 'live handoff execute is unavailable until #691 lands',
+    confirmDisabledReason:
+      'live handoff execute is unavailable until #691 lands',
     plan: overrides.plan ?? basePlan({ id: `handoff-plan:${key}` }),
     sourceSessionOutcome: 'left running locally',
     agentContinuation: {
       mode: 'full-workcontext',
       confidence: 'high',
-      summary: 'continue with workcontext summary, selected patch state, and task refs',
+      summary:
+        'continue with workcontext summary, selected patch state, and task refs',
     },
     collapsedGroups: ['tracked-patch', 'approved-untracked'],
     ...overrides,
   };
 }
 
-export const HANDOFF_PLAN_FIXTURES: Record<HandoffFixtureKey, HandoffPlanFixture> = {
+export const HANDOFF_PLAN_FIXTURES: Record<
+  HandoffFixtureKey,
+  HandoffPlanFixture
+> = {
   clean: fixture('clean', {
     statusCopy: 'clean plan; live confirm remains disabled in fixture mode',
   }),
   conflicts: fixture('conflicts', {
     status: 'blocked',
-    statusCopy: 'destination has conflicts; resolve before starting hub session',
-    confirmDisabledReason: 'blocked: destination conflict and untracked collision',
+    statusCopy:
+      'destination has conflicts; resolve before starting hub session',
+    confirmDisabledReason:
+      'blocked: destination conflict and untracked collision',
     plan: basePlan({
       id: 'handoff-plan:conflicts',
       conflicts: [
-        conflict('DESTINATION_CONFLICT', 'destination worktree already changed frontend/src/App.tsx'),
-        conflict('UNTRACKED_COLLISION', 'untracked notes/handoff-plan.md already exists on hub'),
+        conflict(
+          'DESTINATION_CONFLICT',
+          'destination worktree already changed frontend/src/App.tsx'
+        ),
+        conflict(
+          'UNTRACKED_COLLISION',
+          'untracked notes/handoff-plan.md already exists on hub'
+        ),
       ],
     }),
   }),
   'grants-required': fixture('grants-required', {
     status: 'needs-grants',
     statusCopy: 'additional grants are required before the dry run can execute',
-    confirmDisabledReason: 'blocked: source read and destination write grants required',
+    confirmDisabledReason:
+      'blocked: source read and destination write grants required',
     plan: basePlan({
       id: 'handoff-plan:grants-required',
       requiredGrants: [
         grant('source-read', 'session:read'),
         grant('destination-write', 'rpc:fs:write'),
-        grant('destination-session-create', 'session:create:agent'),
       ],
     }),
   }),
@@ -206,7 +229,12 @@ export const HANDOFF_PLAN_FIXTURES: Record<HandoffFixtureKey, HandoffPlanFixture
         disposition: 'stale-source',
         durabilityState: 'stale-node',
       },
-      conflicts: [conflict('STALE_SOURCE', 'source session freshness is older than the latest workcontext event')],
+      conflicts: [
+        conflict(
+          'STALE_SOURCE',
+          'source session freshness is older than the latest workcontext event'
+        ),
+      ],
     }),
   }),
   'offline-hub': fixture('offline-hub', {
@@ -223,11 +251,14 @@ export const HANDOFF_PLAN_FIXTURES: Record<HandoffFixtureKey, HandoffPlanFixture
         sourceNodeId: SOURCE_NODE,
         summary: 'hub inventory is last-known only; wait for node heartbeat',
       },
-      conflicts: [conflict('DESTINATION_UNAVAILABLE', 'hub node has no fresh heartbeat')],
+      conflicts: [
+        conflict('DESTINATION_UNAVAILABLE', 'hub node has no fresh heartbeat'),
+      ],
     }),
   }),
   'non-git-snapshot': fixture('non-git-snapshot', {
-    statusCopy: 'directory snapshot uses approved files and metadata only; no git assumptions',
+    statusCopy:
+      'directory snapshot uses approved files and metadata only; no git assumptions',
     plan: basePlan({
       id: 'handoff-plan:non-git-snapshot',
       transferMode: 'approved-untracked-files',
@@ -239,47 +270,42 @@ export const HANDOFF_PLAN_FIXTURES: Record<HandoffFixtureKey, HandoffPlanFixture
         action: 'use-cwd',
         sourceCwd: '/Users/dev/design-spike',
         sourceNodeId: SOURCE_NODE,
-        summary: 'copy approved directory files into a hub scratch cwd; no repo badge or git actions',
+        summary:
+          'copy approved directory files into a hub scratch cwd; no repo badge or git actions',
       },
       pathMappings: [
         {
           kind: 'directory',
           source: { nodeId: SOURCE_NODE, path: '/Users/dev/design-spike' },
-          destination: { nodeId: HUB_NODE, path: '/srv/relay/scratch/design-spike', mode: 'create' },
+          destination: {
+            nodeId: HUB_NODE,
+            path: '/srv/relay/scratch/design-spike',
+            mode: 'create',
+          },
           bytes: 8192,
           summary: 'approved non-git snapshot contents',
         },
       ],
     }),
   }),
-  'summary-only-agent-continuation': fixture('summary-only-agent-continuation', {
-    statusCopy: 'agent continuation is summary-only; no raw transcript or live process migration',
+  'summary-only-continuation': fixture('summary-only-continuation', {
+    statusCopy:
+      'continuation is summary-only; no raw transcript or live process migration',
     sourceSessionOutcome: 'summary only; live process remains local',
     agentContinuation: {
       mode: 'summary-only',
       confidence: 'medium',
-      summary: 'continue from bounded workcontext summary and task refs; raw transcript and provider auth stay local',
+      summary:
+        'continue from bounded workcontext summary and task refs; raw transcript and provider auth stay local',
     },
     plan: basePlan({
-      id: 'handoff-plan:summary-only-agent-continuation',
+      id: 'handoff-plan:summary-only-continuation',
       transferMode: 'metadata-only',
       includedGroups: ['source-summary'],
       excludedGroups: ['excluded-secret', 'excluded-cache'],
       fileCount: 0,
       byteCount: 0,
       pathMappings: [],
-      launchPreview: {
-        nodeId: HUB_NODE,
-        cwd: DESTINATION_CWD,
-        runtime: {
-          kind: 'agent',
-          providerId: 'hermes',
-          commandSummary: 'start a fresh hub-side agent with workcontext summary only',
-          requiredCapabilities: ['session:create:agent'],
-        },
-        summary: 'start a new hub-side agent from summary only; no raw transcript sync',
-        workContextId: WORK_CONTEXT_ID,
-      },
     }),
   }),
 };
@@ -292,10 +318,12 @@ export const HANDOFF_FIXTURE_ORDER: HandoffFixtureKey[] = [
   'stale-source',
   'offline-hub',
   'non-git-snapshot',
-  'summary-only-agent-continuation',
+  'summary-only-continuation',
 ];
 
-export function getHandoffPlanFixture(key: HandoffFixtureKey = DEFAULT_HANDOFF_FIXTURE_KEY): HandoffPlanFixture {
+export function getHandoffPlanFixture(
+  key: HandoffFixtureKey = DEFAULT_HANDOFF_FIXTURE_KEY
+): HandoffPlanFixture {
   return HANDOFF_PLAN_FIXTURES[key];
 }
 

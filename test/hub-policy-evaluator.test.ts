@@ -23,14 +23,16 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 
 const NOW = new Date('2026-01-02T03:04:05.000Z');
 
-function nodeSummary(input: {
-  nodeId?: string;
-  trustTier?: RelayTrustTier;
-  allowed?: RelayCapabilityBit[];
-  requiresConfirmation?: RelayCapabilityBit[];
-  scope?: RelayPolicyScope;
-  revoked?: boolean;
-} = {}): HubNodeSummary {
+function nodeSummary(
+  input: {
+    nodeId?: string;
+    trustTier?: RelayTrustTier;
+    allowed?: RelayCapabilityBit[];
+    requiresConfirmation?: RelayCapabilityBit[];
+    scope?: RelayPolicyScope;
+    revoked?: boolean;
+  } = {}
+): HubNodeSummary {
   const nodeId = input.nodeId ?? 'node_a';
   const acl: RelayNodeAcl = {
     ...createLegacyDefaultNodeAcl({
@@ -56,7 +58,10 @@ function nodeSummary(input: {
     relayVersion: '0.1.0-test',
     protocolVersion: '1.0',
     status: input.revoked ? 'revoked' : 'online',
-    connection: { route: 'reverse-link', status: input.revoked ? 'revoked' : 'connected' },
+    connection: {
+      route: 'reverse-link',
+      status: input.revoked ? 'revoked' : 'connected',
+    },
     trust: {
       state: input.revoked ? 'revoked' : 'active',
       level: input.trustTier ?? 'dev',
@@ -91,7 +96,9 @@ function nodeSummary(input: {
   };
 }
 
-function baseInput(overrides: Partial<Parameters<typeof evaluateHubPolicy>[0]> = {}) {
+function baseInput(
+  overrides: Partial<Parameters<typeof evaluateHubPolicy>[0]> = {}
+) {
   const node = nodeSummary();
   return {
     peer: { kind: 'hub' as const },
@@ -130,7 +137,9 @@ describe('hub policy evaluator', () => {
 
   it('fails closed for unknown capability bits before granting known bits', () => {
     const decision = evaluateHubPolicy(
-      baseInput({ requiredCapabilities: ['session:read', 'rpc:fs:format-disk'] })
+      baseInput({
+        requiredCapabilities: ['session:read', 'rpc:fs:format-disk'],
+      })
     );
     expect(decision).toMatchObject({
       decision: 'deny',
@@ -144,7 +153,9 @@ describe('hub policy evaluator', () => {
     const required = requiredCapabilitiesForRpcIntent('rpc.fs.format-disk');
     expect(required).toEqual(['rpc:unknown:rpc.fs.format-disk']);
 
-    expect(evaluateHubPolicy(baseInput({ requiredCapabilities: required }))).toMatchObject({
+    expect(
+      evaluateHubPolicy(baseInput({ requiredCapabilities: required }))
+    ).toMatchObject({
       decision: 'deny',
       reasonCode: 'POLICY_UNKNOWN_CAPABILITY',
       unknownBits: ['rpc:unknown:rpc.fs.format-disk'],
@@ -156,7 +167,9 @@ describe('hub policy evaluator', () => {
       'session:control:kill',
     ]);
 
-    expect(evaluateHubPolicy(baseInput({ requiredCapabilities: ['session:attach'] }))).toMatchObject({
+    expect(
+      evaluateHubPolicy(baseInput({ requiredCapabilities: ['session:attach'] }))
+    ).toMatchObject({
       decision: 'allow',
       grantedBits: ['session:attach'],
     });
@@ -164,7 +177,8 @@ describe('hub policy evaluator', () => {
       evaluateHubPolicy(
         baseInput({
           intent: { action: 'sessions.kill', target: 'node_a' },
-          requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.kill'),
+          requiredCapabilities:
+            requiredCapabilitiesForRpcIntent('sessions.kill'),
         })
       )
     ).toMatchObject({
@@ -173,13 +187,16 @@ describe('hub policy evaluator', () => {
       grantedBits: ['session:control:kill'],
     });
 
-    const attachOnlyNode = nodeSummary({ allowed: ['session:read', 'session:attach'] });
+    const attachOnlyNode = nodeSummary({
+      allowed: ['session:read', 'session:attach'],
+    });
     expect(
       evaluateHubPolicy(
         baseInput({
           node: attachOnlyNode,
           intent: { action: 'sessions.kill', target: 'node_a' },
-          requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.kill'),
+          requiredCapabilities:
+            requiredCapabilitiesForRpcIntent('sessions.kill'),
         })
       )
     ).toMatchObject({
@@ -199,7 +216,11 @@ describe('hub policy evaluator', () => {
       evaluateHubPolicy(
         baseInput({
           node,
-          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '/srv/allowed/project' },
+          scope: {
+            kind: 'node-cwd',
+            nodeId: node.nodeId,
+            cwd: '/srv/allowed/project',
+          },
         })
       )
     ).toMatchObject({ decision: 'allow' });
@@ -208,7 +229,11 @@ describe('hub policy evaluator', () => {
       evaluateHubPolicy(
         baseInput({
           node,
-          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '/srv/allowed/../outside' },
+          scope: {
+            kind: 'node-cwd',
+            nodeId: node.nodeId,
+            cwd: '/srv/allowed/../outside',
+          },
         })
       )
     ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_SCOPE_DENIED' });
@@ -217,7 +242,11 @@ describe('hub policy evaluator', () => {
       evaluateHubPolicy(
         baseInput({
           node,
-          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '../allowed/project' },
+          scope: {
+            kind: 'node-cwd',
+            nodeId: node.nodeId,
+            cwd: '../allowed/project',
+          },
         })
       )
     ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_SCOPE_DENIED' });
@@ -227,7 +256,9 @@ describe('hub policy evaluator', () => {
     const expired = evaluateHubPolicy(
       baseInput({ expiresAt: '2026-01-02T03:04:04.000Z', sessionId: 's1' })
     );
-    expect(policyDecisionToRelayError(expired)).toMatchObject({ code: 'SESSION_EXPIRED' });
+    expect(policyDecisionToRelayError(expired)).toMatchObject({
+      code: 'SESSION_EXPIRED',
+    });
   });
 
   it('returns challenge for prod high-risk capabilities after trust-tier overlay', () => {
@@ -252,21 +283,32 @@ describe('hub policy evaluator', () => {
   it('denies scope mismatches and node-originated envelopes acting as another node', () => {
     expect(
       evaluateHubPolicy(
-        baseInput({ scope: { kind: 'node', nodeId: 'node_b', cwd: '/srv/relay' } })
+        baseInput({
+          scope: { kind: 'node', nodeId: 'node_b', cwd: '/srv/relay' },
+        })
       )
-    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_SCOPE_NODE_MISMATCH' });
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_SCOPE_NODE_MISMATCH',
+    });
+
+    expect(
+      evaluateHubPolicy(baseInput({ peer: { kind: 'node', nodeId: 'node_b' } }))
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_PEER_NODE_MISMATCH',
+    });
 
     expect(
       evaluateHubPolicy(
-        baseInput({ peer: { kind: 'node', nodeId: 'node_b' } })
+        baseInput({
+          peer: { kind: 'node', nodeId: 'node_a', credentialId: 'stale_cred' },
+        })
       )
-    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_PEER_NODE_MISMATCH' });
-
-    expect(
-      evaluateHubPolicy(
-        baseInput({ peer: { kind: 'node', nodeId: 'node_a', credentialId: 'stale_cred' } })
-      )
-    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_PEER_CREDENTIAL_MISMATCH' });
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_PEER_CREDENTIAL_MISMATCH',
+    });
   });
 
   it('denies expired and revoked session lifecycles', () => {
@@ -274,24 +316,40 @@ describe('hub policy evaluator', () => {
       evaluateHubPolicy(
         baseInput({ expiresAt: '2026-01-02T03:04:04.000Z', sessionId: 's1' })
       )
-    ).toMatchObject({ decision: 'revoke', reasonCode: 'POLICY_SESSION_EXPIRED' });
+    ).toMatchObject({
+      decision: 'revoke',
+      reasonCode: 'POLICY_SESSION_EXPIRED',
+    });
 
     expect(
       evaluateHubPolicy(
         baseInput({ revokedAt: '2026-01-02T03:04:04.000Z', sessionId: 's1' })
       )
-    ).toMatchObject({ decision: 'revoke', reasonCode: 'POLICY_SESSION_REVOKED' });
+    ).toMatchObject({
+      decision: 'revoke',
+      reasonCode: 'POLICY_SESSION_REVOKED',
+    });
   });
 
   it('keeps multi-node authorization independent', () => {
     const nodeA = nodeSummary({ nodeId: 'node_a', allowed: ['session:read'] });
-    const nodeB = nodeSummary({ nodeId: 'node_b', allowed: ['session:create:terminal'] });
+    const nodeB = nodeSummary({
+      nodeId: 'node_b',
+      allowed: ['session:create:terminal'],
+    });
 
     expect(
       evaluateHubPolicy(
-        baseInput({ node: nodeA, nodeId: 'node_a', requiredCapabilities: ['session:create:terminal'] })
+        baseInput({
+          node: nodeA,
+          nodeId: 'node_a',
+          requiredCapabilities: ['session:create:terminal'],
+        })
       )
-    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_CAPABILITY_DENIED' });
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_CAPABILITY_DENIED',
+    });
     expect(
       evaluateHubPolicy(
         baseInput({
@@ -334,11 +392,15 @@ describe('hub policy evaluator', () => {
     });
 
     expect(revoked.map((session) => session.sessionId)).toEqual(['s1']);
-    expect(envelopes.validate({ nodeId: 'node_a', sessionId: 's1', now: NOW })).toMatchObject({
+    expect(
+      envelopes.validate({ nodeId: 'node_a', sessionId: 's1', now: NOW })
+    ).toMatchObject({
       ok: false,
       error: { code: 'SESSION_REVOKED' },
     });
-    expect(envelopes.validate({ nodeId: 'node_b', sessionId: 's2', now: NOW })).toMatchObject({
+    expect(
+      envelopes.validate({ nodeId: 'node_b', sessionId: 's2', now: NOW })
+    ).toMatchObject({
       ok: true,
     });
     expect(auditEntries).toHaveLength(1);
@@ -352,49 +414,66 @@ describe('hub policy evaluator', () => {
   });
 
   it('maps read-only File RPC intents to read/list/tail capability bits', () => {
-    expect(requiredCapabilitiesForRpcIntent('rpc.fs.list')).toEqual(['rpc:fs:list']);
-    expect(requiredCapabilitiesForRpcIntent('rpc.fs.stat')).toEqual(['rpc:fs:read']);
-    expect(requiredCapabilitiesForRpcIntent('rpc.fs.read')).toEqual(['rpc:fs:read']);
-    expect(requiredCapabilitiesForRpcIntent('rpc.fs.tail')).toEqual(['rpc:fs:tail']);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.list')).toEqual([
+      'rpc:fs:list',
+    ]);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.stat')).toEqual([
+      'rpc:fs:read',
+    ]);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.read')).toEqual([
+      'rpc:fs:read',
+    ]);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.tail')).toEqual([
+      'rpc:fs:tail',
+    ]);
   });
 
-  it('separates tab intervention/control capabilities from file/git/exec powers', () => {
-    expect(requiredCapabilitiesForRpcIntent('sessions.interventions.read')).toEqual([
-      'session:read',
-      'tab:intervention:read',
-    ]);
-    expect(requiredCapabilitiesForRpcIntent('sessions.control.set-agent')).toEqual([
-      'session:attach',
-      'tab:mode:set-agent',
+  it('separates tab intervention capabilities from file/git/exec powers', () => {
+    expect(
+      requiredCapabilitiesForRpcIntent('sessions.interventions.read')
+    ).toEqual(['session:read', 'tab:intervention:read']);
+    expect(
+      requiredCapabilitiesForRpcIntent('sessions.control.set-agent')
+    ).toEqual(['rpc:unknown:sessions.control.set-agent']);
+    expect(
+      sessionCreateCapabilities({
+        sessionType: 'terminal',
+        controlMode: 'agent-driven',
+      })
+    ).toEqual(['session:create:terminal']);
+    expect(sessionCreateCapabilities({ sessionType: 'terminal' })).toEqual([
+      'session:create:terminal',
     ]);
     expect(
-      sessionCreateCapabilities({ sessionType: 'agent', controlMode: 'agent-driven' })
-    ).toEqual(['session:create:agent', 'tab:mode:set-agent']);
-    expect(sessionCreateCapabilities({ sessionType: 'agent' })).toEqual([
-      'session:create:agent',
-      'tab:mode:set-agent',
-    ]);
-    expect(
-      sessionCreateCapabilities({ sessionType: 'agent', controlMode: 'lol-nope' })
-    ).toEqual(['session:create:agent', 'tab:mode:set-agent']);
+      sessionCreateCapabilities({
+        sessionType: 'terminal',
+        controlMode: 'lol-nope',
+      })
+    ).toEqual(['session:create:terminal']);
     expect(
       evaluateHubPolicy(
         baseInput({
           requiredCapabilities: sessionCreateCapabilities({
-            sessionType: 'agent',
+            sessionType: 'terminal',
             controlMode: 'lol-nope',
           }),
         })
       )
     ).toMatchObject({
       decision: 'allow',
-      grantedBits: ['session:create:agent', 'tab:mode:set-agent'],
+      grantedBits: ['session:create:terminal'],
     });
     expect(
-      sessionCreateCapabilities({ sessionType: 'agent', controlMode: 'human-driven' })
-    ).toEqual(['session:create:agent']);
+      sessionCreateCapabilities({
+        sessionType: 'terminal',
+        controlMode: 'human-driven',
+      })
+    ).toEqual(['session:create:terminal']);
     expect(
-      sessionCreateCapabilities({ sessionType: 'terminal', controlMode: 'human-driven' })
+      sessionCreateCapabilities({
+        sessionType: 'terminal',
+        controlMode: 'human-driven',
+      })
     ).toEqual(['session:create:terminal']);
   });
 
@@ -421,7 +500,10 @@ describe('hub policy evaluator', () => {
     });
     expect(policyDecisionToRelayError(decision)).toMatchObject({
       code: 'UNAUTHORIZED',
-      details: { reasonCode: 'POLICY_CAPABILITY_DENIED', deniedBits: ['rpc:fs:read'] },
+      details: {
+        reasonCode: 'POLICY_CAPABILITY_DENIED',
+        deniedBits: ['rpc:fs:read'],
+      },
     });
   });
 
@@ -431,7 +513,11 @@ describe('hub policy evaluator', () => {
       baseInput({ node, requiredCapabilities: ['rpc:fs:write'] })
     );
     const audited = appendPolicyAudit(
-      { append: () => { throw new Error('disk full'); } },
+      {
+        append: () => {
+          throw new Error('disk full');
+        },
+      },
       decision
     );
     expect(audited).toMatchObject({

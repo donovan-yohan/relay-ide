@@ -28,7 +28,6 @@ import {
   type BuildEnvironmentOptionsInput,
 } from '../environment-options.js';
 import type { EnvironmentOption } from '../../../../shared/environment-option.js';
-import type { AgentType } from '../types.js';
 
 /**
  * Stable `generatedAt` used before any inventory snapshot has loaded. A fixed
@@ -39,8 +38,6 @@ import type { AgentType } from '../types.js';
 export const ENV_PICKER_FALLBACK_GENERATED_AT = '1970-01-01T00:00:00.000Z';
 
 export interface UseEnvPickerOptionsInput {
-  /** Agent the picker should gate capability-missing reasons against. */
-  selectedAgent: AgentType;
   /**
    * Fallback when inventory is empty / hasn't surfaced the active workspace —
    * typically the active workspace. `null`/`undefined` is fine: with no
@@ -55,19 +52,7 @@ export interface UseEnvPickerOptionsInput {
  * Derive the env-picker option list from the shared `['hub-nodes']` +
  * `['repo-inventory']` queries.
  *
- * #863 decision — `sessionType` stays fixed to `'terminal'` here even though the
- * launcher now supports agent launches. `buildEnvironmentOptions`' `sessionType`
- * only gates the node row's freshness/capability bits (shell + terminal backend
- * for `'terminal'`; additionally the selected agent's capability for
- * `'agent'`). Threading `'agent'` through would mark a fresh node `stale`
- * whenever the *currently-selected* agent is unavailable — which would also
- * block that same node's plain terminal launch, violating the acceptance
- * criterion that an unavailable agent must NOT block a shell. So node rows stay
- * terminal-gated (always launchable for a shell), and the per-option agent
- * provider choice is instead enforced fail-closed at the launch boundary in
- * `launchEnvironment`, reading `option.node.agentProviders` (populated by #861).
- * This keeps a single option list serving both launch kinds without a parallel
- * agent-gated derivation.
+ * The picker is terminal-only. Agent work opens in a channel or DM.
  */
 export function useEnvPickerOptions(
   input: UseEnvPickerOptionsInput
@@ -88,14 +73,13 @@ export function useEnvPickerOptions(
 
   const nodes = nodesQuery.data;
   const inventory = inventoryQuery.data;
-  const { selectedAgent, fallbackWorkspace, fallbackWorktreePath } = input;
+  const { fallbackWorkspace, fallbackWorktreePath } = input;
 
   return useMemo(
     () =>
       buildEnvironmentOptions({
         inventory: inventory ?? null,
         nodes: nodes ?? [],
-        selectedAgent,
         sessionType: 'terminal',
         ...(fallbackWorkspace !== undefined ? { fallbackWorkspace } : {}),
         ...(fallbackWorktreePath !== undefined ? { fallbackWorktreePath } : {}),
@@ -106,12 +90,6 @@ export function useEnvPickerOptions(
         // effect). See file header.
         generatedAt: inventory?.generatedAt ?? ENV_PICKER_FALLBACK_GENERATED_AT,
       }),
-    [
-      inventory,
-      nodes,
-      selectedAgent,
-      fallbackWorkspace,
-      fallbackWorktreePath,
-    ]
+    [inventory, nodes, fallbackWorkspace, fallbackWorktreePath]
   );
 }

@@ -9,12 +9,10 @@
  */
 
 import type {
-  AgentBlockDescriptor,
   ArtifactBlockDescriptor,
   CustomBlockDescriptor,
   FileBlockDescriptor,
   MarkdownBlockDescriptor,
-  PromptFanoutBlockDescriptor,
   TerminalBlockDescriptor,
   WorkbenchBlockDescriptor,
   WorkContextBlockDescriptor,
@@ -38,8 +36,6 @@ export interface BuildBlockDescriptorInput {
  *  - terminal: sessionRef with `nodeId`/`cwd` from the env; sessionId is
  *    deliberately left as `pending:<blockId>` so #629's launch hook can swap
  *    it for the real id once the session is created.
- *  - agent: actorRef placeholder pending the actor identity resolution that
- *    #629 / slice 5 owns.
  *  - markdown: empty content; the user can fill it in inline.
  *  - file/artifact/work-context/custom: minimal stubs — full wiring lives in
  *    the respective slices.
@@ -70,29 +66,6 @@ export function buildBlockDescriptor(
             cwd: request.environment.cwd,
           },
         },
-      };
-      return desc;
-    }
-    case 'agent': {
-      const desc: AgentBlockDescriptor = {
-        ...base,
-        kind: 'agent',
-        capabilityRequirements: ['session:create:agent'],
-        meta: {
-          actorRef: {
-            kind: 'actor',
-            id: `pending:${id}`,
-            displayName: request.title,
-          },
-        },
-      };
-      return desc;
-    }
-    case 'prompt-fanout': {
-      const desc: PromptFanoutBlockDescriptor = {
-        ...base,
-        kind: 'prompt-fanout',
-        meta: { fixture: 'all-success', dryRunOnly: true },
       };
       return desc;
     }

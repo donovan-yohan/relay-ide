@@ -552,12 +552,6 @@ This prints (human-readable):
 
 Exit code is 0 when `ok` is true (no `warn` or `error` degraded reasons and hub reachable if `--hub` supplied), 1 otherwise.
 
-### Optional rmux capability probe
-
-`relay-ide manifest` and node diagnostics may include an `rmux` capability record when an `rmux` binary or `RMUX_SDK_DAEMON_BINARY` helper override is visible on the node. This is diagnostic-only: Relay does not bundle rmux, install rmux, supervise an rmux daemon, or switch the terminal/session backend to rmux by default.
-
-If `RMUX_SDK_DAEMON_BINARY` is set, the probe executes that explicit helper override rather than silently falling back to a different `rmux` found on `PATH`. A bad override is reported as a non-fatal `probe-failed` capability so bootstrap and doctor output can show the configuration problem without blocking the existing Relay backend.
-
 ### Service logs by platform
 
 | Platform      | Command                                                                        |

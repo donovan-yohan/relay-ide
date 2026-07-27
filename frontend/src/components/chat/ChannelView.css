@@ -1,7 +1,4 @@
-/* Channel timeline view (#1166). A near-1:1 density/type match to ChatView.css
-   so the channel surface reads as the same product — same font sizes, spacing
-   scale, and tokens — over a different (multi-sender) data model. No new spacing
-   values; all pulled from DESIGN.md's 4px scale and existing tokens. */
+/* Channel timeline density and tokens follow DESIGN.md's 4px scale. */
 
 .ch-view {
   display: flex;

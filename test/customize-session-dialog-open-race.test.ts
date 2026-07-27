@@ -12,13 +12,10 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 const mocks = vi.hoisted(() => ({
   fetchRepoInventory: vi.fn(),
   fetchHubNodes: vi.fn(),
-  createAgentSession: vi.fn(),
+  createTerminalSession: vi.fn(),
   configState: {
-    defaultContinue: false,
-    defaultYolo: false,
     defaultAgent: 'claude',
     defaultNotifications: true,
-    claudeFullscreen: true,
     frameworks: [] as FrameworkInfo[],
     refreshConfig: vi.fn(),
     loadFrameworks: vi.fn(),
@@ -50,7 +47,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: mocks.createAgentSession,
+  createTerminalSession: mocks.createTerminalSession,
 }));
 
 vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
@@ -112,7 +109,6 @@ function framework(id: string): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: false,
     },
     eventSource: 'hooks',
     availability: { installed: true, path: `/usr/local/bin/${id}` },
@@ -290,7 +286,7 @@ async function renderAndOpen(
   mocks.fetchRepoInventory.mockResolvedValue(inventoryResponse);
   mocks.fetchHubNodes.mockResolvedValue(nodes);
   mocks.configState.refreshConfig.mockResolvedValue(undefined);
-  mocks.createAgentSession.mockResolvedValue({ session: { id: 'sess-1' } });
+  mocks.createTerminalSession.mockResolvedValue({ session: { id: 'sess-1' } });
 
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -323,6 +319,15 @@ async function flush() {
   });
 }
 
+async function selectTerminal(el: HTMLElement) {
+  await act(async () => {
+    const select = el.querySelector('#cs-launch-mode') as HTMLSelectElement;
+    select.value = 'terminal';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+}
+
 describe('CustomizeSessionDialog open races', () => {
   afterEach(() => {
     act(() => root?.unmount());
@@ -330,8 +335,6 @@ describe('CustomizeSessionDialog open races', () => {
     container = null;
     root = null;
     vi.clearAllMocks();
-    mocks.configState.defaultContinue = false;
-    mocks.configState.defaultYolo = false;
     mocks.configState.defaultAgent = 'claude';
     mocks.configState.frameworks = [framework('claude')];
   });
@@ -342,6 +345,7 @@ describe('CustomizeSessionDialog open races', () => {
       inventory('local'),
       [node()]
     );
+    await selectTerminal(el);
 
     await act(async () => {
       (
@@ -352,7 +356,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+    expect(mocks.createTerminalSession).toHaveBeenCalledWith(
       expect.objectContaining({
         nodeId: 'local',
         repoPath: '/tmp/local-one',
@@ -374,6 +378,7 @@ describe('CustomizeSessionDialog open races', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     await act(async () => {
       const select = el.querySelector('#cs-node') as HTMLSelectElement;
@@ -391,7 +396,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+    expect(mocks.createTerminalSession).toHaveBeenCalledWith(
       expect.objectContaining({
         nodeId: 'remote',
         cwd: '/home/relay',
@@ -413,6 +418,7 @@ describe('CustomizeSessionDialog open races', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     await act(async () => {
       const select = el.querySelector('#cs-node') as HTMLSelectElement;
@@ -430,7 +436,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+    expect(mocks.createTerminalSession).toHaveBeenCalledWith(
       expect.objectContaining({
         nodeId: 'remote',
         cwd: '/home/relay',
@@ -451,6 +457,7 @@ describe('CustomizeSessionDialog open races', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     const cwdInput = el.querySelector('#cs-remote-cwd') as HTMLInputElement;
     expect(cwdInput).toBeTruthy();
@@ -465,7 +472,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    const payload = mocks.createTerminalSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
       nodeId: 'remote',
       cwd: '/home/relay',
@@ -488,6 +495,7 @@ describe('CustomizeSessionDialog open races', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     await act(async () => {
       const select = el.querySelector('#cs-node') as HTMLSelectElement;
@@ -509,7 +517,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    const payload = mocks.createTerminalSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
       nodeId: 'remote',
       cwd: '/home/relay',
@@ -532,6 +540,7 @@ describe('CustomizeSessionDialog open races', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     await flush();
 
@@ -547,7 +556,7 @@ describe('CustomizeSessionDialog open races', () => {
     });
     await flush();
 
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
   });
 
   it('ignores stale inventory and config from an earlier overlapping open call', async () => {
@@ -604,6 +613,7 @@ describe('CustomizeSessionDialog open races', () => {
       await secondOpen;
     });
     await flush();
+    await selectTerminal(container);
 
     expect(container.textContent).toContain('latest workspace');
     expect(container.textContent).toContain(

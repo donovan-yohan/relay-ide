@@ -38,11 +38,9 @@ import './blocks/custom-templates.css';
 const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
   'session:read': 'read session list and metadata',
   'session:create:terminal': 'create new terminal sessions',
-  'session:create:agent': 'create new agent sessions',
   'session:attach': 'attach to existing sessions',
   'session:control:kill': 'terminate sessions',
-  'tab:mode:set-agent': 'switch tabs to agent-driven mode',
-  'tab:intervention:read': 'read human interventions on agent tabs',
+  'tab:intervention:read': 'read terminal intervention history',
   'rpc:fs:list': 'list files and directories',
   'rpc:fs:read': 'read file contents',
   'rpc:fs:tail': 'tail file contents in real-time',

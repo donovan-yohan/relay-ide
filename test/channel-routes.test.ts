@@ -24,7 +24,7 @@ import {
   type ChannelSocket,
 } from '../server/channel-hub.js';
 import {
-  authenticatedSourceSessionId,
+  authenticatedSourceRuntimeId,
   createChannelChatRouter,
 } from '../server/channel-chat-router.js';
 import {
@@ -480,32 +480,56 @@ describe('channel routes — attribution', () => {
     });
   });
 
-  it('attributes persistent-orchestrator posts only to a matching durable orchestrator session', () => {
-    const roles: Readonly<Record<string, string>> = {
-      'session:orchestrator': 'orchestrator',
-      'session:worker': 'implementer',
+  it('attributes persistent-orchestrator posts only to its scoped private runtime and stable profile actor', () => {
+    const runtimes: Readonly<
+      Record<
+        string,
+        {
+          profileActorId: string;
+          providerId: string;
+          role: string;
+          status: string;
+        }
+      >
+    > = {
+      'runtime:orchestrator': {
+        profileActorId: 'agent-profile:claude:orchestrator',
+        providerId: 'claude',
+        role: 'orchestrator',
+        status: 'active',
+      },
+      'runtime:worker': {
+        profileActorId: 'agent-profile:claude:worker',
+        providerId: 'claude',
+        role: 'implementer',
+        status: 'active',
+      },
     };
-    const getSession = (sessionId: string) => {
-      const role = roles[sessionId];
-      return role ? { role, status: 'active' } : undefined;
-    };
-    const credential = (actorId: string) =>
+    const getRuntime = (runtimeId: string) => runtimes[runtimeId];
+    const credential = (actorId: string, runtimeId: string) =>
       ({
         actor: { type: 'agent', id: actorId },
+        scope: { sessionIds: [runtimeId] },
         metadata: { reason: 'persistent-orchestrator' },
       }) as unknown as ScopedActorCredentialRecord;
 
     expect(
-      authenticatedSourceSessionId(
-        credential('session:orchestrator'),
-        getSession
+      authenticatedSourceRuntimeId(
+        credential('agent-profile:claude:orchestrator', 'runtime:orchestrator'),
+        getRuntime
       )
-    ).toBe('session:orchestrator');
+    ).toBe('runtime:orchestrator');
     expect(
-      authenticatedSourceSessionId(credential('session:worker'), getSession)
+      authenticatedSourceRuntimeId(
+        credential('agent-profile:claude:worker', 'runtime:worker'),
+        getRuntime
+      )
     ).toBeUndefined();
     expect(
-      authenticatedSourceSessionId(credential('session:stale'), getSession)
+      authenticatedSourceRuntimeId(
+        credential('agent-profile:claude:stale', 'runtime:stale'),
+        getRuntime
+      )
     ).toBeUndefined();
   });
 });
@@ -1195,13 +1219,13 @@ describe('channel routes — orchestrator designation (#1259)', () => {
       binder: {
         ensureOrchestrator: async (channelId: string, framework: string) => {
           calls.push({ channelId, framework });
-          return { sessionId: 'orch-1', status: 'idle' } as never;
+          return { runtimeId: 'orch-1', status: 'idle' } as never;
         },
       },
     });
     const res = await req<{
       ok: boolean;
-      orchestrator: { sessionId: string; status: string; framework: string };
+      orchestrator: { runtimeId: string; status: string; framework: string };
     }>({
       port: h.port,
       method: 'POST',
@@ -1210,7 +1234,7 @@ describe('channel routes — orchestrator designation (#1259)', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.orchestrator).toEqual({
-      sessionId: 'orch-1',
+      runtimeId: 'orch-1',
       status: 'idle',
       framework: 'claude',
     });
@@ -1223,7 +1247,7 @@ describe('channel routes — orchestrator designation (#1259)', () => {
       binder: {
         ensureOrchestrator: async (_channelId: string, framework: string) => {
           seen.push(framework);
-          return { sessionId: 'orch-2', status: 'idle' } as never;
+          return { runtimeId: 'orch-2', status: 'idle' } as never;
         },
       },
     });

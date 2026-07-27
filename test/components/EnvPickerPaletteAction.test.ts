@@ -103,35 +103,6 @@ function offlineOption(
   });
 }
 
-// #863: a fresh option whose node advertises a mix of available + degraded /
-// unavailable / unknown agent providers. The launch-target chooser renders
-// each, gates selection on availability, and never lets an unavailable
-// provider block the terminal launch on the same node.
-function providerOption(
-  overrides: Partial<EnvironmentOption> = {}
-): EnvironmentOption {
-  return freshOption({
-    id: 'opt-providers',
-    node: {
-      nodeId: 'local',
-      kind: 'local',
-      displayName: 'this host',
-      online: true,
-      agentProviders: [
-        { id: 'claude', availability: 'available' },
-        {
-          id: 'codex',
-          availability: 'unavailable',
-          reason: 'cli not installed',
-        },
-        { id: 'opencode', availability: 'degraded', authStatus: 'logged out' },
-        { id: 'hermes', availability: 'unknown' },
-      ],
-    },
-    ...overrides,
-  });
-}
-
 describe('sessionStartWorkInEnv action meta', () => {
   it('registers and is discoverable by the palette search terms', () => {
     _resetForTesting();
@@ -188,9 +159,7 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
     container.remove();
   });
 
-  async function render(
-    props: React.ComponentProps<typeof EnvPickerDialog>
-  ) {
+  async function render(props: React.ComponentProps<typeof EnvPickerDialog>) {
     await act(async () => {
       root.render(React.createElement(EnvPickerDialog, props));
     });
@@ -247,10 +216,12 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
 
   it('selecting a fresh option invokes the launch hook with typed env IDs', async () => {
     const fresh = freshOption({ id: 'opt-launch' });
-    const launch = vi.fn(async (): Promise<LaunchEnvironmentResult> => ({
-      kind: 'launched',
-      result: { session: undefined, error: null },
-    }));
+    const launch = vi.fn(
+      async (): Promise<LaunchEnvironmentResult> => ({
+        kind: 'launched',
+        result: { session: undefined, error: null },
+      })
+    );
     const onClose = vi.fn();
     const onLaunched = vi.fn();
     await render({
@@ -282,10 +253,12 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
 
   it('blocks launch on a stale option and surfaces the typed reason', async () => {
     const stale = staleOption({ id: 'opt-stale-block' });
-    const launch = vi.fn(async (): Promise<LaunchEnvironmentResult> => ({
-      kind: 'launched',
-      result: { session: undefined, error: null },
-    }));
+    const launch = vi.fn(
+      async (): Promise<LaunchEnvironmentResult> => ({
+        kind: 'launched',
+        result: { session: undefined, error: null },
+      })
+    );
     const onClose = vi.fn();
     await render({
       open: true,
@@ -440,292 +413,5 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
 
 // #863 — agent/provider launch-target chooser. Verifies that the dialog
 // surfaces per-node provider choices with availability states + reasons,
-// disables non-available providers, launches with `{ type: 'agent', agent }`
+// disables non-available providers and opens the selected provider chat
 // on selection, and NEVER lets an unavailable provider block the always-
-// enabled terminal path (preselected — zero extra clicks).
-describe('<EnvPickerDialog /> launch-target chooser (#863)', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  async function render(props: React.ComponentProps<typeof EnvPickerDialog>) {
-    await act(async () => {
-      root.render(React.createElement(EnvPickerDialog, props));
-    });
-  }
-
-  const okLaunch = () =>
-    vi.fn(async (): Promise<LaunchEnvironmentResult> => ({
-      kind: 'launched',
-      result: { session: undefined, error: null },
-    }));
-
-  function targetButtons(): HTMLButtonElement[] {
-    return Array.from(
-      container.querySelectorAll(
-        '[data-testid="env-picker-dialog-target-agent"], [data-testid="env-picker-dialog-target-terminal"]'
-      )
-    ) as HTMLButtonElement[];
-  }
-
-  function agentButton(agent: string): HTMLButtonElement {
-    return container.querySelector(
-      `[data-testid="env-picker-dialog-target-agent"][data-agent="${agent}"]`
-    ) as HTMLButtonElement;
-  }
-
-  it('renders the provider list with availability states + reasons', async () => {
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose: vi.fn(),
-    });
-    // terminal + 4 providers = 5 target buttons.
-    expect(targetButtons()).toHaveLength(5);
-
-    const claude = agentButton('claude');
-    expect(claude).toBeTruthy();
-    expect(claude.getAttribute('data-availability')).toBe('available');
-    expect(claude.disabled).toBe(false);
-
-    // Each non-available provider surfaces a lowercase reason.
-    const codex = agentButton('codex');
-    expect(codex.getAttribute('data-availability')).toBe('unavailable');
-    expect(codex.textContent).toMatch(/cli not installed/i);
-
-    const opencode = agentButton('opencode');
-    // degraded provider surfaces its auth status in the reason.
-    expect(opencode.textContent).toMatch(/logged out/i);
-
-    const hermes = agentButton('hermes');
-    expect(hermes.getAttribute('data-availability')).toBe('unknown');
-    // unknown falls back to a typed reason rather than a silent disable.
-    expect(hermes.textContent).toMatch(/unknown/i);
-
-    // Reasons are lowercase per DESIGN.md.
-    const reason = container.querySelector(
-      '[data-testid="env-picker-dialog-target-reason"]'
-    );
-    expect(reason?.textContent).toBe(reason?.textContent?.toLowerCase());
-  });
-
-  it('disables degraded / unavailable / unknown providers; enables available', async () => {
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose: vi.fn(),
-    });
-    expect(agentButton('claude').disabled).toBe(false);
-    expect(agentButton('codex').disabled).toBe(true);
-    expect(agentButton('opencode').disabled).toBe(true);
-    expect(agentButton('hermes').disabled).toBe(true);
-  });
-
-  it('terminal is preselected and launches with { type: terminal } on row click (zero extra clicks)', async () => {
-    const launch = okLaunch();
-    const onClose = vi.fn();
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      launch,
-    });
-    // terminal target carries the persistent "selected" mark from the start.
-    const terminal = container.querySelector(
-      '[data-testid="env-picker-dialog-target-terminal"]'
-    ) as HTMLButtonElement;
-    expect(terminal.getAttribute('aria-pressed')).toBe('true');
-
-    // Clicking the option ROW (not a provider) launches a plain terminal —
-    // the #862 path is unchanged and takes no extra clicks.
-    const row = container.querySelector(
-      '[data-option-id="opt-providers"]'
-    ) as HTMLElement;
-    await act(async () => {
-      row.click();
-    });
-    expect(launch).toHaveBeenCalledTimes(1);
-    expect(launch.mock.calls[0]?.[1]).toEqual({ type: 'terminal' });
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('selecting an available provider launches with { type: agent, agent }', async () => {
-    const launch = okLaunch();
-    const onClose = vi.fn();
-    const onLaunched = vi.fn();
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      onLaunched,
-      launch,
-    });
-    await act(async () => {
-      agentButton('claude').click();
-    });
-    expect(launch).toHaveBeenCalledTimes(1);
-    const launchedOption = launch.mock.calls[0]?.[0] as EnvironmentOption;
-    expect(launchedOption.id).toBe('opt-providers');
-    // The chosen provider rides the launch overrides — the same typed contract
-    // the CLI/action manifest uses (#849), never a UI-only path.
-    expect(launch.mock.calls[0]?.[1]).toEqual({
-      type: 'agent',
-      agent: 'claude',
-    });
-    expect(onLaunched).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('clicking a disabled provider does not launch (native disabled button)', async () => {
-    const launch = okLaunch();
-    const onClose = vi.fn();
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      launch,
-    });
-    // A disabled <button> swallows clicks; the launch hook must never fire.
-    await act(async () => {
-      agentButton('codex').click();
-    });
-    expect(launch).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('unavailable providers do not block terminal launch on the same node', async () => {
-    const launch = okLaunch();
-    const onClose = vi.fn();
-    // A node whose ONLY providers are unavailable must still terminal-launch.
-    const option = providerOption({
-      id: 'opt-all-unavailable',
-      node: {
-        nodeId: 'local',
-        kind: 'local',
-        displayName: 'this host',
-        online: true,
-        agentProviders: [
-          { id: 'codex', availability: 'unavailable', reason: 'cli missing' },
-        ],
-      },
-    });
-    await render({
-      open: true,
-      options: [option],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      launch,
-    });
-    const terminal = container.querySelector(
-      '[data-testid="env-picker-dialog-target-terminal"]'
-    ) as HTMLButtonElement;
-    expect(terminal.disabled).toBe(false);
-    await act(async () => {
-      terminal.click();
-    });
-    expect(launch).toHaveBeenCalledTimes(1);
-    expect(launch.mock.calls[0]?.[1]).toEqual({ type: 'terminal' });
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('a node with zero providers is still terminal-launchable (chooser shows only terminal)', async () => {
-    const launch = okLaunch();
-    const onClose = vi.fn();
-    // freshOption() has no agentProviders at all.
-    await render({
-      open: true,
-      options: [freshOption({ id: 'opt-no-providers' })],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      launch,
-    });
-    const buttons = targetButtons();
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0]?.getAttribute('data-target')).toBe('terminal');
-
-    const row = container.querySelector(
-      '[data-option-id="opt-no-providers"]'
-    ) as HTMLElement;
-    await act(async () => {
-      row.click();
-    });
-    expect(launch).toHaveBeenCalledTimes(1);
-    expect(launch.mock.calls[0]?.[1]).toEqual({ type: 'terminal' });
-  });
-
-  it('surfaces provider-specific copy (not stale copy) when the launch hook returns provider-unavailable', async () => {
-    // Defense-in-depth path: if the dialog's own provider gate and the launch
-    // hook desync (race, injected hook), the hook can still return a typed
-    // `provider-unavailable` block on a FRESH node. The dialog MUST render the
-    // provider reason — never the freshness fallback, which would mislabel a
-    // fresh node as "stale".
-    const launch = vi.fn(
-      async (): Promise<LaunchEnvironmentResult> => ({
-        kind: 'blocked',
-        reason: {
-          code: 'provider-unavailable',
-          agent: 'claude',
-          availability: 'unavailable',
-          providerReason: 'cli not installed',
-          authStatus: 'logged out',
-        },
-      })
-    );
-    const onClose = vi.fn();
-    const onLaunched = vi.fn();
-    await render({
-      open: true,
-      options: [providerOption()],
-      launchOverrides: { type: 'terminal' },
-      onClose,
-      onLaunched,
-      launch,
-    });
-    await act(async () => {
-      agentButton('claude').click();
-    });
-    expect(launch).toHaveBeenCalledTimes(1);
-    expect(onLaunched).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-    const block = container.querySelector(
-      '[data-testid="env-picker-dialog-block-reason"]'
-    );
-    // Provider-specific copy: names the agent + its reason, NOT "stale".
-    expect(block?.textContent).toMatch(/claude/i);
-    expect(block?.textContent).toMatch(/unavailable/i);
-    expect(block?.textContent).toMatch(/cli not installed/i);
-    expect(block?.textContent).toMatch(/logged out/i);
-    expect(block?.textContent).not.toMatch(/stale/i);
-    // Lowercase per DESIGN.md.
-    expect(block?.textContent).toBe(block?.textContent?.toLowerCase());
-  });
-
-  it('agent mode title names the provider once one is chosen', async () => {
-    await render({
-      open: true,
-      options: [providerOption()],
-      // An agent-first entry point threads the agent override; the title and
-      // chooser open pre-selected on that provider.
-      launchOverrides: { type: 'agent', agent: 'claude' },
-      onClose: vi.fn(),
-    });
-    const title = container.querySelector('.env-picker-dialog__title');
-    expect(title?.textContent).toMatch(/start claude in environment/i);
-    expect(agentButton('claude').getAttribute('aria-pressed')).toBe('true');
-  });
-});

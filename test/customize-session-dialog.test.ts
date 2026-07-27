@@ -2,12 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildEnvironmentPickerModel,
-  defaultSessionModeForAgent,
-  getSessionModeOptions,
-  getSessionModeOptionsForType,
   isFrameworkAvailable,
-  isFrameworkWebAvailable,
-  nodeAgentBlockReason,
   nodeShellBlockReason,
   selectLaunchAgent,
 } from '../frontend/src/components/dialogs/CustomizeSessionDialog.js';
@@ -16,9 +11,6 @@ import type { AggregatedRepoInventoryResponse } from '../shared/repo-inventory.j
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 
 function framework(id: string, installed = true): FrameworkInfo {
-  // Mirrors BUILTIN_FRAMEWORKS in server/types.ts. Codex web sessions are
-  // advertised as of #1169 (closes #301). Claude stays absent here so this
-  // frontend guard keeps exercising the "only tui" branch for one provider.
   return {
     id,
     displayName: id,
@@ -28,7 +20,6 @@ function framework(id: string, installed = true): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: ['opencode', 'hermes', 'codex'].includes(id),
     },
     eventSource: 'hooks',
     availability: installed
@@ -174,76 +165,7 @@ function inventory(): AggregatedRepoInventoryResponse {
   };
 }
 
-describe('CustomizeSessionDialog session mode options', () => {
-  it('shows tui and web for agents with web-session adapters', () => {
-    const frameworks = [framework('opencode'), framework('hermes')];
-
-    expect(getSessionModeOptions(frameworks, 'opencode')).toEqual([
-      { value: 'pty', label: 'tui' },
-      { value: 'web', label: 'web' },
-    ]);
-  });
-
-  it('shows only tui for agents without web-session adapters', () => {
-    expect(getSessionModeOptions([framework('custom')], 'custom')).toEqual([
-      { value: 'pty', label: 'tui' },
-    ]);
-  });
-
-  // #1169 (closes #301): Codex web sessions are advertised, so the session-mode
-  // dropdown now surfaces both tui and web when codex is selected.
-  it('shows tui and web for codex (web mode advertised, #1169 closes #301)', () => {
-    expect(getSessionModeOptions([framework('codex')], 'codex')).toEqual([
-      { value: 'pty', label: 'tui' },
-      { value: 'web', label: 'web' },
-    ]);
-  });
-
-  // Regression guard for issue #300: Claude web sessions are de-advertised
-  // pending end-to-end verification. The session-mode dropdown must NOT
-  // surface a "web" option when Claude is selected.
-  it('shows only tui for claude (web de-advertised pending issue #300)', () => {
-    expect(getSessionModeOptions([framework('claude')], 'claude')).toEqual([
-      { value: 'pty', label: 'tui' },
-    ]);
-  });
-
-  it('defaults hermes to web and other agents to tui', () => {
-    expect(defaultSessionModeForAgent([framework('hermes')], 'hermes')).toBe(
-      'web'
-    );
-    expect(defaultSessionModeForAgent([framework('claude')], 'claude')).toBe(
-      'pty'
-    );
-    expect(defaultSessionModeForAgent([framework('codex')], 'codex')).toBe(
-      'pty'
-    );
-    expect(
-      defaultSessionModeForAgent([framework('opencode')], 'opencode')
-    ).toBe('pty');
-  });
-
-  it('disables web mode when an installed agent runtime is unavailable', () => {
-    const hermes = framework('hermes');
-    hermes.webAvailability = {
-      available: false,
-      reason: 'Hermes API server is not reachable',
-    };
-
-    expect(isFrameworkAvailable(hermes)).toBe(true);
-    expect(isFrameworkWebAvailable(hermes)).toBe(false);
-    expect(getSessionModeOptions([hermes], 'hermes')).toEqual([
-      { value: 'pty', label: 'tui' },
-      {
-        value: 'web',
-        label: 'web (unavailable)',
-        disabled: true,
-        reason: 'Hermes API server is not reachable',
-      },
-    ]);
-    expect(defaultSessionModeForAgent([hermes], 'hermes')).toBe('pty');
-  });
-
+describe('CustomizeSessionDialog agent availability', () => {
   it('treats missing legacy availability as available', () => {
     const legacy = framework('claude');
     delete legacy.availability;
@@ -263,7 +185,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
     const model = buildEnvironmentPickerModel({
       inventory: null,
       nodes: [],
-      selectedAgent: 'claude',
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -301,7 +222,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
     const model = buildEnvironmentPickerModel({
       inventory: repoInventory,
       nodes: [node({ status: 'offline' })],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'local',
       selectedCheckoutId: null,
@@ -322,7 +242,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
     const model = buildEnvironmentPickerModel({
       inventory: inventory(),
       nodes: [node(), node({ nodeId: 'linux', displayName: 'linux lab' })],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
       selectedCheckoutId:
@@ -358,7 +277,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
         node(),
         node({ nodeId: 'linux', displayName: 'linux lab', status: 'offline' }),
       ],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
       selectedCheckoutId: null,
@@ -375,7 +293,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
     expect(model.resolved.nodeId).toBe('local');
   });
 
-  it('disables nodes missing the selected agent capability', () => {
+  it('does not gate terminal nodes on provider availability', () => {
     const model = buildEnvironmentPickerModel({
       inventory: inventory(),
       nodes: [
@@ -389,7 +307,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
       selectedCheckoutId: null,
@@ -399,11 +316,8 @@ describe('CustomizeSessionDialog environment picker model', () => {
 
     expect(
       model.nodeChoices.find((choice) => choice.value === 'linux')
-    ).toMatchObject({
-      disabled: true,
-      reason: 'claude unavailable on linux lab',
-    });
-    expect(model.resolved.nodeId).toBe('local');
+    ).toMatchObject({ value: 'linux', label: 'linux lab' });
+    expect(model.resolved.nodeId).toBe('linux');
   });
 
   it('includes a paired node without repo inventory as a remote target', () => {
@@ -421,7 +335,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
         node(),
         node({ nodeId: 'remote-free', displayName: 'remote free' }),
       ],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/example/tools',
       selectedNodeId: 'remote-free',
       selectedCheckoutId: null,
@@ -458,7 +371,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
     const model = buildEnvironmentPickerModel({
       inventory: repoInventory,
       nodes: [node({ nodeId: 'linux', displayName: 'linux lab' })],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -490,7 +402,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
       nodes: [
         node({ nodeId: 'linux', displayName: 'linux lab', status: 'offline' }),
       ],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
       selectedCheckoutId: null,
@@ -533,7 +444,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
     const model = buildEnvironmentPickerModel({
       inventory: repoInventory,
       nodes: [node(), node({ nodeId: 'linux', displayName: 'linux lab' })],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'local',
       selectedCheckoutId:
@@ -574,7 +484,6 @@ describe('CustomizeSessionDialog environment picker model', () => {
             },
           }),
         ],
-        selectedAgent: 'claude',
         selectedGroupId: 'github.com/donovan-yohan/relay-ide',
         selectedNodeId: 'linux',
         selectedCheckoutId: null,
@@ -606,13 +515,10 @@ describe('terminal vs agent node eligibility', () => {
     });
   }
 
-  it('nodeAgentBlockReason returns reason for missing agent; nodeShellBlockReason returns null when shell plus terminal backend are available', () => {
+  it('nodeShellBlockReason ignores provider availability when terminal capabilities are available', () => {
     const hermesMissingNode = remoteNode();
 
     expect(nodeShellBlockReason(hermesMissingNode)).toBeNull();
-    expect(nodeAgentBlockReason(hermesMissingNode, 'hermes')).toBe(
-      'hermes capability unknown on remote server'
-    );
   });
 
   it('buildEnvironmentPickerModel enables node in terminal mode when agent is missing but shell plus terminal backend are available', () => {
@@ -647,35 +553,14 @@ describe('terminal vs agent node eligibility', () => {
       },
     ];
 
-    const agentModel = buildEnvironmentPickerModel({
-      inventory: repoInventory,
-      nodes: [node(), hermesMissingNode],
-      selectedAgent: 'hermes',
-      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
-      selectedNodeId: 'remote',
-      selectedCheckoutId: null,
-      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
-      fallbackWorktreePath: null,
-      sessionType: 'agent',
-    });
-
     const terminalModel = buildEnvironmentPickerModel({
       inventory: repoInventory,
       nodes: [node(), hermesMissingNode],
-      selectedAgent: 'hermes',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'remote',
       selectedCheckoutId: null,
       fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
       fallbackWorktreePath: null,
-      sessionType: 'terminal',
-    });
-
-    expect(
-      agentModel.nodeChoices.find((c) => c.value === 'remote')
-    ).toMatchObject({
-      disabled: true,
-      reason: 'hermes capability unknown on remote server',
     });
 
     const terminalRemoteChoice = terminalModel.nodeChoices.find(
@@ -696,12 +581,9 @@ describe('terminal vs agent node eligibility', () => {
     });
 
     expect(nodeShellBlockReason(tmuxDegradedNode)).toBeNull();
-    expect(nodeAgentBlockReason(tmuxDegradedNode, 'hermes')).toBe(
-      'hermes capability unknown on remote server'
-    );
   });
 
-  it('disables node in both modes when no terminal backend is available', () => {
+  it('disables node when no terminal backend is available', () => {
     const noBackendNode = remoteNode({
       capabilities: {
         ...remoteNode().capabilities,
@@ -714,19 +596,15 @@ describe('terminal vs agent node eligibility', () => {
     expect(nodeShellBlockReason(noBackendNode)).toBe(
       'terminal backend unavailable on remote server (relay-pty unavailable)'
     );
-    expect(nodeAgentBlockReason(noBackendNode, 'hermes')).toBe(
-      'terminal backend unavailable on remote server (relay-pty unavailable)'
-    );
   });
 
-  it('disables node in both modes when node is offline', () => {
+  it('disables node when node is offline', () => {
     const offlineNode = remoteNode({ status: 'offline' });
 
     expect(nodeShellBlockReason(offlineNode)).toBe('node is offline');
-    expect(nodeAgentBlockReason(offlineNode, 'hermes')).toBe('node is offline');
   });
 
-  it('blocks version-skew node in both terminal and agent mode', () => {
+  it('blocks a version-skew terminal node', () => {
     const skewNode = remoteNode({
       version: {
         state: 'version-skew',
@@ -736,12 +614,9 @@ describe('terminal vs agent node eligibility', () => {
     });
 
     expect(nodeShellBlockReason(skewNode)).toBe('node has version skew');
-    expect(nodeAgentBlockReason(skewNode, 'hermes')).toBe(
-      'node has version skew'
-    );
   });
 
-  it('blocks incompatible node in both terminal and agent mode', () => {
+  it('blocks an incompatible terminal node', () => {
     const incompatNode = remoteNode({
       version: {
         state: 'incompatible',
@@ -753,9 +628,6 @@ describe('terminal vs agent node eligibility', () => {
     expect(nodeShellBlockReason(incompatNode)).toBe(
       'node protocol is incompatible'
     );
-    expect(nodeAgentBlockReason(incompatNode, 'hermes')).toBe(
-      'node protocol is incompatible'
-    );
   });
 });
 
@@ -764,7 +636,6 @@ describe('directory-kind workspace support', () => {
     const model = buildEnvironmentPickerModel({
       inventory: null,
       nodes: [],
-      selectedAgent: 'claude',
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -787,7 +658,6 @@ describe('directory-kind workspace support', () => {
     const model = buildEnvironmentPickerModel({
       inventory: null,
       nodes: [],
-      selectedAgent: 'claude',
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -806,7 +676,6 @@ describe('directory-kind workspace support', () => {
     const model = buildEnvironmentPickerModel({
       inventory: null,
       nodes: [],
-      selectedAgent: 'claude',
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -826,7 +695,6 @@ describe('directory-kind workspace support', () => {
     const model = buildEnvironmentPickerModel({
       inventory: null,
       nodes: [],
-      selectedAgent: 'claude',
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
@@ -839,30 +707,6 @@ describe('directory-kind workspace support', () => {
 });
 
 describe('agent/terminal mode toggle', () => {
-  it('terminal mode forces session mode to pty/shell only', () => {
-    const hermesFrameworks = [framework('hermes')];
-    const options = getSessionModeOptionsForType(
-      hermesFrameworks,
-      'hermes',
-      'terminal'
-    );
-
-    expect(options).toHaveLength(1);
-    expect(options[0]).toMatchObject({ value: 'pty', label: 'shell' });
-  });
-
-  it('agent mode returns normal session mode options', () => {
-    const hermesFrameworks = [framework('hermes')];
-    const options = getSessionModeOptionsForType(
-      hermesFrameworks,
-      'hermes',
-      'agent'
-    );
-
-    expect(options.length).toBeGreaterThan(1);
-    expect(options.some((o) => o.value === 'web')).toBe(true);
-  });
-
   it('terminal mode does not block nodes missing agent capability (buildEnvironmentPickerModel)', () => {
     const repoInventory = inventory();
     const noAgentNode = node({
@@ -905,13 +749,11 @@ describe('agent/terminal mode toggle', () => {
     const terminalModel = buildEnvironmentPickerModel({
       inventory: repoInventory,
       nodes: [node(), noAgentNode],
-      selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'no-agent',
       selectedCheckoutId: null,
       fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
       fallbackWorktreePath: null,
-      sessionType: 'terminal',
     });
 
     const noAgentChoice = terminalModel.nodeChoices.find(

@@ -16,7 +16,7 @@
 ## Reproduction Steps
 
 1. Open relay-ide on an Android mobile device (Chrome 121+)
-2. Navigate to a Claude Code session
+2. Navigate to a terminal running Claude Code
 3. Observe the terminal area — black screen with only cursor visible
 
 ## Root Cause

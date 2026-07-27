@@ -46,16 +46,14 @@ import type {
 } from '../../frontend/src/lib/types.js';
 import type {
   ControlActor,
-  TabControlEvent,
-  TabModeChangedEvent,
+  TabInterventionEvent,
 } from '../../shared/control-state.js';
 import { useSessionsStore } from '../../frontend/src/lib/stores/sessions.js';
 import { useUnreadStore } from '../../frontend/src/lib/stores/unread.js';
 
 const nodeASession: SessionSummary = {
   id: 'same-local-id',
-  type: 'agent',
-  agent: 'claude',
+  type: 'terminal',
   mode: 'pty',
   repoName: 'relay-ide',
   repoPath: '/node-a/relay-ide',
@@ -68,7 +66,7 @@ const nodeASession: SessionSummary = {
   idle: false,
   nodeId: 'node-a',
   globalSessionId: 'node-a:same-local-id',
-  agentState: 'processing',
+  activityState: 'processing',
 };
 
 const nodeBSession: SessionSummary = {
@@ -80,14 +78,6 @@ const nodeBSession: SessionSummary = {
   globalSessionId: 'node-b:same-local-id',
 };
 
-const codexActor: ControlActor = {
-  kind: 'agent',
-  id: 'codex',
-  displayName: 'Codex',
-  nodeId: 'node-b',
-  sessionId: 'same-local-id',
-};
-
 const browserActor: ControlActor = {
   kind: 'human',
   id: 'browser-user',
@@ -96,12 +86,10 @@ const browserActor: ControlActor = {
   sessionId: 'same-local-id',
 };
 
-function tabControlEvent(
-  overrides: Partial<TabModeChangedEvent> & Pick<TabModeChangedEvent, 'controlMode'>
-): TabControlEvent {
+function tabInterventionEvent(): TabInterventionEvent {
   return {
-    eventId: 'evt-control-1',
-    type: 'tab.mode-changed',
+    eventId: 'evt-intervention-1',
+    type: 'tab.intervention',
     occurredAt: '2026-05-11T00:00:01.000Z',
     identity: {
       nodeId: 'node-b',
@@ -114,23 +102,28 @@ function tabControlEvent(
       branchName: 'main',
     },
     actor: browserActor,
-    previousControlMode: 'agent-driven',
-    ...overrides,
-  };
-}
-
-function controlReadySession(session: SessionSummary): SessionSummary {
-  return {
-    ...session,
-    controlMode: 'agent-driven',
-    activeActors: [codexActor],
-    activeWorker: codexActor,
-    controlFreshness: 'fresh',
-    controlReason: 'boot',
-    lastInterventionAt: null,
-    lastInterventionBy: null,
-    lastInterventionEventId: null,
-  };
+    intervention: {
+      id: 'evt-intervention-1',
+      sessionId: 'same-local-id',
+      tabId: 'same-local-id',
+      nodeId: 'node-b',
+      globalSessionId: 'node-b:same-local-id',
+      cwd: '/node-b/relay-ide',
+      timestamp: '2026-05-11T00:00:01.000Z',
+      author: browserActor,
+      source: 'pty-input',
+      kind: 'human-input',
+      redaction: {
+        redacted: true,
+        byteCount: 3,
+        charCount: 3,
+        lineCount: 1,
+        hashSha256: 'hash',
+        classes: ['input'],
+      },
+      modeBefore: 'human-driven',
+    },
+  } as unknown as TabInterventionEvent;
 }
 
 function sidebarItem(session: SessionSummary): SidebarItem {
@@ -170,86 +163,27 @@ describe('sessions store node-scoped events', () => {
     });
   });
 
-  it('uses effective pushed actors instead of the triggering actor for co-driven events', () => {
-    useSessionsStore.setState({
-      sessions: [nodeASession, controlReadySession(nodeBSession)],
+  it('stores intervention history only on the matching scoped session', () => {
+    useSessionsStore.getState().handleTabControlEvent(tabInterventionEvent());
+
+    const sessions = useSessionsStore.getState().sessions;
+    expect(
+      sessions.find(
+        (session) => session.globalSessionId === 'node-a:same-local-id'
+      )?.lastInterventionEventId
+    ).toBeUndefined();
+    expect(
+      sessions.find(
+        (session) => session.globalSessionId === 'node-b:same-local-id'
+      )
+    ).toMatchObject({
+      lastInterventionAt: '2026-05-11T00:00:01.000Z',
+      lastInterventionBy: browserActor,
+      lastInterventionEventId: 'evt-intervention-1',
     });
-
-    useSessionsStore.getState().handleTabControlEvent(
-      tabControlEvent({
-        controlMode: 'co-driven',
-        activeActors: [browserActor, codexActor],
-        activeWorker: codexActor,
-        reason: 'human input',
-      })
-    );
-
-    const updated = useSessionsStore
-      .getState()
-      .sessions.find((session) => session.globalSessionId === 'node-b:same-local-id');
-    expect(updated).toMatchObject({
-      controlMode: 'co-driven',
-      activeActors: [browserActor, codexActor],
-      activeWorker: codexActor,
-      controlReason: 'human input',
-      controlFreshness: 'fresh',
-    });
-  });
-
-  it('falls back to existing worker identity and clears stale human-only fields on mode events', () => {
-    useSessionsStore.setState({
-      sessions: [nodeASession, controlReadySession(nodeBSession)],
-    });
-
-    useSessionsStore.getState().handleTabControlEvent(
-      tabControlEvent({
-        controlMode: 'human-driven',
-        previousControlMode: 'agent-driven',
-        actor: browserActor,
-        reason: 'take-over',
-      })
-    );
-
-    let updated = useSessionsStore
-      .getState()
-      .sessions.find((session) => session.globalSessionId === 'node-b:same-local-id');
-    expect(updated).toMatchObject({
-      controlMode: 'human-driven',
-      activeActors: [browserActor],
-      controlReason: 'take-over',
-    });
-    expect(updated?.activeWorker).toBeUndefined();
-
-    useSessionsStore.setState({
-      sessions: [
-        nodeASession,
-        {
-          ...controlReadySession(nodeBSession),
-          controlMode: 'co-driven',
-          activeActors: [browserActor, codexActor],
-          activeWorker: codexActor,
-          controlReason: 'human input',
-        },
-      ],
-    });
-
-    useSessionsStore.getState().handleTabControlEvent(
-      tabControlEvent({
-        controlMode: 'agent-driven',
-        previousControlMode: 'co-driven',
-        actor: browserActor,
-      })
-    );
-
-    updated = useSessionsStore
-      .getState()
-      .sessions.find((session) => session.globalSessionId === 'node-b:same-local-id');
-    expect(updated).toMatchObject({
-      controlMode: 'agent-driven',
-      activeActors: [codexActor],
-      activeWorker: codexActor,
-    });
-    expect(updated?.controlReason).toBeUndefined();
+    expect(
+      useSessionsStore.getState().interventionsBySession['node-b:same-local-id']
+    ).toHaveLength(1);
   });
 
   it('updates only the matching global session when local ids collide across nodes', () => {
@@ -263,15 +197,13 @@ describe('sessions store node-scoped events', () => {
     const sessions = useSessionsStore.getState().sessions;
     expect(
       sessions.find((s) => s.globalSessionId === 'node-a:same-local-id')
-        ?.agentState
+        ?.activityState
     ).toBe('processing');
     expect(
       sessions.find((s) => s.globalSessionId === 'node-b:same-local-id')
-        ?.agentState
+        ?.activityState
     ).toBe('idle');
   });
-
-
 
   it('scopes sidebar aggregate state when duplicate local ids collide across nodes', () => {
     (useSessionsStore.getState().handleBackendStateChanged as any)(
@@ -367,7 +299,9 @@ describe('sessions store node-scoped events', () => {
 
     const sidebarItems = useSessionsStore.getState().sidebarItems;
     const nodeAItem = sidebarItems.find((item) => item.nodeId === 'node-a');
-    const updatedNodeBItem = sidebarItems.find((item) => item.nodeId === 'node-b');
+    const updatedNodeBItem = sidebarItems.find(
+      (item) => item.nodeId === 'node-b'
+    );
 
     expect(nodeAItem?.displayState).toBe('running');
     expect(nodeAItem?.isUnread).toBeFalsy();

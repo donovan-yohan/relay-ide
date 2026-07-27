@@ -5,7 +5,7 @@ export type WorkspaceTab =
   | {
       kind: 'session';
       sessionId: string;
-      sessionType: 'agent' | 'terminal';
+      sessionType: 'terminal';
       /**
        * Execution node this session is attached to. Omitted for hub-local
        * sessions. When set, the WS resolver routes via

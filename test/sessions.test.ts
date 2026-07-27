@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import * as sessions from '../server/sessions.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
-import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
 import { LOCAL_COMPATIBILITY_SESSION_INTENT } from '../shared/session-envelope.js';
 import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.js';
@@ -34,48 +33,6 @@ afterEach(async () => {
   createdIds.length = 0;
 });
 
-describe('buildAgentArgs cold-resume claudeArgs leak gate', () => {
-  type SerializedSession = Parameters<typeof sessions.buildAgentArgs>[0];
-  // config.claudeArgs (persisted as the session's claudeArgs) are Claude-only
-  // flags. Replaying them into a codex resume exits the CLI with code 2.
-  const claudeArgs = ['--model', 'opus', '--effort', 'high'];
-  const base = {
-    id: 's1',
-    type: 'agent' as const,
-    cwd: '/tmp',
-    displayName: 'Agent',
-    createdAt: new Date().toISOString(),
-    lastActivity: new Date().toISOString(),
-    customCommand: null,
-  };
-
-  it('drops serialized claudeArgs when restoring a codex session', () => {
-    const args = sessions.buildAgentArgs({
-      ...base,
-      agent: 'codex',
-      claudeArgs,
-      yolo: false,
-    } as SerializedSession);
-    expect(args).not.toContain('--model');
-    expect(args).not.toContain('--effort');
-    // Codex resume still gets its own continue args, never the claudeArgs.
-    expect(args).toEqual([...(AGENT_CONTINUE_ARGS['codex'] ?? [])]);
-  });
-
-  it('replays serialized claudeArgs when restoring a claude session', () => {
-    const args = sessions.buildAgentArgs({
-      ...base,
-      agent: 'claude',
-      claudeArgs,
-      yolo: false,
-    } as SerializedSession);
-    expect(args).toEqual([
-      ...(AGENT_CONTINUE_ARGS['claude'] ?? []),
-      ...claudeArgs,
-    ]);
-  });
-});
-
 describe('routed PTY control-session cleanup', () => {
   it('releases a routed control session idempotently', () => {
     sessions.recordRoutedPtyInput({
@@ -85,16 +42,10 @@ describe('routed PTY control-session cleanup', () => {
     });
 
     expect(
-      sessions.releaseRoutedPtyControlSession(
-        'remote-cleanup',
-        'session-one'
-      )
+      sessions.releaseRoutedPtyControlSession('remote-cleanup', 'session-one')
     ).toBe(true);
     expect(
-      sessions.releaseRoutedPtyControlSession(
-        'remote-cleanup',
-        'session-one'
-      )
+      sessions.releaseRoutedPtyControlSession('remote-cleanup', 'session-one')
     ).toBe(false);
   });
 
@@ -116,120 +67,6 @@ describe('routed PTY control-session cleanup', () => {
     expect(
       sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
     ).toBe(0);
-  });
-});
-
-describe('initial prompt delivery', () => {
-  it('passes a Codex initial prompt as the final distinct argv element', async () => {
-    const probeDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'relay-codex-argv-')
-    );
-    const probePath = path.join(probeDir, 'argv-probe.mjs');
-    fs.writeFileSync(
-      probePath,
-      [
-        "process.stdout.write('ARGV=' + JSON.stringify(process.argv.slice(2)));",
-        'setTimeout(() => {}, 10_000);',
-      ].join('\n'),
-      'utf-8'
-    );
-    const initialPrompt = 'fix spaces; $(never-shell-interpolate) && verify';
-    const cases = [
-      {
-        name: 'fresh',
-        args: ['--ask-for-approval', 'never'],
-      },
-      {
-        name: 'resume',
-        args: ['resume', '--last', '--ask-for-approval', 'never'],
-      },
-    ];
-
-    try {
-      for (const testCase of cases) {
-        const result = sessions.create({
-          repoName: `codex-${testCase.name}`,
-          repoPath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          agent: 'codex',
-          command: process.execPath,
-          args: [probePath, ...testCase.args],
-          initialPrompt,
-        });
-        createdIds.push(result.id);
-
-        let output = '';
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          output =
-            (
-              sessions.get(result.id) as PtySession | undefined
-            )?.scrollback.join('') ?? '';
-          if (output.includes('ARGV=')) break;
-          await delay(10);
-        }
-
-        expect(output).toContain(
-          `ARGV=${JSON.stringify([...testCase.args, initialPrompt])}`
-        );
-        expect(
-          (sessions.get(result.id) as PtySession | undefined)?.initialPrompt
-        ).toBeUndefined();
-      }
-    } finally {
-      fs.rmSync(probeDir, { recursive: true, force: true });
-    }
-  });
-
-  it('schedules typed injection for Claude but not Codex', () => {
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
-    try {
-      const codex = sessions.create({
-        repoName: 'codex-native-prompt',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        agent: 'codex',
-        command: process.execPath,
-        args: ['-e', 'setInterval(() => {}, 10_000);'],
-        initialPrompt: 'native prompt',
-      });
-      createdIds.push(codex.id);
-
-      expect(timeoutSpy.mock.calls.some((call) => call[1] === 8000)).toBe(
-        false
-      );
-      expect(
-        (sessions.get(codex.id) as PtySession | undefined)?.initialPrompt
-      ).toBeUndefined();
-
-      timeoutSpy.mockClear();
-      const claude = sessions.create({
-        repoName: 'claude-typed-prompt',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        agent: 'claude',
-        command: process.execPath,
-        args: ['-e', 'setInterval(() => {}, 10_000);'],
-        initialPrompt: 'typed prompt',
-      });
-      createdIds.push(claude.id);
-
-      const fallbackCallIndex = timeoutSpy.mock.calls.findIndex(
-        (call) => call[1] === 8000
-      );
-      expect(fallbackCallIndex).toBeGreaterThanOrEqual(0);
-      expect(
-        (sessions.get(claude.id) as PtySession | undefined)?.initialPrompt
-      ).toBe('typed prompt');
-
-      const fallbackTimer = timeoutSpy.mock.results[fallbackCallIndex]
-        ?.value as ReturnType<typeof setTimeout> | undefined;
-      if (fallbackTimer) clearTimeout(fallbackTimer);
-    } finally {
-      timeoutSpy.mockRestore();
-    }
   });
 });
 
@@ -433,7 +270,7 @@ describe('sessions', () => {
 
       const session = sessions.get(result.id);
       expect(session).toBeTruthy();
-      session!.agentState = 'permission-prompt';
+      session!.activityState = 'permission-prompt';
       sessions.fireStateChange(result.id, 'permission-prompt');
 
       // No list() call between the state change and now — the event must
@@ -610,7 +447,7 @@ describe('sessions', () => {
     expect(list[0]?.idle).toBe(false);
   });
 
-  it('type defaults to agent when not specified', () => {
+  it('type defaults to terminal when not specified', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -620,16 +457,16 @@ describe('sessions', () => {
       args: ['hello'],
     });
     createdIds.push(result.id);
-    expect(result.type).toBe('agent');
+    expect(result.type).toBe('terminal');
 
     const session = sessions.get(result.id);
     expect(session).toBeTruthy();
-    expect(session!.type).toBe('agent');
+    expect(session!.type).toBe('terminal');
   });
 
-  it('type is set to agent when specified', () => {
+  it('type is set to terminal when specified', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp',
       worktreePath: null,
@@ -638,16 +475,16 @@ describe('sessions', () => {
       args: ['hello'],
     });
     createdIds.push(result.id);
-    expect(result.type).toBe('agent');
+    expect(result.type).toBe('terminal');
 
     const session = sessions.get(result.id);
     expect(session).toBeTruthy();
-    expect(session!.type).toBe('agent');
+    expect(session!.type).toBe('terminal');
   });
 
   it('list includes type field', () => {
     const r1 = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'repo-a',
       repoPath: '/tmp/a',
       worktreePath: null,
@@ -658,7 +495,7 @@ describe('sessions', () => {
     createdIds.push(r1.id);
 
     const r2 = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'repo-b',
       repoPath: '/tmp/b',
       worktreePath: null,
@@ -677,14 +514,14 @@ describe('sessions', () => {
     });
 
     expect(s1).toBeTruthy();
-    expect(s1!.type).toBe('agent');
+    expect(s1!.type).toBe('terminal');
     expect(s2).toBeTruthy();
-    expect(s2!.type).toBe('agent');
+    expect(s2!.type).toBe('terminal');
   });
 
   it('list includes repoPath, worktreePath, and cwd fields', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp/workspace',
       worktreePath: '/tmp/workspace/.worktrees/my-branch',
@@ -704,7 +541,7 @@ describe('sessions', () => {
 
   it('branchName defaults to empty string when branchName is not provided', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp',
       worktreePath: null,
@@ -725,7 +562,7 @@ describe('sessions', () => {
 
   it('preserves explicit branchName for repo-bound sessions', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp/workspace',
       worktreePath: '/tmp/workspace/.worktrees/feature-branch',
@@ -749,7 +586,7 @@ describe('sessions', () => {
 
   it('serializes control state separately from transport mode for PTY sessions', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp/workspace',
       worktreePath: null,
@@ -757,9 +594,8 @@ describe('sessions', () => {
       command: '/bin/echo',
       args: ['hello'],
       controlState: {
-        controlMode: 'agent-driven',
-        activeActors: [{ kind: 'agent', id: 'worker-1' }],
-        activeWorker: { kind: 'agent', id: 'worker-1' },
+        controlMode: 'human-driven',
+        activeActors: [{ kind: 'human', id: 'operator' }],
         lastInterventionAt: '2026-01-02T03:04:05.000Z',
         lastInterventionBy: { kind: 'human', id: 'operator' },
         lastInterventionEventId: 'evt-pty-1',
@@ -769,13 +605,13 @@ describe('sessions', () => {
     createdIds.push(result.id);
 
     expect(result.mode).toBe('pty');
-    expect(result.controlMode).toBe('agent-driven');
-    expect(result.activeWorker).toEqual({ kind: 'agent', id: 'worker-1' });
+    expect(result.controlMode).toBe('human-driven');
+    expect(result).not.toHaveProperty('activeWorker');
 
     const listed = sessions.list().find((session) => session.id === result.id);
     expect(listed).toMatchObject({
       mode: 'pty',
-      controlMode: 'agent-driven',
+      controlMode: 'human-driven',
       controlFreshness: 'fresh',
       lastInterventionEventId: 'evt-pty-1',
     });
@@ -783,7 +619,7 @@ describe('sessions', () => {
 
   it('backfills missing PTY control state to human-driven unknown freshness', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: '/tmp/workspace',
       worktreePath: null,
@@ -811,7 +647,7 @@ describe('sessions', () => {
     expect(prodPrefix.startsWith(devPrefix)).toBe(false);
   });
 
-  it('agent defaults to claude when not specified', () => {
+  it('does not expose a provider identity on terminal creation', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -821,69 +657,10 @@ describe('sessions', () => {
       args: ['hello'],
     });
     createdIds.push(result.id);
-    expect(result.agent).toBe('claude');
-  });
-
-  it('agent is set when specified', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      agent: 'codex',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    expect(result.agent).toBe('codex');
-  });
-
-  it('list includes agent field', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      agent: 'codex',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    const list = sessions.list();
-    const session = list.find((s) => s.id === result.id);
-    expect(session).toBeTruthy();
-    expect(session!.agent).toBe('codex');
-  });
-
-  it.skip('useTmux defaults to false when not specified', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-    });
-    createdIds.push(result.id);
-    expect(result.terminalBackend).toBe('relay-pty');
-    expect(result.useTmux).toBe(false);
-    expect(result.tmuxSessionName).toBe('');
-  });
-
-  it.skip('useTmux:false opts custom command sessions into relay-pty', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      useTmux: false,
-    });
-    createdIds.push(result.id);
-    expect(result.terminalBackend).toBe('relay-pty');
-    expect(result.useTmux).toBe(false);
-    expect(result.tmuxSessionName).toBe('');
+    expect(result).not.toHaveProperty('agent');
+    expect(
+      sessions.list().find((session) => session.id === result.id)
+    ).not.toHaveProperty('agent');
   });
 
   it('returns a bounded rendered screen snapshot for relay-pty sessions', async () => {
@@ -1008,80 +785,6 @@ describe('sessions', () => {
     }
   });
 
-  it('calls onPtyReplaced when continue-arg process fails quickly', () =>
-    new Promise<void>((done) => {
-      const result = sessions.create({
-        repoName: 'test-repo',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        command: '/bin/false',
-        args: [...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
-      });
-      createdIds.push(result.id);
-
-      const session = sessions.get(result.id);
-      expect(session).toBeTruthy();
-      expect(session!.mode).toBe('pty');
-      const ptySession = session as PtySession;
-
-      ptySession.onPtyReplacedCallbacks.push((newPty) => {
-        expect(newPty).toBeTruthy();
-        expect(ptySession.pty).toBe(newPty);
-        done();
-      });
-    }));
-
-  it('session survives after continue-arg retry', () =>
-    new Promise<void>((done) => {
-      const result = sessions.create({
-        repoName: 'test-repo',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        command: '/bin/false',
-        args: [...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
-      });
-      createdIds.push(result.id);
-
-      const session = sessions.get(result.id);
-      expect(session).toBeTruthy();
-      expect(session!.mode).toBe('pty');
-      const ptySession = session as PtySession;
-
-      ptySession.onPtyReplacedCallbacks.push(() => {
-        const stillExists = sessions.get(result.id);
-        expect(stillExists).toBeTruthy();
-        done();
-      });
-    }));
-
-  it('retries when continue-arg process exits quickly with code 0 (tmux behavior)', () =>
-    new Promise<void>((done) => {
-      const result = sessions.create({
-        repoName: 'test-repo',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        command: '/bin/sh',
-        args: ['-c', 'exit 0', ...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
-      });
-      createdIds.push(result.id);
-
-      const session = sessions.get(result.id);
-      expect(session).toBeTruthy();
-      expect(session!.mode).toBe('pty');
-      const ptySession = session as PtySession;
-
-      ptySession.onPtyReplacedCallbacks.push((newPty) => {
-        expect(newPty).toBeTruthy();
-        expect(ptySession.pty).toBe(newPty);
-        const stillExists = sessions.get(result.id);
-        expect(stillExists).toBeTruthy();
-        done();
-      });
-    }));
-
   it('create accepts a predetermined id', () => {
     const result = sessions.create({
       id: 'custom-id-12345678',
@@ -1151,8 +854,7 @@ describe('session persistence', () => {
     const timestamp = new Date().toISOString();
     return {
       id,
-      type: 'agent' as const,
-      agent: 'claude' as const,
+      type: 'terminal' as const,
       repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
@@ -1306,8 +1008,7 @@ describe('session persistence', () => {
       sessions: [
         {
           id: 'stale-id',
-          type: 'agent',
-          agent: 'claude',
+          type: 'terminal',
           workspacePath: '/tmp',
           worktreePath: null,
           cwd: '/tmp',
@@ -1340,6 +1041,40 @@ describe('session persistence', () => {
     expect(fs.existsSync(path.join(configDir, 'scrollback'))).toBe(false);
   });
 
+  it('discards fresh retired PTY agent records instead of restoring them', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify({
+        version: 7,
+        timestamp,
+        sessions: [
+          {
+            id: 'retired-agent',
+            type: 'agent',
+            cwd: '/tmp',
+            displayName: 'Retired agent',
+            createdAt: timestamp,
+            lastActivity: timestamp,
+            terminalBackend: 'relay-pty',
+            customCommand: '/bin/cat',
+          },
+        ],
+      })
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'retired-agent.buf'), 'old');
+
+    await expect(restoreFromDisk(configDir)).resolves.toBe(0);
+    expect(sessions.get('retired-agent')).toBeUndefined();
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
   it('restoreFromDisk removes malformed timestamp pending files and scrollback', async () => {
     const configDir = createTmpDir();
     const pending = {
@@ -1349,8 +1084,7 @@ describe('session persistence', () => {
       sessions: [
         {
           id: 'bad-timestamp-id',
-          type: 'agent' as const,
-          agent: 'claude' as const,
+          type: 'terminal' as const,
           repoPath: '/tmp',
           worktreePath: null,
           cwd: '/tmp',
@@ -1392,129 +1126,6 @@ describe('session persistence', () => {
 
     expect(restored).toBe(0);
     expect(fs.existsSync(scrollbackDir)).toBe(false);
-  });
-
-  it.skip('restoreFromDisk keeps failed restore records and scrollback for a retry', async () => {
-    const configDir = createTmpDir();
-    const timestamp = new Date().toISOString();
-    const pending = {
-      version: 6,
-      reason: 'dev-restart',
-      timestamp,
-      sessions: [
-        {
-          id: 'restore-failure-kept',
-          type: 'agent' as const,
-          agent: 'claude' as const,
-          repoPath: '/tmp',
-          worktreePath: null,
-          cwd: path.join(configDir, 'missing-cwd'),
-          repoName: 'test',
-          branchName: '',
-          displayName: 'retry-me',
-          createdAt: timestamp,
-          lastActivity: timestamp,
-          useTmux: true,
-          tmuxSessionName: 'relay-ide-retry-me-failure',
-          customCommand: '/bin/cat',
-          hookToken: 'keep-token',
-          hooksActive: true,
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-    const scrollbackDir = path.join(configDir, 'scrollback');
-    fs.mkdirSync(scrollbackDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(scrollbackDir, 'restore-failure-kept.buf'),
-      'important output'
-    );
-
-    const restored = await restoreFromDisk(configDir);
-
-    expect(restored).toBe(0);
-    const retryPending = JSON.parse(
-      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
-    );
-    expect(retryPending.sessions).toHaveLength(1);
-    expect(retryPending.timestamp).toBe(timestamp);
-    expect(retryPending.sessions[0].id).toBe('restore-failure-kept');
-    expect(retryPending.sessions[0].hookToken).toBe('keep-token');
-    expect(
-      fs.readFileSync(
-        path.join(scrollbackDir, 'restore-failure-kept.buf'),
-        'utf-8'
-      )
-    ).toBe('important output');
-  });
-
-  it.skip('serializeAll preserves failed restore records across the next clean restart', async () => {
-    const configDir = createTmpDir();
-    const timestamp = new Date().toISOString();
-    const pending = {
-      version: 6,
-      reason: 'dev-restart',
-      timestamp,
-      sessions: [
-        pendingPtySession('restore-ok', {
-          displayName: 'restores cleanly',
-          tmuxSessionName: 'relay-ide-restores-cleanly',
-        }),
-        pendingPtySession('restore-fails', {
-          cwd: path.join(configDir, 'missing-cwd'),
-          displayName: 'fails transiently',
-          tmuxSessionName: 'relay-ide-fails-transiently',
-          hookToken: 'failed-token',
-        }),
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-    const scrollbackDir = path.join(configDir, 'scrollback');
-    fs.mkdirSync(scrollbackDir, { recursive: true });
-    fs.writeFileSync(path.join(scrollbackDir, 'restore-ok.buf'), 'a output');
-    fs.writeFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'b output');
-
-    const restored = await restoreFromDisk(configDir);
-
-    expect(restored).toBe(1);
-    expect(sessions.get('restore-ok')).toBeTruthy();
-    const failedOnlyPending = JSON.parse(
-      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
-    );
-    expect(failedOnlyPending.sessions.map((s: { id: string }) => s.id)).toEqual(
-      ['restore-fails']
-    );
-    expect(failedOnlyPending.timestamp).toBe(timestamp);
-
-    serializeAll(configDir, { reason: 'dev-restart' });
-
-    const retryPending = JSON.parse(
-      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
-    );
-    const retrySessions = retryPending.sessions as Array<{
-      id: string;
-      hookToken?: string;
-      pendingSince?: string;
-    }>;
-    expect(retryPending.timestamp).toBeTruthy();
-    expect(retrySessions.map((s) => s.id).sort()).toEqual([
-      'restore-fails',
-      'restore-ok',
-    ]);
-    const failedRetry = retrySessions.find((s) => s.id === 'restore-fails');
-    const liveRetry = retrySessions.find((s) => s.id === 'restore-ok');
-    expect(failedRetry?.pendingSince).toBe(timestamp);
-    expect(liveRetry?.pendingSince).toBe(retryPending.timestamp);
-    expect(failedRetry?.hookToken).toBe('failed-token');
-    expect(
-      fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')
-    ).toBe('b output');
   });
 
   it('serializeAll keeps fresh live sessions restorable when old preserved failures age out', async () => {
@@ -1671,64 +1282,12 @@ describe('session persistence', () => {
     expect(restored).toBe(0);
   });
 
-  it.skip('restored session remains in list after PTY exits (disconnected status)', async () => {
-    const configDir = createTmpDir();
-
-    const pending = {
-      version: 3,
-      timestamp: new Date().toISOString(),
-      sessions: [
-        {
-          id: 'restore-exit-test',
-          type: 'agent' as const,
-          agent: 'claude' as const,
-          workspacePath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          repoName: 'test-repo',
-          branchName: 'my-branch',
-          displayName: 'restored-session',
-          createdAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          useTmux: false,
-          tmuxSessionName: '',
-          customCommand: '/bin/false',
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    await restoreFromDisk(configDir);
-
-    // Poll for the restored session's PTY (/bin/false) to exit and the
-    // status to flip to 'disconnected'. Previously this used a fixed
-    // 500ms sleep which flaked under CPU contention because the PTY had
-    // not exited by the deadline. Restored sessions exit through a
-    // dedicated branch in pty-handler.ts that flips status but does not
-    // call fireSessionEnd, so polling is the cleanest signal here.
-    // Use sessions.get() inside the loop — O(1) map lookup, avoids the
-    // sessions.list() snapshot+sort cost on every iteration.
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if (sessions.get('restore-exit-test')?.status === 'disconnected') break;
-      await delay(25);
-    }
-
-    const found = sessions.list().find((s) => s.id === 'restore-exit-test');
-
-    expect(found).toBeTruthy();
-    expect(found!.status).toBe('disconnected');
-  });
-
   it('full serialize-restore round trip preserves relay-pty session fields', async () => {
     const configDir = createTmpDir();
 
     // Create sessions of different types
     const agentSession = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'my-repo',
       repoPath: '/tmp',
       worktreePath: null,
@@ -1767,7 +1326,7 @@ describe('session persistence', () => {
 
     const restoredAgent = list.find((s) => s.id === agentSession.id);
     expect(restoredAgent).toBeTruthy();
-    expect(restoredAgent!.type).toBe('agent');
+    expect(restoredAgent!.type).toBe('terminal');
     expect(restoredAgent!.displayName).toBe('My Agent');
     expect(restoredAgent!.status).toBe('active');
 
@@ -1775,118 +1334,6 @@ describe('session persistence', () => {
     expect(restoredTerminal).toBeTruthy();
     expect(restoredTerminal!.type).toBe('terminal');
     expect(restoredTerminal!.displayName).toBe('Terminal 1');
-  });
-
-  it('serialize/restore preserves yolo flag', async () => {
-    const configDir = createTmpDir();
-
-    const s = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      yolo: true,
-    });
-
-    const session = sessions.get(s.id);
-    expect(session).toBeTruthy();
-    expect((session as PtySession).yolo).toBe(true);
-
-    serializeAll(configDir);
-    sessions.kill(s.id);
-
-    // Verify yolo is in the serialized JSON
-    const pending = JSON.parse(
-      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
-    );
-    expect(pending.version).toBe(7);
-    expect(pending.sessions[0].yolo).toBe(true);
-
-    await restoreFromDisk(configDir);
-    const restored = sessions.get(s.id);
-    expect(restored).toBeTruthy();
-    expect((restored as PtySession).yolo).toBe(true);
-  });
-
-  it('maps codex yolo to no-approval workspace-write args', () => {
-    expect(AGENT_YOLO_ARGS.codex).toEqual([
-      '--ask-for-approval',
-      'never',
-      '--sandbox',
-      'workspace-write',
-    ]);
-  });
-
-  it('serialize/restore preserves claudeArgs', async () => {
-    const configDir = createTmpDir();
-
-    const s = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      claudeArgs: ['--model', 'opus', '--verbose'],
-    });
-
-    const session = sessions.get(s.id);
-    expect(session).toBeTruthy();
-    expect((session as PtySession).claudeArgs).toEqual([
-      '--model',
-      'opus',
-      '--verbose',
-    ]);
-
-    serializeAll(configDir);
-    sessions.kill(s.id);
-
-    await restoreFromDisk(configDir);
-    const restored = sessions.get(s.id);
-    expect(restored).toBeTruthy();
-    expect((restored as PtySession).claudeArgs).toEqual([
-      '--model',
-      'opus',
-      '--verbose',
-    ]);
-  });
-
-  it('serialize/restore preserves hookToken and hooksActive', async () => {
-    const configDir = createTmpDir();
-
-    const s = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-    });
-
-    // Manually set hookToken and hooksActive (simulating a session that had hooks injected)
-    const session = sessions.get(s.id);
-    expect(session).toBeTruthy();
-    (session as PtySession).hookToken = 'abc123deadbeef';
-    (session as PtySession).hooksActive = true;
-
-    serializeAll(configDir);
-
-    // Verify hookToken is in the serialized JSON
-    const pending = JSON.parse(
-      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
-    );
-    expect(pending.sessions[0].hookToken).toBe('abc123deadbeef');
-    expect(pending.sessions[0].hooksActive).toBe(true);
-
-    sessions.kill(s.id);
-
-    await restoreFromDisk(configDir);
-    const restored = sessions.get(s.id);
-    expect(restored).toBeTruthy();
-    expect((restored as PtySession).hookToken).toBe('abc123deadbeef');
-    expect((restored as PtySession).hooksActive).toBe(true);
   });
 
   it('serialize/restore preserves needsBranchRename and branchRenamePrompt', async () => {
@@ -1917,100 +1364,6 @@ describe('session persistence', () => {
     expect((restored as PtySession).branchRenamePrompt).toBe(
       'Name this feature branch:'
     );
-  });
-
-  it.skip('restoreFromDisk handles v1/v2 pending files (v2→v3 migration)', async () => {
-    const configDir = createTmpDir();
-
-    // Write a v2 format pending file with old fields: type: 'repo', repoPath, root
-    const v2Timestamp = new Date().toISOString();
-    const pending = {
-      version: 2,
-      timestamp: v2Timestamp,
-      sessions: [
-        {
-          id: 'v2-migration-test',
-          type: 'repo',
-          agent: 'claude',
-          root: '',
-          repoName: 'test-repo',
-          repoPath: '/tmp/my-repo',
-          worktreeName: '',
-          branchName: 'main',
-          displayName: 'v2-session',
-          createdAt: v2Timestamp,
-          lastActivity: v2Timestamp,
-          useTmux: false,
-          tmuxSessionName: '',
-          customCommand: '/bin/cat',
-          cwd: '/tmp/my-repo',
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('v2-migration-test');
-    expect(session).toBeTruthy();
-    // type should be migrated from 'repo' to 'agent'
-    expect(session!.type).toBe('agent');
-    // cwd should equal the old repoPath
-    expect(session!.cwd).toBe('/tmp/my-repo');
-    // repoPath should be derived from cwd (no configured workspaces, so falls back to cwd)
-    expect(session!.repoPath).toBe('/tmp/my-repo');
-    // worktreePath should be null since cwd === repoPath
-    expect(session!.worktreePath).toBe(null);
-    expect((session as PtySession).useTmux).toBe(true);
-    expect((session as PtySession).tmuxSessionName).toMatch(
-      /^relay-(ide|dev)-v2-session-/
-    );
-  });
-
-  it.skip('restoreFromDisk handles v3 pending files (v3→v4 migration: workspacePath→repoPath)', async () => {
-    const configDir = createTmpDir();
-
-    const v3Timestamp = new Date().toISOString();
-    const pending = {
-      version: 3,
-      timestamp: v3Timestamp,
-      sessions: [
-        {
-          id: 'v3-migration-test',
-          type: 'agent' as const,
-          agent: 'claude' as const,
-          workspacePath: '/tmp/my-v3-repo',
-          worktreePath: null,
-          cwd: '/tmp/my-v3-repo',
-          repoName: 'v3-repo',
-          branchName: 'main',
-          displayName: 'v3-session',
-          createdAt: v3Timestamp,
-          lastActivity: v3Timestamp,
-          useTmux: false,
-          tmuxSessionName: '',
-          customCommand: '/bin/cat',
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('v3-migration-test');
-    expect(session).toBeTruthy();
-    // repoPath should be migrated from v3 workspacePath
-    expect(session!.repoPath).toBe('/tmp/my-v3-repo');
-    expect(session!.cwd).toBe('/tmp/my-v3-repo');
-    createdIds.push('v3-migration-test');
   });
 
   it('serializeAll writes version 7 in pending-sessions.json', () => {
@@ -2065,111 +1418,5 @@ describe('session persistence', () => {
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
     expect(pending.sessions.length).toBe(1);
     expect(pending.sessions[0].displayName).toBe('before-kill');
-  });
-
-  it.skip('restoreFromDisk uses framework continueArgs for claude (--continue)', async () => {
-    const configDir = createTmpDir();
-
-    // Write a v4 pending file with a non-tmux claude agent session
-    const pending = {
-      version: 4,
-      timestamp: new Date().toISOString(),
-      sessions: [
-        {
-          id: 'framework-continue-claude',
-          type: 'agent' as const,
-          agent: 'claude',
-          repoPath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          repoName: 'test-repo',
-          branchName: 'main',
-          displayName: 'claude-session',
-          createdAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          useTmux: false,
-          tmuxSessionName: '',
-          customCommand: '/bin/cat', // use /bin/cat so session doesn't error out
-          yolo: false,
-          claudeArgs: [],
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('framework-continue-claude');
-    expect(session).toBeTruthy();
-    // The session should have been created successfully (continueArgs from framework)
-    expect(session!.agent).toBe('claude');
-  });
-
-  it.skip('restoreFromDisk uses framework continueArgs for codex (resume --last)', async () => {
-    const configDir = createTmpDir();
-
-    // Write a v4 pending file with a non-tmux codex agent session
-    const pending = {
-      version: 4,
-      timestamp: new Date().toISOString(),
-      sessions: [
-        {
-          id: 'framework-continue-codex',
-          type: 'agent' as const,
-          agent: 'codex',
-          repoPath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          repoName: 'test-repo',
-          branchName: 'main',
-          displayName: 'codex-session',
-          createdAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          useTmux: false,
-          tmuxSessionName: '',
-          customCommand: '/bin/cat',
-          yolo: false,
-          claudeArgs: [],
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('framework-continue-codex');
-    expect(session).toBeTruthy();
-    expect(session!.agent).toBe('codex');
-  });
-
-  it('serializeAll preserves claudeArgs for backward compat', () => {
-    const configDir = createTmpDir();
-
-    const s = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      claudeArgs: ['--model', 'opus'],
-    });
-
-    serializeAll(configDir);
-    sessions.kill(s.id);
-
-    const pendingPath = path.join(configDir, 'pending-sessions.json');
-    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    expect(pending.sessions.length).toBe(1);
-    // claudeArgs should still be there for backward compat
-    expect(pending.sessions[0].claudeArgs).toEqual(['--model', 'opus']);
   });
 });

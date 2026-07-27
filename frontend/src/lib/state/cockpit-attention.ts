@@ -1,5 +1,4 @@
 import type { ChannelAgentStatus } from '../api.js';
-import type { RosterAttention } from '../../../../shared/agent-roster.js';
 import type {
   ChannelRailNode,
   ChannelRailSection,
@@ -13,10 +12,10 @@ const MAX_RECENCY_BONUS = 100;
 const NEEDS_INPUT_PRIORITY = 900;
 const MAX_PENDING_INBOX_COUNT = 4;
 
-export type CockpitRosterAttention = Pick<
-  RosterAttention,
-  'needsAttention' | 'pendingInboxCount'
->;
+export interface CockpitRosterAttention {
+  needsAttention: boolean;
+  pendingInboxCount: number;
+}
 
 export interface CockpitAttentionScoreContext {
   unread: boolean;

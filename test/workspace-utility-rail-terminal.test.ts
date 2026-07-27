@@ -5,7 +5,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../frontend/src/lib/types.js';
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../frontend/src/components/UtilityRailFilesPanel.js', () => ({
   default: () => React.createElement('div', { 'data-testid': 'files-panel' }),
@@ -37,7 +39,9 @@ vi.mock('../frontend/src/components/Terminal.js', () => ({
 import { WorkspaceUtilityRail } from '../frontend/src/components/WorkspaceUtilityRail.js';
 import type { WorkspaceUtilityRailState } from '../frontend/src/lib/stores/ui.js';
 
-function session(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
+function session(
+  overrides: Partial<SessionSummary> & { id: string }
+): SessionSummary {
   return {
     id: overrides.id,
     repoName: 'a',
@@ -50,7 +54,6 @@ function session(overrides: Partial<SessionSummary> & { id: string }): SessionSu
     branchName: 'nightly',
     displayName: '',
     idle: false,
-    agent: 'claude',
     type: 'terminal',
     mode: 'pty',
     useTmux: true,
@@ -58,7 +61,9 @@ function session(overrides: Partial<SessionSummary> & { id: string }): SessionSu
   };
 }
 
-function railState(overrides: Partial<WorkspaceUtilityRailState> = {}): WorkspaceUtilityRailState {
+function railState(
+  overrides: Partial<WorkspaceUtilityRailState> = {}
+): WorkspaceUtilityRailState {
   return {
     visible: true,
     selectedRailTab: 'terminal',
@@ -92,8 +97,8 @@ describe('WorkspaceUtilityRail utility terminal panel', () => {
         React.createElement(WorkspaceUtilityRail, {
           workspacePath: '/repo/a',
           railState: railState(),
-          activeSession: session({ id: 'agent-1', type: 'agent' }),
-          workspaceSessions: [session({ id: 'agent-1', type: 'agent' })],
+          activeSession: session({ id: 'term-main' }),
+          workspaceSessions: [session({ id: 'term-main' })],
           utilityTerminalSessions: [
             session({ id: 'term-1' }),
             session({ id: 'term-2', displayName: 'db shell' }),
@@ -113,12 +118,20 @@ describe('WorkspaceUtilityRail utility terminal panel', () => {
     expect(container.textContent).toContain('db shell');
 
     await act(async () => {
-      (container.querySelector('button[aria-label="close db shell"]') as HTMLButtonElement).click();
+      (
+        container.querySelector(
+          'button[aria-label="close db shell"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     expect(onCloseUtilityTerminal).toHaveBeenCalledWith('term-2');
 
     await act(async () => {
-      (container.querySelector('.utility-terminal-actions button') as HTMLButtonElement).click();
+      (
+        container.querySelector(
+          '.utility-terminal-actions button'
+        ) as HTMLButtonElement
+      ).click();
     });
     expect(onPromoteUtilityTerminal).toHaveBeenCalledWith('term-2');
   });
@@ -141,10 +154,14 @@ describe('WorkspaceUtilityRail utility terminal panel', () => {
     });
 
     expect(container.textContent).toContain('no utility terminals yet.');
-    expect(container.querySelector('[data-testid="utility-terminal-mount"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="utility-terminal-mount"]')
+    ).toBeNull();
 
     await act(async () => {
-      (container.querySelector('.utility-empty button') as HTMLButtonElement).click();
+      (
+        container.querySelector('.utility-empty button') as HTMLButtonElement
+      ).click();
     });
     expect(onCreateUtilityTerminal).toHaveBeenCalledTimes(1);
   });

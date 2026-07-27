@@ -40,26 +40,13 @@
 .status-cost,
 .status-tokens,
 .status-activity,
-.status-rate-limits,
-.status-framework {
+.status-terminal {
   color: var(--text-muted);
 }
 
-.status-framework {
+.status-terminal {
   text-transform: lowercase;
   min-width: 60px;
-}
-
-.status-framework--claude {
-  color: var(--color-coral);
-}
-
-.status-framework--codex {
-  color: var(--color-green);
-}
-
-.status-framework--opencode {
-  color: var(--color-purple);
 }
 
 .status-context {
@@ -83,10 +70,6 @@
   max-width: 38vw;
 }
 
-.status-rate-limits {
-  text-align: right;
-}
-
 .status-handoff {
   min-height: 24px;
   padding: 2px 8px;
@@ -106,9 +89,7 @@
 @media (max-width: 600px) {
   .status-model,
   .status-tokens,
-  .status-cost,
-  .status-rate-limits,
-  .status-framework {
+  .status-cost {
     display: none;
   }
 

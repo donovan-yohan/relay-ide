@@ -17,23 +17,16 @@ import {
   type WorkspaceTab,
 } from '../frontend/src/lib/workspace-layout.js';
 
-const sessionTab = (
-  id: string,
-  type: 'agent' | 'terminal' = 'agent'
-): WorkspaceTab => ({
+const sessionTab = (id: string): WorkspaceTab => ({
   kind: 'session',
   sessionId: id,
-  sessionType: type,
+  sessionType: 'terminal',
 });
 
-const nodeSessionTab = (
-  id: string,
-  nodeId: string,
-  type: 'agent' | 'terminal' = 'terminal'
-): WorkspaceTab => ({
+const nodeSessionTab = (id: string, nodeId: string): WorkspaceTab => ({
   kind: 'session',
   sessionId: id,
-  sessionType: type,
+  sessionType: 'terminal',
   nodeId,
 });
 

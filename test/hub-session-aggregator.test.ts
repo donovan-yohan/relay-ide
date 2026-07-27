@@ -42,7 +42,6 @@ function localSession(id: string, nodeId: string): SessionSummary {
   return {
     id,
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath: '/srv/relay-ide',
     worktreePath: null,
@@ -60,7 +59,7 @@ function localSession(id: string, nodeId: string): SessionSummary {
     tmuxSessionName: `tmux-${id}`,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 
@@ -237,7 +236,12 @@ describe('aggregateRemoteSessions', () => {
       nodes: [summary('node-a')],
       activeNodeIds: new Set(['node-a']),
       requestImpl: async () => ({
-        sessions: [{ ...localSession('s-renewed', 'node-a'), sessionEnvelope: staleEnvelope }],
+        sessions: [
+          {
+            ...localSession('s-renewed', 'node-a'),
+            sessionEnvelope: staleEnvelope,
+          },
+        ],
       }),
     });
 
@@ -248,7 +252,9 @@ describe('aggregateRemoteSessions', () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0]?.sessionEnvelope?.expiresAt).toBe('2026-01-02T03:10:00.000Z');
+    expect(result[0]?.sessionEnvelope?.expiresAt).toBe(
+      '2026-01-02T03:10:00.000Z'
+    );
     expect(sessionEnvelopes.read('s-renewed', 'node-a')?.expiresAt).toBe(
       '2026-01-02T03:10:00.000Z'
     );
@@ -430,13 +436,19 @@ describe('aggregateRemoteSessions', () => {
     const { registry, nodeLinks } = buildDeps({
       nodes: [summary('node-a')],
       activeNodeIds,
-      requestImpl: async (nodeId) => ({ sessions: [localSession('s-live', nodeId)] }),
+      requestImpl: async (nodeId) => ({
+        sessions: [localSession('s-live', nodeId)],
+      }),
     });
 
     await aggregateRemoteSessions({ registry, nodeLinks, readModelCache });
     activeNodeIds.clear();
 
-    const result = await aggregateRemoteSessions({ registry, nodeLinks, readModelCache });
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+    });
 
     expect(result).toEqual([]);
     expect(readModelCache.get('node-a', Date.now(), 60_000)).toBeNull();
@@ -444,7 +456,11 @@ describe('aggregateRemoteSessions', () => {
 
   it('prunes cached remote sessions when the owning node is removed from the registry', async () => {
     const readModelCache = createRemoteSessionReadModelCache();
-    readModelCache.set('node-deleted', [localSession('s-stale', 'node-deleted')], 1_000);
+    readModelCache.set(
+      'node-deleted',
+      [localSession('s-stale', 'node-deleted')],
+      1_000
+    );
     const requestImpl = vi.fn(async () => ({ sessions: [] }));
     const { registry, nodeLinks } = buildDeps({
       nodes: [],

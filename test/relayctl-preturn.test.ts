@@ -301,11 +301,11 @@ beforeEach(async () => {
         workContextId: WORK_CONTEXT_ID,
       },
       {
-        id: 'node1:agent-a',
-        type: 'agent',
-        displayName: 'Agent A',
+        id: 'node1:terminal-b',
+        type: 'terminal',
+        displayName: 'Terminal 2',
         status: 'running',
-        cwd: '/tmp/agent',
+        cwd: '/tmp/terminal-b',
       },
     ]);
   });
@@ -538,20 +538,6 @@ describe('relayctl terminal mailroom commands', () => {
     expect(parsed.displayName).toBe('Terminal 1');
   });
 
-  it('lists agent sessions', async () => {
-    const { code, stdout } = await runRelayctl(
-      ['agents', 'list', '--json'],
-      env()
-    );
-    expect(code).toBe(0);
-    const parsed = JSON.parse(stdout) as {
-      agents: Array<{ id: string; type: string }>;
-    };
-    expect(parsed.agents).toEqual([
-      expect.objectContaining({ id: 'node1:agent-a', type: 'agent' }),
-    ]);
-  });
-
   it('sends and reads inbox messages from the terminal CLI', async () => {
     const sent = await runRelayctl(
       ['msg', 'send', '--to', SESSION_ID, 'mailroom ping'],
@@ -618,7 +604,17 @@ describe('relayctl terminal mailroom commands', () => {
 
   it('preserves recipient-looking tokens in message text after --', async () => {
     const sent = await runRelayctl(
-      ['msg', 'send', '--to', SESSION_ID, '--', 'keep', '--to', 'literal', 'after'],
+      [
+        'msg',
+        'send',
+        '--to',
+        SESSION_ID,
+        '--',
+        'keep',
+        '--to',
+        'literal',
+        'after',
+      ],
       env()
     );
     expect(sent.code).toBe(0);

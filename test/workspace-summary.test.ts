@@ -11,15 +11,15 @@ const fileTab = (
   tabType: 'code' | 'diff' | 'html' = 'code'
 ): WorkspaceTab => ({ kind: 'file', filePath, tabType });
 
-const sessionTab = (
-  id: string,
-  type: 'agent' | 'terminal' = 'agent'
-): WorkspaceTab => ({ kind: 'session', sessionId: id, sessionType: type });
+const sessionTab = (id: string): WorkspaceTab => ({
+  kind: 'session',
+  sessionId: id,
+  sessionType: 'terminal',
+});
 
 const session = (overrides: Partial<SessionSummary>): SessionSummary => ({
   id: 's',
-  type: 'agent',
-  agent: 'claude',
+  type: 'terminal',
   repoName: 'relay-ide',
   repoPath: '/r',
   worktreePath: null,
@@ -83,23 +83,16 @@ describe('summaryForTab — file kind', () => {
 });
 
 describe('summaryForTab — session kind', () => {
-  it('returns claude icon for claude agent sessions', () => {
+  it('returns the terminal icon', () => {
     const s = summaryForTab(sessionTab('s1'), {
-      findSession: () => session({ id: 's1', agent: 'claude' }),
+      findSession: () => session({ id: 's1' }),
     });
-    expect(s.icon).toBe('session-claude');
+    expect(s.icon).toBe('session-terminal');
     expect(s.primary).toBe('feat/x');
   });
 
-  it('returns codex icon for codex agent', () => {
+  it('returns terminal icon regardless of shell label', () => {
     const s = summaryForTab(sessionTab('s1'), {
-      findSession: () => session({ id: 's1', agent: 'codex' }),
-    });
-    expect(s.icon).toBe('session-codex');
-  });
-
-  it('returns terminal icon for terminal sessions regardless of agent', () => {
-    const s = summaryForTab(sessionTab('s1', 'terminal'), {
       findSession: () => session({ id: 's1', type: 'terminal', agent: 'bash' }),
     });
     expect(s.icon).toBe('session-terminal');
@@ -121,25 +114,20 @@ describe('summaryForTab — session kind', () => {
       summaryForTab(sessionTab('s1'), {
         findSession: () => undefined,
       }).primary
-    ).toBe('session');
-    expect(
-      summaryForTab(sessionTab('s1', 'terminal'), {
-        findSession: () => undefined,
-      }).primary
     ).toBe('terminal');
   });
 
-  it('maps agentState to correct dot', () => {
+  it('maps activityState to correct dot', () => {
     const cases: Array<
       [
         'live' | 'attention' | 'error' | 'idle' | null,
         ReturnType<typeof session>,
       ]
     > = [
-      ['error', session({ agentState: 'error' })],
-      ['attention', session({ agentState: 'permission-prompt' })],
-      ['attention', session({ agentState: 'waiting-for-input' })],
-      ['live', session({ agentState: 'processing' })],
+      ['error', session({ activityState: 'error' })],
+      ['attention', session({ activityState: 'permission-prompt' })],
+      ['attention', session({ activityState: 'waiting-for-input' })],
+      ['live', session({ activityState: 'processing' })],
       ['idle', session({ idle: true })],
       [null, session({})],
     ];
@@ -149,19 +137,18 @@ describe('summaryForTab — session kind', () => {
     }
   });
 
-  it('builds meta string from agent and state', () => {
+  it('builds meta string from terminal and activity state', () => {
     const s = summaryForTab(sessionTab('s1'), {
-      findSession: () => session({ agent: 'claude', agentState: 'processing' }),
+      findSession: () => session({ activityState: 'processing' }),
     });
-    expect(s.meta).toBe('claude · processing');
+    expect(s.meta).toBe('terminal · relay-ide · processing');
   });
 
   it('appends cwd basename for terminal sessions', () => {
-    const s = summaryForTab(sessionTab('s1', 'terminal'), {
+    const s = summaryForTab(sessionTab('s1'), {
       findSession: () =>
         session({
           type: 'terminal',
-          agent: 'bash',
           cwd: '/Users/alice/code/relay-ide',
         }),
     });
@@ -209,7 +196,7 @@ describe('summaryForTab — nodeBadge', () => {
   });
 
   it('reads nodeId from session when tab.nodeId is unset', () => {
-    const s = summaryForTab(sessionTab('s1', 'terminal'), {
+    const s = summaryForTab(sessionTab('s1'), {
       findSession: () => session({ id: 's1', type: 'terminal', nodeId: 'mac' }),
       findNode: () => ({ label: 'macbook', status: 'stale' }),
     });
@@ -235,7 +222,10 @@ describe('sessionNodeBadge — shared sidebar/tab derivation (#864)', () => {
 
   it('stays quiet for local-node sessions', () => {
     expect(
-      sessionNodeBadge('local', () => ({ label: 'this host', status: 'online' }))
+      sessionNodeBadge('local', () => ({
+        label: 'this host',
+        status: 'online',
+      }))
     ).toBeUndefined();
   });
 

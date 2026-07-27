@@ -93,7 +93,6 @@ function remoteSession(
   return {
     id,
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath: '/srv/relay-ide',
     worktreePath: null,
@@ -109,7 +108,7 @@ function remoteSession(
     tmuxSessionName: 'relay-ide-remote-session-1',
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
     ...overrides,
   };
 }

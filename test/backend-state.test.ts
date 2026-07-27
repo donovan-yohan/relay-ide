@@ -5,14 +5,14 @@ import {
   onBackendStateChange,
 } from '../server/sessions.js';
 import type { BackendDisplayState } from '../server/sessions.js';
-import type { AgentState } from '../server/types.js';
+import type { TerminalActivityState } from '../server/types.js';
 
 // Minimal mock session shape for computeBackendState
 function mockState(
-  agentState: AgentState,
+  activityState: TerminalActivityState,
   idle: boolean
-): { agentState: AgentState; idle: boolean } {
-  return { agentState, idle };
+): { activityState: TerminalActivityState; idle: boolean } {
+  return { activityState, idle };
 }
 
 describe('computeBackendState', () => {
@@ -57,7 +57,7 @@ describe('fireBackendStateIfChanged', () => {
     // Minimal session mock — only the fields fireBackendStateIfChanged needs
     const session = {
       id: 'test-session-dedup',
-      agentState: 'processing' as AgentState,
+      activityState: 'processing' as TerminalActivityState,
       idle: false,
       _lastEmittedBackendState: undefined as string | undefined,
     } as Parameters<typeof fireBackendStateIfChanged>[0];

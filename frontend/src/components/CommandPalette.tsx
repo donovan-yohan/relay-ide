@@ -83,18 +83,6 @@ const SETTINGS_ENTRIES = [
     section: SEC_GENERAL,
   },
   {
-    id: 'setting-continue',
-    label: 'Continue Session',
-    description: 'Resume last session when opening a repo',
-    section: SEC_GENERAL,
-  },
-  {
-    id: 'setting-yolo',
-    label: 'YOLO Mode',
-    description: 'Skip permission checks',
-    section: SEC_GENERAL,
-  },
-  {
     id: 'setting-notifications',
     label: 'Notifications',
     description: 'Push notifications for sessions',

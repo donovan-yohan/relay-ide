@@ -27,7 +27,7 @@ function schemaTypeMatches(type: string, value: unknown): boolean {
 
 // The test intentionally implements the tiny JSON Schema subset used by the gateway
 // envelopes so this regression does not depend on an undeclared Ajv package.
-// eslint-disable-next-line sonarjs/cognitive-complexity
+
 function validateJsonSchema(
   schema: RelayJsonSchema | undefined,
   value: unknown,
@@ -56,7 +56,12 @@ function validateJsonSchema(
       return errors;
     }
   }
-  if (schema.type === 'object' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+  if (
+    schema.type === 'object' &&
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
     const objectValue = value as Record<string, unknown>;
     const properties = schema.properties ?? {};
     for (const required of schema.required ?? []) {
@@ -66,18 +71,23 @@ function validateJsonSchema(
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(objectValue)) {
-        if (!(key in properties)) errors.push(`${path} has additional property ${key}`);
+        if (!(key in properties))
+          errors.push(`${path} has additional property ${key}`);
       }
     }
     for (const [key, childSchema] of Object.entries(properties)) {
       if (key in objectValue) {
-        errors.push(...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`));
+        errors.push(
+          ...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`)
+        );
       }
     }
   }
   if (schema.type === 'array' && Array.isArray(value) && schema.items) {
     for (let index = 0; index < value.length; index += 1) {
-      errors.push(...validateJsonSchema(schema.items, value[index], `${path}[${index}]`));
+      errors.push(
+        ...validateJsonSchema(schema.items, value[index], `${path}[${index}]`)
+      );
     }
   }
   return errors;
@@ -89,7 +99,6 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     globalSessionId: 'remote-1:sess-1',
     nodeId: 'remote-1',
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     cwd: '/home/me/repo',
     repoPath: '/home/me/repo',
@@ -98,6 +107,7 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     createdAt: '2026-06-03T00:00:00.000Z',
     lastActivity: '2026-06-03T00:00:00.000Z',
     idle: true,
+    activityState: 'idle',
     status: 'active',
     ...overrides,
   } as SessionSummary;
@@ -125,24 +135,25 @@ describe('sessions.create frontend action contract', () => {
     expect(descriptor.error).toMatchObject({
       kind: 'typed-shape',
       type: 'RelayCliGatewayErrorEnvelope',
-      schema: expect.objectContaining({ title: 'RelayCliGatewayErrorEnvelope' }),
+      schema: expect.objectContaining({
+        title: 'RelayCliGatewayErrorEnvelope',
+      }),
     });
     expect(descriptor.surfaces).toEqual(
       expect.arrayContaining(['cli', 'agent', 'web', 'command-center'])
     );
   });
 
-  it('attaches sessions.create to launch action metadata without promoting dialog-only actions', () => {
-    for (const action of [
-      sessionNewAgent,
-      sessionNewTerminal,
-      sessionStartOnRepo,
-      sessionStartWorkInEnv,
-    ]) {
+  it('attaches sessions.create only to terminal launch action metadata', () => {
+    for (const action of [sessionNewTerminal, sessionStartWorkInEnv]) {
       expect(action.descriptor?.id).toBe('sessions.create');
       expect(action.descriptor?.stable).toBe(true);
-      expect(action.descriptor?.contract?.relayCommandName).toBe('sessions.create');
+      expect(action.descriptor?.contract?.relayCommandName).toBe(
+        'sessions.create'
+      );
     }
+    expect(sessionNewAgent.descriptor).toBeUndefined();
+    expect(sessionStartOnRepo.descriptor).toBeUndefined();
   });
 
   it('keeps launch actions enabled in a workspace command context', () => {
@@ -158,7 +169,7 @@ describe('sessions.create frontend action contract', () => {
     }
   });
 
-  it('executes a web launch as the stable CLI gateway success envelope', async () => {
+  it('executes a terminal launch as the stable CLI gateway success envelope', async () => {
     const descriptor = sessionCreateActionDescriptor();
     const result = await executeSessionCreateAction(
       {
@@ -310,7 +321,9 @@ describe('sessions.create frontend action contract', () => {
       reason: 'node is offline',
       capabilityHints: expect.arrayContaining(['session:create:terminal']),
     });
-    expect(sessionCreateActionAvailability({ cwd: '/home/me/repo' })).toMatchObject({
+    expect(
+      sessionCreateActionAvailability({ cwd: '/home/me/repo' })
+    ).toMatchObject({
       state: 'available',
     });
   });

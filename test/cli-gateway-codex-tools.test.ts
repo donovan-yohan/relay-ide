@@ -12,7 +12,10 @@ import {
   generateRelayCodexGatewayOpenAiToolDescriptors,
   generateRelayCodexGatewayTools,
 } from '../shared/cli-gateway-codex-tools.js';
-import { RELAY_CLI_GATEWAY_CONTRACT, commandSpec } from '../shared/cli-gateway-contract.js';
+import {
+  RELAY_CLI_GATEWAY_CONTRACT,
+  commandSpec,
+} from '../shared/cli-gateway-contract.js';
 
 type CapturedGatewayRequest = {
   method: string | undefined;
@@ -26,7 +29,8 @@ type CapturedGatewayRequest = {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -39,7 +43,9 @@ async function close(server: http.Server): Promise<void> {
 
 test('generates Codex tool, MCP, and function descriptors from the v1 contract', () => {
   const tools = generateRelayCodexGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
-  expect(tools.map((tool) => tool.relay.command)).toEqual([...CLI_GATEWAY_CODEX_SMOKE_COMMANDS]);
+  expect(tools.map((tool) => tool.relay.command)).toEqual([
+    ...CLI_GATEWAY_CODEX_SMOKE_COMMANDS,
+  ]);
   expect(tools.map((tool) => tool.name)).toEqual([
     'relay_codex_gateway_nodes_list',
     'relay_codex_gateway_sessions_create',
@@ -53,7 +59,9 @@ test('generates Codex tool, MCP, and function descriptors from the v1 contract',
   const readTool = tools.find((tool) => tool.relay.command === 'files.read');
   expect(readTool?.parameters).toBe(commandSpec('files.read').inputSchema);
   expect(readTool?.mcp.inputSchema).toBe(commandSpec('files.read').inputSchema);
-  expect(readTool?.function.function.parameters).toBe(commandSpec('files.read').inputSchema);
+  expect(readTool?.function.function.parameters).toBe(
+    commandSpec('files.read').inputSchema
+  );
   expect(readTool?.openai).toEqual({
     type: 'function',
     name: 'relay_codex_gateway_files_read',
@@ -67,8 +75,12 @@ test('generates Codex tool, MCP, and function descriptors from the v1 contract',
     requiresAuth: true,
   });
 
-  const mcpDescriptors = generateRelayCodexGatewayMcpDescriptors(RELAY_CLI_GATEWAY_CONTRACT);
-  const functionDescriptors = generateRelayCodexGatewayFunctionDescriptors(RELAY_CLI_GATEWAY_CONTRACT);
+  const mcpDescriptors = generateRelayCodexGatewayMcpDescriptors(
+    RELAY_CLI_GATEWAY_CONTRACT
+  );
+  const functionDescriptors = generateRelayCodexGatewayFunctionDescriptors(
+    RELAY_CLI_GATEWAY_CONTRACT
+  );
   const openaiToolDescriptors = generateRelayCodexGatewayOpenAiToolDescriptors(
     RELAY_CLI_GATEWAY_CONTRACT
   );
@@ -82,7 +94,11 @@ test('generates Codex tool, MCP, and function descriptors from the v1 contract',
 test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over public v1 commands', async () => {
   const tools = generateRelayCodexGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
   const captured: CapturedGatewayRequest[] = [];
-  const upgrades: Array<{ url?: string; cookie?: string; marker?: string | string[] }> = [];
+  const upgrades: Array<{
+    url?: string;
+    cookie?: string;
+    marker?: string | string[];
+  }> = [];
   const inputs: string[] = [];
   let sessionAlive = false;
   const session = {
@@ -90,7 +106,6 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',
@@ -116,7 +131,9 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       if (req.method === 'GET' && req.url === '/nodes') {
         res.end(
           JSON.stringify({
-            nodes: [{ nodeId: 'node-a', status: 'online', availability: 'available' }],
+            nodes: [
+              { nodeId: 'node-a', status: 'online', availability: 'available' },
+            ],
           })
         );
         return;
@@ -127,7 +144,11 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
         res.end(JSON.stringify(session));
         return;
       }
-      if (req.method === 'GET' && req.url === '/sessions/remote-session-1' && sessionAlive) {
+      if (
+        req.method === 'GET' &&
+        req.url === '/sessions/remote-session-1' &&
+        sessionAlive
+      ) {
         res.end(JSON.stringify(session));
         return;
       }
@@ -154,7 +175,9 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       }
       if (req.method === 'DELETE') sessionAlive = false;
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
   const wss = new WebSocketServer({ noServer: true });
@@ -193,17 +216,25 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
 
     const nodes = await runner.callTool('relay_codex_gateway_nodes_list');
     expect(nodes).toMatchObject({ ok: true, command: 'nodes.list' });
-    if (Array.isArray(nodes) || !nodes.ok) throw new Error('expected nodes.list to succeed');
+    if (Array.isArray(nodes) || !nodes.ok)
+      throw new Error('expected nodes.list to succeed');
     expect((nodes.data as { nodes: unknown[] }).nodes).toHaveLength(1);
 
-    const created = await runner.callTool('relay_codex_gateway_sessions_create', {
-      nodeId: 'node-a',
-      cwd: '/fixture',
-      type: 'terminal',
-    });
+    const created = await runner.callTool(
+      'relay_codex_gateway_sessions_create',
+      {
+        nodeId: 'node-a',
+        cwd: '/fixture',
+        type: 'terminal',
+      }
+    );
     expect(created).toMatchObject({ ok: true, command: 'sessions.create' });
-    if (Array.isArray(created) || !created.ok) throw new Error('expected sessions.create to succeed');
-    expect(created.data).toMatchObject({ id: 'remote-session-1', nodeId: 'node-a' });
+    if (Array.isArray(created) || !created.ok)
+      throw new Error('expected sessions.create to succeed');
+    expect(created.data).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node-a',
+    });
 
     const read = await runner.callTool('relay_codex_gateway_files_read', {
       sessionId: 'remote-session-1',
@@ -212,23 +243,37 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       maxLines: 2,
     });
     expect(read).toMatchObject({ ok: true, command: 'files.read' });
-    if (Array.isArray(read) || !read.ok) throw new Error('expected files.read to succeed');
-    expect(read.data).toMatchObject({ content: 'hello codex gateway\n', maxBytes: 64, maxLines: 2 });
-
-    const defaultPathRead = await runner.callTool('relay_codex_gateway_files_read', {
-      sessionId: 'remote-session-1',
+    if (Array.isArray(read) || !read.ok)
+      throw new Error('expected files.read to succeed');
+    expect(read.data).toMatchObject({
+      content: 'hello codex gateway\n',
+      maxBytes: 64,
+      maxLines: 2,
     });
+
+    const defaultPathRead = await runner.callTool(
+      'relay_codex_gateway_files_read',
+      {
+        sessionId: 'remote-session-1',
+      }
+    );
     expect(defaultPathRead).toMatchObject({ ok: true, command: 'files.read' });
     if (Array.isArray(defaultPathRead) || !defaultPathRead.ok) {
       throw new Error('expected files.read with omitted path to succeed');
     }
-    expect(defaultPathRead.data).toMatchObject({ content: 'hello codex gateway\n' });
-
-    const stream = await runner.callTool('relay_codex_gateway_sessions_stream', {
-      id: 'remote-session-1',
-      maxEvents: 1,
+    expect(defaultPathRead.data).toMatchObject({
+      content: 'hello codex gateway\n',
     });
-    if (!Array.isArray(stream)) throw new Error('expected sessions.stream to return NDJSON envelopes');
+
+    const stream = await runner.callTool(
+      'relay_codex_gateway_sessions_stream',
+      {
+        id: 'remote-session-1',
+        maxEvents: 1,
+      }
+    );
+    if (!Array.isArray(stream))
+      throw new Error('expected sessions.stream to return NDJSON envelopes');
     expect(stream[0]).toMatchObject({
       ok: true,
       command: 'sessions.stream',
@@ -240,11 +285,16 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       data: { event: 'closed', frames: 1, truncated: false },
     });
 
-    const defaultBoundedStream = await runner.callTool('relay_codex_gateway_sessions_stream', {
-      id: 'remote-session-1',
-    });
+    const defaultBoundedStream = await runner.callTool(
+      'relay_codex_gateway_sessions_stream',
+      {
+        id: 'remote-session-1',
+      }
+    );
     if (!Array.isArray(defaultBoundedStream)) {
-      throw new Error('expected default sessions.stream to return NDJSON envelopes');
+      throw new Error(
+        'expected default sessions.stream to return NDJSON envelopes'
+      );
     }
     expect(defaultBoundedStream.at(-1)).toMatchObject({
       ok: true,
@@ -283,14 +333,21 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       command: 'sessions.input',
       data: { matched: true, nodeId: 'node-a' },
     });
-    if (Array.isArray(input) || !input.ok) throw new Error('expected sessions.input to succeed');
-    expect((input.data as { output: string }).output).toContain('echo:marker-input\n');
+    if (Array.isArray(input) || !input.ok)
+      throw new Error('expected sessions.input to succeed');
+    expect((input.data as { output: string }).output).toContain(
+      'echo:marker-input\n'
+    );
 
-    const detached = await runner.callTool('relay_codex_gateway_sessions_detach', {
-      id: 'remote-session-1',
-    });
+    const detached = await runner.callTool(
+      'relay_codex_gateway_sessions_detach',
+      {
+        id: 'remote-session-1',
+      }
+    );
     expect(detached).toMatchObject({ ok: true, command: 'sessions.detach' });
-    if (Array.isArray(detached) || !detached.ok) throw new Error('expected sessions.detach to succeed');
+    if (Array.isArray(detached) || !detached.ok)
+      throw new Error('expected sessions.detach to succeed');
     expect(detached.data).toMatchObject({ detached: true, killed: false });
   } finally {
     wss.close();
@@ -350,7 +407,6 @@ test('generated Codex session rename tool forwards displayName to the PATCH body
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',
@@ -390,7 +446,9 @@ test('generated Codex session rename tool forwards displayName to the PATCH body
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 
@@ -406,10 +464,13 @@ test('generated Codex session rename tool forwards displayName to the PATCH body
       },
     });
 
-    const renamed = await runner.callTool('relay_codex_gateway_sessions_rename', {
-      id: 'remote-session-1',
-      displayName: 'wanted name',
-    });
+    const renamed = await runner.callTool(
+      'relay_codex_gateway_sessions_rename',
+      {
+        id: 'remote-session-1',
+        displayName: 'wanted name',
+      }
+    );
     expect(renamed).toMatchObject({
       ok: true,
       command: 'sessions.rename',
@@ -474,11 +535,15 @@ test('Codex sessions.stream runner has stdout buffer headroom for schema-valid m
       commandArgsPrefix: [scriptPath],
     });
 
-    const stream = await runner.callTool('relay_codex_gateway_sessions_stream', {
-      id: 'large-session-1',
-      maxBytes: 1024 * 1024,
-    });
-    if (!Array.isArray(stream)) throw new Error('expected sessions.stream to return NDJSON envelopes');
+    const stream = await runner.callTool(
+      'relay_codex_gateway_sessions_stream',
+      {
+        id: 'large-session-1',
+        maxBytes: 1024 * 1024,
+      }
+    );
+    if (!Array.isArray(stream))
+      throw new Error('expected sessions.stream to return NDJSON envelopes');
     expect(stream[0]).toMatchObject({
       ok: true,
       command: 'sessions.stream',
@@ -498,4 +563,3 @@ test('Codex sessions.stream runner has stdout buffer headroom for schema-valid m
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
-

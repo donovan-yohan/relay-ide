@@ -8,7 +8,10 @@ import {
   generateRelayHermesGatewayMcpDescriptors,
   generateRelayHermesGatewayTools,
 } from '../shared/cli-gateway-hermes-tools.js';
-import { RELAY_CLI_GATEWAY_CONTRACT, commandSpec } from '../shared/cli-gateway-contract.js';
+import {
+  RELAY_CLI_GATEWAY_CONTRACT,
+  commandSpec,
+} from '../shared/cli-gateway-contract.js';
 
 type CapturedGatewayRequest = {
   method: string | undefined;
@@ -22,7 +25,8 @@ type CapturedGatewayRequest = {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -35,7 +39,9 @@ async function close(server: http.Server): Promise<void> {
 
 test('generates Hermes tool, MCP, and function descriptors from the v1 contract', () => {
   const tools = generateRelayHermesGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
-  expect(tools.map((tool) => tool.relay.command)).toEqual([...CLI_GATEWAY_HERMES_SMOKE_COMMANDS]);
+  expect(tools.map((tool) => tool.relay.command)).toEqual([
+    ...CLI_GATEWAY_HERMES_SMOKE_COMMANDS,
+  ]);
   expect(tools.map((tool) => tool.name)).toEqual([
     'relay_gateway_nodes_list',
     'relay_gateway_sessions_create',
@@ -49,7 +55,9 @@ test('generates Hermes tool, MCP, and function descriptors from the v1 contract'
   const readTool = tools.find((tool) => tool.relay.command === 'files.read');
   expect(readTool?.parameters).toBe(commandSpec('files.read').inputSchema);
   expect(readTool?.mcp.inputSchema).toBe(commandSpec('files.read').inputSchema);
-  expect(readTool?.function.function.parameters).toBe(commandSpec('files.read').inputSchema);
+  expect(readTool?.function.function.parameters).toBe(
+    commandSpec('files.read').inputSchema
+  );
   expect(readTool?.relay).toMatchObject({
     contract: 'v1',
     contractVersion: '1.0',
@@ -57,8 +65,12 @@ test('generates Hermes tool, MCP, and function descriptors from the v1 contract'
     requiresAuth: true,
   });
 
-  const mcpDescriptors = generateRelayHermesGatewayMcpDescriptors(RELAY_CLI_GATEWAY_CONTRACT);
-  const functionDescriptors = generateRelayHermesGatewayFunctionDescriptors(RELAY_CLI_GATEWAY_CONTRACT);
+  const mcpDescriptors = generateRelayHermesGatewayMcpDescriptors(
+    RELAY_CLI_GATEWAY_CONTRACT
+  );
+  const functionDescriptors = generateRelayHermesGatewayFunctionDescriptors(
+    RELAY_CLI_GATEWAY_CONTRACT
+  );
   expect(mcpDescriptors.map((descriptor) => descriptor.inputSchema)).toEqual(
     tools.map((tool) => tool.parameters)
   );
@@ -68,7 +80,11 @@ test('generates Hermes tool, MCP, and function descriptors from the v1 contract'
 test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke over public v1 commands', async () => {
   const tools = generateRelayHermesGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
   const captured: CapturedGatewayRequest[] = [];
-  const upgrades: Array<{ url?: string; cookie?: string; marker?: string | string[] }> = [];
+  const upgrades: Array<{
+    url?: string;
+    cookie?: string;
+    marker?: string | string[];
+  }> = [];
   const inputs: string[] = [];
   let sessionAlive = false;
   const session = {
@@ -76,7 +92,6 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',
@@ -102,7 +117,9 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       if (req.method === 'GET' && req.url === '/nodes') {
         res.end(
           JSON.stringify({
-            nodes: [{ nodeId: 'node-a', status: 'online', availability: 'available' }],
+            nodes: [
+              { nodeId: 'node-a', status: 'online', availability: 'available' },
+            ],
           })
         );
         return;
@@ -113,7 +130,11 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
         res.end(JSON.stringify(session));
         return;
       }
-      if (req.method === 'GET' && req.url === '/sessions/remote-session-1' && sessionAlive) {
+      if (
+        req.method === 'GET' &&
+        req.url === '/sessions/remote-session-1' &&
+        sessionAlive
+      ) {
         res.end(JSON.stringify(session));
         return;
       }
@@ -140,7 +161,9 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       }
       if (req.method === 'DELETE') sessionAlive = false;
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
   const wss = new WebSocketServer({ noServer: true });
@@ -179,7 +202,8 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
 
     const nodes = await runner.callTool('relay_gateway_nodes_list');
     expect(nodes).toMatchObject({ ok: true, command: 'nodes.list' });
-    if (Array.isArray(nodes) || !nodes.ok) throw new Error('expected nodes.list to succeed');
+    if (Array.isArray(nodes) || !nodes.ok)
+      throw new Error('expected nodes.list to succeed');
     expect((nodes.data as { nodes: unknown[] }).nodes).toHaveLength(1);
 
     const created = await runner.callTool('relay_gateway_sessions_create', {
@@ -188,8 +212,12 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       type: 'terminal',
     });
     expect(created).toMatchObject({ ok: true, command: 'sessions.create' });
-    if (Array.isArray(created) || !created.ok) throw new Error('expected sessions.create to succeed');
-    expect(created.data).toMatchObject({ id: 'remote-session-1', nodeId: 'node-a' });
+    if (Array.isArray(created) || !created.ok)
+      throw new Error('expected sessions.create to succeed');
+    expect(created.data).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node-a',
+    });
 
     const read = await runner.callTool('relay_gateway_files_read', {
       sessionId: 'remote-session-1',
@@ -198,14 +226,20 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       maxLines: 2,
     });
     expect(read).toMatchObject({ ok: true, command: 'files.read' });
-    if (Array.isArray(read) || !read.ok) throw new Error('expected files.read to succeed');
-    expect(read.data).toMatchObject({ content: 'hello hermes gateway\n', maxBytes: 64, maxLines: 2 });
+    if (Array.isArray(read) || !read.ok)
+      throw new Error('expected files.read to succeed');
+    expect(read.data).toMatchObject({
+      content: 'hello hermes gateway\n',
+      maxBytes: 64,
+      maxLines: 2,
+    });
 
     const stream = await runner.callTool('relay_gateway_sessions_stream', {
       id: 'remote-session-1',
       maxEvents: 1,
     });
-    if (!Array.isArray(stream)) throw new Error('expected sessions.stream to return NDJSON envelopes');
+    if (!Array.isArray(stream))
+      throw new Error('expected sessions.stream to return NDJSON envelopes');
     expect(stream[0]).toMatchObject({
       ok: true,
       command: 'sessions.stream',
@@ -243,12 +277,18 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       command: 'sessions.input',
       data: { matched: true, nodeId: 'node-a' },
     });
-    if (Array.isArray(input) || !input.ok) throw new Error('expected sessions.input to succeed');
-    expect((input.data as { output: string }).output).toContain('echo:marker-input\n');
+    if (Array.isArray(input) || !input.ok)
+      throw new Error('expected sessions.input to succeed');
+    expect((input.data as { output: string }).output).toContain(
+      'echo:marker-input\n'
+    );
 
-    const detached = await runner.callTool('relay_gateway_sessions_detach', { id: 'remote-session-1' });
+    const detached = await runner.callTool('relay_gateway_sessions_detach', {
+      id: 'remote-session-1',
+    });
     expect(detached).toMatchObject({ ok: true, command: 'sessions.detach' });
-    if (Array.isArray(detached) || !detached.ok) throw new Error('expected sessions.detach to succeed');
+    if (Array.isArray(detached) || !detached.ok)
+      throw new Error('expected sessions.detach to succeed');
     expect(detached.data).toMatchObject({ detached: true, killed: false });
   } finally {
     wss.close();
@@ -272,7 +312,9 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
     marker: 'v1',
     capabilities: 'session:read',
   });
-  expect(captured.find((entry) => entry.url?.endsWith('/files/read'))?.body).toMatchObject({
+  expect(
+    captured.find((entry) => entry.url?.endsWith('/files/read'))?.body
+  ).toMatchObject({
     path: 'hello.txt',
     maxBytes: 64,
     maxLines: 2,
@@ -299,7 +341,6 @@ test('generated Hermes session rename tool forwards displayName to the PATCH bod
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',
@@ -339,7 +380,9 @@ test('generated Hermes session rename tool forwards displayName to the PATCH bod
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 

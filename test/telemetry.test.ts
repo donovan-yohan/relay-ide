@@ -13,7 +13,6 @@ import {
   stopTelemetry,
   type TelemetryDeps,
 } from '../server/telemetry.js';
-import { getAdapterForFramework } from '../server/telemetry-adapter.js';
 import type { Session } from '../server/types.js';
 
 const noopAuth = (
@@ -104,56 +103,15 @@ function sampleStatusLinePayload(): Record<string, unknown> {
   };
 }
 
-test('parses session telemetry from the statusLine file', () => {
+test('does not infer provider telemetry from a public terminal session', () => {
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   writeStatusLineFile('abc-123', sampleStatusLinePayload());
 
   startTelemetry(makeDeps(['abc-123'], events));
 
-  const session = getTelemetryForSession('abc-123');
-  const account = getAccountTelemetry();
-  expect(session).toEqual({
-    sessionId: 'abc-123',
-    model: 'Claude Opus 4.6',
-    totalInputTokens: 12400,
-    totalOutputTokens: 3200,
-    totalCacheRead: 5000,
-    totalCacheWrite: 1000,
-    reasoningOutputTokens: 0,
-    contextPercent: 7.8,
-    contextWindowSize: 200000,
-    costUsd: 0.42,
-    source: 'statusLine',
-    updatedAt: session?.updatedAt,
-  });
-
-  expect(account).toEqual({
-    claude: {
-      framework: 'claude',
-      rateLimits: [
-        {
-          name: 'five_hour',
-          usedPercent: 22,
-          resetsAt: '2026-03-31T19:30:00Z',
-          windowMinutes: 300,
-        },
-        {
-          name: 'seven_day',
-          usedPercent: 8,
-          resetsAt: '2026-04-03T00:00:00Z',
-          windowMinutes: 10080,
-        },
-      ],
-      updatedAt: account?.claude?.updatedAt,
-    },
-  });
-
-  expect(
-    events.filter((event) => event.type === 'session-telemetry').length
-  ).toBe(1);
-  expect(
-    events.filter((event) => event.type === 'account-telemetry').length
-  ).toBe(1);
+  expect(getTelemetryForSession('abc-123')).toBeUndefined();
+  expect(getAccountTelemetry()).toEqual({});
+  expect(events).toEqual([]);
 });
 
 test('missing statusLine file leaves telemetry undefined', () => {
@@ -193,7 +151,7 @@ test('inactive sessions are pruned once active telemetry is available', () => {
   startTelemetry(makeDeps(['fresh'], []));
 
   expect(getTelemetryForSession('stale')).toBe(undefined);
-  expect(getTelemetryForSession('fresh')).toBeTruthy();
+  expect(getTelemetryForSession('fresh')).toBeUndefined();
 });
 
 test('malformed statusLine JSON is ignored without crashing', () => {
@@ -377,7 +335,7 @@ test('stopTelemetry ignores pending persistence write failures', () => {
   }).not.toThrow();
 });
 
-test('collectTelemetry reuses a single active session snapshot per poll', () => {
+test('collectTelemetry reads the terminal registry once without provider polling', () => {
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   let calls = 0;
 
@@ -396,9 +354,7 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
   });
 
   expect(calls).toBe(1);
-  expect(
-    events.filter((event) => event.type === 'session-telemetry').length
-  ).toBe(1);
+  expect(events).toEqual([]);
 });
 
 test('rejects v1 pending telemetry files and cleans them up', () => {
@@ -500,39 +456,4 @@ test('multiple frameworks telemetry coexist without overwriting', () => {
   const allAccountTelemetry = getAccountTelemetry();
   expect(allAccountTelemetry.claude).toEqual(claudeAccount);
   expect(allAccountTelemetry.opencode).toEqual(opencodeAccount);
-});
-
-test('Codex adapter registered and discoverable via getAdapterForFramework', () => {
-  const deps = makeDeps([], []);
-
-  const adapter = getAdapterForFramework('codex', deps);
-
-  expect(adapter).toBeTruthy();
-  expect(adapter!.framework).toBe('codex');
-});
-
-test('multi-adapter coexistence: Claude and Codex adapters work independently', () => {
-  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
-
-  writeStatusLineFile('claude-session', sampleStatusLinePayload());
-
-  const deps: TelemetryDeps = {
-    configDir: tmpDir,
-    getActiveSessions: () => [
-      { id: 'codex-session', agent: 'codex' } as Session,
-      { id: 'claude-session', agent: 'claude' } as Session,
-    ],
-    broadcastEvent: (type, data) => {
-      if (data === undefined) events.push({ type });
-      else events.push({ type, data });
-    },
-  };
-
-  startTelemetry(deps);
-
-  const claudeTelemetry = getTelemetryForSession('claude-session');
-
-  expect(claudeTelemetry).toBeTruthy();
-  expect(claudeTelemetry!.source).toBe('statusLine');
-  expect(claudeTelemetry!.totalInputTokens).toBe(12400);
 });

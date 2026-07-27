@@ -10,11 +10,7 @@ import {
 } from '../shared/node-boundary.js';
 
 import { createLocalRelayNode } from '../server/local-node.js';
-import type {
-  CreateParams,
-  CreateResult,
-  CreateWebParams,
-} from '../server/sessions.js';
+import type { CreateParams, CreateResult } from '../server/sessions.js';
 
 describe('node boundary primitives', () => {
   it('declares a stable local environment authority for local mode events', () => {
@@ -97,10 +93,6 @@ describe('node boundary primitives', () => {
         create: (params: CreateParams): CreateResult => {
           calls.push('create');
           return { id: params.id ?? 'created' } as CreateResult;
-        },
-        createWeb: async (params: CreateWebParams) => {
-          calls.push('createWeb');
-          return { session: { id: params.id ?? 'web' } as CreateResult };
         },
         kill: (id: string) => {
           calls.push(`kill:${id}`);

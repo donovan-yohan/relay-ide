@@ -68,7 +68,6 @@ import {
   appendPolicyAudit,
   evaluateHubPolicy,
   type HubPolicyDecision,
-  isSessionCreateType,
   policyDecisionToRelayError,
   requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
@@ -183,10 +182,7 @@ interface HubNodeRouterOptions {
     expiresAt: string;
     now?: Date;
   }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
-  releaseRoutedPtyControlSession?: (
-    nodeId: string,
-    sessionId: string
-  ) => void;
+  releaseRoutedPtyControlSession?: (nodeId: string, sessionId: string) => void;
   releaseRoutedPtyControlSessionsForNode?: (nodeId: string) => void;
   confirmations?: ConfirmationChallengeStore;
   operatorHandshakeGrants?: HandshakeGrantRegistry;
@@ -254,7 +250,6 @@ function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
   return (
     (session.controlMode === undefined || isControlMode(session.controlMode)) &&
     activeActorsOk &&
-    optionalControlActorOk(session.activeWorker) &&
     optionalControlStringOk(session.lastInterventionAt) &&
     optionalControlActorOk(session.lastInterventionBy) &&
     optionalControlStringOk(session.lastInterventionEventId) &&
@@ -391,8 +386,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
   const session = value as Partial<SessionSummary>;
   return (
     typeof session.id === 'string' &&
-    (session.type === 'agent' || session.type === 'terminal') &&
-    (session.mode === 'pty' || session.mode === 'web') &&
+    session.type === 'terminal' &&
+    session.mode === 'pty' &&
     sessionAssociationFieldsOk(session) &&
     typeof session.cwd === 'string' &&
     controlSummaryFieldsOk(session) &&
@@ -405,7 +400,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
       session.customCommand === null) &&
     (session.status === 'active' || session.status === 'disconnected') &&
     typeof session.needsBranchRename === 'boolean' &&
-    typeof session.agentState === 'string'
+    typeof session.activityState === 'string'
   );
 }
 
@@ -1190,8 +1185,7 @@ export function coldReopenSessionPayload(
   delete payload['target'];
   delete payload['repoIdentity'];
   delete payload['sourceSession'];
-  payload['type'] =
-    typeof payload['type'] === 'string' ? payload['type'] : 'agent';
+  payload['type'] = 'terminal';
   payload['repoPath'] = target.repo.localPath;
   payload['worktreePath'] = target.worktree?.localPath ?? null;
   if (target.branchName) payload['branchName'] = target.branchName;
@@ -4239,25 +4233,17 @@ export function createHubNodeRouter(
         return;
       }
       const rawSessionType = routedBody['type'];
-      if (
-        rawSessionType !== undefined &&
-        !isSessionCreateType(rawSessionType)
-      ) {
+      if (rawSessionType !== undefined && rawSessionType !== 'terminal') {
         sendRelayError(
           res,
-          relayError(
-            'INVALID_REQUEST',
-            'type must be agent or terminal',
-            false,
-            {
-              reasonCode: 'INVALID_SESSION_TYPE',
-              field: 'type',
-            }
-          )
+          relayError('INVALID_REQUEST', 'type must be terminal', false, {
+            reasonCode: 'INVALID_SESSION_TYPE',
+            field: 'type',
+          })
         );
         return;
       }
-      const sessionType = rawSessionType === 'agent' ? 'agent' : 'terminal';
+      const sessionType = 'terminal';
       const policyDecision = evaluateHubPolicy({
         peer: { kind: 'hub' },
         node,

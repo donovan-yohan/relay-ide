@@ -1,16 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildAgentArgs,
   parseRenderedScreenMaxLines,
   resolveSessionDisplayName,
   resolveSessionLaunchPaths,
   validateSessionCreateRequest,
 } from '../server/index.js';
-import {
-  AGENT_CONTINUE_ARGS,
-  AGENT_YOLO_ARGS,
-  type Config,
-} from '../server/types.js';
+import { type Config } from '../server/types.js';
 import type { WorkContextStore } from '../server/work-context.js';
 
 // Minimal config stub with the two repos we'll test with
@@ -79,12 +74,12 @@ describe('validateSessionCreateRequest', () => {
   const config = makeConfig([configuredPath, nonGitPath]);
   const store = makeStore();
 
-  it('returns true for agent session with configured repoPath', () => {
+  it('returns true for a terminal with configured repoPath', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       configuredPath,
       undefined,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -94,12 +89,12 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(200); // no error response sent
   });
 
-  it('returns true for agent session with cwd inside a configured repo (worktree)', () => {
+  it('returns true for a terminal with cwd inside a configured repo (worktree)', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
       `${configuredPath}/.worktrees/issue-123`,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -114,7 +109,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       undefined,
       `${configuredPath}-evil`,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -124,12 +119,12 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns true for agent session with configured cwd (no repoPath)', () => {
+  it('returns true for a terminal with configured cwd (no repoPath)', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
       nonGitPath,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -139,12 +134,12 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns false with 400 for agent session with no launch anchor', () => {
+  it('returns false with 400 for a terminal with no launch anchor', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
       undefined,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -153,16 +148,16 @@ describe('validateSessionCreateRequest', () => {
     expect(result).toBe(false);
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({
-      error: 'agent sessions require a repoPath or cwd launch anchor',
+      error: 'terminal sessions require a repoPath or cwd launch anchor',
     });
   });
 
-  it('returns false with 400 for agent session with unconfigured repoPath', () => {
+  it('returns false with 400 for a terminal with unconfigured repoPath', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       unconfiguredPath,
       undefined,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -242,7 +237,7 @@ describe('validateSessionCreateRequest', () => {
     });
   });
 
-  it('defaults to agent type when type is undefined', () => {
+  it('defaults to terminal type when type is undefined', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
@@ -262,7 +257,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       undefined,
       '/unlisted/dev/repo',
-      'agent',
+      'terminal',
       makeConfig([]),
       store,
       undefined,
@@ -277,7 +272,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       configuredPath,
       undefined,
-      'agent',
+      'terminal',
       config,
       store,
       'missing-context-id',
@@ -297,7 +292,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       configuredPath,
       '/home/user/.ssh',
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -307,7 +302,7 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({
       error:
-        'agent sessions require a repoPath or cwd inside a configured project path',
+        'terminal sessions require a repoPath or cwd inside a configured project path',
     });
   });
 
@@ -316,7 +311,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       configuredPath,
       `${configuredPath}/.worktrees/issue-9`,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -340,7 +335,7 @@ describe('validateSessionCreateRequest', () => {
     const result = validateSessionCreateRequest(
       requestedRepoPath,
       cwd,
-      'agent',
+      'terminal',
       config,
       store,
       undefined,
@@ -395,50 +390,6 @@ describe('resolveSessionDisplayName', () => {
     expect(resolveSessionDisplayName(undefined, () => 'Terminal 3')).toBe(
       'Terminal 3'
     );
-  });
-});
-
-describe('buildAgentArgs claudeArgs leak gate', () => {
-  // config.claudeArgs holds Claude-only flags (--model/--effort). Folding them
-  // into codex/opencode/hermes spawns exits those CLIs with code 2 within ~1s.
-  const claudeArgs = ['--model', 'opus', '--effort', 'high'];
-
-  it('omits claudeArgs from codex spawns when config.claudeArgs is non-empty', () => {
-    const args = buildAgentArgs('codex', claudeArgs, false, undefined);
-    expect(args).not.toContain('--model');
-    expect(args).not.toContain('--effort');
-    expect(args).toEqual([]);
-  });
-
-  it('omits claudeArgs from opencode and hermes spawns', () => {
-    for (const agent of ['opencode', 'hermes'] as const) {
-      const args = buildAgentArgs(agent, claudeArgs, false, undefined);
-      expect(args).not.toContain('--model');
-      expect(args).not.toContain('--effort');
-    }
-  });
-
-  it('still passes claudeArgs to claude spawns', () => {
-    const args = buildAgentArgs('claude', claudeArgs, false, undefined);
-    expect(args).toEqual(['--model', 'opus', '--effort', 'high']);
-  });
-
-  it('keeps yolo + continue composition around claudeArgs for claude', () => {
-    const args = buildAgentArgs('claude', claudeArgs, true, 'always');
-    expect(args).toEqual([
-      ...(AGENT_CONTINUE_ARGS['claude'] ?? []),
-      ...claudeArgs,
-      ...(AGENT_YOLO_ARGS['claude'] ?? []),
-    ]);
-  });
-
-  it('keeps yolo + continue composition for codex without leaking claudeArgs', () => {
-    const args = buildAgentArgs('codex', claudeArgs, true, 'always');
-    expect(args).toEqual([
-      ...(AGENT_CONTINUE_ARGS['codex'] ?? []),
-      ...(AGENT_YOLO_ARGS['codex'] ?? []),
-    ]);
-    expect(args).not.toContain('--model');
   });
 });
 

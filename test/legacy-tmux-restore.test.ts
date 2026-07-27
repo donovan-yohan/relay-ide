@@ -33,8 +33,7 @@ describe('legacy tmux pending session restore', () => {
         sessions: [
           {
             id: 'legacy-tmux-session',
-            type: 'agent',
-            agent: 'claude',
+            type: 'terminal',
             repoPath: '/tmp',
             worktreePath: null,
             cwd: '/tmp',

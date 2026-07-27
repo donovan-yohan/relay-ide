@@ -32,15 +32,6 @@ export interface ResolveAppViewModeInput {
    * never a stale composer or a leftover session surface.
    */
   hasActiveChannel?: boolean;
-  /**
-   * Transport mode of the active session. Web-mode rows stay in the chat shell
-   * (#1224: the retired `ChatView` surface is replaced by an archived-state
-   * tombstone rendered by `ChatHome`); live PTY agent/terminal sessions surface
-   * their real terminal (viewMode 'session') so the user can watch and drive the
-   * TUI it spawned. Undefined/legacy sessions are treated as PTY terminals,
-   * matching ChatHome's own `mode === 'web'` gate.
-   */
-  activeSessionMode?: 'pty' | 'web' | undefined;
 }
 
 export function resolveAppViewMode({
@@ -50,7 +41,6 @@ export function resolveAppViewMode({
   forceOrgCockpit = false,
   topicComposerOpen = false,
   hasActiveChannel = false,
-  activeSessionMode,
 }: ResolveAppViewModeInput): AppViewMode {
   if (analyticsView !== null) return 'analytics';
   // Channel takes priority within 'chat' mode — checked before topicComposerOpen
@@ -60,10 +50,7 @@ export function resolveAppViewMode({
   if (hasActiveSession) {
     // Explicit legacy cockpit escape hatch still wins.
     if (forceOrgCockpit) return 'session';
-    // Web-mode rows render inside the chat shell (as a retired-session
-    // tombstone, #1224); a live PTY session (Claude/Codex/Hermes TUI, or a bare
-    // terminal) renders its terminal so it is reachable and watchable.
-    return activeSessionMode === 'web' ? 'chat' : 'session';
+    return 'session';
   }
 
   // The no-session / no-explicit-project landing path defaults to the

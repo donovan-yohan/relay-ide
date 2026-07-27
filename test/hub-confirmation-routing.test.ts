@@ -110,7 +110,6 @@ function sessionPayload() {
     session: {
       id: 'remote-session-1',
       type: 'terminal',
-      agent: 'claude',
       mode: 'pty',
       repoPath: '/srv/relay-ide',
       worktreePath: null,
@@ -124,7 +123,7 @@ function sessionPayload() {
       customCommand: null,
       status: 'active',
       needsBranchRename: false,
-      agentState: 'idle',
+      activityState: 'idle',
     },
   };
 }

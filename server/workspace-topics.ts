@@ -313,7 +313,6 @@ export function deriveWorkspaceTopicsFromWorkContexts(
         grouping: { order: index },
         promptDefaults: {},
         routingDefaults: {
-          ...(session?.agent ? { providerId: session.agent } : {}),
           ...(session?.nodeId ? { nodeId: session.nodeId } : {}),
           ...(repo?.localPath ? { repoPath: repo.localPath } : {}),
           ...(worktree?.localPath ? { worktreePath: worktree.localPath } : {}),
@@ -888,13 +887,6 @@ function addContextAnchorMatches(
     'workContext.session.globalId',
     'global session',
     context.anchors.session?.globalSessionId
-  );
-  add(
-    'agent',
-    'workContext.session.agent',
-    'session agent',
-    context.anchors.session?.agent,
-    1.2
   );
   add(
     'repo',

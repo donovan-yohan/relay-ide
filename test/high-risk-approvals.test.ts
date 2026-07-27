@@ -13,7 +13,9 @@ import type { HubPolicyDecision } from '../server/hub-policy-evaluator.js';
 
 const NOW = new Date('2026-01-02T03:04:05.000Z');
 
-function challengeDecision(overrides: Partial<HubPolicyDecision> = {}): HubPolicyDecision {
+function challengeDecision(
+  overrides: Partial<HubPolicyDecision> = {}
+): HubPolicyDecision {
   return {
     decision: 'challenge',
     reasonCode: 'POLICY_CHALLENGE_REQUIRED',
@@ -49,17 +51,72 @@ function challengeDecision(overrides: Partial<HubPolicyDecision> = {}): HubPolic
 
 describe('high-risk approval classifier', () => {
   it.each([
-    ['cross-node control', { action: 'sessions.control.set-agent', sourceNodeId: 'node_a', targetNodeId: 'node_b', requiredCapabilities: ['session:attach', 'tab:mode:set-agent'] }],
-    ['capability escalation / ACL widening', { action: 'nodes.acl.widen', targetNodeId: 'node_prod', requiredCapabilities: ['node:acl:widen'] }],
-    ['shell/exec on high-trust node', { action: 'pty.exec.arbitrary', targetNodeId: 'node_prod', trustTier: 'prod', requiredCapabilities: ['pty:exec:arbitrary'] }],
-    ['file write across boundary', { action: 'rpc.fs.write', targetNodeId: 'node_prod', scopeKind: 'path', boundaryCrossing: true, requiredCapabilities: ['rpc:fs:write'] }],
-    ['credential or secret export', { action: 'credentials.export', targetNodeId: 'node_prod', requiredCapabilities: ['credential:export'] }],
-    ['node revoke/rotate/re-pair/destructive lifecycle', { action: 'nodes.revoke', targetNodeId: 'node_prod', requiredCapabilities: ['node:lifecycle:destructive'] }],
-    ['destructive session control', { action: 'sessions.kill', targetNodeId: 'node_prod', requiredCapabilities: ['session:control:kill'] }],
+    [
+      'cross-node control',
+      {
+        action: 'sessions.attach',
+        sourceNodeId: 'node_a',
+        targetNodeId: 'node_b',
+        requiredCapabilities: ['session:attach'],
+      },
+    ],
+    [
+      'capability escalation / ACL widening',
+      {
+        action: 'nodes.acl.widen',
+        targetNodeId: 'node_prod',
+        requiredCapabilities: ['node:acl:widen'],
+      },
+    ],
+    [
+      'shell/exec on high-trust node',
+      {
+        action: 'pty.exec.arbitrary',
+        targetNodeId: 'node_prod',
+        trustTier: 'prod',
+        requiredCapabilities: ['pty:exec:arbitrary'],
+      },
+    ],
+    [
+      'file write across boundary',
+      {
+        action: 'rpc.fs.write',
+        targetNodeId: 'node_prod',
+        scopeKind: 'path',
+        boundaryCrossing: true,
+        requiredCapabilities: ['rpc:fs:write'],
+      },
+    ],
+    [
+      'credential or secret export',
+      {
+        action: 'credentials.export',
+        targetNodeId: 'node_prod',
+        requiredCapabilities: ['credential:export'],
+      },
+    ],
+    [
+      'node revoke/rotate/re-pair/destructive lifecycle',
+      {
+        action: 'nodes.revoke',
+        targetNodeId: 'node_prod',
+        requiredCapabilities: ['node:lifecycle:destructive'],
+      },
+    ],
+    [
+      'destructive session control',
+      {
+        action: 'sessions.kill',
+        targetNodeId: 'node_prod',
+        requiredCapabilities: ['session:control:kill'],
+      },
+    ],
   ])('marks %s as approval-required with auditable reason', (_label, input) => {
     const result = classifyHighRiskOperation(input);
     expect(result.decision).toBe('approvalRequired');
-    expect(result.riskReason).toMatch(/high-risk|cross-node|capability|exec|file|credential|node lifecycle|session control/i);
+    expect(result.riskReason).toMatch(
+      /high-risk|cross-node|capability|exec|file|credential|node lifecycle|session control/i
+    );
   });
 
   it('fails closed for unknown operations or capabilities while leaving low-risk read/ref-only flows silent', () => {
@@ -83,14 +140,20 @@ describe('high-risk approval classifier', () => {
         targetNodeId: 'node_prod',
         requiredCapabilities: ['context:write'],
       })
-    ).toMatchObject({ decision: 'silentAllowIfPolicyAllows', riskReason: 'low_risk_ref_only' });
+    ).toMatchObject({
+      decision: 'silentAllowIfPolicyAllows',
+      riskReason: 'low_risk_ref_only',
+    });
     expect(
       classifyHighRiskOperation({
         action: 'rpc.fs.read',
         targetNodeId: 'node_prod',
         requiredCapabilities: ['rpc:fs:read'],
       })
-    ).toMatchObject({ decision: 'silentAllowIfPolicyAllows', riskReason: 'low_risk_read' });
+    ).toMatchObject({
+      decision: 'silentAllowIfPolicyAllows',
+      riskReason: 'low_risk_read',
+    });
   });
 });
 
@@ -129,7 +192,11 @@ describe('high-risk approval contract bindings', () => {
       challengeId: 'challenge-1',
       outcome: 'challenge_created',
       correlationId: 'corr-1',
-      operation: { action: 'rpc.fs.write', target: 'node_prod', nodeId: 'node_prod' },
+      operation: {
+        action: 'rpc.fs.write',
+        target: 'node_prod',
+        nodeId: 'node_prod',
+      },
       risk: { decision: 'approvalRequired' },
       policy: {
         aclRef: 'acl_prod',
@@ -164,29 +231,32 @@ describe('high-risk approval contract bindings', () => {
 
   it('serializes cross-node control contract risk from full classifier input, not lossy policy bits', () => {
     const classificationInput = {
-      action: 'sessions.control.set-agent',
+      action: 'sessions.attach',
       sourceNodeId: 'node_a',
       targetNodeId: 'node_b',
-      requiredCapabilities: ['session:attach', 'tab:mode:set-agent'],
+      requiredCapabilities: ['session:attach'],
     } as const;
     const direct = classifyHighRiskOperation(classificationInput);
     const decision = challengeDecision({
       nodeId: 'node_b',
       peer: { kind: 'node', nodeId: 'node_a' },
-      intent: { action: 'sessions.control.set-agent' },
+      intent: { action: 'sessions.attach' },
       scope: { kind: 'node', nodeId: 'node_b' },
-      requiredBits: ['session:attach', 'tab:mode:set-agent'],
+      requiredBits: ['session:attach'],
       challengeBits: ['session:attach'],
-      params: { action: 'sessions.control.set-agent' },
+      params: { action: 'sessions.attach' },
     });
 
     const contract = createHighRiskApprovalContract({
       challengeId: 'challenge-cross-node-control',
       decision,
-      canonicalParams: { action: 'sessions.control.set-agent' },
+      canonicalParams: { action: 'sessions.attach' },
       createdAt: NOW,
       expiresAt: new Date(NOW.getTime() + 60_000),
-      requester: { kind: 'browser-session', authSessionHash: 'requester-session-hash' },
+      requester: {
+        kind: 'browser-session',
+        authSessionHash: 'requester-session-hash',
+      },
     });
 
     expect(direct).toMatchObject({
@@ -219,7 +289,10 @@ describe('high-risk approval contract bindings', () => {
       canonicalParams: { action: 'rpc.fs.read', path: '/srv/app/secrets.txt' },
       createdAt: NOW,
       expiresAt: new Date(NOW.getTime() + 60_000),
-      requester: { kind: 'browser-session', authSessionHash: 'requester-session-hash' },
+      requester: {
+        kind: 'browser-session',
+        authSessionHash: 'requester-session-hash',
+      },
     });
 
     expect(classification).toMatchObject({
@@ -233,7 +306,8 @@ describe('high-risk approval contract bindings', () => {
   });
 
   it('summarizes pty exec command text without exposing raw shell text to public challenge or audit material', () => {
-    const command = 'curl -H "Authorization: Bearer relay-...456" https://example.test && echo ghp_12...cdef';
+    const command =
+      'curl -H "Authorization: Bearer relay-...456" https://example.test && echo ghp_12...cdef';
     const canonicalParams = canonicalConfirmationParams('pty.exec.arbitrary', {
       cwd: '/srv/app',
       command,
@@ -246,7 +320,10 @@ describe('high-risk approval contract bindings', () => {
       commandHash: expect.any(String),
       commandByteCount: Buffer.byteLength(command, 'utf8'),
       commandCharCount: command.length,
-      commandClasses: expect.arrayContaining(['secret-looking', 'shell-metacharacters']),
+      commandClasses: expect.arrayContaining([
+        'secret-looking',
+        'shell-metacharacters',
+      ]),
       envHash: expect.any(String),
     });
     expect(canonicalParams).not.toHaveProperty('command');
@@ -321,13 +398,18 @@ describe('high-risk approval contract bindings', () => {
         workContextId: 'work-context-1',
       },
       approvalTarget: { kind: 'human', id: 'operator-1' },
-      canonicalParams: canonicalConfirmationParams('rpc.fs.write', { path: '/srv/app/a', content: 'a' }),
+      canonicalParams: canonicalConfirmationParams('rpc.fs.write', {
+        path: '/srv/app/a',
+        content: 'a',
+      }),
     });
 
     expect(publicChallenge(challenge)).toMatchObject({
       contract: expect.objectContaining({
         challengeKind: 'exact-operation-high-risk-approval',
-        requester: expect.objectContaining({ credentialIdHash: expect.any(String) }),
+        requester: expect.objectContaining({
+          credentialIdHash: expect.any(String),
+        }),
         approvalTarget: expect.objectContaining({ kind: 'human' }),
       }),
     });
@@ -339,72 +421,123 @@ describe('high-risk approval contract bindings', () => {
       decision: 'approve',
       now: NOW,
     });
-    expect(missingApprover).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID' });
+    expect(missingApprover).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID',
+    });
 
     const sameActor = store.approveChallenge({
       challengeId: challenge.challengeId,
       approverAuthSessionHash: 'operator-session',
-      approver: { kind: 'scoped-actor', actorType: 'agent', actorId: 'agent-1', credentialId: 'cred-2' },
+      approver: {
+        kind: 'scoped-actor',
+        actorType: 'agent',
+        actorId: 'agent-1',
+        credentialId: 'cred-2',
+      },
       decision: 'approve',
       now: NOW,
     });
-    expect(sameActor).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_SAME_ACTOR' });
+    expect(sameActor).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_SAME_ACTOR',
+    });
 
     const sameCredential = store.approveChallenge({
       challengeId: challenge.challengeId,
       approverAuthSessionHash: 'operator-session',
-      approver: { kind: 'human', actorId: 'operator-1', credentialId: 'cred-1' },
+      approver: {
+        kind: 'human',
+        actorId: 'operator-1',
+        credentialId: 'cred-1',
+      },
       decision: 'approve',
       now: NOW,
     });
-    expect(sameCredential).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_SAME_CREDENTIAL' });
+    expect(sameCredential).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_SAME_CREDENTIAL',
+    });
 
     const sameSession = store.approveChallenge({
       challengeId: challenge.challengeId,
       approverAuthSessionHash: 'different-browser',
-      approver: { kind: 'human', actorId: 'operator-1', sessionId: 'session-1' },
+      approver: {
+        kind: 'human',
+        actorId: 'operator-1',
+        sessionId: 'session-1',
+      },
       decision: 'approve',
       now: NOW,
     });
-    expect(sameSession).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_SAME_SESSION' });
+    expect(sameSession).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_SAME_SESSION',
+    });
 
     const wrongOperator = store.approveChallenge({
       challengeId: challenge.challengeId,
       approverAuthSessionHash: 'operator-session',
-      approver: { kind: 'human', actorId: 'operator-2', sessionId: 'operator-session-2' },
+      approver: {
+        kind: 'human',
+        actorId: 'operator-2',
+        sessionId: 'operator-session-2',
+      },
       decision: 'approve',
       now: NOW,
     });
-    expect(wrongOperator).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID' });
+    expect(wrongOperator).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID',
+    });
 
     const approved = store.approveChallenge({
       challengeId: challenge.challengeId,
       approverAuthSessionHash: 'operator-session',
-      approver: { kind: 'human', actorId: 'operator-1', sessionId: 'operator-session-2' },
+      approver: {
+        kind: 'human',
+        actorId: 'operator-1',
+        sessionId: 'operator-session-2',
+      },
       approverDisplayName: 'operator',
       decision: 'approve',
       now: NOW,
     });
-    expect(approved).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    expect(approved).toMatchObject({
+      ok: true,
+      reasonCode: 'CONFIRMATION_APPROVED',
+    });
     if (!approved.ok) throw new Error('expected approval');
     expect(approved.challenge.outcome).toBe('approved');
     expect(approved.challenge.contract.outcome).toBe('approved');
     const approvedNonceHash = approved.challenge.contract.redemptionNonceHash;
     expect(approvedNonceHash).toEqual(expect.any(String));
-    expect(JSON.stringify(approved.challenge.contract)).not.toContain('raw-confirmation-token');
+    expect(JSON.stringify(approved.challenge.contract)).not.toContain(
+      'raw-confirmation-token'
+    );
 
     const redeemed = store.redeemToken({
       token: 'raw-confirmation-token',
       requesterAuthSessionHash: 'requester-session-hash',
       decision: challengeDecision(),
-      canonicalParams: canonicalConfirmationParams('rpc.fs.write', { path: '/srv/app/a', content: 'a' }),
+      canonicalParams: canonicalConfirmationParams('rpc.fs.write', {
+        path: '/srv/app/a',
+        content: 'a',
+      }),
       now: NOW,
     });
-    expect(redeemed).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    expect(redeemed).toMatchObject({
+      ok: true,
+      reasonCode: 'CONFIRMATION_APPROVED',
+    });
     if (!redeemed.ok) throw new Error('expected redemption');
     expect(redeemed.challenge.contract.outcome).toBe('redeemed');
-    expect(redeemed.challenge.contract.redemptionNonceHash).toBe(approvedNonceHash);
-    expect(JSON.stringify(publicChallenge(redeemed.challenge))).not.toContain('raw-confirmation-token');
+    expect(redeemed.challenge.contract.redemptionNonceHash).toBe(
+      approvedNonceHash
+    );
+    expect(JSON.stringify(publicChallenge(redeemed.challenge))).not.toContain(
+      'raw-confirmation-token'
+    );
   });
 
   it('exercises deny, expire, redeem, reuse, and fail-closed parameter/context drift invalidation', () => {
@@ -423,23 +556,35 @@ describe('high-risk approval contract bindings', () => {
       content: 'hello',
     });
 
-    const denied = store.createChallenge(challengeDecision({ params: canonicalParams }), {
-      requesterAuthSessionHash: 'requester-session-hash',
-      canonicalParams,
-    });
+    const denied = store.createChallenge(
+      challengeDecision({ params: canonicalParams }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
     const deniedResult = store.approveChallenge({
       challengeId: denied.challengeId,
       approverAuthSessionHash: 'operator-session',
       decision: 'deny',
       now: current,
     });
-    expect(deniedResult).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED' });
-    expect(store.getChallenge(denied.challengeId)).toMatchObject({ status: 'denied', outcome: 'denied' });
-
-    const expired = store.createChallenge(challengeDecision({ params: canonicalParams }), {
-      requesterAuthSessionHash: 'requester-session-hash',
-      canonicalParams,
+    expect(deniedResult).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_DENIED',
     });
+    expect(store.getChallenge(denied.challengeId)).toMatchObject({
+      status: 'denied',
+      outcome: 'denied',
+    });
+
+    const expired = store.createChallenge(
+      challengeDecision({ params: canonicalParams }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
     current = new Date(NOW.getTime() + 1_001);
     expect(
       store.approveChallenge({
@@ -449,20 +594,29 @@ describe('high-risk approval contract bindings', () => {
         now: current,
       })
     ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_EXPIRED' });
-    expect(store.getChallenge(expired.challengeId)).toMatchObject({ status: 'expired', outcome: 'expired' });
+    expect(store.getChallenge(expired.challengeId)).toMatchObject({
+      status: 'expired',
+      outcome: 'expired',
+    });
 
     current = NOW;
-    const redeemable = store.createChallenge(challengeDecision({ params: canonicalParams }), {
-      requesterAuthSessionHash: 'requester-session-hash',
-      canonicalParams,
-    });
+    const redeemable = store.createChallenge(
+      challengeDecision({ params: canonicalParams }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
     const approved = store.approveChallenge({
       challengeId: redeemable.challengeId,
       approverAuthSessionHash: 'operator-session',
       decision: 'approve',
       now: current,
     });
-    expect(approved).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    expect(approved).toMatchObject({
+      ok: true,
+      reasonCode: 'CONFIRMATION_APPROVED',
+    });
     if (!approved.ok) throw new Error('expected approval');
     const redeemed = store.redeemToken({
       token: approved.confirmationToken,
@@ -471,7 +625,10 @@ describe('high-risk approval contract bindings', () => {
       canonicalParams,
       now: current,
     });
-    expect(redeemed).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    expect(redeemed).toMatchObject({
+      ok: true,
+      reasonCode: 'CONFIRMATION_APPROVED',
+    });
     const reused = store.redeemToken({
       token: approved.confirmationToken,
       requesterAuthSessionHash: 'requester-session-hash',
@@ -479,7 +636,10 @@ describe('high-risk approval contract bindings', () => {
       canonicalParams,
       now: current,
     });
-    expect(reused).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_ALREADY_USED' });
+    expect(reused).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_ALREADY_USED',
+    });
     if (reused.ok) throw new Error('expected reuse denial');
     expect(reused.audit).toMatchObject({
       eventType: 'failed_redemption',
@@ -487,10 +647,13 @@ describe('high-risk approval contract bindings', () => {
       reasonCode: 'CONFIRMATION_ALREADY_USED',
     });
 
-    const drift = store.createChallenge(challengeDecision({ params: canonicalParams }), {
-      requesterAuthSessionHash: 'requester-session-hash',
-      canonicalParams,
-    });
+    const drift = store.createChallenge(
+      challengeDecision({ params: canonicalParams }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
     const driftApproved = store.approveChallenge({
       challengeId: drift.challengeId,
       approverAuthSessionHash: 'operator-session',
@@ -530,10 +693,13 @@ describe('high-risk approval contract bindings', () => {
       })
     ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_TOKEN_INVALID' });
 
-    const contextDrift = store.createChallenge(challengeDecision({ params: canonicalParams }), {
-      requesterAuthSessionHash: 'requester-session-hash',
-      canonicalParams,
-    });
+    const contextDrift = store.createChallenge(
+      challengeDecision({ params: canonicalParams }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
     const contextApproved = store.approveChallenge({
       challengeId: contextDrift.challengeId,
       approverAuthSessionHash: 'operator-session',
@@ -544,7 +710,10 @@ describe('high-risk approval contract bindings', () => {
     const contextResult = store.redeemToken({
       token: contextApproved.confirmationToken,
       requesterAuthSessionHash: 'requester-session-hash',
-      decision: challengeDecision({ params: canonicalParams, sessionId: 'session-2' }),
+      decision: challengeDecision({
+        params: canonicalParams,
+        sessionId: 'session-2',
+      }),
       canonicalParams,
       now: current,
     });

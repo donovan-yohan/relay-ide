@@ -38,9 +38,8 @@ export interface SessionCreateActionTarget {
   cwd?: string;
   repoPath?: string;
   worktreePath?: string | null;
-  type?: 'agent' | 'terminal';
-  mode?: 'pty' | 'web';
-  agent?: string;
+  type?: 'terminal';
+  mode?: 'pty';
   terminalBackend?: 'relay-pty';
 }
 
@@ -116,8 +115,6 @@ export function sessionCreateActionTarget(
   if (type) target.type = type;
   const mode = session.mode ?? input.mode;
   if (mode) target.mode = mode;
-  const agent = session.agent ?? input.agent;
-  if (agent) target.agent = agent;
   if (input.terminalBackend) target.terminalBackend = input.terminalBackend;
   return target;
 }

@@ -50,7 +50,6 @@ export const HANDOFF_CONFLICT_CODES = [
   'SECRET_EXCLUDED',
   'CACHE_EXCLUDED',
   'UNSAFE_PATH_MAPPING',
-  'LAUNCH_FAILURE',
 ] as const;
 
 export type HandoffConflictCode = (typeof HANDOFF_CONFLICT_CODES)[number];
@@ -62,10 +61,6 @@ export const HANDOFF_REASON_CODES = [
   'TRANSFER_COMPLETED',
   'APPLY_STARTED',
   'APPLY_COMPLETED',
-  'LAUNCH_STARTED',
-  'LAUNCH_COMPLETED',
-  'VERIFY_STARTED',
-  'VERIFY_COMPLETED',
   'CANCELLED_BY_OPERATOR',
   'FAILED_STALE_SOURCE',
   'FAILED_MISSING_GRANT',
@@ -74,7 +69,6 @@ export const HANDOFF_REASON_CODES = [
   'FAILED_DESTINATION_CONFLICT',
   'FAILED_MISSING_PATH_MAPPING',
   'FAILED_UNSAFE_PATH_MAPPING',
-  'FAILED_LAUNCH',
 ] as const;
 
 export type HandoffReasonCode = (typeof HANDOFF_REASON_CODES)[number];
@@ -84,8 +78,6 @@ export const HANDOFF_RUN_STATES = [
   'snapshotting',
   'transferring',
   'applying',
-  'launching',
-  'verifying',
   'complete',
   'failed',
   'cancelled',
@@ -104,15 +96,9 @@ export type HandoffTransferMode = (typeof HANDOFF_TRANSFER_MODES)[number];
 
 const HANDOFF_GRANT_LEG_SOURCE_READ = 'source-read';
 const HANDOFF_GRANT_LEG_DESTINATION_WRITE = 'destination-write';
-const HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE =
-  'destination-session-create';
-const HANDOFF_GRANT_LEG_DESTINATION_EXEC = 'destination-exec';
-
 export const HANDOFF_REQUIRED_GRANT_LEGS = [
   HANDOFF_GRANT_LEG_SOURCE_READ,
   HANDOFF_GRANT_LEG_DESTINATION_WRITE,
-  HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE,
-  HANDOFF_GRANT_LEG_DESTINATION_EXEC,
 ] as const;
 
 export type HandoffRequiredGrantLeg =
@@ -146,13 +132,6 @@ export interface HandoffDestinationRef {
   worktreeInstanceId?: WorktreeInstanceId;
 }
 
-export interface HandoffRuntimeRequest {
-  kind: 'agent' | 'terminal';
-  providerId?: string;
-  commandSummary?: string;
-  requiredCapabilities: RelayCapabilityBit[];
-}
-
 export interface HandoffRequest {
   schemaVersion: typeof HANDOFF_SCHEMA_VERSION;
   id: string;
@@ -160,7 +139,6 @@ export interface HandoffRequest {
   requestedByActorId: string;
   source: HandoffSourceRef;
   destination: HandoffDestinationRef;
-  desiredRuntime: HandoffRuntimeRequest;
   reason?: string;
 }
 
@@ -214,14 +192,6 @@ export interface HandoffRequiredGrant {
   scope?: RelayPolicyScope;
 }
 
-export interface HandoffLaunchPreview {
-  nodeId: NodeId;
-  cwd: string;
-  runtime: HandoffRuntimeRequest;
-  summary: string;
-  workContextId: WorkContextId;
-}
-
 export interface HandoffPlan {
   schemaVersion: typeof HANDOFF_SCHEMA_VERSION;
   id: string;
@@ -242,7 +212,6 @@ export interface HandoffPlan {
   pathMappings: HandoffPathMapping[];
   conflicts: HandoffConflict[];
   requiredGrants: HandoffRequiredGrant[];
-  launchPreview: HandoffLaunchPreview;
 }
 
 export interface HandoffSnapshotArtifactRef {
@@ -321,7 +290,6 @@ const SNAPSHOT_GROUP_SET = new Set<string>([
   'excluded-cache',
 ]);
 const DESTINATION_WRITE_MODE_SET = new Set<string>(['create', 'overwrite']);
-const RUNTIME_KIND_SET = new Set<string>(['agent', 'terminal']);
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/i;
 const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const FORBIDDEN_RAW_KEYS = new Set<string>([
@@ -341,9 +309,7 @@ const ALLOWED_TRANSITIONS: Record<HandoffRunState, readonly HandoffRunState[]> =
     planned: ['snapshotting', 'failed', 'cancelled'],
     snapshotting: ['transferring', 'failed', 'cancelled'],
     transferring: ['applying', 'failed', 'cancelled'],
-    applying: ['complete', 'launching', 'failed', 'cancelled'],
-    launching: ['verifying', 'failed', 'cancelled'],
-    verifying: ['complete', 'failed', 'cancelled'],
+    applying: ['complete', 'failed', 'cancelled'],
     complete: [],
     failed: [],
     cancelled: [],
@@ -384,10 +350,6 @@ function isEnumArray(value: unknown, values: Set<string>): value is string[] {
   return (
     Array.isArray(value) && value.every((item) => isEnumValue(item, values))
   );
-}
-
-function isCapabilityArray(value: unknown): value is RelayCapabilityBit[] {
-  return Array.isArray(value) && value.every(isRelayCapabilityBit);
 }
 
 function hasNoForbiddenRawKeys(value: unknown): boolean {
@@ -482,16 +444,6 @@ function isDestinationRef(value: unknown): value is HandoffDestinationRef {
   );
 }
 
-function isRuntimeRequest(value: unknown): value is HandoffRuntimeRequest {
-  if (!isRecord(value)) return false;
-  return (
-    isEnumValue(value.kind, RUNTIME_KIND_SET) &&
-    isOptionalString(value.providerId) &&
-    isOptionalString(value.commandSummary) &&
-    isCapabilityArray(value.requiredCapabilities)
-  );
-}
-
 export function isHandoffRequest(value: unknown): value is HandoffRequest {
   if (!isRecord(value) || !hasNoForbiddenRawKeys(value)) return false;
   return (
@@ -501,7 +453,6 @@ export function isHandoffRequest(value: unknown): value is HandoffRequest {
     hasString(value.requestedByActorId) &&
     isSourceRef(value.source) &&
     isDestinationRef(value.destination) &&
-    isRuntimeRequest(value.desiredRuntime) &&
     isOptionalString(value.reason)
   );
 }
@@ -584,13 +535,6 @@ function isGrantCapabilityValid(
       return capability === 'rpc:fs:read' || capability === 'rpc:git:read';
     case HANDOFF_GRANT_LEG_DESTINATION_WRITE:
       return capability === 'rpc:fs:write' || capability === 'rpc:git:write';
-    case HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE:
-      return (
-        capability === 'session:create:terminal' ||
-        capability === 'session:create:agent'
-      );
-    case HANDOFF_GRANT_LEG_DESTINATION_EXEC:
-      return capability === 'pty:exec:arbitrary';
   }
 }
 
@@ -618,20 +562,7 @@ function hasRequiredGrantLegs(grants: HandoffRequiredGrant[]): boolean {
   const legs = new Set(grants.map((grant) => grant.leg));
   return (
     legs.has(HANDOFF_GRANT_LEG_SOURCE_READ) &&
-    legs.has(HANDOFF_GRANT_LEG_DESTINATION_WRITE) &&
-    legs.has(HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE) &&
-    legs.has(HANDOFF_GRANT_LEG_DESTINATION_EXEC)
-  );
-}
-
-function isLaunchPreview(value: unknown): value is HandoffLaunchPreview {
-  if (!isRecord(value)) return false;
-  return (
-    hasString(value.nodeId) &&
-    isAbsolutePath(value.cwd) &&
-    isRuntimeRequest(value.runtime) &&
-    hasString(value.summary) &&
-    hasString(value.workContextId)
+    legs.has(HANDOFF_GRANT_LEG_DESTINATION_WRITE)
   );
 }
 
@@ -695,9 +626,7 @@ export function isHandoffPlan(value: unknown): value is HandoffPlan {
     Array.isArray(value.conflicts) &&
     value.conflicts.every(isConflict) &&
     hasRequiredGrantLegs(value.requiredGrants) &&
-    requiredGrantsMatchRoute(value.requiredGrants, value.route) &&
-    isLaunchPreview(value.launchPreview) &&
-    value.launchPreview.workContextId === value.source.workContextId
+    requiredGrantsMatchRoute(value.requiredGrants, value.route)
   );
 }
 

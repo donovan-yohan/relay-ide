@@ -1,6 +1,6 @@
 // #1249: per-connection WebSocket send-queue backpressure + a half-open socket
-// reaper, shared by every server→client fan-out lane (terminal PTY stream, agent
-// web-session patches, event broadcast, routed-node PTY relay).
+// reaper, shared by every server→client fan-out lane (terminal PTY stream,
+// event broadcast, routed-node PTY relay).
 //
 // Root cause of the incident: those lanes called `ws.send(JSON.stringify(...))`
 // gated ONLY on `readyState === OPEN`. A backgrounded mobile tab / sleeping

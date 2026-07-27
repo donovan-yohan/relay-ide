@@ -31,13 +31,14 @@ import {
   CHANNEL_BINDING_YOLO_DEFAULT,
   createChannelAgentBinder,
   MAX_CONSECUTIVE_AGENT_TURNS,
-  type BinderSessions,
+  type BinderRuntimes,
   type ChannelAgentBinder,
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
-import type { Session, WebSession } from '../server/types.js';
-import type { CreateWebParams } from '../server/web-session-handler.js';
-import { createWebSession } from '../server/web-session-handler.js';
+import type {
+  ChannelAgentRuntime,
+  CreateChannelAgentRuntimeParams,
+} from '../server/channel-agent-runtime.js';
 import type { WorkspaceTopicStore } from '../server/workspace-topics.js';
 import {
   parseMentions,
@@ -137,14 +138,14 @@ function postAgentTurnRow(
   itemId: string,
   text: string,
   knownIds: string[],
-  sessionId = 'session:orchestrator',
+  runtimeId = 'runtime:orchestrator',
   sender: ChannelSenderRef = AGENT_SENDER
 ): ChannelMessage {
   const mentions = parseMentions(text, knownIds);
   const stream = store.beginStream({
     channelId: CH,
     sender,
-    source: { sessionId, turnId, itemId },
+    source: { runtimeId, turnId, itemId },
     ...(mentions.length ? { mentions } : {}),
   });
   const message = store.finalizeStream(stream.id, {
@@ -772,41 +773,41 @@ class LateOpeningReplyAdapter extends BaseProtocolAdapterV2 {
 // ── sessions harness ─────────────────────────────────────────────────────────
 
 interface SessionsHarness {
-  sessions: BinderSessions;
+  sessions: BinderRuntimes;
   spawns: () => number;
   firstSessionId: () => string;
   adapterFor: (sessionId: string) => ProtocolAdapterV2;
   fireEnd: (sessionId: string) => void;
   forgetWithoutEnd: (sessionId: string) => void;
   registerSourceSession: (sessionId: string, role: AgentRole) => void;
-  registerRestoredWebSession: (
+  registerRestoredRuntime: (
     sessionId: string,
     agentType: string,
     role: AgentRole,
     profileId?: string
   ) => Promise<void>;
-  lastCreateParams: () => CreateWebParams | undefined;
+  lastCreateParams: () => CreateChannelAgentRuntimeParams | undefined;
 }
 
 function makeSessions(
   build: (agentType: string) => ProtocolAdapterV2,
   opts: { throwOnCreate?: boolean; gate?: Promise<void> } = {}
 ): SessionsHarness {
-  const created = new Map<string, { session: WebSession }>();
+  const created = new Map<string, { runtime: ChannelAgentRuntime }>();
   const order: string[] = [];
-  const endCbs: Array<(id: string, cwd: string, br?: string) => void> = [];
+  const endCbs: Array<(id: string) => void> = [];
   let spawns = 0;
-  let lastParams: CreateWebParams | undefined;
-  const sessions: BinderSessions = {
-    async createWeb(params) {
+  let lastParams: CreateChannelAgentRuntimeParams | undefined;
+  const sessions: BinderRuntimes = {
+    async create(params) {
       spawns++;
       lastParams = params;
       if (opts.throwOnCreate) throw new Error('boom: spawn failed');
       // Optional gate: park the spawn so a test can drive a close()/reorder race
-      // between createWeb being invoked and its continuation resuming.
+      // between runtime creation being invoked and its continuation resuming.
       if (opts.gate) await opts.gate;
-      const id = `sess-${spawns}-${params.agentType}`;
-      const adapter = build(params.agentType);
+      const id = `sess-${spawns}-${params.providerId}`;
+      const adapter = build(params.providerId);
       await adapter.connect({
         cwd: params.cwd,
         port: 0,
@@ -814,23 +815,28 @@ function makeSessions(
         hookToken: 't',
         configDir: params.configDir,
       });
-      const session = {
+      const runtime = {
         id,
-        mode: 'web',
-        agent: params.agentType,
-        ...(params.profileId !== undefined ? { profileId: params.profileId } : {}),
+        providerId: params.providerId,
+        profileActorId: params.profileActorId,
         ...(params.role !== undefined ? { role: params.role } : {}),
-        adapterV2: adapter,
+        status: 'active',
+        adapter,
         cwd: params.cwd,
-      } as unknown as WebSession;
-      created.set(id, { session });
+        providerSession: {},
+      } as unknown as ChannelAgentRuntime;
+      created.set(id, { runtime });
       order.push(id);
-      return { session };
+      return runtime;
     },
     get(id) {
-      return created.get(id)?.session as unknown as Session | undefined;
+      return created.get(id)?.runtime;
     },
-    onSessionEnd(cb) {
+    async destroy(id) {
+      if (!created.delete(id)) return;
+      for (const cb of [...endCbs]) cb(id);
+    },
+    onRuntimeEnd(cb) {
       endCbs.push(cb);
       return () => {
         const i = endCbs.indexOf(cb);
@@ -842,20 +848,20 @@ function makeSessions(
     sessions,
     spawns: () => spawns,
     firstSessionId: () => order[0]!,
-    adapterFor: (id) => created.get(id)!.session.adapterV2,
+    adapterFor: (id) => created.get(id)!.runtime.adapter,
     fireEnd: (id) => {
       created.delete(id);
-      for (const cb of [...endCbs]) cb(id, '/tmp');
+      for (const cb of [...endCbs]) cb(id);
     },
     forgetWithoutEnd: (id) => {
       created.delete(id);
     },
     registerSourceSession: (id, role) => {
       created.set(id, {
-        session: { id, role } as unknown as WebSession,
+        runtime: { id, role } as unknown as ChannelAgentRuntime,
       });
     },
-    registerRestoredWebSession: async (id, agentType, role, profileId) => {
+    registerRestoredRuntime: async (id, agentType, role, profileId) => {
       const adapter = build(agentType);
       await adapter.connect({
         cwd: '/tmp',
@@ -865,15 +871,16 @@ function makeSessions(
         configDir: '/tmp',
       });
       created.set(id, {
-        session: {
+        runtime: {
           id,
-          mode: 'web',
-          agent: agentType,
-          ...(profileId !== undefined ? { profileId } : {}),
+          providerId: agentType,
+          profileActorId: profileId ?? builtInAgentProfileId(agentType),
           role,
-          adapterV2: adapter,
+          status: 'active',
+          adapter,
           cwd: '/tmp',
-        } as unknown as WebSession,
+          providerSession: {},
+        } as unknown as ChannelAgentRuntime,
       });
     },
     lastCreateParams: () => lastParams,
@@ -920,7 +927,7 @@ function makeBinder(cfg: {
     ...(cfg.agentProfileStore !== undefined
       ? { agentProfileStore: cfg.agentProfileStore }
       : {}),
-    sessions: sessions.sessions,
+    runtimes: sessions.sessions,
     knownProviderIds: cfg.knownProviderIds,
     mentionTargets: async () => cfg.targets,
     port: 0,
@@ -962,14 +969,15 @@ describe('channel-agent-binder — lifecycle', () => {
     });
     const statusAgentIds = new Set<string>();
     binder.setStatusBroadcaster((_type, data) => {
-      if (typeof data['agentId'] === 'string') statusAgentIds.add(data['agentId']);
+      if (typeof data['agentId'] === 'string')
+        statusAgentIds.add(data['agentId']);
     });
 
     post(store, binder, '@Backend one', ['mock']);
     await waitFor(() => sessions.spawns() === 1);
     expect(sessions.lastCreateParams()).toMatchObject({
-      agentType: 'mock',
-      profileId: backend.id,
+      providerId: 'mock',
+      profileActorId: backend.id,
       model: 'mock-model',
       processEnv: { PROFILE_TEST_FLAG: '1' },
       systemPrompt: 'Review the backend boundary.',
@@ -977,10 +985,10 @@ describe('channel-agent-binder — lifecycle', () => {
     });
     post(store, binder, '@Reviewer two', ['mock']);
     await waitFor(() => sessions.spawns() === 2);
-    expect(store.getBinding(CH, backend.id)?.sessionId).toBeTruthy();
-    expect(store.getBinding(CH, reviewer.id)?.sessionId).toBeTruthy();
+    expect(store.getBinding(CH, backend.id)?.runtimeId).toBeTruthy();
+    expect(store.getBinding(CH, reviewer.id)?.runtimeId).toBeTruthy();
 
-    // A second mention of Backend reuses only Backend's pinned profile session.
+    // A second mention of Backend reuses only Backend's pinned profile runtime.
     post(store, binder, '@Backend again', ['mock']);
     await waitFor(() => agentReplies(store, 'mock').length === 3);
     expect(sessions.spawns()).toBe(2);
@@ -1010,9 +1018,14 @@ describe('channel-agent-binder — lifecycle', () => {
     post(store, binder, '@mock second', ['mock']);
     await waitFor(() => agentReplies(store, 'mock').length === 2);
     expect(sessions.spawns()).toBe(1);
-    expect(store.getBinding(CH, defaultId)?.sessionId).toBeTruthy();
-    expect(agentReplies(store, 'mock').every((row) => row.sender.id === defaultId)).toBe(true);
-    expect((await binder.rosterForChannel(CH)).find((row) => row.id === defaultId)?.binding).not.toBeNull();
+    expect(store.getBinding(CH, defaultId)?.runtimeId).toBeTruthy();
+    expect(
+      agentReplies(store, 'mock').every((row) => row.sender.id === defaultId)
+    ).toBe(true);
+    expect(
+      (await binder.rosterForChannel(CH)).find((row) => row.id === defaultId)
+        ?.binding
+    ).not.toBeNull();
     expect(statusIds.has(defaultId)).toBe(true);
   });
 
@@ -1032,7 +1045,10 @@ describe('channel-agent-binder — lifecycle', () => {
     });
     const { binder, store, sessions } = makeBinder({
       build: (agentType) =>
-        new ScriptedAdapter(agentType, { mode: 'reply', text: '@Reviewer take this.' }),
+        new ScriptedAdapter(agentType, {
+          mode: 'reply',
+          text: '@Reviewer take this.',
+        }),
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
       agentProfileStore: profiles,
@@ -1040,7 +1056,7 @@ describe('channel-agent-binder — lifecycle', () => {
 
     post(store, binder, '@Backend begin', ['mock']);
     await waitFor(() => sessions.spawns() === 2);
-    expect(store.getBinding(CH, reviewer.id)?.sessionId).toBeTruthy();
+    expect(store.getBinding(CH, reviewer.id)?.runtimeId).toBeTruthy();
   });
 
   it('keeps a persisted profile mention pinned across a rename/collision reparse', async () => {
@@ -1067,12 +1083,16 @@ describe('channel-agent-binder — lifecycle', () => {
       channelId: CH,
       sender: OPERATOR,
       text: '@Reviewer please inspect',
-      mentions: [{ raw: '@Reviewer', providerId: 'mock', profileId: pinned.id }],
+      mentions: [
+        { raw: '@Reviewer', providerId: 'mock', profileId: pinned.id },
+      ],
     });
     binder.handleMessagePosted(message, message.mentions ?? []);
     await waitFor(() => sessions.spawns() === 1);
-    expect(store.getBinding(CH, pinned.id)?.sessionId).toBeTruthy();
-    expect(store.getBinding(CH, 'agent-profile:mock:current-reviewer')).toBeNull();
+    expect(store.getBinding(CH, pinned.id)?.runtimeId).toBeTruthy();
+    expect(
+      store.getBinding(CH, 'agent-profile:mock:current-reviewer')
+    ).toBeNull();
   });
 
   it('designates an orchestrator without submitting a turn', async () => {
@@ -1084,9 +1104,9 @@ describe('channel-agent-binder — lifecycle', () => {
 
     const binding = await binder.ensureOrchestrator(CH, 'mock');
 
-    expect(binding.sessionId).toBe(sessions.firstSessionId());
+    expect(binding.runtimeId).toBe(sessions.firstSessionId());
     expect(sessions.lastCreateParams()).toMatchObject({
-      agentType: 'mock',
+      providerId: 'mock',
       role: 'orchestrator',
     });
     expect(agentReplies(store)).toHaveLength(0);
@@ -1099,20 +1119,17 @@ describe('channel-agent-binder — lifecycle', () => {
       knownProviderIds: ['mock'],
     });
     const sessionId = 'session:restored-driver';
-    await sessions.registerRestoredWebSession(
-      sessionId,
-      'mock',
-      'orchestrator'
-    );
+    await sessions.registerRestoredRuntime(sessionId, 'mock', 'orchestrator');
     store.upsertBinding({
       channelId: CH,
+      profileActorId: builtInAgentProfileId('mock'),
       agentFramework: 'mock',
-      sessionId,
+      runtimeId: sessionId,
     });
 
     const binding = await binder.ensureOrchestrator(CH, 'mock');
 
-    expect(binding.sessionId).toBe(sessionId);
+    expect(binding.runtimeId).toBe(sessionId);
     expect(sessions.spawns()).toBe(0);
   });
 
@@ -1132,7 +1149,7 @@ describe('channel-agent-binder — lifecycle', () => {
       agentProfileStore: profiles,
     });
     const sessionId = 'session:restored-profile';
-    await sessions.registerRestoredWebSession(
+    await sessions.registerRestoredRuntime(
       sessionId,
       'mock',
       'orchestrator',
@@ -1142,10 +1159,12 @@ describe('channel-agent-binder — lifecycle', () => {
       channelId: CH,
       profileActorId: reviewer.id,
       agentFramework: 'mock',
-      sessionId,
+      runtimeId: sessionId,
     });
 
-    expect((await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).sessionId).toBe(sessionId);
+    expect(
+      (await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).runtimeId
+    ).toBe(sessionId);
     expect(sessions.spawns()).toBe(0);
     // Exact custom actor ids are accepted by the control lookup; a legacy
     // prefix rewrite would miss this live binding as "not found".
@@ -1169,15 +1188,21 @@ describe('channel-agent-binder — lifecycle', () => {
       knownProviderIds: ['mock'],
       agentProfileStore: profiles,
     });
-    await sessions.registerRestoredWebSession('session:legacy', 'mock', 'orchestrator');
+    await sessions.registerRestoredRuntime(
+      'session:legacy',
+      'mock',
+      'orchestrator'
+    );
     store.upsertBinding({
       channelId: CH,
       profileActorId: reviewer.id,
       agentFramework: 'mock',
-      sessionId: 'session:legacy',
+      runtimeId: 'session:legacy',
     });
 
-    expect((await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).sessionId).not.toBe('session:legacy');
+    expect(
+      (await binder.ensureOrchestrator(CH, 'mock', reviewer.id)).runtimeId
+    ).not.toBe('session:legacy');
     expect(sessions.spawns()).toBe(1);
   });
 
@@ -1201,7 +1226,7 @@ describe('channel-agent-binder — lifecycle', () => {
       knownProviderIds: ['mock'],
       agentProfileStore: profiles,
     });
-    await sessions.registerRestoredWebSession(
+    await sessions.registerRestoredRuntime(
       'session:profile-a',
       'mock',
       'orchestrator',
@@ -1211,16 +1236,18 @@ describe('channel-agent-binder — lifecycle', () => {
       channelId: CH,
       profileActorId: profileB.id,
       agentFramework: 'mock',
-      sessionId: 'session:profile-a',
+      runtimeId: 'session:profile-a',
     });
 
     const binding = await binder.ensureOrchestrator(CH, 'mock', profileB.id);
-    expect(binding.sessionId).not.toBe('session:profile-a');
+    expect(binding.runtimeId).not.toBe('session:profile-a');
     expect(sessions.spawns()).toBe(1);
-    expect(sessions.lastCreateParams()).toMatchObject({ profileId: profileB.id });
+    expect(sessions.lastCreateParams()).toMatchObject({
+      profileActorId: profileB.id,
+    });
     expect(store.getBinding(CH, profileB.id)).toMatchObject({
       profileActorId: profileB.id,
-      sessionId: binding.sessionId,
+      runtimeId: binding.runtimeId,
     });
   });
 
@@ -1231,22 +1258,21 @@ describe('channel-agent-binder — lifecycle', () => {
       knownProviderIds: ['mock'],
     });
     const sessionId = 'session:restored-worker';
-    await sessions.registerRestoredWebSession(
-      sessionId,
-      'mock',
-      'implementer'
-    );
+    await sessions.registerRestoredRuntime(sessionId, 'mock', 'implementer');
     store.upsertBinding({
       channelId: CH,
+      profileActorId: builtInAgentProfileId('mock'),
       agentFramework: 'mock',
-      sessionId,
+      runtimeId: sessionId,
     });
 
     await expect(binder.ensureOrchestrator(CH, 'mock')).rejects.toThrow(
       /already binds @mock.*role implementer/
     );
     expect(sessions.spawns()).toBe(0);
-    expect(store.getBinding(CH, 'mock')?.sessionId).toBe(sessionId);
+    expect(store.getBinding(CH, builtInAgentProfileId('mock'))?.runtimeId).toBe(
+      sessionId
+    );
   });
 
   it('first mention spawns exactly one session and streams the reply as agent:mock', async () => {
@@ -1553,8 +1579,8 @@ describe('channel-agent-binder — lifecycle', () => {
     await waitFor(() => adapter.sendCalls.length === 1);
     adapter.emitError('idle failure');
     await waitFor(() =>
-      systemRows(store).some((row) =>
-        row.body.text === '@Backend errored: idle failure'
+      systemRows(store).some(
+        (row) => row.body.text === '@Backend errored: idle failure'
       )
     );
   });
@@ -1635,7 +1661,7 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(dropped[0]!.parentMessageId).toBe(triggers.at(-1)!.id);
   });
 
-  it('session death unbinds, nulls the row session id, and respawns on next mention', async () => {
+  it('runtime death unbinds, clears the binding, and respawns on next mention', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
       targets: MOCK_TARGETS,
@@ -1645,13 +1671,15 @@ describe('channel-agent-binder — lifecycle', () => {
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     const sid = sessions.firstSessionId();
     sessions.fireEnd(sid);
-    expect(store.getBinding(CH, 'mock')?.sessionId).toBeNull();
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('mock'))?.runtimeId
+    ).toBeNull();
     post(store, binder, '@mock two', ['mock']);
     await waitFor(() => agentReplies(store, 'mock').length === 2);
     expect(sessions.spawns()).toBe(2);
   });
 
-  it('threads session-ended rows for queued trigger messages', async () => {
+  it('threads runtime-ended rows for queued trigger messages', async () => {
     const { binder, store, sessions } = makeBinder({
       build: (agentType) => new DeferredAdapter(agentType),
       targets: MOCK_TARGETS,
@@ -1678,10 +1706,10 @@ describe('channel-agent-binder — lifecycle', () => {
     await waitFor(() => adapter.sendCalls.length === 1);
     sessions.fireEnd(sessions.firstSessionId());
     await waitFor(() =>
-      systemRows(store).some((m) => m.body.text.includes('session ended'))
+      systemRows(store).some((m) => m.body.text.includes('runtime ended'))
     );
     const ended = systemRows(store).find((m) =>
-      m.body.text.includes('session ended')
+      m.body.text.includes('runtime ended')
     )!;
     expect(ended.threadId).toBe(root.id);
     expect(ended.parentMessageId).toBe(queued.id);
@@ -1900,11 +1928,14 @@ describe('channel-agent-binder — delivery + idempotency', () => {
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     await waitFor(
       () =>
-        store.getBinding(CH, 'mock')?.providerSession['lastDeliveredSeq'] ===
-        trigger.seq
+        store.getBinding(CH, builtInAgentProfileId('mock'))?.providerSession[
+          'lastDeliveredSeq'
+        ] === trigger.seq
     );
     expect(
-      store.getBinding(CH, 'mock')?.providerSession['lastDeliveredSeq']
+      store.getBinding(CH, builtInAgentProfileId('mock'))?.providerSession[
+        'lastDeliveredSeq'
+      ]
     ).toBe(trigger.seq);
   });
 });
@@ -1978,8 +2009,7 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     }
     await waitFor(
       () =>
-        agentReplies(store, 'mock').length ===
-        MAX_CONSECUTIVE_AGENT_TURNS + 1
+        agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS + 1
     );
     expect(
       systemRows(store).filter((message) =>
@@ -2078,8 +2108,7 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     );
     await waitFor(
       () =>
-        agentReplies(store, 'mock').length ===
-        MAX_CONSECUTIVE_AGENT_TURNS + 1
+        agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS + 1
     );
     expect(
       systemRows(store).filter((message) =>
@@ -2090,8 +2119,7 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     post(store, binder, '@mock human reset', ['mock'], OPERATOR);
     await waitFor(
       () =>
-        agentReplies(store, 'mock').length ===
-        MAX_CONSECUTIVE_AGENT_TURNS + 2
+        agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS + 2
     );
     postAgentTurnRow(
       store,
@@ -2105,8 +2133,7 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     );
     await waitFor(
       () =>
-        agentReplies(store, 'mock').length ===
-        MAX_CONSECUTIVE_AGENT_TURNS + 3
+        agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS + 3
     );
   });
 
@@ -2299,7 +2326,9 @@ describe('channel-agent-binder — roster + availability', () => {
     });
 
     const roster = await binder.rosterForChannel(CH);
-    expect(roster.filter((entry) => entry.providerId === 'mock')).toHaveLength(1);
+    expect(roster.filter((entry) => entry.providerId === 'mock')).toHaveLength(
+      1
+    );
     expect(roster).toContainEqual(
       expect.objectContaining({
         id: builtInAgentProfileId('worker'),
@@ -2329,10 +2358,12 @@ describe('channel-agent-binder — roster + availability', () => {
     await binder.ensureBinding(CH, 'worker');
 
     const roster = await binder.rosterForChannel(CH);
-    expect(roster.find((entry) => entry.id === builtInAgentProfileId('mock'))?.role).toBe(
-      'orchestrator'
-    );
-    expect(roster.find((entry) => entry.id === builtInAgentProfileId('worker'))?.role).toBeUndefined();
+    expect(
+      roster.find((entry) => entry.id === builtInAgentProfileId('mock'))?.role
+    ).toBe('orchestrator');
+    expect(
+      roster.find((entry) => entry.id === builtInAgentProfileId('worker'))?.role
+    ).toBeUndefined();
     expect(sessions.spawns()).toBe(2);
   });
 
@@ -2346,8 +2377,7 @@ describe('channel-agent-binder — roster + availability', () => {
           displayName: 'Codex',
           kind: 'framework',
           available: false,
-          reason:
-            'Codex web sessions do not yet stream chat responses (see issue #301).',
+          reason: 'Codex is not currently available in channels.',
         },
       ],
       knownProviderIds: ['mock', 'codex'],
@@ -2355,14 +2385,21 @@ describe('channel-agent-binder — roster + availability', () => {
     let roster = await binder.rosterForChannel(CH);
     const codex = roster.find((r) => r.id === builtInAgentProfileId('codex'))!;
     expect(codex.available).toBe(false);
-    expect(codex.reason).toContain('#301');
-    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding).toBeNull();
+    expect(codex.reason).toContain('not currently available in channels');
+    expect(
+      roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding
+    ).toBeNull();
 
     post(store, binder, '@mock hi', ['mock', 'codex']);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     roster = await binder.rosterForChannel(CH);
-    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding).not.toBeNull();
-    expect(roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding?.status).toBe('idle');
+    expect(
+      roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding
+    ).not.toBeNull();
+    expect(
+      roster.find((r) => r.id === builtInAgentProfileId('mock'))!.binding
+        ?.status
+    ).toBe('idle');
   });
 
   it('clears presence to idle when a turn finalizes with an idle live-state and no turn-completed (#1181)', async () => {
@@ -2381,7 +2418,8 @@ describe('channel-agent-binder — roster + availability', () => {
     });
     const statuses: string[] = [];
     binder.setStatusBroadcaster((_type, data) => {
-      if (data['agentId'] === builtInAgentProfileId('hermes')) statuses.push(String(data['status']));
+      if (data['agentId'] === builtInAgentProfileId('hermes'))
+        statuses.push(String(data['status']));
     });
     post(store, binder, '@hermes hi', ['hermes']);
     // The turn must reach 'thinking' (proving it was delivered) and then settle
@@ -2412,8 +2450,7 @@ describe('channel-agent-binder — roster + availability', () => {
           displayName: 'Codex',
           kind: 'framework',
           available: false,
-          reason:
-            'Codex web sessions do not yet stream chat responses (see issue #301).',
+          reason: 'Codex is not currently available in channels.',
         },
       ],
       knownProviderIds: ['codex'],
@@ -2433,7 +2470,9 @@ describe('channel-agent-binder — roster + availability', () => {
       root.id
     );
     await waitFor(() =>
-      systemRows(store).some((m) => m.body.text.includes('#301'))
+      systemRows(store).some((m) =>
+        m.body.text.includes('not currently available in channels')
+      )
     );
     const secondTrigger = post(
       store,
@@ -2454,7 +2493,7 @@ describe('channel-agent-binder — roster + availability', () => {
         m.parentMessageId === trigger.id
     )!;
     expect(unavailable.body.text).toBe(
-      '@Backend is not available in channels yet — Codex web sessions do not yet stream chat responses (see issue #301).'
+      '@Backend is not available in channels yet — Codex is not currently available in channels.'
     );
     expect(unavailable.threadId).toBe(root.id);
     expect(unavailable.parentMessageId).toBe(trigger.id);
@@ -2586,7 +2625,9 @@ describe('channel-agent-binder — gateway agent-sender loop brake (P1 #1180)', 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(sessions.spawns()).toBe(0);
     expect(
-      agentReplies(store, 'claude').filter((message) => message.id !== gatewayPost.id)
+      agentReplies(store, 'claude').filter(
+        (message) => message.id !== gatewayPost.id
+      )
     ).toHaveLength(0);
   });
 
@@ -2797,11 +2838,13 @@ describe('channel-agent-binder — close() gates in-flight spawns (P2 #1180)', (
       gate,
     });
     const pending = binder.ensureBinding(CH, 'mock');
-    await waitFor(() => sessions.spawns() === 1); // createWeb parked at the gate
+    await waitFor(() => sessions.spawns() === 1); // runtime creation parked at the gate
     binder.close();
     releaseGate(); // spawn resolves AFTER close
     await expect(pending).rejects.toThrow(); // BinderClosedError — no attach
-    expect(store.getBinding(CH, 'mock')?.sessionId ?? null).toBeNull();
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('mock'))?.runtimeId ?? null
+    ).toBeNull();
     expect(systemRows(store)).toHaveLength(0); // no post-close store writes
   });
 });
@@ -2833,43 +2876,6 @@ describe('channel-agent-binder — YOLO spawn permission mode (locked decision #
     await waitFor(() => sessions.spawns() === 1);
     expect(sessions.lastCreateParams()).toBeDefined();
     expect(sessions.lastCreateParams()!.permissionMode).toBeUndefined();
-  });
-
-  it('the shared createWebSession path does NOT default permissionMode (no yolo leak)', async () => {
-    const map = new Map<string, Session>();
-    const { session } = await createWebSession(
-      {
-        agentType: 'mock',
-        cwd: '/tmp',
-        displayName: 'normal',
-        port: 0,
-        configDir: '/tmp',
-      },
-      map,
-      () => {},
-      { skipInitialPersist: true }
-    );
-    expect(session.agentSessionV2.config.permissionMode).toBeUndefined();
-  });
-
-  it('the shared createWebSession path plumbs bypassPermissions through when passed', async () => {
-    const map = new Map<string, Session>();
-    const { session } = await createWebSession(
-      {
-        agentType: 'mock',
-        cwd: '/tmp',
-        displayName: 'yolo',
-        port: 0,
-        configDir: '/tmp',
-        permissionMode: 'bypassPermissions',
-      },
-      map,
-      () => {},
-      { skipInitialPersist: true }
-    );
-    expect(session.agentSessionV2.config.permissionMode).toBe(
-      'bypassPermissions'
-    );
   });
 });
 
@@ -2910,7 +2916,7 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
       approvalRequestId: requestId,
       agentId: builtInAgentProfileId('mock'),
     });
-    expect(approvalRow.meta?.['sessionId']).toBe(sessions.firstSessionId());
+    expect(approvalRow.meta?.['runtimeId']).toBe(sessions.firstSessionId());
     expect(approvalRow.threadId).toBe(root.id);
     expect(approvalRow.parentMessageId).toBe(trigger.id);
 
@@ -3021,8 +3027,9 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     expect(a.sendCalls).toHaveLength(1); // T2 NOT pumped — turn stayed parked
     // Presence stayed 'waiting' — never flipped to idle/thinking mid-approval.
     expect(
-      (await binder.rosterForChannel(CH)).find((r) => r.id === builtInAgentProfileId('mock'))!.binding
-        ?.status
+      (await binder.rosterForChannel(CH)).find(
+        (r) => r.id === builtInAgentProfileId('mock')
+      )!.binding?.status
     ).toBe('waiting');
 
     // Resolving the approval resumes the turn: it completes normally, then T2 drains.

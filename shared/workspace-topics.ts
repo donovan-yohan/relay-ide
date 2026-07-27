@@ -321,21 +321,25 @@ export function buildWorkspaceTopicLaunchPreview(
       : undefined,
   ].filter((value): value is string => Boolean(value));
   const taskRefs = (create.linkedRefs?.taskRefs ?? []).map(taskRefLabel);
+  const templateKind = input.templateKind ?? 'agent-task';
   const sideEffects = [
     'create WorkspaceTopic room',
     create.linkedRefs?.workContextIds?.length
       ? 'link existing WorkContext ref'
       : 'create WorkContext link for this room',
-    input.intent === 'create-and-launch'
-      ? 'launch provider-neutral session through sessions.create'
+    input.intent === 'create-and-launch' && templateKind === 'agent-task'
+      ? 'open provider DM channel and post the first message'
       : undefined,
-    input.intent === 'create-and-launch'
-      ? 'link created session back to WorkspaceTopic/WorkContext'
+    input.intent === 'create-and-launch' && templateKind === 'terminal-task'
+      ? 'launch terminal through sessions.create'
+      : undefined,
+    input.intent === 'create-and-launch' && templateKind === 'terminal-task'
+      ? 'link created terminal back to WorkspaceTopic/WorkContext'
       : undefined,
   ].filter((value): value is string => Boolean(value));
   return {
     intent: input.intent,
-    templateKind: input.templateKind ?? 'agent-task',
+    templateKind,
     title: create.title,
     workspaceId: create.workspaceId,
     providerLabel: providerPreviewLabel(provider),
@@ -1142,14 +1146,6 @@ function readLaunchString(
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function readLaunchBoolean(
-  overrides: WorkspaceTopicLaunchOverrides,
-  key: string
-): boolean | undefined {
-  const value = overrides[key];
-  return typeof value === 'boolean' ? value : undefined;
-}
-
 function readLaunchNumber(
   overrides: WorkspaceTopicLaunchOverrides,
   key: string
@@ -1160,25 +1156,12 @@ function readLaunchNumber(
     : undefined;
 }
 
-function topicPromptForSession(topic: WorkspaceTopic): string | undefined {
-  const parts = [
-    topic.promptDefaults.starterPrompt,
-    topic.promptDefaults.instructions,
-  ].filter(
-    (value): value is string =>
-      typeof value === 'string' && value.trim().length > 0
-  );
-  return parts.length ? parts.join('\n\n') : undefined;
-}
-
 /**
  * Build the existing `sessions.create` body for a WorkspaceTopic launch.
  *
- * This deliberately projects Topic defaults into Relay's provider/session
- * primitives instead of creating a Hermes-only launch fork. In the v1 local
- * sessions API `cwd` is represented by `worktreePath`, so a topic-level cwd
- * that differs from repoPath becomes the session worktree/cwd field unless an
- * explicit worktreePath override is supplied.
+ * Project Topic location defaults into the public terminal-session contract.
+ * Agent/provider/prompt defaults belong to channel dispatch and are
+ * intentionally absent here.
  */
 export function buildWorkspaceTopicSessionCreateBody(input: {
   topic: WorkspaceTopic;
@@ -1192,8 +1175,6 @@ export function buildWorkspaceTopicSessionCreateBody(input: {
     ? overrides['worktreePath']
     : undefined;
   const explicitSpawnInput: WorkspaceTopicRoutingDefaults = {};
-  const explicitProvider = readLaunchString(overrides, 'agent');
-  if (explicitProvider) explicitSpawnInput.providerId = explicitProvider;
   const explicitNode = readLaunchString(overrides, 'nodeId');
   if (explicitNode) explicitSpawnInput.nodeId = explicitNode;
   const explicitRepoPath = readLaunchString(overrides, 'repoPath');
@@ -1219,22 +1200,11 @@ export function buildWorkspaceTopicSessionCreateBody(input: {
       (routing.cwd && routing.cwd !== repoPath ? routing.cwd : undefined);
     if (worktreePath) body['worktreePath'] = worktreePath;
   }
-  const agent = routing.providerId;
-  if (agent) body['agent'] = agent;
   if (routing.nodeId) body['nodeId'] = routing.nodeId;
-  for (const key of [
-    'type',
-    'mode',
-    'terminalBackend',
-    'branchName',
-    'continuePolicy',
-    'controlMode',
-  ]) {
+  for (const key of ['type', 'mode', 'terminalBackend', 'branchName']) {
     const value = readLaunchString(overrides, key);
     if (value) body[key] = value;
   }
-  const yolo = readLaunchBoolean(overrides, 'yolo');
-  if (yolo !== undefined) body['yolo'] = yolo;
   for (const key of ['cols', 'rows']) {
     const value = readLaunchNumber(overrides, key);
     if (value !== undefined) body[key] = value;
@@ -1243,10 +1213,6 @@ export function buildWorkspaceTopicSessionCreateBody(input: {
     readLaunchString(overrides, 'workContextId') ??
     input.topic.linkedRefs.workContextIds?.[0];
   if (workContextId) body['workContextId'] = workContextId;
-  const initialPrompt =
-    readLaunchString(overrides, 'initialPrompt') ??
-    topicPromptForSession(input.topic);
-  if (initialPrompt) body['initialPrompt'] = initialPrompt;
   return body;
 }
 

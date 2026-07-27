@@ -6,9 +6,7 @@ export function getMainWorkspaceSessions(
 ): SessionSummary[] {
   if (!utilityTerminalIds?.length) return sessions;
   const utilityIds = new Set(utilityTerminalIds);
-  return sessions.filter(
-    (session) => !(session.type === 'terminal' && utilityIds.has(session.id))
-  );
+  return sessions.filter((session) => !utilityIds.has(session.id));
 }
 
 export function getUtilityTerminalSessions(
@@ -19,12 +17,16 @@ export function getUtilityTerminalSessions(
   const byId = new Map(sessions.map((session) => [session.id, session]));
   return utilityTerminalIds.flatMap((id) => {
     const session = byId.get(id);
-    return session?.type === 'terminal' ? [session] : [];
+    return session ? [session] : [];
   });
 }
 
-function pathHint(session: SessionSummary, workspacePath: string): string | null {
-  const path = session.cwd || session.worktreePath || session.repoPath || workspacePath;
+function pathHint(
+  session: SessionSummary,
+  workspacePath: string
+): string | null {
+  const path =
+    session.cwd || session.worktreePath || session.repoPath || workspacePath;
   const cleaned = path.replace(/\/+$/, '');
   const base = cleaned.split('/').filter(Boolean).at(-1);
   return base || null;

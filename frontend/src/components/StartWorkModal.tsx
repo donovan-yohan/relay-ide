@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GitHubIssue, JiraIssue, AnyIssue, Repo } from '../lib/types.js';
 import { fetchWorkspaces } from '../lib/api.js';
-import { executeTicketStartWorkAction } from '../lib/actions/start-work-lifecycle.js';
+import { openAgentChannel } from '../lib/agent-channels.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import { TuiButton } from './TuiButton.js';
 import './StartWorkModal.css';
 
@@ -9,7 +10,6 @@ export interface StartWorkModalProps {
   issue: AnyIssue;
   open: boolean;
   onClose: () => void;
-  onSessionCreated: (sessionId: string) => void;
 }
 
 function detectSource(i: AnyIssue): 'github' | 'jira' {
@@ -43,15 +43,17 @@ type TicketContext = {
   source: 'github' | 'jira';
 };
 
-// The composite executors return RelayCliGatewayEnvelope<unknown>; the success
-// data projects to workflowCommandOutputSchema with a required `session.id`.
-// Narrow it defensively rather than asserting the wire shape.
-function sessionIdFromWorkflowData(data: unknown): string | undefined {
-  if (typeof data !== 'object' || data === null) return undefined;
-  const session = (data as { session?: unknown }).session;
-  if (typeof session !== 'object' || session === null) return undefined;
-  const id = (session as { id?: unknown }).id;
-  return typeof id === 'string' ? id : undefined;
+export function buildStartWorkPrompt(
+  context: TicketContext,
+  branchName: string
+): string {
+  const branch = branchName.trim();
+  return [
+    `Start work on ${context.ticketId}: ${context.title}`,
+    `Ticket: ${context.url}`,
+    `Repository: ${context.repoPath}`,
+    ...(branch ? [`Use branch: ${branch}`] : []),
+  ].join('\n');
 }
 
 function useWorkspaceLoader(source: 'github' | 'jira', open: boolean) {
@@ -77,7 +79,6 @@ function useStartWork(
   repoPath: string,
   branchName: string,
   buildCtx: () => TicketContext,
-  onSessionCreated: (id: string) => void,
   onClose: () => void
 ) {
   const [loading, setLoading] = useState(false);
@@ -94,58 +95,23 @@ function useStartWork(
     setLoading(true);
     setError(null);
     try {
-      // #871/#876: route start-work through the composite tickets.startWork
-      // executor. The ticket envelope maps `ticketId` -> `id` (keeping the
-      // GH-number formatting semantics buildCtx already applies) and passes the
-      // explicit repo path + branch + reuse-existing worktree policy. The
-      // executor's createSession tail still carries ticketContext for the PTY.
       const ctx = buildCtx();
-      const result = await executeTicketStartWorkAction({
-        ticket: {
-          source: ctx.source,
-          id: ctx.ticketId,
-          title: ctx.title,
-          url: ctx.url,
-        },
-        repo: { repoPath },
-        branch: { name: branchName },
-        worktree: { mode: 'reuse-existing' },
+      useUiStore.getState().setActiveRepoPath(ctx.repoPath);
+      await openAgentChannel({
+        prompt: buildStartWorkPrompt(ctx, branchName),
       });
-      if (!result.ok) {
-        // SESSION_CONFLICT carries details.sessionId and is focus-existing
-        // success in the UI — preserve the prior ConflictError behavior exactly.
-        const conflictSessionId =
-          result.error.code === 'SESSION_CONFLICT' &&
-          typeof result.error.details?.sessionId === 'string'
-            ? result.error.details.sessionId
-            : undefined;
-        if (conflictSessionId) {
-          onSessionCreated(conflictSessionId);
-          onClose();
-          return;
-        }
-        throw new Error(result.error.message);
-      }
-      const sessionId = sessionIdFromWorkflowData(result.data);
-      if (!sessionId) throw new Error('Failed to start work');
-      onSessionCreated(sessionId);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start work');
     } finally {
       setLoading(false);
     }
-  }, [loading, repoPath, branchName, buildCtx, onSessionCreated, onClose]);
+  }, [loading, repoPath, branchName, buildCtx, onClose]);
 
   return { loading, error, handleStart };
 }
 
-export function StartWorkModal({
-  issue,
-  open,
-  onClose,
-  onSessionCreated,
-}: StartWorkModalProps) {
+export function StartWorkModal({ issue, open, onClose }: StartWorkModalProps) {
   const source = detectSource(issue);
   const defaultBranch = buildDefaultBranch(issue, source);
   const ticketDisplay = buildTicketDisplay(issue, source);
@@ -191,7 +157,6 @@ export function StartWorkModal({
     repoPath,
     branchName,
     buildCtx,
-    onSessionCreated,
     onClose
   );
 
@@ -293,7 +258,7 @@ export function StartWorkModal({
             onClick={() => void handleStart()}
             disabled={loading}
           >
-            {loading ? 'Starting...' : 'Start Work'}
+            {loading ? 'Opening chat...' : 'Start Work'}
           </TuiButton>
         </div>
       </div>

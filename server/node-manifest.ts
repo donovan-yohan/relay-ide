@@ -9,7 +9,6 @@ import { resolveExecutablePath } from './frameworks.js';
 import { detectServiceManager, detectWslInfo } from './service.js';
 import { decorateManifestWithFrameworks } from './features/frameworks.js';
 import { enrichManifest } from './node-manifest-build.js';
-import { probeRmuxCapability } from './rmux-probe.js';
 import type {
   NodeCapabilities,
   NodeCapabilityProbe,
@@ -174,7 +173,6 @@ function getNodeCapabilities(
     tailscale: probeCommand('tailscale', 'Tailscale CLI', 'tailscale', env),
     ssh: probeCommand('ssh', 'SSH client', 'ssh', env, { versionArgs: ['-V'] }),
     sessionResume: 'none',
-    rmux: probeRmuxCapability({ env, platform }),
     agents: {},
   };
 }

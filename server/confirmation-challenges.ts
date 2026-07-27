@@ -1,5 +1,9 @@
 import * as crypto from 'node:crypto';
-import { sha256Hex, stableStringify, type SecurityAuditEntryInput } from '../shared/security-audit.js';
+import {
+  sha256Hex,
+  stableStringify,
+  type SecurityAuditEntryInput,
+} from '../shared/security-audit.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import type { HubPolicyDecision } from './hub-policy-evaluator.js';
 import {
@@ -219,11 +223,15 @@ export function createConfirmationChallengeStore(
   options: ConfirmationChallengeStoreOptions = {}
 ): ConfirmationChallengeStore {
   const challenges = new Map<string, ConfirmationChallenge>();
-  const challengeTtlMs = options.challengeTtlMs ?? DEFAULT_CONFIRMATION_CHALLENGE_TTL_MS;
+  const challengeTtlMs =
+    options.challengeTtlMs ?? DEFAULT_CONFIRMATION_CHALLENGE_TTL_MS;
   const tokenTtlMs = options.tokenTtlMs ?? DEFAULT_CONFIRMATION_TOKEN_TTL_MS;
   const maxFailedRedemptions =
     options.maxFailedRedemptions ?? DEFAULT_CONFIRMATION_MAX_FAILED_REDEMPTIONS;
-  const maxChallenges = Math.max(1, options.maxChallenges ?? DEFAULT_CONFIRMATION_MAX_CHALLENGES);
+  const maxChallenges = Math.max(
+    1,
+    options.maxChallenges ?? DEFAULT_CONFIRMATION_MAX_CHALLENGES
+  );
   const now = options.now ?? (() => new Date());
   const randomId = options.randomId ?? randomChallengeId;
   const randomToken = options.randomToken ?? randomConfirmationToken;
@@ -237,7 +245,8 @@ export function createConfirmationChallengeStore(
   }
 
   function pruneExpired(current: Date): void {
-    for (const challenge of Array.from(challenges.values())) expireIfNeeded(challenge, current, true);
+    for (const challenge of Array.from(challenges.values()))
+      expireIfNeeded(challenge, current, true);
   }
 
   function pruneStoredChallenges(current: Date): void {
@@ -247,12 +256,18 @@ export function createConfirmationChallengeStore(
       const finishedAt = Date.parse(
         challenge.redeemedAt ?? challenge.approvedAt ?? challenge.expiresAt
       );
-      if (isTerminal(challenge.status) && Number.isFinite(finishedAt) && finishedAt < cutoff) {
+      if (
+        isTerminal(challenge.status) &&
+        Number.isFinite(finishedAt) &&
+        finishedAt < cutoff
+      ) {
         challenges.delete(challengeId);
       }
     }
     while (challenges.size > maxChallenges) {
-      const terminal = Array.from(challenges.values()).find((challenge) => isTerminal(challenge.status));
+      const terminal = Array.from(challenges.values()).find((challenge) =>
+        isTerminal(challenge.status)
+      );
       if (!terminal) break;
       challenges.delete(terminal.challengeId);
     }
@@ -260,8 +275,11 @@ export function createConfirmationChallengeStore(
 
   function ensureCapacityForNewChallenge(): void {
     while (challenges.size >= maxChallenges) {
-      const terminal = Array.from(challenges.values()).find((challenge) => isTerminal(challenge.status));
-      if (!terminal) throw new ConfirmationChallengeCapacityError(maxChallenges);
+      const terminal = Array.from(challenges.values()).find((challenge) =>
+        isTerminal(challenge.status)
+      );
+      if (!terminal)
+        throw new ConfirmationChallengeCapacityError(maxChallenges);
       challenges.delete(terminal.challengeId);
     }
   }
@@ -283,7 +301,9 @@ export function createConfirmationChallengeStore(
     const requester = input.requester ?? {
       kind: 'browser-session' as const,
       authSessionHash: input.requesterAuthSessionHash,
-      ...(input.requesterDisplayName ? { displayName: input.requesterDisplayName } : {}),
+      ...(input.requesterDisplayName
+        ? { displayName: input.requesterDisplayName }
+        : {}),
     };
     const approvalTarget = input.approvalTarget ?? { kind: 'human' as const };
     const challengeId = randomId();
@@ -291,7 +311,9 @@ export function createConfirmationChallengeStore(
       challengeId,
       status: 'pending',
       requesterAuthSessionHash: input.requesterAuthSessionHash,
-      ...(input.requesterDisplayName ? { requesterDisplayName: input.requesterDisplayName } : {}),
+      ...(input.requesterDisplayName
+        ? { requesterDisplayName: input.requesterDisplayName }
+        : {}),
       nodeId: decision.nodeId,
       intent: decision.intent,
       requiredBits: [...decision.requiredBits],
@@ -306,7 +328,8 @@ export function createConfirmationChallengeStore(
       failedRedemptions: 0,
       maxFailedRedemptions,
       reasonCode: 'CONFIRMATION_REQUIRED',
-      message: 'confirmation required before Relay routes this operation to the node',
+      message:
+        'confirmation required before Relay routes this operation to the node',
       outcome: 'challenge_created',
       requester,
       approvalTarget,
@@ -334,64 +357,147 @@ export function createConfirmationChallengeStore(
   }): ConfirmationApprovalResult {
     const current = input.now ?? now();
     const challenge = challenges.get(input.challengeId);
-    if (!challenge) return failure('CONFIRMATION_NOT_FOUND', 'confirmation challenge not found');
+    if (!challenge)
+      return failure(
+        'CONFIRMATION_NOT_FOUND',
+        'confirmation challenge not found'
+      );
     const expiryFailure = expireIfNeeded(challenge, current);
     if (expiryFailure) return expiryFailure;
     if (challenge.status !== 'pending') {
-      return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
+      return failure(
+        'CONFIRMATION_NOT_APPROVED',
+        `confirmation challenge is ${challenge.status}`,
+        challenge
+      );
     }
     const approver = input.approver;
     const attemptedApproval = attemptedApprovalFromInput(input);
     if (challenge.requesterAuthSessionHash === input.approverAuthSessionHash) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting browser/auth session cannot approve its own challenge', 'same_session_approval_attempt', 'deny', undefined, attemptedApproval);
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_SAME_SESSION',
+        'the requesting browser/auth session cannot approve its own challenge',
+        'same_session_approval_attempt',
+        'deny',
+        undefined,
+        attemptedApproval
+      );
     }
     if (requiresStructuredApprover(challenge) && !approver) {
-      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approval requires a distinct human/operator approver identity', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_APPROVAL_TARGET_INVALID',
+        'approval requires a distinct human/operator approver identity',
+        'denial',
+        'deny',
+        'approval_target_invalid',
+        attemptedApproval
+      );
     }
     if (sameHighRiskActor(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_ACTOR', 'the requesting autonomous actor cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_SAME_ACTOR',
+        'the requesting autonomous actor cannot approve its own high-risk challenge',
+        'same_session_approval_attempt',
+        'deny',
+        'approval_target_invalid',
+        attemptedApproval
+      );
     }
     if (sameHighRiskCredential(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_CREDENTIAL', 'the requesting scoped credential cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_SAME_CREDENTIAL',
+        'the requesting scoped credential cannot approve its own high-risk challenge',
+        'same_session_approval_attempt',
+        'deny',
+        'approval_target_invalid',
+        attemptedApproval
+      );
     }
     if (sameHighRiskSession(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting session cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_SAME_SESSION',
+        'the requesting session cannot approve its own high-risk challenge',
+        'same_session_approval_attempt',
+        'deny',
+        'approval_target_invalid',
+        attemptedApproval
+      );
     }
-    if (approver && !approverSatisfiesTarget(approver, challenge.approvalTarget)) {
-      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approver does not match the challenge approval target', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
+    if (
+      approver &&
+      !approverSatisfiesTarget(approver, challenge.approvalTarget)
+    ) {
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_APPROVAL_TARGET_INVALID',
+        'approver does not match the challenge approval target',
+        'denial',
+        'deny',
+        'approval_target_invalid',
+        attemptedApproval
+      );
     }
     if (input.decision === 'deny' || input.decision === 'deny_revoke') {
-      const reasonCode = input.decision === 'deny' ? 'CONFIRMATION_DENIED' : 'CONFIRMATION_DENIED_REVOKE';
+      const reasonCode =
+        input.decision === 'deny'
+          ? 'CONFIRMATION_DENIED'
+          : 'CONFIRMATION_DENIED_REVOKE';
       challenge.status = input.decision === 'deny' ? 'denied' : 'revoked';
       challenge.reasonCode = reasonCode;
-      challenge.message = input.decision === 'deny'
-        ? 'confirmation challenge was denied by a distinct authenticated session'
-        : 'confirmation challenge was denied and the grant should be revoked';
+      challenge.message =
+        input.decision === 'deny'
+          ? 'confirmation challenge was denied by a distinct authenticated session'
+          : 'confirmation challenge was denied and the grant should be revoked';
       challenge.approverAuthSessionHash = input.approverAuthSessionHash;
       if (approver) challenge.approver = approver;
-      if (input.approverDisplayName) challenge.approverDisplayName = input.approverDisplayName;
+      if (input.approverDisplayName)
+        challenge.approverDisplayName = input.approverDisplayName;
       challenge.approvedAt = current.toISOString();
       challenge.outcome = 'denied';
-      challenge.contract = updatedContract(challenge, input.decision === 'deny' ? 'denied' : 'denied', undefined, approver);
-      return failure(reasonCode, challenge.message, challenge, auditForChallenge(challenge, {
-        eventType: input.decision === 'deny' ? 'denial' : 'revocation',
-        decision: input.decision === 'deny' ? 'deny' : 'revoked',
+      challenge.contract = updatedContract(
+        challenge,
+        input.decision === 'deny' ? 'denied' : 'denied',
+        undefined,
+        approver
+      );
+      return failure(
         reasonCode,
-      }));
+        challenge.message,
+        challenge,
+        auditForChallenge(challenge, {
+          eventType: input.decision === 'deny' ? 'denial' : 'revocation',
+          decision: input.decision === 'deny' ? 'deny' : 'revoked',
+          reasonCode,
+        })
+      );
     }
     const token = randomToken();
     challenge.status = 'approved';
     challenge.reasonCode = 'CONFIRMATION_APPROVED';
-    challenge.message = 'confirmation challenge approved by a distinct authenticated session';
+    challenge.message =
+      'confirmation challenge approved by a distinct authenticated session';
     challenge.approverAuthSessionHash = input.approverAuthSessionHash;
     if (approver) challenge.approver = approver;
-    if (input.approverDisplayName) challenge.approverDisplayName = input.approverDisplayName;
+    if (input.approverDisplayName)
+      challenge.approverDisplayName = input.approverDisplayName;
     challenge.approvedAt = current.toISOString();
-    challenge.tokenExpiresAt = new Date(current.getTime() + tokenTtlMs).toISOString();
+    challenge.tokenExpiresAt = new Date(
+      current.getTime() + tokenTtlMs
+    ).toISOString();
     challenge.tokenHash = hashToken(token);
     challenge.requesterToken = token;
     challenge.outcome = 'approved';
-    challenge.contract = updatedContract(challenge, 'approved', token, approver);
+    challenge.contract = updatedContract(
+      challenge,
+      'approved',
+      token,
+      approver
+    );
     return {
       ok: true,
       reasonCode: 'CONFIRMATION_APPROVED',
@@ -418,7 +524,11 @@ export function createConfirmationChallengeStore(
     const challenge = Array.from(challenges.values()).find(
       (candidate) => candidate.tokenHash === tokenHash
     );
-    if (!challenge) return failure('CONFIRMATION_TOKEN_INVALID', 'confirmation token is invalid');
+    if (!challenge)
+      return failure(
+        'CONFIRMATION_TOKEN_INVALID',
+        'confirmation token is invalid'
+      );
     const expiryFailure = expireIfNeeded(challenge, current, true);
     if (expiryFailure) return expiryFailure;
     if (challenge.status === 'redeemed') {
@@ -436,13 +546,29 @@ export function createConfirmationChallengeStore(
       );
     }
     if (challenge.status !== 'approved') {
-      return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
+      return failure(
+        'CONFIRMATION_NOT_APPROVED',
+        `confirmation challenge is ${challenge.status}`,
+        challenge
+      );
     }
     if (challenge.requesterAuthSessionHash !== input.requesterAuthSessionHash) {
-      return failChallenge(challenge, 'CONFIRMATION_REQUESTER_MISMATCH', 'confirmation token can only be redeemed by the original requesting auth session', 'failed_redemption', 'failed');
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_REQUESTER_MISMATCH',
+        'confirmation token can only be redeemed by the original requesting auth session',
+        'failed_redemption',
+        'failed'
+      );
     }
     if (challenge.approverAuthSessionHash === input.requesterAuthSessionHash) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the approving browser/auth session cannot redeem its own approval', 'same_session_approval_attempt', 'deny');
+      return failChallenge(
+        challenge,
+        'CONFIRMATION_SAME_SESSION',
+        'the approving browser/auth session cannot redeem its own approval',
+        'same_session_approval_attempt',
+        'deny'
+      );
     }
     if (!challengeContextMatches(challenge, input.decision)) {
       return invalidateRedemptionChallenge(
@@ -452,7 +578,10 @@ export function createConfirmationChallengeStore(
         input.canonicalParams
       );
     }
-    if (challenge.canonicalParamsHash !== hashCanonicalParams(input.canonicalParams)) {
+    if (
+      challenge.canonicalParamsHash !==
+      hashCanonicalParams(input.canonicalParams)
+    ) {
       return invalidateRedemptionChallenge(
         challenge,
         'CONFIRMATION_PARAM_MISMATCH',
@@ -487,20 +616,40 @@ export function createConfirmationChallengeStore(
   }): ConfirmationRequesterTokenResult {
     const current = input.now ?? now();
     const challenge = challenges.get(input.challengeId);
-    if (!challenge) return failure('CONFIRMATION_NOT_FOUND', 'confirmation challenge not found');
+    if (!challenge)
+      return failure(
+        'CONFIRMATION_NOT_FOUND',
+        'confirmation challenge not found'
+      );
     const expiryFailure = expireIfNeeded(challenge, current, true);
     if (expiryFailure) return expiryFailure;
     if (challenge.requesterAuthSessionHash !== input.requesterAuthSessionHash) {
-      return failure('CONFIRMATION_REQUESTER_MISMATCH', 'confirmation token can only be picked up by the original requesting auth session', challenge);
+      return failure(
+        'CONFIRMATION_REQUESTER_MISMATCH',
+        'confirmation token can only be picked up by the original requesting auth session',
+        challenge
+      );
     }
     if (challenge.status === 'redeemed') {
-      return failure('CONFIRMATION_ALREADY_USED', 'confirmation token was already used', challenge);
+      return failure(
+        'CONFIRMATION_ALREADY_USED',
+        'confirmation token was already used',
+        challenge
+      );
     }
     if (challenge.status !== 'approved') {
-      return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
+      return failure(
+        'CONFIRMATION_NOT_APPROVED',
+        `confirmation challenge is ${challenge.status}`,
+        challenge
+      );
     }
     if (!challenge.requesterToken) {
-      return failure('CONFIRMATION_TOKEN_INVALID', 'confirmation token is no longer available', challenge);
+      return failure(
+        'CONFIRMATION_TOKEN_INVALID',
+        'confirmation token is no longer available',
+        challenge
+      );
     }
     return {
       ok: true,
@@ -563,9 +712,13 @@ export function canonicalConfirmationParams(
         action,
         cwd: stringField(record, 'cwd'),
         commandHash: command === undefined ? undefined : sha256Hex(command),
-        commandByteCount: command === undefined ? undefined : Buffer.byteLength(command, 'utf8'),
+        commandByteCount:
+          command === undefined
+            ? undefined
+            : Buffer.byteLength(command, 'utf8'),
         commandCharCount: command?.length,
-        commandClasses: command === undefined ? undefined : commandClasses(command),
+        commandClasses:
+          command === undefined ? undefined : commandClasses(command),
         envHash: hashOptional(record?.['env']),
       });
     }
@@ -597,7 +750,6 @@ export function canonicalConfirmationParams(
       });
     case 'sessions.create':
     case 'sessions.kill':
-    case 'sessions.create.agent':
     case 'sessions.create.terminal':
       return canonicalSessionParams(action, record, [
         'type',
@@ -640,12 +792,18 @@ export function publicChallenge(
     ...(challenge.sessionId ? { sessionId: challenge.sessionId } : {}),
     canonicalParams: challenge.canonicalParams,
     canonicalParamsHash: challenge.canonicalParamsHash,
-    ...(challenge.requesterDisplayName ? { requesterDisplayName: challenge.requesterDisplayName } : {}),
-    ...(challenge.approverDisplayName ? { approverDisplayName: challenge.approverDisplayName } : {}),
+    ...(challenge.requesterDisplayName
+      ? { requesterDisplayName: challenge.requesterDisplayName }
+      : {}),
+    ...(challenge.approverDisplayName
+      ? { approverDisplayName: challenge.approverDisplayName }
+      : {}),
     createdAt: challenge.createdAt,
     expiresAt: challenge.expiresAt,
     ...(challenge.approvedAt ? { approvedAt: challenge.approvedAt } : {}),
-    ...(challenge.tokenExpiresAt ? { tokenExpiresAt: challenge.tokenExpiresAt } : {}),
+    ...(challenge.tokenExpiresAt
+      ? { tokenExpiresAt: challenge.tokenExpiresAt }
+      : {}),
     failedRedemptions: challenge.failedRedemptions,
     maxFailedRedemptions: challenge.maxFailedRedemptions,
     reasonCode: challenge.reasonCode,
@@ -656,7 +814,10 @@ export function publicChallenge(
 }
 
 function requiresStructuredApprover(challenge: ConfirmationChallenge): boolean {
-  return challenge.requester?.kind === 'scoped-actor' || Boolean(challenge.requester?.actorId || challenge.requester?.credentialId);
+  return (
+    challenge.requester?.kind === 'scoped-actor' ||
+    Boolean(challenge.requester?.actorId || challenge.requester?.credentialId)
+  );
 }
 
 function approverSatisfiesTarget(
@@ -689,10 +850,16 @@ function updatedContract(
     requester: challenge.requester ?? {
       kind: 'browser-session',
       authSessionHash: challenge.requesterAuthSessionHash,
-      ...(challenge.requesterDisplayName ? { displayName: challenge.requesterDisplayName } : {}),
+      ...(challenge.requesterDisplayName
+        ? { displayName: challenge.requesterDisplayName }
+        : {}),
     },
-    ...(challenge.approvalTarget ? { approvalTarget: challenge.approvalTarget } : {}),
-    ...(approver ?? challenge.approver ? { approver: approver ?? challenge.approver } : {}),
+    ...(challenge.approvalTarget
+      ? { approvalTarget: challenge.approvalTarget }
+      : {}),
+    ...((approver ?? challenge.approver)
+      ? { approver: approver ?? challenge.approver }
+      : {}),
     ...(redemptionNonce
       ? { redemptionNonce }
       : challenge.contract.redemptionNonceHash
@@ -717,12 +884,17 @@ function invalidateRedemptionChallenge(
   delete challenge.tokenExpiresAt;
   delete challenge.tokenHash;
   delete challenge.requesterToken;
-  return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
-    eventType: 'failed_redemption',
-    decision: 'failed',
+  return failure(
     reasonCode,
-    ...(params !== undefined ? { params } : {}),
-  }));
+    message,
+    challenge,
+    auditForChallenge(challenge, {
+      eventType: 'failed_redemption',
+      decision: 'failed',
+      reasonCode,
+      ...(params !== undefined ? { params } : {}),
+    })
+  );
 }
 
 function attemptedApprovalFromInput(input: {
@@ -732,7 +904,9 @@ function attemptedApprovalFromInput(input: {
 }): AttemptedApproval {
   return {
     approverAuthSessionHash: input.approverAuthSessionHash,
-    ...(input.approverDisplayName ? { approverDisplayName: input.approverDisplayName } : {}),
+    ...(input.approverDisplayName
+      ? { approverDisplayName: input.approverDisplayName }
+      : {}),
     ...(input.approver ? { approver: input.approver } : {}),
   };
 }
@@ -754,14 +928,24 @@ function failChallenge(
   challenge.message = message;
   if (outcome) {
     challenge.outcome = outcome;
-    challenge.contract = updatedContract(challenge, outcome, undefined, attemptedApproval?.approver);
+    challenge.contract = updatedContract(
+      challenge,
+      outcome,
+      undefined,
+      attemptedApproval?.approver
+    );
   }
-  return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
-    eventType,
-    decision,
+  return failure(
     reasonCode,
-    ...(attemptedApproval ? { attemptedApproval } : {}),
-  }));
+    message,
+    challenge,
+    auditForChallenge(challenge, {
+      eventType,
+      decision,
+      reasonCode,
+      ...(attemptedApproval ? { attemptedApproval } : {}),
+    })
+  );
 }
 
 function failure(
@@ -770,7 +954,13 @@ function failure(
   challenge?: ConfirmationChallenge,
   audit?: SecurityAuditEntryInput
 ): ConfirmationFailure {
-  return { ok: false, reasonCode, message, ...(challenge ? { challenge } : {}), ...(audit ? { audit } : {}) };
+  return {
+    ok: false,
+    reasonCode,
+    message,
+    ...(challenge ? { challenge } : {}),
+    ...(audit ? { audit } : {}),
+  };
 }
 
 function expireIfNeeded(
@@ -793,11 +983,16 @@ function expireIfNeeded(
   challenge.message = tokenExpired
     ? 'confirmation token expired'
     : 'confirmation challenge expired';
-  return failure('CONFIRMATION_EXPIRED', challenge.message, challenge, auditForChallenge(challenge, {
-    eventType: 'expiry',
-    decision: 'expired',
-    reasonCode: 'CONFIRMATION_EXPIRED',
-  }));
+  return failure(
+    'CONFIRMATION_EXPIRED',
+    challenge.message,
+    challenge,
+    auditForChallenge(challenge, {
+      eventType: 'expiry',
+      decision: 'expired',
+      reasonCode: 'CONFIRMATION_EXPIRED',
+    })
+  );
 }
 
 function challengeContextMatches(
@@ -809,8 +1004,10 @@ function challengeContextMatches(
     challenge.intent.action === decision.intent.action &&
     (challenge.intent.target ?? null) === (decision.intent.target ?? null) &&
     (challenge.sessionId ?? null) === (decision.sessionId ?? null) &&
-    stableStringify(challenge.requiredBits) === stableStringify(decision.requiredBits) &&
-    stableStringify(challenge.challengeBits) === stableStringify(decision.challengeBits) &&
+    stableStringify(challenge.requiredBits) ===
+      stableStringify(decision.requiredBits) &&
+    stableStringify(challenge.challengeBits) ===
+      stableStringify(decision.challengeBits) &&
     challenge.scopeHash === sha256Hex(stableStringify(decision.scope))
   );
 }
@@ -833,7 +1030,11 @@ function auditForChallenge(
     eventType: input.eventType,
     decision: input.decision,
     reasonCode: input.reasonCode,
-    peer: auditPeerForChallenge(challenge, input.eventType, input.attemptedApproval),
+    peer: auditPeerForChallenge(
+      challenge,
+      input.eventType,
+      input.attemptedApproval
+    ),
     node: {
       nodeId: challenge.nodeId,
       ...(policy.trustTier ? { trustTier: policy.trustTier } : {}),
@@ -845,8 +1046,14 @@ function auditForChallenge(
       params: input.params ?? challenge.canonicalParams,
     },
     requiredBits: challenge.requiredBits,
-    grantedBits: input.decision === 'allow' || input.decision === 'approved' ? challenge.requiredBits : [],
-    deniedBits: input.decision === 'deny' || input.decision === 'failed' ? challenge.requiredBits : [],
+    grantedBits:
+      input.decision === 'allow' || input.decision === 'approved'
+        ? challenge.requiredBits
+        : [],
+    deniedBits:
+      input.decision === 'deny' || input.decision === 'failed'
+        ? challenge.requiredBits
+        : [],
     refs: {
       ...(policy.aclRef ? { aclRef: policy.aclRef } : {}),
       ...(policy.policyVersion ? { policyVersion: policy.policyVersion } : {}),
@@ -868,7 +1075,9 @@ function auditPeerForChallenge(
     Boolean(attemptedApproval?.approverAuthSessionHash);
   const useApprover =
     !useAttemptedApprover &&
-    (eventType === 'approval' || eventType === 'denial' || eventType === 'revocation') &&
+    (eventType === 'approval' ||
+      eventType === 'denial' ||
+      eventType === 'revocation') &&
     Boolean(challenge.approverAuthSessionHash);
   const principalHash = useAttemptedApprover
     ? attemptedApproval!.approverAuthSessionHash
@@ -887,7 +1096,9 @@ function auditPeerForChallenge(
   };
 }
 
-function isTerminalChallengeStatus(status: ConfirmationChallengeStatus): boolean {
+function isTerminalChallengeStatus(
+  status: ConfirmationChallengeStatus
+): boolean {
   return status !== 'pending' && status !== 'approved';
 }
 
@@ -913,7 +1124,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+function stringField(
+  record: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
   const value = record?.[key];
   return typeof value === 'string' ? value : undefined;
 }
@@ -924,8 +1138,10 @@ function hashOptional(value: unknown): string | undefined {
 
 function commandClasses(command: string): string[] {
   const classes: string[] = [];
-  if (command.includes('\r') || command.includes('\n')) classes.push('multiline');
-  if (/[;&|`$<>()[\]{}*?~!]/.test(command)) classes.push('shell-metacharacters');
+  if (command.includes('\r') || command.includes('\n'))
+    classes.push('multiline');
+  if (/[;&|`$<>()[\]{}*?~!]/.test(command))
+    classes.push('shell-metacharacters');
   if (/https?:\/\//i.test(command)) classes.push('url');
   if (
     /(?:authorization|bearer|token|secret|password|api[_-]?key|gh[pousr]_|sk-|relay-)/i.test(
@@ -938,7 +1154,9 @@ function commandClasses(command: string): string[] {
   return classes;
 }
 
-function bytesFromFileWrite(record: Record<string, unknown> | undefined): Buffer {
+function bytesFromFileWrite(
+  record: Record<string, unknown> | undefined
+): Buffer {
   // Primary: fs.write payload uses contentBase64
   const contentBase64 = record?.['contentBase64'];
   if (typeof contentBase64 === 'string') {
@@ -980,8 +1198,12 @@ function canonicalSessionParams(
   };
 }
 
-function stripUndefined(input: Record<string, unknown>): CanonicalConfirmationParams {
-  const output: CanonicalConfirmationParams = { action: String(input['action']) };
+function stripUndefined(
+  input: Record<string, unknown>
+): CanonicalConfirmationParams {
+  const output: CanonicalConfirmationParams = {
+    action: String(input['action']),
+  };
   for (const [key, value] of Object.entries(input)) {
     if (key === 'action' || value === undefined) continue;
     output[key] = value;

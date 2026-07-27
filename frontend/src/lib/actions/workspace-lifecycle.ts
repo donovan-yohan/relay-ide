@@ -70,10 +70,7 @@ export interface WorktreeArchiveActionInput {
 
 export interface WorkspaceLaunchActionInput {
   workspaceId: string;
-  agent?: string | undefined;
-  yolo?: boolean | undefined;
   terminalBackend?: 'relay-pty' | undefined;
-  claudeArgs?: string[] | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
 }
@@ -98,7 +95,7 @@ export interface WorktreeMutationActionData {
 
 // workspaces.launch returns the full SessionSummary (plus partial-launch
 // warnings). The contract sessionDescriptorSchema has additionalProperties:true
-// and required ['id','type','agent','mode','cwd','displayName','status'], so the
+// and accepts the terminal summary fields, so the
 // whole summary passes through and downstream callers keep repoPath/warnings/etc.
 export type WorkspaceLaunchActionData = SessionSummary & {
   warnings?: Array<{ repoPath: string; error: string }>;
@@ -375,12 +372,9 @@ const defaultArchiveExecutor: WorktreeArchiveExecutor = (input) =>
   deleteWorktreeApi(input.worktreePath, input.repoPath, input.force, false);
 const defaultLaunchExecutor: WorkspaceLaunchExecutor = (input) =>
   launchWorkspaceSessionApi(input.workspaceId, {
-    ...(input.agent !== undefined ? { agent: input.agent } : {}),
-    ...(input.yolo !== undefined ? { yolo: input.yolo } : {}),
     ...(input.terminalBackend !== undefined
       ? { terminalBackend: input.terminalBackend }
       : {}),
-    ...(input.claudeArgs !== undefined ? { claudeArgs: input.claudeArgs } : {}),
     ...(input.cols !== undefined ? { cols: input.cols } : {}),
     ...(input.rows !== undefined ? { rows: input.rows } : {}),
   });

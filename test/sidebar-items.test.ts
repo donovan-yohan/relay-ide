@@ -133,7 +133,7 @@ describe('buildSidebarItems', () => {
       worktreePath: null,
       cwd: '/repo',
       idle: true,
-      agentState: 'idle',
+      activityState: 'idle',
     });
     const existing = makeItem({
       id: '/repo',
@@ -155,7 +155,7 @@ describe('buildSidebarItems', () => {
       worktreePath: null,
       cwd: '/repo',
       idle: true,
-      agentState: 'idle',
+      activityState: 'idle',
     });
     // Existing item thinks backend is running; new data says idle
     const existing = makeItem({

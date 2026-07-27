@@ -13,10 +13,10 @@
 
 Epic #757 introduces a CLI/API-first primitive for attaching precise context —
 file ranges, diff hunks, terminal ranges, markdown blocks, freeform notes — and
-routing it into running agent sessions or durable WorkContexts. The product
-principle is that the CLI/API contract is the source of truth and the web UI
-(#762) is a thin client over the same verbs; an agent must be able to create,
-inspect, deliver, acknowledge, pin, and resolve context headlessly.
+routing it to agent participants through channels or into durable WorkContexts.
+The product principle is that the CLI/API contract is the source of truth and
+the web UI (#762) is a thin client over the same verbs; an agent must be able to
+create, inspect, deliver, acknowledge, pin, and resolve context headlessly.
 
 The planning cycle's child issues under-specified two forks. This ADR is the
 decision gate (#764) that ratifies both so the parallel implementation lanes
@@ -128,23 +128,22 @@ comparison (freshness). `'shifted'` (range moved but quote relocatable) is
 
 ### D4 — Environment contract
 
-The shipped env var is **`RELAY_WORK_CONTEXT_ID`**, set by
-`injectRelaySessionEnv` in `server/pty-handler.ts:676-677` (both process env and
-tmux env). #761's proposed `RELAY_WORKCONTEXT_ID` (no underscore between WORK
-and CONTEXT) is **wrong** and must align to the shipped name. Agent context
-`preturn` keys off the session's bound `GlobalSessionId` and, when present,
-`RELAY_WORK_CONTEXT_ID`.
+The shipped env var is **`RELAY_WORK_CONTEXT_ID`**, set by the public terminal
+environment injector. #761's proposed `RELAY_WORKCONTEXT_ID` (no underscore
+between WORK and CONTEXT) is **wrong** and must align to the shipped name.
+Context lookup keys off the terminal's bound `GlobalSessionId` and, when
+present, `RELAY_WORK_CONTEXT_ID`.
 
 ### D5 — Capability bits
 
 Four new bits, added to `RELAY_CAPABILITY_BITS` in `shared/security-policy.ts`:
 
-| Bit | Tier placement |
-| --- | --- |
-| `context:read` | default-allow (add to `LEGACY_DEFAULT_ALLOWED_CAPABILITIES`) |
-| `inbox:read` | default-allow (add to `LEGACY_DEFAULT_ALLOWED_CAPABILITIES`) |
-| `context:write` | dev-allow; **NOT** in `HIGH_RISK_CAPABILITIES` |
-| `inbox:write` | dev-allow; **NOT** in `HIGH_RISK_CAPABILITIES` |
+| Bit             | Tier placement                                               |
+| --------------- | ------------------------------------------------------------ |
+| `context:read`  | default-allow (add to `LEGACY_DEFAULT_ALLOWED_CAPABILITIES`) |
+| `inbox:read`    | default-allow (add to `LEGACY_DEFAULT_ALLOWED_CAPABILITIES`) |
+| `context:write` | dev-allow; **NOT** in `HIGH_RISK_CAPABILITIES`               |
+| `inbox:write`   | dev-allow; **NOT** in `HIGH_RISK_CAPABILITIES`               |
 
 Rationale grounded in the policy module: the trust-tier overlay
 (`applyTrustTierOverlay`, `shared/security-policy.ts:190-217`) silently allows
@@ -267,4 +266,7 @@ Notes:
   mutation, or exec; high-risk is reserved for kill/intervention/fs-write/
   fs-delete/git-write/pty-exec/port-forward. They stay grant-gated but not
   confirmation-gated on prod.
+
+```
+
 ```

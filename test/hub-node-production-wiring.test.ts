@@ -86,7 +86,6 @@ function remoteSession(nodeId: string): SessionSummary {
   return {
     id: 'remote-session-1',
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath: '/srv/relay-ide',
     worktreePath: null,
@@ -103,7 +102,7 @@ function remoteSession(nodeId: string): SessionSummary {
     repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 

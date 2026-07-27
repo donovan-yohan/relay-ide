@@ -28,13 +28,10 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 const mocks = vi.hoisted(() => ({
   fetchRepoInventory: vi.fn(),
   fetchHubNodes: vi.fn(),
-  createAgentSession: vi.fn(),
+  createTerminalSession: vi.fn(),
   configState: {
-    defaultContinue: false,
-    defaultYolo: false,
     defaultAgent: 'claude',
     defaultNotifications: true,
-    claudeFullscreen: true,
     frameworks: [] as FrameworkInfo[],
     refreshConfig: vi.fn(),
     loadFrameworks: vi.fn(),
@@ -66,7 +63,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: mocks.createAgentSession,
+  createTerminalSession: mocks.createTerminalSession,
 }));
 
 vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
@@ -118,7 +115,6 @@ function framework(id: string): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: false,
     },
     eventSource: 'hooks',
     availability: { installed: true, path: `/usr/local/bin/${id}` },
@@ -223,7 +219,7 @@ async function renderAndOpen(
   mocks.fetchRepoInventory.mockResolvedValue(inventoryResponse);
   mocks.fetchHubNodes.mockResolvedValue(nodes);
   mocks.configState.refreshConfig.mockResolvedValue(undefined);
-  mocks.createAgentSession.mockResolvedValue({ session: { id: 'sess-1' } });
+  mocks.createTerminalSession.mockResolvedValue({ session: { id: 'sess-1' } });
 
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -256,6 +252,15 @@ async function flush() {
   });
 }
 
+async function selectTerminal(el: HTMLElement) {
+  await act(async () => {
+    const select = el.querySelector('#cs-launch-mode') as HTMLSelectElement;
+    select.value = 'terminal';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+}
+
 describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
   afterEach(() => {
     act(() => root?.unmount());
@@ -281,6 +286,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     expect(
       el.querySelector('[data-testid="customize-session-env-picker"]')
@@ -307,6 +313,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     const selectedRow = el.querySelector('[aria-selected="true"]');
     expect(selectedRow).toBeTruthy();
@@ -331,6 +338,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     const allOptions = Array.from(
       el.querySelectorAll<HTMLElement>('[role="option"]')
@@ -364,6 +372,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     // Pick the offline linux node.
     const allOptions = Array.from(
@@ -393,7 +402,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
       createBtn.click();
     });
     await flush();
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
   });
 
   it('never silently switches to a different node when the picker is showing offline', async () => {
@@ -417,6 +426,7 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
         }),
       ]
     );
+    await selectTerminal(el);
 
     const allOptions = Array.from(
       el.querySelectorAll<HTMLElement>('[role="option"]')
@@ -437,8 +447,8 @@ describe('CustomizeSessionDialog environment picker wiring (#629)', () => {
     });
     await flush();
 
-    // No mocked call to createAgentSession means no silent substitution.
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    // No mocked terminal launch means no silent substitution.
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
   });
 
   it('renders nothing for the picker when inventory + nodes are still pending', async () => {

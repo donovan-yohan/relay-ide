@@ -17,7 +17,6 @@ export interface TerminalCockpitSessionInput {
   tabKind?: string;
   type?: string;
   mode?: string;
-  agent?: string;
   cwd?: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -25,7 +24,7 @@ export interface TerminalCockpitSessionInput {
   branchName?: string;
   displayName?: string;
   status?: string;
-  agentState?: string;
+  activityState?: string;
   currentActivity?: { tool?: string; detail?: string };
   controlMode?: ControlMode;
   activeActors?: ControlActor[];
@@ -115,8 +114,7 @@ export interface TerminalCockpitItem {
     displayName?: string;
     type?: string;
     mode?: string;
-    agent?: string;
-    state?: string;
+    activityState?: string;
     status?: string;
     durability?: SessionDurabilityState;
     live: boolean;
@@ -207,16 +205,16 @@ function activeWorkAttentionPriority(
 ): number {
   const needsOperator = group.sessions.some(
     (session) =>
-      session.agentState === 'permission-prompt' ||
-      session.agentState === 'waiting-for-input'
+      session.activityState === 'permission-prompt' ||
+      session.activityState === 'waiting-for-input'
   );
   if (needsOperator) return 0;
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 1;
   if (group.node.status === 'stale' || group.staleReadModel) return 2;
-  if (group.sessions.some((session) => session.agentState === 'error'))
+  if (group.sessions.some((session) => session.activityState === 'error'))
     return 3;
-  if (group.sessions.some((session) => session.agentState === 'processing'))
+  if (group.sessions.some((session) => session.activityState === 'processing'))
     return 4;
   if (group.sessions.some((session) => session.live)) return 5;
   return 6;
@@ -229,8 +227,8 @@ function primarySession(
     group.sessions.find(
       (session) =>
         session.live &&
-        (session.agentState === 'permission-prompt' ||
-          session.agentState === 'waiting-for-input')
+        (session.activityState === 'permission-prompt' ||
+          session.activityState === 'waiting-for-input')
     ) ??
     group.sessions.find((session) => session.live) ??
     group.sessions[0]
@@ -239,20 +237,24 @@ function primarySession(
 
 function stateLabel(group: TerminalCockpitActiveGroupInput): string {
   if (
-    group.sessions.some((session) => session.agentState === 'permission-prompt')
+    group.sessions.some(
+      (session) => session.activityState === 'permission-prompt'
+    )
   )
     return 'needs approval';
   if (
-    group.sessions.some((session) => session.agentState === 'waiting-for-input')
+    group.sessions.some(
+      (session) => session.activityState === 'waiting-for-input'
+    )
   )
     return 'needs input';
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 'offline';
   if (group.node.status === 'stale') return 'stale';
   if (group.staleReadModel) return 'stale read model';
-  if (group.sessions.some((session) => session.agentState === 'error'))
+  if (group.sessions.some((session) => session.activityState === 'error'))
     return 'error';
-  if (group.sessions.some((session) => session.agentState === 'processing'))
+  if (group.sessions.some((session) => session.activityState === 'processing'))
     return 'running';
   if (group.sessions.some((session) => session.live)) return 'live';
   return 'inactive';
@@ -263,11 +265,11 @@ function attentionReasons(
   session: TerminalCockpitSessionInput
 ): string[] {
   const reasons: string[] = [];
-  if (session.agentState === 'permission-prompt')
+  if (session.activityState === 'permission-prompt')
     reasons.push('permission-prompt');
-  if (session.agentState === 'waiting-for-input')
+  if (session.activityState === 'waiting-for-input')
     reasons.push('waiting-for-input');
-  if (session.agentState === 'error') reasons.push('error');
+  if (session.activityState === 'error') reasons.push('error');
   if (group.node.status !== 'online') reasons.push(`${group.node.status}-node`);
   if (group.staleReadModel) reasons.push('stale-read-model');
   if (!session.live) reasons.push('last-known-session');
@@ -358,10 +360,7 @@ export function buildTerminalCockpitView(input: {
     const context = group.context;
     const liveReason = liveControlDisabledReason(group, session);
     const freshReason = freshControlDisabledReason(session);
-    const inputReason =
-      liveReason ??
-      freshReason ??
-      (session.mode === 'web' ? 'web session input is unsupported here' : null);
+    const inputReason = liveReason ?? freshReason;
     const sessionKey = session.globalSessionId ?? session.id;
     return {
       rank: index + 1,
@@ -422,8 +421,9 @@ export function buildTerminalCockpitView(input: {
         ...(session.displayName ? { displayName: session.displayName } : {}),
         ...(session.type ? { type: session.type } : {}),
         ...(session.mode ? { mode: session.mode } : {}),
-        ...(session.agent ? { agent: session.agent } : {}),
-        ...(session.agentState ? { state: session.agentState } : {}),
+        ...(session.activityState
+          ? { activityState: session.activityState }
+          : {}),
         ...(session.status ? { status: session.status } : {}),
         ...(session.durability ? { durability: session.durability } : {}),
         live: session.live,
@@ -682,7 +682,7 @@ export function renderTerminalCockpitDetail(
     `node: ${item.node.id} (${item.node.status}; freshness=${item.node.freshness}${item.node.lastSeenAt ? `; lastSeen=${item.node.lastSeenAt}` : ''})`
   );
   lines.push(
-    `session: ${item.session.id}${item.session.globalSessionId ? ` (${item.session.globalSessionId})` : ''} ${fmt(item.session.agent)} ${fmt(item.session.state)} durability=${fmt(item.session.durability)} live=${item.session.live}`
+    `session: ${item.session.id}${item.session.globalSessionId ? ` (${item.session.globalSessionId})` : ''} ${fmt(item.session.activityState)} durability=${fmt(item.session.durability)} live=${item.session.live}`
   );
   lines.push(
     `control: mode=${fmt(item.session.controlMode)} freshness=${fmt(item.session.controlFreshness)} actors=${item.session.activeActors?.map((a) => a.displayName ?? a.id ?? a.kind).join(', ') ?? 'n/a'}`
@@ -734,7 +734,7 @@ export function renderTerminalCockpit(view: TerminalCockpitView): string {
       `  node: ${item.node.id} (${item.node.status}; freshness=${item.node.freshness}${item.node.lastSeenAt ? `; lastSeen=${item.node.lastSeenAt}` : ''})`
     );
     lines.push(
-      `  session: ${item.session.id}${item.session.globalSessionId ? ` (${item.session.globalSessionId})` : ''} ${fmt(item.session.agent)} ${fmt(item.session.state)} durability=${fmt(item.session.durability)} live=${item.session.live}`
+      `  session: ${item.session.id}${item.session.globalSessionId ? ` (${item.session.globalSessionId})` : ''} ${fmt(item.session.activityState)} durability=${fmt(item.session.durability)} live=${item.session.live}`
     );
     lines.push(
       `  control: mode=${fmt(item.session.controlMode)} freshness=${fmt(item.session.controlFreshness)} actors=${item.session.activeActors?.map((a) => a.displayName ?? a.id ?? a.kind).join(', ') ?? 'n/a'}`

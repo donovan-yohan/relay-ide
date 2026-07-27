@@ -591,7 +591,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           status: 'complete',
           body: { text: 'Synthetic durable answer.', format: 'markdown' },
           source: expect.objectContaining({
-            sessionId: config.sessionId,
+            runtimeId: config.sessionId,
             turnId: 'turn-triple-final',
             itemId: 'message-replayed',
           }),

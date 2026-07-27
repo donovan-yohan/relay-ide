@@ -1,13 +1,12 @@
 import { useUiStore } from '../lib/stores/ui.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import type { CurrentActivity } from '../lib/types.js';
-import { formatCompact, formatResetAt } from '../lib/utils.js';
+import { formatCompact } from '../lib/utils.js';
 import './SessionStatusBar.css';
 
 export interface SessionStatusBarProps {
   sessionId: string | null;
   currentActivity?: CurrentActivity | null;
-  framework?: string | null | undefined;
   onHandoffClick?: () => void;
 }
 
@@ -39,42 +38,14 @@ function getContextLabel(telemetry: { contextPercent: number } | null): string {
   return `${'░'.repeat(BAR_WIDTH)} —%`;
 }
 
-const RATE_LIMIT_DISPLAY_NAMES: Record<string, string> = {
-  five_hour: '5h',
-  seven_day: '7d',
-};
-
-function buildRateLimitLabel(
-  accountTelemetry:
-    | import('../lib/types.js').AccountTelemetry
-    | null
-    | undefined
-): string {
-  if (!accountTelemetry || !accountTelemetry.rateLimits.length) return '—';
-  const parts: string[] = [];
-  for (const rl of accountTelemetry.rateLimits) {
-    if (rl.usedPercent >= 0) {
-      const label = RATE_LIMIT_DISPLAY_NAMES[rl.name] ?? rl.name;
-      parts.push(`${label}: ${Math.round(rl.usedPercent)}%`);
-    }
-  }
-  return parts.length > 0 ? parts.join(' | ') : '—';
-}
-
-function useSessionStatusBarData(
-  sessionId: string | null,
-  framework: string | null | undefined
-) {
+function useSessionStatusBarData(sessionId: string | null) {
   const sessionTelemetryById = useTelemetryStore((s) => s.sessionTelemetryById);
-  const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
-  const accountTelemetry = framework ? getAccountTelemetry(framework) : null;
-  const frameworkLabel = framework ?? 'unknown';
 
   const telemetry = sessionId
     ? (sessionTelemetryById[sessionId] ?? null)
     : null;
 
-  return { telemetry, accountTelemetry, frameworkLabel };
+  return telemetry;
 }
 
 function buildActivityLabel(currentActivity: CurrentActivity | null): string {
@@ -92,12 +63,10 @@ function buildTelemetryTitle(
 export function SessionStatusBar({
   sessionId,
   currentActivity = null,
-  framework,
   onHandoffClick,
 }: SessionStatusBarProps) {
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
-  const { telemetry, accountTelemetry, frameworkLabel } =
-    useSessionStatusBarData(sessionId, framework);
+  const telemetry = useSessionStatusBarData(sessionId);
 
   const contextTone = getContextTone(telemetry);
   const contextLabel = getContextLabel(telemetry);
@@ -108,7 +77,6 @@ export function SessionStatusBar({
       : `status-context status-segment status-context--${contextTone}`;
 
   const activityLabel = buildActivityLabel(currentActivity);
-  const rateLimitLabel = buildRateLimitLabel(accountTelemetry);
   const telemetryTitle = buildTelemetryTitle(telemetry);
 
   return (
@@ -129,12 +97,7 @@ export function SessionStatusBar({
             ? formatCurrency(telemetry.costUsd)
             : '~$—'}
         </span>
-        <span
-          className={`status-framework status-segment status-framework--${frameworkLabel}`}
-          title={`Framework: ${frameworkLabel}`}
-        >
-          {frameworkLabel}
-        </span>
+        <span className="status-terminal status-segment">terminal</span>
         <span className="status-activity status-segment" title={activityLabel}>
           [{activityLabel}]
         </span>
@@ -151,18 +114,6 @@ export function SessionStatusBar({
             handoff
           </button>
         )}
-        <span
-          className="status-rate-limits status-segment"
-          title={
-            accountTelemetry?.rateLimits.length
-              ? accountTelemetry.rateLimits
-                  .map((rl) => formatResetAt(rl.resetsAt))
-                  .join(' · ')
-              : '—'
-          }
-        >
-          {rateLimitLabel}
-        </span>
       </div>
     </div>
   );

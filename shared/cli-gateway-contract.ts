@@ -8,7 +8,6 @@ import {
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
 import { SUPERVISOR_SEND_KEY_NAMES } from './supervisor-actions.js';
-import { AGENT_ROLES } from './agent-roster.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
 export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
@@ -45,7 +44,6 @@ export type RelayCliGatewayCommand =
   | 'sessions.screen'
   | 'sessions.input'
   | 'sessions.interventions'
-  | 'sessions.handBack'
   | 'files.list'
   | 'files.stat'
   | 'files.read'
@@ -79,7 +77,6 @@ export type RelayCliGatewayCommand =
   | 'workflow-runs.update'
   | 'workflow-runs.list'
   | 'workflow-runs.get'
-  | 'orchestration-runs.launch'
   | 'automation-runs.register'
   | 'automation-runs.observe'
   | 'automation-runs.retire'
@@ -99,9 +96,6 @@ export type RelayCliGatewayCommand =
   | 'workspace-topics.update'
   | 'workspace-topics.archive'
   | 'channels.post'
-  | 'roster.list'
-  | 'roster.register'
-  | 'roster.updateSelf'
   | 'cockpit.list'
   | 'cockpit.get'
   | 'inbox.send'
@@ -111,11 +105,6 @@ export type RelayCliGatewayCommand =
   | 'inbox.resolve'
   | 'inbox.ignore'
   | 'handoffs.plan'
-  | 'handoffs.create'
-  | 'handoffs.status'
-  | 'handoffs.cancel'
-  | 'handoffs.resume'
-  | 'handoffs.launch'
   | 'artifacts.read'
   | 'supervisor.snapshot'
   | 'supervisor.sessions'
@@ -679,10 +668,19 @@ const sessionDescriptorSchema: RelayJsonSchema = {
   properties: {
     id: stringSchema,
     spawnedBySessionId: stringSchema,
-    type: { type: 'string', enum: ['agent', 'terminal'] },
-    agent: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    mode: { type: 'string', enum: ['pty', 'web'] },
+    type: { type: 'string', enum: ['terminal'] },
+    mode: { type: 'string', enum: ['pty'] },
+    activityState: {
+      type: 'string',
+      enum: [
+        'initializing',
+        'waiting-for-input',
+        'processing',
+        'permission-prompt',
+        'error',
+        'idle',
+      ],
+    },
     nodeId: stringSchema,
     globalSessionId: stringSchema,
     cwd: stringSchema,
@@ -694,10 +692,9 @@ const sessionDescriptorSchema: RelayJsonSchema = {
     status: { type: 'string', enum: ['active', 'disconnected'] },
     controlMode: {
       type: 'string',
-      enum: ['agent-driven', 'human-driven', 'co-driven'],
+      enum: ['human-driven'],
     },
     activeActors: { type: 'array', items: controlActorSchema },
-    activeWorker: controlActorSchema,
     lastInterventionAt: nullableStringSchema,
     lastInterventionBy: { oneOf: [controlActorSchema, { type: 'null' }] },
     lastInterventionEventId: nullableStringSchema,
@@ -705,7 +702,15 @@ const sessionDescriptorSchema: RelayJsonSchema = {
     controlReason: stringSchema,
     sessionEnvelope: sessionEnvelopeSchema,
   },
-  required: ['id', 'type', 'agent', 'mode', 'cwd', 'displayName', 'status'],
+  required: [
+    'id',
+    'type',
+    'mode',
+    'cwd',
+    'displayName',
+    'status',
+    'activityState',
+  ],
 };
 
 const fileRpcStatSchema: RelayJsonSchema = {
@@ -1290,14 +1295,14 @@ const sessionInputOutputSchema: RelayJsonSchema = {
 };
 
 /**
- * Typed environment shape for agent task creation (#626, epic #615).
+ * Typed environment shape for terminal session creation.
  *
  * Adapter-facing alternative to the legacy `repoPath` / `worktreePath` / flat
  * `nodeId` + `cwd` fields. Uses scoped IDs from `shared/identity.ts` and the
  * canonical `RepoIdentity` string ("github.com/{owner}/{name}" or
  * "{host}/{path}") emitted by `shared/repo-identity.ts`. Raw host/path pairs
  * are intentionally absent: free-form host strings are exactly what #626
- * forbids on the agent task contract.
+ * forbids on the terminal session contract.
  *
  * Invariants (enforced in `shared/cli-gateway-runtime.ts`):
  *   - `nodeId` and `cwd` are required.
@@ -1365,42 +1370,26 @@ const createSessionInputSchema: RelayJsonSchema = {
       description:
         'DEPRECATED in v1.x — prefer `environment.cwd`. Removed in v2.',
     },
-    type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
-    mode: { type: 'string', enum: ['pty', 'web'] },
-    agent: stringSchema,
-    role: {
-      type: 'string',
-      enum: [...AGENT_ROLES],
-      description:
-        'Collaboration role for a web agent session. The orchestrator role is operator-designated and cannot be self-assigned by an actor-created worker.',
-    },
-    yolo: booleanSchema,
+    type: { type: 'string', enum: ['terminal'], default: 'terminal' },
+    mode: { type: 'string', enum: ['pty'] },
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
     branchName: stringSchema,
     displayName: {
       ...stringSchema,
       description:
-        'Human-readable session label shown in session lists and the web UI; defaults to "Agent N" / "Terminal N".',
+        'Human-readable terminal label shown in session lists and the web UI; defaults to "Terminal N".',
     },
     spawnedBySessionId: {
       ...stringSchema,
       description:
         'Optional best-effort lineage id of the Relay session that spawned this session; parent existence is not validated.',
     },
-    initialPrompt: stringSchema,
-    continuePolicy: { type: 'string', enum: ['always', 'never'] },
     workContextId: stringSchema,
     workspaceTopicId: {
       ...stringSchema,
       description:
         'WorkspaceTopic id whose routing/prompt defaults seed this session create and whose linked session refs are updated after launch.',
-    },
-    controlMode: {
-      type: 'string',
-      enum: ['agent-driven', 'human-driven'],
-      description:
-        'Only routed node session creation currently policy-checks controlMode. Local create rejects agent-driven as unsupported until hub policy support lands.',
     },
     sessionEnvelope: sessionEnvelopeSchema,
     ttlSeconds: { type: 'number', minimum: 1 },
@@ -1459,10 +1448,7 @@ const workspaceLaunchInputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     workspaceId: stringSchema,
-    agent: stringSchema,
-    yolo: booleanSchema,
     terminalBackend: { type: 'string', enum: ['relay-pty'] },
-    claudeArgs: { type: 'array', items: stringSchema },
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
   },
@@ -1739,19 +1725,12 @@ const workflowSessionOptionsInputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
-    mode: { type: 'string', enum: ['pty', 'web'] },
-    agent: stringSchema,
-    yolo: booleanSchema,
+    type: { type: 'string', enum: ['terminal'], default: 'terminal' },
+    mode: { type: 'string', enum: ['pty'] },
     terminalBackend: { type: 'string', enum: ['relay-pty'] },
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
-    continuePolicy: { type: 'string', enum: ['always', 'never'] },
     workContextId: stringSchema,
-    controlMode: {
-      type: 'string',
-      enum: ['agent-driven', 'human-driven'],
-    },
   },
 };
 
@@ -1909,7 +1888,7 @@ export const EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES = {
   context: ['context:read'],
   inbox: ['inbox:read'],
   // Attention/session-state is a derived projection of the session read model,
-  // gated like `sessions`/`roster.list` on `session:read`.
+  // gated like session reads on `session:read`.
   attention: ['session:read'],
   'work-context-artifacts': ['context:read'],
   'handoff-artifacts': ['context:read'],
@@ -2410,34 +2389,6 @@ const handoffPlanInputSchema: RelayJsonSchema = {
   required: ['request'],
 };
 
-const handoffCreateInputSchema: RelayJsonSchema = {
-  title: 'HandoffCreateInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    planId: stringSchema,
-    plan: { type: 'object', additionalProperties: true },
-    confirmedGrants: {
-      type: 'array',
-      items: { type: 'object', additionalProperties: true },
-    },
-    sourceRepoPath: stringSchema,
-    destinationRepoPath: stringSchema,
-    approvedUntrackedPaths: { type: 'array', items: stringSchema },
-    actorId: stringSchema,
-  },
-  required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
-  anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
-};
-
-const handoffRunIdInputSchema: RelayJsonSchema = {
-  title: 'HandoffRunIdInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: { runId: stringSchema, actorId: stringSchema },
-  required: ['runId'],
-};
-
 const artifactReadInputSchema: RelayJsonSchema = {
   title: 'ArtifactReadInput',
   type: 'object',
@@ -2547,7 +2498,7 @@ const supervisorSnapshotInputSchema: RelayJsonSchema = {
     id: stringSchema,
     expectedControlMode: {
       type: 'string',
-      enum: ['agent-driven', 'human-driven', 'co-driven'],
+      enum: ['human-driven'],
       description:
         'Optional caller-observed control mode. When supplied, stale or mismatched control state is refused.',
     },
@@ -2636,40 +2587,6 @@ const handoffPlanOutputSchema: RelayJsonSchema = {
     readOnly: { const: true },
   },
   required: ['plan', 'readOnly'],
-};
-
-const handoffCreateOutputSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    run: { type: 'object', additionalProperties: true },
-    artifacts: {
-      type: 'array',
-      items: { type: 'object', additionalProperties: true },
-    },
-  },
-  required: ['run', 'artifacts'],
-};
-
-const handoffStatusOutputSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    run: { type: 'object', additionalProperties: true },
-    progress: { type: 'object', additionalProperties: true },
-    redaction: { type: 'object', additionalProperties: true },
-  },
-  required: ['run', 'progress', 'redaction'],
-};
-
-const handoffResumeOutputSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    run: { type: 'object', additionalProperties: true },
-    resume: { type: 'object', additionalProperties: true },
-  },
-  required: ['run', 'resume'],
 };
 
 const artifactReadOutputSchema: RelayJsonSchema = {
@@ -2863,49 +2780,6 @@ const eventsSubscribeFrameSchema: RelayJsonSchema = {
   required: ['event', 'topic', 'sequence'],
 };
 
-const workflowRunSessionAttentionSchema: RelayJsonSchema = {
-  title: 'WorkflowRunSessionAttention',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    needsAttention: { type: 'boolean' },
-    reasons: { type: 'array', items: stringSchema },
-    pendingInboxCount: { type: 'number', minimum: 0 },
-  },
-};
-
-const workflowRunSessionLinkSchema: RelayJsonSchema = {
-  title: 'WorkflowRunSessionLink',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    role: stringSchema,
-    sessionId: stringSchema,
-    globalSessionId: stringSchema,
-    provider: stringSchema,
-    nodeId: stringSchema,
-    displayName: stringSchema,
-    cwd: stringSchema,
-    repoPath: stringSchema,
-    worktreePath: stringSchema,
-    state: stringSchema,
-    attention: workflowRunSessionAttentionSchema,
-    createdAt: { type: 'string', format: 'date-time' },
-  },
-  required: ['role'],
-  anyOf: [{ required: ['sessionId'] }, { required: ['globalSessionId'] }],
-};
-
-const workflowRunOrchestrationSchema: RelayJsonSchema = {
-  title: 'WorkflowRunOrchestration',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    planner: workflowRunSessionLinkSchema,
-    children: { type: 'array', items: workflowRunSessionLinkSchema },
-  },
-};
-
 const workflowRunProjectionSchema: RelayJsonSchema = {
   title: 'WorkflowRunProjection',
   type: 'object',
@@ -2914,13 +2788,8 @@ const workflowRunProjectionSchema: RelayJsonSchema = {
     id: stringSchema,
     runId: stringSchema,
     providerRuntime: stringSchema,
-    runKind: {
-      type: 'string',
-      enum: ['provider-runtime', 'relay-orchestration'],
-    },
     workContextId: stringSchema,
     state: stringSchema,
-    orchestration: workflowRunOrchestrationSchema,
     version: { type: 'number', minimum: 1 },
     redaction: { type: 'object', additionalProperties: true },
   },
@@ -2943,14 +2812,9 @@ const workflowRunPublishInputSchema: RelayJsonSchema = {
     id: stringSchema,
     runId: stringSchema,
     providerRuntime: stringSchema,
-    runKind: {
-      type: 'string',
-      enum: ['provider-runtime', 'relay-orchestration'],
-    },
     workContextId: stringSchema,
     definition: { type: 'object', additionalProperties: true },
     state: stringSchema,
-    orchestration: workflowRunOrchestrationSchema,
   },
   required: ['runId', 'providerRuntime', 'workContextId', 'definition'],
 };
@@ -2963,7 +2827,6 @@ const workflowRunUpdateInputSchema: RelayJsonSchema = {
     id: stringSchema,
     expectedVersion: { type: 'number', minimum: 1 },
     state: stringSchema,
-    orchestration: workflowRunOrchestrationSchema,
   },
 };
 
@@ -3002,103 +2865,6 @@ const workflowRunListOutputDataSchema: RelayJsonSchema = {
     workflowRuns: { type: 'array', items: workflowRunProjectionSchema },
   },
   required: ['workflowRuns'],
-};
-
-const orchestrationLaunchLaneInputSchema: RelayJsonSchema = {
-  title: 'OrchestrationLaunchLaneInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    role: stringSchema,
-    provider: stringSchema,
-    agent: stringSchema,
-    nodeId: stringSchema,
-    type: { type: 'string', enum: ['agent', 'terminal'] },
-    mode: { type: 'string', enum: ['pty', 'web'] },
-    cwd: stringSchema,
-    repoPath: stringSchema,
-    worktreePath: stringSchema,
-    initialPrompt: stringSchema,
-    inboxMessage: stringSchema,
-    controlMode: stringSchema,
-    yolo: booleanSchema,
-    cols: { type: 'number', minimum: 1 },
-    rows: { type: 'number', minimum: 1 },
-  },
-  required: ['role'],
-  anyOf: [{ required: ['provider'] }, { required: ['agent'] }],
-};
-
-const orchestrationLaunchInputSchema: RelayJsonSchema = {
-  title: 'OrchestrationLaunchInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    id: stringSchema,
-    runId: stringSchema,
-    workContextId: stringSchema,
-    providerRuntime: stringSchema,
-    definition: { type: 'object', additionalProperties: true },
-    planner: workflowRunSessionLinkSchema,
-    lanes: { type: 'array', items: orchestrationLaunchLaneInputSchema },
-  },
-  required: ['workContextId', 'lanes'],
-};
-
-const orchestrationLaunchLaneResultSchema: RelayJsonSchema = {
-  title: 'OrchestrationLaunchLaneResult',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    role: stringSchema,
-    provider: stringSchema,
-    launched: booleanSchema,
-    sessionId: stringSchema,
-    globalSessionId: stringSchema,
-    nodeId: stringSchema,
-    inboxMessageId: stringSchema,
-    failureStage: {
-      type: 'string',
-      enum: ['session-create', 'message-delivery'],
-    },
-    error: stringSchema,
-  },
-  required: ['role', 'provider', 'launched'],
-};
-
-const orchestrationLaunchOutputDataSchema: RelayJsonSchema = {
-  title: 'OrchestrationLaunchOutputData',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    workflowRunId: stringSchema,
-    runId: stringSchema,
-    workContextId: stringSchema,
-    planner: workflowRunSessionLinkSchema,
-    children: { type: 'array', items: workflowRunSessionLinkSchema },
-    lanes: { type: 'array', items: orchestrationLaunchLaneResultSchema },
-    partialFailure: booleanSchema,
-    workflowRun: { type: 'object', additionalProperties: true },
-    next: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        workflowRunCommand: stringSchema,
-        eventsCommand: stringSchema,
-      },
-      required: ['workflowRunCommand', 'eventsCommand'],
-    },
-  },
-  required: [
-    'workflowRunId',
-    'runId',
-    'workContextId',
-    'children',
-    'lanes',
-    'partialFailure',
-    'workflowRun',
-    'next',
-  ],
 };
 
 const automationRunTargetSchema: RelayJsonSchema = {
@@ -3418,236 +3184,6 @@ const prOverseerListOutputDataSchema: RelayJsonSchema = {
   required: ['prOverseers'],
 };
 
-const rosterAttentionSchema: RelayJsonSchema = {
-  title: 'RosterAttention',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    needsAttention: booleanSchema,
-    reasons: {
-      type: 'array',
-      items: {
-        type: 'string',
-        enum: [
-          'permission-prompt',
-          'waiting-for-input',
-          'error',
-          'pending-inbox',
-          'self-declared',
-        ],
-      },
-    },
-    pendingInboxCount: { type: 'number', minimum: 0 },
-  },
-  required: ['needsAttention', 'reasons', 'pendingInboxCount'],
-};
-
-// Self-declared overlay (#964) echoed onto a merged / self-declared roster
-// entry. Redaction-safe: no secrets, tokens, transcripts, or raw payloads.
-const selfDeclaredPresenceSchema: RelayJsonSchema = {
-  title: 'SelfDeclaredPresence',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    presenceId: stringSchema,
-    registeredBy: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    displayName: stringSchema,
-    useCase: stringSchema,
-    statusText: stringSchema,
-    needsAttention: booleanSchema,
-    capabilityHints: { type: 'array', items: stringSchema },
-    updatedAt: { type: 'string', format: 'date-time' },
-    expiresAt: { type: 'string', format: 'date-time' },
-  },
-  required: ['presenceId', 'updatedAt', 'expiresAt'],
-};
-
-const rosterActorSchema: RelayJsonSchema = {
-  title: 'RosterActor',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    kind: { type: 'string', enum: ['agent', 'human', 'system'] },
-    id: stringSchema,
-    displayName: stringSchema,
-  },
-  required: ['kind'],
-};
-
-const rosterEntrySchema: RelayJsonSchema = {
-  title: 'RosterEntry',
-  type: 'object',
-  // Redaction-safe, metadata-only projection (#953). Never carries transcript,
-  // prompt, raw bytes, provider-private state, tokens, or env.
-  additionalProperties: false,
-  properties: {
-    sessionId: stringSchema,
-    spawnedBySessionId: stringSchema,
-    globalSessionId: stringSchema,
-    nodeId: stringSchema,
-    provider: stringSchema,
-    sessionType: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    displayName: stringSchema,
-    repoPath: stringSchema,
-    repoName: stringSchema,
-    worktreePath: nullableStringSchema,
-    branchName: stringSchema,
-    cwd: stringSchema,
-    workContextId: stringSchema,
-    controlMode: stringSchema,
-    status: stringSchema,
-    agentState: stringSchema,
-    attention: rosterAttentionSchema,
-    capabilities: { type: 'array', items: stringSchema },
-    activeActors: { type: 'array', items: rosterActorSchema },
-    lastActivity: stringSchema,
-    createdAt: stringSchema,
-    origin: {
-      type: 'string',
-      enum: ['derived', 'self-declared', 'merged'],
-    },
-    selfDeclared: selfDeclaredPresenceSchema,
-  },
-  required: [
-    'sessionId',
-    'provider',
-    'sessionType',
-    'role',
-    'displayName',
-    'attention',
-    'capabilities',
-  ],
-};
-
-const rosterListInputSchema: RelayJsonSchema = {
-  title: 'RosterListInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    workContextId: stringSchema,
-    repo: stringSchema,
-    nodeId: stringSchema,
-    provider: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    includeTerminals: booleanSchema,
-    needsAttention: booleanSchema,
-    limit: { type: 'number', minimum: 1, maximum: 200 },
-  },
-};
-
-const rosterListOutputDataSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    roster: { type: 'array', items: rosterEntrySchema },
-    generatedAt: { type: 'string', format: 'date-time' },
-    count: { type: 'number', minimum: 0 },
-    nodeId: stringSchema,
-  },
-  required: ['roster', 'generatedAt', 'count'],
-};
-
-// roster.register / roster.updateSelf (#964): explicit self-declared presence.
-// `additionalProperties: false` is the FIRST redaction line — unknown/secret
-// fields are rejected at the contract before the store ever sees them; the
-// store (`sanitizePresenceInput`) re-checks as defense in depth.
-const presenceWriteInputSchema: RelayJsonSchema = {
-  title: 'PresenceWriteInput',
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    id: {
-      ...stringSchema,
-      description:
-        'Target an existing presence record by id (returned by register). Otherwise the id is stably derived from the actor + session/scope.',
-    },
-    sessionId: stringSchema,
-    globalSessionId: stringSchema,
-    workContextId: stringSchema,
-    repoPath: stringSchema,
-    nodeId: stringSchema,
-    provider: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    displayName: stringSchema,
-    useCase: {
-      ...stringSchema,
-      description: 'Free-text role/use-case hint, e.g. "implementing #964".',
-    },
-    statusText: {
-      ...stringSchema,
-      description: 'Self-declared coarse status, e.g. "running tests".',
-    },
-    needsAttention: {
-      ...booleanSchema,
-      description:
-        'Self-declared attention hint. Additive: it can raise needsAttention on the merged roster entry but never clears a derived reason.',
-    },
-    capabilityHints: { type: 'array', items: stringSchema },
-    ttlSeconds: {
-      type: 'number',
-      minimum: 10,
-      maximum: 3600,
-      description:
-        'Heartbeat TTL. Stale presence past now+ttl is filtered from the roster and swept (default 120s).',
-    },
-    createdBy: {
-      ...stringSchema,
-      description:
-        'Optional actor attribution. The server prefers the authenticated actor id and only falls back to this.',
-    },
-  },
-};
-
-const presenceRegisterInputSchema: RelayJsonSchema = {
-  ...presenceWriteInputSchema,
-  title: 'PresenceRegisterInput',
-};
-
-const presenceUpdateInputSchema: RelayJsonSchema = {
-  ...presenceWriteInputSchema,
-  title: 'PresenceUpdateSelfInput',
-};
-
-const agentPresenceSchema: RelayJsonSchema = {
-  title: 'AgentPresence',
-  type: 'object',
-  // Redaction-safe self-declared record (#964). Mirrors RosterEntry's boundary.
-  additionalProperties: false,
-  properties: {
-    id: stringSchema,
-    sessionId: stringSchema,
-    globalSessionId: stringSchema,
-    workContextId: stringSchema,
-    repoPath: stringSchema,
-    nodeId: stringSchema,
-    provider: stringSchema,
-    role: { type: 'string', enum: [...AGENT_ROLES] },
-    displayName: stringSchema,
-    useCase: stringSchema,
-    statusText: stringSchema,
-    needsAttention: booleanSchema,
-    capabilityHints: { type: 'array', items: stringSchema },
-    registeredBy: stringSchema,
-    createdAt: { type: 'string', format: 'date-time' },
-    updatedAt: { type: 'string', format: 'date-time' },
-    expiresAt: { type: 'string', format: 'date-time' },
-  },
-  required: ['id', 'registeredBy', 'createdAt', 'updatedAt', 'expiresAt'],
-};
-
-const presenceWriteOutputDataSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    presence: agentPresenceSchema,
-    /** Unknown (non-secret) input keys that were dropped during sanitization. */
-    droppedKeys: { type: 'array', items: stringSchema },
-  },
-  required: ['presence'],
-};
-
 const cockpitListInputSchema: RelayJsonSchema = {
   title: 'CockpitListInput',
   type: 'object',
@@ -3823,10 +3359,7 @@ const cliGatewaySafeSettingsSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     defaultAgent: stringSchema,
-    defaultContinue: booleanSchema,
-    defaultYolo: booleanSchema,
     defaultNotifications: booleanSchema,
-    claudeFullscreen: booleanSchema,
     renamerTool: {
       type: 'string',
       enum: ['claude', 'codex', 'none', 'custom-script'],
@@ -3835,10 +3368,7 @@ const cliGatewaySafeSettingsSchema: RelayJsonSchema = {
   },
   required: [
     'defaultAgent',
-    'defaultContinue',
-    'defaultYolo',
     'defaultNotifications',
-    'claudeFullscreen',
     'renamerTool',
     'updateChannel',
   ],
@@ -3862,10 +3392,7 @@ const settingsUpdateInputSchema: RelayJsonSchema = {
       type: 'string',
       enum: [
         'defaultAgent',
-        'defaultContinue',
-        'defaultYolo',
         'defaultNotifications',
-        'claudeFullscreen',
         'renamerTool',
         'updateChannel',
       ],
@@ -4335,11 +3862,11 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Launch an agent session for a configured workspace group using its typed workspace id.',
+      'Launch a relay-pty terminal for a configured workspace group using its typed workspace id.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['session:create:agent'],
+    capabilityHints: ['session:create:terminal'],
     inputSchema: workspaceLaunchInputSchema,
     outputSchema: okOutput('WorkspacesLaunchOutput', sessionDescriptorSchema),
     errorCodes: [
@@ -4566,15 +4093,11 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Create a local or routed node session and return the created descriptor.',
+      'Create a local or routed relay-pty terminal and return the created descriptor. Agent participants belong to channels and DMs.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: [
-      'session:create:terminal',
-      'session:create:agent',
-      'tab:mode:set-agent',
-    ],
+    capabilityHints: ['session:create:terminal'],
     inputSchema: createSessionInputSchema,
     outputSchema: okOutput('SessionsCreateOutput', sessionDescriptorSchema),
     errorCodes: [
@@ -4601,15 +4124,11 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Start work from a typed ticket context by resolving repo/branch/worktree policy and creating a Relay session.',
+      'Start work from a typed ticket context by resolving repo/branch/worktree policy and creating a Relay terminal.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: [
-      'session:create:terminal',
-      'session:create:agent',
-      'tab:mode:set-agent',
-    ],
+    capabilityHints: ['session:create:terminal'],
     inputSchema: ticketsStartWorkWorkflowInputSchema,
     outputSchema: okOutput(
       'TicketsStartWorkOutput',
@@ -4629,15 +4148,11 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Open a session for a branch or PR target with typed repo/worktree, prompt, and control handoff metadata.',
+      'Open a terminal for a branch or PR target with typed repo/worktree and control metadata.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: [
-      'session:create:terminal',
-      'session:create:agent',
-      'tab:mode:set-agent',
-    ],
+    capabilityHints: ['session:create:terminal'],
     inputSchema: branchesOpenSessionWorkflowInputSchema,
     outputSchema: okOutput(
       'BranchesOpenSessionOutput',
@@ -4984,52 +4499,6 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'FORBIDDEN',
-      'SERVER_UNAVAILABLE',
-      'UPSTREAM_ERROR',
-    ],
-  },
-  {
-    name: 'sessions.handBack',
-    cli: [
-      'relay-ide',
-      'v1',
-      'sessions',
-      'hand-back',
-      '--id',
-      '<session-id>',
-      '--latest-seen-intervention-event-id',
-      '<event-id>',
-      '--json',
-    ],
-    summary:
-      'Acknowledge latest human intervention before restoring agent-driven control.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['session:attach', 'tab:mode:set-agent'],
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        id: stringSchema,
-        latestSeenInterventionEventId: stringSchema,
-      },
-      required: ['id', 'latestSeenInterventionEventId'],
-    },
-    outputSchema: okOutput('SessionsHandBackOutput', {
-      type: 'object',
-      additionalProperties: true,
-    }),
-    errorCodes: [
-      'UNAUTHORIZED',
-      'INVALID_ARGUMENT',
-      'NOT_FOUND',
-      'FORBIDDEN',
-      'SESSION_CONFLICT',
-      'CONTROL_STATE_STALE',
-      'INTERVENTION_ACK_REQUIRED',
-      'INTERVENTION_ACK_STALE',
-      'CONTROL_STATE_UNKNOWN',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
@@ -6022,124 +5491,6 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: gatewayHandoffErrorCodes,
   },
   {
-    name: 'handoffs.create',
-    cli: [
-      'relay-ide',
-      'v1',
-      'handoffs',
-      'create',
-      '--input-json',
-      '<json>',
-      '--json',
-    ],
-    summary:
-      'Execute a confirmed cold handoff through the transfer/apply engine; refuses fake success.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: [
-      'rpc:fs:read',
-      'rpc:fs:write',
-      'session:create:agent',
-      'session:create:terminal',
-      'pty:exec:arbitrary',
-    ],
-    inputSchema: handoffCreateInputSchema,
-    outputSchema: okOutput('HandoffsCreateOutput', handoffCreateOutputSchema),
-    errorCodes: gatewayHandoffErrorCodes,
-  },
-  {
-    name: 'handoffs.status',
-    cli: [
-      'relay-ide',
-      'v1',
-      'handoffs',
-      'status',
-      '--run-id',
-      '<run-id>',
-      '--json',
-    ],
-    summary: 'Read bounded/redacted HandoffRun state and progress.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['session:read'],
-    inputSchema: handoffRunIdInputSchema,
-    outputSchema: okOutput('HandoffsStatusOutput', handoffStatusOutputSchema),
-    errorCodes: gatewayHandoffErrorCodes,
-  },
-  {
-    name: 'handoffs.cancel',
-    cli: [
-      'relay-ide',
-      'v1',
-      'handoffs',
-      'cancel',
-      '--run-id',
-      '<run-id>',
-      '--json',
-    ],
-    summary:
-      'Cancel a non-terminal handoff run without applying additional mutations.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['session:read'],
-    inputSchema: handoffRunIdInputSchema,
-    outputSchema: okOutput('HandoffsCancelOutput', handoffStatusOutputSchema),
-    errorCodes: gatewayHandoffErrorCodes,
-  },
-  {
-    name: 'handoffs.resume',
-    cli: [
-      'relay-ide',
-      'v1',
-      'handoffs',
-      'resume',
-      '--run-id',
-      '<run-id>',
-      '--json',
-    ],
-    summary:
-      'Read cold handoff resume bundle refs without raw transcript/provider-auth export.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['session:read'],
-    inputSchema: handoffRunIdInputSchema,
-    outputSchema: okOutput('HandoffsResumeOutput', handoffResumeOutputSchema),
-    errorCodes: gatewayHandoffErrorCodes,
-  },
-  {
-    name: 'handoffs.launch',
-    cli: [
-      'relay-ide',
-      'v1',
-      'handoffs',
-      'launch',
-      '--run-id',
-      '<run-id>',
-      '--json',
-    ],
-    summary:
-      'Retry hub-side destination session launch for an applied cold handoff after a typed launch failure.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    // Static gateway manifests cannot know whether the stored retry target is
-    // agent or terminal; advertise the superset for tool generators while the
-    // hub route enforces the stored plan's runtime-specific create capability.
-    capabilityHints: [
-      'session:read',
-      'session:create:agent',
-      'session:create:terminal',
-      'pty:exec:arbitrary',
-    ],
-    inputSchema: handoffRunIdInputSchema,
-    outputSchema: okOutput('HandoffsLaunchOutput', handoffCreateOutputSchema),
-    errorCodes: gatewayHandoffErrorCodes,
-  },
-  {
     name: 'artifacts.read',
     cli: [
       'relay-ide',
@@ -6293,7 +5644,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Publish a bounded WorkContext-scoped workflow run projection, including Relay orchestration topology, without raw transcripts or provider-private state.',
+      'Publish a bounded WorkContext-scoped workflow run evidence projection without raw transcripts or provider-private state.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -6358,8 +5709,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<id>',
       '--json',
     ],
-    summary:
-      'List bounded workflow run projections and Relay orchestration runs by WorkContext.',
+    summary: 'List bounded workflow run evidence projections by WorkContext.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -6394,45 +5744,6 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'FORBIDDEN',
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
-      'UPSTREAM_ERROR',
-    ],
-  },
-  {
-    name: 'orchestration-runs.launch',
-    cli: [
-      'relay-ide',
-      'v1',
-      'orchestration-runs',
-      'launch',
-      '--input-json',
-      '<json>',
-      '--json',
-    ],
-    summary:
-      'Trusted local launcher that creates a Relay orchestration run, starts visible child sessions, optionally sends bounded inbox messages, and patches the run topology.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: [
-      'context:write',
-      'session:create:agent',
-      'session:create:terminal',
-      'inbox:write',
-      'tab:mode:set-agent',
-    ],
-    inputSchema: orchestrationLaunchInputSchema,
-    outputSchema: okOutput(
-      'OrchestrationLaunchOutput',
-      orchestrationLaunchOutputDataSchema
-    ),
-    errorCodes: [
-      'UNAUTHORIZED',
-      'INVALID_ARGUMENT',
-      'FORBIDDEN',
-      'NOT_FOUND',
-      'SESSION_CONFLICT',
-      'SERVER_UNAVAILABLE',
-      'UNSUPPORTED',
       'UPSTREAM_ERROR',
     ],
   },
@@ -6599,7 +5910,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Link a Relay agent session/issue/WorkContext to the GitHub PR it is shipping so checks, reviews, mergeability, and issue closeout can be observed and surfaced as structured blockers + a required next action.',
+      'Link a Relay terminal, issue, or WorkContext to the GitHub PR it is shipping so checks, reviews, mergeability, and issue closeout can be observed and surfaced as structured blockers plus a required next action.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -6983,87 +6294,6 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'SESSION_CONFLICT',
-      'SERVER_UNAVAILABLE',
-      'UPSTREAM_ERROR',
-    ],
-  },
-  {
-    name: 'roster.list',
-    cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
-    summary:
-      'List active agent/session roster entries (redacted, derived) scoped to a repo or WorkContext for cross-agent discovery.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['session:read'],
-    inputSchema: rosterListInputSchema,
-    outputSchema: okOutput('RosterListOutput', rosterListOutputDataSchema),
-    errorCodes: [
-      'UNAUTHORIZED',
-      'INVALID_ARGUMENT',
-      'FORBIDDEN',
-      'NOT_FOUND',
-      'SERVER_UNAVAILABLE',
-      'UPSTREAM_ERROR',
-    ],
-  },
-  {
-    name: 'roster.register',
-    cli: [
-      'relay-ide',
-      'v1',
-      'roster',
-      'register',
-      '--input-json',
-      '<json>',
-      '--json',
-    ],
-    summary:
-      'Register/refresh self-declared agent presence (role/use-case/status/capability hints) for the current session/repo/WorkContext. Redaction-safe + heartbeat-expiring; merged into roster.list.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['context:write'],
-    inputSchema: presenceRegisterInputSchema,
-    outputSchema: okOutput(
-      'RosterRegisterOutput',
-      presenceWriteOutputDataSchema
-    ),
-    errorCodes: [
-      'UNAUTHORIZED',
-      'INVALID_ARGUMENT',
-      'FORBIDDEN',
-      'SERVER_UNAVAILABLE',
-      'UPSTREAM_ERROR',
-    ],
-  },
-  {
-    name: 'roster.updateSelf',
-    cli: [
-      'relay-ide',
-      'v1',
-      'roster',
-      'update-self',
-      '--input-json',
-      '<json>',
-      '--json',
-    ],
-    summary:
-      'Patch the calling agent’s existing presence record and refresh its heartbeat. Fails closed (NOT_FOUND) if no live self-declared presence exists; never alters another agent’s record.',
-    stable: true,
-    transport: 'hub-http',
-    requiresAuth: true,
-    capabilityHints: ['context:write'],
-    inputSchema: presenceUpdateInputSchema,
-    outputSchema: okOutput(
-      'RosterUpdateSelfOutput',
-      presenceWriteOutputDataSchema
-    ),
-    errorCodes: [
-      'UNAUTHORIZED',
-      'INVALID_ARGUMENT',
-      'FORBIDDEN',
-      'NOT_FOUND',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],

@@ -8,9 +8,9 @@
 // `server/types.ts`, so this module stays in the shared layer and is
 // consumable by frontend code without leaking server-only types.
 // Kept narrow on purpose: the durability derivation only reads a small
-// subset of agent-state values.
+// subset of terminal activity-state values.
 export type SessionDurabilityStatus = 'active' | 'disconnected';
-export type SessionDurabilityAgentState =
+export type SessionDurabilityActivityState =
   | 'initializing'
   | 'waiting-for-input'
   | 'processing'
@@ -55,7 +55,7 @@ export interface SessionDurabilityInput {
   /** Coarse two-state field already on every session summary. */
   status: SessionDurabilityStatus;
   /** Agent state machine; carries permission-prompt + error signals. */
-  agentState: SessionDurabilityAgentState;
+  activityState: SessionDurabilityActivityState;
   /** True when the session is not actively producing/consuming. */
   idle: boolean;
   /** PTY sessions only — process was reaped and cleanup ran. */
@@ -76,7 +76,7 @@ export interface SessionDurabilityInput {
  *      session may still be running locally but we cannot prove it from here.
  *   2. `ended` — process was reaped (PTY `cleanedUp`) and there is nothing to
  *      reattach to.
- *   3. `error` — agent state reports an error; honored even when `status` is
+ *   3. `error` — terminal activity reports an error; honored even when `status` is
  *      still `'active'` because the error signal is more specific.
  *   4. `permission-needed` — interactive prompt waiting for an operator.
  *   5. `awaiting-start` — session created but has not produced output yet.
@@ -94,9 +94,9 @@ export function deriveSessionDurability(
     return 'stale-node';
   }
   if (input.cleanedUp) return 'ended';
-  if (input.agentState === 'error') return 'error';
-  if (input.agentState === 'permission-prompt') return 'permission-needed';
-  if (input.agentState === 'initializing' && input.idle)
+  if (input.activityState === 'error') return 'error';
+  if (input.activityState === 'permission-prompt') return 'permission-needed';
+  if (input.activityState === 'initializing' && input.idle)
     return 'awaiting-start';
   if (input.status === 'disconnected') return 'running-detached';
   // The slice 1 scope does not track per-session attach handles centrally.

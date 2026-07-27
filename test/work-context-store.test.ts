@@ -137,15 +137,14 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   const nodeId = overrides.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   return {
     id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoPath: '/repo/relay-ide',
     worktreePath: null,
     cwd: '/repo/relay-ide',
     repoName: 'relay-ide',
     branchName: 'nightly',
-    displayName: 'Agent 1',
+    displayName: 'Terminal 1',
     createdAt: now,
     lastActivity: now,
     idle: false,
@@ -154,7 +153,7 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     globalSessionId: createGlobalSessionId(nodeId, id),
     status: 'running',
     needsBranchRename: false,
-    agentState: 'busy',
+    activityState: 'processing',
     ...overrides,
   } as SessionSummary;
 }
@@ -431,7 +430,6 @@ describe('WorkContext store', () => {
       id: 'pair-1',
       nodeId: 'node-remote',
       globalSessionId: createGlobalSessionId('node-remote', 'pair-1'),
-      agent: 'codex',
       cwd: '/remote/relay-ide/.worktrees/560-pair-handoff',
       controlMode: 'co-driven',
       displayName: 'Pair session',
@@ -484,7 +482,6 @@ describe('WorkContext store', () => {
       expect(associated.body.workContext.anchors.session).toMatchObject({
         nodeId: 'node-remote',
         sessionId: 'pair-1',
-        agent: 'codex',
         controlMode: 'co-driven',
         cwd: '/remote/relay-ide/.worktrees/560-pair-handoff',
       });
@@ -532,7 +529,6 @@ describe('WorkContext store', () => {
           expect.objectContaining({
             id: 'pair-1',
             nodeId: 'node-remote',
-            agent: 'codex',
             controlMode: 'co-driven',
             live: true,
           }),
@@ -1009,7 +1005,7 @@ describe('WorkContext store', () => {
         branchName: undefined,
         cwd: '/tmp/free-shell',
         displayName: 'Free shell',
-        agentState: 'idle',
+        activityState: 'idle',
       });
       const context = store.create({
         id: 'wc:free',

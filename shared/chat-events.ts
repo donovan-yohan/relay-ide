@@ -1,12 +1,12 @@
 // @deprecated v1 chat protocol — bridge/legacy-adapter use only.
 //
-// The canonical web-chat surface is the v2 protocol in
+// The canonical channel-agent surface is the v2 protocol in
 // `shared/agent-chat-protocol-v2.ts`. This v1 ChatEvent type system survives
 // solely because the legacy protocol adapters (opencode, hermes,
 // attached-runtime, mock) still emit ChatEvents, and
 // `LegacyProtocolAdapterV2Bridge` translates them to v2 patches via
 // `shared/agent-chat-v1-compat.ts`. Do NOT wire ChatEvent into new UI or
-// session state — use the v2 protocol instead. Once every adapter emits v2
+// channel state — use the v2 protocol instead. Once every adapter emits v2
 // natively, this file and the v1 compat shim can be deleted.
 //
 // ChatEvent is a SIBLING to AgentEvent — not a subtype. AgentEvent handles
@@ -180,7 +180,7 @@ export interface InputResponseEvent extends ChatEventBase {
 
 // ── Lifecycle Events ──────────────────────────────────────────────────────────
 
-/** Web session was created and agent is ready */
+/** Adapter-private channel runtime connected and the participant is ready */
 export interface SessionStartedEvent extends ChatEventBase {
   type: 'chat:session-started';
   sessionId: string;
@@ -198,7 +198,7 @@ export type SessionStatusKind =
   | 'disconnected';
 export type WaitingOn = 'user-input' | 'approval' | 'tool' | 'network';
 
-/** Agent session status changed */
+/** Adapter-private channel runtime status changed */
 export interface SessionStatusEvent extends ChatEventBase {
   type: 'chat:session-status';
   status: SessionStatusKind;

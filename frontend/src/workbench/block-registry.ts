@@ -82,7 +82,7 @@ export function registeredKinds(): ReadonlySet<WorkbenchBlockKind> {
 // ---------------------------------------------------------------------------
 
 /**
- * Register all eight first-party block renderers.
+ * Register all six first-party block renderers.
  * Call once at application startup (e.g. before rendering the app root).
  * Safe to call multiple times — last writer wins on duplicate registration.
  *
@@ -91,20 +91,9 @@ export function registeredKinds(): ReadonlySet<WorkbenchBlockKind> {
  * server-side type-checking or shared module evaluation.
  */
 export async function initFirstPartyBlocks(): Promise<void> {
-  const [
-    terminal,
-    agent,
-    promptFanout,
-    workContext,
-    file,
-    artifact,
-    markdown,
-    custom,
-  ] =
+  const [terminal, workContext, file, artifact, markdown, custom] =
     await Promise.all([
       import('./blocks/terminal.js'),
-      import('./blocks/agent.js'),
-      import('./blocks/prompt-fanout.js'),
       import('./blocks/work-context.js'),
       import('./blocks/file.js'),
       import('./blocks/artifact.js'),
@@ -113,8 +102,6 @@ export async function initFirstPartyBlocks(): Promise<void> {
     ]);
 
   registerBlockRenderer('terminal', terminal.TerminalBlock);
-  registerBlockRenderer('agent', agent.AgentBlock);
-  registerBlockRenderer('prompt-fanout', promptFanout.PromptFanoutBlock);
   registerBlockRenderer('work-context', workContext.WorkContextBlock);
   registerBlockRenderer('file', file.FileBlock);
   registerBlockRenderer('artifact', artifact.ArtifactBlock);

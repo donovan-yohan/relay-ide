@@ -105,8 +105,6 @@ export interface WorkbenchBlockCreateDialogProps {
 
 const ALL_SUPPORTED_KINDS: WorkbenchBlockDescriptor['kind'][] = [
   'terminal',
-  'agent',
-  'prompt-fanout',
   'file',
   'markdown',
   'work-context',
@@ -158,7 +156,7 @@ export function WorkbenchBlockCreateDialog({
 }: WorkbenchBlockCreateDialogProps): React.ReactElement {
   // Derive which block kinds to offer. When the node explicitly lacks file RPC,
   // hide file-rpc-requiring kinds so users can't select them — they'd immediately
-  // hit a NodeDegradedCard. Terminal, agent, markdown, etc. always show.
+  // hit a NodeDegradedCard. Terminal, markdown, and other safe kinds remain.
   const supportedKinds = useMemo(
     () =>
       nodeFileRpcAvailable === false

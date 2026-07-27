@@ -78,8 +78,7 @@ function makeSession(
 ): SessionSummary {
   return {
     id: overrides.id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
     repoPath: '/repo/relay-ide',

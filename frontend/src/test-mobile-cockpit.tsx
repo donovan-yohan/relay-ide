@@ -65,26 +65,24 @@ function topic(input: {
 
 function session(
   id: string,
-  agentState: SessionSummary['agentState'],
+  activityState: SessionSummary['activityState'],
   overrides: Partial<SessionSummary> = {}
 ): SessionSummary {
   return {
     id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
     repoPath: `/workspace/cockpit/${id}`,
     cwd: `/workspace/cockpit/${id}`,
-    displayName: `${id} agent`,
+    displayName: `${id} terminal`,
     createdAt: NOW,
     lastActivity: NOW,
-    idle: agentState === 'idle',
+    idle: activityState === 'idle',
     status: 'active',
-    agentState,
-    controlFreshness: 'fresh',
+    activityState,
     currentActivity:
-      agentState === 'processing'
+      activityState === 'processing'
         ? { tool: 'edit', detail: 'TopicSidebarShell.tsx' }
         : undefined,
     ...overrides,
@@ -152,34 +150,12 @@ for (const fixtureTopic of topics) {
             kind: 'framework',
             available: true,
             reason: null,
-            binding: { sessionId: `roster:${fixtureTopic.id}`, status },
+            binding: { runtimeId: `roster:${fixtureTopic.id}`, status },
           },
         ]
       : []
   );
 }
-queryClient.setQueryData(['agent-roster', 'mobile-cockpit', 200], {
-  generatedAt: NOW,
-  count: 1,
-  entries: [
-    {
-      sessionId: 's-pending',
-      provider: 'claude',
-      sessionType: 'agent',
-      role: 'implementer',
-      displayName: 'pending inbox agent',
-      status: 'active',
-      agentState: 'idle',
-      attention: {
-        needsAttention: true,
-        reasons: ['pending-inbox'],
-        pendingInboxCount: 3,
-      },
-      capabilities: [],
-    },
-  ],
-});
-
 useUiStore.getState().setAdvancedMode(false);
 useUiStore.setState({
   activeChannelId: null,
@@ -205,7 +181,7 @@ useChannelAgentStatusStore.setState({
     [channelAgentStatusKey(RECONCILED_ID, 'claude')]: 'waiting',
     [channelAgentStatusKey(IDLE_ID, 'claude')]: 'idle',
   },
-  sessionByChannelAgent: {
+  runtimeByChannelAgent: {
     [channelAgentStatusKey(BLOCKED_ID, 'claude')]: 's-blocked',
     [channelAgentStatusKey(WORKING_ID, 'claude')]: 's-working',
     [channelAgentStatusKey(WAITING_ID, 'claude')]: 's-waiting',

@@ -9,18 +9,13 @@ import {
   type SessionCreateActionFailure,
 } from './actions/session-create.js';
 
-export interface CreateAgentSessionOptions {
+export interface CreateTerminalSessionOptions {
   nodeId?: NodeId | undefined;
   repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
   cwd?: string | undefined;
-  type?: 'agent' | 'terminal' | undefined;
-  mode?: 'pty' | 'web' | undefined;
-  continue?: boolean | undefined;
+  mode?: 'pty' | undefined;
   branchName?: string | undefined;
-  claudeArgs?: string[] | undefined;
-  yolo?: boolean | undefined;
-  agent?: string | undefined;
   terminalBackend?: 'relay-pty' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
@@ -32,15 +27,6 @@ export interface CreateAgentSessionOptions {
    *  to the spawned PTY env. The backend refuses reserved keys (`PATH`,
    *  `RELAY_*`). */
   envOverrides?: Record<string, string> | undefined;
-  ticketContext?: {
-    ticketId: string;
-    title: string;
-    description?: string;
-    url: string;
-    source: 'github' | 'jira';
-    repoPath: string;
-    repoName: string;
-  };
 }
 
 export interface CurrentSessionContext {
@@ -50,7 +36,7 @@ export interface CurrentSessionContext {
   currentWorktreePath: string | null;
 }
 
-export interface CreateAgentSessionResult {
+export interface CreateTerminalSessionResult {
   session: SessionSummary | undefined;
   error: unknown;
 }
@@ -108,12 +94,15 @@ function restoreSessionPlacement(
 }
 
 export async function createSessionWithoutActivation(
-  options: CreateAgentSessionOptions
-): Promise<CreateAgentSessionResult> {
+  options: CreateTerminalSessionOptions
+): Promise<CreateTerminalSessionResult> {
   const before = useSessionsStore.getState();
   const activeSessionId = before.activeSessionId;
   const workspaceLastSession = { ...before.workspaceLastSession };
-  const action = await executeSessionCreateAction(options);
+  const action = await executeSessionCreateAction({
+    ...options,
+    type: 'terminal',
+  });
 
   if (action.ok) {
     let refreshError: unknown = null;
@@ -149,10 +138,13 @@ export async function createSessionWithoutActivation(
   return { session: undefined, error };
 }
 
-export async function createAgentSession(
-  options: CreateAgentSessionOptions
-): Promise<CreateAgentSessionResult> {
-  const action = await executeSessionCreateAction(options);
+export async function createTerminalSession(
+  options: CreateTerminalSessionOptions
+): Promise<CreateTerminalSessionResult> {
+  const action = await executeSessionCreateAction({
+    ...options,
+    type: 'terminal',
+  });
 
   if (action.ok) {
     let refreshError: unknown = null;

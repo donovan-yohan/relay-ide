@@ -265,8 +265,7 @@ export function FileFeedbackPanel({
                   key={scopedSessionKey(session)}
                   value={scopedSessionKey(session)}
                 >
-                  {session.displayName || session.id} ·{' '}
-                  {session.agent || session.type}
+                  {session.displayName || session.id} · {session.type}
                 </option>
               ))
             )}

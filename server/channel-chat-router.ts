@@ -124,10 +124,15 @@ export interface ChannelChatRouterDeps {
   binder?: ChannelAgentBinder | null;
   /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
   knownProviderIds?: readonly string[];
-  /** Live session lookup used to authenticate privileged source attribution. */
-  getSession?: (
-    sessionId: string
-  ) => { role?: string; status?: string } | undefined;
+  /** Private channel-runtime lookup used to authenticate source attribution. */
+  getRuntime?: (runtimeId: string) =>
+    | {
+        profileActorId: string;
+        providerId: string;
+        role?: string;
+        status?: string;
+      }
+    | undefined;
   /** byte budget for one history response body (defaults to 4MB). */
   historyMaxBytes?: number;
   requireAuth?: RequestHandler;
@@ -305,13 +310,20 @@ function binderOr503(
  * request body ([MF]: attribution is the core product promise). Browser cookie
  * session → human operator; CLI-gateway actor credential → agent:<actor id>.
  */
-function deriveSender(req: Request): ChannelSenderRef {
+function deriveSender(
+  req: Request,
+  runtime: { profileActorId: string; providerId: string } | undefined
+): ChannelSenderRef {
   const credential = authenticatedCliGatewayActorCredential(req);
   if (credential) {
+    const isPersistentOrchestrator =
+      credential.metadata?.reason === 'persistent-orchestrator';
     return {
       kind: 'agent',
-      id: `agent:${credential.actor.id}`,
-      providerId: credential.actor.id,
+      id: isPersistentOrchestrator
+        ? credential.actor.id
+        : `agent:${credential.actor.id}`,
+      providerId: runtime?.providerId ?? credential.actor.id,
       ...(credential.actor.displayName
         ? { displayName: credential.actor.displayName }
         : {}),
@@ -321,19 +333,25 @@ function deriveSender(req: Request): ChannelSenderRef {
 }
 
 /**
- * Persistent-orchestrator credentials use their actor id as authoritative
- * backing-session provenance. Other actor credentials stay unattributed and
- * therefore remain subject to the ordinary agent brake.
+ * Persistent-orchestrator credentials bind their stable profile Actor id to
+ * the private runtime id carried in credential scope. Other actor credentials
+ * stay unattributed and therefore remain subject to the ordinary agent brake.
  */
-export function authenticatedSourceSessionId(
+export function authenticatedSourceRuntimeId(
   credential: ReturnType<typeof authenticatedCliGatewayActorCredential>,
-  getSession: ChannelChatRouterDeps['getSession']
+  getRuntime: ChannelChatRouterDeps['getRuntime']
 ): string | undefined {
   if (credential?.metadata?.reason !== 'persistent-orchestrator') {
     return undefined;
   }
-  const session = getSession?.(credential.actor.id);
-  return session?.role === 'orchestrator' ? credential.actor.id : undefined;
+  const runtimeId = credential.scope.sessionIds?.[0];
+  if (!runtimeId) return undefined;
+  const runtime = getRuntime?.(runtimeId);
+  return runtime?.role === 'orchestrator' &&
+    runtime.status === 'active' &&
+    runtime.profileActorId === credential.actor.id
+    ? runtimeId
+    : undefined;
 }
 
 function mapStoreError(res: Response, error: unknown): void {
@@ -426,7 +444,7 @@ function postToChannel(
   input: {
     channelId: string;
     sender: ChannelSenderRef;
-    sourceSessionId?: string;
+    sourceRuntimeId?: string;
     text: string;
     format?: ChannelBodyFormat;
     parentMessageId?: string;
@@ -448,8 +466,8 @@ function postToChannel(
       : {}),
     ...(input.mentions.length ? { mentions: input.mentions } : {}),
     ...(input.parts?.length ? { parts: input.parts } : {}),
-    ...(input.sourceSessionId
-      ? { source: { sessionId: input.sourceSessionId } }
+    ...(input.sourceRuntimeId
+      ? { source: { runtimeId: input.sourceRuntimeId } }
       : {}),
   });
   store.upsertMember({
@@ -865,11 +883,15 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ? body['clientMessageId']
         : undefined;
 
-    const sender = deriveSender(req);
-    const sourceSessionId = authenticatedSourceSessionId(
-      authenticatedCliGatewayActorCredential(req),
-      deps.getSession
+    const credential = authenticatedCliGatewayActorCredential(req);
+    const sourceRuntimeId = authenticatedSourceRuntimeId(
+      credential,
+      deps.getRuntime
     );
+    const sourceRuntime = sourceRuntimeId
+      ? deps.getRuntime?.(sourceRuntimeId)
+      : undefined;
+    const sender = deriveSender(req, sourceRuntime);
 
     // clientMessageId idempotency: return the existing row without re-broadcast.
     if (clientMessageId) {
@@ -896,7 +918,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const message = postToChannel(store, deps.hub, {
         channelId: id,
         sender,
-        ...(sourceSessionId ? { sourceSessionId } : {}),
+        ...(sourceRuntimeId ? { sourceRuntimeId } : {}),
         text,
         ...(format ? { format } : {}),
         ...(parentMessageId ? { parentMessageId } : {}),
@@ -927,8 +949,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   // #1259 slice 4: operator designates (spawns / resumes) the persistent
   // orchestrator for a product channel. Operator lane ONLY — scoped actors are
-  // forbidden from creating orchestrator-role sessions (see the actor
-  // session-create policy); the durable orchestrator role is granted here.
+  // forbidden from creating orchestrator runtimes directly; the durable
+  // orchestrator role is granted only through this channel-owned lane.
   router.post('/channels/:id/orchestrator', auth, (req, res) => {
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
@@ -945,7 +967,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         res.json({
           ok: true,
           orchestrator: {
-            sessionId: binding.sessionId ?? null,
+            runtimeId: binding.runtimeId ?? null,
             status: binding.status ?? 'idle',
             framework,
           },
@@ -956,7 +978,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           sendGatewayError(
             res,
             'SESSION_CONFLICT',
-            'channel already bound to a non-orchestrator session',
+            'channel already bound to a non-orchestrator runtime',
             false,
             { channelId: topic.id, reasonCode: 'CHANNEL_ROLE_CONFLICT' }
           );

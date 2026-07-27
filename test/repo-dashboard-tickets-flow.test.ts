@@ -121,11 +121,9 @@ vi.mock('../frontend/src/components/StartWorkModal.js', async () => {
     default: ({
       issue,
       onClose,
-      onSessionCreated,
     }: {
       issue: typeof sampleIssue;
       onClose: () => void;
-      onSessionCreated: (sessionId: string) => void;
     }) =>
       ReactModule.createElement(
         'div',
@@ -137,7 +135,7 @@ vi.mock('../frontend/src/components/StartWorkModal.js', async () => {
         ),
         ReactModule.createElement(
           'button',
-          { onClick: () => onSessionCreated('session-123') },
+          { onClick: onClose },
           'complete start work'
         ),
         ReactModule.createElement('button', { onClick: onClose }, 'close')
@@ -187,7 +185,7 @@ describe('RepoDashboard ticket flow', () => {
     useUiStore.setState({ repoDashboardTabIntent: null });
   });
 
-  it('mounts TicketsPanel from the repo dashboard and forwards Start Work sessions', async () => {
+  it('mounts TicketsPanel and closes Start Work after channel routing', async () => {
     const onSessionCreated = vi.fn();
 
     await act(async () => {
@@ -245,7 +243,7 @@ describe('RepoDashboard ticket flow', () => {
       completeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(onSessionCreated).toHaveBeenCalledWith('session-123');
+    expect(onSessionCreated).not.toHaveBeenCalled();
     expect(
       container.querySelector('[data-testid="start-work-modal"]')
     ).toBeNull();

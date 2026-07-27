@@ -87,31 +87,6 @@ describe('hub node registry', () => {
             version: 'relay-pty 1.0',
           },
         },
-        rmux: {
-          id: 'rmux',
-          label: 'rmux optional backend probe',
-          status: 'available-experimental',
-          binaryPresent: true,
-          helperPresent: true,
-          binaryPath: '/usr/local/bin/rmux',
-          helperPath: '/usr/local/bin/rmux',
-          version: 'rmux 0.1.2',
-          platform: 'darwin',
-          arch: 'arm64',
-          ipc: {
-            kind: 'unix-socket',
-            source: 'platform-default',
-            shape: 'owner-only Unix socket under rmux-$uid runtime directory',
-          },
-          message: 'diagnostic-only rmux capability',
-          r0Checklist: [
-            {
-              id: 'version-pinning',
-              status: 'warn',
-              message: 'diagnostic provenance only',
-            },
-          ],
-        },
       },
     });
     expect(isNodeManifest(validWithOptionalStrings)).toBe(true);
@@ -168,79 +143,6 @@ describe('hub node registry', () => {
             unknown
           >;
           capabilities['agents'] = [];
-        }),
-      ],
-      [
-        'rmux status',
-        malformedManifest((candidate) => {
-          const capabilities = candidate['capabilities'] as Record<
-            string,
-            unknown
-          >;
-          capabilities['rmux'] = {
-            id: 'rmux',
-            label: 'rmux optional backend probe',
-            status: 'production-ready',
-            binaryPresent: false,
-            helperPresent: false,
-            platform: 'linux',
-            arch: 'x64',
-            ipc: {
-              kind: 'unix-socket',
-              source: 'platform-default',
-              shape: 'owner-only Unix socket',
-            },
-            message: 'bad status',
-            r0Checklist: [],
-          };
-        }),
-      ],
-      [
-        'rmux ipc shape',
-        malformedManifest((candidate) => {
-          const capabilities = candidate['capabilities'] as Record<
-            string,
-            unknown
-          >;
-          capabilities['rmux'] = {
-            id: 'rmux',
-            label: 'rmux optional backend probe',
-            status: 'unavailable',
-            binaryPresent: false,
-            helperPresent: false,
-            platform: 'linux',
-            arch: 'x64',
-            ipc: { kind: 'tcp', source: 'network', shape: '127.0.0.1:9999' },
-            message: 'bad ipc',
-            r0Checklist: [],
-          };
-        }),
-      ],
-      [
-        'rmux checklist item',
-        malformedManifest((candidate) => {
-          const capabilities = candidate['capabilities'] as Record<
-            string,
-            unknown
-          >;
-          capabilities['rmux'] = {
-            id: 'rmux',
-            label: 'rmux optional backend probe',
-            status: 'unavailable',
-            binaryPresent: false,
-            helperPresent: false,
-            platform: 'linux',
-            arch: 'x64',
-            ipc: {
-              kind: 'unix-socket',
-              source: 'platform-default',
-              shape: 'owner-only Unix socket',
-            },
-            message: 'bad checklist',
-            r0Checklist: [
-              { id: 'root-shell', status: 'pass', message: 'nope' },
-            ],
-          };
         }),
       ],
       [
@@ -329,7 +231,7 @@ describe('hub node registry', () => {
             trustTier: 'dev',
             allowed: expect.arrayContaining([
               'session:create:terminal',
-              'session:create:agent',
+              'session:create:terminal',
               'session:attach',
               'rpc:fs:read',
               'rpc:git:read',
@@ -1174,7 +1076,9 @@ describe('hub node registry', () => {
       expect(updatedDenials[1]?.material?.params).toMatchObject({
         suppressedSinceLast: 2,
       });
-      expect(JSON.stringify(auditEntries)).not.toContain(exchanged.credential.token);
+      expect(JSON.stringify(auditEntries)).not.toContain(
+        exchanged.credential.token
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

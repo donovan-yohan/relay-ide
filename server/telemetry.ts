@@ -4,18 +4,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AccountTelemetry, TelemetryData } from './types.js';
-import type {
-  TelemetryAdapter,
-  TelemetryDeps,
-  TelemetrySession,
-} from './telemetry-adapter.js';
-import { getAdapterForFramework } from './telemetry-adapter.js';
-// Side-effect imports: register adapters in the adapter registry
-import './adapters/claude-telemetry.js';
-// Side-effect import: registers the Codex adapter in the adapter registry
-import './adapters/codex-telemetry.js';
-// Side-effect import: registers the OpenCode adapter in the adapter registry
-import './adapters/opencode-telemetry.js';
+import type { TelemetryDeps } from './telemetry-adapter.js';
 import { createLogger } from './logger.js';
 import { createGlobalSessionId } from '../shared/identity.js';
 
@@ -32,16 +21,12 @@ interface PendingTelemetryFile {
   account: Record<string, AccountTelemetry> | null;
 }
 
-type IncomingTelemetryData = Omit<TelemetryData, 'updatedAt'>;
-
 let activeDeps: TelemetryDeps | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let persistTimer: ReturnType<typeof setInterval> | null = null;
 let sessionTelemetry = new Map<string, TelemetryData>();
 // Map from frameworkId -> AccountTelemetry
 let accountTelemetryMap = new Map<string, AccountTelemetry>();
-// Per-session adapter instances (keyed by sessionId)
-let sessionAdapters = new Map<string, TelemetryAdapter>();
 let restoredPendingOnly = false;
 
 function pendingFilePath(configDir: string): string {
@@ -50,79 +35,31 @@ function pendingFilePath(configDir: string): string {
 
 function telemetryToObject(): Record<string, TelemetryData> {
   const activeSessionsById = new Map(
-    (activeDeps?.getActiveSessions() ?? []).map((session) => [session.id, session])
+    (activeDeps?.getActiveSessions() ?? []).map((session) => [
+      session.id,
+      session,
+    ])
   );
   const result: Record<string, TelemetryData> = {};
   for (const [sessionId, telemetry] of Array.from(sessionTelemetry.entries())) {
     const session = activeSessionsById.get(sessionId);
     const globalSessionId =
       session?.globalSessionId ??
-      (session?.nodeId ? createGlobalSessionId(session.nodeId, sessionId) : undefined);
+      (session?.nodeId
+        ? createGlobalSessionId(session.nodeId, sessionId)
+        : undefined);
     const telemetryKey = globalSessionId ?? sessionId;
     result[telemetryKey] = {
       ...telemetry,
       sessionId,
-      ...(globalSessionId || session?.nodeId ? { localSessionId: sessionId } : {}),
+      ...(globalSessionId || session?.nodeId
+        ? { localSessionId: sessionId }
+        : {}),
       ...(session?.nodeId ? { nodeId: session.nodeId } : {}),
       ...(globalSessionId ? { globalSessionId } : {}),
     };
   }
   return result;
-}
-
-function sameTelemetry(
-  a: TelemetryData | undefined,
-  b: IncomingTelemetryData
-): boolean {
-  if (!a) return false;
-  return (
-    a.sessionId === b.sessionId &&
-    a.model === b.model &&
-    a.totalInputTokens === b.totalInputTokens &&
-    a.totalOutputTokens === b.totalOutputTokens &&
-    a.totalCacheRead === b.totalCacheRead &&
-    a.totalCacheWrite === b.totalCacheWrite &&
-    a.reasoningOutputTokens === b.reasoningOutputTokens &&
-    a.contextPercent === b.contextPercent &&
-    a.contextWindowSize === b.contextWindowSize &&
-    a.costUsd === b.costUsd &&
-    a.source === b.source
-  );
-}
-
-function sameAccountTelemetry(
-  a: AccountTelemetry | undefined,
-  b: AccountTelemetry
-): boolean {
-  if (!a) return false;
-  if (a.framework !== b.framework) return false;
-  if (a.rateLimits.length !== b.rateLimits.length) return false;
-  return b.rateLimits.every((br) => {
-    const ar = a.rateLimits.find((r) => r.name === br.name);
-    if (!ar) return false;
-    return (
-      ar.usedPercent === br.usedPercent &&
-      ar.resetsAt === br.resetsAt &&
-      ar.windowMinutes === br.windowMinutes
-    );
-  });
-}
-
-function createAdapterForSession(
-  session: TelemetrySession & { agent?: string },
-  deps: TelemetryDeps
-): TelemetryAdapter | null {
-  try {
-    const frameworkId = session.agent ?? 'claude';
-    const adapter = getAdapterForFramework(frameworkId, deps);
-    if (adapter) {
-      adapter.attach(session);
-    }
-    return adapter;
-  } catch (err) {
-    logger.warn(`Failed to create adapter for session ${session.id}:`, err);
-    return null;
-  }
 }
 
 function restorePendingTelemetry(configDir: string): void {
@@ -195,57 +132,6 @@ function pruneEndedSessions(activeSessionIds: Set<string>): void {
       sessionTelemetry.delete(sessionId);
     }
   }
-  for (const [sessionId, adapter] of [...sessionAdapters.entries()]) {
-    if (!activeSessionIds.has(sessionId)) {
-      try {
-        adapter.detach(sessionId);
-      } catch {
-        /* ignore cleanup errors */
-      }
-      sessionAdapters.delete(sessionId);
-    }
-  }
-}
-
-function getOrCreateAdapter(
-  session: TelemetrySession,
-  deps: TelemetryDeps
-): TelemetryAdapter | undefined {
-  let adapter = sessionAdapters.get(session.id);
-  if (!adapter) {
-    adapter = createAdapterForSession(session, deps) ?? undefined;
-    if (adapter) {
-      sessionAdapters.set(session.id, adapter);
-    }
-  }
-  return adapter;
-}
-
-function pollSessionTelemetry(
-  adapter: TelemetryAdapter,
-  sessionId: string,
-  deps: TelemetryDeps
-): void {
-  const snapshot = adapter.collectSnapshot(sessionId);
-  if (!snapshot) return;
-
-  const { updatedAt: _u, ...incoming } = snapshot;
-  if (!sameTelemetry(sessionTelemetry.get(sessionId), incoming)) {
-    sessionTelemetry.set(sessionId, snapshot);
-    deps.broadcastEvent('session-telemetry', { sessionId, data: snapshot });
-  }
-
-  const adapterAccount = adapter.collectAccountTelemetry?.();
-  if (
-    adapterAccount &&
-    !sameAccountTelemetry(
-      accountTelemetryMap.get(adapterAccount.framework),
-      adapterAccount
-    )
-  ) {
-    accountTelemetryMap.set(adapterAccount.framework, adapterAccount);
-    deps.broadcastEvent('account-telemetry', { data: adapterAccount });
-  }
 }
 
 function collectTelemetry(): void {
@@ -259,14 +145,6 @@ function collectTelemetry(): void {
     pruneEndedSessions(activeSessionIds);
   } else if (!restoredPendingOnly) {
     sessionTelemetry = new Map();
-    sessionAdapters.clear();
-  }
-
-  for (const session of activeSessions) {
-    const adapter = getOrCreateAdapter(session, activeDeps);
-    if (adapter) {
-      pollSessionTelemetry(adapter, session.id, activeDeps);
-    }
   }
 }
 
@@ -294,18 +172,9 @@ export function stopTelemetry(): void {
   if (activeDeps) {
     persistPendingTelemetry(activeDeps.configDir);
   }
-  // Detach all adapters
-  for (const [sessionId, adapter] of sessionAdapters.entries()) {
-    try {
-      adapter.detach(sessionId);
-    } catch {
-      /* ignore */
-    }
-  }
   activeDeps = null;
   sessionTelemetry = new Map();
   accountTelemetryMap = new Map();
-  sessionAdapters = new Map();
   restoredPendingOnly = false;
 }
 
@@ -313,21 +182,6 @@ export function getTelemetryForSession(
   sessionId: string
 ): TelemetryData | undefined {
   return sessionTelemetry.get(sessionId);
-}
-
-/**
- * Forward a hook event to the adapter for the given session.
- * Called from the hooks router when an agent-event is received.
- */
-export function forwardHookEvent(
-  sessionId: string,
-  eventType: string,
-  data: Record<string, unknown>
-): void {
-  const adapter = sessionAdapters.get(sessionId);
-  if (adapter?.handleHookEvent) {
-    adapter.handleHookEvent(sessionId, eventType, data);
-  }
 }
 
 export function getAccountTelemetry(): Record<string, AccountTelemetry> {

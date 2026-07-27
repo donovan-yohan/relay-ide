@@ -63,11 +63,7 @@ function statusPresence(status: ChannelAgentStatus): CockpitPresence {
 }
 
 function sessionPresence(session: TopicNavSessionRef): CockpitPresence {
-  if (
-    session.status === 'disconnected' ||
-    session.controlFreshness === 'stale' ||
-    session.controlFreshness === 'unknown'
-  ) {
+  if (session.status === 'disconnected') {
     return 'unknown';
   }
   if (

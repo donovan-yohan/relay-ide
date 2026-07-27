@@ -170,8 +170,8 @@ describe('session durability — failure matrix (#614 slice 5)', () => {
   });
 
   it('agent error transition → error', () => {
-    // Agent adapters set `agentState = 'error'` for unrecoverable failures
-    // (e.g. resume failed for web sessions, parser-detected error frames
+    // Terminal runtime failures set `activityState = 'error'`.
+    // (e.g. parser-detected error frames
     // for PTY sessions). Durability must surface this ahead of the
     // attached/detached default.
     const { id, session } = makeSession('agent-error');
@@ -179,7 +179,7 @@ describe('session durability — failure matrix (#614 slice 5)', () => {
 
     const cap = captureTransitions();
     try {
-      session.agentState = 'error';
+      session.activityState = 'error';
       expect(durabilityOf(id)).toBe('error');
       expect(cap.events.at(-1)).toMatchObject({
         sessionId: id,
@@ -200,7 +200,7 @@ describe('session durability — failure matrix (#614 slice 5)', () => {
 
     const cap = captureTransitions();
     try {
-      session.agentState = 'permission-prompt';
+      session.activityState = 'permission-prompt';
       expect(durabilityOf(id)).toBe('permission-needed');
       expect(cap.events.at(-1)?.to).toBe('permission-needed');
     } finally {

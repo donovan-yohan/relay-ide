@@ -86,14 +86,14 @@ describe('channel-message-store schema migration', () => {
     expect(migrated.getBinding('topic:v2', profileId)).toMatchObject({
       profileActorId: profileId,
       agentFramework: 'claude',
-      sessionId: 'sess-v2',
+      runtimeId: 'sess-v2',
       providerSession: { lastDeliveredSeq: 7 },
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-02T00:00:00.000Z',
     });
     const reopened = store(file);
     expect(reopened.getBinding('topic:v2', profileId)).toMatchObject({
-      sessionId: 'sess-v2',
+      runtimeId: 'sess-v2',
       providerSession: { lastDeliveredSeq: 7 },
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-02T00:00:00.000Z',
@@ -227,11 +227,19 @@ describe('channel-message-store schema migration', () => {
     legacy.close();
 
     const migrated = store(file);
-    expect(migrated.getMessage('chm:legacy')?.body.text).toBe('preserved');
+    expect(migrated.getMessage('chm:legacy')).toMatchObject({
+      body: { text: 'preserved' },
+      sender: { runtimeId: 'session' },
+      source: {
+        runtimeId: 'session',
+        turnId: 'turn',
+        itemId: 'item',
+      },
+    });
     const stream = migrated.beginStream({
       channelId: 'topic:migration',
       sender: AGENT,
-      source: { sessionId: 'session', turnId: 'turn-2', itemId: 'item-2' },
+      source: { runtimeId: 'runtime', turnId: 'turn-2', itemId: 'item-2' },
     });
     expect(
       migrated.finalizeStream(stream.id, {
@@ -261,14 +269,15 @@ describe('channel-message-store schema migration', () => {
     ).toHaveLength(2);
     expect(migrated.getMessage('chm:claude-live-keeper')?.replyCount).toBe(1);
     expect(
-      migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))?.providerSession[
-        'lastDeliveredSeq'
-      ]
+      migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))
+        ?.providerSession['lastDeliveredSeq']
     ).toBe(2);
-    expect(migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))).toMatchObject({
+    expect(
+      migrated.getBinding('topic:live-heal', builtInAgentProfileId('claude'))
+    ).toMatchObject({
       profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
-      sessionId: 'session-live',
+      runtimeId: 'session-live',
     });
     expect(migrated.latestSeq('topic:live-heal')).toBe(3);
     expect(
@@ -289,7 +298,7 @@ describe('channel-message-store schema migration', () => {
       }).seq
     ).toBe(4);
 
-    // Reopening the v3 database is an idempotent no-op: the healed row set,
+    // Reopening the v5 database is an idempotent no-op: the healed row set,
     // references, gap-free sequence, and translated delivery cursor survive.
     const reopened = store(file);
     expect(
@@ -303,9 +312,8 @@ describe('channel-message-store schema migration', () => {
       [expect.any(String), 4],
     ]);
     expect(
-      reopened.getBinding('topic:live-heal', builtInAgentProfileId('claude'))?.providerSession[
-        'lastDeliveredSeq'
-      ]
+      reopened.getBinding('topic:live-heal', builtInAgentProfileId('claude'))
+        ?.providerSession['lastDeliveredSeq']
     ).toBe(2);
 
     const inspect = new Database(file, { readonly: true });
@@ -316,28 +324,34 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(3);
+    ).toBe(5);
+    expect(
+      (
+        inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name)
+    ).toContain('source_runtime_id');
 
-    // The v3 conversion is reopen-idempotent: exactly one legacy binding is
-    // backfilled, with its session and provider cursor byte-for-byte intact.
-    const bindingRows = (
-      inspect
-        .prepare(
-          'SELECT profile_actor_id, agent_framework, session_id, provider_session_json FROM channel_agent_bindings'
-        )
-        .all() as Array<{
-        profile_actor_id: string;
-        agent_framework: string;
-        session_id: string | null;
-        provider_session_json: string;
-      }>
-    );
+    // The v5 conversion is reopen-idempotent: exactly one legacy binding is
+    // backfilled, with its runtime and provider cursor byte-for-byte intact.
+    const bindingRows = inspect
+      .prepare(
+        'SELECT profile_actor_id, agent_framework, runtime_id, provider_session_json FROM channel_agent_bindings'
+      )
+      .all() as Array<{
+      profile_actor_id: string;
+      agent_framework: string;
+      runtime_id: string | null;
+      provider_session_json: string;
+    }>;
     expect(bindingRows).toEqual([
       {
         profile_actor_id: builtInAgentProfileId('claude'),
         agent_framework: 'claude',
-        session_id: 'session-live',
-        provider_session_json: '{"claudeSessionId":"session-live","lastDeliveredSeq":2}',
+        runtime_id: 'session-live',
+        provider_session_json:
+          '{"claudeSessionId":"session-live","lastDeliveredSeq":2}',
       },
     ]);
   });
@@ -410,7 +424,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const begun = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' },
+      source: { runtimeId: 'runtime-1', turnId: 't1', itemId: 'a1' },
     });
     expect(begun.status).toBe('streaming');
     const flushed = s.updateStreamText(begun.id, 'partial text');
@@ -434,7 +448,11 @@ describe('channel-message-store streaming lifecycle', () => {
     const begun = first.beginStream({
       channelId: 'topic:cards',
       sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'reason-1' },
+      source: {
+        runtimeId: 'runtime-1',
+        turnId: 't1',
+        itemId: 'reason-1',
+      },
       agentDetail: {
         itemId: 'reason-1',
         card: {
@@ -501,7 +519,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const begun = s.beginStream({
       channelId: 'topic:detail-fsm',
       sender: AGENT,
-      source: { sessionId: 'sess', turnId: 'turn', itemId: 'reason' },
+      source: { runtimeId: 'runtime', turnId: 'turn', itemId: 'reason' },
       agentDetail: {
         itemId: 'reason',
         card: { kind: 'thought', title: 'thinking', status: 'running' },
@@ -572,7 +590,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const begun = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' },
+      source: { runtimeId: 'runtime-1', turnId: 't1', itemId: 'a1' },
     });
     s.finalizeStream(begun.id, { text: 'done', status: 'complete' });
     const replay = s.finalizeStream(begun.id, {
@@ -588,12 +606,12 @@ describe('channel-message-store streaming lifecycle', () => {
     const one = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' },
+      source: { runtimeId: 'runtime-1', turnId: 't1', itemId: 'a1' },
     });
     const two = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' },
+      source: { runtimeId: 'runtime-1', turnId: 't1', itemId: 'a1' },
     });
     expect(two.id).toBe(one.id);
     expect(s.history('topic:c')).toHaveLength(1);
@@ -603,7 +621,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const p = dbPath();
     const firstStore = store(p);
     const replayStore = store(p);
-    const source = { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' };
+    const source = { runtimeId: 'runtime-1', turnId: 't1', itemId: 'a1' };
     const first = firstStore.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
@@ -634,7 +652,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const begun = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1' },
+      source: { runtimeId: 'runtime-1' },
     });
     const final = s.finalizeStream(begun.id, {
       text: 'capped',
@@ -652,7 +670,7 @@ describe('channel-message-store streaming lifecycle', () => {
       s.beginStream({
         channelId: 'topic:bounded-card',
         sender: AGENT,
-        source: { sessionId: 'sess', turnId: 'turn', itemId: 'detail' },
+        source: { runtimeId: 'runtime', turnId: 'turn', itemId: 'detail' },
         text: 'x'.repeat(200 * 1024),
         agentDetail: {
           itemId: 'detail',
@@ -675,7 +693,7 @@ describe('channel-message-store streaming lifecycle', () => {
     const stream = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'x', turnId: 't', itemId: 'i' },
+      source: { runtimeId: 'x', turnId: 't', itemId: 'i' },
     }); // seq 2, agent-origin
     s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'later' }); // seq 3
 
@@ -701,7 +719,7 @@ describe('channel-message-store streaming lifecycle', () => {
       channelId: 'topic:c',
       sender: AGENT,
       source: {
-        sessionId: 'root-session',
+        runtimeId: 'root-runtime',
         turnId: 'root-turn',
         itemId: 'root',
       },
@@ -713,7 +731,7 @@ describe('channel-message-store streaming lifecycle', () => {
         channelId: 'topic:c',
         sender: AGENT,
         source: {
-          sessionId: `reply-session-${index}`,
+          runtimeId: `reply-runtime-${index}`,
           turnId: `reply-turn-${index}`,
           itemId: `reply-${index}`,
         },
@@ -725,7 +743,7 @@ describe('channel-message-store streaming lifecycle', () => {
       channelId: 'topic:c',
       sender: AGENT,
       source: {
-        sessionId: 'reply-session-stream',
+        runtimeId: 'reply-runtime-stream',
         turnId: 'reply-turn-stream',
         itemId: 'reply-stream',
       },
@@ -978,7 +996,11 @@ describe('channel-message-store posts, threads, idempotency', () => {
     const begun = s.beginStream({
       channelId: 'topic:d',
       sender: AGENT,
-      source: { sessionId: 'sess-d', turnId: 't-d', itemId: 'reason-d' },
+      source: {
+        runtimeId: 'runtime-d',
+        turnId: 't-d',
+        itemId: 'reason-d',
+      },
       agentDetail: {
         itemId: 'reason-d',
         card: {
@@ -1046,16 +1068,18 @@ describe('channel-message-store members and bindings', () => {
     const s = store();
     const created = s.upsertBinding({
       channelId: 'topic:c',
+      profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
       providerSession: { claudeSessionId: 'abc' },
     });
-    expect(created.sessionId).toBeNull();
+    expect(created.runtimeId).toBeNull();
     const updated = s.upsertBinding({
       channelId: 'topic:c',
+      profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
-      sessionId: 'sess-9',
+      runtimeId: 'runtime-9',
     });
-    expect(updated.sessionId).toBe('sess-9');
+    expect(updated.runtimeId).toBe('runtime-9');
     expect(updated.providerSession).toEqual({ claudeSessionId: 'abc' });
 
     // Arbitrary profile ids are real actor ids, never rewritten by a prefix
@@ -1064,37 +1088,14 @@ describe('channel-message-store members and bindings', () => {
       channelId: 'topic:c',
       profileActorId: 'reviewer',
       agentFramework: 'claude',
-      sessionId: 'sess-reviewer',
+      runtimeId: 'runtime-reviewer',
       providerSession: { lastDeliveredSeq: 9 },
     });
     expect(s.getBinding('topic:c', 'reviewer')).toMatchObject({
       profileActorId: 'reviewer',
-      sessionId: 'sess-reviewer',
+      runtimeId: 'runtime-reviewer',
       providerSession: { lastDeliveredSeq: 9 },
     });
-  });
-
-  it('lists distinct non-null bound session ids (reaper protection) (#1248)', () => {
-    const s = store();
-    // Bound sessions across two channels; one binding has no session yet.
-    s.upsertBinding({
-      channelId: 'topic:a',
-      agentFramework: 'claude',
-      sessionId: 'sess-a',
-    });
-    s.upsertBinding({
-      channelId: 'topic:b',
-      agentFramework: 'codex',
-      sessionId: 'sess-b',
-    });
-    s.upsertBinding({
-      channelId: 'topic:c',
-      agentFramework: 'claude',
-      providerSession: { claudeSessionId: 'no-session-yet' },
-    });
-
-    const bound = s.listBoundSessionIds().sort();
-    expect(bound).toEqual(['sess-a', 'sess-b']);
   });
 });
 
@@ -1104,7 +1105,7 @@ describe('channel-message-store boot sweeps', () => {
     const stuck = s.beginStream({
       channelId: 'topic:c',
       sender: AGENT,
-      source: { sessionId: 'sess-1' },
+      source: { runtimeId: 'runtime-1' },
     });
     const results = s.sweepStaleStreaming();
     expect(results).toHaveLength(1);
@@ -1125,7 +1126,7 @@ describe('channel-message-store boot sweeps', () => {
     const stuck = s.beginStream({
       channelId: 'topic:restart-detail',
       sender: AGENT,
-      source: { sessionId: 'sess', turnId: 'turn', itemId: 'reason' },
+      source: { runtimeId: 'runtime', turnId: 'turn', itemId: 'reason' },
       agentDetail: {
         itemId: 'reason',
         card: {

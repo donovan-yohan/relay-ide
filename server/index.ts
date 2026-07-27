@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -33,14 +32,9 @@ import {
   populateMetaCache,
 } from './sessions.js';
 import type { CreateResult } from './sessions.js';
-import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 
 import { setupWebSocket } from './ws.js';
 import { createLocalRelayNode } from './local-node.js';
-import {
-  buildHermesInstructions,
-  buildRelayHermesMetadata,
-} from './protocol-adapters/hermes-adapter.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   parseGlobalSessionId,
@@ -87,12 +81,6 @@ import {
   recordRateLimitSnapshot,
 } from './analytics.js';
 import {
-  initRelayStateDb,
-  closeRelayStateDb,
-  flushAllPendingWrites as flushRelayStateWrites,
-  setReapProtectedSessionIdsProvider,
-} from './relay-state-db.js';
-import {
   createWorkContextRouter,
   createUnavailableWorkContextStore,
   initWorkContextStore,
@@ -104,10 +92,6 @@ import {
   initContextPacketStore,
   type ContextPacketStore,
 } from './context-packets.js';
-import {
-  initAgentPresenceStore,
-  type AgentPresenceStore,
-} from './agent-presence-store.js';
 import {
   initAgentProfileStore,
   type AgentProfileStore,
@@ -149,9 +133,8 @@ import {
   getAccountTelemetry,
 } from './telemetry.js';
 import {
-  getFrameworkAvailability,
   getFrameworkClientInfoWithRuntime,
-  getFrameworkWebAvailability,
+  getFrameworkChannelAvailability,
   listConfiguredFrameworks,
 } from './frameworks.js';
 import {
@@ -197,7 +180,6 @@ import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
   createHandoffRouter,
   type HandoffCapabilityContext,
-  type HandoffDestinationLaunchInput,
 } from './handoffs.js';
 import { createHubNodeLinkManager, HubNodeLinkError } from './hub-node-link.js';
 import {
@@ -233,13 +215,7 @@ import {
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAutomationRunRouter } from './features/automation-run-router.js';
 import { createPrOverseerRouter } from './features/pr-overseer-router.js';
-import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { createAgentProfileRouter } from './agent-profile-router.js';
-import {
-  AGENT_ROLES,
-  buildAttentionEventInput,
-  type AgentRole,
-} from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initChannelMessageStore,
@@ -256,6 +232,10 @@ import {
   type ChannelAgentBinder,
   type MentionTarget,
 } from './channel-agent-binder.js';
+import {
+  channelAgentRuntimes,
+  configureChannelAgentRuntimes,
+} from './channel-agent-runtime.js';
 import { v2Adapters } from './protocol-adapters/index.js';
 import {
   initWorkContextArtifactStore,
@@ -293,15 +273,11 @@ import {
 } from './context-adapters/file-range.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
-  AgentType,
   AutomationSettings,
-  BackendDisplayState,
   Config,
-  ContinuePolicy,
   SessionSummary,
   TerminalBackend,
   TicketContext,
-  WorkspaceSettings,
 } from './types.js';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
@@ -311,7 +287,6 @@ import {
   type RelayCliGatewayError,
 } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
-import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
   buildPtyCapacityResponse,
@@ -346,7 +321,6 @@ import {
   filterPortReconciliationRepoPaths,
 } from './port-reconciliation.js';
 import {
-  actorFromRequestBody,
   capabilityDecisionFromRequest,
   capabilitiesDecisionFromRequest,
   capabilityError,
@@ -355,8 +329,6 @@ import {
   CONTROL_READ_CAPABILITY,
   CONTROL_RENAME_CAPABILITY,
   CONTROL_SESSION_CAPABILITY,
-  CONTROL_WRITE_CAPABILITY,
-  createAgentDrivenInitialControlState,
   errorStatus as sessionControlErrorStatus,
   INTERVENTION_READ_CAPABILITY,
   toInterventionReadResponse,
@@ -389,7 +361,6 @@ import {
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
-import { actorSessionCreateRolePolicy } from './actor-session-create-policy.js';
 import {
   RELAY_CAPABILITY_BITS,
   type RelayCapabilityBit,
@@ -400,72 +371,6 @@ const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
-
-/**
- * Build the `extra` payload for a Hermes web session so its conversation is
- * tagged with the topic/workspace/repo/node/ticket anchors (via the responses
- * `metadata` field) and carries the channel's prompt defaults (via the
- * responses `instructions` field, resent on every turn — a channel behaves
- * like a pre-configured room, mirrors #1090) plus the ticket-launch initial
- * prompt (via `initialInstructions`, folded into `instructions` by the
- * adapter for the first turn only — see HermesProtocolAdapter#sendMessage —
- * so the one-shot ticket kickoff doesn't persist as system framing for the
- * rest of the conversation, unlike the PTY path's literal typed prompt it
- * would otherwise semantically diverge from). Returns an empty object for
- * non-Hermes agents or when there is nothing to attach, so it can be spread
- * into createWeb params.
- */
-export function buildHermesCreateExtra(
-  resolvedAgent: string,
-  ctx: {
-    workspaceTopic?:
-      | {
-          id?: string;
-          workspaceId?: string;
-          promptDefaults?: {
-            systemPrompt?: string | null;
-            instructions?: string | null;
-          };
-        }
-      | null
-      | undefined;
-    repoPath?: string | null | undefined;
-    worktreePath?: string | null | undefined;
-    branchName?: string | null | undefined;
-    nodeId?: string | null | undefined;
-    ticketContext?:
-      | { ticketId?: string; source?: string; url?: string }
-      | null
-      | undefined;
-    initialPrompt?: string | null | undefined;
-  }
-): { extra: Record<string, unknown> } | Record<string, never> {
-  if (resolvedAgent !== 'hermes') return {};
-  const metadata = buildRelayHermesMetadata({
-    topicId: ctx.workspaceTopic?.id,
-    workspaceId: ctx.workspaceTopic?.workspaceId,
-    repoPath: ctx.repoPath,
-    worktreePath: ctx.worktreePath,
-    branchName: ctx.branchName,
-    nodeId: ctx.nodeId,
-    ticketId: ctx.ticketContext?.ticketId,
-    ticketSource: ctx.ticketContext?.source,
-    ticketUrl: ctx.ticketContext?.url,
-  });
-  const channelInstructions = buildHermesInstructions(
-    ctx.workspaceTopic?.promptDefaults
-  );
-  const ticketInitialInstructions =
-    typeof ctx.initialPrompt === 'string' && ctx.initialPrompt.trim()
-      ? ctx.initialPrompt.trim()
-      : undefined;
-  const extra: Record<string, unknown> = {};
-  if (Object.keys(metadata).length > 0) extra['metadata'] = metadata;
-  if (channelInstructions) extra['instructions'] = channelInstructions;
-  if (ticketInitialInstructions)
-    extra['initialInstructions'] = ticketInitialInstructions;
-  return Object.keys(extra).length > 0 ? { extra } : {};
-}
 
 const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
@@ -738,176 +643,10 @@ export function validateTicketContext(
   return null;
 }
 
-/** Builds the initial prompt string from a ticket context and repo settings. */
-export function buildTicketInitialPrompt(
-  ticketContext: TicketContext,
-  repoSettings: WorkspaceSettings | undefined
-): string {
-  const template =
-    repoSettings?.promptStartWork ??
-    'You are working on ticket {ticketId}: {title}\n\nTicket URL: {ticketUrl}\n\nPlease start by understanding the issue and proposing an approach.';
-  return template
-    .replace(/\{ticketId\}/g, ticketContext.ticketId)
-    .replace(/\{title\}/g, ticketContext.title)
-    .replace(/\{ticketUrl\}/g, ticketContext.url)
-    .replace(/\{description\}/g, ticketContext.description ?? '');
-}
-
 /**
  * Clamps a terminal dimension (cols or rows) to a valid range.
  * Returns the rounded value if valid, or undefined if invalid/unset.
  */
-
-/**
- * Builds the CLI args array for an agent session based on resolved settings.
- */
-export function buildAgentArgs(
-  resolvedAgent: AgentType,
-  claudeArgs: string[],
-  yolo: boolean,
-  continuePolicy: ContinuePolicy | undefined
-): string[] {
-  const baseArgs = [
-    // config.claudeArgs carries Claude-specific flags (e.g. --model, --effort).
-    // Folding them into codex/opencode/hermes spawns makes those CLIs exit with
-    // code 2 within ~1s, killing every non-claude session on hubs with a
-    // non-empty claudeArgs. Gate the flags to the claude agent only.
-    ...(resolvedAgent === 'claude' ? claudeArgs : []),
-    ...(yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
-  ];
-  const useContinue = continuePolicy === 'always';
-  return useContinue
-    ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
-    : [...baseArgs];
-}
-
-type AgentAvailabilityValidation =
-  | { ok: true }
-  | {
-      ok: false;
-      body: {
-        error: 'agent_unavailable' | 'unknown_agent';
-        message: string;
-        agent: AgentType;
-      };
-    };
-
-function validateAgentFrameworkAvailable(
-  config: Config,
-  resolvedAgent: AgentType
-): AgentAvailabilityValidation {
-  try {
-    const framework = resolveFramework(
-      config.frameworks ? { frameworks: config.frameworks } : {},
-      resolvedAgent
-    );
-    const availability = getFrameworkAvailability(framework);
-    if (availability.installed) return { ok: true };
-    return {
-      ok: false,
-      body: {
-        error: 'agent_unavailable',
-        message:
-          availability.reason ??
-          `${framework.displayName} CLI is not installed on this host.`,
-        agent: resolvedAgent,
-      },
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      body: {
-        error: 'unknown_agent',
-        message:
-          err instanceof Error
-            ? err.message
-            : `Unknown agent: ${resolvedAgent}`,
-        agent: resolvedAgent,
-      },
-    };
-  }
-}
-
-async function validateAgentWebRuntimeAvailable(
-  config: Config,
-  resolvedAgent: AgentType
-): Promise<AgentAvailabilityValidation> {
-  try {
-    const framework = resolveFramework(
-      config.frameworks ? { frameworks: config.frameworks } : {},
-      resolvedAgent
-    );
-    const availability = await getFrameworkWebAvailability(framework);
-    if (availability.available) return { ok: true };
-    return {
-      ok: false,
-      body: {
-        error: 'agent_unavailable',
-        message:
-          availability.reason ??
-          `${framework.displayName} web runtime is not available on this host.`,
-        agent: resolvedAgent,
-      },
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      body: {
-        error: 'unknown_agent',
-        message: err instanceof Error ? err.message : String(err),
-        agent: resolvedAgent,
-      },
-    };
-  }
-}
-
-/**
- * Resolves the effective continue policy for an agent session.
- * For new worktrees, always returns 'never'.
- */
-function resolveContinuePolicy(
-  explicitContinuePolicy: ContinuePolicy | undefined,
-  explicitContinue: boolean | undefined,
-  needsBranchRename: boolean | undefined,
-  newWorktree: boolean = false
-): ContinuePolicy | undefined {
-  if (needsBranchRename || newWorktree) return 'never';
-  if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
-  if (explicitContinue === undefined) return undefined;
-  return explicitContinue ? 'always' : 'never';
-}
-
-type AgentSessionParams = {
-  id?: string;
-  spawnedBySessionId?: string;
-  repoName: string;
-  repoPath?: string | undefined;
-  worktreePath: string | null | undefined;
-  cwd: string;
-  requestBranchName: string | undefined;
-  displayName: string;
-  args: string[];
-  resolvedAgent: AgentType;
-  resolvedTerminalBackend: TerminalBackend;
-  resolvedYolo: boolean;
-  resolvedClaudeArgs: string[];
-  resolvedContinuePolicy: ContinuePolicy | undefined;
-  safeCols: number | undefined;
-  safeRows: number | undefined;
-  needsBranchRename: boolean;
-  branchRenamePrompt: string;
-  computedInitialPrompt: string | undefined;
-  claudeFullscreen: boolean;
-  sessionLane: SessionLane | undefined;
-  workContextId?: string | undefined;
-  controlState?: ReturnType<typeof createAgentDrivenInitialControlState>;
-  /** Port env var names to inject for this worktree (from repo settings) */
-  portVariables?: string[] | undefined;
-  /** #614 slice 4: effective scrollback cap from resolveSessionSettings. */
-  scrollbackBytes?: number | undefined;
-  /** #740: anchoring Bench's env overrides, applied additively to the PTY env. */
-  envOverrides?: Record<string, string> | undefined;
-};
 
 type TerminalSessionParams = {
   spawnedBySessionId?: string;
@@ -939,7 +678,6 @@ function createTerminalSessionRecord(
     ...(params.spawnedBySessionId !== undefined
       ? { spawnedBySessionId: params.spawnedBySessionId }
       : {}),
-    agent: 'claude' as AgentType,
     repoName: params.repoName,
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),
     worktreePath: params.worktreePath ?? null,
@@ -956,65 +694,6 @@ function createTerminalSessionRecord(
     portVariables: params.portVariables,
     ...(params.envOverrides ? { envOverrides: params.envOverrides } : {}),
   });
-}
-
-/** Creates an agent session record and writes worktree metadata if applicable. */
-function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
-  const sessionId = params.id ?? crypto.randomBytes(8).toString('hex');
-  const session = localRelayNode.sessions.create({
-    id: sessionId,
-    ...(params.spawnedBySessionId !== undefined
-      ? { spawnedBySessionId: params.spawnedBySessionId }
-      : {}),
-    type: 'agent',
-    agent: params.resolvedAgent,
-    repoName: params.repoName,
-    ...(params.repoPath ? { repoPath: params.repoPath } : {}),
-    worktreePath: params.worktreePath ?? null,
-    cwd: params.cwd,
-    branchName: params.requestBranchName ?? '',
-    displayName: params.displayName,
-    args: params.args,
-    configPath: CONFIG_PATH,
-    terminalBackend: params.resolvedTerminalBackend,
-    yolo: params.resolvedYolo,
-    claudeArgs: params.resolvedClaudeArgs,
-    continuePolicy: params.resolvedContinuePolicy,
-    claudeFullscreen: params.claudeFullscreen,
-    ...(params.safeCols != null && { cols: params.safeCols }),
-    ...(params.safeRows != null && { rows: params.safeRows }),
-    ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
-    workContextId: params.workContextId,
-    controlState:
-      params.controlState ??
-      createAgentDrivenInitialControlState({
-        workerId: sessionId,
-        displayName: params.displayName,
-      }),
-    needsBranchRename: params.needsBranchRename,
-    branchRenamePrompt: params.branchRenamePrompt,
-    ...(params.computedInitialPrompt != null && {
-      initialPrompt: params.computedInitialPrompt,
-    }),
-    // Pass port env var names for per-worktree port injection
-    portVariables: params.portVariables,
-    ...(params.scrollbackBytes !== undefined
-      ? { maxScrollbackBytes: params.scrollbackBytes }
-      : {}),
-    // #740: anchoring Bench's env overrides, applied additively to the PTY env.
-    ...(params.envOverrides ? { envOverrides: params.envOverrides } : {}),
-  });
-
-  if (params.worktreePath) {
-    writeMeta(CONFIG_PATH, {
-      worktreePath: params.cwd,
-      displayName: params.displayName,
-      lastActivity: new Date().toISOString(),
-      branchName: params.requestBranchName ?? '',
-    });
-  }
-
-  return session;
 }
 
 function activePtySessionCount(): number {
@@ -1181,14 +860,14 @@ function isConfiguredLaunchAnchor(
 export function validateSessionCreateRequest(
   repoPath: string | undefined,
   cwd: string | undefined,
-  type: 'agent' | 'terminal' | undefined,
+  type: 'terminal' | undefined,
   config: Config,
   workContextStore: WorkContextStore,
   workContextId: string | undefined,
   res: express.Response
 ): boolean {
   const configured = new Set(config.repos ?? []);
-  const sessionType = type ?? 'agent';
+  const sessionType = type ?? 'terminal';
   if (repoPath && configured.size > 0 && !configured.has(repoPath)) {
     res.status(400).json({
       error: 'repoPath must be a configured project path when provided',
@@ -1240,194 +919,6 @@ function sanitizeSessionEnvOverrides(
     out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;
-}
-
-function configuredRepoForCwd(config: Config, cwd: string): string | null {
-  const repos = config.repos ?? [];
-  return (
-    repos
-      .filter((repo) => cwd === repo || cwd.startsWith(`${repo}${path.sep}`))
-      .sort((a, b) => b.length - a.length)[0] ?? null
-  );
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function terminalBriefCommand(brief: string): string {
-  return `printf '%s\\n' ${shellSingleQuote(brief)}\n`;
-}
-
-function createHandoffDestinationLauncher(params: {
-  startupConfig: Config;
-  configDir: string;
-  getConfig: () => Config;
-  watchSessionCwd: (sessionId: string, cwd: string) => void;
-}): (input: HandoffDestinationLaunchInput) => Promise<
-  | {
-      ok: true;
-      session: ReturnType<typeof localRelayNode.sessions.list>[number];
-      acknowledgedBrief: boolean;
-    }
-  | {
-      ok: false;
-      code:
-        | 'HUB_UNAVAILABLE'
-        | 'NODE_UNAVAILABLE'
-        | 'LAUNCH_UNSUPPORTED'
-        | 'LAUNCH_FAILED';
-      message: string;
-      details?: Record<string, unknown>;
-    }
-> {
-  return async (input) => {
-    const destination = input.plan.destinationProposal;
-    if (destination.nodeId !== 'local') {
-      return {
-        ok: false,
-        code: 'NODE_UNAVAILABLE',
-        message: `destination node ${destination.nodeId} is not attached for hub-side launch`,
-        details: { nodeId: destination.nodeId },
-      };
-    }
-    if (!fs.existsSync(destination.cwd)) {
-      return {
-        ok: false,
-        code: 'NODE_UNAVAILABLE',
-        message: `destination cwd does not exist: ${destination.cwd}`,
-        details: { cwd: destination.cwd },
-      };
-    }
-
-    const freshConfig = params.getConfig();
-    const repoPath = configuredRepoForCwd(freshConfig, destination.cwd);
-    if (!repoPath) {
-      return {
-        ok: false,
-        code: 'LAUNCH_UNSUPPORTED',
-        message:
-          'destination cwd is not inside a configured Relay repo; refusing path-only launch',
-        details: { cwd: destination.cwd },
-      };
-    }
-
-    const cwd = destination.cwd;
-    const worktreePath = cwd === repoPath ? null : cwd;
-    const repoName = sessionNameFromRepoPath(repoPath);
-    const portVariables = getRepoPortVariables(freshConfig, repoPath);
-    const capacityResponse = buildPtyCapacityResponse(
-      activePtySessionCount(),
-      freshConfig.maxPtySessions
-    );
-    if (capacityResponse) {
-      return {
-        ok: false,
-        code: 'LAUNCH_FAILED',
-        message: capacityResponse.message,
-        details: { ...capacityResponse },
-      };
-    }
-
-    try {
-      if (input.request.desiredRuntime.kind === 'terminal') {
-        const resolvedTerminal = resolveSessionSettings(
-          freshConfig,
-          repoPath,
-          {}
-        );
-        const session = createTerminalSessionRecord({
-          repoName,
-          repoPath,
-          worktreePath,
-          cwd,
-          displayName: undefined,
-          safeCols: undefined,
-          safeRows: undefined,
-          resolvedTerminalBackend: resolvedTerminal.terminalBackend,
-          sessionLane: undefined,
-          workContextId: undefined,
-          portVariables,
-          // Pipeline-handoff destination is spawned by the source session.
-          spawnedBySessionId: input.request.source.sessionId,
-        });
-        localRelayNode.sessions.write(
-          session.id,
-          terminalBriefCommand(input.handoffBrief)
-        );
-        params.watchSessionCwd(session.id, session.cwd);
-        return { ok: true, session, acknowledgedBrief: true };
-      }
-
-      const requestedAgent = input.request.desiredRuntime.providerId as
-        | AgentType
-        | undefined;
-      const resolved = resolveSessionSettings(freshConfig, repoPath, {
-        agent: requestedAgent,
-        continuePolicy: 'never',
-      });
-      const availability = validateAgentFrameworkAvailable(
-        freshConfig,
-        resolved.agent
-      );
-      if (!availability.ok) {
-        return {
-          ok: false,
-          code: 'LAUNCH_UNSUPPORTED',
-          message:
-            availability.body.message ??
-            availability.body.error ??
-            'agent framework is unavailable',
-          details: availability.body,
-        };
-      }
-      const args = buildAgentArgs(
-        resolved.agent,
-        resolved.claudeArgs,
-        resolved.yolo,
-        resolved.continuePolicy
-      );
-      const displayName = sessions.nextAgentName();
-      const branchName = destination.branchName ?? '';
-      const session = createAgentSessionRecord({
-        repoName,
-        repoPath,
-        worktreePath,
-        cwd,
-        requestBranchName: branchName,
-        displayName,
-        args,
-        resolvedAgent: resolved.agent,
-        resolvedTerminalBackend: resolved.terminalBackend,
-        resolvedYolo: resolved.yolo,
-        resolvedClaudeArgs: resolved.claudeArgs,
-        resolvedContinuePolicy: resolved.continuePolicy,
-        safeCols: undefined,
-        safeRows: undefined,
-        needsBranchRename: false,
-        branchRenamePrompt: '',
-        computedInitialPrompt: input.handoffBrief,
-        claudeFullscreen: params.startupConfig.claudeFullscreen,
-        sessionLane: undefined,
-        portVariables,
-        scrollbackBytes: resolved.scrollbackBytes,
-        // Pipeline-handoff destination is spawned by the source session.
-        spawnedBySessionId: input.request.source.sessionId,
-      });
-      params.watchSessionCwd(session.id, session.cwd);
-      return { ok: true, session, acknowledgedBrief: true };
-    } catch (err) {
-      return {
-        ok: false,
-        code: 'LAUNCH_FAILED',
-        message:
-          err instanceof Error
-            ? err.message
-            : 'destination session launch failed',
-        details: { cwd, repoPath, configDir: params.configDir },
-      };
-    }
-  };
 }
 
 function sessionNameFromRepoPath(repoPath: string): string {
@@ -1604,7 +1095,6 @@ function buildSessionConfig(
 ): Parameters<typeof sessions.configure>[0] {
   return {
     port: startupConfig.port,
-    forceOutputParser: startupConfig.forceOutputParser ?? false,
     configDir,
     ...(startupConfig.control?.interventionDebounceMs !== undefined
       ? { interventionDebounceMs: startupConfig.control.interventionDebounceMs }
@@ -1641,10 +1131,6 @@ function deriveContextInboxStore(
  * the authenticated CLI-gateway actor credential. Module-scoped so `main()`
  * stays under the complexity gate.
  */
-function presenceActorIdFromRequest(req: express.Request): string | undefined {
-  return authenticatedCliGatewayActorCredential(req)?.actor?.id;
-}
-
 /**
  * Initialize every SQLite-backed boot store through one collector. A hub may
  * use disabled stores only when the operator explicitly opts into degraded
@@ -1664,26 +1150,20 @@ function initializeHubPersistence(
           createSecurityAuditLog(path.join(configDir, 'security-audit.db')),
       },
       {
-        name: 'relay-state',
-        criticality: 'core',
-        initialize: () => initRelayStateDb(configDir),
-      },
-      {
         name: 'work-contexts',
         criticality: 'core',
         initialize: () => initWorkContextStore(configDir),
         unavailable: (cause) => createUnavailableWorkContextStore(cause),
       },
-      { name: 'ia', criticality: 'core', initialize: () => initIaStore(configDir) },
+      {
+        name: 'ia',
+        criticality: 'core',
+        initialize: () => initIaStore(configDir),
+      },
       {
         name: 'context-packets',
         criticality: 'core',
         initialize: () => initContextPacketStore(configDir),
-      },
-      {
-        name: 'agent-presence',
-        criticality: 'core',
-        initialize: () => initAgentPresenceStore(configDir),
       },
       {
         name: 'agent-profiles',
@@ -1760,20 +1240,20 @@ function initializeHubPersistence(
 
 /**
  * Routable framework targets for @-mention routing (#1167): builtin/configured
- * frameworks gated on `supportsWebSessions` + web availability, plus `mock` when
+ * frameworks gated on channel-runtime support and availability, plus `mock` when
  * `RELAY_MOCK_AGENT=1` (dev/tests). Unavailable frameworks are INCLUDED with
  * `available:false` so the palette can render them greyed with the reason.
  */
 async function channelMentionTargets(config: Config): Promise<MentionTarget[]> {
   const targets: MentionTarget[] = [];
   for (const framework of listConfiguredFrameworks(config.frameworks)) {
-    const web = await getFrameworkWebAvailability(framework);
+    const channel = await getFrameworkChannelAvailability(framework);
     targets.push({
       id: framework.id,
       displayName: framework.displayName,
       kind: 'framework',
-      available: web.available,
-      reason: web.available ? null : (web.reason ?? null),
+      available: channel.available,
+      reason: channel.available ? null : (channel.reason ?? null),
     });
   }
   if (process.env['RELAY_MOCK_AGENT'] === '1') {
@@ -1915,7 +1395,7 @@ async function main(): Promise<void> {
 
   // Startup-only config — captured once at boot.
   // Use ONLY for values wired into the listening socket or long-lived connections
-  // (port, host, webhookSecret, smeeUrl, githubToken, forceOutputParser).
+  // (port, host, webhookSecret, smeeUrl, githubToken).
   let startupConfig: Config;
   try {
     startupConfig = loadConfig(CONFIG_PATH);
@@ -1948,8 +1428,6 @@ async function main(): Promise<void> {
   const iaStore = persistenceState.get<IaStore>('ia');
   const contextPacketStore =
     persistenceState.get<ContextPacketStore>('context-packets');
-  const agentPresenceStore =
-    persistenceState.get<AgentPresenceStore>('agent-presence');
   const agentProfileStore =
     persistenceState.get<AgentProfileStore>('agent-profiles');
   const workContextArtifactStore =
@@ -1962,12 +1440,13 @@ async function main(): Promise<void> {
     persistenceState.get<WorkspaceSurfaceStore>('workspace-surfaces');
   const workspaceTopicStore =
     persistenceState.get<WorkspaceTopicStore>('workspace-topics');
-  const prOverseerStore =
-    persistenceState.get<PrOverseerStore>('pr-overseer');
-  const workContextMessageStore =
-    persistenceState.get<WorkContextMessageStore>('work-context-messages');
-  const channelAttachmentStore =
-    persistenceState.get<ChannelAttachmentStore>('channel-attachments');
+  const prOverseerStore = persistenceState.get<PrOverseerStore>('pr-overseer');
+  const workContextMessageStore = persistenceState.get<WorkContextMessageStore>(
+    'work-context-messages'
+  );
+  const channelAttachmentStore = persistenceState.get<ChannelAttachmentStore>(
+    'channel-attachments'
+  );
   const channelMessageStore =
     persistenceState.get<ChannelMessageStore>('channel-messages');
   const hubNodeRegistry = createAuditedHubNodeRegistry(
@@ -2051,8 +1530,8 @@ async function main(): Promise<void> {
     store: channelMessageStore,
     channelExists: (channelId) => Boolean(workspaceTopicStore?.get(channelId)),
   });
-  // @-mention routing binder (#1167): spawns/reuses (channel, framework) web
-  // sessions on mention and streams replies back through the slice-2 bridge.
+  // @-mention routing binder (#1167): owns private agent runtimes per
+  // (channel, profile) and streams replies through the channel bridge.
   // Null when the channel store failed to init (routes degrade to 503).
   const channelAgentBinder: ChannelAgentBinder | null = channelMessageStore
     ? createChannelAgentBinder({
@@ -2061,11 +1540,7 @@ async function main(): Promise<void> {
         hub: channelHub,
         topicStore: workspaceTopicStore,
         agentProfileStore,
-        sessions: {
-          createWeb: sessions.createWeb,
-          get: sessions.get,
-          onSessionEnd: sessions.onSessionEnd,
-        },
+        runtimes: channelAgentRuntimes,
         knownProviderIds: Object.keys(v2Adapters),
         mentionTargets: () => channelMentionTargets(getConfig()),
         port: startupConfig.port,
@@ -2079,20 +1554,6 @@ async function main(): Promise<void> {
     );
   }
 
-  // Teach the relay-state-db age-reaper (#1248) which web_sessions must never be
-  // evicted: every session live in the in-memory map (including disconnected-
-  // but-retained ones a channel binding may rebind) plus every session still
-  // referenced by an open channel binding. Without this the reaper could drop a
-  // stale-but-still-wanted session's row and destroy its resume anchor.
-  setReapProtectedSessionIdsProvider(() => {
-    const protectedIds = new Set<string>(sessions.liveSessionIds());
-    if (channelMessageStore) {
-      for (const id of channelMessageStore.listBoundSessionIds()) {
-        protectedIds.add(id);
-      }
-    }
-    return protectedIds;
-  });
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   await initializePinConfig(startupConfig);
@@ -2181,6 +1642,36 @@ async function main(): Promise<void> {
     res.status(400).json({ error });
   }
 
+  const retiredAgentSessionCreateFields = new Set([
+    'agent',
+    'role',
+    'yolo',
+    'claudeArgs',
+    'continue',
+    'continuePolicy',
+    'initialPrompt',
+    'ticketContext',
+  ]);
+
+  function rejectRetiredAgentSessionCreateFields(
+    body: Record<string, unknown>,
+    res: express.Response
+  ): boolean {
+    for (const field of retiredAgentSessionCreateFields) {
+      if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+      res.status(400).json({
+        error: {
+          code: 'RETIRED_AGENT_SESSION_FIELD',
+          message: `Session field "${field}" belonged to retired agent sessions; start agent conversations in a channel or DM.`,
+          field,
+          replacement: 'channel-or-dm',
+        },
+      });
+      return true;
+    }
+    return false;
+  }
+
   function sessionCreateBodyFromRequest(
     req: express.Request,
     res: express.Response
@@ -2204,6 +1695,7 @@ async function main(): Promise<void> {
         });
         return null;
       }
+      if (rejectRetiredAgentSessionCreateFields(directBody, res)) return null;
       return directBody;
     }
     if (!isRecord(body)) {
@@ -2619,19 +2111,14 @@ async function main(): Promise<void> {
   function actorSessionCreateScopeForRequest(req: express.Request): {
     repoIds?: string[];
     pathPrefixes: string[];
-    sessionIds?: string[];
   } {
     const target = actorSessionCreateTarget(req);
     if (!target.ok) {
       return { pathPrefixes: [invalidActorSessionCreatePath] };
     }
-    const spawnedBySessionId = compactRequestPath(
-      target.body['spawnedBySessionId']
-    );
     return {
       ...(target.repoId ? { repoIds: [target.repoId] } : {}),
       pathPrefixes: [target.path],
-      ...(spawnedBySessionId ? { sessionIds: [spawnedBySessionId] } : {}),
     };
   }
 
@@ -2667,21 +2154,19 @@ async function main(): Promise<void> {
       Boolean(target.repoId) &&
       (credential.scope.repoIds?.length ?? 0) > 0 &&
       pathIsWithin(target.repoId!, target.path);
-    const persistentOrchestratorSession =
-      credential.metadata?.reason === 'persistent-orchestrator'
-        ? sessions.get(credential.actor.id)
+    const scopedRuntimeId = credential.scope.sessionIds?.[0];
+    const persistentOrchestratorRuntime =
+      credential.metadata?.reason === 'persistent-orchestrator' &&
+      scopedRuntimeId
+        ? channelAgentRuntimes.get(scopedRuntimeId)
         : undefined;
-    const requestedParent = compactRequestPath(
-      target.body['spawnedBySessionId']
-    );
     const isBoundPersistentOrchestrator =
-      persistentOrchestratorSession?.mode === 'web' &&
-      persistentOrchestratorSession.role === 'orchestrator' &&
-      persistentOrchestratorSession.status === 'active' &&
-      requestedParent === credential.actor.id &&
+      persistentOrchestratorRuntime?.role === 'orchestrator' &&
+      persistentOrchestratorRuntime.status === 'active' &&
+      persistentOrchestratorRuntime.profileActorId === credential.actor.id &&
       [
-        persistentOrchestratorSession.cwd,
-        persistentOrchestratorSession.repoPath,
+        persistentOrchestratorRuntime.cwd,
+        persistentOrchestratorRuntime.repoPath,
       ]
         .filter((root): root is string => Boolean(root))
         .some((root) => pathIsWithin(root, target.path));
@@ -2696,47 +2181,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    const body = target.body;
-    const rolePolicy = actorSessionCreateRolePolicy(body);
-    if (!rolePolicy.ok) {
-      res.status(403).json({
-        error: {
-          code: 'FORBIDDEN',
-          reasonCode: rolePolicy.reasonCode,
-          message:
-            'scoped CLI actors may create worker sessions only; the orchestrator role requires the browser operator lane',
-          retryable: false,
-          lane: 'denied',
-          acceptedLanes: ['browser-cookie-lane'],
-        },
-      });
-      return;
-    }
-    if (body['type'] === 'terminal') {
-      res.status(403).json({
-        error: {
-          code: 'FORBIDDEN',
-          reasonCode: 'CLI_ACTOR_SESSION_TYPE_UNSUPPORTED',
-          message:
-            'scoped CLI actors may create agent worker sessions only; terminal creation requires the browser lane',
-          retryable: false,
-          lane: 'denied',
-          acceptedLanes: ['scoped-actor-credential'],
-        },
-      });
-      return;
-    }
-    const credentialSessionId =
-      credential.scope.sessionIds?.[0] ??
-      (isBoundPersistentOrchestrator ? credential.actor.id : undefined);
-    const requestedParentSessionId =
-      typeof body['spawnedBySessionId'] === 'string'
-        ? body['spawnedBySessionId']
-        : undefined;
     if (
-      credentialSessionId &&
-      requestedParentSessionId &&
-      requestedParentSessionId !== credentialSessionId
+      Object.prototype.hasOwnProperty.call(target.body, 'spawnedBySessionId')
     ) {
       sendCliGatewayActorFailure(
         res,
@@ -2744,64 +2190,14 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (credentialSessionId) {
-      body['spawnedBySessionId'] = credentialSessionId;
-      if (isRecord(req.body)) {
-        req.body['spawnedBySessionId'] = credentialSessionId;
-      }
-    } else {
-      // A caller-provided lineage id is identity-like attribution. Without a
-      // credential-bound session id it is unverified, so omit it fail-closed.
-      delete body['spawnedBySessionId'];
-      if (isRecord(req.body)) {
-        delete req.body['spawnedBySessionId'];
-      }
+    // A channel runtime/profile is not a public terminal session. Scoped actor
+    // credentials authorize this explicit create but do not create lineage.
+    delete target.body['spawnedBySessionId'];
+    if (isRecord(req.body)) {
+      delete req.body['spawnedBySessionId'];
     }
     next();
   };
-
-  function actorSessionCreateControlState(
-    req: express.Request,
-    workerId: string,
-    workerDisplayName: string
-  ): ReturnType<typeof createAgentDrivenInitialControlState> {
-    const credential = authenticatedCliGatewayActorCredential(req);
-    if (!credential) {
-      throw new Error(
-        'actor session control state requires an authenticated actor credential'
-      );
-    }
-    const workerState = createAgentDrivenInitialControlState({
-      workerId,
-      displayName: workerDisplayName,
-    });
-    const persistentOrchestratorSessionId =
-      credential.metadata?.reason === 'persistent-orchestrator' &&
-      sessions.get(credential.actor.id)?.role === 'orchestrator'
-        ? credential.actor.id
-        : undefined;
-    const ownerSessionId =
-      credential.scope.sessionIds?.[0] ?? persistentOrchestratorSessionId;
-    const owner = {
-      kind: 'agent' as const,
-      id: `agent:${credential.actor.id}`,
-      ...(credential.actor.displayName
-        ? { displayName: credential.actor.displayName }
-        : {}),
-      ...(credential.scope.nodeIds?.[0]
-        ? { nodeId: credential.scope.nodeIds[0] }
-        : {}),
-      ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
-    };
-    return {
-      ...workerState,
-      activeActors: [...workerState.activeActors, owner],
-      // activeWorker remains the spawned worker. The authenticated orchestrator
-      // is an additional controlling actor, never a body-supplied replacement.
-      activeWorker: workerState.activeWorker,
-      controlReason: 'scoped-actor-spawned-agent-worker',
-    };
-  }
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
@@ -3115,7 +2511,17 @@ async function main(): Promise<void> {
       topicStore: workspaceTopicStore,
       binder: channelAgentBinder,
       knownProviderIds: Object.keys(v2Adapters),
-      getSession: (sessionId) => sessions.get(sessionId),
+      getRuntime: (runtimeId) => {
+        const runtime = channelAgentRuntimes.get(runtimeId);
+        return runtime
+          ? {
+              profileActorId: runtime.profileActorId,
+              providerId: runtime.providerId,
+              ...(runtime.role !== undefined ? { role: runtime.role } : {}),
+              status: runtime.status,
+            }
+          : undefined;
+      },
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
@@ -3292,8 +2698,8 @@ async function main(): Promise<void> {
       events: cliGatewayEventBus,
     })
   );
-  // pr-overseer (#960, refs #956): link a Relay agent session/issue/WorkContext to
-  // the GitHub PR it is shipping and observe checks/reviews/mergeability/issue
+  // pr-overseer (#960, refs #956): link a Relay terminal, issue, or WorkContext
+  // to the GitHub PR it is shipping and observe checks/reviews/mergeability/issue
   // closeout. The gh-CLI-backed observer fetches a fresh snapshot only on
   // `observe` (reads stay GitHub-free); it never throws, so a missing/unauth `gh`
   // degrades to a failed-fetch snapshot rather than breaking the registry. No
@@ -3325,73 +2731,6 @@ async function main(): Promise<void> {
       observer: prObserver,
       workContextStore,
       events: cliGatewayEventBus,
-    })
-  );
-  // roster.list (#953): derived, redacted active-agent roster. Scoped on
-  // `session:read` like sessions.list; when the caller filters by
-  // ?workContextId= the actor credential must also carry that WorkContext
-  // (fail-closed via scopeForRequest). Without a workContextId filter it
-  // behaves like sessions.list (broad session:read read scope).
-  const rosterScopeFromQuery = (
-    req: express.Request
-  ): { workContextIds?: string[] } | undefined => {
-    const workContextId =
-      typeof req.query['workContextId'] === 'string'
-        ? req.query['workContextId'].trim()
-        : '';
-    return workContextId ? { workContextIds: [workContextId] } : undefined;
-  };
-  const rosterCapabilitiesForAgent = (agent: string): readonly string[] => {
-    if (!agent || agent === 'terminal') return [];
-    try {
-      const caps = resolveFramework(startupConfig, agent).capabilities;
-      const names: string[] = [];
-      if (caps.supportsHooks) names.push('hooks');
-      if (caps.supportsContinue) names.push('continue');
-      if (caps.supportsYolo) names.push('yolo');
-      if (caps.supportsTelemetry) names.push('telemetry');
-      if (caps.supportsAttachedRuntime) names.push('attached-runtime');
-      if (caps.supportsWebSessions) names.push('web-sessions');
-      return names;
-    } catch {
-      // Unknown / unregistered framework — surface no capability claims.
-      return [];
-    }
-  };
-  app.use(
-    createAgentRosterRouter({
-      requireAuth: requireCliGatewayAuth,
-      requireReadAuth: {
-        list: requireCliGatewayAuthForActorCommand('roster.list', {
-          scopeForRequest: rosterScopeFromQuery,
-        }),
-      },
-      // roster.register / roster.updateSelf (#964): explicit self-declared
-      // presence writes, capability-gated on `context:write` via the actor
-      // command auth, with the authenticated actor id as the audit-attributed
-      // `registeredBy`. Disabled (writes fail closed) when the store is absent.
-      presence: agentPresenceStore ?? undefined,
-      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
-      resolveActorId: presenceActorIdFromRequest,
-      nodeId: DEFAULT_LOCAL_NODE_ID,
-      listSessions: () =>
-        localRelayNode.sessions
-          .list()
-          .map((session) => withWorkContextMetadata(workContextStore, session)),
-      resolveCapabilities: rosterCapabilitiesForAgent,
-      pendingInboxCount: (session) => {
-        const target = session.globalSessionId;
-        if (!target || !contextInboxStore) return 0;
-        return contextInboxStore
-          .listInboxMessages(
-            { targetSessionId: target },
-            { markDelivered: false }
-          )
-          .filter(
-            (message) =>
-              message.state === 'queued' || message.state === 'delivered'
-          ).length;
-      },
     })
   );
   app.use(
@@ -3726,6 +3065,8 @@ async function main(): Promise<void> {
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
   sessions.configure({
     ...buildSessionConfig(startupConfig, configDir, securityAuditLog),
+  });
+  configureChannelAgentRuntimes({
     orchestratorCredentials: {
       issueCredential: (input) =>
         issuePersistentOrchestratorCliGatewayActorCredential(
@@ -3739,17 +3080,7 @@ async function main(): Promise<void> {
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({
-    getSession: sessions.get,
-    broadcastEvent,
-    fireBackendStateIfChanged: sessions.fireBackendStateIfChanged,
-    notifySessionAttention: push.notifySessionAttention,
-    configPath: CONFIG_PATH,
-    get renamerTool() {
-      return getConfig().renamerTool;
-    },
-    get renamerCustomScript() {
-      return getConfig().renamerCustomScript;
-    },
+    getRuntime: (id) => channelAgentRuntimes.get(id),
   });
   app.use('/hooks', hooksRouter);
 
@@ -3864,11 +3195,8 @@ async function main(): Promise<void> {
   app.use('/branch-linker', requireAuth, branchLinkerRouter);
 
   // Mount ticket transitions router
-  const {
-    router: ticketTransitionsRouter,
-    transitionOnSessionCreate,
-    checkPrTransitions,
-  } = createTicketTransitionsRouter({ configPath: CONFIG_PATH });
+  const { router: ticketTransitionsRouter, checkPrTransitions } =
+    createTicketTransitionsRouter({ configPath: CONFIG_PATH });
   app.use('/ticket-transitions', requireAuth, ticketTransitionsRouter);
 
   // Mount GitHub device flow auth
@@ -3907,13 +3235,6 @@ async function main(): Promise<void> {
           .list()
           .find((session) => session.id === sessionId);
       },
-      launchDestinationSession: createHandoffDestinationLauncher({
-        startupConfig,
-        configDir,
-        getConfig,
-        watchSessionCwd: (sessionId, cwd) =>
-          gitWatcher.watchSession(sessionId, cwd),
-      }),
     })
   );
   app.use(
@@ -4407,51 +3728,6 @@ async function main(): Promise<void> {
     return {
       configPath: CONFIG_PATH,
       getWorkspacePaths: () => getConfig().repos ?? [],
-      getRepoSettings: (wsPath: string) => getConfig().repoSettings?.[wsPath],
-      createSession: async (opts: {
-        repoPath: string;
-        worktreePath: string;
-        branchName: string;
-        initialPrompt?: string;
-      }) => {
-        const freshCfg = getConfig();
-        const resolved = resolveSessionSettings(freshCfg, opts.repoPath, {});
-        const repoName =
-          opts.repoPath.split('/').filter(Boolean).pop() || 'session';
-        const displayName = sessions.nextAgentName();
-        // Get port env var names from repo settings for port injection
-        const portVariables = getRepoPortVariables(freshCfg, opts.repoPath);
-        localRelayNode.sessions.create({
-          type: 'agent',
-          agent: resolved.agent,
-          repoName,
-          repoPath: opts.repoPath,
-          worktreePath: opts.worktreePath,
-          cwd: opts.worktreePath,
-          branchName: opts.branchName,
-          displayName,
-          // Route through buildAgentArgs so the claudeArgs leak gate applies to
-          // auto-checkout review sessions too (fresh session, continue: never).
-          args: buildAgentArgs(
-            resolved.agent,
-            resolved.claudeArgs,
-            resolved.yolo,
-            undefined
-          ),
-          configPath: CONFIG_PATH,
-          yolo: resolved.yolo,
-          claudeArgs: resolved.claudeArgs,
-          claudeFullscreen: freshCfg.claudeFullscreen,
-          ...(opts.initialPrompt != null && {
-            initialPrompt: opts.initialPrompt,
-          }),
-          // Pass port env var names for per-worktree port injection
-          portVariables,
-          ...(resolved.scrollbackBytes !== undefined
-            ? { maxScrollbackBytes: resolved.scrollbackBytes }
-            : {}),
-        });
-      },
       broadcastEvent,
     };
   }
@@ -4468,9 +3744,8 @@ async function main(): Promise<void> {
   sessions.onSessionCreate(() => {
     invalidateBranchLinkerCache();
   });
-  sessions.onSessionEnd((sessionId) => {
+  sessions.onSessionEnd(() => {
     invalidateBranchLinkerCache();
-    lastPushState.delete(sessionId);
   });
 
   sessions.onSessionEnd((sessionId) => {
@@ -4533,86 +3808,6 @@ async function main(): Promise<void> {
           : {}),
       });
     }, 1000);
-  });
-
-  // Push notifications on meaningful state transitions (skip when hooks already sent attention notification)
-  const lastPushState = new Map<string, string>();
-  sessions.onBackendStateChange((sessionId, state) => {
-    const prevState = lastPushState.get(sessionId);
-    lastPushState.set(sessionId, state);
-
-    // Only notify on meaningful transitions: running → idle or running → permission
-    if (
-      prevState === 'running' &&
-      (state === 'idle' || state === 'permission')
-    ) {
-      const session = localRelayNode.sessions.get(sessionId);
-      if (session && session.type !== 'terminal') {
-        // Dedup: if hooks fired an attention notification within last 10s, skip
-        if (
-          session.mode === 'pty' &&
-          session.hooksActive &&
-          session.lastAttentionNotifiedAt &&
-          Date.now() - session.lastAttentionNotifiedAt < 10000
-        ) {
-          return;
-        }
-        push.notifySessionAttention(sessionId, session);
-      }
-    }
-  });
-
-  // Evented attention/session-state for active-agent steering (#963, child of
-  // #952). A derived, redaction-safe projection of the session read model: when
-  // an agent session's backend state transitions, publish a metadata-only frame
-  // onto the `attention` CLI-gateway topic so operators/agents react to
-  // "needs-attention / state changed" without a polling or screen-watchdog loop.
-  // It rides the same in-memory bus as `inbox`, so it inherits cursor/resume +
-  // gap (`replayDropped`) + backpressure semantics. The frame NEVER carries
-  // transcripts, prompts, raw PTY bytes, tokens, or env — only identity,
-  // control, and coarse attention metadata (same boundary as `roster.list`).
-  const openInboxCountForGlobalId = (globalSessionId?: string): number => {
-    if (!globalSessionId || !contextInboxStore) return 0;
-    return contextInboxStore
-      .listInboxMessages(
-        { targetSessionId: globalSessionId },
-        { markDelivered: false }
-      )
-      .filter(
-        (message) => message.state === 'queued' || message.state === 'delivered'
-      ).length;
-  };
-  const lastAttentionState = new Map<string, BackendDisplayState>();
-  // Prune the previous-state map on session end so it does not grow unbounded
-  // and so a reused session id never inherits a dead session's
-  // `previousBackendState`. Mirrors the `lastPushState.delete` cleanup above.
-  sessions.onSessionEnd((sessionId) => {
-    lastAttentionState.delete(sessionId);
-  });
-  sessions.onBackendStateChange((sessionId, state, permissionType) => {
-    try {
-      const summary = localRelayNode.sessions
-        .list()
-        .find((entry) => entry.id === sessionId);
-      // Attention is an agent-collaboration signal. Terminals (and sessions that
-      // have already gone) are out of scope; their lifecycle is on `sessions`.
-      // Skip them BEFORE touching the map so terminals never pollute it.
-      if (!summary || summary.type === 'terminal') return;
-      const previousBackendState = lastAttentionState.get(sessionId);
-      lastAttentionState.set(sessionId, state);
-      const decorated = withWorkContextMetadata(workContextStore, summary);
-      cliGatewayEventBus.publish(
-        buildAttentionEventInput(decorated, {
-          backendState: state,
-          previousBackendState,
-          pendingInboxCount: openInboxCountForGlobalId(summary.globalSessionId),
-          ...(permissionType ? { permissionType } : {}),
-          nodeId: summary.nodeId ?? DEFAULT_LOCAL_NODE_ID,
-        })
-      );
-    } catch (err) {
-      logger.error('attention event publish failed:', err);
-    }
   });
 
   // GET /auth/check — lightweight auth probe (no side effects)
@@ -4780,7 +3975,6 @@ async function main(): Promise<void> {
 
       await Promise.all(
         allSessions.map(async (s) => {
-          if (s.type !== 'agent') return;
           // Skip remote (routed) sessions: their cwd lives on the owning
           // node and running `git` against it locally is meaningless.
           if (!isLocallyOwnedSession(s)) return;
@@ -5010,49 +4204,6 @@ async function main(): Promise<void> {
     }
   );
 
-  app.post(
-    '/sessions/:id/control/hand-back',
-    requireScopedSessionAuth,
-    (req, res) => {
-      const decision = capabilitiesDecisionFromRequest(req, [
-        CONTROL_SESSION_CAPABILITY,
-        CONTROL_WRITE_CAPABILITY,
-      ]);
-      if (decision.decision !== 'allow') {
-        const error = capabilityError(decision);
-        res.status(sessionControlErrorStatus(error)).json({ error });
-        return;
-      }
-      const body =
-        typeof req.body === 'object' && req.body !== null
-          ? (req.body as Record<string, unknown>)
-          : {};
-      const latestSeenInterventionEventId =
-        typeof body['latestSeenInterventionEventId'] === 'string'
-          ? body['latestSeenInterventionEventId']
-          : undefined;
-      const actor = actorFromRequestBody(body['actor']);
-      const result = localRelayNode.sessions.handBackToAgent({
-        id: req.params['id'] as string,
-        ...(latestSeenInterventionEventId === undefined
-          ? {}
-          : { latestSeenInterventionEventId }),
-        ...(actor === undefined ? {} : { actor }),
-      });
-      if (result.ok === false) {
-        res
-          .status(sessionControlErrorStatus(result.error))
-          .json({ error: result.error });
-        return;
-      }
-      res.json({
-        ok: true,
-        events: result.events,
-        ackedHumanInterventions: result.ackedHumanInterventions,
-      });
-    }
-  );
-
   app.post('/sessions/:id/input', requireScopedSessionAuth, (req, res) => {
     const decision = capabilityDecisionFromRequest(
       req,
@@ -5131,19 +4282,6 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (session.mode === 'web') {
-      res.status(409).json({
-        error: {
-          code: 'SESSION_CONFLICT',
-          reasonCode: 'CONTROL_STATE_UNKNOWN',
-          message: 'small input is only supported for PTY sessions',
-          retryable: false,
-          details: { sessionId: id },
-        },
-      });
-      return;
-    }
-
     try {
       localRelayNode.sessions.write(id, data);
       res.json({ ok: true });
@@ -5295,10 +4433,7 @@ async function main(): Promise<void> {
     res.json({ defaultAgent: c.defaultFramework });
   });
 
-  boolConfigEndpoints('defaultContinue', true);
-  boolConfigEndpoints('defaultYolo', false);
   boolConfigEndpoints('defaultNotifications', true);
-  boolConfigEndpoints('claudeFullscreen', true);
   boolConfigEndpoints('autoProvision', false);
 
   // GET /config/renamerTool — get the active renamer tool setting
@@ -5394,24 +4529,28 @@ async function main(): Promise<void> {
       const body = req.body as Partial<AutomationSettings>;
       const c = getConfig();
       const prev = c.automations ?? {};
-      const next: AutomationSettings = { ...prev };
+      const next: AutomationSettings = {
+        ...(prev.autoCheckoutReviewRequests !== undefined
+          ? {
+              autoCheckoutReviewRequests: prev.autoCheckoutReviewRequests,
+            }
+          : {}),
+        ...(prev.pollIntervalMs !== undefined
+          ? { pollIntervalMs: prev.pollIntervalMs }
+          : {}),
+        ...(prev.lastPollTimestamp !== undefined
+          ? { lastPollTimestamp: prev.lastPollTimestamp }
+          : {}),
+      };
 
       if (typeof body.autoCheckoutReviewRequests === 'boolean') {
         next.autoCheckoutReviewRequests = body.autoCheckoutReviewRequests;
-      }
-      if (typeof body.autoReviewOnCheckout === 'boolean') {
-        next.autoReviewOnCheckout = body.autoReviewOnCheckout;
       }
       if (
         typeof body.pollIntervalMs === 'number' &&
         body.pollIntervalMs >= 60000
       ) {
         next.pollIntervalMs = body.pollIntervalMs;
-      }
-
-      // Enforce: auto-review requires auto-checkout
-      if (!next.autoCheckoutReviewRequests) {
-        next.autoReviewOnCheckout = false;
       }
 
       c.automations = next;
@@ -5664,7 +4803,7 @@ async function main(): Promise<void> {
     res.json({ ok: true, branchDeleted });
   });
 
-  // POST /sessions — unified endpoint for agent and terminal sessions
+  // POST /sessions — public relay-pty terminal creation only
   const requireCliGatewaySessionCreateAuth =
     requireCliGatewayAuthForActorCommand('sessions.create', {
       scopeForRequest: actorSessionCreateScopeForRequest,
@@ -5696,39 +4835,22 @@ async function main(): Promise<void> {
         repoPath,
         worktreePath,
         cwd: requestCwd,
-        type = 'agent',
-        mode,
-        agent,
-        role,
-        yolo,
+        type = 'terminal',
         terminalBackend,
-        claudeArgs,
         cols,
         rows,
-        branchName: requestBranchName,
         displayName: requestedDisplayName,
-        spawnedBySessionId,
-        needsBranchRename,
-        newWorktree,
-        branchRenamePrompt,
-        initialPrompt,
-        continue: explicitContinue,
-        continuePolicy: explicitContinuePolicy,
+        spawnedBySessionId: requestedSpawnedBySessionId,
         sessionLane,
-        ticketContext,
         workContextId,
         envOverrides: rawEnvOverrides,
       } = createBody as {
         repoPath?: string;
         worktreePath?: string | null;
         cwd?: string;
-        type?: 'agent' | 'terminal';
-        mode?: 'pty' | 'web';
-        agent?: AgentType;
-        role?: AgentRole;
-        yolo?: boolean;
+        type?: string;
+        mode?: string;
         terminalBackend?: TerminalBackend;
-        claudeArgs?: string[];
         cols?: number;
         rows?: number;
         branchName?: string;
@@ -5737,33 +4859,34 @@ async function main(): Promise<void> {
         needsBranchRename?: boolean;
         newWorktree?: boolean;
         branchRenamePrompt?: string;
-        initialPrompt?: string;
-        continue?: boolean;
-        continuePolicy?: ContinuePolicy;
         sessionLane?: SessionLane;
         workContextId?: string;
         envOverrides?: unknown;
-        ticketContext?: {
-          ticketId: string;
-          title: string;
-          description?: string;
-          url: string;
-          source: 'github' | 'jira';
-          repoPath: string;
-          repoName: string;
-        };
       };
+      const spawnedBySessionId = authenticatedCliGatewayActorCredential(req)
+        ? undefined
+        : requestedSpawnedBySessionId;
 
-      if (
-        role !== undefined &&
-        !(AGENT_ROLES as readonly string[]).includes(role)
-      ) {
+      if (type !== 'terminal') {
         res.status(400).json({
-          error: `role must be one of: ${AGENT_ROLES.join(', ')}`,
+          error: {
+            code: 'UNSUPPORTED_SESSION_TYPE',
+            message:
+              'Agent conversations run in channels; public session creation only supports terminals.',
+          },
         });
         return;
       }
-
+      if ((req.body as Record<string, unknown>)['mode'] === 'web') {
+        res.status(400).json({
+          error: {
+            code: 'UNSUPPORTED_SESSION_MODE',
+            message:
+              'Agent conversations run in channels; mode "web" is no longer supported.',
+          },
+        });
+        return;
+      }
       // Read config once for the lifetime of this request
       const freshConfig = getConfig();
       const requestedTerminalBackend =
@@ -5820,228 +4943,28 @@ async function main(): Promise<void> {
       );
       if (sendPtyCapacityError(res, capacityResponse)) return;
 
-      if (type === 'terminal') {
-        const terminalSettings = resolveSessionSettings(
-          freshConfig,
-          settingsAnchorPath,
-          {
-            terminalBackend: requestedTerminalBackend,
-          }
-        );
-        // Terminal session — bare shell
-        let session: CreateResult;
-        try {
-          session = createTerminalSessionRecord({
-            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
-            repoName: name,
-            repoPath: requestedRepoPath,
-            worktreePath: requestedWorktreePath ?? null,
-            cwd,
-            displayName: requestedDisplayName,
-            safeCols,
-            safeRows,
-            resolvedTerminalBackend: terminalSettings.terminalBackend,
-            sessionLane,
-            workContextId,
-            portVariables,
-            envOverrides: sessionEnvOverrides,
-          });
-        } catch (err) {
-          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
-          return;
-        }
-        gitWatcher.watchSession(session.id, session.cwd);
-        const associationError = associateSessionWithWorkContext(
-          workContextStore,
-          workContextId,
-          session
-        );
-        linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-        sendSessionCreateSuccess(res, session, associationError, workContextId);
-        return;
-      }
-
-      // Resolve continue policy (handles legacy boolean continue + new worktree override)
-      const effectivePolicy = resolveContinuePolicy(
-        explicitContinuePolicy,
-        explicitContinue,
-        needsBranchRename,
-        newWorktree ?? false
-      );
-
-      const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
-        agent,
-        yolo,
-        terminalBackend: requestedTerminalBackend,
-        claudeArgs,
-        continuePolicy: effectivePolicy,
-      });
-      const resolvedAgent = resolved.agent;
-      const frameworkAvailability = validateAgentFrameworkAvailable(
+      const terminalSettings = resolveSessionSettings(
         freshConfig,
-        resolvedAgent
-      );
-      if (!frameworkAvailability.ok) {
-        res.status(400).json(frameworkAvailability.body);
-        return;
-      }
-
-      // Ticket context validation and initial prompt. Hoisted above the
-      // web/pty mode branch (#1062) so a Hermes web-mode session launched from
-      // a ticket gets the same validation + computed prompt as the PTY path,
-      // instead of the web branch returning early with neither.
-      let computedInitialPrompt: string | undefined = initialPrompt;
-      if (ticketContext) {
-        const ticketErr = validateTicketContext(
-          ticketContext,
-          freshConfig.repos ?? []
-        );
-        if (ticketErr) {
-          res.status(400).json({ error: ticketErr });
-          return;
+        settingsAnchorPath,
+        {
+          terminalBackend: requestedTerminalBackend,
         }
-        const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
-        computedInitialPrompt = buildTicketInitialPrompt(
-          ticketContext,
-          repoSettings
-        );
-      }
-
-      // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
-      // Hermes remains web by default for backwards compatibility with the
-      // original native-Hermes launch path.
-      const requestedMode =
-        mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
-      if (role !== undefined && requestedMode !== 'web') {
-        res.status(400).json({
-          error: 'role is only supported for web agent sessions',
-        });
-        return;
-      }
-      if (requestedMode === 'web') {
-        const webAvailability = await validateAgentWebRuntimeAvailable(
-          freshConfig,
-          resolvedAgent
-        );
-        if (!webAvailability.ok) {
-          res.status(400).json(webAvailability.body);
-          return;
-        }
-        const displayName = resolveSessionDisplayName(
-          requestedDisplayName,
-          sessions.nextAgentName
-        );
-        const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
-          ? crypto.randomBytes(8).toString('hex')
-          : undefined;
-        try {
-          const { session } = await localRelayNode.sessions.createWeb({
-            ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
-            ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
-            agentType: resolvedAgent,
-            ...(role !== undefined ? { role } : {}),
-            cwd,
-            repoPath: requestedRepoPath,
-            repoName: name,
-            worktreePath: requestedWorktreePath ?? null,
-            branchName: requestBranchName ?? '',
-            displayName,
-            port: startupConfig.port,
-            configDir,
-            sessionLane,
-            ...(actorWorkerSessionId
-              ? {
-                  controlState: actorSessionCreateControlState(
-                    req,
-                    actorWorkerSessionId,
-                    displayName
-                  ),
-                }
-              : {}),
-            ...buildHermesCreateExtra(resolvedAgent, {
-              workspaceTopic,
-              repoPath: requestedRepoPath,
-              worktreePath: requestedWorktreePath,
-              branchName: requestBranchName,
-              // Local hub is itself a node (server/local-node.ts); this call
-              // site only ever creates sessions on the local node today, so
-              // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
-              // revisit once /sessions can target a federated node directly.
-              nodeId: DEFAULT_LOCAL_NODE_ID,
-              ticketContext,
-              initialPrompt: computedInitialPrompt,
-            }),
-          });
-          gitWatcher.watchSession(session.id, session.cwd);
-          const associationError = associateSessionWithWorkContext(
-            workContextStore,
-            workContextId,
-            session
-          );
-          linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
-          sendSessionCreateSuccess(
-            res,
-            session,
-            associationError,
-            workContextId
-          );
-        } catch (err) {
-          sendSessionCreateError(res, err, freshConfig.maxPtySessions);
-        }
-        return;
-      }
-
-      const args = buildAgentArgs(
-        resolvedAgent,
-        resolved.claudeArgs,
-        resolved.yolo,
-        resolved.continuePolicy
       );
-
-      const displayName = resolveSessionDisplayName(
-        requestedDisplayName,
-        sessions.nextAgentName
-      );
-      const actorWorkerSessionId = authenticatedCliGatewayActorCredential(req)
-        ? crypto.randomBytes(8).toString('hex')
-        : undefined;
-
       let session: CreateResult;
       try {
-        session = createAgentSessionRecord({
-          ...(actorWorkerSessionId ? { id: actorWorkerSessionId } : {}),
+        session = createTerminalSessionRecord({
           ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
           repoName: name,
           repoPath: requestedRepoPath,
-          worktreePath: requestedWorktreePath,
+          worktreePath: requestedWorktreePath ?? null,
           cwd,
-          requestBranchName,
-          displayName,
-          args,
-          resolvedAgent,
-          resolvedTerminalBackend: resolved.terminalBackend,
-          resolvedYolo: resolved.yolo,
-          resolvedClaudeArgs: resolved.claudeArgs,
-          resolvedContinuePolicy: resolved.continuePolicy,
+          displayName: requestedDisplayName,
           safeCols,
           safeRows,
-          needsBranchRename: needsBranchRename ?? false,
-          branchRenamePrompt: branchRenamePrompt ?? '',
-          computedInitialPrompt,
-          claudeFullscreen: freshConfig.claudeFullscreen,
+          resolvedTerminalBackend: terminalSettings.terminalBackend,
           sessionLane,
           workContextId,
-          ...(actorWorkerSessionId
-            ? {
-                controlState: actorSessionCreateControlState(
-                  req,
-                  actorWorkerSessionId,
-                  displayName
-                ),
-              }
-            : {}),
           portVariables,
-          scrollbackBytes: resolved.scrollbackBytes,
           envOverrides: sessionEnvOverrides,
         });
       } catch (err) {
@@ -6050,12 +4973,6 @@ async function main(): Promise<void> {
       }
 
       gitWatcher.watchSession(session.id, session.cwd);
-
-      if (ticketContext) {
-        transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
-          logger.error('[index] transition on session create failed:', err);
-        });
-      }
 
       const associationError = associateSessionWithWorkContext(
         workContextStore,
@@ -6128,7 +5045,7 @@ async function main(): Promise<void> {
   });
 
   // POST /sessions/:id/image — upload clipboard image and inject on the node
-  // that owns the target PTY/web session. Local sessions run in-process;
+  // that owns the target terminal session. Local sessions run in-process;
   // scoped remote sessions route hub→node over the reverse node-link RPC.
   app.post('/sessions/:id/image', requireAuth, async (req, res) => {
     let payload: ReturnType<typeof parseSessionImagePayload>;
@@ -6297,12 +5214,9 @@ async function main(): Promise<void> {
         stopTelemetry();
         await flushHubNodeHeartbeatsBestEffort('update restart');
         serializeAll(configDir, { reason: 'update' });
-        flushRelayStateWrites();
-        closeRelayStateDb();
         workContextStore.close();
         iaStore?.close();
         contextPacketStore?.close();
-        agentPresenceStore?.close();
         agentProfileStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
@@ -6312,6 +5226,7 @@ async function main(): Promise<void> {
         prOverseerStore?.close();
         workContextMessageStore?.close();
         channelAgentBinder?.close();
+        await channelAgentRuntimes.close();
         channelHub.close();
         channelMessageStore?.close();
         channelAttachmentStore?.close();
@@ -6377,7 +5292,6 @@ async function main(): Promise<void> {
   let cancelStartupRestore = (): void => {};
   async function gracefulShutdown() {
     cancelStartupRestore();
-    sessions.cancelBackgroundRestores();
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
@@ -6397,12 +5311,9 @@ async function main(): Promise<void> {
     // Serialize relay-pty session metadata only. relay-pty/libghostty-vt is not
     // a process supervisor, so server restart is cold/resume until a future daemon.
     serializeAll(configDir, { reason: restartReason });
-    flushRelayStateWrites();
-    closeRelayStateDb();
     workContextStore.close();
     iaStore?.close();
     contextPacketStore?.close();
-    agentPresenceStore?.close();
     agentProfileStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
@@ -6412,6 +5323,7 @@ async function main(): Promise<void> {
     prOverseerStore?.close();
     workContextMessageStore?.close();
     channelAgentBinder?.close();
+    await channelAgentRuntimes.close();
     channelHub.close();
     channelMessageStore?.close();
     channelAttachmentStore?.close();
@@ -6433,9 +5345,6 @@ async function main(): Promise<void> {
   const MAX_RETRIES = 5;
   let attempt = 0;
 
-  const configuredReattachTimeoutMs = positiveIntegerEnv(
-    'RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS'
-  );
   // Integration-test-only ordering seam. Normal startup never sleeps: the
   // hold is accepted only under NODE_ENV=test and defaults to zero. Keeping it
   // inside the exact function handed to restoreSessionsAfterListen means the
@@ -6452,14 +5361,7 @@ async function main(): Promise<void> {
         setTimeout(resolve, testStartupRestoreHoldMs)
       );
     }
-    return restoreFromDisk(
-      configDir,
-      getConfig().repos ?? [],
-      getConfig().frameworks,
-      configuredReattachTimeoutMs === undefined
-        ? undefined
-        : { webSessionReattachTimeoutMs: configuredReattachTimeoutMs }
-    );
+    return restoreFromDisk(configDir, getConfig().repos ?? []);
   }
   cancelStartupRestore = restoreSessionsAfterListen(
     server,

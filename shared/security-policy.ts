@@ -5,11 +5,9 @@ export type RelayTrustTier = 'sandbox' | 'dev' | 'prod';
 export const RELAY_CAPABILITY_BITS = [
   'session:read',
   'session:create:terminal',
-  'session:create:agent',
   'session:attach',
   'session:control:kill',
   'session:control:rename',
-  'tab:mode:set-agent',
   'tab:intervention:read',
   'tab:intervention:send-text',
   'tab:intervention:send-key',
@@ -59,19 +57,14 @@ export const RELAY_CAPABILITY_BITS = [
 
 export type RelayCapabilityBit = (typeof RELAY_CAPABILITY_BITS)[number];
 
-export type RelayCapabilityDecision =
-  | 'allow'
-  | 'requiresConfirmation'
-  | 'deny';
+export type RelayCapabilityDecision = 'allow' | 'requiresConfirmation' | 'deny';
 
 export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'session:read',
   'session:create:terminal',
-  'session:create:agent',
   'session:attach',
   'session:control:kill',
   'session:control:rename',
-  'tab:mode:set-agent',
   'rpc:fs:list',
   'rpc:fs:read',
   'rpc:fs:tail',
@@ -182,7 +175,9 @@ export function isRelayTrustTier(value: unknown): value is RelayTrustTier {
   return value === 'sandbox' || value === 'dev' || value === 'prod';
 }
 
-export function isRelayCapabilityBit(value: unknown): value is RelayCapabilityBit {
+export function isRelayCapabilityBit(
+  value: unknown
+): value is RelayCapabilityBit {
   return typeof value === 'string' && RELAY_CAPABILITY_SET.has(value);
 }
 
@@ -303,7 +298,9 @@ export function summarizeAcl(acl: RelayNodeAcl): RelayAclSummary {
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
 }
 
 function normalizeScope(value: unknown): RelayPolicyScope {
@@ -375,7 +372,9 @@ export function normalizeNodeAcl(
       ? lifecycle['createdAt']
       : fallback.createdAt;
   const updatedAt =
-    typeof lifecycle['updatedAt'] === 'string' ? lifecycle['updatedAt'] : createdAt;
+    typeof lifecycle['updatedAt'] === 'string'
+      ? lifecycle['updatedAt']
+      : createdAt;
 
   return applyTrustTierOverlay({
     schemaVersion: 1,

@@ -228,7 +228,6 @@ export interface WorkContextSessionSummary {
   tabKind: WorkContextTabKind;
   type?: SessionSummary['type'];
   mode?: SessionSummary['mode'];
-  agent?: SessionSummary['agent'];
   cwd: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -237,11 +236,10 @@ export interface WorkContextSessionSummary {
   displayName?: string;
   status?: SessionSummary['status'];
   durability?: SessionSummary['durability'];
-  agentState?: SessionSummary['agentState'];
+  activityState?: SessionSummary['activityState'];
   currentActivity?: SessionSummary['currentActivity'];
   controlMode?: SessionSummary['controlMode'];
   activeActors?: SessionSummary['activeActors'];
-  activeWorker?: SessionSummary['activeWorker'];
   lastInterventionAt?: SessionSummary['lastInterventionAt'];
   lastInterventionBy?: SessionSummary['lastInterventionBy'];
   lastInterventionEventId?: SessionSummary['lastInterventionEventId'];
@@ -856,7 +854,6 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
       tabId?: string;
       tabKind?: WorkContextTabKind;
       cwd?: string;
-      agent?: string;
       controlMode?: SessionSummary['controlMode'];
       relationship?: string;
     };
@@ -905,7 +902,6 @@ interface SessionRefBody {
   tabId?: string;
   tabKind?: WorkContextTabKind;
   cwd?: string;
-  agent?: string;
   controlMode?: SessionSummary['controlMode'];
 }
 
@@ -1119,7 +1115,6 @@ function pickAnchors(anchors: WorkContext['anchors']): WorkContext['anchors'] {
         tabId: anchors.session.tabId,
         tabKind: anchors.session.tabKind,
         cwd: anchors.session.cwd,
-        agent: anchors.session.agent,
         controlMode: anchors.session.controlMode,
       })
     : undefined;
@@ -1314,7 +1309,7 @@ function contextWithSessionAssociationEvent(
       eventId: `session:${sessionRef.nodeId}:${sessionRef.sessionId}:associated`,
       type: 'session.associated',
       occurredAt: associatedAt,
-      summary: `Associated ${sessionRef.agent ?? sessionRef.tabKind} session ${sessionRef.sessionId} on ${sessionRef.nodeId}`,
+      summary: `Associated ${sessionRef.tabKind} session ${sessionRef.sessionId} on ${sessionRef.nodeId}`,
     },
     associatedAt
   );
@@ -1425,7 +1420,6 @@ export function sessionSummaryToRef(session: SessionSummary): SessionRef {
     globalSessionId,
     tabKind,
     cwd: session.cwd,
-    ...(session.agent ? { agent: session.agent } : {}),
     ...(session.controlMode ? { controlMode: session.controlMode } : {}),
   };
 }
@@ -1447,7 +1441,6 @@ function sessionRefFromBody(body: SessionRefBody): SessionRef {
     ...(body.tabId ? { tabId: body.tabId } : {}),
     tabKind: body.tabKind ?? 'terminal',
     cwd: body.cwd,
-    ...(body.agent ? { agent: body.agent } : {}),
     ...(body.controlMode ? { controlMode: body.controlMode } : {}),
   };
 }
@@ -1633,7 +1626,6 @@ function summarizeLinkedSession(
     nodeId: ref.nodeId,
     ...(ref.globalSessionId ? { globalSessionId: ref.globalSessionId } : {}),
     tabKind: ref.tabKind,
-    ...(ref.agent ? { agent: ref.agent } : {}),
     cwd: ref.cwd,
     ...(ref.controlMode ? { controlMode: ref.controlMode } : {}),
     relationship: link.relationship,
@@ -1656,10 +1648,9 @@ function summarizeLiveSession(
     ...(session.globalSessionId
       ? { globalSessionId: session.globalSessionId }
       : {}),
-    tabKind: session.type === 'terminal' ? 'terminal' : 'agent',
+    tabKind: 'terminal',
     type: session.type,
     mode: session.mode,
-    agent: session.agent,
     cwd: session.cwd,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
     ...(session.worktreePath !== undefined
@@ -1670,13 +1661,12 @@ function summarizeLiveSession(
     displayName: session.displayName,
     status: session.status,
     ...(session.durability ? { durability: session.durability } : {}),
-    agentState: session.agentState,
+    activityState: session.activityState,
     ...(session.currentActivity
       ? { currentActivity: session.currentActivity }
       : {}),
     ...(session.controlMode ? { controlMode: session.controlMode } : {}),
     ...(session.activeActors ? { activeActors: session.activeActors } : {}),
-    ...(session.activeWorker ? { activeWorker: session.activeWorker } : {}),
     ...(session.lastInterventionAt !== undefined
       ? { lastInterventionAt: session.lastInterventionAt }
       : {}),

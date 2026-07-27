@@ -1,44 +1,45 @@
 import express from 'express';
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_LOCAL_NODE_ID, createRepoInstanceId, createWorktreeInstanceId } from '../shared/identity.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createRepoInstanceId,
+  createWorktreeInstanceId,
+} from '../shared/identity.js';
 import {
   HANDOFF_SCHEMA_VERSION,
   type HandoffConflict,
   type HandoffRequest,
-  type HandoffRequiredGrant,
-  type HandoffRun,
 } from '../shared/handoff.js';
 import { ENVIRONMENT_OPTION_SCHEMA_VERSION } from '../shared/environment-option.js';
-import {
-  HandoffService,
-  HANDOFF_PLAN_MAX_AGE_MS,
-  createHandoffRouter,
-  type HandoffCapabilityProvider,
-} from '../server/handoffs.js';
+import { HandoffService, createHandoffRouter } from '../server/handoffs.js';
 import type { HandoffPlannerDryRun } from '../server/handoff-planner.js';
-import { generateScopedToken, validateScopedToken } from '../server/browser-content.js';
 import { createTestServer } from './helpers/test-server.js';
 
 const now = '2026-05-21T10:00:00.000Z';
 const sourceNodeId = DEFAULT_LOCAL_NODE_ID;
 const destinationNodeId = 'devbox-1';
-const workContextId = 'wc:handoff:api-test';
 const sourceCwd = '/repos/relay-ide/.worktrees/feature-a';
 const destinationCwd = '/srv/relay-ide/.worktrees/feature-a';
 
 function request(): HandoffRequest {
-  const repoInstanceId = createRepoInstanceId(destinationNodeId, '/srv/relay-ide');
-  const worktreeInstanceId = createWorktreeInstanceId(destinationNodeId, destinationCwd);
+  const repoInstanceId = createRepoInstanceId(
+    destinationNodeId,
+    '/srv/relay-ide'
+  );
+  const worktreeInstanceId = createWorktreeInstanceId(
+    destinationNodeId,
+    destinationCwd
+  );
   return {
     schemaVersion: HANDOFF_SCHEMA_VERSION,
     id: 'handoff-request-api-test',
     requestedAt: now,
-    requestedByActorId: 'kani-backend',
+    requestedByActorId: 'operator',
     source: {
       nodeId: sourceNodeId,
-      sessionId: 'source-session-1',
-      workContextId,
+      sessionId: 'source-terminal-1',
+      workContextId: 'wc:handoff:api-test',
       cwd: sourceCwd,
       disposition: 'left-running',
       durabilityState: 'running-attached',
@@ -54,13 +55,7 @@ function request(): HandoffRequest {
           displayName: 'devbox',
           online: true,
         },
-        capabilities: [
-          'session:read',
-          'session:create:agent',
-          'rpc:fs:read',
-          'rpc:fs:write',
-          'pty:exec:arbitrary',
-        ],
+        capabilities: ['session:read', 'rpc:fs:read', 'rpc:fs:write'],
         cwd: destinationCwd,
         cwdMode: 'repo',
         freshness: 'fresh',
@@ -69,12 +64,12 @@ function request(): HandoffRequest {
           localPath: '/srv/relay-ide',
           repoIdentity: 'github.com/donovan-yohan/relay-ide',
           name: 'relay-ide',
-          currentBranch: 'feat/691-handoff-api-cli',
+          currentBranch: 'feat/plan-only-handoff',
         },
         bench: {
           worktreeInstanceId,
           localPath: destinationCwd,
-          branchName: 'feat/691-handoff-api-cli',
+          branchName: 'feat/plan-only-handoff',
         },
         generatedAt: now,
       },
@@ -82,33 +77,14 @@ function request(): HandoffRequest {
       repoInstanceId,
       worktreeInstanceId,
     },
-    desiredRuntime: {
-      kind: 'agent',
-      providerId: 'hermes',
-      commandSummary: 'resume cold handoff in destination worktree',
-      requiredCapabilities: ['session:create:agent', 'pty:exec:arbitrary'],
-    },
-  };
-}
-
-function requestWithSourceDisposition(
-  disposition: HandoffRequest['source']['disposition']
-): HandoffRequest {
-  const base = request();
-  return {
-    ...base,
-    source: {
-      ...base.source,
-      disposition,
-    },
   };
 }
 
 function dryRun(conflicts: HandoffConflict[] = []): HandoffPlannerDryRun {
   return {
-    branchName: 'feat/691-handoff-api-cli',
+    branchName: 'feat/plan-only-handoff',
     baseCommit: 'a'.repeat(40),
-    isClean: false,
+    isClean: true,
     stagedFiles: [],
     unstagedFiles: [],
     untrackedCandidates: [],
@@ -122,691 +98,125 @@ function dryRun(conflicts: HandoffConflict[] = []): HandoffPlannerDryRun {
   };
 }
 
-function confirmedGrants(): HandoffRequiredGrant[] {
-  return [
-    { leg: 'source-read', nodeId: sourceNodeId, capability: 'rpc:fs:read', decision: 'allow' },
-    { leg: 'destination-write', nodeId: destinationNodeId, capability: 'rpc:fs:write', decision: 'allow' },
-    { leg: 'destination-session-create', nodeId: destinationNodeId, capability: 'session:create:agent', decision: 'allow' },
-    { leg: 'destination-exec', nodeId: destinationNodeId, capability: 'pty:exec:arbitrary', decision: 'allow' },
-  ];
-}
-
-function appliedRun(planId: string, requestId = 'handoff-request-api-test'): HandoffRun {
-  return {
-    schemaVersion: HANDOFF_SCHEMA_VERSION,
-    id: 'run-applied-1',
-    requestId,
-    planId,
-    state: 'complete',
-    sourceDisposition: 'left-running',
-    sourceDispositions: ['left-running'],
-    reasonCode: 'APPLY_COMPLETED',
-    conflicts: [],
-    transitions: [
-      { from: 'planned', to: 'snapshotting', at: now, reasonCode: 'SNAPSHOT_CAPTURED' },
-      { from: 'snapshotting', to: 'transferring', at: now, reasonCode: 'TRANSFER_STARTED' },
-      { from: 'transferring', to: 'applying', at: now, reasonCode: 'APPLY_STARTED' },
-      { from: 'applying', to: 'complete', at: now, reasonCode: 'APPLY_COMPLETED' },
-    ],
-    createdAt: now,
-    updatedAt: now,
-    completedAt: now,
-  };
-}
-
-async function startHandoffApi(
-  service: HandoffService,
-  getCapabilities?: HandoffCapabilityProvider
-): Promise<{ url: string; close: () => Promise<void> }> {
-  const app = express();
-  app.use(express.json());
-  app.use('/handoffs', createHandoffRouter({ service, ...(getCapabilities ? { getCapabilities } : {}) }));
-  return createTestServer(app);
-}
-
-async function startScopedTokenHandoffApi(
-  service: HandoffService
-): Promise<{ url: string; close: () => Promise<void>; token: string }> {
-  const token = generateScopedToken();
+async function startApi(service: HandoffService) {
   const app = express();
   app.use(express.json());
   app.use(
     '/handoffs',
     createHandoffRouter({
       service,
-      requireAuth: (req, res, next) => {
-        const authHeader = req.header('authorization') ?? '';
-        const bearer = authHeader.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
-        if (!validateScopedToken(bearer)) {
-          res.status(401).json({ error: 'Unauthorized' });
-          return;
-        }
-        next();
+      getCapabilities(req) {
+        return (req.header('x-relay-capabilities') ?? '')
+          .split(',')
+          .filter(Boolean);
       },
-      getCapabilities: () => null,
     })
   );
-  return { ...(await createTestServer(app)), token };
+  return createTestServer(app);
 }
 
-function headerFor(capabilities: readonly string[]): string {
-  return capabilities.join(',');
-}
+describe('plan-only handoff API', () => {
+  it('builds a read-only plan with filesystem grants only', async () => {
+    const service = new HandoffService({
+      now: () => new Date(now),
+      createId: () => 'plan-1',
+    });
 
-describe('handoff API service', () => {
-  it('plans read-only handoffs with all required execute grant legs unconfirmed', async () => {
-    const service = new HandoffService({ now: () => new Date(now), createId: () => 'plan-1' });
-
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
+    const planned = await service.plan({
+      request: request(),
+      dryRun: dryRun(),
+    });
 
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
-    expect(planned.plan.id).toBe('plan-1');
-    expect(planned.plan.transferMode).toBe('metadata-only');
-    expect(planned.plan.requiredGrants.map((grant) => grant.leg)).toEqual([
-      'source-read',
-      'destination-write',
-      'destination-session-create',
-      'destination-exec',
-    ]);
-    expect(planned.plan.requiredGrants.every((grant) => grant.decision === undefined)).toBe(true);
-  });
-
-  it('rejects execute without confirmed source/destination grants and records a failed run', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({ planId: planned.plan.id });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error.code).toBe('MISSING_CONFIRMED_GRANT');
-    expect(created.run?.state).toBe('failed');
-    expect(created.run?.conflicts.map((entry) => entry.code)).toContain('MISSING_CAPABILITY_GRANT');
-    const status = service.getStatus(created.run?.id ?? '');
-    expect(status?.redaction).toMatchObject({ rawSecretsAvailable: false, rawLogsAvailable: false });
-  });
-
-  it('refuses fake execute success even with confirmed grants when the transfer engine cannot run', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-    });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error.code).toBe('DESTINATION_UNAVAILABLE');
-    expect(created.run?.state).toBe('failed');
-    expect(created.run?.reasonCode).toBe('FAILED_DESTINATION_UNAVAILABLE');
-    const resume = service.resume(created.run?.id ?? '');
-    expect(resume?.resume.rawTranscriptAvailable).toBe(false);
-    const artifact = service.readArtifact(`handoff-artifact:${created.run?.id}:resume-bundle`);
-    expect(artifact).toMatchObject({ rawPayloadAvailable: false, transcriptExportAvailable: false });
-  });
-
-  it('launches a destination session after apply and reports source state without migration claims', async () => {
-    let capturedBrief = '';
-    const service = new HandoffService({
-      now: () => new Date(now),
-      createId: () => 'plan-launch',
-      applyTransfer: async (input) => ({
-        ok: true,
-        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
-        auditEvents: [],
-        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
-        approvedUntrackedFiles: [],
+    expect(planned.plan.requiredGrants).toEqual([
+      expect.objectContaining({
+        leg: 'source-read',
+        capability: 'rpc:fs:read',
       }),
-      launchDestinationSession: async (input) => {
-        capturedBrief = input.handoffBrief;
-        return {
-          ok: true,
-          acknowledgedBrief: true,
-          session: {
-            id: 'dest-session-1',
-            type: 'agent',
-            agent: 'hermes',
-            mode: 'pty',
-            cwd: destinationCwd,
-            repoPath: '/srv/relay-ide',
-            worktreePath: destinationCwd,
-            repoName: 'relay-ide',
-            branchName: 'feat/691-handoff-api-cli',
-            displayName: 'Agent 1',
-            createdAt: now,
-            lastActivity: now,
-            idle: false,
-            customCommand: null,
-            nodeId: destinationNodeId,
-            status: 'active',
-            needsBranchRename: false,
-            agentState: 'idle',
-          } as never,
-        };
-      },
-    });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: destinationCwd,
-    });
-
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    expect(created.run.state).toBe('complete');
-    expect(created.run.reasonCode).toBe('VERIFY_COMPLETED');
-    expect(created.run.sourceDisposition).toBe('handed-off');
-    expect(created.run.sourceDispositions).toEqual(['left-running', 'handed-off']);
-    expect(created.run.transitions.map((entry) => entry.to)).toEqual([
-      'snapshotting',
-      'transferring',
-      'applying',
-      'launching',
-      'verifying',
-      'complete',
+      expect.objectContaining({
+        leg: 'destination-write',
+        capability: 'rpc:fs:write',
+      }),
     ]);
-    expect(capturedBrief).toContain('is not process migration');
-    expect(capturedBrief).toContain('Raw transcripts, provider auth, env/secrets, Hermes DBs');
-    expect(service.resume(created.run.id)?.resume.retryLaunchAvailable).toBe(false);
   });
 
-  it('fails launch verification when the destination does not acknowledge the bounded brief', async () => {
-    const service = new HandoffService({
-      now: () => new Date(now),
-      createId: () => 'plan-launch-unacknowledged',
-      applyTransfer: async (input) => ({
-        ok: true,
-        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
-        auditEvents: [],
-        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
-        approvedUntrackedFiles: [],
-      }),
-      launchDestinationSession: async () => ({
-        ok: true,
-        acknowledgedBrief: false,
-        session: {
-          id: 'dest-session-unacknowledged',
-          type: 'agent',
-          agent: 'hermes',
-          mode: 'pty',
-          cwd: destinationCwd,
-          displayName: 'Agent unacknowledged',
-          createdAt: now,
-          lastActivity: now,
-          idle: false,
-          customCommand: null,
-          nodeId: destinationNodeId,
-          status: 'active',
-          needsBranchRename: false,
-          agentState: 'idle',
-        } as never,
-      }),
-    });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: destinationCwd,
-    });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error).toMatchObject({
-      code: 'LAUNCH_FAILED',
-      reasonCode: 'FAILED_LAUNCH',
-    });
-    expect(created.error.body.error.message).toContain('did not acknowledge');
-    expect(created.run?.state).toBe('failed');
-    expect(created.run?.reasonCode).toBe('FAILED_LAUNCH');
-    expect(created.run?.transitions.map((entry) => entry.to)).toEqual([
-      'snapshotting',
-      'transferring',
-      'applying',
-      'launching',
-      'failed',
-    ]);
-    expect(service.resume(created.run?.id ?? '')?.resume.retryLaunchAvailable).toBe(true);
-  });
-
-  it('records the planned source disposition in pre-transfer failed runs', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({
-      request: requestWithSourceDisposition('stop-requested'),
+  it('rejects invalid requests without creating a plan', async () => {
+    const service = new HandoffService();
+    const result = await service.plan({
+      request: { ...request(), requestedAt: 'not-a-date' },
       dryRun: dryRun(),
     });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({ planId: planned.plan.id });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.run?.sourceDisposition).toBe('handoff-failed');
-    expect(created.run?.sourceDispositions).toEqual(['stop-requested', 'handoff-failed']);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { body: { error: { code: 'INVALID_REQUEST' } } },
+    });
   });
 
-  it('fails with a typed launch error after apply when destination launch is unavailable', async () => {
+  it('serves plan and passive artifact reads while retired execution routes are absent', async () => {
     const service = new HandoffService({
       now: () => new Date(now),
-      createId: () => 'plan-launch-missing',
-      applyTransfer: async (input) => ({
-        ok: true,
-        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
-        auditEvents: [],
-        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
-        approvedUntrackedFiles: [],
-      }),
+      createId: () => 'plan-1',
     });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const created = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: destinationCwd,
-    });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error).toMatchObject({
-      code: 'LAUNCH_UNSUPPORTED',
-      reasonCode: 'FAILED_LAUNCH',
-    });
-    expect(created.run?.state).toBe('failed');
-    expect(created.run?.reasonCode).toBe('FAILED_LAUNCH');
-    expect(created.run?.sourceDispositions).toEqual(['left-running', 'handoff-failed']);
-    expect(service.resume(created.run?.id ?? '')?.resume.retryLaunchAvailable).toBe(true);
-  });
-
-  it('preserves stop-requested source state and retries launch without rerunning apply', async () => {
-    let applyCalls = 0;
-    let launchCalls = 0;
-    const service = new HandoffService({
-      now: () => new Date(now),
-      createId: () => 'plan-retry-launch',
-      applyTransfer: async (input) => {
-        applyCalls += 1;
-        return {
-          ok: true,
-          run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
-          auditEvents: [],
-          trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
-          approvedUntrackedFiles: [],
-        };
-      },
-      launchDestinationSession: async () => {
-        launchCalls += 1;
-        if (launchCalls === 1) {
-          return {
-            ok: false,
-            code: 'LAUNCH_FAILED',
-            message: 'agent runtime exited before acknowledging brief',
-          };
-        }
-        return {
-          ok: true,
-          acknowledgedBrief: true,
-          session: {
-            id: 'dest-session-retry',
-            type: 'agent',
-            agent: 'hermes',
-            mode: 'pty',
-            cwd: destinationCwd,
-            displayName: 'Agent 2',
-            createdAt: now,
-            lastActivity: now,
-            idle: false,
-            customCommand: null,
-            nodeId: destinationNodeId,
-            status: 'active',
-            needsBranchRename: false,
-            agentState: 'idle',
-          } as never,
-        };
-      },
-    });
-    const planned = await service.plan({
-      request: requestWithSourceDisposition('stop-requested'),
-      dryRun: dryRun(),
-      sourceRepoPath: sourceCwd,
-    });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const failed = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: destinationCwd,
-    });
-    expect(failed.ok).toBe(false);
-    if (failed.ok || !failed.run) return;
-    expect(failed.run.reasonCode).toBe('FAILED_LAUNCH');
-    expect(failed.run.sourceDispositions).toEqual([
-      'left-running',
-      'stop-requested',
-      'handoff-failed',
-    ]);
-    expect(service.resume(failed.run.id)?.resume.retryLaunchAvailable).toBe(true);
-
-    const retried = await service.retryLaunch(failed.run.id, 'kani-backend');
-    expect(retried.ok).toBe(true);
-    if (!retried.ok) return;
-    expect(applyCalls).toBe(1);
-    expect(launchCalls).toBe(2);
-    expect(retried.run.state).toBe('complete');
-    expect(retried.run.sourceDispositions).toEqual([
-      'left-running',
-      'stop-requested',
-      'handed-off',
-    ]);
-  });
-
-  it('gates launch retry with runtime-specific create capabilities', async () => {
-    let launchCalls = 0;
-    const service = new HandoffService({
-      now: () => new Date(now),
-      createId: () => 'plan-route-runtime-launch',
-      applyTransfer: async (input) => ({
-        ok: true,
-        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
-        auditEvents: [],
-        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
-        approvedUntrackedFiles: [],
-      }),
-      launchDestinationSession: async () => {
-        launchCalls += 1;
-        if (launchCalls === 1) {
-          return {
-            ok: false,
-            code: 'LAUNCH_FAILED',
-            message: 'agent runtime exited before acknowledging brief',
-          };
-        }
-        return {
-          ok: true,
-          acknowledgedBrief: true,
-          session: {
-            id: 'dest-session-route-retry',
-            type: 'agent',
-            agent: 'hermes',
-            mode: 'pty',
-            cwd: destinationCwd,
-            displayName: 'Agent route retry',
-            createdAt: now,
-            lastActivity: now,
-            idle: false,
-            customCommand: null,
-            nodeId: destinationNodeId,
-            status: 'active',
-            needsBranchRename: false,
-            agentState: 'idle',
-          } as never,
-        };
-      },
-    });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-    const failed = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: destinationCwd,
-    });
-    expect(failed.ok).toBe(false);
-    if (failed.ok || !failed.run) return;
-
-    const api = await startHandoffApi(service, () => [
-      'session:read',
-      'session:create:agent',
-      'pty:exec:arbitrary',
-    ]);
+    const api = await startApi(service);
     try {
-      const retried = await fetch(`${api.url}/handoffs/${failed.run.id}/launch`, { method: 'POST' });
-      expect(retried.status).toBe(200);
-      expect((await retried.json()).run).toMatchObject({ state: 'complete', reasonCode: 'VERIFY_COMPLETED' });
+      const planResponse = await fetch(`${api.url}/handoffs/plan`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-relay-capabilities': 'session:read,rpc:fs:read',
+        },
+        body: JSON.stringify({ request: request() }),
+      });
+      expect(planResponse.status).toBe(200);
+      expect(await planResponse.json()).toMatchObject({
+        plan: { id: 'plan-1' },
+        readOnly: true,
+      });
+
+      const artifactResponse = await fetch(
+        `${api.url}/handoffs/artifacts/plan-1`,
+        { headers: { 'x-relay-capabilities': 'session:read' } }
+      );
+      expect(artifactResponse.status).toBe(200);
+      expect(await artifactResponse.json()).toMatchObject({
+        artifact: {
+          planId: 'plan-1',
+          rawPayloadAvailable: false,
+          transcriptExportAvailable: false,
+        },
+      });
+
+      for (const path of [
+        '/handoffs/create',
+        '/handoffs/run-1/status',
+        '/handoffs/run-1/cancel',
+        '/handoffs/run-1/resume',
+        '/handoffs/run-1/launch',
+      ]) {
+        const response = await fetch(`${api.url}${path}`, { method: 'POST' });
+        expect(response.status).toBe(404);
+      }
     } finally {
       await api.close();
     }
   });
 
-  it('requires stale plans to be refreshed before execute', async () => {
-    let currentMs = Date.parse(now);
-    const service = new HandoffService({
-      now: () => new Date(currentMs),
-      createId: () => 'plan-stale',
-    });
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-    currentMs += HANDOFF_PLAN_MAX_AGE_MS + 1;
-
-    const created = await service.create({ planId: planned.plan.id, confirmedGrants: confirmedGrants() });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error.code).toBe('STALE_PLAN');
-  });
-
-  it('returns typed source stale/offline failures during planning', async () => {
-    const service = new HandoffService({ now: () => new Date(now), createId: () => 'plan-source-stale' });
-
-    const planned = await service.plan({
-      request: request(),
-      dryRun: dryRun([
-        {
-          code: 'STALE_SOURCE',
-          message: 'source node is offline',
-          nodeId: sourceNodeId,
-          reasonCode: 'FAILED_STALE_SOURCE',
-        },
-      ]),
-    });
-
-    expect(planned.ok).toBe(false);
-    if (planned.ok) return;
-    expect(planned.error.body.error.code).toBe('SOURCE_STALE_OR_OFFLINE');
-    expect(planned.error.body.error.reasonCode).toBe('FAILED_STALE_SOURCE');
-  });
-
-  it('rejects confirmed grants that try to mutate the planned node/capability/scope envelope', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const malicious = confirmedGrants().map((grant) =>
-      grant.leg === 'destination-write'
-        ? {
-            ...grant,
-            nodeId: sourceNodeId,
-            capability: 'rpc:fs:read' as const,
-            scope: { kind: 'path' as const, pathPrefixes: [sourceCwd] },
-          }
-        : grant
-    );
-
-    const created = await service.create({ planId: planned.plan.id, confirmedGrants: malicious });
-
-    expect(created.ok).toBe(false);
-    if (created.ok) return;
-    expect(created.error.body.error.code).toBe('CAPABILITY_DENIED');
-    expect(created.run?.state).toBe('failed');
-    expect(created.run?.conflicts[0]?.message).toContain('does not match the planned');
-  });
-
-  it('rejects execute when source/destination paths do not match the stored plan', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-
-    const sourceMismatch = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: '/tmp/other-source',
-      destinationRepoPath: destinationCwd,
-    });
-    expect(sourceMismatch.ok).toBe(false);
-    if (sourceMismatch.ok) return;
-    expect(sourceMismatch.error.body.error).toMatchObject({
-      code: 'INVALID_REQUEST',
-      details: { field: 'sourceRepoPath' },
-    });
-
-    const destinationMismatch = await service.create({
-      planId: planned.plan.id,
-      confirmedGrants: confirmedGrants(),
-      sourceRepoPath: sourceCwd,
-      destinationRepoPath: '/tmp/other-destination',
-    });
-    expect(destinationMismatch.ok).toBe(false);
-    if (destinationMismatch.ok) return;
-    expect(destinationMismatch.error.body.error).toMatchObject({
-      code: 'INVALID_REQUEST',
-      details: { field: 'destinationRepoPath' },
-    });
-  });
-
-  it('fails closed when a scoped CLI token forges handoff capability headers', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-    const { url, close, token } = await startScopedTokenHandoffApi(service);
-    const forgedHeaders = {
-      authorization: `Bearer ${token}`,
-      'x-relay-cli-gateway': 'v1',
-      'x-relay-capabilities': headerFor([
-        'session:read',
-        'rpc:fs:read',
-        'rpc:fs:write',
-        'session:create:agent',
-        'pty:exec:arbitrary',
-      ]),
-    };
-
+  it('fails closed without validated capability context', async () => {
+    const service = new HandoffService();
+    const api = await startApi(service);
     try {
-      const forgedPlan = await fetch(`${url}/handoffs/plan`, {
-        method: 'POST',
-        headers: { ...forgedHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({ request: request(), sourceRepoPath: sourceCwd }),
-      });
-      expect(forgedPlan.status).toBe(403);
-      expect((await forgedPlan.json()).error).toMatchObject({
-        code: 'CAPABILITY_DENIED',
-        details: { missingCapabilities: ['session:read', 'rpc:fs:read'] },
-      });
-
-      const forgedCreate = await fetch(`${url}/handoffs/create`, {
-        method: 'POST',
-        headers: { ...forgedHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          planId: planned.plan.id,
-          confirmedGrants: confirmedGrants(),
-          sourceRepoPath: sourceCwd,
-          destinationRepoPath: destinationCwd,
-        }),
-      });
-      expect(forgedCreate.status).toBe(403);
-      expect((await forgedCreate.json()).error).toMatchObject({
-        code: 'CAPABILITY_DENIED',
-        details: {
-          missingCapabilities: [
-            'rpc:fs:read',
-            'rpc:fs:write',
-            'session:create:agent',
-            'pty:exec:arbitrary',
-          ],
-        },
-      });
-    } finally {
-      await close();
-    }
-  });
-
-  it('fails closed when handoff routes have no capability context and gates status/artifact routes', async () => {
-    let nextId = 0;
-    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
-    const planned = await service.plan({ request: request(), dryRun: dryRun() });
-    if (!planned.ok) throw new Error('plan failed unexpectedly');
-    const failed = await service.create({ planId: planned.plan.id });
-    if (failed.ok || !failed.run) throw new Error('expected failed run for status fixture');
-    const { url, close } = await startHandoffApi(service);
-    try {
-      const denied = await fetch(`${url}/handoffs/${failed.run.id}/status`);
-      expect(denied.status).toBe(403);
-      expect((await denied.json()).error.code).toBe('CAPABILITY_DENIED');
-
-      const forgedStatus = await fetch(`${url}/handoffs/${failed.run.id}/status`, {
-        headers: { 'x-relay-capabilities': headerFor(['session:read']) },
-      });
-      expect(forgedStatus.status).toBe(403);
-      expect((await forgedStatus.json()).error.code).toBe('CAPABILITY_DENIED');
-
-      const forgedPlan = await fetch(`${url}/handoffs/plan`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-relay-capabilities': headerFor(['session:read', 'rpc:fs:read']),
-        },
-        body: JSON.stringify({ request: request() }),
-      });
-      expect(forgedPlan.status).toBe(403);
-      expect((await forgedPlan.json()).error.code).toBe('CAPABILITY_DENIED');
-
-      const artifactDenied = await fetch(`${url}/handoffs/artifacts/handoff-artifact:${failed.run.id}:resume-bundle`);
-      expect(artifactDenied.status).toBe(403);
-    } finally {
-      await close();
-    }
-
-    const trustedRead = await startHandoffApi(service, () => ['session:read']);
-    try {
-      const allowed = await fetch(`${trustedRead.url}/handoffs/${failed.run.id}/status`, {
-        headers: { 'x-relay-capabilities': headerFor(['not-used']) },
-      });
-      expect(allowed.status).toBe(200);
-      expect((await allowed.json()).redaction).toMatchObject({ rawSecretsAvailable: false });
-    } finally {
-      await trustedRead.close();
-    }
-
-    const terminalPlan = {
-      ...planned.plan,
-      launchPreview: {
-        ...planned.plan.launchPreview,
-        runtime: { ...planned.plan.launchPreview.runtime, kind: 'terminal' as const },
-      },
-    };
-    const trustedCreate = await startHandoffApi(service, () => [
-      'rpc:fs:read',
-      'rpc:fs:write',
-      'session:create:agent',
-      'pty:exec:arbitrary',
-    ]);
-    try {
-      const terminalCreateDenied = await fetch(`${trustedCreate.url}/handoffs/create`, {
+      const response = await fetch(`${api.url}/handoffs/plan`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ plan: terminalPlan, confirmedGrants: confirmedGrants() }),
+        body: JSON.stringify({ request: request() }),
       });
-      expect(terminalCreateDenied.status).toBe(403);
-      expect((await terminalCreateDenied.json()).error.details.missingCapabilities).toEqual(['session:create:terminal']);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'CAPABILITY_DENIED' },
+      });
     } finally {
-      await trustedCreate.close();
+      await api.close();
     }
   });
 });

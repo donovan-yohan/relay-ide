@@ -27,8 +27,14 @@ import type { RepoIdentity } from '../../shared/identity.js';
 
 const NODE_A = 'node-a';
 const REPO_IDENTITY: RepoIdentity = 'github.com/donovan-yohan/relay-ide';
-const REPO_INSTANCE_ID = createRepoInstanceId(NODE_A, '/Users/me/code/relay-ide');
-const BENCH_ID = createWorktreeInstanceId(NODE_A, '/Users/me/code/relay-ide/.worktrees/626');
+const REPO_INSTANCE_ID = createRepoInstanceId(
+  NODE_A,
+  '/Users/me/code/relay-ide'
+);
+const BENCH_ID = createWorktreeInstanceId(
+  NODE_A,
+  '/Users/me/code/relay-ide/.worktrees/626'
+);
 const REPO_CWD = '/Users/me/code/relay-ide';
 const BENCH_CWD = '/Users/me/code/relay-ide/.worktrees/626';
 
@@ -41,7 +47,9 @@ describe('CLI gateway typed environment IDs (#626)', () => {
       expect(environment).toBeDefined();
       expect(environment?.type).toBe('object');
       expect(environment?.additionalProperties).toBe(false);
-      expect(environment?.required).toEqual(expect.arrayContaining(['nodeId', 'cwd']));
+      expect(environment?.required).toEqual(
+        expect.arrayContaining(['nodeId', 'cwd'])
+      );
 
       const envProps = environment?.properties ?? {};
       expect(envProps['nodeId']?.type).toBe('string');
@@ -52,7 +60,8 @@ describe('CLI gateway typed environment IDs (#626)', () => {
     });
 
     it('does NOT permit raw host/path identity pairs on the environment object', () => {
-      const env = commandSpec('sessions.create').inputSchema.properties?.['environment'];
+      const env =
+        commandSpec('sessions.create').inputSchema.properties?.['environment'];
       const envProps = env?.properties ?? {};
       // Anti-regression: the typed shape must never grow a `host` field
       // (free-form host/path identity is exactly what #626 outlaws).
@@ -72,7 +81,7 @@ describe('CLI gateway typed environment IDs (#626)', () => {
     it('accepts a minimal typed environment (nodeId + cwd) without legacy fields', () => {
       const result = validateAndSanitizeGatewayCreateInput({
         environment: { nodeId: NODE_A, cwd: REPO_CWD },
-        type: 'agent',
+        type: 'terminal',
       });
       expect(result.ok).toBe(true);
       if (result.ok !== true) return;
@@ -94,7 +103,7 @@ describe('CLI gateway typed environment IDs (#626)', () => {
           benchId: BENCH_ID,
           cwd: BENCH_CWD,
         },
-        type: 'agent',
+        type: 'terminal',
       });
       expect(result.ok).toBe(true);
       if (result.ok !== true) return;
@@ -181,7 +190,9 @@ describe('CLI gateway typed environment IDs (#626)', () => {
       expect(result.ok).toBe(false);
       if (result.ok !== false) return;
       expect(result.error.code).toBe('INVALID_ARGUMENT');
-      expect(result.error.details?.['field']).toMatch(/environment\.repoIdentity/);
+      expect(result.error.details?.['field']).toMatch(
+        /environment\.repoIdentity/
+      );
     });
 
     it('rejects environment.repoInstanceId as empty string', () => {
@@ -191,7 +202,9 @@ describe('CLI gateway typed environment IDs (#626)', () => {
       expect(result.ok).toBe(false);
       if (result.ok !== false) return;
       expect(result.error.code).toBe('INVALID_ARGUMENT');
-      expect(result.error.details?.['field']).toMatch(/environment\.repoInstanceId/);
+      expect(result.error.details?.['field']).toMatch(
+        /environment\.repoInstanceId/
+      );
     });
 
     it('rejects environment.benchId as empty string', () => {
@@ -275,7 +288,7 @@ describe('CLI gateway typed environment IDs (#626)', () => {
       });
       expect(routedDefault.ok).toBe(true);
       if (routedDefault.ok !== true) return;
-      expect(routedDefault.sessionType).toBe('agent');
+      expect(routedDefault.sessionType).toBe('terminal');
     });
 
     it('still validates a clean local create body', () => {

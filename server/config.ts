@@ -2,9 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
-  AgentType,
+  AutomationSettings,
   Config,
-  ContinuePolicy,
   FilterPreset,
   TerminalBackend,
   WorkspaceSettings,
@@ -41,14 +40,10 @@ export const DEFAULTS: Omit<
   port: 3456,
   cookieTTL: '24h',
   repos: [],
-  claudeArgs: [],
   defaultFramework: 'claude',
-  defaultContinue: true,
-  defaultYolo: false,
   maxPtySessions: 64,
   terminalBackend: 'relay-pty',
   defaultNotifications: true,
-  claudeFullscreen: true,
   updateChannel: 'stable',
   maxScrollbackPerSessionBytes: DEFAULT_MAX_SCROLLBACK_PER_SESSION_BYTES,
   maxScrollbackGlobalBytes: DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES,
@@ -57,10 +52,43 @@ export const DEFAULTS: Omit<
 // Legacy no-op only: kept as a plain searchable string so audits can find and
 // delete stale config writers. Do not reintroduce this as a supported setting.
 const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
+const RETIRED_PUBLIC_AGENT_SETTING_KEYS = [
+  'defaultContinue',
+  'defaultContinuePolicy',
+  'defaultYolo',
+  'claudeFullscreen',
+  'claudeArgs',
+  'promptCreatePr',
+  'promptBranchRename',
+  'promptGeneral',
+  'promptStartWork',
+] as const;
 const CONFIG_LOG = createLogger('config');
 let warnedLegacyTmuxLaunchSetting = false;
 
-function omitLegacyTmuxLaunchSetting<T extends object>(settings: T): T {
+function normalizeAutomationSettings(
+  value: unknown
+): AutomationSettings | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const settings = value as Record<string, unknown>;
+  return {
+    ...(typeof settings['autoCheckoutReviewRequests'] === 'boolean'
+      ? {
+          autoCheckoutReviewRequests: settings['autoCheckoutReviewRequests'],
+        }
+      : {}),
+    ...(typeof settings['pollIntervalMs'] === 'number'
+      ? { pollIntervalMs: settings['pollIntervalMs'] }
+      : {}),
+    ...(typeof settings['lastPollTimestamp'] === 'string'
+      ? { lastPollTimestamp: settings['lastPollTimestamp'] }
+      : {}),
+  };
+}
+
+function omitRetiredSettings<T extends object>(settings: T): T {
   if (
     !warnedLegacyTmuxLaunchSetting &&
     Object.prototype.hasOwnProperty.call(settings, LEGACY_TMUX_LAUNCH_KEY)
@@ -70,9 +98,12 @@ function omitLegacyTmuxLaunchSetting<T extends object>(settings: T): T {
       'ignoring legacy launchInTmux setting; use terminalBackend instead'
     );
   }
-  const { [LEGACY_TMUX_LAUNCH_KEY]: _legacyTmuxLaunch, ...rest } =
-    settings as T & Record<string, unknown>;
-  return rest as T;
+  const sanitized = { ...(settings as T & Record<string, unknown>) };
+  delete sanitized[LEGACY_TMUX_LAUNCH_KEY];
+  for (const key of RETIRED_PUBLIC_AGENT_SETTING_KEYS) {
+    delete sanitized[key];
+  }
+  return sanitized as T;
 }
 
 export function loadConfig(configPath: string): Config {
@@ -83,13 +114,14 @@ export function loadConfig(configPath: string): Config {
   const parsed = JSON.parse(raw) as Partial<Config> & Record<string, unknown>;
   const config: Config = {
     ...DEFAULTS,
-    ...omitLegacyTmuxLaunchSetting(parsed),
+    ...omitRetiredSettings(parsed),
   };
+  config.automations = normalizeAutomationSettings(config.automations);
   if (config.repoSettings) {
     config.repoSettings = Object.fromEntries(
       Object.entries(config.repoSettings).map(([repoPath, settings]) => [
         repoPath,
-        omitLegacyTmuxLaunchSetting(settings),
+        omitRetiredSettings(settings),
       ])
     );
   }
@@ -98,7 +130,7 @@ export function loadConfig(configPath: string): Config {
       workspace.settings
         ? {
             ...workspace,
-            settings: omitLegacyTmuxLaunchSetting(workspace.settings),
+            settings: omitRetiredSettings(workspace.settings),
           }
         : workspace
     );
@@ -177,12 +209,9 @@ export function getRepoSettings(
 ): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
     defaultFramework: config.defaultFramework,
-    defaultContinue: config.defaultContinue,
-    defaultYolo: config.defaultYolo,
     terminalBackend: defaultTerminalBackend(config),
-    claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = omitLegacyTmuxLaunchSetting(
+  const perWorkspace = omitRetiredSettings(
     config.repoSettings?.[repoPath] ?? {}
   );
   // Per-repo settings override global — only for defined keys
@@ -193,11 +222,7 @@ export function getRepoSettings(
 }
 
 export interface ResolvedSessionSettings {
-  agent: AgentType;
-  yolo: boolean;
-  continuePolicy: ContinuePolicy;
   terminalBackend: TerminalBackend;
-  claudeArgs: string[];
   /** #614 slice 4: effective per-session scrollback cap, undefined = use pty-handler default. */
   scrollbackBytes?: number;
 }
@@ -249,11 +274,7 @@ export function resolveSessionDurabilityScrollbackBytes(
 }
 
 export interface SessionSettingsOverrides {
-  agent?: AgentType | undefined;
-  yolo?: boolean | undefined;
-  continuePolicy?: ContinuePolicy | undefined;
   terminalBackend?: TerminalBackend | undefined;
-  claudeArgs?: string[] | undefined;
 }
 
 export function normalizeTerminalBackend(
@@ -278,10 +299,7 @@ export function resolveSessionSettings(
 ): ResolvedSessionSettings {
   const globalDefaults: Partial<WorkspaceSettings> = {
     defaultFramework: config.defaultFramework,
-    defaultContinue: config.defaultContinue,
-    defaultYolo: config.defaultYolo,
     terminalBackend: defaultTerminalBackend(config),
-    claudeArgs: config.claudeArgs,
   };
 
   let wsDefaults: Partial<WorkspaceSettings> = {};
@@ -299,23 +317,6 @@ export function resolveSessionSettings(
     normalizeTerminalBackend(merged.terminalBackend) ??
     'relay-pty';
 
-  // Map boolean defaultContinue → ContinuePolicy for backward compat
-  const configPolicy: ContinuePolicy =
-    merged.defaultContinuePolicy ??
-    (merged.defaultContinue ? 'always' : 'never');
-
-  // Resolve agent: prefer the most specific layer's defaultFramework
-  const agentFromLayers = (() => {
-    // Repo layer (most specific)
-    if (repoSpecific.defaultFramework)
-      return repoSpecific.defaultFramework as AgentType;
-    // Workspace layer
-    if (wsDefaults.defaultFramework)
-      return wsDefaults.defaultFramework as AgentType;
-    // Global layer
-    return (globalDefaults.defaultFramework ?? 'claude') as AgentType;
-  })();
-
   const scrollbackBytes = resolveSessionDurabilityScrollbackBytes(
     config,
     repoPath,
@@ -323,12 +324,8 @@ export function resolveSessionSettings(
   );
 
   return {
-    agent: overrides.agent ?? agentFromLayers,
-    yolo: overrides.yolo ?? merged.defaultYolo ?? false,
-    continuePolicy: overrides.continuePolicy ?? configPolicy,
     terminalBackend,
     ...(scrollbackBytes !== undefined ? { scrollbackBytes } : {}),
-    claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };
 }
 

@@ -50,9 +50,8 @@ vi.mock('../../frontend/src/lib/api.js', () => ({
 }));
 
 // Imported AFTER the mocks so the hook binds to the mocked useQuery.
-const { useEnvPickerOptions } = await import(
-  '../../frontend/src/lib/hooks/use-env-picker-options.js'
-);
+const { useEnvPickerOptions } =
+  await import('../../frontend/src/lib/hooks/use-env-picker-options.js');
 
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
@@ -154,10 +153,13 @@ function Harness({
   fallbackWorkspace,
 }: {
   sink: (opts: EnvironmentOption[]) => void;
-  fallbackWorkspace?: { name: string; path: string; isGitRepo?: boolean } | null;
+  fallbackWorkspace?: {
+    name: string;
+    path: string;
+    isGitRepo?: boolean;
+  } | null;
 }) {
   const options = useEnvPickerOptions({
-    selectedAgent: 'claude',
     ...(fallbackWorkspace !== undefined ? { fallbackWorkspace } : {}),
   });
   sink(options);
@@ -237,9 +239,7 @@ describe('useEnvPickerOptions (#862)', () => {
     );
     expect(launchable).toBeTruthy();
     // Fallback workspace path surfaces so the user can launch into it.
-    expect(
-      captured.some((o) => o.cwd === '/Users/kyle/relay-ide')
-    ).toBe(true);
+    expect(captured.some((o) => o.cwd === '/Users/kyle/relay-ide')).toBe(true);
   });
 
   it('keeps options array reference-stable across re-renders when inputs are unchanged', () => {

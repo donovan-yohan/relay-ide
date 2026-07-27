@@ -45,7 +45,7 @@ const logger = createLogger('channel-agent-bridge');
 //   bound session dies/disposed mid-stream (unbind)              → finalize('truncated') + completed
 //   non-text items                                              → NOT mirrored (mechanics stay in agentSessionV2)
 
-/** debounce partial-text flush to disk (same shape as relay-state-db throttled scheduler). */
+/** Debounce partial-text flushes into durable channel rows. */
 const FLUSH_DEBOUNCE_MS = 500;
 const FLUSH_MAX_WAIT_MS = 2000;
 /** Bounded dedupe tombstones for late provider replay after a row finalized. */
@@ -264,7 +264,7 @@ export interface BindSessionToChannelInput {
   displayName?: string;
   /**
    * Profile Actor id stamped onto `ChannelSenderRef.id` (#1234, epic #1232). Since
-   * no custom profiles exist yet, every agent session maps to its vendor's DEFAULT
+   * no custom profiles exist yet, every private channel runtime maps to its vendor's DEFAULT
    * profile; callers pass `builtInAgentProfileId(vendor)`. Defaults to the vendor
    * built-in default id when omitted so the `agent:<framework>` id format is gone
    * regardless of caller.
@@ -295,7 +295,7 @@ export interface ChannelBridgeRetentionSnapshot {
 }
 
 /**
- * Bind a live adapter session's patch stream to a channel. Returns an unbind
+ * Bind a private adapter runtime's patch stream to a channel. Returns an unbind
  * function; calling it unsubscribes the patch listener and finalizes any still-
  * open stream as `truncated` (session death mid-stream leaves no stuck ghost).
  */
@@ -318,11 +318,11 @@ export function bindSessionToChannel(
   let closed = false;
 
   function itemSourceKey(
-    sessionId: string,
+    runtimeId: string,
     turnId: string,
     itemId: string
   ): string {
-    return `${sessionId}\u0000${turnId}\u0000${itemId}`;
+    return `${runtimeId}\u0000${turnId}\u0000${itemId}`;
   }
 
   function canonicalAssistantItemId(item: {
@@ -509,13 +509,13 @@ export function bindSessionToChannel(
   function openStream(
     turnId: string,
     canonicalItemId: string,
-    sessionId: string,
+    runtimeId: string,
     initialText: string
   ): BridgeStream | null {
     const streamKey = bridgeStreamKey(turnId, canonicalItemId);
     const existing = streams.get(streamKey);
     if (existing) return existing;
-    const sourceKey = itemSourceKey(sessionId, turnId, canonicalItemId);
+    const sourceKey = itemSourceKey(runtimeId, turnId, canonicalItemId);
     if (recentFinalizedItemKeys.has(sourceKey)) {
       forgetAliasesForStream(streamKey);
       reportRetention();
@@ -525,7 +525,7 @@ export function bindSessionToChannel(
     const message = store.beginStream({
       channelId,
       sender,
-      source: { sessionId, turnId, itemId: canonicalItemId },
+      source: { runtimeId, turnId, itemId: canonicalItemId },
       ...(initialText ? { text: initialText } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
@@ -585,7 +585,7 @@ export function bindSessionToChannel(
     const message = store.beginStream({
       channelId,
       sender,
-      source: { sessionId: patch.sessionId, turnId: patch.turnId, itemId },
+      source: { runtimeId: patch.sessionId, turnId: patch.turnId, itemId },
       agentDetail,
       ...(parentMessageId ? { parentMessageId } : {}),
     });
@@ -883,7 +883,7 @@ export function bindSessionToChannel(
     const started = store.beginStream({
       channelId,
       sender,
-      source: { sessionId: patch.sessionId, turnId: patch.turnId, itemId },
+      source: { runtimeId: patch.sessionId, turnId: patch.turnId, itemId },
       text,
       ...(parts.length > 0 ? { parts } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),

@@ -1,12 +1,12 @@
 // Per-channel, per-agent live status cache (#1167). Fed by the `/ws/events`
 // `channel-agent-status` broadcast, which carries `{ channelId, agentId, status,
-// sessionId }`. The channel header renders a presence chip (glyph + colored dot,
+// runtimeId }`. The channel header renders a presence chip (glyph + colored dot,
 // with an interrupt affordance while the agent is busy) from this store merged
 // with the channel roster query. Structure mirrors `channel-activity.ts`.
 import { create } from 'zustand';
 import type { ChannelAgentStatus } from '../api.js';
 
-/** Composite key for the status/session maps: `"<channelId> <agentId>"`. */
+/** Composite key for the status/runtime maps: `"<channelId> <agentId>"`. */
 export function channelAgentStatusKey(
   channelId: string,
   agentId: string
@@ -17,8 +17,8 @@ export function channelAgentStatusKey(
 interface ChannelAgentStatusState {
   /** Latest status per `${channelId} ${agentId}`. */
   statusByChannelAgent: Record<string, ChannelAgentStatus>;
-  /** Backing session id per `${channelId} ${agentId}` (null when unbound). */
-  sessionByChannelAgent: Record<string, string | null>;
+  /** Backing runtime id per `${channelId} ${agentId}` (null when unbound). */
+  runtimeByChannelAgent: Record<string, string | null>;
   /**
    * Wall-clock time (ms) of the last live transition per `${channelId}
    * ${agentId}`. Compared against the roster query's `dataUpdatedAt` so a fresh
@@ -31,9 +31,9 @@ interface ChannelAgentStatusState {
     channelId: string,
     agentId: string,
     status: ChannelAgentStatus,
-    sessionId: string | null
+    runtimeId: string | null
   ) => void;
-  /** Drop every agent status/session entry for a channel. */
+  /** Drop every agent status/runtime entry for a channel. */
   clearChannel: (channelId: string) => void;
 }
 
@@ -44,14 +44,14 @@ const nowMs = (): number =>
 export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
   (set) => ({
     statusByChannelAgent: {},
-    sessionByChannelAgent: {},
+    runtimeByChannelAgent: {},
     updatedAtByChannelAgent: {},
-    recordStatus: (channelId, agentId, status, sessionId) =>
+    recordStatus: (channelId, agentId, status, runtimeId) =>
       set((state) => {
         const key = channelAgentStatusKey(channelId, agentId);
         if (
           state.statusByChannelAgent[key] === status &&
-          state.sessionByChannelAgent[key] === sessionId
+          state.runtimeByChannelAgent[key] === runtimeId
         ) {
           return state;
         }
@@ -60,9 +60,9 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
             ...state.statusByChannelAgent,
             [key]: status,
           },
-          sessionByChannelAgent: {
-            ...state.sessionByChannelAgent,
-            [key]: sessionId,
+          runtimeByChannelAgent: {
+            ...state.runtimeByChannelAgent,
+            [key]: runtimeId,
           },
           updatedAtByChannelAgent: {
             ...state.updatedAtByChannelAgent,
@@ -74,7 +74,7 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
       set((state) => {
         const prefix = `${channelId} `;
         const status: Record<string, ChannelAgentStatus> = {};
-        const session: Record<string, string | null> = {};
+        const runtime: Record<string, string | null> = {};
         const updatedAt: Record<string, number> = {};
         let changed = false;
         for (const [key, value] of Object.entries(state.statusByChannelAgent)) {
@@ -82,9 +82,9 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
           else status[key] = value;
         }
         for (const [key, value] of Object.entries(
-          state.sessionByChannelAgent
+          state.runtimeByChannelAgent
         )) {
-          if (!key.startsWith(prefix)) session[key] = value;
+          if (!key.startsWith(prefix)) runtime[key] = value;
         }
         for (const [key, value] of Object.entries(
           state.updatedAtByChannelAgent
@@ -94,7 +94,7 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
         if (!changed) return state;
         return {
           statusByChannelAgent: status,
-          sessionByChannelAgent: session,
+          runtimeByChannelAgent: runtime,
           updatedAtByChannelAgent: updatedAt,
         };
       }),

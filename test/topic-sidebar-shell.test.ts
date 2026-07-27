@@ -6,7 +6,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
-import type { WorkflowRunProjection } from '../shared/workflow-run.js';
 import {
   resolveTopicActiveContext,
   type WorkspaceTopic,
@@ -326,99 +325,7 @@ describe('TopicSidebarView', () => {
     });
   });
 
-  it('renders WorkContext orchestration runs with clickable visible lanes', async () => {
-    const workflowRun: WorkflowRunProjection = {
-      schemaVersion: 1,
-      id: 'workflow-run:demo',
-      runId: 'relay-orchestration:demo',
-      providerRuntime: 'relay-orchestration',
-      runKind: 'relay-orchestration',
-      workContextId: 'wc:relay',
-      definition: {
-        hash: 'relay-orchestration-launch:v0',
-        templateId: 'relay/orchestration-launch-v0',
-      },
-      state: 'running',
-      links: {
-        artifactIds: ['artifact:demo'],
-        inboxMessageIds: ['inbox:seed'],
-      },
-      orchestration: {
-        planner: {
-          role: 'planner',
-          provider: 'codex',
-          displayName: 'Codex planner',
-          globalSessionId: 'global:planner',
-          state: 'running',
-          attention: { pendingInboxCount: 2 },
-        },
-        children: [
-          {
-            role: 'implementer',
-            provider: 'claude',
-            displayName: 'Claude worker',
-            globalSessionId: 'global:worker',
-            state: 'waiting',
-            attention: {
-              needsAttention: true,
-              reasons: ['message-delivery-failed'],
-              pendingInboxCount: 1,
-            },
-          },
-        ],
-      },
-      createdAt: NOW,
-      updatedAt: NOW,
-      version: 1,
-      redaction: {
-        rawPayloadStored: false,
-        rawTranscriptStored: false,
-        providerPrivateStateStored: false,
-        truncated: false,
-        omittedKeys: [],
-      },
-    };
-    const fetchMock = vi.fn(async () =>
-      Response.json({ workflowRuns: [workflowRun] })
-    ) as unknown as typeof fetch;
-    vi.stubGlobal('fetch', fetchMock);
-
-    await renderView({
-      showAdvancedDetail: true,
-      topics: [
-        makeTopic({
-          linkedRefs: { workContextIds: ['wc:relay'] },
-        }),
-      ],
-      sessions: [],
-      surfaces: [],
-    });
-    await act(async () => {
-      await flushQueryEffects();
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/workflow-runs?workContextId=wc%3Arelay&limit=5',
-      { headers: { 'x-relay-capabilities': 'context:read' } }
-    );
-    expect(container.textContent).toContain('orchestration');
-    expect(container.textContent).toContain('relay/orchestration-launch-v0');
-    expect(container.textContent).toContain('Codex planner');
-    expect(container.textContent).toContain('Claude worker');
-    expect(container.textContent).toContain('2 lanes');
-    expect(container.textContent).toContain('3 mail');
-    expect(container.textContent).toContain('1 evidence refs');
-    expect(container.textContent).toContain('artifact:demo');
-
-    const workerButton = Array.from(
-      container.querySelectorAll('.topic-orchestration-lane__button')
-    ).find((button) => button.textContent?.includes('Claude worker'));
-    expect(workerButton).toBeTruthy();
-    await act(async () => (workerButton as HTMLButtonElement).click());
-    expect(onSelectSession).toHaveBeenCalledWith('global:worker');
-  });
-
-  it('renders an orchestrator with nested workers and selects the exact worker session', async () => {
+  it('renders terminal sessions flat and selects the exact session', async () => {
     await renderView(
       {
         showAdvancedDetail: true,
@@ -427,21 +334,18 @@ describe('TopicSidebarView', () => {
             id: 'orch',
             nodeId: 'node-a',
             displayName: 'persistent planner',
-            role: 'orchestrator',
             idle: false,
           }),
           makeSession({
             id: 'worker-a',
             nodeId: 'node-b',
             displayName: 'alpha worker',
-            spawnedBySessionId: 'orch',
           }),
           makeSession({
             id: 'worker-b',
             nodeId: 'node-b',
             globalSessionId: 'global:worker-b',
             displayName: 'beta worker',
-            spawnedBySessionId: 'orch',
           }),
         ],
         surfaces: [],
@@ -454,7 +358,6 @@ describe('TopicSidebarView', () => {
     ) as HTMLElement;
     expect(tree).not.toBeNull();
     expect(tree.textContent).toContain('persistent planner');
-    expect(tree.textContent).toContain('orchestrator');
     expect(tree.textContent).toContain('alpha worker');
     expect(tree.textContent).toContain('beta worker');
     expect(
@@ -464,7 +367,7 @@ describe('TopicSidebarView', () => {
       tree
         .querySelector('[data-session-id="worker-a"]')
         ?.parentElement?.style.getPropertyValue('--session-lineage-depth')
-    ).toBe('1');
+    ).toBe('0');
 
     const worker = tree.querySelector(
       '[data-session-id="worker-b"]'
@@ -491,43 +394,6 @@ describe('TopicSidebarView', () => {
     expect(tree.className).toContain('session-lineage-tree--flat');
     expect(tree.textContent).toContain('plain session');
     expect(tree.textContent).not.toContain('orchestrator');
-  });
-
-  it('does not fetch WorkContext workflow runs until advanced mode is enabled', async () => {
-    const fetchMock = vi.fn(async () =>
-      Response.json({ workflowRuns: [] })
-    ) as unknown as typeof fetch;
-    vi.stubGlobal('fetch', fetchMock);
-    const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
-      showAdvancedDetail: true,
-      topics: [
-        makeTopic({
-          linkedRefs: { workContextIds: ['wc:relay'] },
-        }),
-      ],
-      sessions: [],
-      surfaces: [],
-    };
-
-    await renderView(props, { advancedMode: false });
-    await act(async () => {
-      await flushQueryEffects();
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
-
-    await renderView(props, { advancedMode: true });
-    await act(async () => {
-      await flushQueryEffects();
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/workflow-runs?workContextId=wc%3Arelay&limit=5',
-      { headers: { 'x-relay-capabilities': 'context:read' } }
-    );
-    expect(
-      container.querySelector('.topic-shell__advanced-detail')
-    ).not.toBeNull();
   });
 
   it('keeps collapsed topic rows free of linked-item and recency metadata', async () => {
@@ -849,9 +715,8 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 's1',
           displayName: 'Frontend lane',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
-          controlFreshness: 'fresh',
           mode: 'pty',
         }),
       ],
@@ -896,7 +761,7 @@ describe('TopicSidebarView', () => {
   it('resets default mobile input and preview when one session changes from approve to reply', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     const renderAction = async (
-      agentState: 'permission-prompt' | 'waiting-for-input'
+      activityState: 'permission-prompt' | 'waiting-for-input'
     ) => {
       await renderView(
         {
@@ -904,11 +769,10 @@ describe('TopicSidebarView', () => {
             makeSession({
               id: 's1',
               displayName: 'Frontend lane',
-              agentState,
-              ...(agentState === 'permission-prompt'
+              activityState,
+              ...(activityState === 'permission-prompt'
                 ? { permissionType: 'approval' as const }
                 : {}),
-              controlFreshness: 'fresh',
               mode: 'pty',
             }),
           ],
@@ -1345,24 +1209,24 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 'question-session',
           displayName: 'question lane',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'question',
         }),
         makeSession({
           id: 'approval-session',
           displayName: 'approval lane',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
         }),
         makeSession({
           id: 'running-session',
           displayName: 'running lane',
-          agentState: 'processing',
+          activityState: 'processing',
         }),
         makeSession({
           id: 'idle-session',
           displayName: 'idle lane',
-          agentState: 'idle',
+          activityState: 'idle',
           idle: true,
         }),
         makeSession({
@@ -1373,7 +1237,7 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 'crashed-session',
           displayName: 'crashed lane',
-          agentState: 'error',
+          activityState: 'error',
         }),
       ],
       surfaces: [
@@ -1429,7 +1293,7 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 's1',
           displayName: 'offline approval',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
           status: 'disconnected',
         }),
@@ -1459,8 +1323,7 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 's1',
           displayName: 'readable lane',
-          agentState: 'idle',
-          controlFreshness: undefined,
+          activityState: 'idle',
         }),
       ],
     });
@@ -1612,13 +1475,13 @@ describe('TopicSidebarView', () => {
         makeSession({
           id: 'idle-session',
           displayName: 'idle',
-          agentState: 'idle',
+          activityState: 'idle',
           idle: true,
         }),
         makeSession({
           id: 'approval-session',
           displayName: 'approval',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
           currentActivity: { tool: 'bash', detail: 'allow command?' },
         }),
@@ -1648,7 +1511,7 @@ describe('TopicSidebarView', () => {
           makeSession({
             id: 'waiting-session',
             displayName: 'waiting lane',
-            agentState: 'waiting-for-input',
+            activityState: 'waiting-for-input',
             currentActivity: { tool: longToolName },
           }),
         ],
@@ -1688,9 +1551,8 @@ describe('TopicSidebarView', () => {
           makeSession({
             id: 's1',
             displayName: 'approval',
-            agentState: 'permission-prompt',
+            activityState: 'permission-prompt',
             permissionType: 'approval',
-            controlFreshness: 'fresh',
           }),
         ],
         onSendInput,
@@ -1734,9 +1596,8 @@ describe('TopicSidebarView', () => {
           makeSession({
             id: 's1',
             displayName: 'approval',
-            agentState: 'permission-prompt',
+            activityState: 'permission-prompt',
             permissionType: 'approval',
-            controlFreshness: 'fresh',
           }),
         ],
         onSendInput,
@@ -1776,9 +1637,8 @@ describe('TopicSidebarView', () => {
             id: 'local-session',
             globalSessionId: 'global:agent-1',
             displayName: 'global approval',
-            agentState: 'permission-prompt',
+            activityState: 'permission-prompt',
             permissionType: 'approval',
-            controlFreshness: 'fresh',
           }),
         ],
         onSendInput,
@@ -1820,9 +1680,8 @@ describe('TopicSidebarView', () => {
           makeSession({
             id: 's1',
             displayName: 'offline approval',
-            agentState: 'permission-prompt',
+            activityState: 'permission-prompt',
             permissionType: 'approval',
-            controlFreshness: 'fresh',
             status: 'disconnected',
           }),
         ],
@@ -1859,10 +1718,9 @@ describe('TopicSidebarView', () => {
           makeSession({
             id: 's1',
             displayName: 'offline idle session',
-            agentState: 'idle',
+            activityState: 'idle',
             idle: true,
             status: 'disconnected',
-            controlFreshness: 'fresh',
           }),
         ],
         surfaces: [
@@ -1909,15 +1767,15 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).not.toHaveBeenCalled();
   });
 
-  it('keeps permission/question mobile input fail-closed when control freshness is omitted', async () => {
+  it('keeps permission/question terminal input available without ownership state', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView(
       {
         sessions: [
           makeSession({
             id: 's1',
-            displayName: 'approval awaiting freshness',
-            agentState: 'permission-prompt',
+            displayName: 'approval awaiting input',
+            activityState: 'permission-prompt',
             permissionType: 'approval',
             status: 'active',
           }),
@@ -1930,9 +1788,7 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'approve'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: unknown control state'
-    );
+    expect(container.textContent).not.toContain('unknown control state');
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1953,10 +1809,10 @@ describe('TopicSidebarView', () => {
       (button) => button.textContent === 'open terminal tab'
     ) as HTMLButtonElement;
 
-    expect(input.disabled).toBe(true);
+    expect(input.disabled).toBe(false);
     expect(submit.disabled).toBe(true);
-    expect(submit.title).toContain('unknown control state');
-    expect(presets.map((preset) => preset.disabled)).toEqual([true, true]);
+    expect(submit.title).not.toContain('control state');
+    expect(presets.map((preset) => preset.disabled)).toEqual([false, false]);
     expect(resume.disabled).toBe(false);
     expect(resume.title).toContain('open the linked Relay tab');
     expect(terminal.disabled).toBe(false);
@@ -1971,8 +1827,8 @@ describe('TopicSidebarView', () => {
         sessions: [
           makeSession({
             id: 's1',
-            displayName: 'question awaiting freshness',
-            agentState: 'permission-prompt',
+            displayName: 'question awaiting input',
+            activityState: 'permission-prompt',
             permissionType: 'question',
             status: 'active',
           }),
@@ -1985,9 +1841,7 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'reply'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: unknown control state'
-    );
+    expect(container.textContent).not.toContain('unknown control state');
 
     const questionInput = container.querySelector(
       '.topic-mobile-control input'
@@ -2001,7 +1855,7 @@ describe('TopicSidebarView', () => {
       (button) => button.textContent === 'open terminal tab'
     ) as HTMLButtonElement;
 
-    expect(questionInput.disabled).toBe(true);
+    expect(questionInput.disabled).toBe(false);
     expect(questionSubmit.disabled).toBe(true);
     expect(
       container.querySelectorAll('.topic-mobile-control__preset')
@@ -2021,7 +1875,6 @@ describe('TopicSidebarView', () => {
           id: 's1',
           displayName: 'live Hermes pty session',
           status: 'active',
-          controlFreshness: 'unknown',
         }),
       ],
       onSendInput,
@@ -2036,28 +1889,6 @@ describe('TopicSidebarView', () => {
     await act(async () => resumeLast.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
     expect(onSendInput).not.toHaveBeenCalled();
-  });
-
-  it('keeps web session input hidden while allowing resume-last', async () => {
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'fresh Hermes web session',
-          mode: 'web',
-          status: 'active',
-          controlFreshness: 'fresh',
-        }),
-      ],
-    });
-
-    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
-
-    const resumeLast = container.querySelector(
-      '.topic-mobile-cockpit__resume'
-    ) as HTMLButtonElement;
-    await act(async () => resumeLast.click());
-    expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
   it('makes the mobile row an explicit channel timeline affordance', async () => {
@@ -2156,7 +1987,7 @@ describe('TopicSidebarView', () => {
       /\.topic-room__primary:not\(:disabled\):focus-visible,\s*\.topic-room-ref-list a:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
     );
     expect(css).toMatch(
-      /\.topic-room-session__button:focus-visible,\s*\.topic-orchestration-lane__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
+      /\.topic-room-session__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
     );
   });
 
@@ -2243,24 +2074,18 @@ describe('TopicSidebarView', () => {
           id: 'remote-ika',
           nodeId: 'devbox',
           displayName: 'Ika frontend',
-          agent: 'claude',
-          activeWorker: { kind: 'agent', displayName: 'ika-frontend' },
-          agentState: 'processing',
+          activityState: 'processing',
           currentActivity: {
             tool: 'edit',
             detail: 'wiring participant roster',
           },
-          controlMode: 'agent-driven',
           lastActivity: '2026-06-25T23:44:00Z',
         }),
         makeSession({
           id: 'kame-local',
           globalSessionId: 'global:kame',
           displayName: 'Kame QA',
-          agent: 'codex',
-          activeWorker: { kind: 'agent', displayName: 'kame-qa' },
           status: 'disconnected',
-          controlMode: 'human-driven',
           lastActivity: '2026-06-24T12:00:00Z',
         }),
       ],
@@ -2269,10 +2094,10 @@ describe('TopicSidebarView', () => {
 
     const roster = container.querySelector('.topic-participants');
     expect(roster?.textContent).toContain('participants');
-    expect(roster?.textContent).toContain('frontend · claude');
-    expect(roster?.textContent).toContain('qa · codex');
+    expect(roster?.textContent).toContain('terminal · running');
+    expect(roster?.textContent).toContain('terminal · offline');
     expect(roster?.textContent).toContain('last 25-06-26');
-    expect(roster?.textContent).toContain('agent-driven');
+    expect(roster?.textContent).not.toContain('driven');
     expect(roster?.textContent).toContain('wiring participant roster');
     expect(roster?.textContent).toContain('running');
     expect(roster?.textContent).toContain('offline');
@@ -2280,13 +2105,14 @@ describe('TopicSidebarView', () => {
     const childRows = Array.from(
       container.querySelectorAll('.topic-child-row')
     );
-    expect(childRows[0]?.textContent).toContain('Ika frontend');
-    expect(childRows[0]?.textContent).not.toContain('agent · pty');
-    expect(childRows[0]?.textContent).not.toContain('last 25-06-26');
-    expect(childRows[0]?.textContent).not.toContain('agent-driven');
-    expect(childRows[0]?.textContent).not.toContain(
-      'wiring participant roster'
+    const ikaChildRow = childRows.find((row) =>
+      row.textContent?.includes('Ika frontend')
     );
+    expect(ikaChildRow).toBeTruthy();
+    expect(ikaChildRow?.textContent).not.toContain('agent · pty');
+    expect(ikaChildRow?.textContent).not.toContain('last 25-06-26');
+    expect(ikaChildRow?.textContent).not.toContain('driven');
+    expect(ikaChildRow?.textContent).not.toContain('wiring participant roster');
 
     const ikaCard = Array.from(
       container.querySelectorAll('.topic-participant-card')

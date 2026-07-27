@@ -46,9 +46,10 @@ function runCli(
           }
           resolve({
             envelope: JSON.parse(stdout) as Record<string, unknown>,
-            request: JSON.parse(
-              readFileSync(capturePath, 'utf8')
-            ) as Record<string, unknown>,
+            request: JSON.parse(readFileSync(capturePath, 'utf8')) as Record<
+              string,
+              unknown
+            >,
           });
         } finally {
           rmSync(captureDir, { recursive: true, force: true });
@@ -164,12 +165,11 @@ describe('channels.post CLI gateway command', () => {
     expect(request.body).not.toHaveProperty('channelId');
   });
 
-  it('allows the actor token lane to create worker sessions', async () => {
+  it('allows the actor token lane to create terminal sessions', async () => {
     const input = {
       cwd: '/repo',
-      type: 'agent',
-      mode: 'web',
-      agent: 'claude',
+      type: 'terminal',
+      mode: 'pty',
     };
 
     const { envelope, request } = await runCli(
@@ -204,7 +204,7 @@ describe('channels.post CLI gateway command', () => {
         'x-relay-cli-gateway': 'v1',
         'x-relay-cli-actor-token': 'v1',
         'x-relay-cli-command': 'sessions.create',
-        'x-relay-capabilities': 'session:create:agent',
+        'x-relay-capabilities': 'session:create:terminal',
       },
     });
   });

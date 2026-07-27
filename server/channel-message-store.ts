@@ -3,7 +3,6 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
-import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import { createLogger } from './logger.js';
 
 import {
@@ -42,7 +41,7 @@ import {
 //    row deletion — that would break gap-free seq. Future mutation lands as new
 //    events over retained rows.
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -103,7 +102,7 @@ CREATE TABLE IF NOT EXISTS channel_messages (
   body_text         TEXT NOT NULL DEFAULT '',
   body_format       TEXT NOT NULL DEFAULT 'markdown',
   meta_json         TEXT,
-  source_session_id TEXT,
+  source_runtime_id TEXT,
   source_turn_id    TEXT,
   source_item_id    TEXT,
   client_message_id TEXT,
@@ -117,8 +116,8 @@ CREATE INDEX IF NOT EXISTS idx_chm_channel_seq
 CREATE INDEX IF NOT EXISTS idx_chm_thread
   ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chm_source_dedupe
-  ON channel_messages(source_session_id, source_turn_id, source_item_id)
-  WHERE source_session_id IS NOT NULL
+  ON channel_messages(source_runtime_id, source_turn_id, source_item_id)
+  WHERE source_runtime_id IS NOT NULL
     AND source_turn_id IS NOT NULL
     AND source_item_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chm_client_dedupe
@@ -138,7 +137,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   channel_id            TEXT NOT NULL,
   profile_actor_id      TEXT NOT NULL,
   agent_framework       TEXT NOT NULL,
-  session_id            TEXT,
+  runtime_id            TEXT,
   provider_session_json TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
@@ -160,7 +159,7 @@ interface ChannelMessageRow {
   body_text: string;
   body_format: string;
   meta_json: string | null;
-  source_session_id: string | null;
+  source_runtime_id: string | null;
   source_turn_id: string | null;
   source_item_id: string | null;
   client_message_id: string | null;
@@ -182,7 +181,7 @@ interface BindingRow {
   channel_id: string;
   profile_actor_id: string;
   agent_framework: string;
-  session_id: string | null;
+  runtime_id: string | null;
   provider_session_json: string;
   created_at: string;
   updated_at: string;
@@ -211,14 +210,14 @@ export interface AppendCompleteInput {
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
   meta?: ChannelMessageMeta;
-  /** Server-derived backing session for authenticated agent posts. */
-  source?: Pick<ChannelMessageSource, 'sessionId'>;
+  /** Server-derived backing runtime for authenticated agent posts. */
+  source?: Pick<ChannelMessageSource, 'runtimeId'>;
 }
 
 export interface BeginStreamInput {
   channelId: string;
   sender: ChannelSenderRef;
-  source: { sessionId: string; turnId?: string; itemId?: string };
+  source: { runtimeId: string; turnId?: string; itemId?: string };
   text?: string;
   parentMessageId?: string;
   mentions?: ChannelMention[];
@@ -275,7 +274,7 @@ export interface ChannelBinding {
   profileActorId: string;
   /** Provider/framework spawn selector retained independently of the profile. */
   agentFramework: string;
-  sessionId: string | null;
+  runtimeId: string | null;
   providerSession: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -353,19 +352,11 @@ export interface ChannelMessageStore {
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(channelId: string, profileActorId: string): ChannelBinding | null;
-  /**
-   * Distinct non-null `session_id`s across every channel binding. Feeds the
-   * relay-state-db age-reaper's protection set (#1248) so a web_session still
-   * bound as an open channel's agent is never reaped, preserving its resume
-   * anchor even when its `last_activity` is older than the retention window.
-   */
-  listBoundSessionIds(): string[];
   upsertBinding(input: {
     channelId: string;
-    /** Omit only for legacy callers; normalizes to the provider's built-in profile. */
-    profileActorId?: string;
+    profileActorId: string;
     agentFramework: string;
-    sessionId?: string | null;
+    runtimeId?: string | null;
     providerSession?: Record<string, unknown>;
   }): ChannelBinding;
   sweepStaleStreaming(): StaleStreamSweepResult[];
@@ -479,7 +470,7 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
       ? (meta['providerId'] as string)
       : undefined;
   if (providerId) sender.providerId = providerId;
-  if (row.source_session_id) sender.sessionId = row.source_session_id;
+  if (row.source_runtime_id) sender.runtimeId = row.source_runtime_id;
 
   const message: ChannelMessage = {
     schemaVersion: CHANNEL_CHAT_PROTOCOL_VERSION,
@@ -527,9 +518,9 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
     } = meta;
     if (Object.keys(rest).length > 0) message.meta = rest;
   }
-  if (row.source_session_id) {
+  if (row.source_runtime_id) {
     message.source = {
-      sessionId: row.source_session_id,
+      runtimeId: row.source_runtime_id,
       ...(row.source_turn_id ? { turnId: row.source_turn_id } : {}),
       ...(row.source_item_id ? { itemId: row.source_item_id } : {}),
     };
@@ -558,13 +549,6 @@ function buildMeta(input: {
   if (input.providerId) meta['providerId'] = input.providerId;
   return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
 }
-
-const CHANNEL_MESSAGE_COLUMNS = `
-  id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
-  thread_id, parent_message_id, body_text, body_format, meta_json,
-  source_session_id, source_turn_id, source_item_id, client_message_id,
-  created_at, updated_at, completed_at
-`;
 
 interface LegacyClaudeEchoAliasCandidate {
   keeper_id: string;
@@ -800,8 +784,18 @@ function runMigrations(db: Database.Database): void {
           completed_at      TEXT,
           UNIQUE (channel_id, seq)
         );
-        INSERT INTO channel_messages_v2 (${CHANNEL_MESSAGE_COLUMNS})
-        SELECT ${CHANNEL_MESSAGE_COLUMNS} FROM channel_messages;
+        INSERT INTO channel_messages_v2 (
+          id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
+          thread_id, parent_message_id, body_text, body_format, meta_json,
+          source_session_id, source_turn_id, source_item_id, client_message_id,
+          created_at, updated_at, completed_at
+        )
+        SELECT
+          id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
+          thread_id, parent_message_id, body_text, body_format, meta_json,
+          source_session_id, source_turn_id, source_item_id, client_message_id,
+          created_at, updated_at, completed_at
+        FROM channel_messages;
         DROP TABLE channel_messages;
         ALTER TABLE channel_messages_v2 RENAME TO channel_messages;
       `);
@@ -867,6 +861,22 @@ function runMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 3').run();
     })();
   }
+  if (current < 4) {
+    db.transaction(() => {
+      db.exec(
+        'ALTER TABLE channel_agent_bindings RENAME COLUMN session_id TO runtime_id'
+      );
+      db.prepare('UPDATE schema_version SET version = 4').run();
+    })();
+  }
+  if (current < 5) {
+    db.transaction(() => {
+      db.exec(
+        'ALTER TABLE channel_messages RENAME COLUMN source_session_id TO source_runtime_id'
+      );
+      db.prepare('UPDATE schema_version SET version = 5').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -898,7 +908,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   const selectBySource = db.prepare(
     `SELECT m.*, ${replyCountSql('m')} AS reply_count
        FROM channel_messages m
-      WHERE m.source_session_id IS @sessionId
+      WHERE m.source_runtime_id IS @runtimeId
         AND m.source_turn_id IS @turnId
         AND m.source_item_id IS @itemId`
   );
@@ -917,21 +927,21 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   const insertMessageSql = `INSERT INTO channel_messages (
        id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
        thread_id, parent_message_id, body_text, body_format, meta_json,
-       source_session_id, source_turn_id, source_item_id, client_message_id,
+       source_runtime_id, source_turn_id, source_item_id, client_message_id,
        created_at, updated_at, completed_at
      ) VALUES (
        @id, @channelId,
        (SELECT COALESCE(MAX(seq), 0) + 1 FROM channel_messages WHERE channel_id = @channelId),
        @kind, @status, @senderKind, @senderId, @senderDisplay,
        @threadId, @parentMessageId, @bodyText, @bodyFormat, @metaJson,
-       @sourceSessionId, @sourceTurnId, @sourceItemId, @clientMessageId,
+       @sourceRuntimeId, @sourceTurnId, @sourceItemId, @clientMessageId,
        @createdAt, @updatedAt, @completedAt
      )`;
   const insertMessage = db.prepare(insertMessageSql);
   const insertSourceMessage = db.prepare(
     `${insertMessageSql}
-     ON CONFLICT(source_session_id, source_turn_id, source_item_id)
-       WHERE source_session_id IS NOT NULL
+     ON CONFLICT(source_runtime_id, source_turn_id, source_item_id)
+       WHERE source_runtime_id IS NOT NULL
          AND source_turn_id IS NOT NULL
          AND source_item_id IS NOT NULL
      DO NOTHING`
@@ -961,7 +971,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         return selectById.get(params['id']) as ChannelMessageRow;
       }
       const existing = selectBySource.get({
-        sessionId: params['sourceSessionId'],
+        runtimeId: params['sourceRuntimeId'],
         turnId: params['sourceTurnId'],
         itemId: params['sourceItemId'],
       }) as ChannelMessageRow | undefined;
@@ -1065,7 +1075,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           : {}),
         ...(input.meta ? { extra: input.meta } : {}),
       }),
-      sourceSessionId: input.source?.sessionId ?? null,
+      sourceRuntimeId: input.source?.runtimeId ?? null,
       sourceTurnId: null,
       sourceItemId: null,
       clientMessageId: input.clientMessageId ?? null,
@@ -1080,19 +1090,11 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     channelId: string,
     profileActorId: string
   ): ChannelBinding | null {
-    const select = db
-      .prepare(
-        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
-      );
+    const select = db.prepare(
+      'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+    );
     const row = select.get(channelId, profileActorId) as BindingRow | undefined;
-    if (row) return bindingRowToRecord(row);
-    // Compatibility only after an exact Actor lookup misses: older callers sent
-    // bare provider ids, whose durable binding migrated to the built-in profile.
-    const legacy = select.get(
-      channelId,
-      builtInAgentProfileId(profileActorId)
-    ) as BindingRow | undefined;
-    return legacy ? bindingRowToRecord(legacy) : null;
+    return row ? bindingRowToRecord(row) : null;
   }
 
   return {
@@ -1108,7 +1110,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       // Fast replay path; the INSERT ... ON CONFLICT below is the atomic
       // cross-handle/process backstop when two writers observe a miss together.
       const existing = selectBySource.get({
-        sessionId: input.source.sessionId,
+        runtimeId: input.source.runtimeId,
         turnId: input.source.turnId ?? null,
         itemId: input.source.itemId ?? null,
       }) as ChannelMessageRow | undefined;
@@ -1142,7 +1144,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
             ? { providerId: input.sender.providerId }
             : {}),
         }),
-        sourceSessionId: input.source.sessionId,
+        sourceRuntimeId: input.source.runtimeId,
         sourceTurnId: input.source.turnId ?? null,
         sourceItemId: input.source.itemId ?? null,
         clientMessageId: null,
@@ -1379,7 +1381,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
                   ${replyCountSql('m')} AS reply_count
              FROM channel_messages m
             WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
-              AND m.source_session_id IS NOT NULL
+              AND m.source_runtime_id IS NOT NULL
             ORDER BY m.seq DESC LIMIT @limit`
         )
         .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];
@@ -1520,19 +1522,9 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       return getBindingImpl(channelId, profileActorId);
     },
 
-    listBoundSessionIds() {
-      const rows = db
-        .prepare(
-          'SELECT DISTINCT session_id FROM channel_agent_bindings WHERE session_id IS NOT NULL'
-        )
-        .all() as Array<{ session_id: string }>;
-      return rows.map((row) => row.session_id);
-    },
-
     upsertBinding(input) {
       const now = nowIso();
-      const profileActorId =
-        input.profileActorId ?? builtInAgentProfileId(input.agentFramework);
+      const profileActorId = input.profileActorId;
       const existing = db
         .prepare(
           'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
@@ -1544,21 +1536,21 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       );
       db.prepare(
         `INSERT INTO channel_agent_bindings
-           (channel_id, profile_actor_id, agent_framework, session_id, provider_session_json, created_at, updated_at)
-         VALUES (@channelId, @profileActorId, @agentFramework, @sessionId, @providerSessionJson, @createdAt, @updatedAt)
+           (channel_id, profile_actor_id, agent_framework, runtime_id, provider_session_json, created_at, updated_at)
+         VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @providerSessionJson, @createdAt, @updatedAt)
          ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
            agent_framework = excluded.agent_framework,
-           session_id = excluded.session_id,
+           runtime_id = excluded.runtime_id,
            provider_session_json = excluded.provider_session_json,
            updated_at = excluded.updated_at`
       ).run({
         channelId: input.channelId,
         profileActorId,
         agentFramework: input.agentFramework,
-        sessionId:
-          input.sessionId !== undefined
-            ? input.sessionId
-            : (existing?.session_id ?? null),
+        runtimeId:
+          input.runtimeId !== undefined
+            ? input.runtimeId
+            : (existing?.runtime_id ?? null),
         providerSessionJson,
         createdAt: existing?.created_at ?? now,
         updatedAt: now,
@@ -1700,7 +1692,7 @@ function bindingRowToRecord(row: BindingRow): ChannelBinding {
     channelId: row.channel_id,
     profileActorId: row.profile_actor_id,
     agentFramework: row.agent_framework,
-    sessionId: row.session_id,
+    runtimeId: row.runtime_id,
     providerSession,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

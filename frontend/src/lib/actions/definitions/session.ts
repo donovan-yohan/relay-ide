@@ -9,10 +9,6 @@ import {
   sessionRenameActionAvailability,
   sessionRenameActionDescriptor,
 } from '../session-lifecycle.js';
-import {
-  ticketStartWorkActionAvailability,
-  ticketStartWorkActionDescriptor,
-} from '../start-work-lifecycle.js';
 
 const launchDescriptor = sessionCreateActionDescriptor();
 const launchRequiresContext = (ctx: ActionContext) =>
@@ -32,25 +28,14 @@ const renameDescriptor = sessionRenameActionDescriptor();
 const renameRequiresSession = (ctx: ActionContext) =>
   sessionRenameActionAvailability({ sessionMissing: !ctx.sessionId }).reason;
 
-// #871/#876: session.start-on-ticket is the ticket start-work entry point
-// (StartWorkModal). It carries the composite tickets.startWork descriptor so
-// agents/operators discover the stable contract; availability gates on an
-// active workspace, mirroring the existing `when` predicate (and #870).
-const ticketStartWorkDescriptor = ticketStartWorkActionDescriptor();
-const ticketStartWorkRequiresWorkspace = (ctx: ActionContext) =>
-  ticketStartWorkActionAvailability({ workspaceMissing: !ctx.workspacePath })
-    .reason;
-
 export const sessionNewAgent: ActionMeta = {
   id: 'session.new-agent',
-  label: 'new agent session',
-  description: 'start claude or codex',
+  label: 'new agent chat',
+  description: 'open claude or codex in a chat',
   category: 'session',
   icon: '+',
   shortcut: { key: 'mod+t', global: true },
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: launchRequiresContext,
-  descriptor: launchDescriptor,
 };
 
 export const sessionNewTerminal: ActionMeta = {
@@ -89,31 +74,33 @@ export const sessionKill: ActionMeta = {
 
 export const sessionStartOnRepo: ActionMeta = {
   id: 'session.start-on-repo',
-  label: 'start session on repo',
-  description: 'open agent on current workspace',
+  label: 'open workspace chat',
+  description: 'open an agent chat for the current workspace',
   category: 'session',
   icon: '▸',
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: launchRequiresContext,
-  descriptor: launchDescriptor,
 };
 
 export const sessionStartOnTicket: ActionMeta = {
   id: 'session.start-on-ticket',
   label: 'start work on ticket',
-  description: 'pick a ticket and start coding',
+  description: 'open a ticket prompt in agent chat',
   category: 'session',
   icon: '◆',
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: ticketStartWorkRequiresWorkspace,
-  descriptor: ticketStartWorkDescriptor,
 };
 
 export const sessionCreateTaskRoom: ActionMeta = {
   id: 'session.create-task-room',
   label: 'new chat…',
-  description: 'start a workspace chat, optionally launching an agent',
-  aliases: ['new chat', '+ chat', 'chat', 'workspace chat', 'create and launch'],
+  description: 'start a workspace chat',
+  aliases: [
+    'new chat',
+    '+ chat',
+    'chat',
+    'workspace chat',
+    'create and launch',
+  ],
   category: 'session',
   icon: '+',
   when: (ctx) => !!ctx.workspacePath || !!ctx.cwd,

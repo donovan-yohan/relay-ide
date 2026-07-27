@@ -1,4 +1,4 @@
-// ProtocolAdapter — the core abstraction for the unified web chat interface.
+// ProtocolAdapter — the compatibility abstraction for channel agent runtimes.
 // Each agent backend (Codex, OpenCode, Claude Code) implements this interface
 // to normalize their native protocol into the canonical ChatEvent type system.
 //
@@ -11,11 +11,11 @@ import type { ChatEvent } from '../shared/chat-events.js';
 const logger = createLogger('protocol-adapter');
 
 export interface AdapterConfig {
-  /** Working directory for the agent session */
+  /** Working directory for the adapter-private channel runtime */
   cwd: string;
   /** relay-ide server port (for hooks callbacks) */
   port: number;
-  /** Relay session ID (ties adapter to WebSession) */
+  /** Private channel runtime ID */
   sessionId: string;
   /** Token for authenticating inbound hook callbacks */
   hookToken: string;
@@ -27,7 +27,7 @@ export interface AdapterConfig {
   model?: string;
   /**
    * Runtime-only subprocess environment overlay. Credentials belong here, not
-   * in `extra`, because provider options are persisted with web-session state.
+   * in `extra`, because provider options are persisted with channel bindings.
    */
   processEnv?: Record<string, string>;
   /**
@@ -40,7 +40,7 @@ export interface AdapterConfig {
 }
 
 export interface SessionOptions {
-  /** Resume an existing agent session by ID */
+  /** Resume provider-native conversation state by its provider ID */
   resumeSessionId?: string;
   /** Additional context dirs to include in the agent's workspace */
   additionalDirs?: string[];
@@ -110,15 +110,15 @@ export interface ProtocolAdapter {
     answers: Record<string, string[]>
   ): Promise<void>;
 
-  // ── Session Management ────────────────────────────────────────────────────
+  // ── Provider Conversation State ───────────────────────────────────────────
 
-  /** Create a new agent session in the given directory */
+  /** Create provider-native conversation state for a private channel runtime */
   createSession(cwd: string, options?: SessionOptions): Promise<string>;
 
-  /** Resume an existing agent session */
+  /** Resume provider-native conversation state; not a public Relay Session */
   resumeSession(sessionId: string): Promise<void>;
 
-  /** Fork the current session (returns new session ID) */
+  /** Fork provider-native conversation state and return its provider ID */
   forkSession(sessionId: string): Promise<string>;
 
   // ── Events ────────────────────────────────────────────────────────────────

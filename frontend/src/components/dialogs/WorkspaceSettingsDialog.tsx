@@ -31,20 +31,10 @@ const EMPTY_VALUES: WorkspaceEditorValues = {
   remote: '',
   branchPrefix: '',
   defaultAgent: 'claude',
-  defaultContinue: false,
-  defaultYolo: false,
-  promptCodeReview: '',
-  promptCreatePr: '',
-  promptBranchRename: '',
-  promptGeneral: '',
   portVariables: [],
 };
 
-const SESSION_DEFAULT_KEYS = [
-  'defaultAgent',
-  'defaultContinue',
-  'defaultYolo',
-];
+const SESSION_DEFAULT_KEYS = ['defaultAgent'];
 
 function settingsToValues(s: WorkspaceSettings): WorkspaceEditorValues {
   return {
@@ -54,12 +44,6 @@ function settingsToValues(s: WorkspaceSettings): WorkspaceEditorValues {
     defaultAgent: (s.defaultAgent === 'codex' ? 'codex' : 'claude') as
       | 'claude'
       | 'codex',
-    defaultContinue: s.defaultContinue ?? false,
-    defaultYolo: s.defaultYolo ?? false,
-    promptCodeReview: s.promptCodeReview ?? '',
-    promptCreatePr: s.promptCreatePr ?? '',
-    promptBranchRename: s.promptBranchRename ?? '',
-    promptGeneral: s.promptGeneral ?? '',
     portVariables: s.portVariables ?? [],
   };
 }
@@ -71,19 +55,9 @@ function buildSavePayload(
   const settings: Record<string, unknown> = {};
   if (values.defaultAgent !== original['defaultAgent'])
     settings['defaultAgent'] = values.defaultAgent;
-  if (values.defaultContinue !== original['defaultContinue'])
-    settings['defaultContinue'] = values.defaultContinue;
-  if (values.defaultYolo !== original['defaultYolo'])
-    settings['defaultYolo'] = values.defaultYolo;
   if (values.defaultBranch) settings['defaultBranch'] = values.defaultBranch;
   if (values.remote) settings['remote'] = values.remote;
   if (values.branchPrefix) settings['branchPrefix'] = values.branchPrefix;
-  if (values.promptCodeReview)
-    settings['promptCodeReview'] = values.promptCodeReview;
-  if (values.promptCreatePr) settings['promptCreatePr'] = values.promptCreatePr;
-  if (values.promptBranchRename)
-    settings['promptBranchRename'] = values.promptBranchRename;
-  if (values.promptGeneral) settings['promptGeneral'] = values.promptGeneral;
   // Normalize env port var names before saving by trimming, removing empties,
   // and de-duplicating equivalent entries.
   const filteredPortNames = Array.from(
@@ -196,8 +170,6 @@ const WorkspaceSettingsDialog = forwardRef<
         setValues(settingsToValues(mergedResult.settings));
         setOriginalSettings({
           defaultAgent: mergedResult.settings.defaultAgent,
-          defaultContinue: mergedResult.settings.defaultContinue,
-          defaultYolo: mergedResult.settings.defaultYolo,
           portVariables: mergedResult.settings.portVariables ?? [],
         });
         setOverriddenKeys(mergedResult.overridden);
@@ -240,15 +212,11 @@ const WorkspaceSettingsDialog = forwardRef<
     try {
       await updateWorkspaceSettings(workspacePath, {
         defaultAgent: null,
-        defaultContinue: null,
-        defaultYolo: null,
       } as unknown as Record<string, unknown>);
       const merged = await fetchMergedWorkspaceSettings(workspacePath);
       setValues(settingsToValues(merged.settings));
       setOriginalSettings({
         defaultAgent: merged.settings.defaultAgent,
-        defaultContinue: merged.settings.defaultContinue,
-        defaultYolo: merged.settings.defaultYolo,
         portVariables: merged.settings.portVariables ?? [],
       });
       setOverriddenKeys(merged.overridden);

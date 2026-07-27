@@ -1,5 +1,5 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
-import type { AgentRole, AgentRoster } from '../../../shared/agent-roster.js';
+import type { AgentRole } from '../../../shared/agent-roster.js';
 import type {
   AnchorRef,
   AnchorState,
@@ -80,7 +80,6 @@ import type {
   BranchLinksResponse,
   JiraIssuesResponse,
   JiraStatus,
-  AutomationSettings,
   FilterPreset,
   BranchInfo,
   Workspace,
@@ -113,10 +112,7 @@ import {
   type NodeId,
 } from '../../../shared/identity.js';
 import type { SessionLane } from '../../../shared/session-lane.js';
-import type {
-  ControlActor,
-  InterventionRecord,
-} from '../../../shared/control-state.js';
+import type { InterventionRecord } from '../../../shared/control-state.js';
 import type {
   CommandCenterExecutionConfirmationInput,
   CommandCenterExecutionResult,
@@ -721,34 +717,6 @@ export async function fetchSessionInterventions(
   return json<InterventionReadResponse>(
     await fetch(
       `/sessions/${encodeURIComponent(sessionId)}/interventions?${query.toString()}`
-    )
-  );
-}
-
-export async function handBackSessionControl(input: {
-  sessionId: string;
-  latestSeenInterventionEventId: string;
-  actor?: ControlActor;
-}): Promise<{
-  ok: true;
-  events: unknown[];
-  ackedHumanInterventions: InterventionRecord[];
-}> {
-  return json<{
-    ok: true;
-    events: unknown[];
-    ackedHumanInterventions: InterventionRecord[];
-  }>(
-    await fetch(
-      `/sessions/${encodeURIComponent(input.sessionId)}/control/hand-back`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          latestSeenInterventionEventId: input.latestSeenInterventionEventId,
-          ...(input.actor ? { actor: input.actor } : {}),
-        }),
-      }
     )
   );
 }
@@ -1922,10 +1890,10 @@ export interface RosterEntry {
   /** False when the framework cannot currently be routed to (see `reason`). */
   available: boolean;
   reason: string | null;
-  /** Present for a bound session when its collaboration role is known. */
+  /** Present for a bound runtime when its collaboration role is known. */
   role?: AgentRole;
-  /** Present when a live session is bound to this agent in the channel. */
-  binding: { sessionId: string; status: ChannelAgentStatus } | null;
+  /** Present when a live runtime is bound to this agent in the channel. */
+  binding: { runtimeId: string; status: ChannelAgentStatus } | null;
 }
 
 export async function fetchChannelRoster(
@@ -1937,44 +1905,6 @@ export async function fetchChannelRoster(
     })
   );
   return Array.isArray(data.roster) ? data.roster : [];
-}
-
-/**
- * Read the redaction-safe global agent roster. The HTTP route predates the
- * shared `AgentRoster` envelope and names its entries field `roster`; normalize
- * that transport detail here so frontend consumers use the shared contract.
- */
-export async function fetchAgentRoster(
-  options: {
-    includeTerminals?: boolean;
-    needsAttention?: boolean;
-    limit?: number;
-  } = {}
-): Promise<AgentRoster> {
-  const params = new URLSearchParams();
-  params.set('includeTerminals', String(options.includeTerminals ?? false));
-  if (options.needsAttention !== undefined) {
-    params.set('needsAttention', String(options.needsAttention));
-  }
-  const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 200)));
-  params.set('limit', String(limit));
-  const data = await json<{
-    roster?: AgentRoster['entries'];
-    generatedAt?: string;
-    count?: number;
-    nodeId?: string;
-  }>(
-    await fetch(`/roster?${params.toString()}`, {
-      headers: { 'x-relay-capabilities': 'session:read' },
-    })
-  );
-  const entries = Array.isArray(data.roster) ? data.roster : [];
-  return {
-    generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : '',
-    count: typeof data.count === 'number' ? data.count : entries.length,
-    entries,
-    ...(typeof data.nodeId === 'string' ? { nodeId: data.nodeId } : {}),
-  };
 }
 
 /**
@@ -2007,7 +1937,7 @@ export async function interruptChannelAgent(
 export interface ChannelOrchestratorDesignation {
   ok: true;
   orchestrator: {
-    sessionId: string | null;
+    runtimeId: string | null;
     status: ChannelAgentStatus;
     framework: string;
   };
@@ -2502,42 +2432,21 @@ export interface CreateSessionBody {
   repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
   cwd?: string | undefined;
-  type?: 'agent' | 'terminal' | undefined;
-  mode?: 'pty' | 'web' | undefined;
-  continue?: boolean | undefined;
+  type?: 'terminal' | undefined;
+  mode?: 'pty' | undefined;
   branchName?: string | undefined;
-  claudeArgs?: string[] | undefined;
-  yolo?: boolean | undefined;
-  agent?: string | undefined;
   terminalBackend?: 'relay-pty' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
-  /**
-   * One-shot typed prompt delivered by the server once the agent reaches
-   * `waiting-for-input` (server/sessions.ts; route field name `initialPrompt`).
-   * This is the typed prompt-handoff path used by tickets.startWork /
-   * branches.openSession instead of post-create raw PTY keystroke injection.
-   */
-  initialPrompt?: string | undefined;
   sessionLane?: SessionLane | undefined;
   workContextId?: string | undefined;
   workspaceTopicId?: string | undefined;
-  controlMode?: 'agent-driven' | 'human-driven' | 'co-driven' | undefined;
   /** #740: Bench-inherited env overrides applied additively to the PTY env.
    *  Reserved keys (`PATH`, `RELAY_*`) are refused by the backend. */
   envOverrides?: Record<string, string> | undefined;
-  ticketContext?: {
-    ticketId: string;
-    title: string;
-    description?: string;
-    url: string;
-    source: 'github' | 'jira';
-    repoPath: string;
-    repoName: string;
-  };
 }
 
 function sessionCreatePath(nodeId?: NodeId | undefined): string {
@@ -2827,18 +2736,10 @@ async function setConfigBool(key: string, value: boolean): Promise<void> {
   }
 }
 
-export const fetchDefaultContinue = () => fetchConfigBool('defaultContinue');
-export const setDefaultContinue = (v: boolean) =>
-  setConfigBool('defaultContinue', v);
-export const fetchDefaultYolo = () => fetchConfigBool('defaultYolo');
-export const setDefaultYolo = (v: boolean) => setConfigBool('defaultYolo', v);
 export const fetchDefaultNotifications = () =>
   fetchConfigBool('defaultNotifications');
 export const setDefaultNotifications = (v: boolean) =>
   setConfigBool('defaultNotifications', v);
-export const fetchClaudeFullscreen = () => fetchConfigBool('claudeFullscreen');
-export const setClaudeFullscreen = (v: boolean) =>
-  setConfigBool('claudeFullscreen', v);
 
 export type RenamerTool = 'claude' | 'codex' | 'none' | 'custom-script';
 
@@ -2981,24 +2882,6 @@ export async function fetchAnalyticsSize(): Promise<{ bytes: number }> {
 export async function clearAnalytics(): Promise<void> {
   const res = await fetch('/analytics/events', { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to clear analytics');
-}
-
-export async function fetchAutomations(): Promise<AutomationSettings> {
-  return json<AutomationSettings>(
-    await fetch('/config/automations', { credentials: 'include' })
-  );
-}
-
-export async function updateAutomations(
-  settings: Partial<AutomationSettings>
-): Promise<AutomationSettings> {
-  const res = await fetch('/config/automations', {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(settings),
-  });
-  return json<AutomationSettings>(res);
 }
 
 export async function fetchPresets(): Promise<FilterPreset[]> {
@@ -3231,10 +3114,7 @@ export async function deleteWorkspaceGroup(id: string): Promise<void> {
 export async function launchWorkspaceSession(
   workspaceId: string,
   opts?: {
-    agent?: string;
-    yolo?: boolean;
     terminalBackend?: 'relay-pty';
-    claudeArgs?: string[];
     cols?: number;
     rows?: number;
   }

@@ -63,7 +63,7 @@ function environmentOption(
       online: true,
     },
     capabilities: [
-      'session:create:agent',
+      'session:create:terminal',
       'rpc:fs:read',
       'rpc:fs:write',
       'rpc:git:read',
@@ -254,7 +254,9 @@ describe('handoff destination mapping', () => {
       sourceNodeId,
       destinationNodeId,
       sourcePaths: [`${sourceCwd}/shared/handoff.ts`],
-      mirrorRoots: [mirrorRoot({ destinationNodeId: 'other-destination-node' })],
+      mirrorRoots: [
+        mirrorRoot({ destinationNodeId: 'other-destination-node' }),
+      ],
       allowedDestinationRoots: ['/srv/relay'],
     });
 
@@ -441,7 +443,7 @@ describe('handoff destination mapping', () => {
     const conflicts = detectHandoffDestinationConflicts({
       source: source(),
       destination: environmentOption({
-        capabilities: ['session:create:agent'],
+        capabilities: ['session:create:terminal'],
         freshness: 'offline',
         node: {
           nodeId: destinationNodeId,

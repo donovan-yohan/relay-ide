@@ -8,8 +8,7 @@ describe('sessions.create displayName', () => {
   it('accepts displayName on a local cwd create', () => {
     const result = validateAndSanitizeGatewayCreateInput({
       cwd: REPO_CWD,
-      type: 'agent',
-      agent: 'codex',
+      type: 'terminal',
       displayName: 'implementer-codex-1',
     });
     expect(result.ok).toBe(true);
@@ -20,7 +19,7 @@ describe('sessions.create displayName', () => {
   it('rejects a non-string displayName', () => {
     const result = validateAndSanitizeGatewayCreateInput({
       cwd: REPO_CWD,
-      type: 'agent',
+      type: 'terminal',
       displayName: 7,
     });
     expect(result.ok).toBe(false);
@@ -29,40 +28,21 @@ describe('sessions.create displayName', () => {
   });
 });
 
-describe('sessions.create role', () => {
-  it('declares the role enum on create input and session descriptors', () => {
+describe('sessions.create retired agent fields', () => {
+  it('does not advertise role on terminal create input', () => {
     const create = commandSpec('sessions.create');
-    expect(create.inputSchema.properties?.['role']?.enum).toContain(
-      'orchestrator'
-    );
-    expect(
-      create.outputSchema.properties?.['data']?.properties?.['role']?.enum
-    ).toContain('orchestrator');
+    expect(create.inputSchema.properties?.['role']).toBeUndefined();
   });
 
-  it('accepts a known collaboration role', () => {
+  it('rejects collaboration roles on terminal creation', () => {
     const result = validateAndSanitizeGatewayCreateInput({
       cwd: REPO_CWD,
-      type: 'agent',
-      mode: 'web',
-      agent: 'claude',
+      type: 'terminal',
       role: 'orchestrator',
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok !== true) return;
-    expect(result.input['role']).toBe('orchestrator');
-  });
-
-  it('rejects an unknown collaboration role', () => {
-    const result = validateAndSanitizeGatewayCreateInput({
-      cwd: REPO_CWD,
-      type: 'agent',
-      mode: 'web',
-      role: 'manager',
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe('INVALID_ARGUMENT');
+    expect(result.error.code).toBe('UNSUPPORTED');
     expect(result.error.details?.['field']).toBe('role');
   });
 });

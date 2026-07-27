@@ -22,21 +22,11 @@ import {
   MessageSquare,
   TriangleAlert,
 } from 'lucide-react';
-import type {
-  WorkflowRunProjection,
-  WorkflowRunSessionLink,
-  WorkflowRunState,
-} from '../../../shared/workflow-run.js';
-import type { RosterAttention } from '../../../shared/agent-roster.js';
 import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
   parseMentions,
   type ChannelMessage,
 } from '../../../shared/channel-chat-protocol.js';
-import {
-  createGlobalSessionId,
-  DEFAULT_LOCAL_NODE_ID,
-} from '../../../shared/identity.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -45,10 +35,8 @@ import {
 } from '../../../shared/workspace-topics.js';
 import {
   fetchHubNodes,
-  fetchAgentRoster,
   fetchChannelRoster,
   fetchChannelHistory,
-  fetchWorkflowRuns,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
   interruptChannelAgent,
@@ -58,9 +46,9 @@ import {
   sendSessionInput,
   type ChannelAgentStatus,
 } from '../lib/api.js';
+import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
-import { buildSessionLineage } from '../lib/session-lineage.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import {
   hasUnseenActivity,
@@ -94,7 +82,6 @@ import {
   type TopicNavParticipantRef,
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
-  type TopicNavTone,
 } from '../lib/state/topic-nav.js';
 import { MarqueeText } from './MarqueeText.js';
 import {
@@ -135,11 +122,9 @@ type TopicSendInput = typeof sendSessionInput;
 const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
-const WORKFLOW_RUNS_LIMIT = 5;
 const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
 const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
 const CURRENT_OPERATOR_MENTION_NAME = 'operator';
-const EMPTY_WORKFLOW_RUNS: WorkflowRunProjection[] = [];
 
 function useMobileCockpitViewport(): boolean {
   const [matches, setMatches] = useState(
@@ -213,27 +198,12 @@ function sessionAttachDisabledReason(
   return null;
 }
 
-function sessionControlDisabledReason(
-  session: TopicNavSessionRef | undefined
-): string | null {
-  if (!session) return 'no session linked to this topic';
-  const attachReason = sessionAttachDisabledReason(session);
-  if (attachReason) return attachReason;
-  if (session.controlFreshness === 'stale') return 'stale control state';
-  if (session.controlFreshness !== 'fresh') return 'unknown control state';
-  if (session.mode === 'web') return 'web session input is unsupported here';
-  return null;
-}
-
 function topicPrimaryAction(item: TopicNavItem): {
   label: string;
   detail: string;
   disabledReason: string | null;
 } {
   const session = topicPrimarySession(item);
-  const controlDisabledReason = session
-    ? sessionControlDisabledReason(session)
-    : null;
   const attachDisabledReason = session
     ? sessionAttachDisabledReason(session)
     : null;
@@ -241,14 +211,14 @@ function topicPrimaryAction(item: TopicNavItem): {
     return {
       label: 'approve',
       detail: 'send an audited approval reply to the live session',
-      disabledReason: controlDisabledReason,
+      disabledReason: attachDisabledReason,
     };
   }
   if (session?.displayState === 'needs-answer') {
     return {
       label: 'reply',
       detail: 'send a short audited reply without opening the terminal first',
-      disabledReason: controlDisabledReason,
+      disabledReason: attachDisabledReason,
     };
   }
   if (session && attachDisabledReason) {
@@ -292,7 +262,7 @@ function shouldShowMobileControlPanel(item: TopicNavItem | undefined): boolean {
 
 function topicLatestStatus(item: TopicNavItem): string {
   const session = topicPrimarySession(item);
-  if (session?.agentState === 'permission-prompt') {
+  if (session?.activityState === 'permission-prompt') {
     const status = session.currentActivity?.detail
       ? `${item.statusLabel} · ${session.currentActivity.detail}`
       : item.statusLabel;
@@ -382,8 +352,7 @@ function topicRoomSessionGroup(
   if (
     session.status === 'disconnected' ||
     session.durability === 'stale-node' ||
-    session.durability === 'ended' ||
-    session.controlFreshness === 'stale'
+    session.durability === 'ended'
   ) {
     return 'stale-offline';
   }
@@ -580,7 +549,7 @@ function ParticipantRoster({
                     {participant.nodeLabel ? ` · ${participant.nodeLabel}` : ''}
                   </span>
                   <span className="topic-participant-card__meta">
-                    {lastActivityLabel} · {participant.controlLabel}
+                    {lastActivityLabel}
                   </span>
                   {participant.summaryLabel ? (
                     <span className="topic-participant-card__summary">
@@ -612,12 +581,6 @@ function SessionLineageRow({
 }) {
   const status = sessionLineageStatus(session);
   const selectKey = scopedSessionKey(session);
-  const identity = resolveSenderIdentity({
-    kind: 'agent',
-    id: selectKey,
-    providerId: session.agent,
-    displayName: session.displayName,
-  });
   const rowStyle = { '--session-lineage-depth': depth } as CSSProperties;
   return (
     <li className="session-lineage-tree__item" style={rowStyle}>
@@ -630,21 +593,13 @@ function SessionLineageRow({
         onClick={() => onSelectSession?.(selectKey)}
       >
         <span className="session-lineage-tree__icon" aria-hidden="true">
-          <AgentAvatar
-            identity={identity}
-            name={session.displayName}
-            presence={status === 'active' ? 'busy' : 'online'}
-            size={20}
-          />
+          ›_
         </span>
         <span className="session-lineage-tree__content">
           <span className="session-lineage-tree__name">
             <MarqueeText>{session.displayName}</MarqueeText>
           </span>
           <span className="session-lineage-tree__meta">
-            {session.role === 'orchestrator' ? (
-              <span className="session-lineage-tree__role">orchestrator</span>
-            ) : null}
             <span>{status}</span>
           </span>
         </span>
@@ -656,7 +611,7 @@ function SessionLineageRow({
   );
 }
 
-/** Operator-facing, one-hop hierarchy over the live session summaries. */
+/** Operator-facing list of live terminal sessions. */
 function SessionLineageTree({
   sessions,
   onSelectSession,
@@ -664,88 +619,26 @@ function SessionLineageTree({
   sessions: SessionSummary[];
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const lineage = buildSessionLineage(sessions);
-  const hasOrchestrators = lineage.orchestrators.length > 0;
-  if (
-    !hasOrchestrators &&
-    lineage.standalone.length === 0 &&
-    lineage.ungrouped.length === 0
-  ) {
-    return null;
-  }
+  if (sessions.length === 0) return null;
   return (
     <section
-      className={`session-lineage-tree${hasOrchestrators ? '' : ' session-lineage-tree--flat'}`}
+      className="session-lineage-tree session-lineage-tree--flat"
       aria-label="session lineage"
     >
       <div className="session-lineage-tree__header">
         <span>session tree</span>
         <span>{sessions.length} live</span>
       </div>
-      {hasOrchestrators ? (
-        <ul className="session-lineage-tree__list">
-          {lineage.orchestrators.map(({ session, workers }) => (
-            <li
-              className="session-lineage-tree__branch"
-              key={scopedSessionKey(session)}
-            >
-              <ul className="session-lineage-tree__list">
-                <SessionLineageRow
-                  session={session}
-                  depth={0}
-                  onSelectSession={onSelectSession}
-                />
-              </ul>
-              {workers.length > 0 ? (
-                <ul className="session-lineage-tree__list">
-                  {workers.map((worker) => (
-                    <SessionLineageRow
-                      key={scopedSessionKey(worker)}
-                      session={worker}
-                      depth={1}
-                      onSelectSession={onSelectSession}
-                    />
-                  ))}
-                </ul>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {lineage.standalone.length > 0 ? (
-        <div className="session-lineage-tree__bucket">
-          <div className="session-lineage-tree__bucket-label">
-            {hasOrchestrators ? 'other sessions' : 'sessions'}
-          </div>
-          <ul className="session-lineage-tree__list">
-            {lineage.standalone.map((session) => (
-              <SessionLineageRow
-                key={scopedSessionKey(session)}
-                session={session}
-                depth={0}
-                onSelectSession={onSelectSession}
-              />
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {lineage.ungrouped.length > 0 ? (
-        <div className="session-lineage-tree__bucket">
-          <div className="session-lineage-tree__bucket-label">
-            ungrouped/other
-          </div>
-          <ul className="session-lineage-tree__list">
-            {lineage.ungrouped.map((session) => (
-              <SessionLineageRow
-                key={scopedSessionKey(session)}
-                session={session}
-                depth={0}
-                onSelectSession={onSelectSession}
-              />
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <ul className="session-lineage-tree__list">
+        {sessions.map((session) => (
+          <SessionLineageRow
+            key={scopedSessionKey(session)}
+            session={session}
+            depth={0}
+            onSelectSession={onSelectSession}
+          />
+        ))}
+      </ul>
     </section>
   );
 }
@@ -757,7 +650,7 @@ function TopicRoomSessionRow({
   session: TopicNavSessionRef;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const disabledReason = sessionControlDisabledReason(session);
+  const disabledReason = sessionAttachDisabledReason(session);
   return (
     <li className={`topic-room-session topic-room-session--${session.tone}`}>
       <button
@@ -771,7 +664,7 @@ function TopicRoomSessionRow({
             <MarqueeText>{session.label}</MarqueeText>
           </span>
           <span className="topic-room-session__meta">
-            {session.agent} · {session.type} · {session.displayState}
+            terminal · {session.displayState}
           </span>
         </span>
         <span className="topic-room-session__anchor">
@@ -786,244 +679,6 @@ function TopicRoomSessionRow({
         </span>
       ) : null}
     </li>
-  );
-}
-
-function workflowRunTone(state: WorkflowRunState): TopicNavTone {
-  if (state === 'failed' || state === 'cancelled' || state === 'stale') {
-    return 'error';
-  }
-  if (state === 'waiting') return 'attention';
-  if (state === 'queued' || state === 'running') return 'active';
-  if (state === 'succeeded') return 'idle';
-  return 'empty';
-}
-
-function orchestrationLaneTone(link: WorkflowRunSessionLink): TopicNavTone {
-  if (link.attention?.needsAttention) return 'attention';
-  return workflowRunTone(link.state ?? 'unknown');
-}
-
-function orchestrationLaneSelectKey(
-  link: WorkflowRunSessionLink
-): string | null {
-  if (link.globalSessionId) return link.globalSessionId;
-  if (link.nodeId && link.nodeId !== DEFAULT_LOCAL_NODE_ID && link.sessionId) {
-    return createGlobalSessionId(link.nodeId, link.sessionId);
-  }
-  return link.sessionId ?? null;
-}
-
-function orchestrationLaneLabel(link: WorkflowRunSessionLink): string {
-  return (
-    link.displayName ??
-    link.sessionId ??
-    link.globalSessionId ??
-    `${link.role} lane`
-  );
-}
-
-function orchestrationLaneStatus(link: WorkflowRunSessionLink): string {
-  const pending = link.attention?.pendingInboxCount ?? 0;
-  if (pending > 0) return `${pending} pending`;
-  if (link.attention?.needsAttention) {
-    const reasons = link.attention.reasons?.slice(0, 2).join(', ');
-    return reasons ? `attention · ${reasons}` : 'needs attention';
-  }
-  return link.state ?? 'linked';
-}
-
-function orchestrationRunSummary(run: WorkflowRunProjection): string {
-  if (run.errorSummary) return run.errorSummary;
-  if (run.resultSummary) return run.resultSummary;
-  const latest = run.journal?.[run.journal.length - 1];
-  return latest?.summary ?? 'no run journal yet';
-}
-
-function orchestrationRunEvidenceRefs(run: WorkflowRunProjection): string[] {
-  return [
-    ...(run.links?.artifactIds ?? []),
-    ...(run.links?.handoffArtifactIds ?? []),
-  ];
-}
-
-function orchestrationRunMailCount(run: WorkflowRunProjection): number {
-  const links = [
-    run.orchestration?.planner,
-    ...(run.orchestration?.children ?? []),
-  ].filter((link): link is WorkflowRunSessionLink => Boolean(link));
-  const attentionCount = links.reduce(
-    (sum, link) => sum + (link.attention?.pendingInboxCount ?? 0),
-    0
-  );
-  return Math.max(run.links?.inboxMessageIds?.length ?? 0, attentionCount);
-}
-
-function isOrchestrationWorkflowRun(run: WorkflowRunProjection): boolean {
-  return run.runKind === 'relay-orchestration' || Boolean(run.orchestration);
-}
-
-function OrchestrationLaneRow({
-  link,
-  laneKind,
-  onSelectSession,
-}: {
-  link: WorkflowRunSessionLink;
-  laneKind: 'planner' | 'worker';
-  onSelectSession?: ((id: string) => void) | undefined;
-}) {
-  const selectKey = orchestrationLaneSelectKey(link);
-  const handleSelect =
-    selectKey && onSelectSession ? () => onSelectSession(selectKey) : undefined;
-  const tone = orchestrationLaneTone(link);
-  return (
-    <li
-      className={`topic-orchestration-lane topic-orchestration-lane--${tone}`}
-    >
-      <button
-        type="button"
-        className="topic-orchestration-lane__button"
-        {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
-        title={
-          handleSelect ? `open ${link.role} session` : 'session not linked'
-        }
-      >
-        <span className="topic-orchestration-lane__icon" aria-hidden="true">
-          <MessageSquare size={12} />
-        </span>
-        <span className="topic-orchestration-lane__main">
-          <span className="topic-orchestration-lane__label">
-            <MarqueeText>{orchestrationLaneLabel(link)}</MarqueeText>
-          </span>
-          <span className="topic-orchestration-lane__meta">
-            {laneKind} · {link.role} · {link.provider ?? 'provider unknown'}
-          </span>
-        </span>
-        <span className="topic-orchestration-lane__state">
-          {orchestrationLaneStatus(link)}
-        </span>
-        <StatusGlyph tone={tone} />
-      </button>
-    </li>
-  );
-}
-
-function OrchestrationRunCard({
-  run,
-  onSelectSession,
-}: {
-  run: WorkflowRunProjection;
-  onSelectSession?: ((id: string) => void) | undefined;
-}) {
-  const planner = run.orchestration?.planner;
-  const children = run.orchestration?.children ?? [];
-  const lanes = (planner ? 1 : 0) + children.length;
-  const evidenceRefs = orchestrationRunEvidenceRefs(run);
-  const mailCount = orchestrationRunMailCount(run);
-  return (
-    <article
-      className={`topic-orchestration-run topic-orchestration-run--${workflowRunTone(run.state)}`}
-    >
-      <div className="topic-orchestration-run__header">
-        <span className="topic-orchestration-run__title">
-          <MarqueeText>{run.definition.templateId ?? run.runId}</MarqueeText>
-        </span>
-        <span className="topic-orchestration-run__state">{run.state}</span>
-      </div>
-      <p className="topic-orchestration-run__summary">
-        {orchestrationRunSummary(run)}
-      </p>
-      <div className="topic-orchestration-run__meta">
-        <span>{lanes} lanes</span>
-        <span>{mailCount} mail</span>
-        <span>{evidenceRefs.length} evidence refs</span>
-        <span>updated {formatRelativeTimeCompact(run.updatedAt)}</span>
-      </div>
-      {evidenceRefs.length > 0 ? (
-        <div
-          className="topic-orchestration-run__evidence"
-          aria-label="orchestration evidence refs"
-        >
-          {evidenceRefs.slice(0, 3).map((ref) => (
-            <span key={ref}>{ref}</span>
-          ))}
-          {evidenceRefs.length > 3 ? (
-            <span>+{evidenceRefs.length - 3} more</span>
-          ) : null}
-        </div>
-      ) : null}
-      <ul className="topic-orchestration-run__lanes">
-        {planner ? (
-          <OrchestrationLaneRow
-            link={planner}
-            laneKind="planner"
-            {...(onSelectSession ? { onSelectSession } : {})}
-          />
-        ) : null}
-        {children.map((child, index) => (
-          <OrchestrationLaneRow
-            key={
-              child.globalSessionId ??
-              child.sessionId ??
-              `${child.role}:${child.provider ?? 'worker'}:${index}`
-            }
-            link={child}
-            laneKind="worker"
-            {...(onSelectSession ? { onSelectSession } : {})}
-          />
-        ))}
-        {!planner && children.length === 0 ? (
-          <li className="topic-room-empty">no visible lanes linked yet</li>
-        ) : null}
-      </ul>
-    </article>
-  );
-}
-
-function TopicRoomOrchestrationRuns({
-  item,
-  workflowRuns,
-  loading,
-  error,
-  onSelectSession,
-}: {
-  item: TopicNavItem;
-  workflowRuns: WorkflowRunProjection[];
-  loading: boolean;
-  error: boolean;
-  onSelectSession?: ((id: string) => void) | undefined;
-}) {
-  const workContextId = item.workContextIds[0];
-  if (!workContextId) {
-    return <p className="topic-room-empty">no WorkContext linked yet</p>;
-  }
-  if (loading && workflowRuns.length === 0) {
-    return <p className="topic-room-empty">orchestration runs loading...</p>;
-  }
-  if (error && workflowRuns.length === 0) {
-    return (
-      <p className="topic-room-empty error">orchestration runs unavailable</p>
-    );
-  }
-  const orchestrationRuns = workflowRuns.filter(isOrchestrationWorkflowRun);
-  if (orchestrationRuns.length === 0) {
-    return <p className="topic-room-empty">no orchestration runs linked yet</p>;
-  }
-  return (
-    <div className="topic-orchestration-list">
-      {orchestrationRuns.map((run) => (
-        <OrchestrationRunCard
-          key={run.id}
-          run={run}
-          {...(onSelectSession ? { onSelectSession } : {})}
-        />
-      ))}
-      {error ? (
-        <p className="topic-room-empty error">
-          orchestration runs partially unavailable
-        </p>
-      ) : null}
-    </div>
   );
 }
 
@@ -1129,9 +784,6 @@ function TopicDetail({
   workspaceName,
   surfacesError,
   surfacesLoading,
-  workflowRuns,
-  workflowRunsError,
-  workflowRunsLoading,
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
@@ -1143,9 +795,6 @@ function TopicDetail({
   workspaceName?: string | null | undefined;
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
-  workflowRuns: WorkflowRunProjection[];
-  workflowRunsError: boolean;
-  workflowRunsLoading: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
@@ -1155,9 +804,6 @@ function TopicDetail({
   const session = topicPrimarySession(item);
   const topSurface = item.surfaces[0];
   const groupedSessions = topicRoomGroupedSessions(item);
-  const orchestrationRunCount = workflowRuns.filter(
-    isOrchestrationWorkflowRun
-  ).length;
   const primaryDisabled =
     Boolean(action.disabledReason) || (!session && !topSurface?.target);
   return (
@@ -1237,20 +883,6 @@ function TopicDetail({
         <span>latest bounded status</span>
         <strong>{topicRoomLatestSummary(item)}</strong>
       </div>
-
-      <section className="topic-room__section" aria-label="orchestration runs">
-        <div className="topic-room__section-header">
-          <span>orchestration</span>
-          <span>{orchestrationRunCount} runs</span>
-        </div>
-        <TopicRoomOrchestrationRuns
-          item={item}
-          workflowRuns={workflowRuns}
-          loading={workflowRunsLoading}
-          error={workflowRunsError}
-          onSelectSession={onSelectSession}
-        />
-      </section>
 
       <section className="topic-room__section" aria-label="grouped sessions">
         <div className="topic-room__section-header">
@@ -1535,11 +1167,7 @@ function TopicMobileControlPanel({
           <div className="topic-mobile-detail__meta">
             <span>{item.kindLabel}</span>
             {item.routingLabel ? <span>{item.routingLabel}</span> : null}
-            {session ? (
-              <span>
-                {session.agent} · {session.type}
-              </span>
-            ) : null}
+            {session ? <span>terminal</span> : null}
             {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
           </div>
           {item.description ? (
@@ -1720,19 +1348,6 @@ function TopicAdvancedDetailGate({
   restoringTopicId?: string | undefined;
   onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
-  const workContextId = item?.workContextIds[0] ?? null;
-  const workflowRunsQuery = useQuery({
-    queryKey: ['workflow-runs', workContextId, WORKFLOW_RUNS_LIMIT],
-    queryFn: () => {
-      if (!workContextId) return Promise.resolve(EMPTY_WORKFLOW_RUNS);
-      return fetchWorkflowRuns({
-        workContextId,
-        limit: WORKFLOW_RUNS_LIMIT,
-      });
-    },
-    enabled: Boolean(item && show && workContextId),
-    staleTime: 10_000,
-  });
   if (!item || !show) return null;
   return (
     <div className="topic-shell__advanced-detail">
@@ -1742,11 +1357,6 @@ function TopicAdvancedDetailGate({
         workspaceName={resolveWorkspaceName(item, workspaceNameById)}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
-        workflowRuns={workflowRunsQuery.data ?? EMPTY_WORKFLOW_RUNS}
-        workflowRunsError={workflowRunsQuery.isError}
-        workflowRunsLoading={
-          workflowRunsQuery.isLoading || workflowRunsQuery.isFetching
-        }
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
@@ -2073,7 +1683,7 @@ function TopicMobileCockpit({
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   mentionsMeByChannel: Readonly<Record<string, boolean>>;
-  rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
+  rosterAttentionBySessionKey: Readonly<Record<string, CockpitRosterAttention>>;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onNudge: (
@@ -2774,32 +2384,8 @@ export function TopicSidebarView({
     statusByChannelAgent,
     statusUpdatedAtByChannelAgent,
   ]);
-  const mobileAgentRosterQuery = useQuery({
-    queryKey: ['agent-roster', 'mobile-cockpit', 200],
-    queryFn: () =>
-      fetchAgentRoster({
-        includeTerminals: false,
-        needsAttention: true,
-        limit: 200,
-      }),
-    enabled: mobileCockpitViewport && sidebarOpen,
-    staleTime: 30_000,
-    retry: false,
-  });
-  const rosterAttentionBySessionKey = useMemo(() => {
-    const attentionBySessionKey: Record<string, RosterAttention> = {};
-    for (const entry of mobileAgentRosterQuery.data?.entries ?? []) {
-      attentionBySessionKey[entry.sessionId] = entry.attention;
-      if (entry.globalSessionId) {
-        attentionBySessionKey[entry.globalSessionId] = entry.attention;
-      } else if (entry.nodeId) {
-        attentionBySessionKey[
-          createGlobalSessionId(entry.nodeId, entry.sessionId)
-        ] = entry.attention;
-      }
-    }
-    return attentionBySessionKey;
-  }, [mobileAgentRosterQuery.data]);
+  const rosterAttentionBySessionKey: Record<string, CockpitRosterAttention> =
+    {};
   const railTree = useMemo(
     () => selectChannelRailTree(model, workspaces, { unreadByChannel }),
     [model, unreadByChannel, workspaces]

@@ -72,8 +72,6 @@ interface ConfigSummary {
     port: number;
     updateChannel?: string;
     defaultFramework: string;
-    defaultContinue: boolean;
-    defaultYolo: boolean;
     maxPtySessions: number;
     repoCount: number;
     workspaceCount: number;
@@ -101,28 +99,32 @@ const DEFAULT_LOG_LINES = 200;
 const SENSITIVE_KEY_PATTERN =
   'token|secret|password|passwd|pwd|pin|cookie|authorization|credential|private[_-]?key|privatekey|access[_-]?key|accesskey|api[_-]?key|apikey|webhook|hash';
 
-export const DIAGNOSTICS_REDACTION_RULES: readonly DiagnosticsRedactionRule[] = [
-  {
-    id: 'sensitive-json-key',
-    description:
-      'JSON object keys matching token/secret/password/passwd/pwd/pin/cookie/authorization/credential/private-key/access-key/api-key/webhook/hash',
-  },
-  { id: 'private-key-block', description: 'private key PEM blocks' },
-  { id: 'authorization-header', description: 'full Authorization header values' },
-  { id: 'bearer-token', description: 'standalone Bearer token values' },
-  { id: 'cookie-header', description: 'cookie header values' },
-  { id: 'github-token', description: 'GitHub token formats' },
-  {
-    id: 'url-credential',
-    description:
-      'URL embedded credentials (any scheme: http/https/ws/wss/git/ssh/...)',
-  },
-  {
-    id: 'secret-assignment',
-    description:
-      'text assignments for sensitive key terms, including quoted values',
-  },
-] as const;
+export const DIAGNOSTICS_REDACTION_RULES: readonly DiagnosticsRedactionRule[] =
+  [
+    {
+      id: 'sensitive-json-key',
+      description:
+        'JSON object keys matching token/secret/password/passwd/pwd/pin/cookie/authorization/credential/private-key/access-key/api-key/webhook/hash',
+    },
+    { id: 'private-key-block', description: 'private key PEM blocks' },
+    {
+      id: 'authorization-header',
+      description: 'full Authorization header values',
+    },
+    { id: 'bearer-token', description: 'standalone Bearer token values' },
+    { id: 'cookie-header', description: 'cookie header values' },
+    { id: 'github-token', description: 'GitHub token formats' },
+    {
+      id: 'url-credential',
+      description:
+        'URL embedded credentials (any scheme: http/https/ws/wss/git/ssh/...)',
+    },
+    {
+      id: 'secret-assignment',
+      description:
+        'text assignments for sensitive key terms, including quoted values',
+    },
+  ] as const;
 
 const SENSITIVE_KEY_RE = new RegExp(SENSITIVE_KEY_PATTERN, 'i');
 const NON_SECRET_STATE_KEY_RE = /(configured|present|count|status|state)$/i;
@@ -184,7 +186,11 @@ export async function createDiagnosticsBundle(
     entries.push(entry);
   };
 
-  const writeJson = (relativePath: string, source: string, value: unknown): void => {
+  const writeJson = (
+    relativePath: string,
+    source: string,
+    value: unknown
+  ): void => {
     const redacted = redactJson(value);
     const filePath = writeBundleFile(
       bundleDir,
@@ -199,7 +205,11 @@ export async function createDiagnosticsBundle(
     });
   };
 
-  const writeText = (relativePath: string, source: string, value: string): void => {
+  const writeText = (
+    relativePath: string,
+    source: string,
+    value: string
+  ): void => {
     const redacted = redactText(value);
     const filePath = writeBundleFile(bundleDir, relativePath, redacted.value);
     addEntry({
@@ -224,7 +234,11 @@ export async function createDiagnosticsBundle(
   );
 
   const config = options.config ?? loadConfigIfPresent(configPath);
-  writeJson('config-summary.json', 'config summary', buildConfigSummary(configPath, config));
+  writeJson(
+    'config-summary.json',
+    'config summary',
+    buildConfigSummary(configPath, config)
+  );
   if (config instanceof Error) {
     addEntry({
       path: 'config-redacted.json',
@@ -245,8 +259,16 @@ export async function createDiagnosticsBundle(
     });
   }
 
-  writeJson('version.json', 'package and runtime version info', options.versionInfo ?? collectVersionInfo(cwd));
-  writeJson('environment.json', 'selected environment hints', buildEnvironmentHints(env, cwd));
+  writeJson(
+    'version.json',
+    'package and runtime version info',
+    options.versionInfo ?? collectVersionInfo(cwd)
+  );
+  writeJson(
+    'environment.json',
+    'selected environment hints',
+    buildEnvironmentHints(env, cwd)
+  );
   writeJson(
     'processes/language-servers.json',
     'local language-server process diagnostics',
@@ -255,7 +277,9 @@ export async function createDiagnosticsBundle(
 
   const manifest =
     options.manifest ??
-    (await getNodeManifest(config && !(config instanceof Error) ? { config } : {}));
+    (await getNodeManifest(
+      config && !(config instanceof Error) ? { config } : {}
+    ));
   writeJson('node-manifest.json', 'local node capability manifest', manifest);
 
   writeJson('service-status.json', 'local service status', {
@@ -264,12 +288,21 @@ export async function createDiagnosticsBundle(
   });
 
   writeLogSnapshot('hub', lines, configPath, servicePaths, writeText, addEntry);
-  writeLogSnapshot('node', lines, configPath, servicePaths, writeText, addEntry);
+  writeLogSnapshot(
+    'node',
+    lines,
+    configPath,
+    servicePaths,
+    writeText,
+    addEntry
+  );
 
   writeJson(
     'node-credential-summary.json',
     'local relay-node credential metadata',
-    readNodeCredentialSummary(path.join(service.CONFIG_DIR, 'node-credential.json'))
+    readNodeCredentialSummary(
+      path.join(service.CONFIG_DIR, 'node-credential.json')
+    )
   );
 
   writeOptionalRedactedJsonFile({
@@ -286,7 +319,8 @@ export async function createDiagnosticsBundle(
     source: 'remote paired-node diagnostics',
     status: 'skipped',
     redacted: false,
-    reason: 'local diagnostics bundle only; remote node fan-in is intentionally out of scope',
+    reason:
+      'local diagnostics bundle only; remote node fan-in is intentionally out of scope',
   });
 
   entries.push({
@@ -332,7 +366,11 @@ function writeLogSnapshot(
     lines,
   });
   if (snapshot.output) {
-    writeText(`logs/${role}.log`, `${role} local log snapshot`, snapshot.output);
+    writeText(
+      `logs/${role}.log`,
+      `${role} local log snapshot`,
+      snapshot.output
+    );
   } else {
     const plan = resolveLocalLogPlan(configPath, servicePaths.logDir);
     addEntry({
@@ -365,7 +403,9 @@ function writeOptionalRedactedJsonFile(options: {
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(options.sourcePath, 'utf8')) as unknown;
+    const parsed = JSON.parse(
+      fs.readFileSync(options.sourcePath, 'utf8')
+    ) as unknown;
     const redacted = redactJson(parsed);
     const filePath = writeBundleFile(
       options.bundleDir,
@@ -423,15 +463,17 @@ function buildConfigSummary(
       port: config.port,
       ...(config.updateChannel ? { updateChannel: config.updateChannel } : {}),
       defaultFramework: config.defaultFramework,
-      defaultContinue: config.defaultContinue,
-      defaultYolo: config.defaultYolo,
       maxPtySessions: config.maxPtySessions,
       repoCount: config.repos.length,
       workspaceCount: config.workspaces?.length ?? 0,
       repoSettingsCount: Object.keys(config.repoSettings ?? {}).length,
       frameworkOverrideCount: Object.keys(config.frameworks ?? {}).length,
-      githubConfigured: Boolean(config.github?.accessToken || config.github?.username),
-      webhookConfigured: Boolean(config.github?.webhookSecret || config.github?.smeeUrl),
+      githubConfigured: Boolean(
+        config.github?.accessToken || config.github?.username
+      ),
+      webhookConfigured: Boolean(
+        config.github?.webhookSecret || config.github?.smeeUrl
+      ),
       pinConfigured: isPinConfigured(config.pinHash),
       vapidConfigured: Boolean(config.vapidPublicKey || config.vapidPrivateKey),
     },
@@ -448,7 +490,8 @@ function buildEnvironmentHints(
     if (value !== undefined) selected[key] = value;
   }
   for (const [key, value] of Object.entries(env)) {
-    if (key.startsWith('RELAY_IDE_') && value !== undefined) selected[key] = value;
+    if (key.startsWith('RELAY_IDE_') && value !== undefined)
+      selected[key] = value;
   }
   return {
     cwd,
@@ -474,7 +517,9 @@ function buildEnvironmentHints(
   };
 }
 
-function readNodeCredentialSummary(credentialPath: string): NodeCredentialSummary {
+function readNodeCredentialSummary(
+  credentialPath: string
+): NodeCredentialSummary {
   if (!fs.existsSync(credentialPath)) {
     return { path: credentialPath, exists: false, loaded: false };
   }
@@ -492,7 +537,12 @@ function readNodeCredentialSummary(credentialPath: string): NodeCredentialSummar
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { path: credentialPath, exists: true, loaded: false, error: message };
+    return {
+      path: credentialPath,
+      exists: true,
+      loaded: false,
+      error: message,
+    };
   }
 }
 
@@ -673,20 +723,32 @@ function replaceAndCountWith(
 }
 
 function increment(
-  counts: Record<string, number>, rule: string, amount = 1): void {
+  counts: Record<string, number>,
+  rule: string,
+  amount = 1
+): void {
   counts[rule] = (counts[rule] ?? 0) + amount;
 }
 
 function mergeCounts(
-  target: Record<string, number>, source: Record<string, number>): void {
-  for (const [rule, count] of Object.entries(source)) increment(target, rule, count);
+  target: Record<string, number>,
+  source: Record<string, number>
+): void {
+  for (const [rule, count] of Object.entries(source))
+    increment(target, rule, count);
 }
 
-function writeBundleFile(bundleDir: string, relativePath: string, content: string): string {
+function writeBundleFile(
+  bundleDir: string,
+  relativePath: string,
+  content: string
+): string {
   const resolved = path.resolve(bundleDir, relativePath);
   const root = path.resolve(bundleDir);
   if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`Refusing to write outside diagnostics bundle: ${relativePath}`);
+    throw new Error(
+      `Refusing to write outside diagnostics bundle: ${relativePath}`
+    );
   }
   fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
   fs.writeFileSync(resolved, content, { encoding: 'utf8', mode: 0o600 });

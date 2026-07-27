@@ -568,7 +568,7 @@ describe('channel-agent-bridge lifecycle', () => {
     });
     expect(message.body.text).toBe('Mock v2 response complete.');
     expect(message.source).toMatchObject({
-      sessionId: 'sess-1',
+      runtimeId: 'sess-1',
       turnId: 'turn-1',
       itemId: 'assistant-turn-1',
     });
@@ -677,8 +677,8 @@ describe('channel-agent-bridge lifecycle', () => {
     );
     expect(claude?.body.text).toBe('Mock v2 response complete.');
     expect(codex?.body.text).toBe('Mock v2 response complete.');
-    expect(claude?.source?.sessionId).toBe('s1');
-    expect(codex?.source?.sessionId).toBe('s2');
+    expect(claude?.source?.runtimeId).toBe('s1');
+    expect(codex?.source?.runtimeId).toBe('s2');
   });
 
   it('finalizes as failed on agent-error-v2 keeping the partial text', () => {
@@ -1318,7 +1318,7 @@ describe('channel-agent-bridge lifecycle', () => {
       sender: { kind: 'agent', providerId: 'codex' },
       body: { text: '' },
       parts: [part],
-      source: { sessionId: 's', turnId: 'turn-image', itemId: 'img-1' },
+      source: { runtimeId: 's', turnId: 'turn-image', itemId: 'img-1' },
     });
   });
 
@@ -1793,7 +1793,7 @@ describe('channel-agent-bridge lifecycle', () => {
       seq: 1,
       status: 'complete',
       source: {
-        sessionId: 's',
+        runtimeId: 's',
         turnId: 'turn',
         itemId: 'provider-reason-1',
       },

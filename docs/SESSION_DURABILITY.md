@@ -105,11 +105,8 @@ cursor, timestamp, replay flag, and typed payload kinds:
   owners whose dimensions are applied to the PTY; passive mirrors receive the
   event but do not fight terminal geometry.
 
-This contract keeps browser rendering, permission checks, and the current
-`relay-pty` runtime separated from future transport/daemon experiments. The
-experimental `relay-rmux-helper` JSON/stdin-stdout boundary lives in
-[`RMUX_HELPER_PROTOCOL.md`](RMUX_HELPER_PROTOCOL.md); it is historical
-prototype guidance, not default runtime adoption.
+This contract keeps browser rendering, permission checks, and the supported
+`relay-pty` runtime behind one Relay-owned attachment boundary.
 
 ## Frontend reconnect UX
 
@@ -186,21 +183,24 @@ simulate end-to-end:
   reattaches; durability stays `running-attached` (or briefly flips
   through `running-detached` if the WS is rebuilt slowly).
 
-## Provider-native import boundary
+## Provider-runtime boundary
 
-Provider-native session adapters complement durability replay; they do not replace it. Relay may inspect provider-owned state stores such as Claude JSONL files to derive a bounded `AgentSessionV2` read model and safe resume/open argv, but the provider store remains the source of truth for that native CLI.
+This document governs public terminal-session durability only. Provider resume
+state belongs to a channel/profile binding and is consumed by the private
+channel runtime. Relay does not import provider conversations into public
+session records, expose provider-native resume commands through the public
+session API, or treat provider stores as an alternate transcript.
 
-Rules for this slice:
-
-- provider stores are read-only; Relay must not write `.claude`, `.codex`, `.hermes`, `.opencode`, or equivalent native state paths;
-- imported read models include an audit/divider marker with provider, source kind, import time, and content hash;
-- snapshots expose hashes, sizes, event types, timestamps, and redacted previews, not raw provider rows;
-- resume/open commands are copyable data only and are never executed by the adapter.
+Provider stores remain private and read-only to Relay unless a provider adapter
+has an explicit internal contract. Relay must not write `.claude`, `.codex`,
+`.hermes`, `.opencode`, or equivalent native state paths.
 
 ## Out of scope (later #614 slices)
 
 - Cross-node/remote replay forwarding.
-- Web-session replay redesign (existing `WebSession.messages` buffer is
-  unchanged in slice 2).
+- Durable provider-runtime restart remains adapter-specific. Channel history is
+  already durable and provider resume state lives with the channel/profile
+  binding; private runtimes are recreated rather than exposed as attachable
+  conversations.
 - Durability mode toggle (standard vs durable).
 - Live process migration. No raw infinite transcript storage.

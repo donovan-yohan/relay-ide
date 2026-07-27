@@ -19,10 +19,7 @@ import SettingsAgentProfilesSection from './SettingsAgentProfilesSection.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import {
   setDefaultAgent,
-  setDefaultContinue,
-  setDefaultYolo,
   setDefaultNotifications,
-  setClaudeFullscreen,
   checkVersion,
   triggerUpdate,
   fetchAnalyticsSize,
@@ -30,10 +27,7 @@ import {
   fetchGitHubStatus,
   fetchWebhookStatus,
   fetchDefaultAgent,
-  fetchDefaultContinue,
-  fetchDefaultYolo,
   fetchDefaultNotifications,
-  fetchClaudeFullscreen,
   fetchUpdateChannel,
   setUpdateChannel,
   fetchRenamerTool,
@@ -57,31 +51,21 @@ export interface SettingsDialogHandle {
 
 interface ConfigState {
   defaultAgent: string;
-  defaultContinue: boolean;
-  defaultYolo: boolean;
   defaultNotifications: boolean;
-  claudeFullscreen: boolean;
   renamerTool: RenamerTool;
 }
 
 const DEFAULT_CONFIG: ConfigState = {
   defaultAgent: 'claude',
-  defaultContinue: true,
-  defaultYolo: false,
   defaultNotifications: true,
-  claudeFullscreen: true,
   renamerTool: 'claude',
 };
 
 const TOC_SECTIONS = [
   { id: 'section-general', label: 'general' },
   {
-    id: 'section-agents',
+    id: 'section-agent-profiles',
     label: 'agents',
-    children: [
-      { id: 'agent-claude-code', label: 'Claude Code' },
-      { id: 'section-agent-profiles', label: 'profiles' },
-    ],
   },
   {
     id: 'section-integrations',
@@ -100,15 +84,13 @@ const TOC_SECTIONS = [
 const SECTION_KEYWORDS: Record<string, string[]> = {
   general: [
     'default coding agent',
-    'continue',
-    'yolo',
     'notifications',
     'rename',
     'renamer',
     'branch name',
     'session name',
   ],
-  agents: ['claude', 'claude code', 'fullscreen', 'no flicker', 'profiles'],
+  'agent-profiles': ['agents', 'profiles', 'claude', 'codex', 'opencode'],
   integrations: [
     'github',
     'webhooks',
@@ -146,24 +128,18 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
 };
 
 async function loadConfig(): Promise<ConfigState> {
-  const [agent, cont, yolo, notif, fullscreen, renamer] = await Promise.all([
+  const [agent, notif, renamer] = await Promise.all([
     fetchDefaultAgent().catch(() => DEFAULT_CONFIG.defaultAgent),
-    fetchDefaultContinue().catch(() => DEFAULT_CONFIG.defaultContinue),
-    fetchDefaultYolo().catch(() => DEFAULT_CONFIG.defaultYolo),
     fetchDefaultNotifications().catch(
       () => DEFAULT_CONFIG.defaultNotifications
     ),
-    fetchClaudeFullscreen().catch(() => DEFAULT_CONFIG.claudeFullscreen),
     fetchRenamerTool().catch(() => ({
       renamerTool: DEFAULT_CONFIG.renamerTool as RenamerTool,
     })),
   ]);
   return {
     defaultAgent: agent,
-    defaultContinue: cont,
-    defaultYolo: yolo,
     defaultNotifications: notif,
-    claudeFullscreen: fullscreen,
     renamerTool: renamer.renamerTool,
   };
 }
@@ -198,28 +174,6 @@ function useConfigHandlers(
       setError('Failed to update default agent.');
     }
   }
-  async function handleContinueChange(v: boolean) {
-    const prev = config.defaultContinue;
-    setConfig((c) => ({ ...c, defaultContinue: v }));
-    setError('');
-    try {
-      await setDefaultContinue(v);
-    } catch {
-      setConfig((c) => ({ ...c, defaultContinue: prev }));
-      setError('Failed to update continue default.');
-    }
-  }
-  async function handleYoloChange(v: boolean) {
-    const prev = config.defaultYolo;
-    setConfig((c) => ({ ...c, defaultYolo: v }));
-    setError('');
-    try {
-      await setDefaultYolo(v);
-    } catch {
-      setConfig((c) => ({ ...c, defaultYolo: prev }));
-      setError('Failed to update yolo default.');
-    }
-  }
   async function handleNotifChange(v: boolean) {
     const prev = config.defaultNotifications;
     setConfig((c) => ({ ...c, defaultNotifications: v }));
@@ -250,18 +204,6 @@ function useConfigHandlers(
       setError('Failed to update notifications default.');
     }
   }
-  async function handleClaudeFullscreenChange(v: boolean) {
-    const prev = config.claudeFullscreen;
-    setConfig((c) => ({ ...c, claudeFullscreen: v }));
-    setError('');
-    try {
-      await setClaudeFullscreen(v);
-      await useConfigStore.getState().refreshConfig();
-    } catch {
-      setConfig((c) => ({ ...c, claudeFullscreen: prev }));
-      setError('Failed to update Claude fullscreen setting.');
-    }
-  }
   async function handleRenamerToolChange(v: RenamerTool) {
     const prev = config.renamerTool;
     setConfig((c) => ({ ...c, renamerTool: v }));
@@ -275,10 +217,7 @@ function useConfigHandlers(
   }
   return {
     handleAgentChange,
-    handleContinueChange,
-    handleYoloChange,
     handleNotifChange,
-    handleClaudeFullscreenChange,
     handleRenamerToolChange,
   };
 }
@@ -480,11 +419,6 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               searchQuery={searchQuery}
               handlers={configHandlers}
             />
-            <AgentsSection
-              config={config}
-              searchQuery={searchQuery}
-              handlers={configHandlers}
-            />
             <SettingsAgentProfilesSection searchQuery={searchQuery} />
             <IntegrationsSection
               searchQuery={searchQuery}
@@ -603,60 +537,11 @@ function GeneralSection({
           </option>
         </select>
       </SettingRow>
-      <SettingRow
-        name="Continue existing session"
-        description="Resume the last session when opening a repo"
-      >
-        <TuiCheckbox
-          checked={config.defaultContinue}
-          onChange={(v) => void handlers.handleContinueChange(v)}
-        />
-      </SettingRow>
-      <SettingRow
-        name="YOLO mode"
-        description="Skip permission checks for all sessions"
-      >
-        <TuiCheckbox
-          checked={config.defaultYolo}
-          onChange={(v) => void handlers.handleYoloChange(v)}
-        />
-      </SettingRow>
       <SettingRow name="Notifications" description={notifDescription}>
         <TuiCheckbox
           checked={config.defaultNotifications}
           onChange={(v) => void handlers.handleNotifChange(v)}
           disabled={notifDisabled}
-        />
-      </SettingRow>
-    </section>
-  );
-}
-
-function AgentsSection({
-  config,
-  searchQuery,
-  handlers,
-}: {
-  config: ConfigState;
-  searchQuery: string;
-  handlers: ConfigHandlers;
-}) {
-  return (
-    <section
-      id="section-agents"
-      className={sectionClass('section-agents', searchQuery)}
-    >
-      <h3 className="settings-dialog-section-heading">agents</h3>
-      <h4 id="agent-claude-code" className="settings-dialog-subsection-heading">
-        Claude Code
-      </h4>
-      <SettingRow
-        name="Fullscreen mode"
-        description="Lock terminal to viewport height — Claude handles scrolling internally"
-      >
-        <TuiCheckbox
-          checked={config.claudeFullscreen}
-          onChange={(v) => void handlers.handleClaudeFullscreenChange(v)}
         />
       </SettingRow>
     </section>

@@ -9,7 +9,7 @@ export const ORCHESTRATOR_ACTOR_CAPABILITIES = [
   'session:read',
   'context:read',
   'context:write',
-  'session:create:agent',
+  'session:create:terminal',
 ] as const;
 
 export const ORCHESTRATOR_ACTOR_CREDENTIAL_TTL_MS =
@@ -40,7 +40,8 @@ export interface OrchestratorCredentialLifecycleDeps {
 }
 
 export interface StartOrchestratorCredentialLifecycleInput {
-  sessionId: string;
+  runtimeId: string;
+  profileActorId: string;
   port: number;
   displayName?: string;
 }
@@ -73,7 +74,7 @@ function credentialRefreshDelay(
 }
 
 /**
- * Runtime-only credential lease for one persistent orchestrator session.
+ * Runtime-only credential lease for one persistent channel orchestrator.
  *
  * The initial credential is minted synchronously before the caller creates the
  * adapter. Rotations are ordered mint -> runtime apply -> current swap -> old
@@ -125,7 +126,7 @@ export class OrchestratorCredentialLifecycle {
     this.stopped = true;
     this.clearRefreshTimer();
     this.cancelApplyDeadline();
-    this.safeRevoke(this.current.credential.id, 'orchestrator-session-ended');
+    this.safeRevoke(this.current.credential.id, 'orchestrator-runtime-ended');
   }
 
   private issueInitial(): OrchestratorCredentialIssueResult {
@@ -150,7 +151,7 @@ export class OrchestratorCredentialLifecycle {
     return this.deps.issueCredential({
       actor: {
         type: 'agent',
-        id: this.input.sessionId,
+        id: this.input.profileActorId,
         ...(this.input.displayName
           ? { displayName: this.input.displayName }
           : {}),
@@ -160,6 +161,7 @@ export class OrchestratorCredentialLifecycle {
         displayName: 'Relay',
       },
       capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+      scope: { sessionIds: [this.input.runtimeId] },
       ttlMs: ORCHESTRATOR_ACTOR_CREDENTIAL_TTL_MS,
     });
   }
@@ -201,7 +203,7 @@ export class OrchestratorCredentialLifecycle {
       if (this.stopped) {
         this.safeRevoke(
           replacement.credential.id,
-          'orchestrator-session-ended'
+          'orchestrator-runtime-ended'
         );
         return;
       }
@@ -210,7 +212,7 @@ export class OrchestratorCredentialLifecycle {
       if (this.stopped) {
         this.safeRevoke(
           replacement.credential.id,
-          'orchestrator-session-ended'
+          'orchestrator-runtime-ended'
         );
         return;
       }
@@ -254,7 +256,7 @@ export class OrchestratorCredentialLifecycle {
     return {
       RELAY_IDE_ACTOR_TOKEN: token,
       RELAY_IDE_PORT: String(this.input.port),
-      RELAY_IDE_SESSION_ID: this.input.sessionId,
+      RELAY_IDE_RUNTIME_ID: this.input.runtimeId,
     };
   }
 

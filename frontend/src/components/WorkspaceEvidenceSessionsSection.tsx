@@ -50,7 +50,9 @@ export function WorkspaceEvidenceSessionsSection({
       {query.isLoading ? (
         <div className="section-message">loading…</div>
       ) : sessions.length === 0 ? (
-        <div className="section-message">no active sessions for this workspace</div>
+        <div className="section-message">
+          no active sessions for this workspace
+        </div>
       ) : (
         <div className="evidence-sessions">
           {sessions.map((session) => (
@@ -65,11 +67,7 @@ export function WorkspaceEvidenceSessionsSection({
               </div>
               <div className="evidence-session__cwd">{session.cwd}</div>
               <div className="evidence-session__meta">
-                {[
-                  session.agent ?? session.type ?? session.tabKind,
-                  session.controlMode,
-                  session.agentState,
-                ]
+                {[session.type ?? session.tabKind, session.activityState]
                   .filter(Boolean)
                   .join(' · ')}
               </div>

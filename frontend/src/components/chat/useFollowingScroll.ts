@@ -78,6 +78,7 @@ export function useFollowingScroll({
   const previousLatestSeqRef = useRef(0);
   const previousFullSnapshotRevisionRef = useRef(fullSnapshotRevision);
   const lastScrollTopRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
   const [loadSettleTick, setLoadSettleTick] = useState(0);
   const [newMessageCount, setNewMessageCount] = useState(0);
 
@@ -89,6 +90,7 @@ export function useFollowingScroll({
     if (!container) return;
     container.scrollTop = container.scrollHeight;
     lastScrollTopRef.current = container.scrollTop;
+    lastScrollHeightRef.current = container.scrollHeight;
     shouldFollowRef.current = true;
     setNewMessageCount(0);
   }, []);
@@ -171,6 +173,7 @@ export function useFollowingScroll({
     const container = containerRef.current;
     const content = contentRef.current;
     if (!container || !content) return;
+    let toggleFrame: number | null = null;
 
     const preserveFollow = (): void => {
       if (anchorRef.current) return;
@@ -194,11 +197,34 @@ export function useFollowingScroll({
       scrollToBottom();
     };
 
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(preserveFollow);
-    observer.observe(content);
-    observer.observe(container);
-    return () => observer.disconnect();
+    const preserveFollowAfterCardToggle = (event: MouseEvent): void => {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest('.ch-agent-card__toggle') ||
+        !shouldFollowRef.current ||
+        anchorRef.current
+      ) {
+        return;
+      }
+      if (toggleFrame !== null) cancelAnimationFrame(toggleFrame);
+      toggleFrame = requestAnimationFrame(() => {
+        toggleFrame = null;
+        scrollToBottom();
+      });
+    };
+
+    content.addEventListener('click', preserveFollowAfterCardToggle);
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(preserveFollow);
+    observer?.observe(content);
+    observer?.observe(container);
+    return () => {
+      content.removeEventListener('click', preserveFollowAfterCardToggle);
+      observer?.disconnect();
+      if (toggleFrame !== null) cancelAnimationFrame(toggleFrame);
+    };
   }, [scrollToBottom]);
 
   useLayoutEffect(() => {
@@ -226,6 +252,8 @@ export function useFollowingScroll({
     const metrics = readTimelineScrollMetrics(container);
     const scrollTopChanged =
       Math.abs(metrics.scrollTop - lastScrollTopRef.current) > 1;
+    const contentGrewBeforeResizeObserver =
+      metrics.scrollHeight > lastScrollHeightRef.current + 1;
     const pendingAnchor = anchorRef.current;
     if (pendingAnchor && loadingOlder && scrollTopChanged) {
       const refreshed = captureViewportAnchor(container);
@@ -237,9 +265,24 @@ export function useFollowingScroll({
       }
     }
 
+    // A card/code block expansion can emit `scroll` after layout grows but
+    // before ResizeObserver restores the bottom. Preserve the prior follow
+    // intent only when the viewport itself stayed put; real reader movement
+    // still disengages follow through deriveFollowIntent below.
+    if (
+      shouldFollowRef.current &&
+      contentGrewBeforeResizeObserver &&
+      !scrollTopChanged &&
+      !pendingAnchor
+    ) {
+      scrollToBottom();
+      return;
+    }
+
     const { follow } = deriveFollowIntent(metrics, lastScrollTopRef.current);
     shouldFollowRef.current = follow;
     lastScrollTopRef.current = metrics.scrollTop;
+    lastScrollHeightRef.current = metrics.scrollHeight;
     if (follow) {
       readerAnchorRef.current = null;
       setNewMessageCount(0);
@@ -267,7 +310,14 @@ export function useFollowingScroll({
         .catch(() => {})
         .finally(() => setLoadSettleTick((tick) => tick + 1));
     }
-  }, [hasMoreOlder, loadingOlder, loadOlder, messages.length, earliestSeq]);
+  }, [
+    hasMoreOlder,
+    loadingOlder,
+    loadOlder,
+    messages.length,
+    earliestSeq,
+    scrollToBottom,
+  ]);
 
   return {
     containerRef,

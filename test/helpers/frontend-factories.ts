@@ -30,8 +30,8 @@ export function makeSession(
 ): SessionSummary {
   return {
     id: 'sess-1',
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
+    mode: 'pty',
     repoName: 'repo',
     repoPath: '/path/to/repo',
     worktreePath: '/path/to/worktree',

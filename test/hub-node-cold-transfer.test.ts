@@ -167,15 +167,14 @@ function repoInventoryReport(
 function remoteSession(nodeId: string): SessionSummary {
   return {
     id: 'cold-reopen-session-1',
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoPath: '/srv/relay-ide',
     worktreePath: '/srv/relay-ide/.worktrees/feature-a',
     cwd: '/srv/relay-ide/.worktrees/feature-a',
     repoName: 'relay-ide',
     branchName: 'feature/a',
-    displayName: 'Agent 1',
+    displayName: 'Terminal 1',
     createdAt: '2026-01-02T03:04:05.000Z',
     lastActivity: '2026-01-02T03:04:05.000Z',
     idle: false,
@@ -186,7 +185,7 @@ function remoteSession(nodeId: string): SessionSummary {
     worktreeInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature-a`,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 
@@ -342,7 +341,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -380,7 +379,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -426,7 +425,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -494,7 +493,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -595,7 +594,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -665,8 +664,6 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             branchName: 'feature/a',
             sessionId: 'source-session-1',
           },
-          type: 'agent',
-          agent: 'claude',
         }),
       }
     );
@@ -677,8 +674,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
       channel: 'rpc',
       type: 'sessions.create',
       payload: {
-        type: 'agent',
-        agent: 'claude',
+        type: 'terminal',
         repoPath: '/srv/relay-ide',
         worktreePath: '/srv/relay-ide/.worktrees/feature-a',
         branchName: 'feature/a',
@@ -781,7 +777,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );
@@ -861,7 +857,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
             repoIdentity: 'github.com/donovan-yohan/relay-ide',
             branchName: 'feature/a',
           },
-          type: 'agent',
+          type: 'terminal',
         }),
       }
     );

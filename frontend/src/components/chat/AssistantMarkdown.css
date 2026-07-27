@@ -1,15 +1,4 @@
-/*
- * AssistantMarkdown styles — co-located with their sole emitter.
- *
- * These rules previously lived in the (now retired) ChatView.css. The shared
- * AssistantMarkdown component (rendered by ChannelMessageRow on the primary
- * channel timeline, and anywhere else agent markdown is shown) emits every
- * class below, so the styles must travel with the component rather than with
- * any one surface. Values are preserved verbatim from the original ChatView.css
- * (plain CSS, --font-* / --text* custom properties, zero border-radius beyond
- * the 2px TUI chips per DESIGN.md). The retired `.tl-text--user*` / `.slash` /
- * `.token-skill` rules stayed deleted — nothing surviving emits them.
- */
+/* AssistantMarkdown styles, co-located with the live channel renderer. */
 
 /* tl-text — wrapper base (font/size/color/line-height). AssistantMarkdown
    mounts as `.tl-text.tl-markdown`; `.tl-markdown` below overrides white-space. */

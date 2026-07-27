@@ -75,8 +75,8 @@ export interface ChannelSenderRef {
   displayName?: string;
   /** agent framework/vendor id (claude/codex/hermes/opencode) */
   providerId?: string;
-  /** backing adapter session (slice 4 fills) */
-  sessionId?: string;
+  /** Private backing channel runtime; never a public Relay session id. */
+  runtimeId?: string;
 }
 
 export interface ChannelMemberRef {
@@ -98,7 +98,8 @@ export interface ChannelMention {
 }
 
 export interface ChannelMessageSource {
-  sessionId: string;
+  /** Private channel runtime that emitted this provider item. */
+  runtimeId: string;
   turnId?: string;
   itemId?: string;
 }
@@ -134,7 +135,7 @@ export interface ChannelMessage {
   /**
    * Opaque row metadata surfaced to clients (#1167). System rows carry actionable
    * payloads here — e.g. an approval request `{ approvalRequestId, agentId,
-   * sessionId }` the timeline renders approve/deny controls for. Additive and
+   * runtimeId }` the timeline renders approve/deny controls for. Additive and
    * optional: rows without meta are unaffected.
    */
   meta?: Record<string, unknown>;

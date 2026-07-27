@@ -27,8 +27,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
 function session(id: string): SessionSummary {
   return {
     id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     cwd: '/repo',
     displayName: id,
     createdAt: '2026-06-10T00:00:00.000Z',

@@ -51,7 +51,7 @@ const roster: RosterEntry[] = [
     kind: 'framework',
     available: true,
     reason: null,
-    binding: { sessionId: 'sess-1', status: 'thinking' },
+    binding: { runtimeId: 'runtime-1', status: 'thinking' },
   },
 ];
 
@@ -113,11 +113,8 @@ describe('buildMentionContacts', () => {
       isBuiltIn: false,
     });
     expect(
-      parseMentions(
-        mentionInsertText(custom),
-        ['claude'],
-        contacts
-      )[0]?.profileId
+      parseMentions(mentionInsertText(custom), ['claude'], contacts)[0]
+        ?.profileId
     ).toBe(customId);
   });
 });

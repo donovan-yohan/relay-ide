@@ -144,20 +144,18 @@ describe('workspace topic room API', () => {
     await launchWorkspaceTopicRoom({
       room: { topic: topic(), workContext: workContext() },
       launch: {
-        type: 'agent',
+        type: 'terminal',
         mode: 'pty',
-        agent: 'hermes',
-        controlMode: 'agent-driven',
+        controlMode: 'human-driven',
       },
     });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ path: '/hub/nodes/devbox/sessions' });
     expect(calls[0]?.body).toMatchObject({
-      type: 'agent',
+      type: 'terminal',
       mode: 'pty',
-      agent: 'hermes',
-      controlMode: 'agent-driven',
+      controlMode: 'human-driven',
       workspaceTopicId: 'topic:remote-launch',
       workContextId: 'wc-topic',
     });

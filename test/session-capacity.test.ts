@@ -12,7 +12,6 @@ describe('PTY session capacity', () => {
       countActivePtySessions([
         { mode: 'pty', status: 'active' },
         { mode: 'pty', status: 'disconnected' },
-        { mode: 'web', status: 'active' },
         { mode: 'pty' },
       ])
     ).toBe(2);

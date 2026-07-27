@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
-import { createAgentSession } from '../lib/session-utils.js';
+import { createTerminalSession } from '../lib/session-utils.js';
 import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
@@ -471,8 +471,7 @@ export function RepoDashboard({
                 onClick={() => {
                   setTerminalError(null);
                   setCreatingTerminal(true);
-                  void createAgentSession({
-                    type: 'terminal',
+                  void createTerminalSession({
                     repoPath,
                     cwd: repoPath,
                   }).then(({ session, error }) => {
@@ -547,10 +546,6 @@ export function RepoDashboard({
           issue={startWorkIssue}
           open={true}
           onClose={() => setStartWorkIssue(null)}
-          onSessionCreated={(sessionId) => {
-            setStartWorkIssue(null);
-            onSessionCreated?.(sessionId);
-          }}
         />
       )}
     </div>

@@ -60,12 +60,6 @@ describe('<WorkspaceEditor /> default placeholder copy', () => {
             remote: '',
             branchPrefix: '',
             defaultAgent: 'claude',
-            defaultContinue: true,
-            defaultYolo: false,
-            promptCodeReview: '',
-            promptCreatePr: '',
-            promptBranchRename: '',
-            promptGeneral: '',
             portVariables: [],
           },
           onChange: vi.fn(),
@@ -93,17 +87,6 @@ describe('<WorkspaceEditor /> default placeholder copy', () => {
       ])
     );
 
-    for (const button of container.querySelectorAll(
-      '.workspace-editor__prompt-toggle'
-    )) {
-      act(() => (button as HTMLButtonElement).click());
-    }
-
-    expect(inputPlaceholders()).toEqual(
-      expect.arrayContaining([
-        WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt,
-      ])
-    );
     expect(inputPlaceholders().some((value) => /e\.g\./i.test(value))).toBe(
       false
     );

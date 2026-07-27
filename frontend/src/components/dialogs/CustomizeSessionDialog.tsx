@@ -10,12 +10,11 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
-import TuiCheckbox from '../TuiCheckbox.js';
 import { EnvironmentPicker } from '../EnvironmentPicker.js';
 import { estimateTerminalDimensions } from '../../lib/utils.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
-import { createAgentSession } from '../../lib/session-utils.js';
+import { createTerminalSession } from '../../lib/session-utils.js';
 import { fetchHubNodes, fetchRepoInventory } from '../../lib/api.js';
 import {
   cleanCwd,
@@ -27,16 +26,10 @@ import {
   firstDegradedReasonMessage,
 } from '../../lib/environment-options.js';
 import {
-  defaultSessionModeForAgent,
-  getSessionModeOptions,
   isFrameworkAvailable,
-  isFrameworkWebAvailable,
   selectLaunchAgent,
-  shouldRouteToChannel,
-  type SessionLaunchMode,
-  type SessionModeOption,
-} from '../../lib/session-launch-mode.js';
-import { getOrCreateDmChannel } from '../../hooks/useTopicRoomCreate.js';
+} from '../../lib/framework-availability.js';
+import { getOrCreateDmChannel } from '../../lib/agent-channels.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -59,13 +52,7 @@ import { pickDefaultEnvironment } from '../../../../shared/safe-defaults.js';
 import type { SessionLane } from '../../../../shared/session-lane.js';
 import './CustomizeSessionDialog.css';
 
-export {
-  defaultSessionModeForAgent,
-  getSessionModeOptions,
-  isFrameworkAvailable,
-  isFrameworkWebAvailable,
-  selectLaunchAgent,
-};
+export { isFrameworkAvailable, selectLaunchAgent };
 
 export interface CustomizeSessionDialogHandle {
   open(
@@ -112,13 +99,11 @@ export interface EnvironmentPickerModel {
 export interface EnvironmentPickerInput {
   inventory: AggregatedRepoInventoryResponse | null;
   nodes: HubNodeSummary[];
-  selectedAgent: AgentType;
   selectedGroupId: string | null;
   selectedNodeId: NodeId | null;
   selectedCheckoutId: string | null;
   fallbackWorkspace: { name: string; path: string; isGitRepo?: boolean };
   fallbackWorktreePath: string | null;
-  sessionType?: 'agent' | 'terminal';
 }
 
 const CHECKOUT_ROOT_PREFIX = 'repo:';
@@ -131,7 +116,7 @@ const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
 // it as soon as `/hub/repo-inventory` resolves.
 const PICKER_FALLBACK_GENERATED_AT = '1970-01-01T00:00:00.000Z';
 
-function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
+function syntheticLocalNode(): HubNodeSummary {
   return {
     nodeId: DEFAULT_LOCAL_NODE_ID,
     identity: {
@@ -180,7 +165,7 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
         'relay-pty': 'available',
       },
       worktrees: 'available',
-      agents: { [selectedAgent]: 'available' },
+      agents: {},
       serviceManager: 'local',
       wsl: false,
     },
@@ -307,27 +292,6 @@ export function nodeShellBlockReason(
   return null;
 }
 
-export function nodeAgentBlockReason(
-  node: HubNodeSummary | null,
-  agent: AgentType
-): string | null {
-  const shellReason = nodeShellBlockReason(node);
-  if (shellReason) return shellReason;
-  if (!node) return null;
-  const agentProblem = capabilityProblem(
-    node.capabilities.agents[agent],
-    agent
-  );
-  return agentProblem ? `${agentProblem} on ${node.displayName}` : null;
-}
-
-function nodeBlockReason(
-  node: HubNodeSummary | null,
-  selectedAgent: AgentType
-): string | null {
-  return nodeAgentBlockReason(node, selectedAgent);
-}
-
 function uniqueInstancesByNode(
   instances: RepoInventoryRepoInstance[]
 ): RepoInventoryRepoInstance[] {
@@ -393,10 +357,7 @@ function nodeMapFor(
 ): Map<NodeId, HubNodeSummary> {
   const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
   if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
-    nodeById.set(
-      DEFAULT_LOCAL_NODE_ID,
-      syntheticLocalNode(input.selectedAgent)
-    );
+    nodeById.set(DEFAULT_LOCAL_NODE_ID, syntheticLocalNode());
   }
   return nodeById;
 }
@@ -421,18 +382,14 @@ function nodeChoiceIdsFor(
 function nodeChoicesFor(
   selectedGroup: AggregatedRepoInventoryGroup,
   input: EnvironmentPickerInput,
-  nodeById: Map<NodeId, HubNodeSummary>,
-  sessionType: 'agent' | 'terminal' = 'agent'
+  nodeById: Map<NodeId, HubNodeSummary>
 ): EnvironmentChoice[] {
   const seenNodeChoices = new Set<NodeId>();
   return nodeChoiceIdsFor(selectedGroup, input.nodes).flatMap((nodeId) => {
     if (seenNodeChoices.has(nodeId)) return [];
     seenNodeChoices.add(nodeId);
     const node = nodeById.get(nodeId) ?? null;
-    const reason =
-      sessionType === 'terminal'
-        ? nodeShellBlockReason(node)
-        : nodeBlockReason(node, input.selectedAgent);
+    const reason = nodeShellBlockReason(node);
     return [
       {
         value: nodeId,
@@ -521,16 +478,10 @@ function shouldShowEnvironmentPicker(
 export function buildEnvironmentPickerModel(
   input: EnvironmentPickerInput
 ): EnvironmentPickerModel {
-  const sessionType = input.sessionType ?? 'agent';
   const groups = environmentGroupsFor(input);
   const selectedGroup = selectedEnvironmentGroup(groups, input);
   const nodeById = nodeMapFor(input);
-  const nodeChoices = nodeChoicesFor(
-    selectedGroup,
-    input,
-    nodeById,
-    sessionType
-  );
+  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById);
   const selectedNodeChoice = selectedNodeChoiceFor(
     nodeChoices,
     input.selectedNodeId
@@ -567,42 +518,22 @@ export function buildEnvironmentPickerModel(
   };
 }
 
-type DialogSessionType = 'agent' | 'terminal';
+type DialogLaunchMode = 'chat' | 'terminal';
 
 interface FormState {
-  claudeArgsInput: string;
   selectedAgent: AgentType;
-  sessionMode: SessionLaunchMode;
-  yoloMode: boolean;
-  continueExisting: boolean;
-  dialogSessionType: DialogSessionType;
+  launchMode: DialogLaunchMode;
 }
 
 function defaultForm(): FormState {
   return {
-    claudeArgsInput: '',
     selectedAgent: 'claude',
-    sessionMode: 'pty',
-    yoloMode: false,
-    continueExisting: false,
-    dialogSessionType: 'agent',
+    launchMode: 'chat',
   };
-}
-
-export function getSessionModeOptionsForType(
-  frameworks: FrameworkInfo[],
-  selectedAgent: AgentType,
-  dialogSessionType: DialogSessionType
-): SessionModeOption[] {
-  if (dialogSessionType === 'terminal') {
-    return [{ value: 'pty', label: 'shell' }];
-  }
-  return getSessionModeOptions(frameworks, selectedAgent);
 }
 
 async function createSessionFromForm(
   environment: EnvironmentPickerModel['resolved'],
-  form: FormState,
   sessionLane: SessionLane,
   remoteCwd?: string
 ) {
@@ -611,54 +542,23 @@ async function createSessionFromForm(
     useUiStore.getState().terminalFontSize
   );
 
-  if (form.dialogSessionType === 'terminal') {
-    const baseOptions = {
-      nodeId: environment.nodeId,
-      type: 'terminal' as const,
-      mode: 'pty' as const,
-      sessionLane,
-      cols,
-      rows,
-    };
-    if (remoteNodeSelected) {
-      return createAgentSession({
-        ...baseOptions,
-        cwd: cleanCwd(remoteCwd),
-      });
-    }
-    return createAgentSession({
-      ...baseOptions,
-      repoPath: environment.repoPath || undefined,
-      cwd: environment.repoPath || undefined,
-    });
-  }
-
-  const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
-  const sessionMode: SessionLaunchMode = remoteNodeSelected
-    ? 'pty'
-    : form.sessionMode;
   const baseOptions = {
     nodeId: environment.nodeId,
-    type: 'agent' as const,
-    mode: sessionMode,
-    continue: form.continueExisting,
-    yolo: form.yoloMode,
-    claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
-    agent: form.selectedAgent,
+    mode: 'pty' as const,
     sessionLane,
     cols,
     rows,
   };
   if (remoteNodeSelected) {
-    return createAgentSession({
+    return createTerminalSession({
       ...baseOptions,
       cwd: cleanCwd(remoteCwd),
     });
   }
-  return createAgentSession({
+  return createTerminalSession({
     ...baseOptions,
-    repoPath: environment.repoPath,
-    worktreePath: environment.worktreePath,
+    repoPath: environment.repoPath || undefined,
+    cwd: environment.repoPath || undefined,
   });
 }
 
@@ -678,7 +578,7 @@ interface BodyProps {
   onFormChange: (patch: Partial<FormState>) => void;
   onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
   onRemoteCwdChange: (cwd: string) => void;
-  onDialogSessionTypeChange: (t: DialogSessionType) => void;
+  onLaunchModeChange: (mode: DialogLaunchMode) => void;
 }
 
 interface EnvironmentSelection {
@@ -700,7 +600,7 @@ function CustomizeSessionBody({
   onFormChange,
   onEnvironmentChange,
   onRemoteCwdChange,
-  onDialogSessionTypeChange,
+  onLaunchModeChange,
 }: BodyProps) {
   const frameworks = useConfigStore((state) => state.frameworks);
   const frameworkOptions =
@@ -716,27 +616,14 @@ function CustomizeSessionBody({
               supportsYolo: false,
               supportsHooks: false,
               supportsTelemetry: false,
-              supportsWebSessions: false,
             },
             eventSource: 'parser',
           } satisfies FrameworkInfo,
         ];
 
-  const isTerminal = form.dialogSessionType === 'terminal';
+  const isTerminal = form.launchMode === 'terminal';
   const remoteNodeSelected =
     environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
-  const modeOptions = isTerminal
-    ? ([{ value: 'pty', label: 'shell' }] satisfies SessionModeOption[])
-    : remoteNodeSelected
-      ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
-      : // #1166: a web agent launch now opens as a DM channel, not a distinct
-        // "web session" — relabel so the picker copy matches the behavior.
-        getSessionModeOptions(frameworkOptions, form.selectedAgent).map(
-          (option) =>
-            option.value === 'web' && !option.disabled
-              ? { ...option, label: 'web (opens as chat)' }
-              : option
-        );
   const selectedFramework = frameworkOptions.find(
     (framework) => framework.id === form.selectedAgent
   );
@@ -744,11 +631,6 @@ function CustomizeSessionBody({
     !isTerminal &&
     selectedFramework &&
     !isFrameworkAvailable(selectedFramework);
-  const selectedWebUnavailable =
-    !isTerminal &&
-    selectedFramework &&
-    form.sessionMode === 'web' &&
-    !isFrameworkWebAvailable(selectedFramework);
   const remoteNodeLabel =
     selectedRemoteNode?.displayName ?? environmentModel.selectedNodeId;
   const remoteHomeDir = cleanCwd(selectedRemoteNode?.homeDir);
@@ -758,28 +640,28 @@ function CustomizeSessionBody({
       <div className="customize-session-dialog-field">
         <label
           className="customize-session-dialog-label"
-          htmlFor="cs-session-type"
+          htmlFor="cs-launch-mode"
         >
           mode
         </label>
         <select
-          id="cs-session-type"
+          id="cs-launch-mode"
           className="customize-session-dialog-select"
-          data-track="dialog.customize-session.session-type"
-          value={form.dialogSessionType}
+          data-track="dialog.customize-session.launch-mode"
+          value={form.launchMode}
           onChange={(e) => {
-            const next = e.currentTarget.value as DialogSessionType;
-            onDialogSessionTypeChange(next);
+            const next = e.currentTarget.value as DialogLaunchMode;
+            onLaunchModeChange(next);
           }}
         >
-          <option value="agent">agent</option>
+          <option value="chat">chat</option>
           <option value="terminal">terminal</option>
         </select>
       </div>
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
       )}
-      {environmentOptions.length > 0 && (
+      {isTerminal && environmentOptions.length > 0 && (
         <section
           className="customize-session-env-picker"
           aria-label="environment options"
@@ -808,14 +690,13 @@ function CustomizeSessionBody({
           )}
         </section>
       )}
-      {(environmentModel.showPicker || remoteNodeSelected) && (
+      {isTerminal && (environmentModel.showPicker || remoteNodeSelected) && (
         <section
           className="customize-session-environment-picker"
           aria-label="environment picker"
         >
           <div className="customize-session-environment-copy">
             choose execution node, then directory or git checkout on that node.
-            agents are configured separately below.
           </div>
           {environmentModel.repoChoices.length > 1 && (
             <div className="customize-session-dialog-field">
@@ -944,13 +825,11 @@ function CustomizeSessionBody({
         </section>
       )}
       {!isTerminal && (
-        <AgentOnlyFields
+        <ChatFields
           form={form}
           frameworkOptions={frameworkOptions}
-          modeOptions={modeOptions}
           selectedFramework={selectedFramework}
           selectedUnavailable={!!selectedUnavailable}
-          selectedWebUnavailable={!!selectedWebUnavailable}
           onFormChange={onFormChange}
         />
       )}
@@ -958,25 +837,21 @@ function CustomizeSessionBody({
   );
 }
 
-interface AgentOnlyFieldsProps {
+interface ChatFieldsProps {
   form: FormState;
   frameworkOptions: FrameworkInfo[];
-  modeOptions: SessionModeOption[];
   selectedFramework: FrameworkInfo | undefined;
   selectedUnavailable: boolean;
-  selectedWebUnavailable: boolean;
   onFormChange: (patch: Partial<FormState>) => void;
 }
 
-function AgentOnlyFields({
+function ChatFields({
   form,
   frameworkOptions,
-  modeOptions,
   selectedFramework,
   selectedUnavailable,
-  selectedWebUnavailable,
   onFormChange,
-}: AgentOnlyFieldsProps) {
+}: ChatFieldsProps) {
   return (
     <>
       <div className="customize-session-dialog-field">
@@ -990,13 +865,7 @@ function AgentOnlyFields({
           value={form.selectedAgent}
           onChange={(e) => {
             const selectedAgent = e.currentTarget.value as AgentType;
-            onFormChange({
-              selectedAgent,
-              sessionMode: defaultSessionModeForAgent(
-                frameworkOptions,
-                selectedAgent
-              ),
-            });
+            onFormChange({ selectedAgent });
           }}
         >
           {frameworkOptions.map((framework) => (
@@ -1017,92 +886,20 @@ function AgentOnlyFields({
           </div>
         )}
       </div>
-      {modeOptions.length > 1 && (
-        <div className="customize-session-dialog-field">
-          <label className="customize-session-dialog-label" htmlFor="cs-mode">
-            interface
-          </label>
-          <select
-            id="cs-mode"
-            className="customize-session-dialog-select"
-            data-track="dialog.customize-session.mode"
-            value={form.sessionMode}
-            onChange={(e) =>
-              onFormChange({
-                sessionMode: e.currentTarget.value as SessionLaunchMode,
-              })
-            }
-          >
-            {modeOptions.map((option) => (
-              <option
-                key={option.value}
-                value={option.value}
-                disabled={option.disabled}
-              >
-                {option.label}
-              </option>
-            ))}
-          </select>
-          {selectedWebUnavailable && selectedFramework && (
-            <div className="customize-session-field-note">
-              {selectedFramework.webAvailability?.reason ??
-                `${selectedFramework.displayName} web runtime is not available`}
-            </div>
-          )}
-        </div>
-      )}
-      <TuiCheckbox
-        checked={form.continueExisting}
-        onChange={(checked) => onFormChange({ continueExisting: checked })}
-      >
-        continue existing session
-      </TuiCheckbox>
-      <TuiCheckbox
-        checked={form.yoloMode}
-        onChange={(checked) => onFormChange({ yoloMode: checked })}
-      >
-        yolo mode (skip permission checks)
-      </TuiCheckbox>
-      <div className="customize-session-dialog-field">
-        <label className="customize-session-dialog-label" htmlFor="cs-args">
-          extra args (optional)
-        </label>
-        <input
-          id="cs-args"
-          type="text"
-          className="customize-session-dialog-input"
-          placeholder="e.g. --verbose"
-          value={form.claudeArgsInput}
-          onChange={(e) =>
-            onFormChange({ claudeArgsInput: e.currentTarget.value })
-          }
-          autoComplete="off"
-        />
-      </div>
     </>
   );
 }
 
-function validateAgentFramework(
+function validateChatFramework(
   frameworks: FrameworkInfo[],
   form: FormState
 ): string | null {
-  if (form.dialogSessionType !== 'agent') return null;
+  if (form.launchMode !== 'chat') return null;
   const selectedFramework = frameworks.find((f) => f.id === form.selectedAgent);
   if (selectedFramework && !isFrameworkAvailable(selectedFramework)) {
     return (
       selectedFramework.availability?.reason ??
       `${selectedFramework.displayName} is not installed`
-    );
-  }
-  if (
-    selectedFramework &&
-    form.sessionMode === 'web' &&
-    !isFrameworkWebAvailable(selectedFramework)
-  ) {
-    return (
-      selectedFramework.webAvailability?.reason ??
-      `${selectedFramework.displayName} web runtime is not available`
     );
   }
   return null;
@@ -1179,7 +976,6 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         buildEnvironmentPickerModel({
           inventory,
           nodes,
-          selectedAgent: form.selectedAgent,
           selectedGroupId: environmentSelection.selectedGroupId,
           selectedNodeId: environmentSelection.selectedNodeId,
           selectedCheckoutId: environmentSelection.selectedCheckoutId,
@@ -1191,13 +987,10 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
               : {}),
           },
           fallbackWorktreePath: worktreePath,
-          sessionType: form.dialogSessionType,
         }),
       [
         inventory,
         nodes,
-        form.selectedAgent,
-        form.dialogSessionType,
         environmentSelection.selectedGroupId,
         environmentSelection.selectedNodeId,
         environmentSelection.selectedCheckoutId,
@@ -1218,8 +1011,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       return buildEnvironmentOptions({
         inventory,
         nodes,
-        selectedAgent: form.selectedAgent,
-        sessionType: form.dialogSessionType,
+        sessionType: 'terminal',
         fallbackWorkspace: {
           name: workspaceName,
           path: workspacePath,
@@ -1241,8 +1033,6 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     }, [
       inventory,
       nodes,
-      form.selectedAgent,
-      form.dialogSessionType,
       workspaceName,
       workspacePath,
       workspaceIsGitRepo,
@@ -1258,7 +1048,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
 
     useEffect(() => {
       // Apply safe-defaults whenever the candidate list changes (after
-      // inventory/nodes load, or after agent/session-type toggles change
+      // inventory/nodes load, or after chat/terminal toggles change
       // which capabilities are required). Do NOT re-pick if the user has
       // already selected an option still present in candidates — that would
       // silently undo their choice on every refetch.
@@ -1393,15 +1183,8 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           preselectedFramework ?? (config.defaultAgent as AgentType)
         );
         setForm({
-          claudeArgsInput: '',
           selectedAgent,
-          sessionMode: defaultSessionModeForAgent(
-            config.frameworks,
-            selectedAgent
-          ),
-          yoloMode: config.defaultYolo,
-          continueExisting: config.defaultContinue,
-          dialogSessionType: 'agent',
+          launchMode: 'chat',
         });
         shellRef.current?.open();
       },
@@ -1415,9 +1198,28 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       rememberCwd = true
     ) {
       if (!workspacePath || creating) return;
-      const frameworkError = validateAgentFramework(frameworks, form);
+      const frameworkError = validateChatFramework(frameworks, form);
       if (frameworkError) {
         setError(frameworkError);
+        return;
+      }
+      if (form.launchMode === 'chat') {
+        setCreating(true);
+        setError(null);
+        try {
+          const framework = frameworks.find((f) => f.id === form.selectedAgent);
+          const topic = await getOrCreateDmChannel({
+            providerId: form.selectedAgent,
+            providerDisplayName: framework?.displayName ?? form.selectedAgent,
+            workspaceId: useUiStore.getState().activeWorkspaceId,
+          });
+          useUiStore.getState().setActiveChannelId(topic.id);
+          shellRef.current?.close();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to open chat');
+        } finally {
+          setCreating(false);
+        }
         return;
       }
       if (environmentModel.selectedNodeReason) {
@@ -1429,39 +1231,6 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       // and require the user to pick another option (or wait for recovery).
       if (selectedOptionDegradedMessage) {
         setError(selectedOptionDegradedMessage);
-        return;
-      }
-      // #1166: an agent launch in web mode routes to a DM channel, never a
-      // mode:'web' session. (Remote nodes force pty above, so this is local +
-      // agent + web only.) Same getOrCreateDmChannel + setActiveChannelId flow
-      // as TopicComposer — this closes the last UI-driven web-session path.
-      if (
-        shouldRouteToChannel(
-          form.dialogSessionType === 'agent' ? 'agent' : 'terminal',
-          remoteNodeSelected ? 'pty' : form.sessionMode
-        )
-      ) {
-        setCreating(true);
-        setError(null);
-        try {
-          const framework = frameworks.find((f) => f.id === form.selectedAgent);
-          const topic = await getOrCreateDmChannel({
-            providerId: form.selectedAgent,
-            providerDisplayName: framework?.displayName ?? form.selectedAgent,
-            workspaceId: useUiStore.getState().activeWorkspaceId,
-          });
-          // #1178: open the channel via the channel path ONLY. Do NOT feed the
-          // topic id into onSessionCreated/activeSessionId — App wires that to
-          // setActiveSessionId, and the channel↔session mutual-exclusion effect
-          // would then clear the activeChannelId we just set (flash-and-close),
-          // while persisting an unresolvable 'topic:...' active-session key.
-          useUiStore.getState().setActiveChannelId(topic.id);
-          shellRef.current?.close();
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to open chat');
-        } finally {
-          setCreating(false);
-        }
         return;
       }
       const cwdForRemote = remoteNodeSelected
@@ -1481,7 +1250,6 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       try {
         const { session, error: submitError } = await createSessionFromForm(
           environmentModel.resolved,
-          form,
           sessionLane,
           cwdForRemote
         );
@@ -1512,7 +1280,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         >
           Cancel
         </TuiButton>
-        {remoteNodeSelected && (
+        {form.launchMode === 'terminal' && remoteNodeSelected && (
           <TuiButton
             variant="ghost"
             data-track="dialog.customize-session.start-in-home"
@@ -1534,21 +1302,26 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           onClick={() => void handleSubmit()}
           disabled={
             !workspacePath ||
-            Boolean(environmentModel.selectedNodeReason) ||
-            Boolean(selectedOptionDegradedMessage) ||
-            (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
+            (form.launchMode === 'terminal' &&
+              (Boolean(environmentModel.selectedNodeReason) ||
+                Boolean(selectedOptionDegradedMessage))) ||
+            (form.launchMode === 'terminal' &&
+              remoteNodeSelected &&
+              !cleanCwd(remoteCwd)) ||
             creating ||
-            (form.dialogSessionType === 'agent' &&
+            (form.launchMode === 'chat' &&
               frameworks.some(
                 (framework) =>
                   framework.id === form.selectedAgent &&
-                  (!isFrameworkAvailable(framework) ||
-                    (form.sessionMode === 'web' &&
-                      !isFrameworkWebAvailable(framework)))
+                  !isFrameworkAvailable(framework)
               ))
           }
         >
-          {creating ? 'Creating...' : 'Start Session'}
+          {creating
+            ? 'Creating...'
+            : form.launchMode === 'chat'
+              ? 'Open Chat'
+              : 'Start Terminal'}
         </TuiButton>
       </div>
     );
@@ -1580,8 +1353,8 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             setEnvironmentSelection((selection) => ({ ...selection, ...patch }))
           }
           onRemoteCwdChange={setRemoteCwd}
-          onDialogSessionTypeChange={(t) =>
-            setForm((f) => ({ ...f, dialogSessionType: t }))
+          onLaunchModeChange={(launchMode) =>
+            setForm((f) => ({ ...f, launchMode }))
           }
         />
       </DialogShell>

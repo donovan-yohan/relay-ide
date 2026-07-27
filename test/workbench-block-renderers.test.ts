@@ -177,66 +177,6 @@ describe('work-context renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// prompt-fanout renderer
-// ---------------------------------------------------------------------------
-
-describe('prompt-fanout renderer', () => {
-  it('file exists', () => {
-    expect(blockExists('prompt-fanout.tsx')).toBe(true);
-  });
-
-  it('css file exists', () => {
-    expect(blockExists('prompt-fanout.css')).toBe(true);
-  });
-
-  it('exports PromptFanoutBlock', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain('export const PromptFanoutBlock');
-  });
-
-  it('is typed as WorkbenchBlockRenderer<"prompt-fanout">', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain(`WorkbenchBlockRenderer<'prompt-fanout'>`);
-  });
-
-  it('uses PromptFanoutRun fixtures and schema helpers', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain('getPromptFanoutRunFixture');
-    expect(src).toContain('selectedPromptFanoutTargets');
-    expect(src).toContain('unselectedPromptFanoutTargets');
-  });
-
-  it('has visible loading, empty, denied, and partial-failure states', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain('block-prompt-fanout--loading');
-    expect(src).toContain('block-prompt-fanout--empty');
-    expect(src).toContain('block-prompt-fanout--denied');
-    expect(src).toContain('block-prompt-fanout--partial-failure');
-  });
-
-  it('distinguishes selected targets from all sessions', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain('selected targets');
-    expect(src).toContain('all sessions not selected');
-    expect(src).toContain('no broadcast-to-all default');
-  });
-
-  it('dry-run action emits audit event without terminal input', () => {
-    const src = readBlock('prompt-fanout.tsx');
-    expect(src).toContain('prompt-fanout.dry-run');
-    expect(src).toContain('sendsTerminalInput: false');
-    expect(src).not.toContain('sendInput');
-    expect(src).not.toContain('writeTerminal');
-  });
-
-  it('CSS has block-prompt-fanout classes', () => {
-    const css = readBlock('prompt-fanout.css');
-    expect(css).toContain('.block-prompt-fanout');
-    expect(css).toContain('.block-prompt-fanout__dry-run');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // custom renderer (slice 4 — sandboxed proposal/approval flow)
 // ---------------------------------------------------------------------------
 
@@ -793,57 +733,12 @@ describe('terminal renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// agent renderer
+// All renderers: verify they export their named renderer
 // ---------------------------------------------------------------------------
 
-describe('agent renderer', () => {
-  it('file exists', () => {
-    expect(blockExists('agent.tsx')).toBe(true);
-  });
-
-  it('exports AgentBlock', () => {
-    const src = readBlock('agent.tsx');
-    expect(src).toContain('export const AgentBlock');
-  });
-
-  it('is typed as WorkbenchBlockRenderer<"agent">', () => {
-    const src = readBlock('agent.tsx');
-    expect(src).toContain(`WorkbenchBlockRenderer<'agent'>`);
-  });
-
-  it('reads actorRef from descriptor.meta', () => {
-    const src = readBlock('agent.tsx');
-    expect(src).toContain('actorRef');
-    expect(src).toContain('descriptor.meta');
-  });
-
-  it('does not embed the retired ChatView surface (#1224)', () => {
-    const src = readBlock('agent.tsx');
-    // The legacy web-session/ChatView subtree was deleted in #1224; the dormant
-    // AgentBlock now renders a bounded placeholder rather than the chat surface.
-    expect(src).not.toContain('ChatView');
-    expect(src).toContain('block-agent__placeholder');
-  });
-
-  it('CSS exists', () => {
-    expect(blockExists('agent.css')).toBe(true);
-  });
-
-  it('CSS has block-agent class', () => {
-    const css = readBlock('agent.css');
-    expect(css).toContain('.block-agent');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// All 8 renderers: verify they all export their named renderer
-// ---------------------------------------------------------------------------
-
-describe('all 8 renderers exist and export named components', () => {
+describe('all renderers exist and export named components', () => {
   const renderers = [
     { file: 'terminal.tsx', export: 'TerminalBlock' },
-    { file: 'agent.tsx', export: 'AgentBlock' },
-    { file: 'prompt-fanout.tsx', export: 'PromptFanoutBlock' },
     { file: 'work-context.tsx', export: 'WorkContextBlock' },
     { file: 'file.tsx', export: 'FileBlock' },
     { file: 'artifact.tsx', export: 'ArtifactBlock' },
@@ -867,7 +762,6 @@ describe('all 8 renderers exist and export named components', () => {
 describe('no renderer uses raw filesystem paths', () => {
   const renderers = [
     'terminal.tsx',
-    'agent.tsx',
     'work-context.tsx',
     'file.tsx',
     'artifact.tsx',
@@ -919,11 +813,10 @@ describe('block-registry source structure', () => {
     expect(src).toContain('export async function initFirstPartyBlocks');
   });
 
-  it('registers all 7 first-party kinds in initFirstPartyBlocks', () => {
+  it('registers all 6 first-party kinds in initFirstPartyBlocks', () => {
     const src = readFileSync(registryPath, 'utf-8');
     const kinds = [
       'terminal',
-      'agent',
       'work-context',
       'file',
       'artifact',

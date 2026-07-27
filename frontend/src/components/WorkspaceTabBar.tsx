@@ -12,16 +12,10 @@ import {
   type WorkspaceTabSummary,
 } from '../lib/workspace-summary.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
-import { TabControlBadge } from './TabControlBadge.js';
 import { SessionMailboxBadge } from './SessionMailboxPanel.js';
 import './WorkspaceTabBar.css';
 
 const ICON_GLYPH: Record<WorkspaceTabSummary['icon'], string> = {
-  'session-claude': '✱',
-  'session-codex': '◆',
-  'session-opencode': '○',
-  'session-hermes': '△',
-  'session-agent': '✱',
   'session-terminal': '›_',
   'file-tsx': '⟨⟩',
   'file-ts': 'TS',
@@ -73,7 +67,9 @@ function WorkspaceTabItem({
     .filter(Boolean)
     .join(' ');
   const session =
-    tab.kind === 'session' ? summaryContext.findSession?.(tab.sessionId) : undefined;
+    tab.kind === 'session'
+      ? summaryContext.findSession?.(tab.sessionId)
+      : undefined;
 
   return (
     <div
@@ -101,13 +97,6 @@ function WorkspaceTabItem({
       </span>
       <span className="ws-tab__name">{summary.primary}</span>
       {summary.meta && <span className="ws-tab__meta">{summary.meta}</span>}
-      {tab.kind === 'session' && (
-        <TabControlBadge
-          session={session}
-          nodeBadge={summary.nodeBadge}
-          compact
-        />
-      )}
       {tab.kind === 'session' && session && (
         <SessionMailboxBadge
           targetSessionId={scopedSessionKey(session)}

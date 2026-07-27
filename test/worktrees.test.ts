@@ -362,17 +362,9 @@ describe('workspace-to-repo merging for worktree discovery', () => {
 });
 
 describe('CLI worktree arg parsing', () => {
-  it('should extract --yolo and leave other args intact', () => {
-    const args = [
-      'add',
-      './.worktrees/my-feature',
-      '-b',
-      'my-feature',
-      '--yolo',
-    ];
-    const hasYolo = args.includes('--yolo');
-    const gitArgs = args.filter((a) => a !== '--yolo');
-    expect(hasYolo).toBe(true);
+  it('should forward worktree add arguments directly to git', () => {
+    const args = ['add', './.worktrees/my-feature', '-b', 'my-feature'];
+    const gitArgs = [...args];
     expect(gitArgs).toEqual([
       'add',
       './.worktrees/my-feature',

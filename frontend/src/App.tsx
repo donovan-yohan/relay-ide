@@ -259,7 +259,6 @@ function useTerminalDerivedState() {
         forceOrgCockpit,
         topicComposerOpen,
         hasActiveChannel: activeChannelId !== null,
-        activeSessionMode: activeSession?.mode,
       }),
     [
       analyticsView,
@@ -268,7 +267,6 @@ function useTerminalDerivedState() {
       forceOrgCockpit,
       topicComposerOpen,
       activeChannelId,
-      activeSession?.mode,
     ]
   );
 
@@ -392,7 +390,6 @@ function useUtilityTerminalHandlers({
       const { session, error } = await createSessionWithoutActivation({
         repoPath,
         worktreePath,
-        type: 'terminal',
         cols,
         rows,
       });
@@ -805,7 +802,7 @@ function TerminalAreaContent({
                 utilityRailWorkspacePath={utilityRailStateKey}
                 branchName={activeSession?.branchName ?? ''}
                 sessionId={activeSessionId}
-                agentRunning={activeSession?.agentState === 'processing'}
+                agentRunning={activeSession?.activityState === 'processing'}
                 onArchive={onArchive}
               />
             )}
@@ -848,7 +845,6 @@ function TerminalAreaContent({
                   <SessionStatusBar
                     sessionId={activeSessionId}
                     currentActivity={activeSession?.currentActivity ?? null}
-                    framework={activeSession?.agent}
                     onHandoffClick={() =>
                       useUiStore
                         .getState()
@@ -922,7 +918,6 @@ export default function App() {
   // Default agent for the env-picker capability gating (#862). Terminal MVP
   // gates only shell/backend, but the shared option builder still takes the
   // selected agent — pass the configured default.
-  const defaultAgent = useConfigStore((s) => s.defaultAgent);
 
   // ── UI store ───────────────────────────────────────────────────────────────
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
@@ -1401,14 +1396,13 @@ export default function App() {
           from the single shared read model (`buildEnvironmentOptions`) over the
           `['hub-nodes']` + `['repo-inventory']` queries — replacing the #630
           repo-only stopgap. The launcher owns those `useQuery` calls so they run
-          inside the QueryClientProvider boundary. Terminal MVP: bare-shell
-          launch (`launchOverrides={{ type: 'terminal' }}`); agent picking is
-          #863. The active workspace (if any) is only a fallback when inventory
+          inside the QueryClientProvider boundary. This surface launches bare
+          terminals only; agent work opens in channels. The active workspace
+          (if any) is only a fallback when inventory
           is empty — the picker still surfaces a launchable local node otherwise. */}
       <EnvPickerLauncher
         open={activeModal?.modal === 'env-picker'}
         onClose={handleModalClose}
-        selectedAgent={defaultAgent}
         fallbackWorkspace={envPickerFallbackWorkspace}
         onLaunched={onEnvPickerLaunched}
       />

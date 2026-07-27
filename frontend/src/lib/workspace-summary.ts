@@ -1,14 +1,9 @@
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
-import type { AgentState, SessionSummary } from './types.js';
+import type { TerminalActivityState, SessionSummary } from './types.js';
 import type { WorkspaceTab } from './workspace-layout.js';
 
 export type SummaryIcon =
-  | 'session-claude'
-  | 'session-codex'
-  | 'session-opencode'
-  | 'session-hermes'
-  | 'session-agent'
   | 'session-terminal'
   | 'file-tsx'
   | 'file-ts'
@@ -102,15 +97,10 @@ function summaryForSessionTab(
   ctx: SummaryContext
 ): WorkspaceTabSummary {
   const session = ctx.findSession?.(tab.sessionId);
-  const isTerminal = tab.sessionType === 'terminal';
-  const agent = session?.agent ?? '';
-  const icon = sessionIconFor(tab.sessionType, agent);
-  const primary =
-    session?.displayName ||
-    session?.branchName ||
-    (isTerminal ? 'terminal' : 'session');
-  const dot = sessionDot(session?.agentState, session?.idle);
-  const meta = sessionMeta(session, isTerminal);
+  const icon = 'session-terminal';
+  const primary = session?.displayName || session?.branchName || 'terminal';
+  const dot = sessionDot(session?.activityState, session?.idle);
+  const meta = sessionMeta(session);
   const nodeBadge = nodeBadgeFor(tab.nodeId ?? session?.nodeId, ctx);
   return {
     icon,
@@ -149,20 +139,7 @@ export function sessionNodeBadge(
   return { label: info.label, status: info.status };
 }
 
-function sessionIconFor(
-  type: 'agent' | 'terminal',
-  agent: string
-): SummaryIcon {
-  if (type === 'terminal') return 'session-terminal';
-  const a = agent.toLowerCase();
-  if (a.includes('claude')) return 'session-claude';
-  if (a.includes('codex')) return 'session-codex';
-  if (a.includes('opencode')) return 'session-opencode';
-  if (a.includes('hermes')) return 'session-hermes';
-  return 'session-agent';
-}
-
-function sessionDot(state?: AgentState, idle?: boolean): SummaryDot {
+function sessionDot(state?: TerminalActivityState, idle?: boolean): SummaryDot {
   if (state === 'error') return 'error';
   if (state === 'permission-prompt' || state === 'waiting-for-input') {
     return 'attention';
@@ -172,18 +149,15 @@ function sessionDot(state?: AgentState, idle?: boolean): SummaryDot {
   return null;
 }
 
-function sessionMeta(
-  session: SessionSummary | undefined,
-  isTerminal: boolean
-): string | undefined {
+function sessionMeta(session: SessionSummary | undefined): string | undefined {
   if (!session) return undefined;
   const parts: string[] = [];
-  if (session.agent) parts.push(session.agent);
-  if (isTerminal && session.cwd) {
+  parts.push('terminal');
+  if (session.cwd) {
     const last = session.cwd.split('/').filter(Boolean).pop();
     if (last) parts.push(last);
   }
-  if (session.agentState) parts.push(session.agentState);
+  if (session.activityState) parts.push(session.activityState);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 

@@ -17,13 +17,12 @@ const session = (
   id: 's1',
   nodeId: DEFAULT_LOCAL_NODE_ID,
   tabKind: 'terminal',
-  type: 'agent',
+  type: 'terminal',
   mode: 'pty',
-  agent: 'codex',
   cwd: '/repo/relay-ide',
   status: 'active',
-  agentState: 'processing',
-  controlMode: 'agent-driven',
+  activityState: 'processing',
+  controlMode: 'human-driven',
   controlFreshness: 'fresh',
   relationship: 'primary',
   associatedAt: '2026-05-17T00:00:00.000Z',
@@ -113,7 +112,6 @@ describe('activeWorkMobileControlState respects durability', () => {
     const state = activeWorkMobileControlState(onlineGroup([s]), s);
     expect(state.smallInputDisabledReason).toMatch(/stale node/);
     expect(state.attachDisabledReason).toMatch(/stale node/);
-    expect(state.destructiveDisabledReason).toMatch(/stale node/);
   });
 
   it('disables live controls when durability is ended even if node is online', () => {

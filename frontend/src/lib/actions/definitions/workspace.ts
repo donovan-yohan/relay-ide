@@ -7,7 +7,7 @@ import {
 } from '../workspace-lifecycle.js';
 
 // #870: workspace.new-worktree bridges its createWorktree step to the stable
-// worktrees.create descriptor (the createAgentSession tail stays the #867
+// worktrees.create descriptor (the terminal-session tail stays the #867
 // sessions.create path). Availability gates on an active workspace, mirroring
 // the existing `when` predicate.
 const newWorktreeDescriptor = worktreeCreateActionDescriptor();

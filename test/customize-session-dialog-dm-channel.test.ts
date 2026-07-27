@@ -13,15 +13,12 @@ import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 const mocks = vi.hoisted(() => ({
   fetchRepoInventory: vi.fn(),
   fetchHubNodes: vi.fn(),
-  createAgentSession: vi.fn(),
+  createTerminalSession: vi.fn(),
   getOrCreateDmChannel: vi.fn(),
   setActiveChannelId: vi.fn(),
   configState: {
-    defaultContinue: false,
-    defaultYolo: false,
     defaultAgent: 'hermes',
     defaultNotifications: true,
-    claudeFullscreen: true,
     frameworks: [] as FrameworkInfo[],
     refreshConfig: vi.fn(),
     loadFrameworks: vi.fn(),
@@ -41,13 +38,9 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
   };
 });
 
-vi.mock(
-  '../frontend/src/hooks/useTopicRoomCreate.js',
-  async (importOriginal) => {
-    const actual = await importOriginal<object>();
-    return { ...actual, getOrCreateDmChannel: mocks.getOrCreateDmChannel };
-  }
-);
+vi.mock('../frontend/src/lib/agent-channels.js', () => ({
+  getOrCreateDmChannel: mocks.getOrCreateDmChannel,
+}));
 
 vi.mock('../frontend/src/lib/stores/config.js', () => {
   const useConfigStore = (
@@ -69,7 +62,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: mocks.createAgentSession,
+  createTerminalSession: mocks.createTerminalSession,
 }));
 
 vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
@@ -118,7 +111,6 @@ function webFramework(id = 'hermes'): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: true,
     },
     eventSource: 'hooks',
     availability: { installed: true, path: `/usr/local/bin/${id}` },
@@ -260,15 +252,9 @@ describe('CustomizeSessionDialog DM channel routing (#1178)', () => {
   it('opens the DM channel without routing the topic id through onSessionCreated', async () => {
     const { el, onSessionCreated } = await renderAndOpen();
 
-    // hermes defaults to web mode; make it explicit if the mode select exists.
-    const modeSelect = el.querySelector('#cs-mode') as HTMLSelectElement | null;
-    if (modeSelect && modeSelect.value !== 'web') {
-      await act(async () => {
-        modeSelect.value = 'web';
-        modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-      await flush();
-    }
+    expect(
+      el.querySelector('[data-testid="customize-session-env-picker"]')
+    ).toBeNull();
 
     await act(async () => {
       (
@@ -280,7 +266,7 @@ describe('CustomizeSessionDialog DM channel routing (#1178)', () => {
     await flush();
 
     const dmId = dmChannelTopicId('hermes', null);
-    // Routed a web agent launch to the DM channel...
+    // Routed the agent launch directly to the DM channel...
     expect(mocks.getOrCreateDmChannel).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'hermes' })
     );
@@ -289,7 +275,7 @@ describe('CustomizeSessionDialog DM channel routing (#1178)', () => {
     // ...and NEVER through the session-selection callback (no flash-and-close,
     // no bogus 'topic:...' active-session key).
     expect(onSessionCreated).not.toHaveBeenCalled();
-    // No mode:'web' session was created either.
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    // No user-visible session was created.
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
   });
 });

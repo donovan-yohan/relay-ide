@@ -1,21 +1,33 @@
-import { test, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+
+import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
+
 import {
   DEFAULTS,
-  loadConfig,
-  saveConfig,
-  ensureMetaDir,
-  readMeta,
-  writeMeta,
   deleteMeta,
-  resolveSessionSettings,
   deleteRepoSettingKeys,
+  ensureMetaDir,
+  loadConfig,
+  readMeta,
+  resolveSessionSettings,
+  saveConfig,
+  writeMeta,
 } from '../server/config.js';
-import type { Config } from '../server/types.js';
 
 const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
+const RETIRED_AGENT_KEYS = [
+  'defaultContinue',
+  'defaultContinuePolicy',
+  'defaultYolo',
+  'claudeFullscreen',
+  'claudeArgs',
+  'promptCreatePr',
+  'promptBranchRename',
+  'promptGeneral',
+  'promptStartWork',
+] as const;
 
 let tmpDir!: string;
 
@@ -25,704 +37,218 @@ beforeAll(() => {
 
 afterEach(() => {
   for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
-    const fullPath = path.join(tmpDir, entry.name);
-    if (entry.isDirectory()) {
-      fs.rmSync(fullPath, { recursive: true });
-    } else {
-      fs.unlinkSync(fullPath);
-    }
+    fs.rmSync(path.join(tmpDir, entry.name), {
+      recursive: entry.isDirectory(),
+      force: true,
+    });
   }
 });
 
 afterAll(() => {
-  fs.rmdirSync(tmpDir);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('loadConfig loads a JSON config file', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const data = { port: 4000, host: '127.0.0.1' };
-  fs.writeFileSync(configPath, JSON.stringify(data), 'utf8');
-
-  const config = loadConfig(configPath);
-  expect(config.port).toBe(4000);
-  expect(config.host).toBe('127.0.0.1');
-});
-
-test('loadConfig merges with defaults for missing fields', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ port: 9000 }), 'utf8');
-
-  const config = loadConfig(configPath);
-  expect(config.port).toBe(9000);
-  expect(config.host).toBe(DEFAULTS.host);
-  expect(config.cookieTTL).toBe(DEFAULTS.cookieTTL);
-  expect(config.repos).toEqual(DEFAULTS.repos);
-  expect(config.claudeArgs).toEqual(DEFAULTS.claudeArgs);
-  expect(config.defaultFramework).toBe(DEFAULTS.defaultFramework);
-});
-
-test('loadConfig throws if config file not found', () => {
-  const configPath = path.join(tmpDir, 'nonexistent.json');
-  expect(() => loadConfig(configPath)).toThrow(/Config file not found/);
-});
-
-test('saveConfig writes JSON with 2-space indent', () => {
-  const configPath = path.join(tmpDir, 'output.json');
-  const config = { port: 3456, host: '0.0.0.0' };
-
-  saveConfig(configPath, config as Parameters<typeof saveConfig>[1]);
-
-  const raw = fs.readFileSync(configPath, 'utf8');
-  expect(raw).toBe(JSON.stringify(config, null, 2));
-});
-
-test('DEFAULTS has expected keys and values', () => {
-  expect(DEFAULTS.host).toBe('0.0.0.0');
-  expect(DEFAULTS.port).toBe(3456);
-  expect(DEFAULTS.cookieTTL).toBe('24h');
-  expect(DEFAULTS.repos).toEqual([]);
-  expect(DEFAULTS.claudeArgs).toEqual([]);
-  expect(DEFAULTS.defaultFramework).toBe('claude');
-  expect(DEFAULTS.defaultContinue).toBe(true);
-  expect(DEFAULTS.defaultYolo).toBe(false);
-  expect(
-    Object.prototype.hasOwnProperty.call(DEFAULTS, LEGACY_TMUX_LAUNCH_KEY)
-  ).toBe(false);
-  expect(DEFAULTS.terminalBackend).toBe('relay-pty');
-});
-
-test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and terminalBackend', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ port: 3456 }), 'utf8');
-
-  const config = loadConfig(configPath);
-  expect(config.defaultContinue).toBe(true);
-  expect(config.defaultYolo).toBe(false);
-  expect(
-    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
-  ).toBe(false);
-  expect(config.terminalBackend).toBe('relay-pty');
-});
-
-test('loadConfig ignores the legacy tmux launch flag when terminalBackend is absent', () => {
+test('loadConfig merges supported defaults', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: true }),
+    JSON.stringify({ port: 9000, host: '127.0.0.1' }),
     'utf8'
   );
 
   const config = loadConfig(configPath);
-  expect(config.terminalBackend).toBe('relay-pty');
-  expect(
-    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
-  ).toBe(false);
-});
-
-test('loadConfig keeps relay-pty default for absent or false legacy tmux launch flag', () => {
-  const missingLegacyPath = path.join(tmpDir, 'missing-legacy.json');
-  fs.writeFileSync(missingLegacyPath, JSON.stringify({}), 'utf8');
-  const missingLegacyConfig = loadConfig(missingLegacyPath);
-  expect(missingLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(
-    Object.prototype.hasOwnProperty.call(
-      missingLegacyConfig,
-      LEGACY_TMUX_LAUNCH_KEY
-    )
-  ).toBe(false);
-
-  const falseLegacyPath = path.join(tmpDir, 'false-legacy.json');
-  fs.writeFileSync(
-    falseLegacyPath,
-    JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: false }),
-    'utf8'
-  );
-  const falseLegacyConfig = loadConfig(falseLegacyPath);
-  expect(falseLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(
-    Object.prototype.hasOwnProperty.call(
-      falseLegacyConfig,
-      LEGACY_TMUX_LAUNCH_KEY
-    )
-  ).toBe(false);
-});
-
-test('loadConfig keeps explicit terminalBackend when legacy tmux launch flag is present', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      terminalBackend: 'relay-pty',
-      [LEGACY_TMUX_LAUNCH_KEY]: true,
-    }),
-    'utf8'
-  );
-
-  const config = loadConfig(configPath);
-  expect(config.terminalBackend).toBe('relay-pty');
-  expect(
-    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
-  ).toBe(false);
-});
-
-test('ensureMetaDir creates worktree-meta directory', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  ensureMetaDir(configPath);
-  const metaPath = path.join(tmpDir, 'worktree-meta');
-  expect(fs.existsSync(metaPath)).toBeTruthy();
-});
-
-test('writeMeta creates and readMeta reads metadata file', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const meta = {
-    worktreePath: '/tmp/test-worktree',
-    displayName: 'My Feature',
-    lastActivity: '2026-02-22T00:00:00.000Z',
-  };
-  writeMeta(configPath, meta);
-  const read = readMeta(configPath, '/tmp/test-worktree');
-  expect(read).toEqual(meta);
-});
-
-test('readMeta returns null for non-existent metadata', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const result = readMeta(configPath, '/no/such/worktree');
-  expect(result).toBe(null);
-});
-
-test('writeMeta overwrites existing metadata', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  writeMeta(configPath, {
-    worktreePath: '/tmp/wt',
-    displayName: 'Old Name',
-    lastActivity: '2026-01-01T00:00:00.000Z',
+  expect(config).toMatchObject({
+    port: 9000,
+    host: '127.0.0.1',
+    cookieTTL: DEFAULTS.cookieTTL,
+    repos: [],
+    defaultFramework: 'claude',
+    terminalBackend: 'relay-pty',
   });
-  writeMeta(configPath, {
-    worktreePath: '/tmp/wt',
-    displayName: 'New Name',
-    lastActivity: '2026-02-22T00:00:00.000Z',
-  });
-  const read = readMeta(configPath, '/tmp/wt');
-  expect(read!.displayName).toBe('New Name');
-  expect(read!.lastActivity).toBe('2026-02-22T00:00:00.000Z');
-});
-
-test('deleteMeta removes metadata file', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  writeMeta(configPath, {
-    worktreePath: '/tmp/del-test',
-    displayName: 'To Delete',
-    lastActivity: '2026-02-22T00:00:00.000Z',
-  });
-  expect(readMeta(configPath, '/tmp/del-test')).toBeTruthy();
-  deleteMeta(configPath, '/tmp/del-test');
-  expect(readMeta(configPath, '/tmp/del-test')).toBe(null);
-});
-
-test('deleteMeta is a no-op for non-existent metadata', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  expect(() => deleteMeta(configPath, '/no/such/path')).not.toThrow();
-});
-
-test('resolveSessionSettings returns global defaults when no workspace or overrides', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultContinue: true,
-      defaultYolo: false,
-      claudeArgs: [],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', {});
-  expect(result.agent).toBe('claude');
-  expect(result.yolo).toBe(false);
-  expect(result.continuePolicy).toBe('always');
-  expect(result.terminalBackend).toBe('relay-pty');
-  expect(result.claudeArgs).toEqual([]);
-});
-
-test('resolveSessionSettings applies workspace overrides over globals', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repoSettings: {
-        '/my/repo': { defaultYolo: true, defaultFramework: 'codex' },
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {});
-  expect(result.agent).toBe('codex');
-  expect(result.yolo).toBe(true);
-  expect(result.continuePolicy).toBe('always');
-});
-
-test('resolveSessionSettings keeps relay-pty when legacy tmux fields are absent', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const wsId = 'ws-relay-pty-only';
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
-      workspaces: [
-        {
-          id: wsId,
-          name: 'My Workspace',
-          repos: ['/my/repo'],
-          order: 0,
-          settings: {},
-        },
-      ],
-      repoSettings: {
-        '/my/repo': {},
-      },
-    }),
-    'utf8'
-  );
-
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
-
-  expect(result.terminalBackend).toBe('relay-pty');
-});
-
-test('resolveSessionSettings can opt into relay-pty through terminalBackend', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      terminalBackend: 'relay-pty',
-      claudeArgs: [],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', {});
-  expect(result.terminalBackend).toBe('relay-pty');
-});
-
-test('resolveSessionSettings ignores removed repo terminalBackend values', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const previousBackend = process.env.RELAY_IDE_TERMINAL_BACKEND;
-  process.env.RELAY_IDE_TERMINAL_BACKEND = 'relay-pty';
-  try {
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify({
-        defaultFramework: 'claude',
-        defaultYolo: false,
-        defaultContinue: true,
-        terminalBackend: 'relay-pty',
-        claudeArgs: [],
-        repoSettings: {
-          '/my/repo': { terminalBackend: 'tmux-compat' },
-        },
-      }),
-      'utf8'
-    );
-    const config = loadConfig(configPath);
-    const result = resolveSessionSettings(config, '/my/repo', {});
-    expect(result.terminalBackend).toBe('relay-pty');
-  } finally {
-    if (previousBackend === undefined) {
-      delete process.env.RELAY_IDE_TERMINAL_BACKEND;
-    } else {
-      process.env.RELAY_IDE_TERMINAL_BACKEND = previousBackend;
-    }
+  for (const key of RETIRED_AGENT_KEYS) {
+    expect(config).not.toHaveProperty(key);
+    expect(DEFAULTS).not.toHaveProperty(key);
   }
 });
 
-test('resolveSessionSettings explicit overrides beat workspace settings', () => {
+test('loadConfig strips retired public-agent settings at every config layer', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: true,
-      defaultContinue: true,
-      claudeArgs: [],
-      repoSettings: {
-        '/my/repo': { defaultYolo: true },
-      },
-    }),
-    'utf8'
+  const retired = Object.fromEntries(
+    RETIRED_AGENT_KEYS.map((key) => [
+      key,
+      key === 'claudeArgs' ? ['--x'] : true,
+    ])
   );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', { yolo: false });
-  expect(result.yolo).toBe(false);
-});
-
-test('resolveSessionSettings uses override claudeArgs, not global', () => {
-  const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: ['--global-arg'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', {
-    claudeArgs: ['--custom'],
-  });
-  expect(result.claudeArgs).toEqual(['--custom']);
-});
-
-test('resolveSessionSettings falls through to globals when no workspace exists', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
+      ...retired,
       defaultFramework: 'codex',
-      defaultYolo: true,
-      defaultContinue: false,
-      terminalBackend: 'tmux-compat',
-      claudeArgs: ['--verbose'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/nonexistent/repo', {});
-  expect(result.agent).toBe('codex');
-  expect(result.yolo).toBe(true);
-  expect(result.continuePolicy).toBe('never');
-  expect(result.terminalBackend).toBe('relay-pty');
-  expect(result.claudeArgs).toEqual(['--verbose']);
-});
-
-test('deleteRepoSettingKeys removes specified keys', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const config = {
-    ...DEFAULTS,
-    repoSettings: {
-      '/my/repo': {
-        defaultYolo: true,
-        defaultFramework: 'codex',
-        branchPrefix: 'dy/',
+      repoSettings: {
+        '/repo': {
+          ...retired,
+          defaultFramework: 'claude',
+          promptFixConflicts: 'resolve this conflict',
+        },
       },
-    },
-  };
-  fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  deleteRepoSettingKeys(configPath, config, '/my/repo', [
-    'defaultYolo',
-    'defaultFramework',
-  ]);
-  expect(config.repoSettings!['/my/repo']!.defaultYolo).toBe(undefined);
-  expect(config.repoSettings!['/my/repo']!.defaultFramework).toBe(undefined);
-  expect(config.repoSettings!['/my/repo']!.branchPrefix).toBe('dy/');
-});
-
-test('deleteRepoSettingKeys removes entire workspace entry when empty', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const config = {
-    ...DEFAULTS,
-    repoSettings: {
-      '/my/repo': { defaultYolo: true },
-    },
-  };
-  fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  deleteRepoSettingKeys(configPath, config, '/my/repo', ['defaultYolo']);
-  expect(config.repoSettings!['/my/repo']).toBe(undefined);
-});
-
-test('deleteRepoSettingKeys is no-op for nonexistent workspace', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const config = { ...DEFAULTS };
-  fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  expect(() =>
-    deleteRepoSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo'])
-  ).not.toThrow();
-});
-
-// ── resolveSessionSettings workspace cascade ──
-
-test('resolveSessionSettings with workspaceId applies workspace settings between global and repo', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const wsId = 'ws-cascade-1';
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
       workspaces: [
         {
-          id: wsId,
-          name: 'My Workspace',
-          repos: ['/my/repo'],
+          id: 'ws',
+          name: 'Workspace',
+          repos: ['/repo'],
           order: 0,
           settings: {
-            defaultYolo: true,
-            defaultFramework: 'codex',
-            [LEGACY_TMUX_LAUNCH_KEY]: true,
+            ...retired,
+            defaultFramework: 'hermes',
+            promptFixConflicts: 'workspace conflict prompt',
           },
         },
       ],
     }),
     'utf8'
   );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
-  // Workspace settings should override global; the legacy tmux launch flag no longer changes the backend.
-  expect(result.yolo).toBe(true);
-  expect(result.agent).toBe('codex');
-  expect(result.terminalBackend).toBe('relay-pty');
-});
 
-test('resolveSessionSettings: repo settings override workspace settings', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const wsId = 'ws-cascade-2';
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
-      workspaces: [
-        {
-          id: wsId,
-          name: 'My Workspace',
-          repos: ['/my/repo'],
-          order: 0,
-          settings: { defaultYolo: true, defaultFramework: 'codex' },
-        },
-      ],
-      repoSettings: {
-        '/my/repo': { defaultYolo: false, defaultFramework: 'claude' },
-      },
-    }),
-    'utf8'
-  );
   const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
-  // Repo settings beat workspace settings
-  expect(result.yolo).toBe(false);
-  expect(result.agent).toBe('claude');
-});
-
-test('resolveSessionSettings: overrides beat workspace and repo settings', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const wsId = 'ws-cascade-3';
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
-      workspaces: [
-        {
-          id: wsId,
-          name: 'My Workspace',
-          repos: ['/my/repo'],
-          order: 0,
-          settings: { defaultYolo: true },
-        },
-      ],
-      repoSettings: {
-        '/my/repo': { defaultYolo: true },
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(
-    config,
-    '/my/repo',
-    { yolo: false },
-    wsId
-  );
-  expect(result.yolo).toBe(false);
-});
-
-test('resolveSessionSettings without workspaceId skips workspace cascade', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
-      workspaces: [
-        {
-          id: 'ws-x',
-          name: 'My Workspace',
-          repos: ['/my/repo'],
-          order: 0,
-          settings: { defaultYolo: true, defaultFramework: 'codex' },
-        },
-      ],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  // No workspaceId passed — workspace settings should NOT apply
-  const result = resolveSessionSettings(config, '/my/repo', {});
-  expect(result.yolo).toBe(false);
-  expect(result.agent).toBe('claude');
-});
-
-test('resolveSessionSettings with unknown workspaceId falls through to global', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      defaultFramework: 'claude',
-      defaultYolo: false,
-      defaultContinue: true,
-      claudeArgs: [],
-      repos: ['/my/repo'],
-      workspaces: [],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(
-    config,
-    '/my/repo',
-    {},
-    'no-such-workspace'
-  );
-  expect(result.yolo).toBe(false);
-  expect(result.agent).toBe('claude');
-});
-
-test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ defaultContinue: true }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const resolved = resolveSessionSettings(config, '/some/repo', {});
-  expect(resolved.continuePolicy).toBe('always');
-});
-
-test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ defaultContinue: false }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const resolved = resolveSessionSettings(config, '/some/repo', {});
-  expect(resolved.continuePolicy).toBe('never');
-});
-
-test('resolveSessionSettings respects explicit continuePolicy override', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ defaultContinue: true }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const resolved = resolveSessionSettings(config, '/some/repo', {
-    continuePolicy: 'never',
+  for (const key of RETIRED_AGENT_KEYS) {
+    expect(config).not.toHaveProperty(key);
+    expect(config.repoSettings?.['/repo']).not.toHaveProperty(key);
+    expect(config.workspaces?.[0]?.settings).not.toHaveProperty(key);
+  }
+  expect(config.defaultFramework).toBe('codex');
+  expect(config.repoSettings?.['/repo']).toMatchObject({
+    defaultFramework: 'claude',
+    promptFixConflicts: 'resolve this conflict',
   });
-  expect(resolved.continuePolicy).toBe('never');
 });
 
-test('resolveSessionSettings defaults continuePolicy to always when defaultContinue is missing', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
-  const config = loadConfig(configPath);
-  const resolved = resolveSessionSettings(config, '/some/repo', {});
-  // defaultContinue defaults to true via DEFAULTS, so maps to 'always'
-  expect(resolved.continuePolicy).toBe('always');
-});
-
-test('cascades workspace settings when workspaceId is provided', () => {
-  const config = {
-    ...DEFAULTS,
-    repos: ['/tmp/test-repo'],
-    workspaces: [
-      {
-        id: 'ws-1',
-        name: 'test workspace',
-        repos: ['/tmp/test-repo'],
-        order: 0,
-        settings: {
-          defaultYolo: true,
-          defaultFramework: 'claude',
-        },
-      },
-    ],
-    repoSettings: {},
-  } as Config;
-
-  const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  expect(result.yolo).toBe(true);
-  expect(result.agent).toBe('claude');
-});
-
-test('repo settings override workspace settings', () => {
-  const config = {
-    ...DEFAULTS,
-    repos: ['/tmp/test-repo'],
-    workspaces: [
-      {
-        id: 'ws-1',
-        name: 'test workspace',
-        repos: ['/tmp/test-repo'],
-        order: 0,
-        settings: {
-          defaultYolo: true,
-        },
-      },
-    ],
-    repoSettings: {
-      '/tmp/test-repo': { defaultYolo: false },
-    },
-  } as Config;
-
-  const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  expect(result.yolo).toBe(false);
-});
-
-test('resolveSessionSettings: repoSettings defaultFramework overrides global', () => {
+test('loadConfig strips the retired tmux launch flag and preserves relay-pty', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultFramework: 'claude',
-      repos: ['/my/repo'],
-      repoSettings: {
-        '/my/repo': { defaultFramework: 'opencode' },
+      [LEGACY_TMUX_LAUNCH_KEY]: true,
+      terminalBackend: 'relay-pty',
+    }),
+    'utf8'
+  );
+
+  const config = loadConfig(configPath);
+  expect(config.terminalBackend).toBe('relay-pty');
+  expect(config).not.toHaveProperty(LEGACY_TMUX_LAUNCH_KEY);
+});
+
+test('loadConfig exposes only supported automation settings', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      automations: {
+        autoCheckoutReviewRequests: true,
+        pollIntervalMs: 120_000,
+        lastPollTimestamp: '2026-07-26T00:00:00.000Z',
+        unsupportedSetting: true,
       },
     }),
     'utf8'
   );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {});
-  expect(result.agent).toBe('opencode');
+
+  expect(loadConfig(configPath).automations).toEqual({
+    autoCheckoutReviewRequests: true,
+    pollIntervalMs: 120_000,
+    lastPollTimestamp: '2026-07-26T00:00:00.000Z',
+  });
+});
+
+test('loadConfig throws for a missing file and saveConfig writes formatted JSON', () => {
+  expect(() => loadConfig(path.join(tmpDir, 'missing.json'))).toThrow(
+    /Config file not found/
+  );
+  const configPath = path.join(tmpDir, 'saved.json');
+  const config = { ...DEFAULTS };
+  saveConfig(configPath, config);
+  expect(fs.readFileSync(configPath, 'utf8')).toBe(
+    JSON.stringify(config, null, 2)
+  );
+});
+
+test('worktree metadata round-trips and deletes', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  ensureMetaDir(configPath);
+  const metadata = {
+    worktreePath: '/tmp/worktree',
+    displayName: 'feature',
+    lastActivity: '2026-07-27T00:00:00.000Z',
+    branchName: 'feature/runtime',
+  };
+  writeMeta(configPath, metadata);
+  expect(readMeta(configPath, metadata.worktreePath)).toEqual(metadata);
+  deleteMeta(configPath, metadata.worktreePath);
+  expect(readMeta(configPath, metadata.worktreePath)).toBeNull();
+  expect(() => deleteMeta(configPath, '/missing')).not.toThrow();
+});
+
+test('resolveSessionSettings resolves only terminal runtime settings', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      terminalBackend: 'relay-pty',
+      sessionDurability: { scrollbackBytes: 333_000 },
+      defaultFramework: 'codex',
+    }),
+    'utf8'
+  );
+  expect(resolveSessionSettings(loadConfig(configPath), '/repo', {})).toEqual({
+    terminalBackend: 'relay-pty',
+    scrollbackBytes: 333_000,
+  });
+});
+
+test('repo terminal settings override workspace settings and invalid backends fall through', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      terminalBackend: 'relay-pty',
+      workspaces: [
+        {
+          id: 'ws',
+          name: 'Workspace',
+          repos: ['/repo'],
+          order: 0,
+          settings: {
+            terminalBackend: 'relay-pty',
+            sessionDurability: { scrollbackBytes: 200_000 },
+          },
+        },
+      ],
+      repoSettings: {
+        '/repo': {
+          terminalBackend: 'tmux-compat',
+          sessionDurability: { scrollbackBytes: 250_000 },
+        },
+      },
+    }),
+    'utf8'
+  );
+  expect(
+    resolveSessionSettings(loadConfig(configPath), '/repo', {}, 'ws')
+  ).toEqual({
+    terminalBackend: 'relay-pty',
+    scrollbackBytes: 250_000,
+  });
+});
+
+test('deleteRepoSettingKeys preserves remaining repo configuration', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const config = {
+    ...DEFAULTS,
+    repoSettings: {
+      '/repo': { defaultFramework: 'codex', branchPrefix: 'dy/' },
+    },
+  };
+  deleteRepoSettingKeys(configPath, config, '/repo', ['defaultFramework']);
+  expect(config.repoSettings?.['/repo']).toEqual({ branchPrefix: 'dy/' });
+  deleteRepoSettingKeys(configPath, config, '/repo', ['branchPrefix']);
+  expect(config.repoSettings?.['/repo']).toBeUndefined();
 });

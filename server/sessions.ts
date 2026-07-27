@@ -2,42 +2,18 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
-  AgentType,
-  AgentState,
-  AgentFramework,
+  TerminalActivityState,
   BackendDisplayState,
-  ContinuePolicy,
   PtySession,
   Session,
   SessionSummary,
   SessionMeta,
   TerminalBackend,
   SessionType,
-  WebSession,
 } from './types.js';
 export type { BackendDisplayState };
-import {
-  AGENT_CONTINUE_ARGS,
-  AGENT_YOLO_ARGS,
-  resolveFramework,
-} from './types.js';
 import { createPtySession } from './pty-handler.js';
-import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
-import {
-  createWebSession,
-  reconnectWebSessionAdapter,
-  retireWebSessionAdapter,
-  setWebSessionRestoreSnapshotFence,
-  continueHereWebSession,
-  type CreateWebParams,
-} from './web-session-handler.js';
-import {
-  iterateWebSessions,
-  deleteWebSession,
-  upsertWebSessionNow,
-} from './relay-state-db.js';
-import { applyWebSessionPatchV2 } from './web-session-v2-state.js';
 import { getWorkingTreeDiff } from './git.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
@@ -54,7 +30,6 @@ import {
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
-import type { AdapterConfig } from './protocol-adapter.js';
 import {
   deriveSessionDurability,
   type SessionDurabilityNodeStatus,
@@ -87,22 +62,11 @@ import {
   type SessionRenewResult,
 } from './session-envelope-registry.js';
 import {
-  acknowledgeHumanInput,
-  applyControlModeAction,
-  maybeAutoRevertToAgentDriven,
   recordHumanPtyInput,
   recordSupervisorAction,
-  type ControlModeAction,
   type SupervisorInterventionAction,
 } from './control-engine.js';
-import {
-  listInterventions,
-  listUnackedHumanInput,
-} from './intervention-log.js';
-import {
-  validateAgentHandBackAck,
-  type SessionControlError,
-} from './session-control-api.js';
+import { listInterventions } from './intervention-log.js';
 import {
   securityAuditEntryForTabControlEvent,
   type SecurityAuditEntryInput,
@@ -113,11 +77,6 @@ import {
   type TerminalInputKey,
 } from './terminal-model-backend.js';
 import { cleanupSessionImageTempDir } from './session-image-ingress.js';
-import {
-  startOrchestratorCredentialLifecycle,
-  type OrchestratorCredentialLifecycle,
-  type OrchestratorCredentialLifecycleDeps,
-} from './orchestrator-credential-lifecycle.js';
 
 const logger = createLogger('sessions');
 
@@ -210,7 +169,6 @@ interface SerializedPtySession {
   id: string;
   spawnedBySessionId?: string;
   type: SessionType;
-  agent: AgentType;
   repoPath?: string;
   worktreePath?: string | null;
   cwd: string;
@@ -221,13 +179,8 @@ interface SerializedPtySession {
   lastActivity: string;
   terminalBackend?: TerminalBackend;
   customCommand: string | null;
-  yolo?: boolean;
-  claudeArgs?: string[];
-  hookToken?: string;
-  hooksActive?: boolean;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  continuePolicy?: ContinuePolicy;
   workspaceId?: string;
   additionalDirs?: string[];
   controlState?: ControlStateSummary;
@@ -262,7 +215,6 @@ export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   spawnedBySessionId?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  initialPrompt?: string;
   workspaceId?: string;
   additionalDirs?: string[];
   sessionLane?: SessionLane;
@@ -279,7 +231,6 @@ const metaCache = new Map<string, SessionMeta>();
 
 // Module-level defaults for hooks injection (set via configure())
 let defaultPort: number | undefined;
-let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
 let defaultInterventionDebounceMs: number | undefined;
 let defaultCoDrivenAutoRevertMs: number | undefined;
@@ -287,157 +238,29 @@ let defaultSecurityAuditSink:
   | { append(input: SecurityAuditEntryInput): unknown }
   | undefined;
 let defaultMaxScrollbackPerSessionBytes: number | undefined;
-let defaultOrchestratorCredentialAuthority:
-  | Pick<
-      OrchestratorCredentialLifecycleDeps,
-      'issueCredential' | 'revokeCredential'
-    >
-  | undefined;
-const orchestratorCredentialLeases = new Map<
-  string,
-  OrchestratorCredentialLifecycle
->();
-const orchestratorFailClosedSessions = new Set<string>();
 
 function configure(opts: {
   port?: number;
-  forceOutputParser?: boolean;
   configDir?: string;
   interventionDebounceMs?: number;
   coDrivenAutoRevertMs?: number;
   securityAuditSink?: { append(input: SecurityAuditEntryInput): unknown };
-  orchestratorCredentials?: Pick<
-    OrchestratorCredentialLifecycleDeps,
-    'issueCredential' | 'revokeCredential'
-  >;
   /** Global scrollback cap across all sessions in bytes. Default: 4 MB. */
   maxScrollbackGlobalBytes?: number;
   /** Per-session scrollback cap in bytes. Default: 256 KB. */
   maxScrollbackPerSessionBytes?: number;
 }): void {
   defaultPort = opts.port;
-  defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
   defaultInterventionDebounceMs = opts.interventionDebounceMs;
   defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
   defaultSecurityAuditSink = opts.securityAuditSink;
-  defaultOrchestratorCredentialAuthority = opts.orchestratorCredentials;
   if (opts.maxScrollbackGlobalBytes !== undefined) {
     globalScrollbackCapBytes = opts.maxScrollbackGlobalBytes;
   }
   if (opts.maxScrollbackPerSessionBytes !== undefined) {
     defaultMaxScrollbackPerSessionBytes = opts.maxScrollbackPerSessionBytes;
   }
-}
-
-function stopOrchestratorCredentialLease(sessionId: string): void {
-  const lease = orchestratorCredentialLeases.get(sessionId);
-  if (!lease) return;
-  orchestratorCredentialLeases.delete(sessionId);
-  lease.stop();
-}
-
-function orchestratorRuntimeIsDisconnected(session: WebSession): boolean {
-  if (
-    session.status === 'disconnected' ||
-    session.agentSessionV2.live.status === 'disconnected'
-  ) {
-    return true;
-  }
-  // Restore creates the durable wrapper before connecting its adapter. That
-  // one fenced pre-connect state is not a runtime loss; every other
-  // disconnected adapter state ends the privileged lease.
-  return (
-    session.adapterV2.status === 'disconnected' &&
-    session.restoreState !== 'restoring'
-  );
-}
-
-function failClosedOrchestratorSession(sessionId: string): void {
-  if (orchestratorFailClosedSessions.has(sessionId)) return;
-  orchestratorFailClosedSessions.add(sessionId);
-  try {
-    if (sessions.has(sessionId)) kill(sessionId);
-  } finally {
-    orchestratorFailClosedSessions.delete(sessionId);
-  }
-}
-
-function prepareOrchestratorWebCreate(params: CreateWebParams): {
-  params: CreateWebParams;
-  lease?: OrchestratorCredentialLifecycle;
-} {
-  if (params.role !== 'orchestrator') return { params };
-
-  const authority = defaultOrchestratorCredentialAuthority;
-  if (!authority) {
-    throw new Error(
-      'Orchestrator actor credential authority is not configured'
-    );
-  }
-  const id = params.id ?? crypto.randomBytes(8).toString('hex');
-  if (orchestratorCredentialLeases.has(id)) {
-    throw new Error(`Orchestrator credential lease already exists for ${id}`);
-  }
-  const lease = startOrchestratorCredentialLifecycle(
-    {
-      sessionId: id,
-      port: params.port,
-      ...(params.displayName ? { displayName: params.displayName } : {}),
-    },
-    {
-      ...authority,
-      applyRuntimeEnv: async (processEnv) => {
-        const session = sessions.get(id);
-        if (
-          session?.mode !== 'web' ||
-          session.role !== 'orchestrator' ||
-          orchestratorRuntimeIsDisconnected(session)
-        ) {
-          stopOrchestratorCredentialLease(id);
-          throw new Error(
-            'Orchestrator session unavailable during credential refresh'
-          );
-        }
-        const refreshRuntimeEnv = session.adapterV2.refreshRuntimeEnv;
-        if (!refreshRuntimeEnv) {
-          throw new Error(
-            'Orchestrator adapter cannot refresh its runtime environment'
-          );
-        }
-        await refreshRuntimeEnv.call(session.adapterV2, processEnv);
-      },
-      failClosed: () => failClosedOrchestratorSession(id),
-    }
-  );
-  return {
-    params: {
-      ...params,
-      id,
-      processEnv: {
-        ...(params.processEnv ?? {}),
-        ...lease.processEnv,
-      },
-    },
-    lease,
-  };
-}
-
-function retainOrchestratorCredentialLease(
-  sessionId: string,
-  lease: OrchestratorCredentialLifecycle | undefined
-): void {
-  if (!lease) return;
-  const session = sessions.get(sessionId);
-  if (
-    session?.mode !== 'web' ||
-    session.role !== 'orchestrator' ||
-    orchestratorRuntimeIsDisconnected(session)
-  ) {
-    lease.stop();
-    return;
-  }
-  orchestratorCredentialLeases.set(sessionId, lease);
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -482,9 +305,11 @@ function withLocalIdentity<T extends SessionSummary>(
 }
 
 let terminalCounter = 0;
-let agentCounter = 0;
 
-type StateChangeCallback = (sessionId: string, state: AgentState) => void;
+type StateChangeCallback = (
+  sessionId: string,
+  state: TerminalActivityState
+) => void;
 const stateChangeCallbacks: StateChangeCallback[] = [];
 
 type ControlEventCallback = (event: TabControlEvent) => void;
@@ -611,7 +436,10 @@ function fireSessionEnd(
   }
 }
 
-export function fireStateChange(sessionId: string, state: AgentState): void {
+export function fireStateChange(
+  sessionId: string,
+  state: TerminalActivityState
+): void {
   for (const cb of [...stateChangeCallbacks]) cb(sessionId, state);
   // Push durability transitions through the live state-change channel so
   // event-stream consumers see `permission-needed` / `error` / etc. without
@@ -666,7 +494,7 @@ function resolveNodeStatus(session: Session): SessionDurabilityNodeStatus {
 function emitDurabilityIfChanged(session: Session): SessionDurabilityState {
   const next = deriveSessionDurability({
     status: session.status,
-    agentState: session.agentState,
+    activityState: session.activityState,
     idle: session.idle,
     nodeStatus: resolveNodeStatus(session),
     ...(session.mode === 'pty' && session.cleanedUp ? { cleanedUp: true } : {}),
@@ -704,19 +532,19 @@ function refreshDurability(sessionIds?: Iterable<string>): void {
 }
 
 export function computeBackendState(session: {
-  agentState: AgentState;
+  activityState: TerminalActivityState;
   idle: boolean;
 }): BackendDisplayState {
-  if (session.agentState === 'permission-prompt') return 'permission';
-  if (session.agentState === 'error') return 'error';
-  if (session.agentState === 'processing') return 'running';
-  if (session.agentState === 'initializing') return 'initializing';
+  if (session.activityState === 'permission-prompt') return 'permission';
+  if (session.activityState === 'error') return 'error';
+  if (session.activityState === 'processing') return 'running';
+  if (session.activityState === 'initializing') return 'initializing';
   if (
-    session.agentState === 'idle' ||
-    session.agentState === 'waiting-for-input'
+    session.activityState === 'idle' ||
+    session.activityState === 'waiting-for-input'
   )
     return 'idle';
-  // Terminal/custom sessions don't report agentState — use the idle flag from PTY activity.
+  // Fall back to the PTY idle timer for activity states added by newer nodes.
   return session.idle ? 'idle' : 'running';
 }
 
@@ -732,12 +560,6 @@ export function onBackendStateChange(cb: BackendStateChangeCallback): void {
 }
 
 export function fireBackendStateIfChanged(session: Session): void {
-  if (
-    session.mode === 'web' &&
-    orchestratorRuntimeIsDisconnected(session)
-  ) {
-    stopOrchestratorCredentialLease(session.id);
-  }
   const newState = computeBackendState(session);
 
   let permissionType: 'approval' | 'question' | undefined;
@@ -766,7 +588,7 @@ export function fireBackendStateIfChanged(session: Session): void {
   }
   // Backend state + status are the only inputs to durability that can flip
   // outside the `fireStateChange` path (e.g. the resume-failure setter
-  // mutates `status` + `agentState` directly). Re-derive here so consumers
+  // mutates `status` + `activityState` directly). Re-derive here so consumers
   // see the transition over the event stream immediately.
   emitDurabilityIfChanged(session);
 }
@@ -776,37 +598,35 @@ function create({
   spawnedBySessionId,
   needsBranchRename,
   branchRenamePrompt,
-  initialPrompt,
   workspaceId,
   additionalDirs,
-  agent = 'claude',
   cols = 80,
   rows = 24,
   args = [],
   port,
-  forceOutputParser,
-  frameworks,
   ...rest
 }: CreateParams): CreateResult {
+  if (rest.type !== undefined && rest.type !== 'terminal') {
+    throw new Error(
+      'Agent conversations run in channels; public sessions only support terminals.'
+    );
+  }
+  if (!rest.command) {
+    throw new Error(
+      'Public terminal sessions require an explicit shell or command.'
+    );
+  }
   const id = providedId || crypto.randomBytes(8).toString('hex');
-  const nativeInitialPrompt =
-    agent === 'codex' && initialPrompt ? initialPrompt : undefined;
 
   const ptyParams: CreatePtyParams = {
     ...rest,
     id,
-    agent,
+    type: 'terminal',
     cols,
     rows,
-    // Codex accepts the first turn as a native positional argument for both
-    // fresh (`codex [flags] <PROMPT>`) and resumed
-    // (`codex resume --last [flags] <PROMPT>`) sessions. Keep it as a
-    // distinct argv element so the TUI never has to receive a typed fallback.
-    args: nativeInitialPrompt ? [...args, nativeInitialPrompt] : args,
+    args,
     port: port ?? defaultPort,
-    forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
     configDir: rest.configDir ?? defaultConfigDir,
-    frameworks,
     // Per-session cap: params override config default; pty-handler uses its own default if undefined.
     ...(rest.maxScrollbackBytes !== undefined
       ? { maxScrollbackBytes: rest.maxScrollbackBytes }
@@ -848,10 +668,10 @@ function create({
     action: 'created',
     target: id,
     properties: {
-      agent,
-      type: rest.type ?? 'agent',
+      agent: 'terminal',
+      type: 'terminal',
       workspace: rest.repoPath,
-      mode: rest.command ? 'terminal' : 'agent',
+      mode: 'terminal',
       ...(rest.sessionLane ? { sessionLane: rest.sessionLane } : {}),
     },
     session_id: id,
@@ -861,9 +681,6 @@ function create({
   }
   if (branchRenamePrompt) {
     ptySession.branchRenamePrompt = branchRenamePrompt;
-  }
-  if (initialPrompt && !nativeInitialPrompt) {
-    ptySession.initialPrompt = initialPrompt;
   }
   if (workspaceId) {
     ptySession.workspaceId = workspaceId;
@@ -883,50 +700,9 @@ function create({
     sessionId: id,
     ...(ptySession.repoPath ? { repoPath: ptySession.repoPath } : {}),
     ...(ptySession.repoName ? { repoName: ptySession.repoName } : {}),
-    agentType: agent,
+    agentType: 'terminal',
     startedAt: new Date().toISOString(),
   });
-  if (initialPrompt && !nativeInitialPrompt) {
-    // One-shot injection, guarded by ptySession.initialPrompt. The submit CR
-    // is a second deferred write (canonical Enter, CR not LF): TUI input
-    // loops coalesce a text+newline chunk into a paste and leave the prompt
-    // sitting unsubmitted in the composer (#958).
-    const injectInitialPrompt = (delayMs: number) => {
-      if (!ptySession.initialPrompt) return;
-      const prompt = ptySession.initialPrompt;
-      ptySession.initialPrompt = undefined;
-      const idx = stateChangeCallbacks.indexOf(promptHandler);
-      if (idx !== -1) stateChangeCallbacks.splice(idx, 1);
-      setTimeout(() => {
-        try {
-          ptySession.pty.write(prompt);
-        } catch (err) {
-          logger.error('Failed to inject initial prompt:', err);
-          return;
-        }
-        const submitTimer = setTimeout(() => {
-          try {
-            ptySession.pty.write('\r');
-          } catch (err) {
-            logger.error('Failed to submit initial prompt:', err);
-          }
-        }, SUPERVISOR_DEFERRED_TAIL_DELAY_MS);
-        submitTimer.unref?.();
-      }, delayMs);
-    };
-    const promptHandler = (changedId: string, state: AgentState) => {
-      if (changedId === id && state === 'waiting-for-input') {
-        injectInitialPrompt(500);
-      }
-    };
-    stateChangeCallbacks.push(promptHandler);
-    // Fallback: not every framework reports waiting-for-input (state
-    // detection depends on per-provider hooks/parsers — Codex sessions can
-    // sit in `initializing` forever). If the state signal hasn't fired by
-    // the deadline, inject anyway; the TUI is up long before this.
-    const fallbackTimer = setTimeout(() => injectInitialPrompt(0), 8000);
-    fallbackTimer.unref?.();
-  }
   const summary = withLocalIdentity({
     ...result,
     ...(spawnedBySessionId !== undefined ? { spawnedBySessionId } : {}),
@@ -942,10 +718,7 @@ function get(id: string): Session | undefined {
 }
 
 /**
- * Ids of every session currently in the in-memory map — live/connected AND
- * disconnected-but-retained. The relay-state-db age-reaper (#1248) treats these
- * as protected so an idle-but-in-memory session (a channel binding still points
- * at these to rebind) is never evicted from disk regardless of its age.
+ * Ids of every PTY session currently in the in-memory map.
  */
 function liveSessionIds(): string[] {
   return [...sessions.keys()];
@@ -1216,12 +989,7 @@ function list(): SessionSummary[] {
           ? { spawnedBySessionId: s.spawnedBySessionId }
           : {}),
         type: s.type,
-        agent: s.agent,
-        ...(s.role !== undefined ? { role: s.role } : {}),
         mode: s.mode,
-        ...(s.mode === 'web' && s.profileId !== undefined
-          ? { profileId: s.profileId }
-          : {}),
         ...(s.repoPath ? { repoPath: s.repoPath } : {}),
         ...(s.worktreePath !== undefined
           ? { worktreePath: s.worktreePath }
@@ -1240,16 +1008,13 @@ function list(): SessionSummary[] {
           : {}),
         durability,
         needsBranchRename: !!s.needsBranchRename,
-        agentState: s.agentState,
+        activityState: s.activityState,
         currentActivity: s.currentActivity,
         ...normalizeControlStateSummary(s.controlState),
-        ...(s.mode === 'pty' ? { terminalBackend: s.terminalBackend } : {}),
+        terminalBackend: s.terminalBackend,
         ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
         ...(s.additionalDirs?.length
           ? { additionalDirs: s.additionalDirs }
-          : {}),
-        ...(s.mode === 'pty' && s.dataQuality !== undefined
-          ? { dataQuality: s.dataQuality }
           : {}),
         ...(s._lastEmittedPermissionType !== undefined
           ? { permissionType: s._lastEmittedPermissionType }
@@ -1324,16 +1089,7 @@ function kill(id: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  stopOrchestratorCredentialLease(id);
-  if (session.mode === 'pty') {
-    void terminatePtySession(session, 'explicit-session-kill');
-  } else {
-    supersedeWebSessionRestore(session);
-    // Web session: disconnect adapter (tears down network connections and event handlers)
-    session.adapterV2?.disconnect().catch(() => {
-      // Adapter may already be disconnected — still proceed with cleanup
-    });
-  }
+  void terminatePtySession(session, 'explicit-session-kill');
   const durationS = Math.round(
     (Date.now() - new Date(session.createdAt).getTime()) / 1000
   );
@@ -1342,7 +1098,6 @@ function kill(id: string): void {
     action: 'ended',
     target: id,
     properties: {
-      agent: session.agent,
       type: session.type,
       workspace: session.repoPath,
       duration_s: durationS,
@@ -1350,19 +1105,6 @@ function kill(id: string): void {
     session_id: id,
   });
   fireSessionEnd(id, session.cwd, session.branchName);
-
-  // Clean up codex hooks adapter temp directory to avoid leaking temp files
-  if (
-    session.mode === 'pty' &&
-    session.agent === 'codex' &&
-    session.hooksActive
-  ) {
-    cleanupCodexHooksAdapter(id);
-  }
-
-  if (session.mode === 'web') {
-    deleteWebSession(id);
-  }
 
   cleanupSessionImageTempDir(id);
   sessions.delete(id);
@@ -1374,18 +1116,11 @@ function detachForRestart(id: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  stopOrchestratorCredentialLease(id);
-  if (session.mode === 'pty') {
-    session.preserveRuntimeFilesOnExit = true;
-    try {
-      session.pty.kill('SIGTERM');
-    } catch {
-      // PTY may already have exited during shutdown.
-    }
-  } else {
-    session.adapterV2?.disconnect().catch(() => {
-      // Adapter may already be disconnected during shutdown.
-    });
+  session.preserveRuntimeFilesOnExit = true;
+  try {
+    session.pty.kill('SIGTERM');
+  } catch {
+    // PTY may already have exited during shutdown.
   }
 }
 
@@ -1394,12 +1129,8 @@ function resize(id: string, cols: number, rows: number): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  if (session.mode === 'pty') {
-    session.pty.resize(cols, rows);
-    session.terminalModel?.resize(cols, rows);
-  } else {
-    logger.warn(`resize() called on web session ${id} — no-op`);
-  }
+  session.pty.resize(cols, rows);
+  session.terminalModel?.resize(cols, rows);
 }
 
 function write(id: string, data: string): void {
@@ -1407,12 +1138,8 @@ function write(id: string, data: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  if (session.mode === 'pty') {
-    recordHumanPtyInput(session, data, controlEngineOptions());
-    session.pty.write(data);
-  } else {
-    logger.warn(`write() called on web session ${id} — no-op`);
-  }
+  recordHumanPtyInput(session, data, controlEngineOptions());
+  session.pty.write(data);
 }
 
 // Delay between a submit body and its deferred CR. TUI input loops coalesce
@@ -1487,17 +1214,16 @@ function createRoutedPtyControlState(
   nodeId: string,
   sessionId: string
 ): ControlStateSummary {
-  const activeWorker: ControlActor = {
-    kind: 'agent',
-    id: 'terminal',
-    displayName: 'terminal',
+  const activeHuman: ControlActor = {
+    kind: 'human',
+    id: 'browser-user',
+    displayName: 'Browser user',
     nodeId,
     sessionId,
   };
   return {
-    controlMode: 'agent-driven',
-    activeActors: [activeWorker],
-    activeWorker,
+    controlMode: 'human-driven',
+    activeActors: [activeHuman],
     lastInterventionAt: null,
     lastInterventionBy: null,
     lastInterventionEventId: null,
@@ -1529,20 +1255,13 @@ function routedPtyControlSession(nodeId: string, sessionId: string): Session {
     id: sessionId,
     nodeId,
     type: 'terminal',
-    agent: 'terminal',
     mode: 'pty',
     pty: { write: () => {}, resize: () => {}, kill: () => {} },
     scrollback: [],
     terminalBackend: 'relay-pty',
     onPtyReplacedCallbacks: [],
     restored: false,
-    outputParser: 'codex',
-    hookToken: '',
-    hooksActive: false,
     cleanedUp: false,
-    yolo: false,
-    claudeArgs: [],
-    continuePolicy: 'never',
     cwd: envelope?.scope.cwd ?? '/',
     repoPath: envelope?.scope.repoPath,
     worktreePath: envelope?.scope.worktreePath,
@@ -1553,7 +1272,7 @@ function routedPtyControlSession(nodeId: string, sessionId: string): Session {
     customCommand: null,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
     controlState: createRoutedPtyControlState(nodeId, sessionId),
   } as unknown as Session;
   routedPtyControlSessions.set(globalSessionId, session);
@@ -1587,81 +1306,6 @@ function releaseRoutedPtyControlSessionsForNode(nodeId: string): number {
     released++;
   }
   return released;
-}
-
-function controlAction(
-  id: string,
-  action: ControlModeAction
-): TabControlEvent[] {
-  const session = sessions.get(id);
-  if (!session) {
-    throw new Error(`Session not found: ${id}`);
-  }
-  return applyControlModeAction(session, action, controlEngineOptions());
-}
-
-function acknowledgeInterventions(id: string, actor?: ControlActor): number {
-  const session = sessions.get(id);
-  if (!session) {
-    throw new Error(`Session not found: ${id}`);
-  }
-  return acknowledgeHumanInput(session, actor, controlEngineOptions());
-}
-
-function interventionScopeForSession(session: Session) {
-  const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
-  return {
-    sessionId: session.id,
-    nodeId,
-    globalSessionId: createGlobalSessionId(nodeId, session.id),
-  };
-}
-
-function handBackToAgent(input: {
-  id: string;
-  latestSeenInterventionEventId?: string;
-  actor?: ControlActor;
-}):
-  | { ok: true; events: TabControlEvent[]; ackedHumanInterventions: number }
-  | { ok: false; error: SessionControlError } {
-  const session = sessions.get(input.id);
-  const summary = session
-    ? {
-        id: session.id,
-        status: session.status,
-        ...normalizeControlStateSummary(session.controlState),
-      }
-    : undefined;
-  const scope = session
-    ? interventionScopeForSession(session)
-    : { sessionId: input.id };
-  const unackedHumanInterventions = listUnackedHumanInput(scope);
-  const validation = validateAgentHandBackAck({
-    session: summary,
-    ...(input.latestSeenInterventionEventId === undefined
-      ? {}
-      : { latestSeenInterventionEventId: input.latestSeenInterventionEventId }),
-    unackedHumanInterventions,
-  });
-  if (validation.ok === false) return { ok: false, error: validation.error };
-  const ackedHumanInterventions = acknowledgeInterventions(
-    input.id,
-    input.actor
-  );
-  const events = controlAction(input.id, 'hand-back');
-  return { ok: true, events, ackedHumanInterventions };
-}
-
-function maybeAutoRevert(id: string, nodeConnected?: boolean) {
-  const session = sessions.get(id);
-  if (!session) {
-    throw new Error(`Session not found: ${id}`);
-  }
-  return maybeAutoRevertToAgentDriven({
-    session,
-    ...(nodeConnected !== undefined ? { nodeConnected } : {}),
-    options: controlEngineOptions(),
-  });
 }
 
 function getInterventions(
@@ -1716,10 +1360,6 @@ async function captureTerminalVisibleText(id: string): Promise<string> {
 
 function nextTerminalName(): string {
   return `Terminal ${++terminalCounter}`;
-}
-
-function nextAgentName(): string {
-  return `Agent ${++agentCounter}`;
 }
 
 function atomicWriteFileSync(filePath: string, data: string): void {
@@ -1846,7 +1486,6 @@ function serializePtySession(
       ? { spawnedBySessionId: session.spawnedBySessionId }
       : {}),
     type: session.type,
-    agent: session.agent,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
     ...(session.worktreePath !== undefined
       ? { worktreePath: session.worktreePath }
@@ -1861,11 +1500,6 @@ function serializePtySession(
     lastActivity: session.lastActivity,
     terminalBackend: session.terminalBackend,
     customCommand: session.customCommand,
-    yolo: session.yolo,
-    claudeArgs: session.sessionArgs ?? session.claudeArgs,
-    hookToken: session.hookToken,
-    hooksActive: session.hooksActive,
-    continuePolicy: session.continuePolicy,
     ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
     ...(session.branchRenamePrompt
       ? { branchRenamePrompt: session.branchRenamePrompt }
@@ -1883,18 +1517,9 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
   fs.mkdirSync(scrollbackDirPath, { recursive: true });
 
   const serializedPty: SerializedPtySession[] = [];
-  let webSessionCount = 0;
 
   for (const session of sessions.values()) {
-    if (session.mode === 'pty') {
-      serializedPty.push(serializePtySession(session, scrollbackDirPath));
-    } else {
-      webSessionCount++;
-      // Web sessions persisted to relay-state.db on patch (debounced) +
-      // structural events. Final shutdown snapshot for any not-yet-flushed
-      // mutations is handled by upsertWebSessionNow before serializeAll.
-      upsertWebSessionNow(session);
-    }
+    serializedPty.push(serializePtySession(session, scrollbackDirPath));
   }
 
   const serializedAt = new Date().toISOString();
@@ -1926,11 +1551,10 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
   );
 
   logger.info(
-    'serialized sessions for restart: reason=%s pty=%d preservedFailedPty=%d web=%d prunedScrollback=%d configDir=%s',
+    'serialized sessions for restart: reason=%s pty=%d preservedFailedPty=%d prunedScrollback=%d configDir=%s',
     reason,
     serializedPty.length,
     preservedFailures?.sessions.length ?? 0,
-    webSessionCount,
     pruned,
     configDir
   );
@@ -1992,10 +1616,6 @@ async function migrateV2ToV3(
       // If cwd differs from repoPath, it's a worktree
       raw.worktreePath = cwd !== repoPath ? cwd : null;
     }
-    // Map old types to new
-    if (raw.type === 'repo' || raw.type === 'worktree') {
-      raw.type = 'agent';
-    }
     // Clean up legacy fields (repoPath is now kept as it's our real field)
     delete raw.root;
     delete raw.worktreeName;
@@ -2003,9 +1623,7 @@ async function migrateV2ToV3(
   }
 }
 
-async function migrateV3ToV4(
-  sessions: SerializedPtySession[]
-): Promise<void> {
+async function migrateV3ToV4(sessions: SerializedPtySession[]): Promise<void> {
   // v3 → v4 migration: workspacePath → repoPath
   // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
   // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
@@ -2032,34 +1650,6 @@ function loadScrollback(
     // Missing scrollback is non-fatal
   }
   return undefined;
-}
-
-export function buildAgentArgs(
-  s: SerializedPtySession,
-  frameworks?: Record<string, Partial<AgentFramework>>
-): string[] {
-  let continueArgsList: string[];
-  let yoloArgsList: string[];
-  try {
-    const framework = resolveFramework(
-      frameworks ? { frameworks } : {},
-      s.agent
-    );
-    continueArgsList = framework.continueArgs;
-    yoloArgsList = framework.yoloArgs;
-  } catch {
-    // Unknown framework — fall back to deprecated lookup tables
-    continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
-    yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
-  }
-  return [
-    ...continueArgsList,
-    // Serialized claudeArgs are Claude-specific flags (--model/--effort). On
-    // cold resume they must not be replayed into codex/opencode/hermes spawns,
-    // which exit code 2 within ~1s. Gate to the claude agent only.
-    ...(s.agent === 'claude' ? (s.claudeArgs ?? []) : []),
-    ...(s.yolo ? yoloArgsList : []),
-  ];
 }
 
 type RestoredPtySpawnParams = {
@@ -2140,22 +1730,23 @@ function serializedTerminalBackend(s: SerializedPtySession): TerminalBackend {
 }
 
 async function resolveSessionSpawnParams(
-  s: SerializedPtySession,
-  frameworks?: Record<string, Partial<AgentFramework>>
+  s: SerializedPtySession
 ): Promise<RestoredPtySpawnParams> {
   const terminalBackend = serializedTerminalBackend(s);
 
-  if (s.customCommand) {
-    return {
-      command: s.customCommand,
-      args: [],
-      terminalBackend,
-    };
+  if ((s.type as string) !== 'terminal') {
+    throw new Error(
+      `serialized session ${s.id} is a retired PTY agent session; agents now run only in channels`
+    );
   }
-
+  if (!s.customCommand) {
+    throw new Error(
+      `serialized terminal ${s.id} has no command and cannot be restored`
+    );
+  }
   return {
-    command: undefined,
-    args: buildAgentArgs(s, frameworks),
+    command: s.customCommand,
+    args: [],
     terminalBackend,
   };
 }
@@ -2170,8 +1761,7 @@ function restoreSession(
     ...(s.spawnedBySessionId !== undefined
       ? { spawnedBySessionId: s.spawnedBySessionId }
       : {}),
-    type: s.type,
-    agent: s.agent,
+    type: 'terminal',
     repoName: s.repoName,
     repoPath: s.repoPath,
     worktreePath: s.worktreePath,
@@ -2182,11 +1772,6 @@ function restoreSession(
     terminalBackend: spawn.terminalBackend,
     sessionCustomCommand: s.customCommand,
     restored: true,
-    yolo: s.yolo ?? false,
-    claudeArgs: s.claudeArgs ?? [],
-    hookToken: s.hookToken,
-    hooksActive: s.hooksActive,
-    continuePolicy: s.continuePolicy ?? 'never',
     ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
     ...(s.branchRenamePrompt
       ? { branchRenamePrompt: s.branchRenamePrompt }
@@ -2200,385 +1785,8 @@ function restoreSession(
   create(createParams);
 }
 
-const DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS = 15_000;
-const webSessionRestoreAttempts = new Map<
-  string,
-  {
-    generation: number;
-    adapter: WebSession['adapterV2'];
-    session: WebSession;
-  }
->();
-let webSessionRestoreShutdown = false;
-
-interface RestoreFromDiskOptions {
-  webSessionReattachTimeoutMs?: number;
-}
-
-async function restoreWebSessionFromDb(
-  row: import('./relay-state-db.js').LoadedWebSessionRow,
-  reattachTimeoutMs: number
-): Promise<void> {
-  // Restore persisted adapter runtime settings so the reconnected session
-  // matches what was originally running rather than reverting to defaults.
-  const persistedConfig = row.agentSessionV2.config;
-  const restoredRepoPath =
-    row.repoPath !== null && row.repoPath.length > 0 ? row.repoPath : undefined;
-  const createParams: CreateWebParams = {
-    id: row.id,
-    ...(row.meta.spawnedBySessionId !== undefined
-      ? { spawnedBySessionId: row.meta.spawnedBySessionId }
-      : {}),
-    agentType: row.meta.adapterType,
-    ...(row.meta.profileId !== undefined ? { profileId: row.meta.profileId } : {}),
-    ...(row.meta.role !== undefined ? { role: row.meta.role } : {}),
-    cwd: row.cwd,
-    ...(restoredRepoPath !== undefined
-      ? {
-          repoPath: restoredRepoPath,
-          ...(row.meta.repoName ? { repoName: row.meta.repoName } : {}),
-          worktreePath: row.worktreePath,
-          branchName: row.branchName ?? '',
-        }
-      : {}),
-    displayName: row.displayName ?? '',
-    port: defaultPort ?? 3456,
-    configDir: defaultConfigDir ?? '',
-    runtimeOwnership: row.meta.runtimeOwnership,
-    hookToken: row.meta.hookToken,
-    ...(row.workspaceId !== null ? { workspaceId: row.workspaceId } : {}),
-    ...(row.meta.additionalDirs !== undefined
-      ? { additionalDirs: row.meta.additionalDirs }
-      : {}),
-    controlState: normalizeControlStateSummary(row.meta.controlState),
-    ...(persistedConfig.model !== undefined
-      ? { model: persistedConfig.model }
-      : {}),
-    ...(persistedConfig.permissionMode !== undefined
-      ? { permissionMode: persistedConfig.permissionMode }
-      : {}),
-    ...(persistedConfig.providerOptions !== undefined
-      ? { extra: persistedConfig.providerOptions }
-      : {}),
-  };
-
-  // skipInitialPersist=true: createWebSession would otherwise overwrite the
-  // persisted DB row with a freshly-initialized blank transcript before we
-  // copy back agentSessionV2 below — a process death in that window would
-  // lose the session.
-  const preparedCreate = prepareOrchestratorWebCreate(createParams);
-  let created: Awaited<ReturnType<typeof createWebSession>>;
-  try {
-    created = await createWebSession(
-      preparedCreate.params,
-      sessions,
-      fireBackendStateIfChanged,
-      { skipInitialPersist: true, deferConnect: true }
-    );
-  } catch (error) {
-    preparedCreate.lease?.stop();
-    throw error;
-  }
-  const { session, config } = created;
-  session.restoreState = 'restoring';
-  retainOrchestratorCredentialLease(session.id, preparedCreate.lease);
-
-  // Replace the freshly-created blank transcript with the persisted one.
-  const persistedAgentSessionV2 = structuredClone(row.agentSessionV2);
-  const persistedProviderSession =
-    persistedAgentSessionV2.providerSession === undefined
-      ? undefined
-      : { ...persistedAgentSessionV2.providerSession };
-  session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
-  session.customCommand = row.meta.customCommand;
-  if (row.meta.needsBranchRename) {
-    session.needsBranchRename = true;
-  }
-
-  // Restore top-level metadata from the row so sessions.list() ordering,
-  // duration calculations, and backend-state display reflect the persisted
-  // session rather than the freshly-created blank wrapper.
-  session.createdAt = new Date(row.createdAt).toISOString();
-  session.lastActivity = new Date(row.lastActivity).toISOString();
-  session.status = row.status === 'archived' ? 'disconnected' : row.status;
-
-  // Derive runtime state from the persisted live snapshot, mirroring the
-  // mapping in web-session-handler's adapter listener.
-  const live = session.agentSessionV2.live;
-  session.currentTurnId = live.activeTurnId;
-  if (live.status === 'working') {
-    session.agentState = 'processing';
-    session.idle = false;
-  } else if (live.status === 'waiting') {
-    session.agentState =
-      live.waitingOn === 'approval' ? 'permission-prompt' : 'waiting-for-input';
-    session.idle = false;
-  } else if (live.status === 'error') {
-    session.agentState = 'error';
-    session.idle = true;
-  } else {
-    session.agentState = 'idle';
-    session.idle = true;
-  }
-  fireBackendStateIfChanged(session);
-
-  // Persist immediately so the freshly-restored row reflects current state
-  // (vendor may not assign a new id, but live status flips).
-  upsertWebSessionNow(session);
-
-  // Provider transport startup and resume are deliberately detached from the
-  // restore caller. The HTTP listener is already accepting requests when this
-  // function is invoked, and a dead provider can therefore never block auth or
-  // health request handling during boot.
-  void reattachRestoredWebSession(
-    session,
-    config,
-    reattachTimeoutMs,
-    persistedAgentSessionV2,
-    persistedProviderSession
-  ).catch((err) => {
-    if (webSessionRestoreShutdown) return;
-    logger.error(`Detached reattach failed for web session ${session.id}`, err);
-  });
-}
-
-async function reattachRestoredWebSession(
-  session: WebSession,
-  config: AdapterConfig,
-  timeoutMs: number,
-  persistedAgentSessionV2: WebSession['agentSessionV2'],
-  persistedProviderSession: Record<string, string> | undefined
-): Promise<void> {
-  if (webSessionRestoreShutdown) return;
-  const priorAttempt = webSessionRestoreAttempts.get(session.id);
-  const generation = (priorAttempt?.generation ?? 0) + 1;
-  const attemptAdapter = session.adapterV2;
-  webSessionRestoreAttempts.set(session.id, {
-    generation,
-    adapter: attemptAdapter,
-    session,
-  });
-
-  const deleteOwnAttempt = (): void => {
-    const current = webSessionRestoreAttempts.get(session.id);
-    if (
-      current?.generation === generation &&
-      current.adapter === attemptAdapter &&
-      current.session === session
-    ) {
-      webSessionRestoreAttempts.delete(session.id);
-    }
-  };
-
-  const isCurrentAttempt = (): boolean =>
-    !webSessionRestoreShutdown &&
-    sessions.get(session.id) === session &&
-    webSessionRestoreAttempts.get(session.id)?.generation === generation &&
-    webSessionRestoreAttempts.get(session.id)?.adapter === attemptAdapter &&
-    webSessionRestoreAttempts.get(session.id)?.session === session &&
-    session.adapterV2 === attemptAdapter &&
-    session.restoreState === 'restoring';
-
-  setWebSessionRestoreSnapshotFence(attemptAdapter, true);
-  const attempt = (async () => {
-    if (!isCurrentAttempt()) {
-      deleteOwnAttempt();
-      return;
-    }
-    await attemptAdapter.connect(config);
-    // Timeout/failure fencing: a late transport connect must not continue into
-    // provider resume after this attempt has already been declared failed.
-    if (!isCurrentAttempt()) {
-      deleteOwnAttempt();
-      return;
-    }
-    // Provider connect snapshots describe a blank transport wrapper, not the
-    // durable Relay transcript. Restore the captured state (including the
-    // provider resume identity) before resume chooses its vendor session id.
-    session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
-    if (persistedProviderSession !== undefined) {
-      session.agentSessionV2.providerSession = {
-        ...persistedProviderSession,
-      };
-    } else {
-      delete session.agentSessionV2.providerSession;
-    }
-    upsertWebSessionNow(session);
-    await reconnectWebSessionAdapter(session, attemptAdapter);
-    // Resume may ignore disconnect and settle after its deadline. Check the
-    // generation again before allowing the adapter to remain connected.
-    if (!isCurrentAttempt()) {
-      deleteOwnAttempt();
-      await attemptAdapter.disconnect().catch(() => {});
-    }
-  })();
-
-  // Promise.race observes rejection, while this continuation guarantees a
-  // late successful handshake is torn down instead of becoming an orphaned
-  // live transport after the timeout path returned.
-  void attempt.then(
-    () => {
-      if (!isCurrentAttempt()) {
-        deleteOwnAttempt();
-        void attemptAdapter.disconnect().catch(() => {});
-      }
-    },
-    () => {}
-  );
-
-  let timeout: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => {
-      reject(
-        new Error(`provider reattach timed out after ${String(timeoutMs)}ms`)
-      );
-    }, timeoutMs);
-    timeout.unref();
-  });
-
-  try {
-    await Promise.race([attempt, timedOut]);
-    if (!isCurrentAttempt()) {
-      deleteOwnAttempt();
-      return;
-    }
-    deleteOwnAttempt();
-    delete session.restoreState;
-    fireBackendStateIfChanged(session);
-    upsertWebSessionNow(session);
-  } catch (err) {
-    if (!isCurrentAttempt()) {
-      deleteOwnAttempt();
-      return;
-    }
-    deleteOwnAttempt();
-    session.restoreState = 'reattach-failed';
-    // Best effort cancellation makes a hung provider release its transport.
-    // Do not await disconnect: failure state must become visible immediately,
-    // even when the provider's cleanup path is itself wedged.
-    void attemptAdapter.disconnect().catch(() => {});
-    surfaceResumeFailure(session, err);
-  } finally {
-    setWebSessionRestoreSnapshotFence(attemptAdapter, false);
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-function supersedeWebSessionRestore(session: WebSession): void {
-  const attempt = webSessionRestoreAttempts.get(session.id);
-  const adapter =
-    attempt?.session === session ? attempt.adapter : session.adapterV2;
-  if (attempt?.session === session) {
-    webSessionRestoreAttempts.delete(session.id);
-  }
-  // Failure/timeout transitions remove their attempt record before the old
-  // transport necessarily settles. Retire the live adapter regardless so
-  // deleting restoreState cannot briefly reopen its patch handler.
-  retireWebSessionAdapter(adapter);
-  void adapter.disconnect().catch(() => {});
-}
-
-function cancelBackgroundRestores(): void {
-  webSessionRestoreShutdown = true;
-  const attempts = Array.from(webSessionRestoreAttempts.values());
-  webSessionRestoreAttempts.clear();
-  for (const { adapter } of attempts) {
-    retireWebSessionAdapter(adapter);
-    void adapter.disconnect().catch(() => {});
-  }
-}
-
-function surfaceResumeFailure(session: WebSession, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  const timestamp = new Date().toISOString();
-
-  // applyAgentPatchV2 only updates existing turns. After restore the active
-  // turn is normally null, so we must aim the error at an existing turn (the
-  // last one we have on the timeline) or synthesize a turn first when the
-  // session has no turns yet. This mirrors the agent-error-v2 fallback.
-  const targetTurnId = resolveResumeFailureTurnId(session, timestamp);
-
-  const errorPatch: import('../shared/agent-chat-protocol-v2.js').AgentItemStartedPatchV2 =
-    {
-      type: 'agent-item-started-v2',
-      sessionId: session.id,
-      timestamp,
-      turnId: targetTurnId,
-      item: {
-        type: 'errorMessage',
-        id: `error-resume-${timestamp}`,
-        message: `Resume failed: ${session.adapterType} session expired or rotated. Start a new session to continue. (${message})`,
-        source: 'client',
-        context: 'resume',
-        status: 'completed',
-        startedAt: timestamp,
-        completedAt: timestamp,
-      },
-    };
-  applyWebSessionPatchV2(session, errorPatch);
-
-  const liveStatePatch: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2 =
-    {
-      type: 'agent-live-state-updated-v2',
-      sessionId: session.id,
-      timestamp,
-      live: {
-        status: 'disconnected',
-        activeTurnId: null,
-        waitingOn: null,
-        activeRequestIds: [],
-        error: 'resume failed',
-      },
-    };
-  applyWebSessionPatchV2(session, liveStatePatch);
-
-  // Keep top-level session state in sync so sessions.list() and backend-state
-  // listeners see the disconnected state immediately rather than the stale
-  // pre-failure values until the next reload.
-  session.status = 'disconnected';
-  session.agentState = 'error';
-  session.idle = true;
-  session.currentTurnId = null;
-  fireBackendStateIfChanged(session);
-
-  upsertWebSessionNow(session);
-}
-
-function resolveResumeFailureTurnId(
-  session: WebSession,
-  timestamp: string
-): string {
-  const live = session.agentSessionV2.live.activeTurnId;
-  if (typeof live === 'string' && live.length > 0) return live;
-
-  const turns = session.agentSessionV2.turns;
-  const lastTurn = turns[turns.length - 1];
-  if (lastTurn) return lastTurn.id;
-
-  const syntheticTurnId = `resume-failed-${timestamp}`;
-  const turnPatch: import('../shared/agent-chat-protocol-v2.js').AgentTurnStartedPatchV2 =
-    {
-      type: 'agent-turn-started-v2',
-      sessionId: session.id,
-      timestamp,
-      turn: {
-        id: syntheticTurnId,
-        status: 'failed',
-        inputMessageId: '',
-        items: [],
-        startedAt: timestamp,
-        completedAt: timestamp,
-      },
-    };
-  applyWebSessionPatchV2(session, turnPatch);
-  return syntheticTurnId;
-}
-
 function syncDisplayNameCounters(): void {
   for (const s of sessions.values()) {
-    const agentMatch = s.displayName?.match(/^Agent (\d+)$/);
-    if (agentMatch)
-      agentCounter = Math.max(agentCounter, parseInt(agentMatch[1]!, 10));
     const termMatch = s.displayName?.match(/^Terminal (\d+)$/);
     if (termMatch)
       terminalCounter = Math.max(terminalCounter, parseInt(termMatch[1]!, 10));
@@ -2644,13 +1852,12 @@ async function migratePendingSessionsFile(
 async function tryRestorePtySession(
   s: SerializedPtySession,
   pendingVersion: number,
-  scrollbackDirPath: string,
-  frameworks?: Record<string, Partial<AgentFramework>>
+  scrollbackDirPath: string
 ): Promise<boolean> {
   const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
   try {
     if (pendingVersion >= 6) assertRestorableCwd(s);
-    const spawn = await resolveSessionSpawnParams(s, frameworks);
+    const spawn = await resolveSessionSpawnParams(s);
     restoreSession(s, spawn, initialScrollback);
     return true;
   } catch (err) {
@@ -2684,8 +1891,7 @@ function preserveFailedPendingSessions(
 async function restoreFreshPendingSessions(
   configDir: string,
   pending: PendingSessionsFile,
-  workspaces?: string[],
-  frameworks?: Record<string, Partial<AgentFramework>>
+  workspaces?: string[]
 ): Promise<number> {
   await migratePendingSessionsFile(pending, workspaces);
   const failedSessions: SerializedPtySession[] = [];
@@ -2698,6 +1904,14 @@ async function restoreFreshPendingSessions(
     // a turn between sessions without delaying restoreFromDisk's result after
     // the final child has been created.
     await yieldToEventLoop();
+    if ((s.type as string) !== 'terminal') {
+      logger.warn(
+        'discarding retired PTY agent session %s (%s); agents now run only in channels',
+        s.id,
+        s.displayName
+      );
+      continue;
+    }
     const removedTmuxReason = removedTmuxBackendReason(s, pending.version);
     if (removedTmuxReason) {
       logger.warn(
@@ -2712,8 +1926,7 @@ async function restoreFreshPendingSessions(
     const ok = await tryRestorePtySession(
       s,
       pending.version,
-      scrollbackDirPath,
-      frameworks
+      scrollbackDirPath
     );
     if (ok) restored++;
     else failedSessions.push(s);
@@ -2737,8 +1950,7 @@ async function restoreFreshPendingSessions(
 
 async function restorePendingSessionsFromDisk(
   configDir: string,
-  workspaces?: string[],
-  frameworks?: Record<string, Partial<AgentFramework>>
+  workspaces?: string[]
 ): Promise<number> {
   const pendingPath = pendingSessionsPath(configDir);
   if (!fs.existsSync(pendingPath)) {
@@ -2798,61 +2010,21 @@ async function restorePendingSessionsFromDisk(
   return restoreFreshPendingSessions(
     configDir,
     { ...pending, sessions: freshSessions },
-    workspaces,
-    frameworks
+    workspaces
   );
-}
-
-async function restoreWebSessionsFromDb(
-  reattachTimeoutMs: number
-): Promise<number> {
-  let restored = 0;
-  // Web sessions live in relay-state.db. Rows persist until the user archives or
-  // closes the session, OR until the relay-state-db age-reaper (#1248) evicts a
-  // row idle past its retention window — but never one that is live in-memory or
-  // still bound to an open channel, so resume anchors survive. iterateWebSessions
-  // restores ALL non-archived rows (no restore cap); the reaper bounds count.
-  for (const row of iterateWebSessions()) {
-    // Rows are parsed one at a time. Yield before their synchronous
-    // materialization, but never after the final row so a just-restored child
-    // remains observable when the restore promise resolves.
-    await yieldToEventLoop();
-    try {
-      if (webSessionRestoreShutdown) break;
-      await restoreWebSessionFromDb(row, reattachTimeoutMs);
-      restored++;
-    } catch (err) {
-      logger.error(
-        `Failed to restore web session ${row.id} (${row.displayName ?? '<unnamed>'})`,
-        err
-      );
-    }
-  }
-  return restored;
 }
 
 async function restoreFromDisk(
   configDir: string,
-  workspaces?: string[],
-  frameworks?: Record<string, Partial<AgentFramework>>,
-  options: RestoreFromDiskOptions = {}
+  workspaces?: string[]
 ): Promise<number> {
-  webSessionRestoreShutdown = false;
   // Startup restore is detached after `listening`, but an async function still
   // executes synchronously until its first await. Yield before manifest/DB work
   // so the listener can return to the event loop before any cold-resume burst.
   await yieldToEventLoop();
-  const restoredPty = await restorePendingSessionsFromDisk(
-    configDir,
-    workspaces,
-    frameworks
-  );
-  const restoredWeb = await restoreWebSessionsFromDb(
-    options.webSessionReattachTimeoutMs ??
-      DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS
-  );
+  const restored = await restorePendingSessionsFromDisk(configDir, workspaces);
   syncDisplayNameCounters();
-  return restoredPty + restoredWeb;
+  return restored;
 }
 
 async function fetchMetaForSession(
@@ -2931,115 +2103,10 @@ async function populateMetaCache(): Promise<void> {
   );
 }
 
-async function createWeb(
-  params: CreateWebParams
-): Promise<{ session: WebSession }> {
-  const preparedCreate = prepareOrchestratorWebCreate(params);
-  let result: Awaited<ReturnType<typeof createWebSession>>;
-  try {
-    result = await createWebSession(
-      preparedCreate.params,
-      sessions,
-      fireBackendStateIfChanged
-    );
-  } catch (error) {
-    preparedCreate.lease?.stop();
-    throw error;
-  }
-  retainOrchestratorCredentialLease(result.session.id, preparedCreate.lease);
-  if (result.session.sessionEnvelope) {
-    sessionEnvelopeRegistry.upsert(result.session.sessionEnvelope);
-  }
-  trackEvent({
-    category: 'session',
-    action: 'created',
-    target: result.session.id,
-    properties: {
-      agent: params.agentType,
-      type: 'agent',
-      workspace: params.repoPath,
-      mode: 'web',
-      ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
-    },
-    session_id: result.session.id,
-  });
-  return result;
-}
-
-/**
- * Initiate a "continue here" recovery for a web session whose resume failed.
- *
- * Disconnects the existing adapter, clears the stale vendor session ID, and
- * starts a fresh provider session (no resume). Uses the module-level defaults
- * for port and configDir so callers (e.g. ws.ts) do not need to carry them.
- *
- * Throws if the session is not found or is not a web session.
- */
-async function continueHereWeb(sessionId: string): Promise<void> {
-  const session = sessions.get(sessionId);
-  if (!session || session.mode !== 'web') {
-    throw new Error(
-      `continue-here: session ${sessionId} not found or not a web session`
-    );
-  }
-
-  // Issue 6 fix: guard against spurious Continue Here on an active session.
-  // Only allow the recovery flow when the session is in a disconnected/failed
-  // state. An active or waiting session should not have its adapter torn down
-  // by a stale or unexpected client command.
-  const replaceRestoreAdapter = session.restoreState !== undefined;
-  const liveStatus = session.agentSessionV2.live.status;
-  const isDisconnected =
-    replaceRestoreAdapter ||
-    liveStatus === 'disconnected' ||
-    session.adapterV2.status === 'disconnected';
-  if (!isDisconnected) {
-    logger.warn(
-      'continue-here: ignoring request for non-disconnected session',
-      {
-        id: session.id,
-        liveStatus,
-        adapterStatus: session.adapterV2.status,
-      }
-    );
-    return;
-  }
-
-  if (replaceRestoreAdapter) {
-    supersedeWebSessionRestore(session);
-  }
-  // Manual cold recovery supersedes the failed boot-reattach fence. The
-  // continue-here flow disconnects and re-registers adapter listeners before
-  // establishing its fresh provider session.
-  delete session.restoreState;
-
-  const config = {
-    cwd: session.cwd,
-    port: defaultPort ?? 3456,
-    sessionId: session.id,
-    hookToken: session.hookToken,
-    configDir: defaultConfigDir ?? '',
-    ...(session.agentSessionV2.config.permissionMode !== undefined
-      ? { permissionMode: session.agentSessionV2.config.permissionMode }
-      : {}),
-    ...(session.agentSessionV2.config.model !== undefined
-      ? { model: session.agentSessionV2.config.model }
-      : {}),
-    ...(session.agentSessionV2.config.providerOptions !== undefined
-      ? { extra: session.agentSessionV2.config.providerOptions }
-      : {}),
-  };
-
-  await continueHereWebSession(session, config, fireBackendStateIfChanged, {
-    replaceAdapter: replaceRestoreAdapter,
-  });
-}
-
 export {
   configure,
   create,
   renew,
-  createWeb,
   get,
   liveSessionIds,
   list,
@@ -3055,10 +2122,6 @@ export {
   recordRoutedPtyInput,
   releaseRoutedPtyControlSession,
   releaseRoutedPtyControlSessionsForNode,
-  controlAction,
-  acknowledgeInterventions,
-  handBackToAgent,
-  maybeAutoRevert,
   getInterventions,
   onControlEvent,
   onStateChange,
@@ -3070,16 +2133,12 @@ export {
   getReplaySnapshot,
   getRenderedScreenSnapshot,
   nextTerminalName,
-  nextAgentName,
   serializeAll,
   restoreFromDisk,
-  cancelBackgroundRestores,
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,
   // onGlobalScrollbackTrim intentionally omitted: no WS consumer wired yet.
   // Add back when the broadcast integration lands.
   enforceGlobalScrollbackCap,
-  continueHereWeb,
 };
-export type { CreateWebParams };

@@ -10,7 +10,7 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mocks = vi.hoisted(() => ({
-  createAgentSession: vi.fn(),
+  createTerminalSession: vi.fn(),
   setActivePane: vi.fn(),
   refreshAll: vi.fn(),
   setActiveSessionId: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: mocks.createAgentSession,
+  createTerminalSession: mocks.createTerminalSession,
   getCurrentSessionContext: () => ({
     currentRepoPath: mocks.activeWorkspace?.path,
     currentActiveWorkspace: mocks.activeWorkspace,
@@ -249,7 +249,7 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
-  mocks.createAgentSession.mockReset();
+  mocks.createTerminalSession.mockReset();
   mocks.setActivePane.mockReset();
   mocks.refreshAll.mockReset();
   mocks.setActiveSessionId.mockReset();
@@ -285,7 +285,7 @@ describe('WorkspaceArea terminal node picker', () => {
 
   it('opens remote cwd entry before creating remote terminal sessions', async () => {
     mocks.hubNodes = [node()];
-    mocks.createAgentSession.mockResolvedValue({
+    mocks.createTerminalSession.mockResolvedValue({
       session: { id: 'remote-session' },
       error: null,
     });
@@ -301,7 +301,7 @@ describe('WorkspaceArea terminal node picker', () => {
     });
 
     expect(mocks.setActivePane).toHaveBeenCalledWith('pane-1');
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
 
     const cwdInput = container!.querySelector(
       '[data-track="workspace.remote-terminal.cwd"]'
@@ -321,9 +321,8 @@ describe('WorkspaceArea terminal node picker', () => {
       ).click();
     });
 
-    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    const payload = mocks.createTerminalSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
-      type: 'terminal',
       nodeId: 'remote',
       cwd: '/srv/relay',
       sessionLane: 'remote-cwd',
@@ -335,7 +334,7 @@ describe('WorkspaceArea terminal node picker', () => {
 
   it('allows remote terminal starts in remote home without repo fields', async () => {
     mocks.hubNodes = [node()];
-    mocks.createAgentSession.mockResolvedValue({
+    mocks.createTerminalSession.mockResolvedValue({
       session: { id: 'remote-home-session' },
       error: null,
     });
@@ -350,7 +349,7 @@ describe('WorkspaceArea terminal node picker', () => {
       ).click();
     });
 
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
 
     await act(async () => {
       (
@@ -360,9 +359,8 @@ describe('WorkspaceArea terminal node picker', () => {
       ).click();
     });
 
-    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    const payload = mocks.createTerminalSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
-      type: 'terminal',
       nodeId: 'remote',
       cwd: '/home/relay',
       sessionLane: 'remote-home',
@@ -375,10 +373,10 @@ describe('WorkspaceArea terminal node picker', () => {
   });
 
   // #862: active-workspace local branch must stay behavior-identical — the
-  // local tab-plus still launches a repo-scoped terminal via createAgentSession
+  // local tab-plus launches a repo-scoped terminal.
   // (NOT the env-picker modal). Locks the unchanged path against regression.
   it('creates a repo-scoped terminal from the local tab-plus when a workspace is active', async () => {
-    mocks.createAgentSession.mockResolvedValue({
+    mocks.createTerminalSession.mockResolvedValue({
       session: { id: 'local-session' },
       error: null,
     });
@@ -395,9 +393,8 @@ describe('WorkspaceArea terminal node picker', () => {
 
     expect(mocks.setActiveModal).not.toHaveBeenCalled();
     expect(mocks.setActivePane).toHaveBeenCalledWith('pane-1');
-    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    const payload = mocks.createTerminalSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
-      type: 'terminal',
       repoPath: '/Users/kyle/relay-ide',
       worktreePath: '/Users/kyle/relay-ide/.worktrees/feature',
       sessionLane: 'local-repo',
@@ -423,7 +420,7 @@ describe('WorkspaceArea terminal node picker', () => {
     });
 
     expect(mocks.setActiveModal).toHaveBeenCalledWith({ modal: 'env-picker' });
-    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
     expect(mocks.setActiveSessionId).not.toHaveBeenCalled();
   });
 });

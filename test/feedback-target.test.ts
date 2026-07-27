@@ -8,13 +8,11 @@ import type { SessionSummary } from '../frontend/src/lib/types.js';
 
 function session(
   id: string,
-  type: SessionSummary['type'],
   overrides: Partial<SessionSummary> = {}
 ): SessionSummary {
   return {
     id,
-    type,
-    agent: type === 'agent' ? 'claude' : 'shell',
+    type: 'terminal',
     cwd: '/repo',
     displayName: id,
     createdAt: '2026-05-28T00:00:00.000Z',
@@ -26,8 +24,8 @@ function session(
 
 test('feedback target selection honors a live preferred target and normalizes it', () => {
   const sessions = [
-    session('terminal-a', 'terminal', { nodeId: 'local' }),
-    session('agent-a', 'agent', { nodeId: 'local' }),
+    session('terminal-a', { nodeId: 'local' }),
+    session('terminal-b', { nodeId: 'local' }),
   ];
 
   expect(initialFeedbackTarget(sessions, 'terminal-a')).toBe(
@@ -35,32 +33,32 @@ test('feedback target selection honors a live preferred target and normalizes it
   );
 });
 
-test('feedback target selection ignores stale preferred targets and falls back to the first live agent', () => {
+test('feedback target selection ignores stale preferred targets and falls back to the first live terminal', () => {
   const sessions = [
-    session('terminal-a', 'terminal', { nodeId: 'local' }),
-    session('agent-a', 'agent', { nodeId: 'remote' }),
+    session('terminal-a', { nodeId: 'local' }),
+    session('terminal-b', { nodeId: 'remote' }),
   ];
 
-  expect(initialFeedbackTarget(sessions, 'local:dead-agent')).toBe(
-    'remote:agent-a'
+  expect(initialFeedbackTarget(sessions, 'local:dead-terminal')).toBe(
+    'local:terminal-a'
   );
 });
 
 test('feedback target revalidation preserves a still-live current target', () => {
   const sessions = [
-    session('agent-a', 'agent', { nodeId: 'local' }),
-    session('agent-b', 'agent', { nodeId: 'remote' }),
+    session('terminal-a', { nodeId: 'local' }),
+    session('terminal-b', { nodeId: 'remote' }),
   ];
 
   expect(
-    resolveFeedbackTarget(sessions, 'local:agent-a', 'remote:agent-b')
-  ).toBe('remote:agent-b');
+    resolveFeedbackTarget(sessions, 'local:terminal-a', 'remote:terminal-b')
+  ).toBe('remote:terminal-b');
 });
 
 test('feedback target revalidation retargets to a live preferred target when the current target disappears', () => {
   const sessions = [
-    session('terminal-a', 'terminal', { nodeId: 'local' }),
-    session('agent-a', 'agent', { nodeId: 'remote' }),
+    session('terminal-a', { nodeId: 'local' }),
+    session('terminal-b', { nodeId: 'remote' }),
   ];
 
   expect(
@@ -68,19 +66,23 @@ test('feedback target revalidation retargets to a live preferred target when the
   ).toBe('local:terminal-a');
 });
 
-test('feedback target revalidation retargets to the first agent when the current and preferred targets disappear', () => {
+test('feedback target revalidation retargets to the first terminal when the current and preferred targets disappear', () => {
   const sessions = [
-    session('terminal-a', 'terminal', { nodeId: 'local' }),
-    session('agent-a', 'agent', { nodeId: 'remote' }),
+    session('terminal-a', { nodeId: 'local' }),
+    session('terminal-b', { nodeId: 'remote' }),
   ];
 
   expect(
-    resolveFeedbackTarget(sessions, 'local:dead-agent', 'remote:dead-agent')
-  ).toBe('remote:agent-a');
+    resolveFeedbackTarget(
+      sessions,
+      'local:dead-terminal',
+      'remote:dead-terminal'
+    )
+  ).toBe('local:terminal-a');
 });
 
 test('feedback target revalidation clears when no live sessions remain', () => {
   expect(
-    resolveFeedbackTarget([], 'local:dead-agent', 'remote:also-dead')
+    resolveFeedbackTarget([], 'local:dead-terminal', 'remote:also-dead')
   ).toBe('');
 });

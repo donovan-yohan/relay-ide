@@ -1446,7 +1446,7 @@ describe('hub node routes and link', () => {
             ...(typeof payload['spawnedBySessionId'] === 'string'
               ? { spawnedBySessionId: payload['spawnedBySessionId'] }
               : {}),
-            type: 'agent',
+            type: 'terminal',
             mode: 'pty',
             cwd: '/srv/app',
             displayName: 'remote session',
@@ -1456,7 +1456,7 @@ describe('hub node routes and link', () => {
             customCommand: null,
             status: 'active',
             needsBranchRename: false,
-            agentState: 'idle',
+            activityState: 'idle',
           },
         };
       },
@@ -1573,7 +1573,7 @@ describe('hub node routes and link', () => {
           method: 'POST',
           headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
           body: JSON.stringify({
-            type: 'agent',
+            type: 'terminal',
             cwd: '/srv/app',
             ...invalidLifecycle,
           }),
@@ -1598,7 +1598,7 @@ describe('hub node routes and link', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          type: 'agent',
+          type: 'terminal',
           cwd: '/srv/app',
           spawnedBySessionId: 'unknown-parent-session',
           expiresAt: '2026-01-02T03:06:00.000Z',
@@ -1608,7 +1608,7 @@ describe('hub node routes and link', () => {
     expect(createRes.status).toBe(201);
     expect(createRequests).toHaveLength(1);
     expect(createRequests[0]).toMatchObject({
-      type: 'agent',
+      type: 'terminal',
       cwd: '/srv/app',
       spawnedBySessionId: 'unknown-parent-session',
     });
@@ -1849,7 +1849,6 @@ describe('hub node routes and link', () => {
           session: {
             id: 'reopened-session',
             type: 'terminal',
-            agent: 'claude',
             mode: 'pty',
             repoPath: '/srv/repos/relay-ide',
             worktreePath: null,
@@ -1863,7 +1862,7 @@ describe('hub node routes and link', () => {
             customCommand: null,
             status: 'active',
             needsBranchRename: false,
-            agentState: 'idle',
+            activityState: 'idle',
           },
         },
       })
