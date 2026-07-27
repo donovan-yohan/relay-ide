@@ -2651,6 +2651,18 @@ export async function triggerUpdate(): Promise<{
   }>(await fetch('/update', { method: 'POST' }));
 }
 
+/**
+ * Failure text for an update attempt. Only an HttpError carries the server's
+ * explanation; a transport failure can also mean the server exited mid-request
+ * after a successful install, so those stay generic.
+ */
+export function updateFailureText(err: unknown): string {
+  const detail = err instanceof HttpError ? err.message.trim() : '';
+  return detail
+    ? `Update failed: ${detail}`
+    : 'Update failed. Please try again.';
+}
+
 export async function fetchUpdateChannel(): Promise<'stable' | 'nightly'> {
   const data = await json<{ channel: 'stable' | 'nightly' }>(
     await fetch('/update-channel')

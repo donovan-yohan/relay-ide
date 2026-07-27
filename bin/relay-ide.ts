@@ -11,6 +11,13 @@ import * as service from '../server/service.js';
 import { DEFAULTS, loadConfig } from '../server/config.js';
 import { createLogger } from '../server/logger.js';
 import { getNodeManifest } from '../server/node-manifest.js';
+import {
+  buildRemedyCommand,
+  buildUpdateCommand,
+  detectRunningInstall,
+  readInstalledVersion as readInstallRootVersion,
+  verifyUpdateLanded,
+} from '../server/self-update.js';
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 import {
   NODE_PAIR_TOKEN_CREATE_CAPABILITY,
@@ -7121,15 +7128,24 @@ async function runNodeInstallBinary(nodeArgs: string[]): Promise<void> {
     getNodeArg(nodeArgs, '--service') ?? 'manual'
   );
 
-  logger.info('installing relay-ide globally via npm...');
+  // Bootstrap installs the published binary; there is no before/after version
+  // to verify (the caller may be running from npx or not be installed at all),
+  // so only the package manager is detected here.
+  const bootstrapInstall = detectRunningInstall([process.argv[1], __dirname]);
+  const [bootstrapCommand, bootstrapArgs] = buildUpdateCommand(
+    bootstrapInstall.kind,
+    'latest',
+    bootstrapInstall.installRoot
+  );
+  logger.info(`installing relay-ide globally via ${bootstrapCommand}...`);
   try {
-    await execFileAsync('npm', ['install', '-g', 'relay-ide@latest'], {
+    await execFileAsync(bootstrapCommand, bootstrapArgs, {
       env: process.env,
     });
     logger.info('relay-ide installed.');
   } catch (err) {
     logger.error(
-      `BOOTSTRAP_INSTALL_FAILED: ${execErrorMessage(err, 'npm install -g relay-ide failed')}`
+      `BOOTSTRAP_INSTALL_FAILED: ${execErrorMessage(err, `${bootstrapCommand} ${bootstrapArgs.join(' ')} failed`)}`
     );
     process.exit(1);
   }
@@ -7203,15 +7219,20 @@ function resolveUpdateChannel(): 'stable' | 'nightly' {
   return 'stable';
 }
 
-/** Read the currently installed relay-ide version from package.json. */
-function readInstalledVersion(): string {
+/**
+ * Read the version currently on disk for the running install. Prefers the
+ * detected install root so a re-read after `npm install -g` reflects whichever
+ * prefix the package manager actually wrote to (#1284).
+ */
+function readRunningVersion(installRoot: string | null): string | null {
+  if (installRoot) return readInstallRootVersion(installRoot);
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
     ) as { version: string };
     return pkg.version;
   } catch {
-    return 'unknown';
+    return null;
   }
 }
 
@@ -7279,7 +7300,8 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
   const checkOnly = nodeArgs.includes('--check');
   const hubUrl = getNodeArg(nodeArgs, '--hub');
   const tag = resolveUpdateChannel() === 'nightly' ? 'nightly' : 'latest';
-  const currentVersion = readInstalledVersion();
+  const install = detectRunningInstall([process.argv[1], __dirname]);
+  const currentVersion = readRunningVersion(install.installRoot);
   const latestVersion = await fetchLatestNpmVersion(tag);
 
   if (checkOnly) {
@@ -7289,7 +7311,7 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
       );
     } else {
       logger.info(
-        `update available: installed ${currentVersion}, latest relay-ide@${tag} is ${latestVersion}. run 'relay-ide node update' to apply.`
+        `update available: installed ${currentVersion ?? 'unknown'}, latest relay-ide@${tag} is ${latestVersion}. run 'relay-ide node update' to apply.`
       );
     }
     process.exit(0);
@@ -7324,44 +7346,68 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
     );
   }
 
-  logger.info(
-    `updating relay-ide from ${currentVersion} → ${latestVersion} (relay-ide@${tag})...`
+  const [updateCommand, updateArgs] = buildUpdateCommand(
+    install.kind,
+    tag,
+    install.installRoot
   );
-  try {
-    await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`], {
-      env: process.env,
-    });
-  } catch (err) {
-    if (hubUrl && credential) {
-      await notifyHubNodeUpdating(
-        hubUrl,
-        credential.nodeId,
-        credential.token,
-        false
-      );
-    }
-    logger.error(
-      `NODE_UPDATE_FAILED: ${execErrorMessage(err, 'npm install -g relay-ide failed')}`
-    );
-    process.exit(1);
-  }
-
-  const installedVersion = readInstalledVersion();
-  logger.info(
-    installedVersion !== 'unknown'
-      ? `relay-ide updated to ${installedVersion}.`
-      : 'relay-ide updated.'
-  );
-
-  // Signal hub: update complete, clear the updating flag.
-  if (hubUrl && credential) {
+  const clearHubUpdatingFlag = async (): Promise<void> => {
+    if (!hubUrl || !credential) return;
     await notifyHubNodeUpdating(
       hubUrl,
       credential.nodeId,
       credential.token,
       false
     );
+  };
+
+  logger.info(
+    `updating relay-ide from ${currentVersion ?? 'unknown'} → ${latestVersion} (relay-ide@${tag} via ${updateCommand})...`
+  );
+  try {
+    await execFileAsync(updateCommand, updateArgs, {
+      env: process.env,
+    });
+  } catch (err) {
+    await clearHubUpdatingFlag();
+    logger.error(
+      `NODE_UPDATE_FAILED: ${execErrorMessage(err, `${updateCommand} ${updateArgs.join(' ')} failed`)}`
+    );
+    process.exit(1);
   }
+
+  // The package manager can report success while writing to a different global
+  // prefix than the one this CLI runs from (#1284), so verify the running root.
+  const installedVersion = readRunningVersion(install.installRoot);
+  // Without an install root (dev checkout) a global install legitimately leaves
+  // this process's version alone, so there is nothing to verify.
+  const verification = install.installRoot
+    ? verifyUpdateLanded({
+        versionBefore: currentVersion,
+        versionAfter: installedVersion,
+        latest: latestVersion,
+      })
+    : 'unverifiable';
+  if (
+    verification === 'unchanged-stale' ||
+    verification === 'no-change-detected'
+  ) {
+    await clearHubUpdatingFlag();
+    const remedy = buildRemedyCommand(install.kind, install.installRoot, tag);
+    logger.error(
+      `NODE_UPDATE_FAILED: \`${updateCommand} ${updateArgs.join(' ')}\` reported success but ${install.installRoot ?? 'the running install'} is still ${installedVersion ?? 'unknown'} (expected ${latestVersion}). Run: ${remedy}`
+    );
+    process.exit(1);
+  }
+
+  logger.info(
+    installedVersion !== null
+      ? `relay-ide updated to ${installedVersion}.`
+      : 'relay-ide updated.'
+  );
+
+  // Signal hub: update complete, clear the updating flag.
+  await clearHubUpdatingFlag();
 
   restartServiceAfterUpdate();
 }

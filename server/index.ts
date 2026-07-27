@@ -64,10 +64,11 @@ import {
 } from './worktree-cleanup.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import {
+  buildRemedyCommand,
   buildUpdateCommand,
-  detectInstallKind,
+  detectRunningInstall,
   readInstalledVersion,
-  type InstallDetection,
+  verifyUpdateLanded,
 } from './self-update.js';
 import {
   ingressSessionImage,
@@ -496,15 +497,14 @@ function getCurrentVersion(): string {
   return pkg.version;
 }
 
-function detectRunningInstall(): InstallDetection {
-  // argv[1] is the (usually symlinked) global bin entry; __filename is the
-  // fallback when the process was started some other way.
-  for (const candidate of [process.argv[1], __filename]) {
-    if (!candidate) continue;
-    const detection = detectInstallKind(candidate);
-    if (detection.kind !== 'unknown') return detection;
-  }
-  return { kind: 'unknown', installRoot: null };
+const UPDATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
+const UPDATE_COMMAND_MAX_BUFFER = 8 * 1024 * 1024;
+
+/** execFile kills the child on timeout, surfacing as `killed` on the error. */
+function isKilledByTimeout(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { killed?: boolean; code?: unknown; signal?: unknown };
+  return e.killed === true || e.code === 'ETIMEDOUT';
 }
 
 async function getLatestVersion(
@@ -5883,14 +5883,32 @@ async function main(): Promise<void> {
     try {
       const channel = startupConfig.updateChannel ?? 'stable';
       const tag = channel === 'nightly' ? 'nightly' : 'latest';
-      const install = detectRunningInstall();
-      const [updateCommand, updateArgs] = buildUpdateCommand(install.kind, tag);
+      // argv[1] is the (usually symlinked) global bin entry; __filename is the
+      // fallback when the process was started some other way.
+      const install = detectRunningInstall([process.argv[1], __filename]);
+      const [updateCommand, updateArgs] = buildUpdateCommand(
+        install.kind,
+        tag,
+        install.installRoot
+      );
       const versionBefore = install.installRoot
         ? readInstalledVersion(install.installRoot)
         : null;
-      await execFileAsync(updateCommand, updateArgs, {
-        env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
-      });
+      try {
+        await execFileAsync(updateCommand, updateArgs, {
+          env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
+          timeout: UPDATE_COMMAND_TIMEOUT_MS,
+          maxBuffer: UPDATE_COMMAND_MAX_BUFFER,
+        });
+      } catch (err) {
+        if (isKilledByTimeout(err)) {
+          throw new Error(
+            `Update command timed out after ${UPDATE_COMMAND_TIMEOUT_MS / 60_000}m.`,
+            { cause: err }
+          );
+        }
+        throw err;
+      }
 
       // A package manager can report success while installing into a different
       // global prefix than the one this process runs from (#1284). Only claim
@@ -5899,20 +5917,30 @@ async function main(): Promise<void> {
       if (install.installRoot) {
         installedVersion = readInstalledVersion(install.installRoot);
         const latest = await getLatestVersion(channel);
-        // An unreadable version on either side means we cannot prove anything;
-        // fall through to the legacy behavior rather than fail a real update.
+        const verification = verifyUpdateLanded({
+          versionBefore,
+          versionAfter: installedVersion,
+          latest,
+        });
         if (
-          installedVersion !== null &&
-          installedVersion === versionBefore &&
-          latest !== null &&
-          installedVersion !== latest
+          verification === 'unchanged-stale' ||
+          verification === 'no-change-detected'
         ) {
           updateInFlight = false;
+          const remedy = buildRemedyCommand(
+            install.kind,
+            install.installRoot,
+            tag
+          );
+          logger.warn(
+            `[update] ${verification}: ran \`${updateCommand} ${updateArgs.join(' ')}\` (kind=${install.kind}) but ${install.installRoot} stayed at ${versionBefore ?? 'unknown'} (after=${installedVersion ?? 'unknown'}, latest=${latest ?? 'unknown'}). Remedy: ${remedy}`
+          );
           res.status(500).json({
             ok: false,
             error:
-              `\`${updateCommand} ${updateArgs.join(' ')}\` reported success but the running install at ${install.installRoot} is still v${installedVersion} (expected v${latest}). ` +
-              'The update landed in a different global prefix — update that install root directly.',
+              verification === 'unchanged-stale'
+                ? `Update installed elsewhere — this server still runs v${installedVersion} from ${install.installRoot}. Run: ${remedy}`
+                : `Update ran but the version at ${install.installRoot} did not change and the latest version is unknown. Run: ${remedy}`,
           });
           return;
         }

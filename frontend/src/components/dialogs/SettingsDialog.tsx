@@ -24,6 +24,7 @@ import {
   setClaudeFullscreen,
   checkVersion,
   triggerUpdate,
+  updateFailureText,
   fetchAnalyticsSize,
   clearAnalytics,
   fetchGitHubStatus,
@@ -404,23 +405,26 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
       setVersionInfo((v) => ({ ...v, updating: true, status: '' }));
       try {
         const result = await triggerUpdate();
+        const updated = result.version
+          ? `Updated to v${result.version}!`
+          : 'Updated!';
         if (result.restarting) {
           setVersionInfo((v) => ({
             ...v,
-            status: 'Updated! Restarting\u2026',
+            status: `${updated} Restarting\u2026`,
             available: false,
           }));
           setTimeout(() => location.reload(), 5000);
         } else
           setVersionInfo((v) => ({
             ...v,
-            status: 'Updated! Please restart the server manually.',
+            status: `${updated} Please restart the server manually.`,
             available: false,
           }));
-      } catch {
+      } catch (err) {
         setVersionInfo((v) => ({
           ...v,
-          status: 'Update failed. Please try again.',
+          status: updateFailureText(err),
           updating: false,
         }));
       }

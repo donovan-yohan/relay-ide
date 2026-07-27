@@ -82,10 +82,7 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
         setShowActions(false);
       }
     } catch (err) {
-      const detail = err instanceof Error ? err.message.trim() : '';
-      setText(
-        detail ? `Update failed: ${detail}` : 'Update failed. Please try again.'
-      );
+      setText(api.updateFailureText(err));
       setButtonDisabled(false);
       setButtonText('Retry');
       setShowActions(true);
