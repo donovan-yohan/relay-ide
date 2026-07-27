@@ -68,6 +68,11 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
 
     try {
       const result = await api.triggerUpdate();
+      if (result.verified === false) {
+        setText(api.UPDATE_NO_CHANGE_TEXT);
+        setShowActions(false);
+        return;
+      }
       const updated = result.version
         ? `Updated to v${result.version}!`
         : 'Updated!';

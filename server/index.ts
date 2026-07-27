@@ -5935,12 +5935,21 @@ async function main(): Promise<void> {
           logger.warn(
             `[update] ${verification}: ran \`${updateCommand} ${updateArgs.join(' ')}\` (kind=${install.kind}) but ${install.installRoot} stayed at ${versionBefore ?? 'unknown'} (after=${installedVersion ?? 'unknown'}, latest=${latest ?? 'unknown'}). Remedy: ${remedy}`
           );
+          if (verification === 'no-change-detected') {
+            // Latest is unknown (offline host, private registry), so a no-op
+            // install is most likely already-current: advisory, not a failure.
+            // Nothing changed on disk, so there is nothing to restart into.
+            res.json({
+              ok: true,
+              verified: false,
+              restarting: false,
+              version: installedVersion,
+            });
+            return;
+          }
           res.status(500).json({
             ok: false,
-            error:
-              verification === 'unchanged-stale'
-                ? `Update installed elsewhere — this server still runs v${installedVersion} from ${install.installRoot}. Run: ${remedy}`
-                : `Update ran but the version at ${install.installRoot} did not change and the latest version is unknown. Run: ${remedy}`,
+            error: `Update installed elsewhere — this server still runs v${installedVersion} from ${install.installRoot}. Run: ${remedy}`,
           });
           return;
         }

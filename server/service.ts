@@ -58,10 +58,18 @@ function isGlobalInstall(): boolean {
 
 /**
  * Resolve the script path for the service file.
- * Always uses the global npm binary to prevent worktrees/dev builds from
- * hijacking the production service. Returns null if no global install found.
+ * Always uses a global install to prevent worktrees/dev builds from hijacking
+ * the production service. Returns null if no global install found.
+ *
+ * `preferred` is an already-detected global script path (bun globals never show
+ * up under an npm prefix); callers must derive it from a detected install root,
+ * and the worktree guard in `install()` still applies to it.
  */
-function resolveGlobalScriptPath(): string | null {
+function resolveGlobalScriptPath(
+  preferred?: string | undefined
+): string | null {
+  if (preferred && fs.existsSync(preferred)) return preferred;
+
   // Try to find the global relay-ide binary via node's prefix
   const nodePrefix = path.resolve(process.execPath, '..', '..');
   const globalScript = path.join(
@@ -519,8 +527,8 @@ function install(opts: InstallOpts): void {
   }
 
   // Resolve the global binary path once and validate it.
-  // The service plist/unit must always point to the global npm binary.
-  const scriptPath = resolveGlobalScriptPath();
+  // The service plist/unit must always point to a global install.
+  const scriptPath = resolveGlobalScriptPath(opts.scriptPath);
   if (!scriptPath) {
     throw new Error(
       'Cannot install service: no global relay-ide installation found. ' +

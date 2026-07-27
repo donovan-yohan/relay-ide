@@ -2638,6 +2638,8 @@ export async function checkVersion(): Promise<{
 export async function triggerUpdate(): Promise<{
   ok: boolean;
   restarting?: boolean;
+  /** Absent unless the server ran but could not confirm a version change. */
+  verified?: boolean;
   version?: string | null;
   error?: string;
 }> {
@@ -2648,8 +2650,12 @@ export async function triggerUpdate(): Promise<{
     restarting?: boolean;
     version?: string | null;
     error?: string;
+    verified?: boolean;
   }>(await fetch('/update', { method: 'POST' }));
 }
+
+/** Neutral copy for an install that ran without changing the install root. */
+export const UPDATE_NO_CHANGE_TEXT = 'No version change detected.';
 
 /**
  * Failure text for an update attempt. Only an HttpError carries the server's

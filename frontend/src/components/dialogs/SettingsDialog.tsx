@@ -25,6 +25,7 @@ import {
   checkVersion,
   triggerUpdate,
   updateFailureText,
+  UPDATE_NO_CHANGE_TEXT,
   fetchAnalyticsSize,
   clearAnalytics,
   fetchGitHubStatus,
@@ -405,6 +406,14 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
       setVersionInfo((v) => ({ ...v, updating: true, status: '' }));
       try {
         const result = await triggerUpdate();
+        if (result.verified === false) {
+          setVersionInfo((v) => ({
+            ...v,
+            status: UPDATE_NO_CHANGE_TEXT,
+            updating: false,
+          }));
+          return;
+        }
         const updated = result.version
           ? `Updated to v${result.version}!`
           : 'Updated!';

@@ -6,6 +6,7 @@ import {
   detectRunningInstall,
   readInstalledVersion,
   resolveBunBinary,
+  resolveDetectedScriptPath,
   verifyUpdateLanded,
 } from '../server/self-update.js';
 
@@ -184,14 +185,60 @@ test('buildRemedyCommand targets the detected prefix', () => {
     'bun add -g relay-ide@nightly'
   );
   expect(buildRemedyCommand('npm', NPM_ROOT, 'latest')).toBe(
-    'npm install -g --prefix /usr/local relay-ide@latest'
+    'npm install -g --prefix "/usr/local" relay-ide@latest'
   );
+  // Unclassified but npm-shaped roots still get the precise command.
   expect(
     buildRemedyCommand('unknown', '/srv/lib/node_modules/relay-ide', 'latest')
-  ).toContain('/srv/lib/node_modules/relay-ide');
+  ).toBe('npm install -g --prefix "/srv" relay-ide@latest');
   expect(buildRemedyCommand('unknown', null, 'latest')).toBe(
     'npm install -g relay-ide@latest'
   );
+});
+
+test('buildRemedyCommand quotes prefixes containing spaces', () => {
+  expect(
+    buildRemedyCommand(
+      'npm',
+      '/opt/relay nodes/lib/node_modules/relay-ide',
+      'latest'
+    )
+  ).toBe('npm install -g --prefix "/opt/relay nodes" relay-ide@latest');
+});
+
+test('buildRemedyCommand falls back for non-npm-shaped unknown roots', () => {
+  const pnpmRoot =
+    '/home/relay/.local/share/pnpm/global/5/node_modules/relay-ide';
+  expect(buildRemedyCommand('unknown', pnpmRoot, 'latest')).toContain(pnpmRoot);
+});
+
+test('resolveDetectedScriptPath only trusts classified global roots', () => {
+  const exists = () => true;
+  expect(
+    resolveDetectedScriptPath(
+      { kind: 'bun', installRoot: BUN_ROOT },
+      { fsExistsSync: exists }
+    )
+  ).toBe(`${BUN_ROOT}/dist/bin/relay-ide.js`);
+  // npx caches and other unclassified roots must not become service targets.
+  expect(
+    resolveDetectedScriptPath(
+      { kind: 'unknown', installRoot: '/tmp/npx-cache/node_modules/relay-ide' },
+      { fsExistsSync: exists }
+    )
+  ).toBeUndefined();
+  expect(
+    resolveDetectedScriptPath(
+      { kind: 'npm', installRoot: NPM_ROOT },
+      { fsExistsSync: () => false }
+    )
+  ).toBeUndefined();
+  expect(
+    resolveDetectedScriptPath(
+      { kind: 'npm', installRoot: null },
+      { fsExistsSync: exists }
+    )
+  ).toBeUndefined();
 });
 
 test('readInstalledVersion sees a changed version after a successful install', () => {

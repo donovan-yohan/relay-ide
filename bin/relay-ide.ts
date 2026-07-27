@@ -16,6 +16,7 @@ import {
   buildUpdateCommand,
   detectRunningInstall,
   readInstalledVersion as readInstallRootVersion,
+  resolveDetectedScriptPath,
   verifyUpdateLanded,
 } from '../server/self-update.js';
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
@@ -7167,6 +7168,8 @@ async function runNodeInstallBinary(nodeArgs: string[]): Promise<void> {
       configPath: resolveConfigPath(),
       port: getArg('--port') ?? String(DEFAULTS.port),
       host: getArg('--host') ?? DEFAULTS.host,
+      // A bun-global install has no npm-prefix copy for service.ts to find.
+      scriptPath: resolveDetectedScriptPath(bootstrapInstall),
     });
   });
 }
@@ -7261,7 +7264,7 @@ async function fetchLatestNpmVersion(tag: string): Promise<string> {
 }
 
 /** Restart the managed platform service after a binary update. Best-effort. */
-function restartServiceAfterUpdate(): void {
+function restartServiceAfterUpdate(scriptPath?: string | undefined): void {
   if (!service.isInstalled()) {
     logger.info(
       'no managed service detected. restart relay-ide node link manually to connect with the updated binary.'
@@ -7275,6 +7278,9 @@ function restartServiceAfterUpdate(): void {
       configPath: resolveConfigPath(),
       port: getArg('--port') ?? String(DEFAULTS.port),
       host: getArg('--host') ?? DEFAULTS.host,
+      // Without this, a bun-global install would uninstall the unit and then
+      // fail to reinstall it (npm prefix probing cannot see the bun root).
+      scriptPath,
     });
     logger.info('service restarted.');
   } catch (err) {
@@ -7409,7 +7415,7 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
   // Signal hub: update complete, clear the updating flag.
   await clearHubUpdatingFlag();
 
-  restartServiceAfterUpdate();
+  restartServiceAfterUpdate(resolveDetectedScriptPath(install));
 }
 
 function optionalNodeJsonNumber(

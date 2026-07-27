@@ -157,6 +157,27 @@ export function resolveBunBinary(
   return exists(binary) ? binary : 'bun';
 }
 
+/**
+ * Script path a platform service should point at, for install roots npm prefix
+ * probing cannot find (a `bun add -g` install has no npm-global copy). Only
+ * classified global installs qualify — never a dev checkout, and never an
+ * unclassified root such as an npx cache directory.
+ */
+export function resolveDetectedScriptPath(
+  detection: InstallDetection,
+  deps: SelfUpdateDeps = {}
+): string | undefined {
+  if (detection.kind === 'unknown' || !detection.installRoot) return undefined;
+  const exists = deps.fsExistsSync ?? fs.existsSync;
+  const script = path.join(
+    detection.installRoot,
+    'dist',
+    'bin',
+    'relay-ide.js'
+  );
+  return exists(script) ? script : undefined;
+}
+
 /** Build the global-install command for the detected package manager. */
 export function buildUpdateCommand(
   kind: InstallKind,
@@ -180,11 +201,17 @@ export function buildRemedyCommand(
   tag: string
 ): string {
   if (kind === 'bun') return `bun add -g relay-ide@${tag}`;
-  if (kind === 'npm' && installRoot) {
-    const prefix = normalizePath(installRoot)
+  const normalized = installRoot ? normalizePath(installRoot) : '';
+  // An npm-shaped root deserves the precise command even when classification
+  // fell back to `unknown` (e.g. a node prefix this process is not running).
+  if (
+    installRoot &&
+    (kind === 'npm' || normalized.endsWith('/lib/node_modules/relay-ide'))
+  ) {
+    const prefix = normalized
       .replace(/\/node_modules\/relay-ide$/, '')
       .replace(/\/lib$/, '');
-    return `npm install -g --prefix ${prefix} relay-ide@${tag}`;
+    return `npm install -g --prefix "${prefix}" relay-ide@${tag}`;
   }
   if (installRoot) {
     return `reinstall relay-ide@${tag} into ${installRoot} with the package manager that owns it`;
