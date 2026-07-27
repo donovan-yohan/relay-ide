@@ -43,7 +43,6 @@ import {
 import {
   settingsOpen,
   settingsConnectGithub,
-  settingsToggleYolo,
   settingsCheckUpdates,
   settingsDisconnectGithub,
   settingsSetupWebhooks,
@@ -53,7 +52,6 @@ import {
   settingsDisconnectJira,
   settingsToggleDevTools,
   settingsClearAnalytics,
-  settingsToggleContinue,
   settingsToggleNotifications,
   settingsChangeDefaultAgent,
 } from '../lib/actions/definitions/settings.js';
@@ -64,7 +62,6 @@ import {
   sidebarRenameSession,
   sidebarDeleteWorktree,
   sidebarResumeSession,
-  sidebarResumeYolo,
 } from '../lib/actions/definitions/sidebar.js';
 import {
   dashboardOpenPrSession,
@@ -116,7 +113,6 @@ import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import {
   approveNodePairingRequest,
-  ConflictError,
   createSession,
   denyNodePairingRequest,
   fetchActiveWork,
@@ -124,13 +120,12 @@ import {
   fetchNodePairingRequests,
   rotateHubNodeCredential,
   revokeHubNode,
-  setDefaultYolo,
 } from '../lib/api.js';
 import { executeSessionKillAction } from '../lib/actions/session-lifecycle.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
-import { createAgentSession } from '../lib/session-utils.js';
+import { openAgentChannel } from '../lib/agent-channels.js';
 import {
   resolveSessionByKey,
   resolveSessionCloseTarget,
@@ -372,7 +367,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       [settingsDisconnectJira, SECTION_INTEGRATIONS],
       [settingsToggleDevTools, SECTION_ADVANCED],
       [settingsClearAnalytics, SECTION_ADVANCED],
-      [settingsToggleContinue, SECTION_GENERAL],
       [settingsToggleNotifications, SECTION_GENERAL],
       [settingsChangeDefaultAgent, SECTION_GENERAL],
     ] as const;
@@ -504,9 +498,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         },
       },
       {
-        // #870: Command Center surface for the stable workspaces.launch verb.
-        // Resolves the active workspace-group id and delegates to the shared
-        // launch handler (which routes through executeWorkspaceLaunchAction).
+        // Resolve the active workspace-group id and open its agent channel.
         ...workspaceLaunch,
         handler: () => {
           // `when`/`disabledReason` gate on ctx.workspacePath (an active repo
@@ -583,19 +575,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           }),
       },
       {
-        ...settingsToggleYolo,
-        handler: async () => {
-          const prev = useConfigStore.getState().defaultYolo;
-          useConfigStore.setState({ defaultYolo: !prev });
-          try {
-            await setDefaultYolo(!prev);
-          } catch (err) {
-            useConfigStore.setState({ defaultYolo: prev });
-            logger.error('Failed to update default YOLO setting', err);
-          }
-        },
-      },
-      {
         ...settingsCheckUpdates,
         handler: () =>
           useUiStore
@@ -642,7 +621,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         },
       },
       { ...sidebarResumeSession, handler: () => handleQuickAgent() },
-      { ...sidebarResumeYolo, handler: () => handleQuickAgent() },
 
       // ── Dashboard / Org / Ticket ────────────────────────────────────────────
       { ...dashboardOpenPrSession, handler: () => handleQuickAgent() },
@@ -938,40 +916,17 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       .map((framework) => ({
         ...createFrameworkAction(framework),
         handler: async () => {
-          const currentRepoPath = useUiStore.getState().activeRepoPath;
-          const state = useSessionsStore.getState();
-          const workspace = currentRepoPath
-            ? state.repos.find((repo) => repo.path === currentRepoPath)
-            : undefined;
-          const activeSession = state.activeSessionId
-            ? resolveSessionByKey(state.sessions, state.activeSessionId)
-            : undefined;
-
-          if (!workspace) return;
-
-          const { session, error } = await createAgentSession({
-            repoPath: workspace.path,
-            worktreePath: activeSession?.worktreePath ?? null,
-            type: 'agent',
-            agent: framework.id,
-          });
-
-          if (session?.id && !(error instanceof ConflictError)) {
-            useSessionsStore
+          try {
+            await openAgentChannel({ providerId: framework.id });
+          } catch (error) {
+            logger.error(`Failed to open ${framework.id} chat`, error);
+            useToastStore
               .getState()
-              .initSessionNotification(
-                session.id,
-                useConfigStore.getState().defaultNotifications
+              .showToast(
+                error instanceof Error
+                  ? error.message
+                  : `failed to open ${framework.id} chat`
               );
-          }
-
-          if (error && !(error instanceof ConflictError)) {
-            logger.error(`Failed to create ${framework.id} session`, error);
-            customizeDialogRef.current?.open(
-              { name: workspace.name, path: workspace.path },
-              activeSession?.worktreePath ?? null,
-              framework.id
-            );
           }
         },
       }));

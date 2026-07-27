@@ -11,13 +11,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
-  AgentBlockDescriptor,
   ArtifactBlockDescriptor,
   CustomBlockDescriptor,
   FileBlockDescriptor,
   JsonValue,
   MarkdownBlockDescriptor,
-  PromptFanoutBlockDescriptor,
   TerminalBlockDescriptor,
   WorkContextBlockDescriptor,
   WorkbenchBlockDescriptor,
@@ -27,7 +25,6 @@ import type {
 } from '../shared/workbench-block-types.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import type { WorkContextRedactionClass } from '../shared/work-context.js';
-import { getPromptFanoutRunFixture } from '../shared/prompt-fanout-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -122,35 +119,6 @@ describe('WorkbenchBlockDescriptor discriminated union narrowing', () => {
     } else {
       // If this branch were reachable we have a narrowing bug.
       assertNever(desc as never);
-    }
-  });
-
-  it('narrows to AgentBlockDescriptor on kind === agent', () => {
-    const desc: WorkbenchBlockDescriptor = {
-      kind: 'agent',
-      id: 'b-2',
-      title: 'Claude Code',
-      capabilityRequirements: ['session:attach'],
-      meta: { actorRef: { kind: 'actor', id: 'actor-123' } },
-    };
-
-    if (desc.kind === 'agent') {
-      assertType<'actor'>(desc.meta.actorRef.kind);
-    }
-  });
-
-  it('narrows to PromptFanoutBlockDescriptor on kind === prompt-fanout', () => {
-    const desc: WorkbenchBlockDescriptor = {
-      kind: 'prompt-fanout',
-      id: 'b-3',
-      title: 'Prompt Fanout',
-      capabilityRequirements: [],
-      meta: { fixture: 'all-success', dryRunOnly: true },
-    };
-
-    if (desc.kind === 'prompt-fanout') {
-      assertType<string | undefined>(desc.meta.fixture);
-      assertType<boolean | undefined>(desc.meta.dryRunOnly);
     }
   });
 
@@ -254,8 +222,7 @@ describe('WorkbenchBlockRenderer generic constraint', () => {
     expect(typeof _TerminalRenderer).toBe('function');
   });
 
-  it('ensures props for one kind cannot receive descriptors of another kind at type level', () => {
-    // Build terminal renderer props and agent renderer props; verify Extract works.
+  it('builds correctly narrowed terminal renderer props', () => {
     const terminalDesc: TerminalBlockDescriptor = {
       kind: 'terminal',
       id: 'x',
@@ -271,31 +238,12 @@ describe('WorkbenchBlockRenderer generic constraint', () => {
       },
     };
 
-    const agentDesc: AgentBlockDescriptor = {
-      kind: 'agent',
-      id: 'y',
-      title: 'A',
-      capabilityRequirements: [],
-      meta: { actorRef: { kind: 'actor', id: 'a1' } },
-    };
-
-    // Correct assignment — should compile.
     const terminalProps: WorkbenchBlockRendererProps<'terminal'> = {
       descriptor: terminalDesc,
       context: makeContext(),
     };
 
-    // agentDesc is NOT assignable to WorkbenchBlockRendererProps<'terminal'>.
-    // The @ts-expect-error sits on the line directly above the failing property.
-    const _bad: WorkbenchBlockRendererProps<'terminal'> = {
-      // @ts-expect-error — Type '"agent"' is not assignable to type '"terminal"'.
-      descriptor: agentDesc,
-      context: makeContext(),
-    };
-
     expect(terminalProps.descriptor.kind).toBe('terminal');
-    // Suppress unused warning — _bad is used by @ts-expect-error above.
-    void _bad;
   });
 });
 
@@ -307,15 +255,13 @@ describe('WorkbenchBlockKind union', () => {
   it('covers all expected literals', () => {
     const kinds: WorkbenchBlockKind[] = [
       'terminal',
-      'agent',
-      'prompt-fanout',
       'work-context',
       'file',
       'artifact',
       'markdown',
       'custom',
     ];
-    expect(kinds).toHaveLength(8);
+    expect(kinds).toHaveLength(6);
   });
 });
 
@@ -341,26 +287,6 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
         },
       },
     } satisfies TerminalBlockDescriptor,
-    {
-      kind: 'agent',
-      id: 'rt-agent',
-      title: 'Claude Code',
-      capabilityRequirements: ['session:attach'],
-      meta: {
-        actorRef: { kind: 'actor', id: 'actor-001', displayName: 'claude' },
-      },
-    } satisfies AgentBlockDescriptor,
-    {
-      kind: 'prompt-fanout',
-      id: 'rt-prompt-fanout',
-      title: 'Prompt fanout',
-      capabilityRequirements: [],
-      meta: {
-        fixture: 'all-success',
-        run: getPromptFanoutRunFixture('all-success'),
-        dryRunOnly: true,
-      },
-    } satisfies PromptFanoutBlockDescriptor,
     {
       kind: 'work-context',
       id: 'rt-work-context',
@@ -425,7 +351,7 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
     }
   });
 
-  it('round-trips produce the correct kind for all 8 variants', () => {
+  it('round-trips produce the correct kind for all supported variants', () => {
     const roundTripped = cases.map((d) => {
       const parsed = JSON.parse(JSON.stringify(d)) as WorkbenchBlockDescriptor;
       return parsed.kind;
@@ -433,8 +359,6 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
 
     expect(roundTripped).toEqual([
       'terminal',
-      'agent',
-      'prompt-fanout',
       'work-context',
       'file',
       'artifact',

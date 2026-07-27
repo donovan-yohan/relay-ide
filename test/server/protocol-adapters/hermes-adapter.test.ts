@@ -37,6 +37,17 @@ const originalEnv = new Map<string, string | undefined>(
   ENV_KEYS.map((key) => [key, process.env[key]])
 );
 const tempDirs: string[] = [];
+const HERMES_FILE_ENV_KEYS = ENV_KEYS.filter(
+  (key) => key !== 'HOME' && key !== 'HERMES_HOME'
+);
+
+function hermeticHermesEnv(
+  overrides: Partial<Record<(typeof HERMES_FILE_ENV_KEYS)[number], string>> = {}
+): string {
+  return HERMES_FILE_ENV_KEYS.map(
+    (key) => `${key}=${overrides[key] ?? ''}`
+  ).join('\n');
+}
 
 function resetHermesEnv(): void {
   for (const key of ENV_KEYS) {
@@ -55,8 +66,11 @@ function resetHermesEnv(): void {
 function makeTempHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hermes-home-'));
   tempDirs.push(dir);
+  const hermesRoot = path.join(dir, '.hermes');
+  fs.mkdirSync(hermesRoot, { recursive: true });
+  fs.writeFileSync(path.join(hermesRoot, '.env'), hermeticHermesEnv());
   process.env.HOME = dir;
-  delete process.env.HERMES_HOME;
+  process.env.HERMES_HOME = hermesRoot;
   for (const key of ENV_KEYS) {
     if (key !== 'HOME' && key !== 'HERMES_HOME') delete process.env[key];
   }
@@ -156,7 +170,10 @@ describe('Hermes gateway settings resolution', () => {
     const hermesHome = path.join(home, '.hermes');
     const profileHome = path.join(hermesHome, 'profiles', 'ebi');
     fs.mkdirSync(profileHome, { recursive: true });
-    fs.writeFileSync(path.join(hermesHome, '.env'), 'API_SERVER_PORT=1111\n');
+    fs.writeFileSync(
+      path.join(hermesHome, '.env'),
+      hermeticHermesEnv({ API_SERVER_PORT: '1111' })
+    );
     fs.writeFileSync(path.join(hermesHome, 'active_profile'), 'ebi\n');
     fs.writeFileSync(
       path.join(profileHome, '.env'),
@@ -180,7 +197,10 @@ describe('Hermes gateway settings resolution', () => {
 
     const profileHome = path.join(customRoot, 'profiles', 'ebi');
     fs.mkdirSync(profileHome, { recursive: true });
-    fs.writeFileSync(path.join(customRoot, '.env'), 'API_SERVER_PORT=1111\n');
+    fs.writeFileSync(
+      path.join(customRoot, '.env'),
+      hermeticHermesEnv({ API_SERVER_PORT: '1111' })
+    );
     fs.writeFileSync(path.join(customRoot, 'active_profile'), 'ebi\n');
     fs.writeFileSync(
       path.join(profileHome, '.env'),

@@ -153,7 +153,6 @@ export interface SessionRef {
   tabId?: string;
   tabKind: WorkContextTabKind;
   cwd: string;
-  agent?: string;
   controlMode?: ControlMode;
 }
 
@@ -452,7 +451,6 @@ function isSessionRef(value: unknown): value is SessionRef {
     isOptionalString(value.tabId) &&
     isEnumValue(value.tabKind, TAB_KINDS) &&
     hasString(value.cwd) &&
-    isOptionalString(value.agent) &&
     (value.controlMode === undefined ||
       isEnumValue(value.controlMode, CONTROL_MODES))
   );

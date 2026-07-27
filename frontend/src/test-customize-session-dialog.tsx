@@ -1,10 +1,10 @@
-/* eslint-disable sonarjs/no-duplicate-string */
 import React, { useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import CustomizeSessionDialog, {
   type CustomizeSessionDialogHandle,
 } from './components/dialogs/CustomizeSessionDialog.js';
 import { useConfigStore } from './lib/stores/config.js';
+import { useUiStore } from './lib/stores/ui.js';
 import type { FrameworkInfo } from './lib/types.js';
 import type { AggregatedRepoInventoryResponse } from '../../shared/repo-inventory.js';
 import type { HubNodeSummary } from '../../shared/relay-node-protocol.js';
@@ -31,7 +31,6 @@ function framework(id: string): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: true,
-      supportsWebSessions: id === 'hermes',
     },
     eventSource: 'hooks',
     availability: { installed: true, path: `/usr/local/bin/${id}` },
@@ -326,10 +325,19 @@ window.fetch = async (input, init) => {
   const url = new URL(String(input), window.location.origin);
   if (url.pathname === '/hub/repo-inventory') return jsonResponse(inventory());
   if (url.pathname === '/nodes') return jsonResponse({ nodes: nodes() });
-  if (url.pathname === '/config/defaultContinue')
-    return jsonResponse({ defaultContinue: false });
-  if (url.pathname === '/config/defaultYolo')
-    return jsonResponse({ defaultYolo: false });
+  if (url.pathname.startsWith('/workspace-topics/')) {
+    const id = decodeURIComponent(
+      url.pathname.slice('/workspace-topics/'.length)
+    );
+    return jsonResponse({
+      topic: {
+        id,
+        workspaceId: null,
+        routingDefaults: { providerId: id.split(':').at(-1) ?? 'claude' },
+        display: { title: 'agent chat' },
+      },
+    });
+  }
   if (url.pathname === '/config/defaultAgent')
     return jsonResponse({
       defaultAgent:
@@ -339,15 +347,11 @@ window.fetch = async (input, init) => {
     });
   if (url.pathname === '/config/defaultNotifications')
     return jsonResponse({ defaultNotifications: true });
-  if (url.pathname === '/config/claudeFullscreen')
-    return jsonResponse({ claudeFullscreen: true });
   if (url.pathname === '/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
-    const body = JSON.parse(String(init.body ?? '{}')) as { agent?: string };
     return jsonResponse({
       id: 'local-session',
-      type: 'agent',
-      agent: body.agent ?? 'claude',
+      type: 'terminal',
       repoName: 'relay-ide',
       repoPath: '/Users/kyle/relay-ide',
       worktreePath: null,
@@ -357,25 +361,25 @@ window.fetch = async (input, init) => {
       createdAt: '2026-05-12T00:00:00.000Z',
       lastActivity: '2026-05-12T00:00:00.000Z',
       idle: false,
+      activityState: 'idle',
     });
   }
   if (url.pathname === '/hub/nodes/linux/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
     const body = JSON.parse(String(init.body ?? '{}')) as {
-      agent?: string;
       cwd?: string;
     };
     return jsonResponse({
       id: body.cwd === '/home/linux' ? 'remote-home-session' : 'remote-session',
       nodeId: 'linux',
       globalSessionId: 'linux:remote-session',
-      type: 'agent',
-      agent: body.agent ?? 'claude',
+      type: 'terminal',
       cwd: body.cwd ?? '/home/linux',
       displayName: 'linux shell',
       createdAt: '2026-05-12T00:00:00.000Z',
       lastActivity: '2026-05-12T00:00:00.000Z',
       idle: false,
+      activityState: 'idle',
     });
   }
   if (url.pathname === '/sessions') return jsonResponse([]);
@@ -399,14 +403,13 @@ window.fetch = async (input, init) => {
 
 useConfigStore.setState({
   defaultAgent: 'claude',
-  defaultContinue: false,
-  defaultYolo: false,
   frameworks: [framework('claude'), framework('codex'), framework('hermes')],
 });
 
 function Harness() {
   const dialogRef = useRef<CustomizeSessionDialogHandle>(null);
   const [createdSession, setCreatedSession] = useState('');
+  const activeChannelId = useUiStore((state) => state.activeChannelId);
   return (
     <div className="test-harness">
       <button
@@ -471,6 +474,7 @@ function Harness() {
       </button>
       <output data-testid="created-session">{createdSession}</output>
       <output data-testid="last-create-request">{lastCreateRequest}</output>
+      <output data-testid="active-channel">{activeChannelId ?? ''}</output>
       <CustomizeSessionDialog
         ref={dialogRef}
         onSessionCreated={setCreatedSession}

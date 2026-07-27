@@ -23,17 +23,19 @@ Future work depends on this generality:
 - Hosts that participate in the fleet without serving a programming use case
   at all (build farms, content boxes, home automation, future).
 
-Today the core makes implicit assumptions that block that future:
+At the time of this decision, the core made implicit assumptions that blocked
+that future:
 
 - Heartbeat and manifest carry repo inventory as a first-class field.
-- Session creation pulls in framework registry, agent commands, and tmux
-  defaults.
+- Session creation pulled in framework registry, agent commands, and terminal
+  backend defaults.
 - Worktree scanning, divergence summaries, and git status are wired into
   manifest probes.
 - "Workspace"[^workspace] is used to mean both "a paired node's set of repos"
   and "a grouping of repos for the IDE UI."
 
-[^workspace]: "Workspace" in this ADR refers to the IDE-layer grouping of repos
+[^workspace]:
+    "Workspace" in this ADR refers to the IDE-layer grouping of repos
     surfaced in the frontend. The workbench vocabulary in
     `docs/WORKBENCH_BOUNDARY.md` (View → Workspace → Project → Instance → Bench →
     Tab) is the canonical product taxonomy; consult that doc to avoid conflating
@@ -57,8 +59,9 @@ core; the core does not depend on them.
 - Routing-only surface of `server/hub-node-router.ts` (envelope dispatch,
   node lookup, RPC method registration). See note below; this file is
   currently mixed.
-- `server/node-manifest.ts` (capability probes for tmux, git binary
-  availability, agent CLIs — *availability*, not repo state)
+- `server/node-manifest.ts` (capability probes for the supported terminal
+  backend, git binary availability, and agent CLIs — _availability_, not repo
+  state)
 - `shared/relay-node-protocol.ts`, `shared/node-manifest.ts`
 - Session, node, and stream identifiers are opaque strings as far as the core
   is concerned.

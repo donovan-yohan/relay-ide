@@ -1,4 +1,10 @@
-export type ControlMode = 'agent-driven' | 'human-driven' | 'co-driven';
+/**
+ * Public Relay sessions are human-driven terminals.
+ *
+ * Agent execution lives in channel-private runtimes and is not a terminal
+ * ownership mode.
+ */
+export type ControlMode = 'human-driven';
 
 export type ControlFreshness = 'fresh' | 'stale' | 'unknown';
 
@@ -40,8 +46,6 @@ export interface TabControlEventBase {
   actor: ControlActor;
   /** Effective actors after this event is applied. */
   activeActors?: ControlActor[];
-  /** Effective agent worker after this event is applied, if agent-visible control remains active. */
-  activeWorker?: ControlActor;
   reason?: string;
 }
 
@@ -51,21 +55,13 @@ export interface TabModeChangedEvent extends TabControlEventBase {
   controlMode: ControlMode;
 }
 
-export type InterventionSource =
-  | 'pty-input'
-  | 'supervisor-action'
-  | 'mode-action'
-  | 'auto-revert';
+export type InterventionSource = 'pty-input' | 'supervisor-action';
 
 export type InterventionKind =
   | 'human-input'
   | 'supervisor-send-text'
   | 'supervisor-send-key'
-  | 'supervisor-submit'
-  | 'join'
-  | 'take-over'
-  | 'hand-back'
-  | 'auto-revert';
+  | 'supervisor-submit';
 
 export interface InterventionRedactionMetadata {
   redacted: boolean;
@@ -113,7 +109,6 @@ export type TabControlEvent = TabModeChangedEvent | TabInterventionEvent;
 export interface ControlStateSummary {
   controlMode: ControlMode;
   activeActors: ControlActor[];
-  activeWorker?: ControlActor;
   lastInterventionAt: string | null;
   lastInterventionBy: ControlActor | null;
   lastInterventionEventId: string | null;
@@ -142,14 +137,10 @@ export function createLegacyControlStateSummary(
 }
 
 export function isControlMode(value: unknown): value is ControlMode {
-  return (
-    value === 'agent-driven' || value === 'human-driven' || value === 'co-driven'
-  );
+  return value === 'human-driven';
 }
 
-export function isControlFreshness(
-  value: unknown
-): value is ControlFreshness {
+export function isControlFreshness(value: unknown): value is ControlFreshness {
   return value === 'fresh' || value === 'stale' || value === 'unknown';
 }
 
@@ -167,7 +158,9 @@ function optionalNullableString(value: unknown): string | null {
   return optionalString(value) ?? null;
 }
 
-export function normalizeControlActor(value: unknown): ControlActor | undefined {
+export function normalizeControlActor(
+  value: unknown
+): ControlActor | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return undefined;
   }
@@ -230,7 +223,6 @@ export function normalizeControlStateSummary(
     return createLegacyControlStateSummary(fallbackReason);
   }
 
-  const activeWorker = normalizeControlActor(record.activeWorker);
   const lastInterventionBy = normalizeControlActor(record.lastInterventionBy);
   const controlReason = optionalString(record.controlReason);
 
@@ -239,10 +231,11 @@ export function normalizeControlStateSummary(
     activeActors,
     lastInterventionAt: optionalNullableString(record.lastInterventionAt),
     lastInterventionBy: lastInterventionBy ?? null,
-    lastInterventionEventId: optionalNullableString(record.lastInterventionEventId),
+    lastInterventionEventId: optionalNullableString(
+      record.lastInterventionEventId
+    ),
     controlFreshness,
   };
-  if (activeWorker) summary.activeWorker = activeWorker;
   if (controlReason) summary.controlReason = controlReason;
   return summary;
 }
@@ -258,14 +251,14 @@ export function isControlStateSummary(
     isControlMode(record.controlMode) &&
     normalizeControlActors(record.activeActors).length > 0 &&
     isControlFreshness(record.controlFreshness) &&
-    (record.activeWorker === undefined ||
-      normalizeControlActor(record.activeWorker) !== undefined) &&
+    record.activeWorker === undefined &&
     (record.lastInterventionBy === null ||
       normalizeControlActor(record.lastInterventionBy) !== undefined) &&
     (record.lastInterventionAt === null ||
       typeof record.lastInterventionAt === 'string') &&
     (record.lastInterventionEventId === null ||
       typeof record.lastInterventionEventId === 'string') &&
-    (record.controlReason === undefined || typeof record.controlReason === 'string')
+    (record.controlReason === undefined ||
+      typeof record.controlReason === 'string')
   );
 }

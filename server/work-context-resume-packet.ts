@@ -24,9 +24,10 @@ const DEFAULT_MAX_ARTIFACTS = 24;
 const DEFAULT_MAX_AUDIT_REFS = 20;
 const DEFAULT_MAX_CHARS = 24_000;
 const ARTIFACT_SCAN_MULTIPLIER = 4;
-const STAGE_ORDER: Record<PipelineHandoffStageName, number> = Object.fromEntries(
-  PIPELINE_HANDOFF_STAGES.map((stage, index) => [stage, index])
-) as Record<PipelineHandoffStageName, number>;
+const STAGE_ORDER: Record<PipelineHandoffStageName, number> =
+  Object.fromEntries(
+    PIPELINE_HANDOFF_STAGES.map((stage, index) => [stage, index])
+  ) as Record<PipelineHandoffStageName, number>;
 const APPROVAL_VERDICTS = new Set(['passed', 'approved', 'released']);
 const BLOCKING_VERDICTS = new Set([
   'failed',
@@ -131,7 +132,11 @@ export interface WorkContextResumePacket {
   sessions: WorkContextResumeSnapshot['sessions'];
   node: WorkContextResumeSnapshot['node'];
   suggestedNextAction: {
-    kind: 'resolve-blockers' | 'produce-current-evidence' | 'continue' | 'inspect-pins';
+    kind:
+      | 'resolve-blockers'
+      | 'produce-current-evidence'
+      | 'continue'
+      | 'inspect-pins';
     summary: string;
   };
   privacy: {
@@ -152,8 +157,15 @@ export interface WorkContextResumePacket {
   limits: WorkContextResumePacketLimits;
 }
 
-export function resumeArtifactScanLimit(options: WorkContextResumePacketOptions = {}): number {
-  const maxArtifacts = boundedInt(options.maxArtifacts, DEFAULT_MAX_ARTIFACTS, 1, 200);
+export function resumeArtifactScanLimit(
+  options: WorkContextResumePacketOptions = {}
+): number {
+  const maxArtifacts = boundedInt(
+    options.maxArtifacts,
+    DEFAULT_MAX_ARTIFACTS,
+    1,
+    200
+  );
   return Math.min(maxArtifacts * ARTIFACT_SCAN_MULTIPLIER, 200);
 }
 
@@ -183,16 +195,37 @@ export function buildWorkContextResumePacket(input: {
   generatedAt?: string;
 }): WorkContextResumePacket {
   const options = input.options ?? {};
-  const maxArtifacts = boundedInt(options.maxArtifacts, DEFAULT_MAX_ARTIFACTS, 1, 200);
-  const maxAuditRefs = boundedInt(options.maxAuditRefs, DEFAULT_MAX_AUDIT_REFS, 1, 200);
-  const maxChars = boundedInt(options.maxChars, DEFAULT_MAX_CHARS, 4_000, 200_000);
+  const maxArtifacts = boundedInt(
+    options.maxArtifacts,
+    DEFAULT_MAX_ARTIFACTS,
+    1,
+    200
+  );
+  const maxAuditRefs = boundedInt(
+    options.maxAuditRefs,
+    DEFAULT_MAX_AUDIT_REFS,
+    1,
+    200
+  );
+  const maxChars = boundedInt(
+    options.maxChars,
+    DEFAULT_MAX_CHARS,
+    4_000,
+    200_000
+  );
   const publicSafe = options.publicSafe ?? false;
   const artifactRecords = stableArtifactRecords(input.artifactRecords ?? []);
   const readableRecords = publicSafe
-    ? artifactRecords.filter((record) => record.metadata.visibility === 'public')
+    ? artifactRecords.filter(
+        (record) => record.metadata.visibility === 'public'
+      )
     : artifactRecords;
   const payloads = readableRecords.filter(hasPayload);
-  const goal = deriveGoal(input.snapshot.workContext.tasks, payloads, publicSafe);
+  const goal = deriveGoal(
+    input.snapshot.workContext.tasks,
+    payloads,
+    publicSafe
+  );
   const nonGoals = boundedUniqueStrings(
     payloads.flatMap((record) =>
       payloadNonGoals(record.payload).map((item) => safeText(item, publicSafe))
@@ -206,18 +239,36 @@ export function buildWorkContextResumePacket(input: {
     publicSafe,
     maxArtifacts
   );
-  const artifacts = summarizeArtifactRefs(input.snapshot.artifacts, publicSafe, maxArtifacts);
-  const allEvidence = summarizeEvidence(payloads, options.currentHeadSha, publicSafe);
-  const latestCurrentEvidence = latestByKey(allEvidence.filter((item) => !item.stale));
-  const latestHistoricalEvidence = latestByKey(allEvidence.filter((item) => item.stale));
+  const artifacts = summarizeArtifactRefs(
+    input.snapshot.artifacts,
+    publicSafe,
+    maxArtifacts
+  );
+  const allEvidence = summarizeEvidence(
+    payloads,
+    options.currentHeadSha,
+    publicSafe
+  );
+  const latestCurrentEvidence = latestByKey(
+    allEvidence.filter((item) => !item.stale)
+  );
+  const latestHistoricalEvidence = latestByKey(
+    allEvidence.filter((item) => item.stale)
+  );
   const currentEvidence = latestCurrentEvidence.slice(0, maxArtifacts);
   const historicalEvidence = latestHistoricalEvidence.slice(0, maxArtifacts);
-  const missing = missingCurrentEvidence(input.snapshot.workContext.tasks, latestCurrentEvidence);
+  const missing = missingCurrentEvidence(
+    input.snapshot.workContext.tasks,
+    latestCurrentEvidence
+  );
   const openBlockers = [
     ...blockedStageEvidence(latestCurrentEvidence),
     ...missing,
   ];
-  const unresolvedDecisions = unresolvedDecisionSummaries(latestCurrentEvidence, publicSafe);
+  const unresolvedDecisions = unresolvedDecisionSummaries(
+    latestCurrentEvidence,
+    publicSafe
+  );
   const workContext = publicSafe
     ? sanitizeResumeWorkContext(input.snapshot.workContext)
     : input.snapshot.workContext;
@@ -242,11 +293,17 @@ export function buildWorkContextResumePacket(input: {
       unresolvedDecisions,
     },
     auditRefs: publicSafe
-      ? input.snapshot.auditRefs.slice(-maxAuditRefs).map((ref) => safeAuditRef(ref))
+      ? input.snapshot.auditRefs
+          .slice(-maxAuditRefs)
+          .map((ref) => safeAuditRef(ref))
       : input.snapshot.auditRefs.slice(-maxAuditRefs),
     sessions,
     node: publicSafe ? safeNode(input.snapshot.node) : input.snapshot.node,
-    suggestedNextAction: suggestedNextAction(openBlockers, currentEvidence, pinnedArtifacts),
+    suggestedNextAction: suggestedNextAction(
+      openBlockers,
+      currentEvidence,
+      pinnedArtifacts
+    ),
     privacy: {
       mode: publicSafe ? 'public-safe' : 'compact-refs',
       rawPayloadAvailable: false,
@@ -258,7 +315,8 @@ export function buildWorkContextResumePacket(input: {
     },
     provenance: {
       source: 'deterministic-work-context-index',
-      artifactStoreAvailable: input.artifactStoreAvailable ?? artifactRecords.length > 0,
+      artifactStoreAvailable:
+        input.artifactStoreAvailable ?? artifactRecords.length > 0,
       artifactRecordsScanned: artifactRecords.length,
       rawDbHistorySummarizedByLlm: false,
     },
@@ -285,14 +343,23 @@ function stableArtifactRecords(
 
 function hasPayload(
   record: WorkContextArtifactReadResult
-): record is WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact } {
+): record is WorkContextArtifactReadResult & {
+  payload: PipelineHandoffArtifact;
+} {
   return isPipelineHandoffPayload(record.payload);
 }
 
-function isPipelineHandoffPayload(value: unknown): value is PipelineHandoffArtifact {
+function isPipelineHandoffPayload(
+  value: unknown
+): value is PipelineHandoffArtifact {
   if (!isRecordObject(value)) return false;
-  if (typeof value.id !== 'string' || typeof value.title !== 'string') return false;
-  if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') return false;
+  if (typeof value.id !== 'string' || typeof value.title !== 'string')
+    return false;
+  if (
+    typeof value.createdAt !== 'string' ||
+    typeof value.updatedAt !== 'string'
+  )
+    return false;
   if (!isRecordObject(value.scope)) return false;
   if (typeof value.scope.summary !== 'string') return false;
   if (!isRecordObject(value.head)) return false;
@@ -306,9 +373,16 @@ function isRecordObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function payloadTaskRefs(payload: PipelineHandoffArtifact, publicSafe: boolean): TaskRef[] {
-  const rawTaskRefs = Array.isArray(payload.scope.taskRefs) ? payload.scope.taskRefs : [];
-  const taskRefs = rawTaskRefs.slice(0, MAX_PAYLOAD_TASK_REFS).filter(isTaskRef);
+function payloadTaskRefs(
+  payload: PipelineHandoffArtifact,
+  publicSafe: boolean
+): TaskRef[] {
+  const rawTaskRefs = Array.isArray(payload.scope.taskRefs)
+    ? payload.scope.taskRefs
+    : [];
+  const taskRefs = rawTaskRefs
+    .slice(0, MAX_PAYLOAD_TASK_REFS)
+    .filter(isTaskRef);
   return publicSafe
     ? taskRefs.filter(isPublicTaskRef).map((task) => safeTaskRef(task, true))
     : taskRefs;
@@ -322,7 +396,9 @@ function payloadNonGoals(payload: PipelineHandoffArtifact): string[] {
     : [];
 }
 
-function payloadStages(payload: PipelineHandoffArtifact): PipelineHandoffStage[] {
+function payloadStages(
+  payload: PipelineHandoffArtifact
+): PipelineHandoffStage[] {
   return Array.isArray(payload.stages)
     ? payload.stages.slice(0, MAX_PAYLOAD_STAGES).filter(isPipelineHandoffStage)
     : [];
@@ -341,7 +417,10 @@ function isTaskRef(value: unknown): value is TaskRef {
 
 function isPipelineHandoffStage(value: unknown): value is PipelineHandoffStage {
   if (!isRecordObject(value)) return false;
-  if (!PIPELINE_HANDOFF_STAGES.includes(value.stage as PipelineHandoffStageName)) return false;
+  if (
+    !PIPELINE_HANDOFF_STAGES.includes(value.stage as PipelineHandoffStageName)
+  )
+    return false;
   if (typeof value.addedAt !== 'string') return false;
   if (typeof value.summary !== 'string') return false;
   switch (value.stage) {
@@ -358,7 +437,9 @@ function isPipelineHandoffStage(value: unknown): value is PipelineHandoffStage {
 
 function deriveGoal(
   tasks: TaskRef[],
-  payloads: Array<WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact }>,
+  payloads: Array<
+    WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact }
+  >,
   publicSafe: boolean
 ): WorkContextResumeGoal {
   const latestPayload = payloads[0]?.payload;
@@ -396,28 +477,52 @@ function summarizePinnedArtifacts(
   publicSafe: boolean,
   maxArtifacts: number
 ): WorkContextResumeArtifactSummary[] {
-  const recordsById = new Map(records.map((record) => [record.metadata.id, record]));
+  const recordsById = new Map(
+    records.map((record) => [record.metadata.id, record])
+  );
   return pinned
-    .filter((artifact) => artifact.uri?.startsWith('relay://work-context-artifacts/'))
+    .filter((artifact) =>
+      artifact.uri?.startsWith('relay://work-context-artifacts/')
+    )
     .filter((artifact) => includeArtifactRefInResume(artifact, publicSafe))
     .map((artifact) => {
-      const record = artifact.uri ? recordsById.get(lastUriSegment(artifact.uri)) : undefined;
+      const record = artifact.uri
+        ? recordsById.get(lastUriSegment(artifact.uri))
+        : undefined;
       const stale = Boolean(
-        currentHeadSha && record?.metadata.headSha && record.metadata.headSha !== currentHeadSha
+        currentHeadSha &&
+        record?.metadata.headSha &&
+        record.metadata.headSha !== currentHeadSha
       );
       return {
         id: safeText(artifact.id, publicSafe),
         kind: artifact.kind,
-        ...(artifact.title ? { title: safeText(artifact.title, publicSafe) } : {}),
-        ...(artifact.uri ? { uri: publicSafe ? publicSafeArtifactUri(artifact.uri) : artifact.uri } : {}),
-        ...(artifact.summary ? { summary: safeText(artifact.summary, publicSafe) } : {}),
+        ...(artifact.title
+          ? { title: safeText(artifact.title, publicSafe) }
+          : {}),
+        ...(artifact.uri
+          ? {
+              uri: publicSafe
+                ? publicSafeArtifactUri(artifact.uri)
+                : artifact.uri,
+            }
+          : {}),
+        ...(artifact.summary
+          ? { summary: safeText(artifact.summary, publicSafe) }
+          : {}),
         ...(artifact.producedAt ? { producedAt: artifact.producedAt } : {}),
         privacyClass: artifact.privacy.classification,
         publicSafe: isPublicPrivacy(artifact.privacy.classification),
-        ...(stale ? { stale, staleReason: 'artifact head differs from currentHeadSha' } : {}),
+        ...(stale
+          ? { stale, staleReason: 'artifact head differs from currentHeadSha' }
+          : {}),
       } satisfies WorkContextResumeArtifactSummary;
     })
-    .sort((a, b) => (b.producedAt ?? '').localeCompare(a.producedAt ?? '') || a.id.localeCompare(b.id))
+    .sort(
+      (a, b) =>
+        (b.producedAt ?? '').localeCompare(a.producedAt ?? '') ||
+        a.id.localeCompare(b.id)
+    )
     .slice(0, maxArtifacts);
 }
 
@@ -431,26 +536,44 @@ function summarizeArtifactRefs(
     .map((artifact) => ({
       id: safeText(artifact.id, publicSafe),
       kind: artifact.kind,
-      ...(artifact.title ? { title: safeText(artifact.title, publicSafe) } : {}),
-      ...(artifact.uri ? { uri: publicSafe ? publicSafeArtifactUri(artifact.uri) : artifact.uri } : {}),
-      ...(artifact.summary ? { summary: safeText(artifact.summary, publicSafe) } : {}),
+      ...(artifact.title
+        ? { title: safeText(artifact.title, publicSafe) }
+        : {}),
+      ...(artifact.uri
+        ? {
+            uri: publicSafe
+              ? publicSafeArtifactUri(artifact.uri)
+              : artifact.uri,
+          }
+        : {}),
+      ...(artifact.summary
+        ? { summary: safeText(artifact.summary, publicSafe) }
+        : {}),
       ...(artifact.producedAt ? { producedAt: artifact.producedAt } : {}),
       privacyClass: artifact.privacy.classification,
       publicSafe: isPublicPrivacy(artifact.privacy.classification),
     }))
-    .sort((a, b) => (b.producedAt ?? '').localeCompare(a.producedAt ?? '') || a.id.localeCompare(b.id))
+    .sort(
+      (a, b) =>
+        (b.producedAt ?? '').localeCompare(a.producedAt ?? '') ||
+        a.id.localeCompare(b.id)
+    )
     .slice(0, maxArtifacts);
 }
 
 function summarizeEvidence(
-  payloads: Array<WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact }>,
+  payloads: Array<
+    WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact }
+  >,
   currentHeadSha: string | undefined,
   publicSafe: boolean
 ): WorkContextResumeGateEvidence[] {
   const evidence: WorkContextResumeGateEvidence[] = [];
   for (const record of payloads) {
     const artifact = record.payload;
-    const stale = currentHeadSha ? isPipelineHandoffArtifactStale(artifact, currentHeadSha) : false;
+    const stale = currentHeadSha
+      ? isPipelineHandoffArtifactStale(artifact, currentHeadSha)
+      : false;
     for (const stage of payloadStages(artifact).sort(compareStages)) {
       evidence.push({
         key: evidenceKey(record, stage),
@@ -460,35 +583,53 @@ function summarizeEvidence(
         artifactId: safeText(record.metadata.id, publicSafe),
         artifactTitle: safeText(record.metadata.title, publicSafe),
         capturedAt: record.metadata.capturedAt,
-        ...(record.metadata.taskRef ? { taskRef: safeTaskRef(record.metadata.taskRef, publicSafe) } : {}),
-        ...(record.metadata.prNumber ? { prNumber: record.metadata.prNumber } : {}),
+        ...(record.metadata.taskRef
+          ? { taskRef: safeTaskRef(record.metadata.taskRef, publicSafe) }
+          : {}),
+        ...(record.metadata.prNumber
+          ? { prNumber: record.metadata.prNumber }
+          : {}),
         headSha: artifact.head.headSha,
         ...(currentHeadSha ? { currentHeadSha } : {}),
         stale,
         historical: stale,
-        acceptanceEvidence: stageAcceptanceEvidence(stage).map((item) => safeEvidence(item, publicSafe)),
+        acceptanceEvidence: stageAcceptanceEvidence(stage).map((item) =>
+          safeEvidence(item, publicSafe)
+        ),
         commands: stageCommands(stage).map((command) => ({
           label: safeText(command.label, publicSafe),
           status: command.status,
           summary: safeText(command.summary, publicSafe),
-          ...(command.exitCode !== undefined ? { exitCode: command.exitCode } : {}),
+          ...(command.exitCode !== undefined
+            ? { exitCode: command.exitCode }
+            : {}),
         })),
-        downstreamFocus: stageDownstreamFocus(stage).map((item) => safeText(item, publicSafe)),
+        downstreamFocus: stageDownstreamFocus(stage).map((item) =>
+          safeText(item, publicSafe)
+        ),
       });
     }
   }
   return evidence.sort(compareEvidenceLatestFirst);
 }
 
-function stageAcceptanceEvidence(stage: PipelineHandoffStage): PipelineHandoffEvidence[] {
+function stageAcceptanceEvidence(
+  stage: PipelineHandoffStage
+): PipelineHandoffEvidence[] {
   return Array.isArray(stage.acceptanceEvidence)
-    ? stage.acceptanceEvidence.slice(0, MAX_STAGE_EVIDENCE_ITEMS).filter(isPipelineHandoffEvidence)
+    ? stage.acceptanceEvidence
+        .slice(0, MAX_STAGE_EVIDENCE_ITEMS)
+        .filter(isPipelineHandoffEvidence)
     : [];
 }
 
-function stageCommands(stage: PipelineHandoffStage): PipelineHandoffStage['commands'] {
+function stageCommands(
+  stage: PipelineHandoffStage
+): PipelineHandoffStage['commands'] {
   return Array.isArray(stage.commands)
-    ? stage.commands.slice(0, MAX_STAGE_COMMAND_ITEMS).filter(isPipelineHandoffCommand)
+    ? stage.commands
+        .slice(0, MAX_STAGE_COMMAND_ITEMS)
+        .filter(isPipelineHandoffCommand)
     : [];
 }
 
@@ -500,7 +641,9 @@ function stageDownstreamFocus(stage: PipelineHandoffStage): string[] {
     : [];
 }
 
-function isPipelineHandoffEvidence(value: unknown): value is PipelineHandoffEvidence {
+function isPipelineHandoffEvidence(
+  value: unknown
+): value is PipelineHandoffEvidence {
   return (
     isRecordObject(value) &&
     typeof value.label === 'string' &&
@@ -521,7 +664,9 @@ function isPipelineHandoffCommand(
   );
 }
 
-function latestByKey(items: WorkContextResumeGateEvidence[]): WorkContextResumeGateEvidence[] {
+function latestByKey(
+  items: WorkContextResumeGateEvidence[]
+): WorkContextResumeGateEvidence[] {
   const byKey = new Map<string, WorkContextResumeGateEvidence>();
   for (const item of items) {
     if (!byKey.has(item.key)) byKey.set(item.key, item);
@@ -535,11 +680,16 @@ function evidenceKey(
 ): string {
   const task = record.metadata.taskRef;
   const taskPart = task ? `${task.kind}:${task.id}` : 'task:unknown';
-  const prPart = record.metadata.prNumber ? `pr:${record.metadata.prNumber}` : 'pr:none';
+  const prPart = record.metadata.prNumber
+    ? `pr:${record.metadata.prNumber}`
+    : 'pr:none';
   return `${stage.stage}|${taskPart}|${prPart}`;
 }
 
-function compareStages(a: PipelineHandoffStage, b: PipelineHandoffStage): number {
+function compareStages(
+  a: PipelineHandoffStage,
+  b: PipelineHandoffStage
+): number {
   const order = STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage];
   if (order !== 0) return order;
   return a.addedAt.localeCompare(b.addedAt);
@@ -560,7 +710,9 @@ function missingCurrentEvidence(
   tasks: TaskRef[],
   current: WorkContextResumeGateEvidence[]
 ): WorkContextResumeBlocker[] {
-  const keys = new Set(current.map((item) => `${item.taskRef?.kind}:${item.taskRef?.id}`));
+  const keys = new Set(
+    current.map((item) => `${item.taskRef?.kind}:${item.taskRef?.id}`)
+  );
   return tasks
     .filter((task) => task.kind === 'github-pr' || task.kind === 'github-issue')
     .filter((task) => !keys.has(`${task.kind}:${task.id}`))
@@ -582,7 +734,9 @@ function blockedStageEvidence(
         summary: `${item.stage} evidence is ${item.status}: ${item.summary}`,
         artifactId: item.artifactId,
         stage: item.stage,
-        ...(item.taskRef ? { taskRef: { kind: item.taskRef.kind, id: item.taskRef.id } } : {}),
+        ...(item.taskRef
+          ? { taskRef: { kind: item.taskRef.kind, id: item.taskRef.id } }
+          : {}),
       });
     }
     for (const evidenceItem of item.acceptanceEvidence) {
@@ -592,7 +746,9 @@ function blockedStageEvidence(
           summary: `${item.stage} evidence blocked: ${evidenceItem.summary}`,
           artifactId: item.artifactId,
           stage: item.stage,
-          ...(item.taskRef ? { taskRef: { kind: item.taskRef.kind, id: item.taskRef.id } } : {}),
+          ...(item.taskRef
+            ? { taskRef: { kind: item.taskRef.kind, id: item.taskRef.id } }
+            : {}),
         });
       }
     }
@@ -621,20 +777,39 @@ function suggestedNextAction(
   pinned: WorkContextResumeArtifactSummary[]
 ): WorkContextResumePacket['suggestedNextAction'] {
   if (blockers.length > 0) {
-    return { kind: 'resolve-blockers', summary: blockers[0]?.summary ?? 'Resolve open blockers.' };
+    return {
+      kind: 'resolve-blockers',
+      summary: blockers[0]?.summary ?? 'Resolve open blockers.',
+    };
   }
   if (current.length === 0) {
     return {
       kind: 'produce-current-evidence',
-      summary: 'Publish current-head implementation, QA, review, or release evidence before relying on this WorkContext.',
+      summary:
+        'Publish current-head implementation, QA, review, or release evidence before relying on this WorkContext.',
     };
   }
-  const release = current.find((item) => item.stage === 'release' && APPROVAL_VERDICTS.has(item.status));
-  if (release) return { kind: 'continue', summary: 'Latest release evidence is current; continue with the downstream WorkContext focus.' };
+  const release = current.find(
+    (item) => item.stage === 'release' && APPROVAL_VERDICTS.has(item.status)
+  );
+  if (release)
+    return {
+      kind: 'continue',
+      summary:
+        'Latest release evidence is current; continue with the downstream WorkContext focus.',
+    };
   const focus = current.flatMap((item) => item.downstreamFocus)[0];
   if (focus) return { kind: 'continue', summary: focus };
-  if (pinned.length > 0) return { kind: 'inspect-pins', summary: 'Inspect pinned artifact refs and continue from the latest current evidence.' };
-  return { kind: 'continue', summary: 'Continue from the current WorkContext task refs.' };
+  if (pinned.length > 0)
+    return {
+      kind: 'inspect-pins',
+      summary:
+        'Inspect pinned artifact refs and continue from the latest current evidence.',
+    };
+  return {
+    kind: 'continue',
+    summary: 'Continue from the current WorkContext task refs.',
+  };
 }
 
 function enforcePacketCharLimit(
@@ -647,7 +822,8 @@ function enforcePacketCharLimit(
   let stringLimit = 1024;
   for (let iteration = 0; iteration < 10; iteration += 1) {
     const truncatedStrings = truncatePacketStrings(current, stringLimit);
-    changed = changed || JSON.stringify(truncatedStrings) !== JSON.stringify(current);
+    changed =
+      changed || JSON.stringify(truncatedStrings) !== JSON.stringify(current);
     current = truncatedStrings;
     const approximateChars = JSON.stringify(current).length;
     if (approximateChars <= maxChars) {
@@ -659,7 +835,8 @@ function enforcePacketCharLimit(
   }
   const minimal = minimalPacket(packet);
   const minimalChars = JSON.stringify(minimal).length;
-  if (minimalChars <= maxChars) return withLimitState(minimal, true, minimalChars);
+  if (minimalChars <= maxChars)
+    return withLimitState(minimal, true, minimalChars);
   const absolute = truncatePacketStrings(minimal, 32);
   return withLimitState(absolute, true, JSON.stringify(absolute).length);
 }
@@ -685,37 +862,69 @@ function truncatePacketStrings(
 ): WorkContextResumePacket {
   return JSON.parse(
     JSON.stringify(packet, (_key, value: unknown) => {
-      if (typeof value !== 'string' || value.length <= maxStringChars) return value;
+      if (typeof value !== 'string' || value.length <= maxStringChars)
+        return value;
       return `${value.slice(0, Math.max(0, maxStringChars - 1))}…`;
     })
   ) as WorkContextResumePacket;
 }
 
-function reducePacket(packet: WorkContextResumePacket): WorkContextResumePacket {
+function reducePacket(
+  packet: WorkContextResumePacket
+): WorkContextResumePacket {
   return {
     ...packet,
     goal: {
       ...packet.goal,
       summary: truncateString(packet.goal.summary, 240),
-      taskRefs: packet.goal.taskRefs.slice(0, Math.max(1, Math.floor(packet.goal.taskRefs.length / 2))),
+      taskRefs: packet.goal.taskRefs.slice(
+        0,
+        Math.max(1, Math.floor(packet.goal.taskRefs.length / 2))
+      ),
     },
-    nonGoals: packet.nonGoals.slice(0, Math.max(0, Math.floor(packet.nonGoals.length / 2))),
-    pinnedArtifacts: packet.pinnedArtifacts.slice(0, Math.max(0, Math.floor(packet.pinnedArtifacts.length / 2))),
-    artifacts: packet.artifacts.slice(0, Math.max(0, Math.floor(packet.artifacts.length / 2))),
+    nonGoals: packet.nonGoals.slice(
+      0,
+      Math.max(0, Math.floor(packet.nonGoals.length / 2))
+    ),
+    pinnedArtifacts: packet.pinnedArtifacts.slice(
+      0,
+      Math.max(0, Math.floor(packet.pinnedArtifacts.length / 2))
+    ),
+    artifacts: packet.artifacts.slice(
+      0,
+      Math.max(0, Math.floor(packet.artifacts.length / 2))
+    ),
     evidence: {
-      current: packet.evidence.current.slice(0, Math.max(0, Math.floor(packet.evidence.current.length / 2))),
-      historical: packet.evidence.historical.slice(0, Math.max(0, Math.floor(packet.evidence.historical.length / 2))),
-      missing: packet.evidence.missing.slice(0, Math.max(0, Math.floor(packet.evidence.missing.length / 2))),
+      current: packet.evidence.current.slice(
+        0,
+        Math.max(0, Math.floor(packet.evidence.current.length / 2))
+      ),
+      historical: packet.evidence.historical.slice(
+        0,
+        Math.max(0, Math.floor(packet.evidence.historical.length / 2))
+      ),
+      missing: packet.evidence.missing.slice(
+        0,
+        Math.max(0, Math.floor(packet.evidence.missing.length / 2))
+      ),
     },
     blockers: {
-      open: packet.blockers.open.slice(0, Math.max(0, Math.floor(packet.blockers.open.length / 2))),
+      open: packet.blockers.open.slice(
+        0,
+        Math.max(0, Math.floor(packet.blockers.open.length / 2))
+      ),
       unresolvedDecisions: packet.blockers.unresolvedDecisions.slice(
         0,
         Math.max(0, Math.floor(packet.blockers.unresolvedDecisions.length / 2))
       ),
     },
-    auditRefs: packet.auditRefs.slice(-Math.max(0, Math.floor(packet.auditRefs.length / 2))),
-    sessions: packet.sessions.slice(0, Math.max(0, Math.floor(packet.sessions.length / 2))),
+    auditRefs: packet.auditRefs.slice(
+      -Math.max(0, Math.floor(packet.auditRefs.length / 2))
+    ),
+    sessions: packet.sessions.slice(
+      0,
+      Math.max(0, Math.floor(packet.sessions.length / 2))
+    ),
     suggestedNextAction: {
       ...packet.suggestedNextAction,
       summary: truncateString(packet.suggestedNextAction.summary, 240),
@@ -724,7 +933,9 @@ function reducePacket(packet: WorkContextResumePacket): WorkContextResumePacket 
   };
 }
 
-function minimalPacket(packet: WorkContextResumePacket): WorkContextResumePacket {
+function minimalPacket(
+  packet: WorkContextResumePacket
+): WorkContextResumePacket {
   const workContext = sanitizeResumeWorkContext(packet.workContext);
   return {
     ...packet,
@@ -756,7 +967,10 @@ function stageStatus(stage: PipelineHandoffStage): string {
   return 'unknown';
 }
 
-function safeEvidence(item: PipelineHandoffEvidence, publicSafe: boolean): PipelineHandoffEvidence {
+function safeEvidence(
+  item: PipelineHandoffEvidence,
+  publicSafe: boolean
+): PipelineHandoffEvidence {
   return {
     label: safeText(item.label, publicSafe),
     disposition: item.disposition,
@@ -767,9 +981,19 @@ function safeEvidence(item: PipelineHandoffEvidence, publicSafe: boolean): Pipel
           artifacts: item.artifacts.map((artifact) => ({
             id: safeText(artifact.id, publicSafe),
             kind: artifact.kind,
-            ...(artifact.title ? { title: safeText(artifact.title, publicSafe) } : {}),
-            ...(artifact.uri ? { uri: publicSafe ? publicSafeArtifactUri(artifact.uri) : artifact.uri } : {}),
-            ...(artifact.summary ? { summary: safeText(artifact.summary, publicSafe) } : {}),
+            ...(artifact.title
+              ? { title: safeText(artifact.title, publicSafe) }
+              : {}),
+            ...(artifact.uri
+              ? {
+                  uri: publicSafe
+                    ? publicSafeArtifactUri(artifact.uri)
+                    : artifact.uri,
+                }
+              : {}),
+            ...(artifact.summary
+              ? { summary: safeText(artifact.summary, publicSafe) }
+              : {}),
             ...(artifact.hashSha256 ? { hashSha256: artifact.hashSha256 } : {}),
           })),
         }
@@ -801,19 +1025,26 @@ function sanitizeResumeSessions(
   return sessions.map((session) => ({
     id: '[redacted-session]',
     nodeId: '[redacted-node]',
-    ...(session.globalSessionId ? { globalSessionId: '[redacted-session]' } : {}),
+    ...(session.globalSessionId
+      ? { globalSessionId: '[redacted-session]' }
+      : {}),
     tabKind: session.tabKind,
     ...(session.type ? { type: session.type } : {}),
     ...(session.mode ? { mode: session.mode } : {}),
-    ...(session.agent ? { agent: safeText(session.agent, true) } : {}),
     cwd: '[redacted-local-path]',
     ...(session.repoName ? { repoName: safeText(session.repoName, true) } : {}),
-    ...(session.branchName ? { branchName: safeText(session.branchName, true) } : {}),
-    ...(session.displayName ? { displayName: safeText(session.displayName, true) } : {}),
+    ...(session.branchName
+      ? { branchName: safeText(session.branchName, true) }
+      : {}),
+    ...(session.displayName
+      ? { displayName: safeText(session.displayName, true) }
+      : {}),
     ...(session.status ? { status: session.status } : {}),
-    ...(session.agentState ? { agentState: session.agentState } : {}),
+    ...(session.activityState ? { activityState: session.activityState } : {}),
     ...(session.controlMode ? { controlMode: session.controlMode } : {}),
-    ...(session.controlFreshness ? { controlFreshness: session.controlFreshness } : {}),
+    ...(session.controlFreshness
+      ? { controlFreshness: session.controlFreshness }
+      : {}),
     ...(session.controlReason
       ? { controlReason: safeText(session.controlReason, true) }
       : {}),
@@ -831,7 +1062,9 @@ function safeAuditRef(ref: AuditEventRef): AuditEventRef {
     eventId: safeText(ref.eventId, true),
     ...(ref.type ? { type: safeText(ref.type, true) } : {}),
     ...(ref.actorId ? { actorId: '[redacted-actor]' } : {}),
-    ...(ref.correlationId ? { correlationId: safeText(ref.correlationId, true) } : {}),
+    ...(ref.correlationId
+      ? { correlationId: safeText(ref.correlationId, true) }
+      : {}),
     ...(ref.logRef ? { logRef: '[redacted-private-log-ref]' } : {}),
   };
 }
@@ -842,13 +1075,16 @@ function safeNode(
   return {
     nodeId: '[redacted-node]',
     status: node.status,
-    ...(node.displayName ? { displayName: safeText(node.displayName, true) } : {}),
+    ...(node.displayName
+      ? { displayName: safeText(node.displayName, true) }
+      : {}),
     ...(node.kind ? { kind: node.kind } : {}),
   };
 }
 
 function safeTaskRef(task: TaskRef, publicSafe: boolean): TaskRef {
-  if (publicSafe && !isPublicTaskRef(task)) return { kind: 'external', id: '[redacted-private-task]' };
+  if (publicSafe && !isPublicTaskRef(task))
+    return { kind: 'external', id: '[redacted-private-task]' };
   return {
     kind: task.kind,
     id: safeText(task.id, publicSafe),
@@ -875,9 +1111,18 @@ function safeText(value: string | undefined, publicSafe: boolean): string {
   if (!publicSafe) return value;
   return value
     .replace(/\bt_[a-f0-9]{8,}\b/gi, '[redacted-kanban-task]')
-    .replace(/(?:\/home\/|\/Users\/|\/tmp\/)[^\s)'",]+/g, '[redacted-local-path]')
-    .replace(/(?<![A-Za-z])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s)'",]+[\\/][^\\/\s)'",]+[\\/])[^\s)'",]+/g, '[redacted-local-path]')
-    .replace(/(?:bearer\s+|sk-|relay-(?:sac|auth|grant|pair)-v1)[a-z0-9._~+/-]+=*/gi, '[redacted-secret]');
+    .replace(
+      /(?:\/home\/|\/Users\/|\/tmp\/)[^\s)'",]+/g,
+      '[redacted-local-path]'
+    )
+    .replace(
+      /(?<![A-Za-z])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s)'",]+[\\/][^\\/\s)'",]+[\\/])[^\s)'",]+/g,
+      '[redacted-local-path]'
+    )
+    .replace(
+      /(?:bearer\s+|sk-|relay-(?:sac|auth|grant|pair)-v1)[a-z0-9._~+/-]+=*/gi,
+      '[redacted-secret]'
+    );
 }
 
 function truncateString(value: string, maxChars: number): string {
@@ -893,7 +1138,10 @@ function isPublicArtifactRef(artifact: ArtifactRef): boolean {
   return isPublicPrivacy(artifact.privacy.classification);
 }
 
-function includeArtifactRefInResume(artifact: ArtifactRef, publicSafe: boolean): boolean {
+function includeArtifactRefInResume(
+  artifact: ArtifactRef,
+  publicSafe: boolean
+): boolean {
   return !publicSafe || isPublicArtifactRef(artifact);
 }
 

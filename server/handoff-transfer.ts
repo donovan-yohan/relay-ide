@@ -313,12 +313,13 @@ function failResult(
   createId: () => string
 ): HandoffTransferApplyFailure {
   run.conflicts = conflicts;
-  const previousSourceDispositions = run.sourceDispositions ?? [run.sourceDisposition];
+  const previousSourceDispositions = run.sourceDispositions ?? [
+    run.sourceDisposition,
+  ];
   run.sourceDisposition = 'handoff-failed';
-  run.sourceDispositions = mergeSourceDispositions(
-    previousSourceDispositions,
-    ['handoff-failed']
-  );
+  run.sourceDispositions = mergeSourceDispositions(previousSourceDispositions, [
+    'handoff-failed',
+  ]);
   const at = now();
   transitionRun(run, 'failed', reasonCode, at, actorId, auditEvents, createId);
   const failureEvent: HandoffTransferAuditEvent = {
@@ -341,13 +342,13 @@ function deniedGrantConflicts(
 ): HandoffConflict[] {
   const grantList = grants ?? [];
   const allowedLegs = new Set(
-    grantList.filter((grant) => grant.decision === 'allow').map((grant) => grant.leg)
+    grantList
+      .filter((grant) => grant.decision === 'allow')
+      .map((grant) => grant.leg)
   );
   const requiredLegs: readonly HandoffRequiredGrant['leg'][] = [
     'source-read',
     'destination-write',
-    'destination-session-create',
-    'destination-exec',
   ];
   const missing = requiredLegs
     .filter((leg) => !allowedLegs.has(leg))
@@ -393,7 +394,10 @@ async function prepareApprovedUntrackedFiles(input: {
 
   for (const candidate of candidates) {
     const sourcePath = safeRepoPath(input.sourceRepoPath, candidate.path);
-    const destinationPath = safeRepoPath(input.destinationRepoPath, candidate.path);
+    const destinationPath = safeRepoPath(
+      input.destinationRepoPath,
+      candidate.path
+    );
     if (!sourcePath || !destinationPath) {
       conflicts.push(
         makeConflict(
@@ -492,7 +496,6 @@ async function prepareApprovedUntrackedFiles(input: {
   return { ok: true, files };
 }
 
-// eslint-disable-next-line complexity -- transfer/apply is a linear safety decision table with explicit typed failures.
 export async function applyHandoffTransfer(
   input: HandoffTransferApplyInput
 ): Promise<HandoffTransferApplyResult> {
@@ -537,7 +540,10 @@ export async function applyHandoffTransfer(
     dryRun = await planHandoffSnapshot(
       input.approvedUntrackedPaths === undefined
         ? plannerInput
-        : { ...plannerInput, approvedUntrackedPaths: input.approvedUntrackedPaths }
+        : {
+            ...plannerInput,
+            approvedUntrackedPaths: input.approvedUntrackedPaths,
+          }
     );
   } catch (error) {
     return failResult(

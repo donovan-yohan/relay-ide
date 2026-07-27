@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../frontend/src/lib/types.js';
 import type { WorkspaceUtilityRailState } from '../frontend/src/lib/stores/ui.js';
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../frontend/src/components/UtilityRailFilesPanel.js', () => ({
   default: ({
@@ -29,7 +31,13 @@ vi.mock('../frontend/src/components/UtilityRailFilesPanel.js', () => ({
     }),
 }));
 vi.mock('../frontend/src/components/UtilityRailGitChangesPanel.js', () => ({
-  default: ({ workspacePath, stateKey }: { workspacePath: string; stateKey?: string }) =>
+  default: ({
+    workspacePath,
+    stateKey,
+  }: {
+    workspacePath: string;
+    stateKey?: string;
+  }) =>
     React.createElement('div', {
       'data-testid': 'changes-panel',
       'data-workspace-path': workspacePath,
@@ -37,7 +45,13 @@ vi.mock('../frontend/src/components/UtilityRailGitChangesPanel.js', () => ({
     }),
 }));
 vi.mock('../frontend/src/components/UtilityRailBranchPanel.js', () => ({
-  default: ({ workspacePath, stateKey }: { workspacePath: string; stateKey?: string }) =>
+  default: ({
+    workspacePath,
+    stateKey,
+  }: {
+    workspacePath: string;
+    stateKey?: string;
+  }) =>
     React.createElement('div', {
       'data-testid': 'branch-panel',
       'data-workspace-path': workspacePath,
@@ -45,7 +59,13 @@ vi.mock('../frontend/src/components/UtilityRailBranchPanel.js', () => ({
     }),
 }));
 vi.mock('../frontend/src/components/UtilityRailReviewPanel.js', () => ({
-  default: ({ workspacePath, stateKey }: { workspacePath: string; stateKey?: string }) =>
+  default: ({
+    workspacePath,
+    stateKey,
+  }: {
+    workspacePath: string;
+    stateKey?: string;
+  }) =>
     React.createElement('div', {
       'data-testid': 'review-panel',
       'data-workspace-path': workspacePath,
@@ -68,7 +88,9 @@ vi.mock('../frontend/src/components/Terminal.js', () => ({
 
 import { WorkspaceUtilityRail } from '../frontend/src/components/WorkspaceUtilityRail.js';
 
-function session(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
+function session(
+  overrides: Partial<SessionSummary> & { id: string }
+): SessionSummary {
   return {
     id: overrides.id,
     repoName: 'a',
@@ -81,7 +103,6 @@ function session(overrides: Partial<SessionSummary> & { id: string }): SessionSu
     branchName: 'nightly',
     displayName: '',
     idle: false,
-    agent: 'claude',
     type: 'terminal',
     mode: 'pty',
     useTmux: true,
@@ -89,7 +110,9 @@ function session(overrides: Partial<SessionSummary> & { id: string }): SessionSu
   };
 }
 
-function railState(selectedRailTab: WorkspaceUtilityRailState['selectedRailTab']): WorkspaceUtilityRailState {
+function railState(
+  selectedRailTab: WorkspaceUtilityRailState['selectedRailTab']
+): WorkspaceUtilityRailState {
   return {
     visible: true,
     selectedRailTab,
@@ -125,8 +148,8 @@ describe('WorkspaceUtilityRail resource context guards', () => {
             git: { workspacePath: '/repo/a', disabledReason: null },
           },
           railState: railState('changes'),
-          activeSession: session({ id: 'agent-1', type: 'agent' }),
-          workspaceSessions: [session({ id: 'agent-1', type: 'agent' })],
+          activeSession: session({ id: 'term-main' }),
+          workspaceSessions: [session({ id: 'term-main' })],
         })
       );
     });
@@ -145,11 +168,23 @@ describe('WorkspaceUtilityRail resource context guards', () => {
             displayWorkspacePath: '/home/me/repo',
             anchorLabel: 'linux-box · /home/me/repo',
             repoBadge: null,
-            files: { workspacePath: '', disabledReason: 'remote-files-unavailable' },
-            git: { workspacePath: '', disabledReason: 'remote-git-unavailable' },
+            files: {
+              workspacePath: '',
+              disabledReason: 'remote-files-unavailable',
+            },
+            git: {
+              workspacePath: '',
+              disabledReason: 'remote-git-unavailable',
+            },
           },
           railState: railState('files'),
-          activeSession: session({ id: 'remote-1', type: 'terminal', nodeId: 'linux-box', repoPath: undefined, cwd: '/home/me/repo' }),
+          activeSession: session({
+            id: 'remote-1',
+            type: 'terminal',
+            nodeId: 'linux-box',
+            repoPath: undefined,
+            cwd: '/home/me/repo',
+          }),
           workspaceSessions: [],
         })
       );
@@ -173,7 +208,12 @@ describe('WorkspaceUtilityRail resource context guards', () => {
             git: { workspacePath: '', disabledReason: 'no-git-context' },
           },
           railState: railState('branch'),
-          activeSession: session({ id: 'free-1', type: 'terminal', repoPath: undefined, cwd: '/tmp/free-folder' }),
+          activeSession: session({
+            id: 'free-1',
+            type: 'terminal',
+            repoPath: undefined,
+            cwd: '/tmp/free-folder',
+          }),
           workspaceSessions: [],
         })
       );
@@ -197,7 +237,12 @@ describe('WorkspaceUtilityRail resource context guards', () => {
             git: { workspacePath: '', disabledReason: 'no-git-context' },
           },
           railState: railState('files'),
-          activeSession: session({ id: 'free-1', type: 'terminal', repoPath: undefined, cwd: '/tmp/free-folder' }),
+          activeSession: session({
+            id: 'free-1',
+            type: 'terminal',
+            repoPath: undefined,
+            cwd: '/tmp/free-folder',
+          }),
           workspaceSessions: [],
         })
       );
@@ -207,7 +252,9 @@ describe('WorkspaceUtilityRail resource context guards', () => {
     expect(files?.getAttribute('data-workspace-path')).toBe('/tmp/free-folder');
     expect(files?.getAttribute('data-state-key')).toBe('/tmp/free-folder');
     expect(files?.getAttribute('data-git-workspace-path')).toBe('');
-    expect(files?.getAttribute('data-git-disabled-reason')).toBe('no-git-context');
+    expect(files?.getAttribute('data-git-disabled-reason')).toBe(
+      'no-git-context'
+    );
     expect(container.textContent).not.toContain('HTTP 403');
   });
 });

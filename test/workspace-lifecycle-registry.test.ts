@@ -29,6 +29,9 @@ const {
 const { executeSessionKillAction } = vi.hoisted(() => ({
   executeSessionKillAction: vi.fn(),
 }));
+const { openAgentChannel } = vi.hoisted(() => ({
+  openAgentChannel: vi.fn(async () => ({ id: 'topic:dm-test' })),
+}));
 
 executeWorktreeCreateAction.mockImplementation(
   async (input: { repoPath?: string }) =>
@@ -100,6 +103,10 @@ vi.mock('../frontend/src/lib/actions/session-lifecycle.js', async () => {
   };
 });
 
+vi.mock('../frontend/src/lib/agent-channels.js', () => ({
+  openAgentChannel,
+}));
+
 // fetchWorktreeStatus drives the handleDeleteWorktree branch selection (clean vs
 // dirty). Stub it to a clean worktree so the handler takes the executor path.
 const { fetchWorktreeStatus } = vi.hoisted(() => ({
@@ -124,7 +131,10 @@ vi.mock('../frontend/src/components/dialogs/CustomizeSessionDialog.js', () => ({
   isFrameworkAvailable: () => true,
 }));
 
-import type { SessionSummary, WorktreeInfo } from '../frontend/src/lib/types.js';
+import type {
+  SessionSummary,
+  WorktreeInfo,
+} from '../frontend/src/lib/types.js';
 import { useSessionHandlers } from '../frontend/src/hooks/useSessionHandlers.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
@@ -148,8 +158,7 @@ function makeSession(
 ): SessionSummary {
   return {
     id: overrides.id,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
     repoPath: '/repo/relay-ide',
@@ -312,16 +321,21 @@ describe('workspace/worktree lifecycle action registry wiring (#870)', () => {
     expect(executeWorktreeCreateAction.mock.calls[0]?.[0]).toMatchObject({
       repoPath: '/repo/relay-ide',
     });
+    expect(openAgentChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('feature/test-branch'),
+      })
+    );
   });
 
-  it('routes handleLaunchWorkspaceSession through the workspaces.launch executor', async () => {
+  it('routes workspace launch directly to its agent channel', async () => {
     const handlers = await mountHandlers();
     await act(async () => {
       await handlers.handleLaunchWorkspaceSession('ws-42');
     });
 
-    expect(executeWorkspaceLaunchAction).toHaveBeenCalledTimes(1);
-    expect(executeWorkspaceLaunchAction.mock.calls[0]?.[0]).toMatchObject({
+    expect(executeWorkspaceLaunchAction).not.toHaveBeenCalled();
+    expect(openAgentChannel).toHaveBeenCalledWith({
       workspaceId: 'ws-42',
     });
   });
@@ -373,13 +387,17 @@ describe('workspace/worktree lifecycle action registry wiring (#870)', () => {
       worktreePath: '/repo/relay-ide/.worktrees/test',
     });
     // Clean worktree → no force flag.
-    expect(executeWorktreeDeleteAction.mock.calls[0]?.[0]?.force).toBeUndefined();
+    expect(
+      executeWorktreeDeleteAction.mock.calls[0]?.[0]?.force
+    ).toBeUndefined();
   });
 
   it('DeleteWorktreeDialog confirm path routes through the worktrees.delete executor with force', async () => {
     const dialogRef = React.createRef<DeleteWorktreeDialogHandle>();
     await act(async () => {
-      root!.render(React.createElement(DeleteWorktreeDialog, { ref: dialogRef }));
+      root!.render(
+        React.createElement(DeleteWorktreeDialog, { ref: dialogRef })
+      );
     });
 
     const wt = makeWorktree();
@@ -388,9 +406,9 @@ describe('workspace/worktree lifecycle action registry wiring (#870)', () => {
     });
 
     // Find and click the Delete button (the confirm surface).
-    const deleteButton = Array.from(
-      container!.querySelectorAll('button')
-    ).find((b) => b.textContent?.trim() === 'Delete');
+    const deleteButton = Array.from(container!.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Delete'
+    );
     expect(deleteButton).toBeTruthy();
     await act(async () => {
       deleteButton!.click();

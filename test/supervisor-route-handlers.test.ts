@@ -52,20 +52,18 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     id: 'sess-1',
     globalSessionId: 'local:sess-1',
     nodeId: 'local',
-    type: 'agent',
-    agent: 'codex',
+    type: 'terminal',
     mode: 'pty',
     cwd: '/repo',
     createdAt: '2026-05-16T00:00:00.000Z',
     lastActivity: '2026-05-16T00:00:00.000Z',
     idle: true,
     status: 'active',
-    controlMode: 'agent-driven',
+    controlMode: 'human-driven',
     controlFreshness: 'fresh',
     controlState: {
-      controlMode: 'agent-driven',
-      activeActors: [{ kind: 'agent', id: 'codex' }],
-      activeWorker: { kind: 'agent', id: 'codex' },
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'operator' }],
       lastInterventionAt: null,
       lastInterventionBy: null,
       lastInterventionEventId: null,
@@ -82,8 +80,8 @@ function supervisorBoundary(
 } {
   const supervisorWrite = vi.fn((id: string, input: { payload: string }) => ({
     eventId: `evt-${id}-${input.payload.length}`,
-    modeBefore: 'agent-driven' as const,
-    modeAfter: 'co-driven' as const,
+    modeBefore: 'human-driven' as const,
+    modeAfter: 'human-driven' as const,
   }));
   return {
     list: () => Object.values(sessions),
@@ -400,8 +398,8 @@ describe('supervisor route handlers', () => {
         if (id === 'sess-2') throw new Error('pty is gone');
         return {
           eventId: `evt-${id}-${input.payload.length}`,
-          modeBefore: 'agent-driven' as const,
-          modeAfter: 'co-driven' as const,
+          modeBefore: 'human-driven' as const,
+          modeAfter: 'human-driven' as const,
         };
       }
     );

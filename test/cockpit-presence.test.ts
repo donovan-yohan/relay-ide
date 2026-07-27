@@ -27,19 +27,17 @@ function makeSession(
     id: `session:${displayState}`,
     selectKey: `session:${displayState}`,
     label: displayState,
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     status: 'active',
     tone: 'idle',
     displayState,
-    agentState: null,
+    activityState: null,
     permissionType: null,
     branch: null,
     nodeId: null,
     nodeLabel: null,
     cwd: '/repo',
-    controlFreshness: 'fresh',
     durability: null,
     currentActivity: null,
     lastActivity: null,
@@ -177,17 +175,7 @@ describe('presenceStateForRow', () => {
     ).toBe('done');
   });
 
-  it('treats stale, unknown, and disconnected session state as unknown', () => {
-    expect(
-      presenceStateForRow(
-        makeItem([makeSession('running', { controlFreshness: 'stale' })])
-      )
-    ).toBe('unknown');
-    expect(
-      presenceStateForRow(
-        makeItem([makeSession('running', { controlFreshness: 'unknown' })])
-      )
-    ).toBe('unknown');
+  it('treats disconnected terminal sessions as unknown', () => {
     expect(
       presenceStateForRow(
         makeItem([makeSession('error', { status: 'disconnected' })])

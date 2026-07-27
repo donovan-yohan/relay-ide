@@ -21,10 +21,7 @@ import type { LogEventFilter } from '../shared/log-event.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
-import {
-  createAgentDrivenInitialControlState,
-  createHumanDrivenInitialControlState,
-} from './session-control-api.js';
+import { createHumanDrivenInitialControlState } from './session-control-api.js';
 import type {
   NodeLinkChannelHandler,
   NodeLinkEnvelopeHandlerContext,
@@ -163,31 +160,20 @@ function defaultTerminalCommand(): string {
 
 function parseSessionCommand(
   record: Record<string, unknown>,
-  type: SessionsCreateInput['type']
+  _type: SessionsCreateInput['type']
 ): string | undefined {
-  if (type === 'agent') {
-    // Routed native agent sessions must spawn the selected framework command
-    // on the node. Do not let a hub/browser shell fallback sneak through as
-    // `command` while metadata still says `type: agent` / `agent: codex`.
-    return undefined;
-  }
   return asString(record['command']) ?? defaultTerminalCommand();
 }
 
 function parseInitialControlMode(
   record: Record<string, unknown>,
-  type: SessionsCreateInput['type']
+  _type: SessionsCreateInput['type']
 ): Pick<SessionsCreateInput, 'controlMode'> | RelayNodeError {
   const controlMode = asString(record['controlMode']);
   if (controlMode === undefined) return {};
-  if (controlMode !== 'agent-driven' && controlMode !== 'human-driven') {
+  if (controlMode !== 'human-driven') {
     return invalidRequest(
-      'sessions.create payload.controlMode must be "agent-driven" or "human-driven" when set'
-    );
-  }
-  if (controlMode === 'agent-driven' && type !== 'agent') {
-    return invalidRequest(
-      'sessions.create payload.controlMode="agent-driven" is only supported for agent sessions'
+      'sessions.create payload.controlMode must be "human-driven" when set'
     );
   }
   return { controlMode };
@@ -196,10 +182,9 @@ function parseInitialControlMode(
 interface SessionsCreateInput {
   id?: string;
   spawnedBySessionId?: string;
-  type: 'agent' | 'terminal';
-  mode?: 'pty' | 'web';
-  controlMode?: 'agent-driven' | 'human-driven';
-  agent?: string;
+  type: 'terminal';
+  mode?: 'pty';
+  controlMode?: 'human-driven';
   repoPath?: string;
   worktreePath?: string | null;
   cwd?: string;
@@ -210,13 +195,22 @@ interface SessionsCreateInput {
   customCommand?: string | null;
   workspaceId?: string;
   additionalDirs?: string[];
-  initialPrompt?: string;
   terminalBackend?: TerminalBackend;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  continue?: boolean;
   sessionLane?: SessionLane;
 }
+
+const RETIRED_AGENT_SESSION_CREATE_FIELDS = [
+  'agent',
+  'role',
+  'yolo',
+  'claudeArgs',
+  'continue',
+  'continuePolicy',
+  'initialPrompt',
+  'ticketContext',
+] as const;
 
 function parseSessionsCreateInput(
   raw: unknown
@@ -225,16 +219,24 @@ function parseSessionsCreateInput(
   if (!record) {
     return invalidRequest('sessions.create payload must be an object');
   }
-  const typeRaw = asString(record['type']);
-  if (typeRaw !== 'agent' && typeRaw !== 'terminal') {
+  const retiredField = RETIRED_AGENT_SESSION_CREATE_FIELDS.find((field) =>
+    Object.prototype.hasOwnProperty.call(record, field)
+  );
+  if (retiredField) {
     return invalidRequest(
-      'sessions.create payload.type must be "agent" or "terminal"'
+      `sessions.create payload.${retiredField} is retired; agent conversations run in channels`
+    );
+  }
+  const typeRaw = asString(record['type']);
+  if (typeRaw !== 'terminal') {
+    return invalidRequest(
+      'sessions.create payload.type must be "terminal"; agent conversations run in channels'
     );
   }
   const modeRaw = asString(record['mode']);
-  if (modeRaw !== undefined && modeRaw !== 'pty' && modeRaw !== 'web') {
+  if (modeRaw !== undefined && modeRaw !== 'pty') {
     return invalidRequest(
-      'sessions.create payload.mode must be "pty" or "web" when set'
+      'sessions.create payload.mode must be "pty" when set'
     );
   }
   const input: SessionsCreateInput = { type: typeRaw };
@@ -243,13 +245,11 @@ function parseSessionsCreateInput(
   const spawnedBySessionId = asString(record['spawnedBySessionId']);
   if (spawnedBySessionId !== undefined)
     input.spawnedBySessionId = spawnedBySessionId;
-  if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
+  if (modeRaw === 'pty') input.mode = modeRaw;
   const initialControl = parseInitialControlMode(record, typeRaw);
   if ('code' in initialControl) return initialControl;
   if (initialControl.controlMode)
     input.controlMode = initialControl.controlMode;
-  const agent = asString(record['agent']);
-  if (agent !== undefined) input.agent = agent;
   const repoPath = asString(record['repoPath']);
   if (repoPath !== undefined) input.repoPath = repoPath;
   const worktreePath = asNullableString(record['worktreePath']);
@@ -274,8 +274,6 @@ function parseSessionsCreateInput(
   if (workspaceId !== undefined) input.workspaceId = workspaceId;
   const additionalDirs = asStringArray(record['additionalDirs']);
   if (additionalDirs !== undefined) input.additionalDirs = additionalDirs;
-  const initialPrompt = asString(record['initialPrompt']);
-  if (initialPrompt !== undefined) input.initialPrompt = initialPrompt;
   const terminalOverride = parseTerminalBackendOverride(record);
   if ('code' in terminalOverride) return terminalOverride;
   Object.assign(input, terminalOverride);
@@ -285,8 +283,6 @@ function parseSessionsCreateInput(
   const branchRenamePrompt = asString(record['branchRenamePrompt']);
   if (branchRenamePrompt !== undefined)
     input.branchRenamePrompt = branchRenamePrompt;
-  const continueFlag = asBoolean(record['continue']);
-  if (continueFlag !== undefined) input.continue = continueFlag;
   const sessionLane = record['sessionLane'];
   if (sessionLane !== undefined) {
     if (!isSessionLane(sessionLane)) {
@@ -406,34 +402,17 @@ export function createNodeLinkRpcHost(
       return;
     }
     try {
-      if (parsed.mode === 'web') {
-        sendErrorEnvelope(
-          ctx,
-          envelope,
-          invalidRequest('remote node web sessions are not supported')
-        );
-        return;
-      }
       const { controlMode, ...createInput } = parsed;
       const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
       createInput.id = sessionId;
-      const effectiveControlMode =
-        controlMode ??
-        (createInput.type === 'agent' ? 'agent-driven' : 'human-driven');
+      void controlMode;
       (createInput as CreateParams).controlState =
-        effectiveControlMode === 'agent-driven'
-          ? createAgentDrivenInitialControlState({
-              workerId: sessionId,
-              ...(createInput.displayName
-                ? { displayName: createInput.displayName }
-                : {}),
-            })
-          : createHumanDrivenInitialControlState({
-              sessionId,
-              ...(createInput.displayName
-                ? { displayName: createInput.displayName }
-                : {}),
-            });
+        createHumanDrivenInitialControlState({
+          sessionId,
+          ...(createInput.displayName
+            ? { displayName: createInput.displayName }
+            : {}),
+        });
       const result = localRelayNode.sessions.create(
         createInput as CreateParams
       );

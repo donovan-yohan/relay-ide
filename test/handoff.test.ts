@@ -74,7 +74,6 @@ function destinationOption() {
     },
     capabilities: [
       'session:read' as const,
-      'session:create:agent' as const,
       'rpc:fs:read' as const,
       'rpc:fs:write' as const,
       'rpc:git:read' as const,
@@ -124,12 +123,6 @@ function baseRequest(overrides: Partial<HandoffRequest> = {}): HandoffRequest {
       repoInstanceId: option.repoInstance.repoInstanceId,
       worktreeInstanceId: option.bench.worktreeInstanceId,
     },
-    desiredRuntime: {
-      kind: 'agent',
-      providerId: 'hermes',
-      commandSummary: 'resume agent in destination worktree',
-      requiredCapabilities: ['session:create:agent'],
-    },
     ...overrides,
   };
 }
@@ -158,7 +151,7 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
       repoInstanceId: option.repoInstance.repoInstanceId,
       worktreeInstanceId: option.bench.worktreeInstanceId,
       branchName: 'feat/685-handoff-schemas',
-      summary: 'apply tracked patch and launch a new agent session',
+      summary: 'apply tracked patch in the destination worktree',
     },
     pathMappings: [
       {
@@ -198,34 +191,7 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
         grantRef: 'acl:dest:write',
         scope: { kind: 'path', pathPrefixes: [destinationCwd] },
       },
-      {
-        leg: 'destination-session-create',
-        nodeId: destinationNodeId,
-        capability: 'session:create:agent',
-        decision: 'allow',
-        grantRef: 'acl:dest:session',
-        scope: { kind: 'node' },
-      },
-      {
-        leg: 'destination-exec',
-        nodeId: destinationNodeId,
-        capability: 'pty:exec:arbitrary',
-        decision: 'allow',
-        grantRef: 'acl:dest:exec',
-        scope: { kind: 'node' },
-      },
     ],
-    launchPreview: {
-      nodeId: destinationNodeId,
-      cwd: destinationCwd,
-      runtime: {
-        kind: 'agent',
-        providerId: 'hermes',
-        requiredCapabilities: ['session:create:agent'],
-      },
-      summary: 'start Hermes in destination worktree after apply succeeds',
-      workContextId,
-    },
     ...overrides,
   };
 }
@@ -296,21 +262,19 @@ describe('handoff shared contract', () => {
   it('exports closed enum constants and type guards', () => {
     expect(HANDOFF_SOURCE_DISPOSITIONS).toContain('handed-off');
     expect(HANDOFF_CONFLICT_CODES).toContain('UNSAFE_PATH_MAPPING');
-    expect(HANDOFF_REASON_CODES).toContain('FAILED_LAUNCH');
+    expect(HANDOFF_REASON_CODES).toContain('FAILED_UNSAFE_PATH_MAPPING');
     expect(HANDOFF_RUN_STATES).toEqual([
       'planned',
       'snapshotting',
       'transferring',
       'applying',
-      'launching',
-      'verifying',
       'complete',
       'failed',
       'cancelled',
     ]);
     expect(isHandoffSourceDisposition('stale-source')).toBe(true);
     expect(isHandoffConflictCode('DESTINATION_CONFLICT')).toBe(true);
-    expect(isHandoffReasonCode('VERIFY_COMPLETED')).toBe(true);
+    expect(isHandoffReasonCode('APPLY_COMPLETED')).toBe(true);
     expect(isHandoffRunState('applying')).toBe(true);
   });
 
@@ -370,7 +334,7 @@ describe('handoff shared contract', () => {
     expect(isHandoffPlan(badHash)).toBe(false);
   });
 
-  it('models required grants as explicit source read, destination write, and destination launch grants', () => {
+  it('models required grants as explicit source-read and destination-write grants', () => {
     expect(isHandoffPlan(basePlan())).toBe(true);
     const vagueSuperPermission = basePlan({
       requiredGrants: [
@@ -383,11 +347,11 @@ describe('handoff shared contract', () => {
     });
     const wrongCapabilityForLeg = basePlan({
       requiredGrants: [
-        ...basePlan().requiredGrants.slice(0, 2),
+        ...basePlan().requiredGrants.slice(0, 1),
         {
-          leg: 'destination-session-create',
+          leg: 'destination-write',
           nodeId: destinationNodeId,
-          capability: 'rpc:fs:write' as never,
+          capability: 'session:create:terminal' as never,
         },
       ],
     });
@@ -442,7 +406,7 @@ describe('handoff shared contract', () => {
 
   it('rejects disconnected run transition histories', () => {
     const disconnectedHistory = baseRun({
-      state: 'launching',
+      state: 'applying',
       transitions: [
         {
           from: 'planned',
@@ -451,10 +415,10 @@ describe('handoff shared contract', () => {
           reasonCode: 'SNAPSHOT_CAPTURED',
         },
         {
-          from: 'applying',
-          to: 'launching',
+          from: 'transferring',
+          to: 'applying',
           at: later,
-          reasonCode: 'LAUNCH_STARTED',
+          reasonCode: 'APPLY_STARTED',
         },
       ],
     });

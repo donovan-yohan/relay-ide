@@ -24,10 +24,8 @@ import {
 import { isMobileDevice } from '../lib/utils.js';
 import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
-import { useConfigStore } from '../lib/stores/config.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { clampFontSize, zoomPercentage } from '../lib/terminal-zoom.js';
-import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   detectRendererContext,
   pickTerminalRenderer,
@@ -1025,8 +1023,10 @@ function useImageUpload(
         try {
           const data = await uploadImage(sessionId!, base64, mimeType);
           if (data.clipboardSet) onImageUpload?.('Image pasted', false);
-          else if (data.mode === 'path') onImageUpload?.('Image path inserted', false);
-          else if (data.mode === 'attachment') onImageUpload?.('Image attached', false);
+          else if (data.mode === 'path')
+            onImageUpload?.('Image path inserted', false);
+          else if (data.mode === 'attachment')
+            onImageUpload?.('Image attached', false);
           else if (data.inserted) onImageUpload?.('Image inserted', false);
           else onImageUpload?.(data.path, true, data.path);
         } catch (err: unknown) {
@@ -1139,17 +1139,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       if (id) sendPtyData(id, data);
     }, []);
 
-    const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
-    const activeAgent = useSessionsStore(
-      (s) => resolveSessionByKey(s.sessions, ptySessionKey)?.agent
-    );
     const isPtyReconnecting = useSessionsStore((s) =>
       ptySessionKey
         ? s.reconnectingPtySessionIds[ptySessionKey] === true
         : false
     );
-    const isFullscreenTerminal = claudeFullscreen && activeAgent === 'claude';
-
     const { termRef, fit } = useTerminalSetup(
       containerRef,
       ptySessionKey,
@@ -1218,43 +1212,15 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         termRef.current &&
         !companionMode
       ) {
-        const container = containerRef.current;
-        if (container) {
-          const viewport =
-            container.querySelector<HTMLElement>('.xterm-viewport');
-          if (viewport) {
-            viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
-          }
-        }
         fit();
         termRef.current.refresh(0, termRef.current.rows - 1);
       }
-    }, [
-      ptySessionKey,
-      isPtyReconnecting,
-      companionMode,
-      isFullscreenTerminal,
-      fit,
-    ]);
-
-    // Enforce xterm viewport overflow for fullscreen sessions.
-    // xterm.js defaults .xterm-viewport to overflow-y:scroll; for sessions
-    // that should fill the viewport without scrolling (Claude NO_FLICKER),
-    // we lock it to hidden and re-fit to avoid stale sizing.
-    useEffect(() => {
-      const container = containerRef.current;
-      if (!container) return;
-      const viewport = container.querySelector<HTMLElement>('.xterm-viewport');
-      if (!viewport) return;
-      viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
-      fit();
-    }, [isFullscreenTerminal, fit]);
+    }, [ptySessionKey, isPtyReconnecting, companionMode, fit]);
 
     const wrapperClass = [
       'terminal-wrapper',
       dragOver ? 'drag-over' : '',
       selectionMode ? 'selection-mode' : '',
-      isFullscreenTerminal ? 'terminal-fullscreen' : '',
     ]
       .filter(Boolean)
       .join(' ');

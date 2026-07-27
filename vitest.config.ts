@@ -16,6 +16,21 @@ const SERIAL_SUBPROCESS_FILES = [
   'test/workspace-divergence-api.test.ts',
   'test/worktree-cleanup.test.ts',
   'test/sessions.test.ts',
+  // These files execute or rebuild the shared dist/bin/relay-ide.js output.
+  // Keep every dist consumer in one lane so a build cannot replace modules
+  // while another worker is importing the CLI.
+  'test/browser-cli.test.ts',
+  'test/cli-gateway-claude-tools.test.ts',
+  'test/cli-gateway-codex-tools.test.ts',
+  'test/cli-gateway-hermes-tools.test.ts',
+  'test/cli-gateway-sessions-wait.test.ts',
+  'test/cli-gateway-workflow.test.ts',
+  'test/cli-gateway/channels-post.test.ts',
+  'test/cli-gateway/events.test.ts',
+  'test/hub-node-packaging.test.ts',
+  'test/node-device-pair-cli.test.ts',
+  'test/node-manifest-build.test.ts',
+  'test/service.test.ts',
 ];
 
 const PROJECT_TEST_TIMEOUT_MS = 30_000;

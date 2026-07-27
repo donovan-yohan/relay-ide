@@ -5,7 +5,7 @@ test.describe('CustomizeSessionDialog', () => {
     await page.goto('/test-customize-session-dialog.html');
   });
 
-  test('opens with environment picker and session options', async ({
+  test('opens in chat mode without terminal environment controls', async ({
     page,
   }) => {
     await page.getByText('open customize session').click();
@@ -13,13 +13,12 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(
       page.getByRole('heading', { name: 'Customize Session' })
     ).toBeVisible();
-    await expect(page.getByLabel('repo identity')).toBeVisible();
-    await expect(page.getByLabel('execution node')).toBeVisible();
+    await expect(page.getByLabel('repo identity')).toHaveCount(0);
+    await expect(page.getByLabel('execution node')).toHaveCount(0);
     await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(page.getByLabel('cwd on linux lab')).toBeVisible();
+    await expect(page.getByLabel('cwd on linux lab')).toHaveCount(0);
     await expect(page.getByLabel('coding agent')).toBeVisible();
-    await expect(page.getByText('continue existing session')).toBeVisible();
-    await expect(page.getByText('yolo mode')).toBeVisible();
+    await expect(page.getByLabel('interface')).toHaveCount(0);
     await expect(page.getByText('Launch in tmux')).toHaveCount(0);
   });
 
@@ -27,7 +26,8 @@ test.describe('CustomizeSessionDialog', () => {
     page,
   }) => {
     await page.getByText('open single-node customize session').click();
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByLabel('mode').selectOption('terminal');
+    await page.getByRole('button', { name: 'Start Terminal' }).click();
 
     await expect(page.getByTestId('created-session')).toHaveText(
       'local-session'
@@ -40,39 +40,29 @@ test.describe('CustomizeSessionDialog', () => {
     );
   });
 
-  test('local web-capable default agents keep web session payloads', async ({
+  test('local agents open a DM channel without creating a session', async ({
     page,
   }) => {
     await page.getByText('open local web-capable customize session').click();
     await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
-    await expect(page.getByLabel('interface')).toHaveValue('web');
-    await page.getByRole('button', { name: 'Start Session' }).click();
-
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '/sessions'
-    );
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '"agent":"hermes"'
-    );
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '"mode":"web"'
-    );
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '"repoPath":"/Users/kyle/relay-ide"'
-    );
+    await expect(page.getByLabel('interface')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Open Chat' }).click();
+    await expect(page.getByTestId('active-channel')).toContainText('hermes');
+    await expect(page.getByTestId('last-create-request')).toHaveText('');
   });
 
   test('remote-node lane uses free-text cwd and omits repo fields', async ({
     page,
   }) => {
     await page.getByText('open customize session').click();
+    await page.getByLabel('mode').selectOption('terminal');
     await page.getByLabel('execution node').selectOption('linux');
     await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
     await expect(page.getByLabel('cwd on linux lab')).toHaveValue(
       '/home/linux'
     );
     await page.getByLabel('cwd on linux lab').fill('/srv/manual-cwd');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByRole('button', { name: 'Start Terminal' }).click();
 
     await expect(page.getByTestId('created-session')).toHaveText(
       'remote-session'
@@ -91,45 +81,30 @@ test.describe('CustomizeSessionDialog', () => {
     );
   });
 
-  test('remote-node lane coerces web-capable default agents to pty payloads', async ({
-    page,
-  }) => {
+  test('remote agent selection still opens a DM channel', async ({ page }) => {
     await page.getByText('open web-capable remote customize session').click();
-    await page.getByLabel('execution node').selectOption('linux');
+    await expect(page.getByLabel('execution node')).toHaveCount(0);
     await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
     await expect(page.getByLabel('interface')).toHaveCount(0);
-    await page.getByLabel('cwd on linux lab').fill('/srv/hermes-cwd');
-    await page.getByRole('button', { name: 'Start Session' }).click();
-
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '/hub/nodes/linux/sessions'
-    );
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '"agent":"hermes"'
-    );
-    await expect(page.getByTestId('last-create-request')).toContainText(
-      '"mode":"pty"'
-    );
-    await expect(page.getByTestId('last-create-request')).not.toContainText(
-      '"mode":"web"'
-    );
-    await expect(page.getByTestId('last-create-request')).not.toContainText(
-      'repoPath'
-    );
+    await page.getByRole('button', { name: 'Open Chat' }).click();
+    await expect(page.getByTestId('active-channel')).toContainText('hermes');
+    await expect(page.getByTestId('last-create-request')).toHaveText('');
   });
 
   test('free remote lane starts in node home and remembers cwd per node', async ({
     page,
   }) => {
     await page.getByText('open customize session').click();
+    await page.getByLabel('mode').selectOption('terminal');
     await page.getByLabel('execution node').selectOption('linux');
     await page.getByLabel('cwd on linux lab').fill('/opt/remember-me');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByRole('button', { name: 'Start Terminal' }).click();
     await expect(page.getByTestId('last-create-request')).toContainText(
       '"cwd":"/opt/remember-me"'
     );
 
     await page.getByText('open customize session').click();
+    await page.getByLabel('mode').selectOption('terminal');
     await page.getByLabel('execution node').selectOption('linux');
     await expect(page.getByLabel('cwd on linux lab')).toHaveValue(
       '/opt/remember-me'
@@ -147,6 +122,7 @@ test.describe('CustomizeSessionDialog', () => {
     page,
   }) => {
     await page.getByText('open customize session').click();
+    await page.getByLabel('mode').selectOption('terminal');
     const nodeOptions = page.locator('#cs-node option');
 
     await expect(nodeOptions.filter({ hasText: 'offline lab' })).toBeDisabled();
@@ -174,27 +150,23 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(page.getByLabel('coding agent')).toBeVisible();
   });
 
-  test('shows the disabled-node reason when the single-node picker is otherwise hidden', async ({
+  test('does not block chat on terminal-node availability', async ({
     page,
   }) => {
     await page.getByText('open single disabled-node customize session').click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByLabel('repo identity')).toHaveCount(0);
-    await expect(page.getByLabel('execution node')).toBeVisible();
+    await expect(page.getByLabel('execution node')).toHaveCount(0);
     await expect(
       page.getByText('node is offline', { exact: true })
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(
-      page.getByRole('button', { name: 'Start Session' })
-    ).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Open Chat' })).toBeEnabled();
   });
 
-  test('has Start Session and Cancel buttons', async ({ page }) => {
+  test('has Open Chat and Cancel buttons', async ({ page }) => {
     await page.getByText('open customize session').click();
-    await expect(
-      page.getByRole('button', { name: 'Start Session' })
-    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Chat' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
   });
 

@@ -88,38 +88,21 @@ function actorLabels(group: WorkContextActiveGroup): string[] {
       labels.push(label);
     }
   }
-  for (const session of group.sessions) {
-    for (const actor of session.activeActors ?? []) {
-      const label = actor.displayName ?? actor.id ?? actor.kind;
-      if (!seen.has(label)) {
-        seen.add(label);
-        labels.push(label);
-      }
-    }
-    const worker = session.activeWorker;
-    if (worker) {
-      const label = worker.displayName ?? worker.id ?? worker.kind;
-      if (!seen.has(label)) {
-        seen.add(label);
-        labels.push(label);
-      }
-    }
-  }
   return labels;
 }
 
 function latestStatus(group: WorkContextActiveGroup): string {
   const prompt = group.sessions.find(
     (session) =>
-      session.agentState === 'permission-prompt' ||
-      session.agentState === 'waiting-for-input'
+      session.activityState === 'permission-prompt' ||
+      session.activityState === 'waiting-for-input'
   );
-  if (prompt?.agentState === 'permission-prompt') {
+  if (prompt?.activityState === 'permission-prompt') {
     return prompt.currentActivity?.detail
       ? `approval requested · ${prompt.currentActivity.detail}`
       : 'approval requested';
   }
-  if (prompt?.agentState === 'waiting-for-input') {
+  if (prompt?.activityState === 'waiting-for-input') {
     return prompt.currentActivity?.detail
       ? `waiting for input · ${prompt.currentActivity.detail}`
       : 'waiting for input';
@@ -132,9 +115,8 @@ function latestStatus(group: WorkContextActiveGroup): string {
     return `${active.currentActivity.tool}${detail}`;
   }
   const intervention = group.sessions.find(
-    (session) => session.controlReason || session.lastInterventionAt
+    (session) => session.lastInterventionAt
   );
-  if (intervention?.controlReason) return intervention.controlReason;
   if (intervention?.lastInterventionAt) {
     const by =
       intervention.lastInterventionBy?.displayName ??
@@ -145,8 +127,8 @@ function latestStatus(group: WorkContextActiveGroup): string {
   const artifact = group.context?.artifacts?.[0];
   if (artifact?.summary) return artifact.summary;
   const session = group.sessions[0];
-  if (session?.agentState)
-    return `${session.agent ?? session.type ?? session.tabKind} · ${session.agentState}`;
+  if (session?.activityState)
+    return `${session.tabKind ?? 'terminal'} · ${session.activityState}`;
   return group.context
     ? 'context linked, waiting for bounded status'
     : 'session has no work context yet';
@@ -245,39 +227,12 @@ export function activeWorkAnchorLabel(
   return `${anchorPrefix} · ${cwd} · no repo binding`;
 }
 
-function controlSummary(
-  controlState: ReturnType<typeof activeWorkMobileControlState>,
-  session?: WorkContextSessionSummary
-): string {
-  const mode = session?.controlMode ?? 'unknown control mode';
-  const freshness = session?.controlFreshness
-    ? `control ${session.controlFreshness}`
-    : 'control freshness unknown';
-  const disabled = [
-    controlState.attachDisabledReason
-      ? `attach disabled: ${controlState.attachDisabledReason}`
-      : 'attach available',
-    controlState.smallInputDisabledReason
-      ? `input disabled: ${controlState.smallInputDisabledReason}`
-      : 'input available',
-  ];
-  return [mode, freshness, ...disabled].join(' · ');
-}
-
 function sessionMeta(
   group: WorkContextActiveGroup,
   session: WorkContextSessionSummary,
   repos: Repo[]
 ): string[] {
-  const meta = [
-    session.tabKind,
-    session.type,
-    session.agent,
-    session.controlMode,
-    session.controlFreshness
-      ? `control ${session.controlFreshness}`
-      : undefined,
-  ].filter(Boolean) as string[];
+  const meta = [session.tabKind].filter(Boolean) as string[];
   const binding = resolveSessionRepoBinding(session, repos);
   const bindingLabel = binding
     ? formatRepoBindingLabel(session, binding)
@@ -345,7 +300,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
           primarySession.nodeId
         );
         setInputValue('');
-        setInputStatus('sent · recorded as control intervention');
+        setInputStatus('sent · recorded as terminal intervention');
         void queryClient.invalidateQueries({ queryKey: ['active-work'] });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -423,12 +378,8 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
             </span>
           </div>
           <div>
-            <span className="active-work-label">actors</span>
-            <span>
-              {actors.length
-                ? actors.join(' / ')
-                : (primarySession?.agent ?? 'unknown actor')}
-            </span>
+            <span className="active-work-label">participants</span>
+            <span>{actors.length ? actors.join(' / ') : 'terminal'}</span>
           </div>
           <div>
             <span className="active-work-label">session</span>
@@ -437,10 +388,6 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
                 ? `${shortId(primarySession.globalSessionId ?? primarySession.id)} · ${primarySession.relationship}`
                 : 'no session selected'}
             </span>
-          </div>
-          <div>
-            <span className="active-work-label">control</span>
-            <span>{controlSummary(controlState, primarySession)}</span>
           </div>
           <div>
             <span className="active-work-label">latest</span>
@@ -559,14 +506,6 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
           </form>
           <TuiButton
             size="sm"
-            variant="danger"
-            disabled
-            title={controlState.destructiveDisabledReason}
-          >
-            kill
-          </TuiButton>
-          <TuiButton
-            size="sm"
             variant="info"
             title="open fixture dry-run handoff plan"
             onClick={() =>
@@ -574,14 +513,6 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
             }
           >
             handoff
-          </TuiButton>
-          <TuiButton
-            size="sm"
-            variant="ghost"
-            disabled
-            title="pause/retry require explicit control capability contracts before mobile can route them"
-          >
-            pause/retry
           </TuiButton>
           {(controlState.attachDisabledReason ||
             controlState.smallInputDisabledReason) && (

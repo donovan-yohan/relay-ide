@@ -200,7 +200,6 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
           JSON.stringify({
             id: 'local-created',
             type: entry.body?.['type'] ?? 'agent',
-            agent: 'claude',
             mode: 'pty',
             cwd: entry.body?.['repoPath'] ?? '/tmp/repo',
             displayName: 'created',
@@ -254,7 +253,10 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
         url: '/sessions',
         authorization: 'Bearer scoped-token',
         marker: 'v1',
-        body: expect.objectContaining({ repoPath: '/tmp/repo', type: 'agent' }),
+        body: expect.objectContaining({
+          repoPath: '/tmp/repo',
+          type: 'terminal',
+        }),
       }),
     ])
   );
@@ -449,7 +451,6 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',
@@ -863,7 +864,6 @@ test('v1 gateway session stream and input use routed PTY websocket', async () =>
     globalSessionId: 'node-a:remote-session-1',
     nodeId: 'node-a',
     type: 'terminal',
-    agent: 'shell',
     mode: 'pty',
     cwd: '/fixture',
     displayName: 'fixture terminal',

@@ -12,20 +12,18 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     id: 'sess-1',
     globalSessionId: 'local:sess-1',
     nodeId: 'local',
-    type: 'agent',
-    agent: 'codex',
+    type: 'terminal',
     mode: 'pty',
     cwd: '/repo',
     createdAt: '2026-05-16T00:00:00.000Z',
     lastActivity: '2026-05-16T00:00:00.000Z',
     idle: true,
     status: 'active',
-    controlMode: 'agent-driven',
+    controlMode: 'human-driven',
     controlFreshness: 'fresh',
     controlState: {
-      controlMode: 'agent-driven',
-      activeActors: [{ kind: 'agent', id: 'codex' }],
-      activeWorker: { kind: 'agent', id: 'codex' },
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'operator' }],
       lastInterventionAt: null,
       lastInterventionBy: null,
       lastInterventionEventId: null,
@@ -51,8 +49,8 @@ function boundary(
       writes.push(`${id}:${input.payload}${input.deferredTail ?? ''}`);
       return {
         eventId: `evt-${id}`,
-        modeBefore: 'agent-driven',
-        modeAfter: 'co-driven',
+        modeBefore: 'human-driven',
+        modeAfter: 'human-driven',
       };
     },
   };
@@ -62,23 +60,19 @@ describe('typed supervisor actions', () => {
   it('lists typed action eligibility without exposing raw terminal state', () => {
     const response = listSupervisorSessions([
       session(),
-      session({ id: 'web-1', mode: 'web' }),
       session({ id: 'stale-1', controlFreshness: 'stale' }),
     ]);
 
     expect(response).toMatchObject({
       command: 'supervisor.sessions',
-      count: 3,
+      count: 2,
     });
     expect(response.sessions[0]?.actions).toEqual({
       sendText: { allowed: true },
       sendKey: { allowed: true },
       submit: { allowed: true },
     });
-    expect(response.sessions[1]?.actions.sendText).toMatchObject({
-      allowed: false,
-      reasonCode: 'SESSION_MODE_UNSUPPORTED',
-    });
+    expect(response.sessions[1]?.actions.sendText.allowed).toBe(false);
     expect(JSON.stringify(response)).not.toContain('scrollback');
   });
 
@@ -242,8 +236,8 @@ describe('typed supervisor actions', () => {
       writes.push(`${id}:${input.payload}${input.deferredTail ?? ''}`);
       return {
         eventId: `evt-${id}`,
-        modeBefore: 'agent-driven',
-        modeAfter: 'co-driven',
+        modeBefore: 'human-driven',
+        modeAfter: 'human-driven',
       };
     };
 
@@ -494,7 +488,7 @@ describe('#958 typed supervisor submit', () => {
     const writes: string[] = [];
     const result = executeSupervisorAction({
       boundary: boundary(
-        { 'sess-1': session({ agentState: 'processing', idle: false }) },
+        { 'sess-1': session({ activityState: 'processing', idle: false }) },
         writes
       ),
       action: 'submit',
@@ -505,7 +499,7 @@ describe('#958 typed supervisor submit', () => {
 
     expect(result.results[0]?.postSubmit).toEqual({
       available: true,
-      agentState: 'processing',
+      activityState: 'processing',
       idle: false,
       source: 'session-snapshot',
       observedAt: '2026-06-14T00:00:00.000Z',

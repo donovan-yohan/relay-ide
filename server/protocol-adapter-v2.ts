@@ -120,9 +120,7 @@ export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {
   /**
    * Broadcast a patch to all currently-registered onPatch handlers.
    *
-   * Used by `continueHereWebSession` to emit the synthetic `sessionBreak`
-   * patch to all live listeners (session state reducer + per-WS forwarders)
-   * before `disconnect()` clears the handler set.
+   * Used when a runtime needs to emit one patch to every channel listener.
    */
   broadcastPatch(patch: AgentPatchV2): void {
     this.emitPatch(patch);

@@ -96,7 +96,7 @@ function WorkspacePaneSummaryStrip({
           />
         )}
       </div>
-      <InterventionStrip session={session} nodeBadge={summary.nodeBadge} />
+      <InterventionStrip session={session} />
     </>
   );
 }

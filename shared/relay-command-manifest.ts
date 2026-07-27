@@ -116,7 +116,6 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.screen': 'read rendered terminal screen snapshot',
   'sessions.input': 'send session input',
   'sessions.interventions': 'session interventions',
-  'sessions.handBack': 'hand back session control',
   'files.list': 'list session files',
   'files.stat': 'stat session file',
   'files.read': 'read session file',
@@ -150,7 +149,6 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workflow-runs.update': 'update workflow run projection',
   'workflow-runs.list': 'list workflow run projections',
   'workflow-runs.get': 'workflow run details',
-  'orchestration-runs.launch': 'launch orchestration run',
   'automation-runs.register': 'register automation/watchdog run',
   'automation-runs.observe': 'observe automation/watchdog run',
   'automation-runs.retire': 'retire automation/watchdog run',
@@ -170,9 +168,6 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workspace-topics.update': 'update workspace topic',
   'workspace-topics.archive': 'archive workspace topic',
   'channels.post': 'post channel message',
-  'roster.list': 'list active agent roster',
-  'roster.register': 'register self-declared agent presence',
-  'roster.updateSelf': 'update self-declared agent presence',
   'cockpit.list': 'terminal attention cockpit',
   'cockpit.get': 'terminal cockpit detail',
   'inbox.send': 'send inbox message',
@@ -182,11 +177,6 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'inbox.resolve': 'resolve inbox message',
   'inbox.ignore': 'ignore inbox message',
   'handoffs.plan': 'plan cold handoff',
-  'handoffs.create': 'create cold handoff',
-  'handoffs.status': 'handoff status',
-  'handoffs.cancel': 'cancel handoff',
-  'handoffs.resume': 'handoff resume bundle',
-  'handoffs.launch': 'launch handoff destination',
   'artifacts.read': 'read handoff artifact',
   'supervisor.snapshot': 'supervisor snapshot',
   'supervisor.sessions': 'supervisor sessions',
@@ -207,8 +197,6 @@ const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
 ]);
 
 const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
-  'handoffs.create',
-  'handoffs.launch',
   'nodes.revoke',
   'sessions.kill',
   'worktrees.delete',
@@ -228,12 +216,10 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.detach',
   'sessions.rename',
   'sessions.input',
-  'sessions.handBack',
   'supervisor.sendText',
   'supervisor.sendKey',
   'supervisor.submit',
   'files.write',
-  'handoffs.cancel',
   'context.create',
   'context.pin',
   'context.unpin',
@@ -244,7 +230,6 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.attach',
   'workflow-runs.publish',
   'workflow-runs.update',
-  'orchestration-runs.launch',
   'automation-runs.register',
   'automation-runs.observe',
   'automation-runs.retire',
@@ -258,8 +243,6 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
-  'roster.register',
-  'roster.updateSelf',
   'inbox.send',
   'inbox.ack',
   'inbox.resolve',
@@ -311,9 +294,7 @@ function scopeKindsForGatewayCommand(
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('workspace-surfaces.'))
     return ['work-context', 'repo', 'worktree', 'node'];
-  if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
-  if (name.startsWith('cockpit.') || name.startsWith('orchestration-runs.'))
-    return ['work-context', 'session'];
+  if (name.startsWith('cockpit.')) return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('channels.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
@@ -343,8 +324,6 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'worktrees.delete' ||
     spec.name === 'worktrees.archive' ||
     spec.name === 'workspace-topics.archive' ||
-    spec.name === 'handoffs.create' ||
-    spec.name === 'handoffs.launch' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||
     spec.capabilityHints.includes('rpc:fs:write')
   );
@@ -366,8 +345,6 @@ function controlRequirementsForGatewayCommand(
   ) {
     requirements.push('fresh-control-state');
   }
-  if (spec.name === 'sessions.handBack')
-    requirements.push('latest-intervention-ack');
   return requirements;
 }
 

@@ -7,9 +7,11 @@ import {
   type FormEvent,
 } from 'react';
 import { CircleAlert, LoaderCircle } from 'lucide-react';
-import type { RosterAttention } from '../../../shared/agent-roster.js';
 import type { ChannelAgentStatus } from '../lib/api.js';
-import { selectCockpitAttentionRows } from '../lib/state/cockpit-attention.js';
+import {
+  selectCockpitAttentionRows,
+  type CockpitRosterAttention,
+} from '../lib/state/cockpit-attention.js';
 import {
   PRESENCE_TOKENS,
   presenceStateForRow,
@@ -22,7 +24,7 @@ interface MobileCockpitAttentionLaneProps {
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   mentionsMeByChannel: Readonly<Record<string, boolean>>;
-  rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
+  rosterAttentionBySessionKey: Readonly<Record<string, CockpitRosterAttention>>;
   onSelect: (id: string) => void;
   actionLabelForItem: (item: TopicNavItem) => string;
   statusTextForItem: (item: TopicNavItem) => string;

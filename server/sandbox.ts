@@ -28,7 +28,10 @@ export async function findFreePort(preferred?: number): Promise<number> {
   return getPort({ port: portNumbers(3456, 3556) });
 }
 
-async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+async function waitForExit(
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return true;
 
   return new Promise((resolve) => {
@@ -88,7 +91,7 @@ export async function startSandbox(
   const dataDir = path.join(os.tmpdir(), `relay-ide-sandbox-${uuid}`);
   fs.mkdirSync(dataDir, { recursive: true });
 
-  const port = options.port ?? await findFreePort();
+  const port = options.port ?? (await findFreePort());
   const workspacePath = options.workspacePath ?? process.cwd();
 
   const config = {
@@ -116,7 +119,6 @@ export async function startSandbox(
       ...process.env,
       RELAY_IDE_CONFIG: configPath,
       RELAY_IDE_DEV_INSTANCE: '1',
-      RELAY_IDE_TMUX_PREFIX: 'relay-sandbox-',
     },
     stdio: 'inherit',
     detached: false,

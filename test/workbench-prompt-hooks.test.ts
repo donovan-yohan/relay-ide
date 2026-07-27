@@ -4,7 +4,7 @@
  * Covers:
  *   1. summarizeWorkbenchBlocks
  *      - Empty layout → empty summary, no truncation
- *      - Layout with all 8 block kinds → correct per-kind excerpts
+ *      - Layout with all supported block kinds → correct per-kind excerpts
  *      - Layout exceeding block cap → truncates to MAX_BLOCKS, truncated=true
  *      - Layout exceeding byte cap → truncates safely, truncated=true
  *      - No secret/env/transcript leakage (grep output for forbidden patterns)
@@ -138,7 +138,6 @@ import {
   createWorkbenchProposeBlockRouter,
 } from '../server/workbench-prompt-hooks.js';
 import { writeWorkbenchLayout } from '../server/workbench-layout.js';
-import { getPromptFanoutRunFixture } from '../shared/prompt-fanout-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -155,53 +154,13 @@ function makeTerminalPlacement(): WorkbenchBlockPlacement {
         sessionRef: {
           sessionId: 'sess-abc',
           nodeId: 'node-1',
-          tabKind: 'agent',
+          tabKind: 'terminal',
           cwd: '/home/user/project',
         },
       },
     },
     position: { x: 0, y: 0 },
     size: { width: 400, height: 300 },
-    minimized: false,
-  };
-}
-
-function makeAgentPlacement(): WorkbenchBlockPlacement {
-  return {
-    descriptor: {
-      kind: 'agent',
-      id: 'block-agent',
-      title: 'Claude Agent',
-      capabilityRequirements: ['session:attach', 'tab:mode:set-agent'],
-      meta: {
-        actorRef: {
-          kind: 'actor',
-          id: 'actor-xyz',
-          displayName: 'Claude Code',
-        },
-      },
-    },
-    position: { x: 410, y: 0 },
-    size: { width: 400, height: 300 },
-    minimized: false,
-  };
-}
-
-function makePromptFanoutPlacement(): WorkbenchBlockPlacement {
-  return {
-    descriptor: {
-      kind: 'prompt-fanout',
-      id: 'block-prompt-fanout',
-      title: 'Prompt Fanout',
-      capabilityRequirements: [],
-      meta: {
-        fixture: 'all-success',
-        run: getPromptFanoutRunFixture('all-success'),
-        dryRunOnly: true,
-      },
-    },
-    position: { x: 820, y: 0 },
-    size: { width: 500, height: 300 },
     minimized: false,
   };
 }
@@ -329,11 +288,9 @@ describe('summarizeWorkbenchBlocks', () => {
     expect(summary.workspaceScope.id).toBe('ws:test');
   });
 
-  it('summarizes all 8 block kinds correctly', () => {
+  it('summarizes all supported block kinds correctly', () => {
     const layout = makeLayout([
       makeTerminalPlacement(),
-      makeAgentPlacement(),
-      makePromptFanoutPlacement(),
       makeWorkContextPlacement(),
       makeFilePlacement(),
       makeArtifactPlacement(),
@@ -341,32 +298,14 @@ describe('summarizeWorkbenchBlocks', () => {
       makeCustomPlacement(),
     ]);
     const summary = summarizeWorkbenchBlocks(layout);
-    expect(summary.blocks).toHaveLength(8);
+    expect(summary.blocks).toHaveLength(6);
     expect(summary.truncated).toBe(false);
-    expect(summary.totalBlocks).toBe(8);
+    expect(summary.totalBlocks).toBe(6);
 
     const terminal = summary.blocks.find((b) => b.kind === 'terminal');
     expect(terminal?.excerpt).toMatchObject({
       kind: 'terminal',
       sessionId: 'sess-abc',
-    });
-
-    const agent = summary.blocks.find((b) => b.kind === 'agent');
-    expect(agent?.excerpt).toMatchObject({
-      kind: 'agent',
-      actorId: 'actor-xyz',
-      actorDisplayName: 'Claude Code',
-    });
-
-    const promptFanout = summary.blocks.find(
-      (b) => b.kind === 'prompt-fanout'
-    );
-    expect(promptFanout?.excerpt).toMatchObject({
-      kind: 'prompt-fanout',
-      runId: 'pfr:all-success',
-      state: 'completed',
-      selectedTargetCount: 2,
-      resultCount: 2,
     });
 
     const wc = summary.blocks.find((b) => b.kind === 'work-context');
@@ -554,7 +493,7 @@ describe('evaluateBlockProposal', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'node-1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -572,18 +511,18 @@ describe('evaluateBlockProposal', () => {
         kind: 'terminal',
         id: 'block-term',
         title: 'Term',
-        capabilityRequirements: ['session:attach', 'tab:mode:set-agent'],
+        capabilityRequirements: ['session:attach', 'rpc:fs:read'],
         meta: {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'node-1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
       },
       actorId: 'actor-1',
-      actorGrantedBits: ['session:attach'], // missing tab:mode:set-agent
+      actorGrantedBits: ['session:attach'], // missing rpc:fs:read
     };
     const result = evaluateBlockProposal(request, generateId);
     expect(result.status).toBe('pending');
@@ -705,18 +644,18 @@ describe('workbench-prompt-hooks REST router', () => {
         kind: 'terminal',
         id: 'block-term',
         title: 'Term',
-        capabilityRequirements: ['session:attach', 'tab:mode:set-agent'],
+        capabilityRequirements: ['session:attach'],
         meta: {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
       },
       actorId: 'actor-test',
-      actorGrantedBits: ['session:read'], // missing session:attach, tab:mode:set-agent
+      actorGrantedBits: ['session:read'], // missing session:attach
     });
     expect(res.status).toBe(201);
     const body = res.body as { status: string };
@@ -822,7 +761,7 @@ describe('workbench-prompt-hooks REST router', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -873,7 +812,7 @@ describe('workbench-prompt-hooks REST router', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -905,7 +844,7 @@ describe('workbench-prompt-hooks REST router', () => {
           sessionRef: {
             sessionId: 'sid2',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -947,7 +886,7 @@ describe('workbench-prompt-hooks REST router', () => {
           sessionRef: {
             sessionId: 'sid3',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -1043,7 +982,7 @@ describe('audit envelope emission', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -1079,7 +1018,7 @@ describe('audit envelope emission', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },
@@ -1122,7 +1061,7 @@ describe('audit envelope emission', () => {
           sessionRef: {
             sessionId: 'sid',
             nodeId: 'n1',
-            tabKind: 'agent',
+            tabKind: 'terminal',
             cwd: '/tmp',
           },
         },

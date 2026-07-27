@@ -6,10 +6,7 @@ import type { Config, RenamerTool } from './types.js';
 
 export const CLI_GATEWAY_SAFE_SETTING_KEYS = [
   'defaultAgent',
-  'defaultContinue',
-  'defaultYolo',
   'defaultNotifications',
-  'claudeFullscreen',
   'renamerTool',
   'updateChannel',
 ] as const;
@@ -19,10 +16,7 @@ export type CliGatewaySafeSettingKey =
 
 export interface CliGatewaySafeSettings {
   defaultAgent: string;
-  defaultContinue: boolean;
-  defaultYolo: boolean;
   defaultNotifications: boolean;
-  claudeFullscreen: boolean;
   renamerTool: RenamerTool;
   updateChannel: 'stable' | 'nightly';
 }
@@ -96,10 +90,7 @@ function isSafeSettingKey(value: unknown): value is CliGatewaySafeSettingKey {
 export function safeSettingsFromConfig(config: Config): CliGatewaySafeSettings {
   return {
     defaultAgent: config.defaultFramework || 'claude',
-    defaultContinue: config.defaultContinue ?? true,
-    defaultYolo: config.defaultYolo ?? false,
     defaultNotifications: config.defaultNotifications ?? true,
-    claudeFullscreen: config.claudeFullscreen ?? true,
     renamerTool: config.renamerTool ?? 'claude',
     updateChannel: config.updateChannel ?? 'stable',
   };
@@ -126,10 +117,7 @@ function validateSettingValue(
       }
       return { ok: true, value: trimmed };
     }
-    case 'defaultContinue':
-    case 'defaultYolo':
     case 'defaultNotifications':
-    case 'claudeFullscreen':
       if (typeof value !== 'boolean') {
         return { ok: false, message: `${key} must be a boolean` };
       }
@@ -165,8 +153,6 @@ function riskySettingWriteRequiresConfirmation(
   value: string | boolean,
   previousValue: string | boolean
 ): boolean {
-  if (key === 'defaultYolo' && value === true && previousValue !== true)
-    return true;
   if (key === 'updateChannel' && value !== previousValue) return true;
   return false;
 }
@@ -223,17 +209,8 @@ export function updateSafeSetting(
     case 'defaultAgent':
       config.defaultFramework = nextValue as string;
       break;
-    case 'defaultContinue':
-      config.defaultContinue = nextValue as boolean;
-      break;
-    case 'defaultYolo':
-      config.defaultYolo = nextValue as boolean;
-      break;
     case 'defaultNotifications':
       config.defaultNotifications = nextValue as boolean;
-      break;
-    case 'claudeFullscreen':
-      config.claudeFullscreen = nextValue as boolean;
       break;
     case 'renamerTool':
       config.renamerTool = nextValue as RenamerTool;

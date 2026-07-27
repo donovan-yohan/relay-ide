@@ -1,5 +1,4 @@
-/* file-tree component — port of design-system spec
-   docs/design-system/ui_kits/relay-web/components/file-tree.css */
+/* File tree component. */
 
 .fb {
   font-family: var(--font-mono, monospace);

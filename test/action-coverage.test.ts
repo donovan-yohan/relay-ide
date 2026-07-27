@@ -33,7 +33,7 @@ import { workspaceOpenFileBrowser } from '../frontend/src/lib/actions/definition
 import { actionDescriptorFromMeta } from '../frontend/src/lib/actions/descriptors.js';
 import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
-// Full allowlist: 66 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630
+// Full allowlist: 63 palettable action IDs (15 Phase 2 + 41 Phase 3 + 1 from #630
 // + workspace.launch from #870 + next-attention WorkContext jump from #933
 // + task-room create/launch from #1045 + open-work-cockpit from #1058
 // + advanced-mode escape hatches (nodes dashboard/analytics/active work) from #1058)
@@ -66,10 +66,9 @@ const ACTION_ALLOWLIST = [
   'pr.refresh',
   'pr.change-target',
   'pr.skip-checks',
-  // Settings (15)
+  // Settings (13)
   'settings.open',
   'settings.connect-github',
-  'settings.toggle-yolo',
   'settings.check-updates',
   'settings.disconnect-github',
   'settings.setup-webhooks',
@@ -79,17 +78,15 @@ const ACTION_ALLOWLIST = [
   'settings.disconnect-jira',
   'settings.toggle-devtools',
   'settings.clear-analytics',
-  'settings.toggle-continue',
   'settings.toggle-notifications',
   'settings.change-default-agent',
-  // Sidebar (7)
+  // Sidebar (6)
   'sidebar.collapse',
   'sidebar.navigate-dashboard',
   'sidebar.workspace-settings',
   'sidebar.rename-session',
   'sidebar.delete-worktree',
   'sidebar.resume-session',
-  'sidebar.resume-yolo',
   // Dashboard (3)
   'dashboard.open-pr-session',
   'dashboard.sort-prs',
@@ -374,33 +371,17 @@ describe('Action Coverage', () => {
     });
   });
 
-  it('attaches start-work descriptors to the ticket/PR/dashboard entry points (#871/#876)', () => {
-    // session.start-on-ticket (StartWorkModal) bridges to tickets.startWork.
-    expect(sessionStartOnTicket.descriptor?.id).toBe('tickets.startWork');
-    expect(sessionStartOnTicket.descriptor?.contract?.relayCommandName).toBe(
-      'tickets.startWork'
-    );
-
-    // pr.fix-conflicts and pr.switch-branch open a session on a PR/branch
-    // target through branches.openSession.
-    expect(prFixConflicts.descriptor?.id).toBe('branches.openSession');
-    expect(prFixConflicts.descriptor?.contract?.relayCommandName).toBe(
-      'branches.openSession'
-    );
-    expect(prSwitchBranch.descriptor?.id).toBe('branches.openSession');
-    expect(prSwitchBranch.descriptor?.contract?.relayCommandName).toBe(
-      'branches.openSession'
-    );
-
-    // dashboard.open-pr-session also bridges to branches.openSession.
-    expect(dashboardOpenPrSession.descriptor?.id).toBe('branches.openSession');
-    expect(dashboardOpenPrSession.descriptor?.contract?.relayCommandName).toBe(
-      'branches.openSession'
-    );
-
-    // UI-only exceptions stay descriptor-free.
-    expect(prCopyBranchName.descriptor).toBeUndefined();
-    expect(prOpenExternal.descriptor).toBeUndefined();
+  it('keeps channel-routed ticket and PR actions off legacy session command descriptors', () => {
+    for (const action of [
+      sessionStartOnTicket,
+      prFixConflicts,
+      prSwitchBranch,
+      dashboardOpenPrSession,
+      prCopyBranchName,
+      prOpenExternal,
+    ]) {
+      expect(action.descriptor).toBeUndefined();
+    }
   });
 
   it('projects UI-only actions without promoting them to stable Relay commands', () => {

@@ -21,7 +21,7 @@ export function UtilityRailLogsPanel({
       </div>
       <div className="utility-kv-row">
         <span>state</span>
-        <span>{activeSession?.agentState ?? 'idle'}</span>
+        <span>{activeSession?.activityState ?? 'idle'}</span>
       </div>
       <div className="utility-log-box">
         {activity ? (

@@ -117,11 +117,9 @@ export function isHighRiskNodePairingRequest(input: {
 const CAPABILITY_POSTURE_LABELS: Partial<Record<RelayCapabilityBit, string>> = {
   'session:read': 'view sessions',
   'session:create:terminal': 'launch terminal sessions',
-  'session:create:agent': 'launch configured agent CLIs',
   'session:attach': 'attach/detach sessions',
   'session:control:kill': 'stop sessions',
   'session:control:rename': 'rename sessions',
-  'tab:mode:set-agent': 'drive agent tabs',
   'tab:intervention:read': 'observe agent tabs',
   'tab:intervention:send-text': 'intervene on agent tabs',
   'tab:intervention:send-key': 'intervene on agent tabs',

@@ -11,12 +11,7 @@ export function initialFeedbackTarget(
   );
   if (preferredTarget) return scopedSessionKey(preferredTarget);
 
-  const firstAgent = sessions.find((session) => session.type === 'agent');
-  return firstAgent
-    ? scopedSessionKey(firstAgent)
-    : sessions[0]
-      ? scopedSessionKey(sessions[0])
-      : '';
+  return sessions[0] ? scopedSessionKey(sessions[0]) : '';
 }
 
 export function resolveFeedbackTarget(

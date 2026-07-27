@@ -458,7 +458,7 @@ function buildSubmitPlan(input: {
 }
 
 /**
- * Best-effort derived post-submit state (#958). Reads the last-known agent state
+ * Best-effort derived post-submit state (#958). Reads the last-known terminal activity state
  * from the resolved session snapshot; returns `available: false` when no derived
  * state exists yet (mock/dry-run/unclassified). Never exposes raw bytes.
  */
@@ -466,12 +466,12 @@ function observePostSubmit(
   session: Session,
   observedAt: string
 ): SupervisorSubmitObservation {
-  const agentState = (session as { agentState?: unknown }).agentState;
-  if (typeof agentState === 'string' && agentState.length > 0) {
+  const activityState = (session as { activityState?: unknown }).activityState;
+  if (typeof activityState === 'string' && activityState.length > 0) {
     const idle = (session as { idle?: unknown }).idle;
     return {
       available: true,
-      agentState,
+      activityState,
       ...(typeof idle === 'boolean' ? { idle } : {}),
       source: 'session-snapshot',
       observedAt,

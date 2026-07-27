@@ -211,7 +211,7 @@ describe('#1249 sendTerminalStreamEnvelope — RANK 1 leak path (raw PTY stdout)
   });
 });
 
-describe('#1249 deliverDelta — agent web-session patch lane', () => {
+describe('#1249 deliverDelta — channel patch lane', () => {
   it('sheds a patch above the soft watermark and marks lagging', () => {
     const ws = fakeSocket({ bufferedAmount: WS_SOFT_LIMIT_BYTES + 1 });
     const state: DeltaLaneState = { lagging: false };

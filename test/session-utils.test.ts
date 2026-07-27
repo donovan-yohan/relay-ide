@@ -86,14 +86,14 @@ Object.defineProperty(globalThis, 'localStorage', {
 
 import { ConflictError, HttpError } from '../frontend/src/lib/api.js';
 import {
-  createAgentSession,
+  createTerminalSession,
   createSessionWithoutActivation,
 } from '../frontend/src/lib/session-utils.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 
 const originalRefreshAll = useSessionsStore.getState().refreshAll;
 
-function session(id: string, type: 'agent' | 'terminal' = 'terminal'): SessionSummary {
+function session(id: string): SessionSummary {
   return {
     id,
     repoName: 'a',
@@ -106,8 +106,7 @@ function session(id: string, type: 'agent' | 'terminal' = 'terminal'): SessionSu
     branchName: 'nightly',
     displayName: '',
     idle: false,
-    agent: 'claude',
-    type,
+    type: 'terminal',
     mode: 'pty',
     useTmux: true,
   };
@@ -118,9 +117,17 @@ describe('createSessionWithoutActivation', () => {
     vi.clearAllMocks();
     for (const key of Object.keys(storage)) delete storage[key];
     useSessionsStore.setState({
-      sessions: [session('main', 'agent')],
+      sessions: [session('main')],
       worktrees: [],
-      repos: [{ name: 'a', path: '/repo/a', isGitRepo: true, defaultBranch: 'nightly', currentBranch: 'nightly' }],
+      repos: [
+        {
+          name: 'a',
+          path: '/repo/a',
+          isGitRepo: true,
+          defaultBranch: 'nightly',
+          currentBranch: 'nightly',
+        },
+      ],
       workspaceGroups: [],
       activeSessionId: 'main',
       workspaceLastSession: { '/repo/a': 'main' },
@@ -130,7 +137,13 @@ describe('createSessionWithoutActivation', () => {
     });
     apiMocks.fetchWorktrees.mockResolvedValue([]);
     apiMocks.fetchWorkspaces.mockResolvedValue([
-      { name: 'a', path: '/repo/a', isGitRepo: true, defaultBranch: 'nightly', currentBranch: 'nightly' },
+      {
+        name: 'a',
+        path: '/repo/a',
+        isGitRepo: true,
+        defaultBranch: 'nightly',
+        currentBranch: 'nightly',
+      },
     ]);
     apiMocks.fetchWorkspaceGroups.mockResolvedValue([]);
   });
@@ -138,12 +151,11 @@ describe('createSessionWithoutActivation', () => {
   it('creates and refreshes a terminal session without changing active or recalled workspace session', async () => {
     const created = session('utility');
     apiMocks.createSession.mockResolvedValue(created);
-    apiMocks.fetchSessions.mockResolvedValue([session('main', 'agent'), created]);
+    apiMocks.fetchSessions.mockResolvedValue([session('main'), created]);
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
       worktreePath: null,
-      type: 'terminal',
     });
 
     expect(result.session?.id).toBe('utility');
@@ -153,7 +165,9 @@ describe('createSessionWithoutActivation', () => {
       type: 'terminal',
     });
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
-    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe(
+      'main'
+    );
     expect(storage['claude-remote-active-session']).toBe(undefined);
   });
 
@@ -167,23 +181,23 @@ describe('createSessionWithoutActivation', () => {
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
-      type: 'terminal',
     });
 
     expect(result.session).toBe(created);
     expect(result.error).toBe(refreshError);
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
-    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe(
+      'main'
+    );
   });
 
   it('returns the conflicting session and stable ConflictError envelope when refresh succeeds', async () => {
     const conflict = new ConflictError('main');
     apiMocks.createSession.mockRejectedValue(conflict);
-    apiMocks.fetchSessions.mockResolvedValue([session('main', 'agent')]);
+    apiMocks.fetchSessions.mockResolvedValue([session('main')]);
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
-      type: 'terminal',
     });
 
     expect(result.session?.id).toBe('main');
@@ -194,7 +208,9 @@ describe('createSessionWithoutActivation', () => {
       details: { sessionId: 'main' },
     });
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
-    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe(
+      'main'
+    );
   });
 
   it('returns the conflicting session from stable error details', async () => {
@@ -206,11 +222,10 @@ describe('createSessionWithoutActivation', () => {
       { sessionId: 'main' }
     );
     apiMocks.createSession.mockRejectedValue(conflict);
-    apiMocks.fetchSessions.mockResolvedValue([session('main', 'agent')]);
+    apiMocks.fetchSessions.mockResolvedValue([session('main')]);
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
-      type: 'terminal',
     });
 
     expect(result.session?.id).toBe('main');
@@ -219,7 +234,9 @@ describe('createSessionWithoutActivation', () => {
       details: { sessionId: 'main' },
     });
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
-    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe(
+      'main'
+    );
   });
 
   it('returns the conflicting session plus refresh error when conflict refresh fails', async () => {
@@ -232,13 +249,14 @@ describe('createSessionWithoutActivation', () => {
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
-      type: 'terminal',
     });
 
     expect(result.session?.id).toBe('main');
     expect(result.error).toBe(refreshError);
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
-    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe(
+      'main'
+    );
   });
 
   it('returns generic create errors without refreshing', async () => {
@@ -249,7 +267,6 @@ describe('createSessionWithoutActivation', () => {
 
     const result = await createSessionWithoutActivation({
       repoPath: '/repo/a',
-      type: 'terminal',
     });
 
     expect(result).toMatchObject({
@@ -264,25 +281,24 @@ describe('createSessionWithoutActivation', () => {
     expect(refreshAll).not.toHaveBeenCalled();
   });
 
-  it('activates created agent sessions and returns refresh errors instead of throwing', async () => {
-    const created = session('new-agent', 'agent');
+  it('activates created terminal sessions and returns refresh errors instead of throwing', async () => {
+    const created = session('new-terminal');
     const refreshError = new Error('refresh failed');
     apiMocks.createSession.mockResolvedValue(created);
     useSessionsStore.setState({
       refreshAll: vi.fn().mockRejectedValue(refreshError),
     });
 
-    const result = await createAgentSession({
+    const result = await createTerminalSession({
       repoPath: '/repo/a',
-      type: 'agent',
     });
 
     expect(result.session).toBe(created);
     expect(result.error).toBe(refreshError);
-    expect(useSessionsStore.getState().activeSessionId).toBe('new-agent');
+    expect(useSessionsStore.getState().activeSessionId).toBe('new-terminal');
   });
 
-  it('activates conflicting agent sessions and returns conflict refresh errors instead of throwing', async () => {
+  it('activates conflicting terminal sessions and returns conflict refresh errors instead of throwing', async () => {
     const conflict = new ConflictError('main');
     const refreshError = new Error('refresh failed');
     apiMocks.createSession.mockRejectedValue(conflict);
@@ -290,9 +306,8 @@ describe('createSessionWithoutActivation', () => {
       refreshAll: vi.fn().mockRejectedValue(refreshError),
     });
 
-    const result = await createAgentSession({
+    const result = await createTerminalSession({
       repoPath: '/repo/a',
-      type: 'agent',
     });
 
     expect(result.session?.id).toBe('main');

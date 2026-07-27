@@ -14,7 +14,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { isHandoffRun, type HandoffRequiredGrant } from '../shared/handoff.js';
-import { planHandoffSnapshot, type ExecFileAsyncLike } from '../server/handoff-planner.js';
+import {
+  planHandoffSnapshot,
+  type ExecFileAsyncLike,
+} from '../server/handoff-planner.js';
 import { applyHandoffTransfer } from '../server/handoff-transfer.js';
 
 const SOURCE_NODE = 'local-node';
@@ -46,7 +49,13 @@ function gitCommit(cwd: string, message: string): void {
   ]);
 }
 
-function makeRepos(): { root: string; seed: string; source: string; destination: string; baseCommit: string } {
+function makeRepos(): {
+  root: string;
+  seed: string;
+  source: string;
+  destination: string;
+  baseCommit: string;
+} {
   const root = mkdtempSync(join(tmpdir(), 'relay-handoff-transfer-test-'));
   tempRoots.push(root);
   const seed = join(root, 'seed');
@@ -90,7 +99,7 @@ function allowedGrants(): HandoffRequiredGrant[] {
     {
       leg: 'destination-session-create',
       nodeId: DESTINATION_NODE,
-      capability: 'session:create:agent',
+      capability: 'session:create:terminal',
       decision: 'allow',
     },
     {
@@ -160,7 +169,9 @@ describe('applyHandoffTransfer', () => {
       'complete',
     ]);
     expect(result.trackedPatch.applied).toBe(false);
-    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(before);
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
+      before
+    );
     expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
   });
 
@@ -199,9 +210,13 @@ describe('applyHandoffTransfer', () => {
     expect(result.approvedUntrackedFiles.map((file) => file.path)).toEqual([
       'notes.md',
     ]);
-    expect(readFileSync(join(destination, 'notes.md'), 'utf8')).toBe('safe note\n');
+    expect(readFileSync(join(destination, 'notes.md'), 'utf8')).toBe(
+      'safe note\n'
+    );
     expect(existsSync(join(destination, '.env'))).toBe(false);
-    expect(existsSync(join(destination, 'node_modules', 'cache.txt'))).toBe(false);
+    expect(existsSync(join(destination, 'node_modules', 'cache.txt'))).toBe(
+      false
+    );
   });
 
   it('rejects source base mismatch before touching the destination', async () => {
@@ -216,7 +231,9 @@ describe('applyHandoffTransfer', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
     expect(result.conflicts[0]).toMatchObject({ code: 'STALE_SOURCE' });
-    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(before);
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
+      before
+    );
     expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
   });
 
@@ -233,13 +250,18 @@ describe('applyHandoffTransfer', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
     expect(result.conflicts[0]).toMatchObject({ code: 'BASE_MISMATCH' });
-    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(before);
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
+      before
+    );
   });
 
   it('rejects destination dirty state before applying a patch', async () => {
     const { source, destination, baseCommit } = makeRepos();
     writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 5;\n');
-    writeFileSync(join(destination, 'src', 'app.ts'), 'export const local = 99;\n');
+    writeFileSync(
+      join(destination, 'src', 'app.ts'),
+      'export const local = 99;\n'
+    );
 
     const result = await applyFixture({ source, destination, baseCommit });
 
@@ -256,7 +278,10 @@ describe('applyHandoffTransfer', () => {
     writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 6;\n');
     writeFileSync(join(source, 'notes.md'), 'source note\n');
     writeFileSync(join(destination, 'notes.md'), 'destination note\n');
-    const beforeTracked = readFileSync(join(destination, 'src', 'app.ts'), 'utf8');
+    const beforeTracked = readFileSync(
+      join(destination, 'src', 'app.ts'),
+      'utf8'
+    );
 
     const result = await applyFixture({
       source,
@@ -284,7 +309,10 @@ describe('applyHandoffTransfer', () => {
       nodeId: SOURCE_NODE,
     });
     writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 3;\n');
-    const beforeTracked = readFileSync(join(destination, 'src', 'app.ts'), 'utf8');
+    const beforeTracked = readFileSync(
+      join(destination, 'src', 'app.ts'),
+      'utf8'
+    );
 
     const result = await applyHandoffTransfer({
       requestId: 'handoff-request-test',
@@ -304,7 +332,9 @@ describe('applyHandoffTransfer', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected stale-source failure');
     expect(result.conflicts[0]).toMatchObject({ code: 'STALE_SOURCE' });
-    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(beforeTracked);
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
+      beforeTracked
+    );
     expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
   });
 
@@ -345,7 +375,10 @@ describe('applyHandoffTransfer', () => {
     const { source, destination, baseCommit } = makeRepos();
     writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 7;\n');
     writeFileSync(join(source, 'notes.md'), 'source note\n');
-    const beforeTracked = readFileSync(join(destination, 'src', 'app.ts'), 'utf8');
+    const beforeTracked = readFileSync(
+      join(destination, 'src', 'app.ts'),
+      'utf8'
+    );
     let lockedDestination = false;
     const exec: ExecFileAsyncLike = async (file, args, options) => {
       const stdout = execFileSync(file, args, {
@@ -377,7 +410,9 @@ describe('applyHandoffTransfer', () => {
 
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('expected apply failure');
-      expect(result.conflicts[0]).toMatchObject({ code: 'DESTINATION_CONFLICT' });
+      expect(result.conflicts[0]).toMatchObject({
+        code: 'DESTINATION_CONFLICT',
+      });
     } finally {
       if (lockedDestination) chmodSync(destination, 0o755);
     }
@@ -397,7 +432,9 @@ describe('applyHandoffTransfer', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected unavailable destination failure');
-    expect(result.conflicts[0]).toMatchObject({ code: 'DESTINATION_UNAVAILABLE' });
+    expect(result.conflicts[0]).toMatchObject({
+      code: 'DESTINATION_UNAVAILABLE',
+    });
   });
 
   it('rejects denied grants and oversized approved files before destination writes', async () => {

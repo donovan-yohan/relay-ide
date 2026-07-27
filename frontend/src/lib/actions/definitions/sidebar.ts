@@ -80,15 +80,6 @@ export const sidebarResumeSession: ActionMeta = {
   when: (ctx) => !!ctx.workspacePath,
 };
 
-export const sidebarResumeYolo: ActionMeta = {
-  id: 'sidebar.resume-yolo',
-  label: 'resume session (yolo)',
-  description: 'continue with yolo mode enabled',
-  category: 'sidebar',
-  icon: '!',
-  when: (ctx) => !!ctx.workspacePath,
-};
-
 export const sidebarActions: ActionMeta[] = [
   sidebarCollapse,
   sidebarNavigateDashboard,
@@ -96,5 +87,4 @@ export const sidebarActions: ActionMeta[] = [
   sidebarRenameSession,
   sidebarDeleteWorktree,
   sidebarResumeSession,
-  sidebarResumeYolo,
 ];

@@ -179,7 +179,6 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
           mode: 'pty',
           terminalBackend: 'relay-pty',
         },
-        prompt: { mode: 'initial-prompt', prompt: 'continue the workflow' },
       }),
       {
         ...process.env,
@@ -213,9 +212,9 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
     type: 'terminal',
     mode: 'pty',
     terminalBackend: 'relay-pty',
-    initialPrompt: 'continue the workflow',
   });
   expect(captured[0].body).not.toHaveProperty('cwd');
+  expect(captured[0].body).not.toHaveProperty('initialPrompt');
 });
 
 test('explicit worktree path checked out on a different branch fails before session creation', async () => {

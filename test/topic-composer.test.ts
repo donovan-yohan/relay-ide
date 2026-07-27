@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
-  deriveTopicProviderLaunchMode,
   deriveTopicProviderOptions,
   deriveTopicTitleFromPrompt,
   effectiveDraftTitle,
@@ -21,7 +20,7 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
     fetchHubNodes: vi.fn().mockResolvedValue([]),
     createWorkspaceTopicRoomAndMaybeLaunch: vi.fn(),
     launchWorkspaceTopicRoom: vi.fn(),
-    // #1166: DM-as-channel entry point (web-mode agent launches route here).
+    // Channel-native agent entry point.
     fetchWorkspaceTopic: vi.fn(),
     createWorkspaceTopic: vi.fn(),
     postChannelMessage: vi.fn(),
@@ -79,7 +78,6 @@ function framework(
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: false,
       ...overrides.capabilities,
     },
     eventSource: 'hooks',
@@ -118,13 +116,6 @@ describe('topic provider launch helpers', () => {
         framework('claude', { displayName: 'Claude Code' }),
         framework('hermes', {
           displayName: 'Hermes',
-          capabilities: {
-            supportsContinue: true,
-            supportsYolo: true,
-            supportsHooks: false,
-            supportsTelemetry: true,
-            supportsWebSessions: true,
-          },
         }),
       ],
       defaultProviderId: 'hermes',
@@ -136,72 +127,18 @@ describe('topic provider launch helpers', () => {
       id: 'hermes',
       label: 'Hermes',
       isDefault: true,
-      launchMode: 'web',
-      status: 'global default · web launch',
+      status: 'global default · chat',
     });
     expect(options.find((option) => option.id === 'claude')).toMatchObject({
       label: 'Claude Code',
-      launchMode: 'pty',
+      status: 'one-off override · chat',
     });
   });
 
-  it('derives the shared default launch mode and keeps terminal/custom fallback on pty', () => {
-    const frameworks = [
-      framework('hermes', {
-        capabilities: {
-          supportsContinue: true,
-          supportsYolo: true,
-          supportsHooks: false,
-          supportsTelemetry: true,
-          supportsWebSessions: true,
-        },
-      }),
-      framework('opencode', {
-        capabilities: {
-          supportsContinue: true,
-          supportsYolo: true,
-          supportsHooks: false,
-          supportsTelemetry: false,
-          supportsWebSessions: true,
-        },
-      }),
-      framework('codex'),
-      framework('custom:local'),
-    ];
-
-    expect(
-      deriveTopicProviderLaunchMode('hermes', 'agent-task', frameworks)
-    ).toBe('web');
-    expect(
-      deriveTopicProviderLaunchMode('codex', 'agent-task', frameworks)
-    ).toBe('pty');
-    expect(
-      deriveTopicProviderLaunchMode('opencode', 'agent-task', frameworks)
-    ).toBe('pty');
-    expect(
-      deriveTopicProviderLaunchMode('custom:local', 'agent-task', frameworks)
-    ).toBe('pty');
-    expect(
-      deriveTopicProviderLaunchMode('hermes', 'terminal-task', frameworks)
-    ).toBe('pty');
-  });
-
-  it('surfaces unavailable framework copy and falls Hermes web back to pty when degraded', () => {
+  it('surfaces unavailable framework copy without transport-specific state', () => {
     const options = deriveTopicProviderOptions({
       frameworks: [
-        framework('hermes', {
-          capabilities: {
-            supportsContinue: true,
-            supportsYolo: true,
-            supportsHooks: false,
-            supportsTelemetry: true,
-            supportsWebSessions: true,
-          },
-          webAvailability: {
-            available: false,
-            reason: 'Hermes API server is not reachable',
-          },
-        }),
+        framework('hermes'),
         framework('claude', {
           availability: { installed: false, reason: 'claude CLI missing' },
         }),
@@ -212,9 +149,7 @@ describe('topic provider launch helpers', () => {
     });
 
     expect(options.find((option) => option.id === 'hermes')).toMatchObject({
-      launchMode: 'pty',
-      status:
-        'one-off override · tui launch · web unavailable: Hermes API server is not reachable',
+      status: 'one-off override · chat',
     });
     expect(options.find((option) => option.id === 'claude')).toMatchObject({
       disabled: true,
@@ -222,18 +157,8 @@ describe('topic provider launch helpers', () => {
     });
   });
 
-  it('puts the derived launch mode into the session body', () => {
-    const frameworks = [
-      framework('hermes', {
-        capabilities: {
-          supportsContinue: true,
-          supportsYolo: true,
-          supportsHooks: false,
-          supportsTelemetry: true,
-          supportsWebSessions: true,
-        },
-      }),
-    ];
+  it('never builds an agent session body; explicit terminals stay pty', () => {
+    const frameworks = [framework('hermes')];
     const create = buildTopicRoomCreateInput({
       draft: { ...TOPIC_ROOM_DRAFT_EMPTY, prompt: 'run it' },
       workspaceId: null,
@@ -243,12 +168,7 @@ describe('topic provider launch helpers', () => {
 
     expect(
       buildTopicRoomLaunchBody(create, 'agent-task', frameworks)
-    ).toMatchObject({
-      type: 'agent',
-      mode: 'web',
-      agent: 'hermes',
-      initialPrompt: 'run it',
-    });
+    ).toBeNull();
     expect(
       buildTopicRoomLaunchBody(create, 'terminal-task', frameworks)
     ).toMatchObject({
@@ -268,7 +188,7 @@ describe('topic provider launch helpers', () => {
       defaultCwd: '/configured/project',
       taskRef: null,
     });
-    const body = buildTopicRoomLaunchBody(create, 'agent-task', [
+    const body = buildTopicRoomLaunchBody(create, 'terminal-task', [
       framework('claude'),
     ]);
 
@@ -278,25 +198,17 @@ describe('topic provider launch helpers', () => {
     });
     expect(create.routingDefaults).not.toHaveProperty('repoPath');
     expect(body).toMatchObject({
-      type: 'agent',
+      type: 'terminal',
       mode: 'pty',
-      agent: 'claude',
       cwd: '/configured/project',
     });
     expect(body).not.toHaveProperty('repoPath');
   });
 
-  it('keeps OpenCode on tui launch by default even when it exposes web mode', () => {
+  it('routes every installed provider to chat', () => {
     const frameworks = [
       framework('opencode', {
         displayName: 'OpenCode',
-        capabilities: {
-          supportsContinue: true,
-          supportsYolo: true,
-          supportsHooks: false,
-          supportsTelemetry: false,
-          supportsWebSessions: true,
-        },
       }),
     ];
     const create = buildTopicRoomCreateInput({
@@ -315,16 +227,11 @@ describe('topic provider launch helpers', () => {
       })[0]
     ).toMatchObject({
       id: 'opencode',
-      launchMode: 'pty',
-      status: 'global default · tui launch',
+      status: 'global default · chat',
     });
     expect(
       buildTopicRoomLaunchBody(create, 'agent-task', frameworks)
-    ).toMatchObject({
-      type: 'agent',
-      mode: 'pty',
-      agent: 'opencode',
-    });
+    ).toBeNull();
   });
 });
 
@@ -342,13 +249,6 @@ describe('TopicComposer', () => {
         framework('codex', { displayName: 'Codex' }),
         framework('hermes', {
           displayName: 'Hermes',
-          capabilities: {
-            supportsContinue: true,
-            supportsYolo: true,
-            supportsHooks: false,
-            supportsTelemetry: true,
-            supportsWebSessions: true,
-          },
         }),
       ],
     });
@@ -436,7 +336,7 @@ describe('TopicComposer', () => {
     expect(provider.labels?.[0]?.textContent).toBe('coding agent');
     expect(provider.labels?.[0]?.textContent).not.toContain('Claude Code');
     expect(getProviderStatus(provider)?.textContent).toBe(
-      'global default · tui launch'
+      'global default · chat'
     );
     expect(provider.getAttribute('aria-describedby')).toBe(
       getProviderStatus(provider)?.id
@@ -585,12 +485,15 @@ describe('TopicComposer', () => {
     ).toBeNull();
   });
 
-  it('creates and launches with the derived title on submit', async () => {
-    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
-      status: 'created',
-      topic: { id: 'topic:1' },
-      workContext: { id: 'wc:1' },
+  it('opens the default agent channel and posts the first message', async () => {
+    const dmId = dmChannelTopicId('claude', null);
+    vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
+      id: dmId,
+      workspaceId: 'workspace:local',
+      routingDefaults: { providerId: 'claude' },
+      display: { title: 'Claude Code' },
     } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
     renderComposer();
     const ta = container.querySelector(
       '.topic-composer__ta'
@@ -602,19 +505,15 @@ describe('TopicComposer', () => {
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));
     });
-    expect(createWorkspaceTopicRoomAndMaybeLaunch).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
-      .calls[0]?.[0] as {
-      room: { topic: { title: string } };
-      launch?: unknown;
-    };
-    expect(call.room.topic.title).toBe('triage the reconnect flake');
-    expect(call.launch).toBeDefined();
+    expect(createWorkspaceTopicRoomAndMaybeLaunch).not.toHaveBeenCalled();
+    expect(postChannelMessage).toHaveBeenCalledWith(
+      dmId,
+      expect.objectContaining({ text: 'triage the reconnect flake' })
+    );
+    expect(useUiStore.getState().activeChannelId).toBe(dmId);
   });
 
-  it('routes a one-off web-mode override to a DM channel, not a web session (#1166)', async () => {
-    // Hermes selected + web launch mode now opens the deterministic DM channel
-    // and posts the first message, instead of spawning a mode:'web' session.
+  it('routes a one-off provider override to its DM channel', async () => {
     const dmId = dmChannelTopicId('hermes', null);
     vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
       id: dmId,
@@ -636,7 +535,7 @@ describe('TopicComposer', () => {
     });
     expect(useConfigStore.getState().defaultAgent).toBe('claude');
     expect(getProviderStatus(provider)?.textContent).toBe(
-      'one-off override · web launch'
+      'one-off override · chat'
     );
 
     const form = container.querySelector(
@@ -646,7 +545,6 @@ describe('TopicComposer', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));
     });
 
-    // No web session is created.
     expect(createWorkspaceTopicRoomAndMaybeLaunch).not.toHaveBeenCalled();
     // The DM channel is opened and the first message posted into it.
     expect(postChannelMessage).toHaveBeenCalledWith(
@@ -732,35 +630,20 @@ describe('TopicComposer', () => {
     expect(useSessionsStore.getState().activeSessionId).toBeNull();
   });
 
-  it("resume never targets a mode:'web' session, even when it is the most recent (#1178)", async () => {
-    // The retired per-session web-chat surface must not be resurrected by the
-    // one-tap resume affordance — resume iterates the web-excluded live set.
-    const webSession = {
-      id: 'sess-web',
-      type: 'agent',
-      agent: 'hermes',
-      mode: 'web',
-      repoPath: '/repo/relay-ide',
-      cwd: '/repo/relay-ide',
-      displayName: 'web chat (newer)',
-      createdAt: '2026-07-10T00:00:00.000Z',
-      lastActivity: '2026-07-10T00:00:00.000Z',
-      idle: false,
-    } as const;
+  it('resumes the most recent explicit terminal session', async () => {
     const ptySession = {
       id: 'sess-pty',
-      type: 'agent',
-      agent: 'claude',
+      type: 'terminal',
       mode: 'pty',
       repoPath: '/repo/relay-ide',
       cwd: '/repo/relay-ide',
-      displayName: 'claude tui (older)',
+      displayName: 'terminal session',
       createdAt: '2026-07-05T00:00:00.000Z',
       lastActivity: '2026-07-05T00:00:00.000Z',
       idle: false,
     } as const;
     useSessionsStore.setState({
-      sessions: [webSession, ptySession] as never,
+      sessions: [ptySession],
       activeSessionId: null,
       refreshAll: vi.fn(async () => {}),
     });
@@ -779,26 +662,20 @@ describe('TopicComposer', () => {
     ).find((b) => b.textContent?.startsWith('resume')) as
       | HTMLButtonElement
       | undefined;
-    // Resume points at the older pty session, not the newer web one.
-    expect(resumeBtn?.textContent).toContain('claude tui (older)');
-    expect(resumeBtn?.textContent).not.toContain('web chat');
+    expect(resumeBtn?.textContent).toContain('terminal session');
 
     await act(async () => resumeBtn?.click());
     expect(onSelectSession).toHaveBeenCalledWith(scopedSessionKey(ptySession));
-    expect(onSelectSession).not.toHaveBeenCalledWith(
-      scopedSessionKey(webSession)
-    );
   });
 
-  it('keeps a launched chat in the chat shell while the sessions feed catches up', async () => {
+  it('selects an explicitly launched terminal while the sessions feed catches up', async () => {
     vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
       status: 'launched',
       topic: { id: 'topic:launched' },
       workContext: { id: 'wc:launched' },
       session: {
         id: 'session-late',
-        type: 'agent',
-        agent: 'claude',
+        type: 'terminal',
         mode: 'pty',
         repoPath: '/repo/relay-ide',
         cwd: '/repo/relay-ide',
@@ -838,7 +715,21 @@ describe('TopicComposer', () => {
     const form = container.querySelector(
       '.topic-composer__form'
     ) as HTMLFormElement;
-    act(() => setNativeValue(ta, 'start from repo context'));
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
+    act(() => {
+      setNativeValue(ta, 'start from repo context');
+      toggle.click();
+    });
+    const templateSelect = Array.from(
+      container.querySelectorAll('select')
+    ).find((select) =>
+      Array.from(select.options).some(
+        (option) => option.value === 'terminal-task'
+      )
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(templateSelect, 'terminal-task'));
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));
@@ -854,67 +745,26 @@ describe('TopicComposer', () => {
     expect(onSelectSession).toHaveBeenCalledWith('session-late');
   });
 
-  it('renders the archived-state tombstone for an active web session without repo routing (#1224)', async () => {
-    const launchedSession = {
-      id: 'session-chat-home',
-      type: 'agent',
-      agent: 'hermes',
-      mode: 'web',
-      repoPath: '/repo/relay-ide',
-      cwd: '/repo/relay-ide',
-      displayName: 'chat home session',
-      createdAt: '2026-07-03T00:00:00.000Z',
-      lastActivity: '2026-07-03T00:00:00.000Z',
-      idle: false,
-    } as const;
-    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
-      status: 'launched',
-      topic: { id: 'topic:chat-home' },
-      workContext: { id: 'wc:chat-home' },
-      session: launchedSession,
-    } as never);
+  it('falls back to the channel landing for a stale active-session key', () => {
     useSessionsStore.setState({
       sessions: [],
-      activeSessionId: null,
+      activeSessionId: 'retired-session-key',
       refreshAll: vi.fn(async () => {}),
     });
     useUiStore.setState({
-      activeRepoPath: '/repo/relay-ide',
-      forceOrgCockpit: true,
+      activeRepoPath: null,
+      forceOrgCockpit: false,
+      activeChannelId: null,
     });
-    const onSelectSession = vi.fn(() => {
-      useUiStore.getState().setActiveRepoPath('/repo/relay-ide');
-    });
+    const onSelectSession = vi.fn();
     renderChatHome(onSelectSession);
-    const ta = container.querySelector(
-      '.topic-composer__ta'
-    ) as HTMLTextAreaElement;
-    const form = container.querySelector(
-      '.topic-composer__form'
-    ) as HTMLFormElement;
-    act(() => setNativeValue(ta, 'start from chat home'));
-
-    await act(async () => {
-      form.dispatchEvent(new Event('submit', { bubbles: true }));
-    });
-
-    expect(useSessionsStore.getState().activeSessionId).toBe(
-      'session-chat-home'
-    );
-    expect(useUiStore.getState().activeRepoPath).toBeNull();
-    expect(useUiStore.getState().forceOrgCockpit).toBe(false);
-    expect(onSelectSession).not.toHaveBeenCalled();
-    // #1224: the legacy per-session web-chat surface (ChatView) is retired. An
-    // active `mode:'web'` row now resolves to the archived-state tombstone
-    // instead of the deleted chat surface — and the composer is replaced by it.
+    expect(container.querySelector('.topic-composer')).not.toBeNull();
     expect(
       container.querySelector('[aria-label="archived session"]')
-    ).not.toBeNull();
-    expect(container.querySelector('[data-testid="chat-view"]')).toBeNull();
-    expect(container.querySelector('.topic-composer')).toBeNull();
+    ).toBeNull();
   });
 
-  it('keeps the created room and provider launch mode when retrying after session launch failure', async () => {
+  it('keeps the created room when retrying a terminal launch failure', async () => {
     vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValueOnce({
       status: 'launch_failed',
       topic: { id: 'topic:retry' },
@@ -939,12 +789,21 @@ describe('TopicComposer', () => {
     const ta = container.querySelector(
       '.topic-composer__ta'
     ) as HTMLTextAreaElement;
-    // Default provider (claude) → pty session launch, which keeps the
-    // create-and-launch retry path this test covers. (Web-mode agent launches
-    // now route to a DM channel instead — see the #1166 DM tests above.)
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
     act(() => {
       setNativeValue(ta, 'retry this launch');
+      toggle.click();
     });
+    const templateSelect = Array.from(
+      container.querySelectorAll('select')
+    ).find((select) =>
+      Array.from(select.options).some(
+        (option) => option.value === 'terminal-task'
+      )
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(templateSelect, 'terminal-task'));
     const form = container.querySelector(
       '.topic-composer__form'
     ) as HTMLFormElement;
@@ -963,7 +822,7 @@ describe('TopicComposer', () => {
         topic: { id: 'topic:retry' },
         workContext: { id: 'wc:retry' },
       },
-      launch: expect.objectContaining({ mode: 'pty', agent: 'claude' }),
+      launch: expect.objectContaining({ type: 'terminal', mode: 'pty' }),
     });
   });
 });

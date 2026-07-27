@@ -1,6 +1,4 @@
-import {
-  DEFAULT_LOCAL_NODE_ID,
-} from '../../../shared/identity.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type {
   WorkContextActiveGroup,
   WorkContextSessionSummary,
@@ -11,7 +9,6 @@ import { scopedSessionKey } from './session-keys.js';
 export interface ActiveWorkMobileControlState {
   attachDisabledReason: string | null;
   smallInputDisabledReason: string | null;
-  destructiveDisabledReason: string;
   promptKind: 'approval' | 'input' | null;
   smallInputLabel: string;
   smallInputPlaceholder: string;
@@ -31,16 +28,16 @@ export function activeWorkAttentionPriority(
 ): number {
   const needsOperator = group.sessions.some(
     (session) =>
-      session.agentState === 'permission-prompt' ||
-      session.agentState === 'waiting-for-input'
+      session.activityState === 'permission-prompt' ||
+      session.activityState === 'waiting-for-input'
   );
   if (needsOperator) return 0;
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 1;
   if (group.node.status === 'stale' || group.staleReadModel) return 2;
-  if (group.sessions.some((session) => session.agentState === 'error'))
+  if (group.sessions.some((session) => session.activityState === 'error'))
     return 3;
-  if (group.sessions.some((session) => session.agentState === 'processing'))
+  if (group.sessions.some((session) => session.activityState === 'processing'))
     return 4;
   if (group.sessions.some((session) => session.live)) return 5;
   return 6;
@@ -53,8 +50,8 @@ export function activeWorkPrimarySession(
     group.sessions.find(
       (session) =>
         session.live &&
-        (session.agentState === 'permission-prompt' ||
-          session.agentState === 'waiting-for-input')
+        (session.activityState === 'permission-prompt' ||
+          session.activityState === 'waiting-for-input')
     ) ??
     group.sessions.find((session) => session.live) ??
     group.sessions[0]
@@ -84,8 +81,11 @@ function inverseTimestamp(value: string | undefined): string {
   return String(sortable).padStart(16, '0');
 }
 
-function activeWorkTargetSortKey(target: ActiveWorkNextAttentionTarget): string {
-  const lastActivity = target.session.lastActivity ?? target.session.associatedAt;
+function activeWorkTargetSortKey(
+  target: ActiveWorkNextAttentionTarget
+): string {
+  const lastActivity =
+    target.session.lastActivity ?? target.session.associatedAt;
   return [
     target.priority.toString().padStart(2, '0'),
     // Newer activity wins inside the same Active Work priority bucket.
@@ -123,20 +123,24 @@ export function activeWorkNextAttentionTarget(
 
 export function activeWorkStateLabel(group: WorkContextActiveGroup): string {
   if (
-    group.sessions.some((session) => session.agentState === 'permission-prompt')
+    group.sessions.some(
+      (session) => session.activityState === 'permission-prompt'
+    )
   )
     return 'needs approval';
   if (
-    group.sessions.some((session) => session.agentState === 'waiting-for-input')
+    group.sessions.some(
+      (session) => session.activityState === 'waiting-for-input'
+    )
   )
     return 'needs input';
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 'offline';
   if (group.node.status === 'stale') return 'stale';
   if (group.staleReadModel) return 'stale read model';
-  if (group.sessions.some((session) => session.agentState === 'error'))
+  if (group.sessions.some((session) => session.activityState === 'error'))
     return 'error';
-  if (group.sessions.some((session) => session.agentState === 'processing'))
+  if (group.sessions.some((session) => session.activityState === 'processing'))
     return 'running';
   if (group.sessions.some((session) => session.live)) return 'live';
   return 'inactive';
@@ -159,40 +163,23 @@ function liveControlDisabledReason(
   return null;
 }
 
-function freshControlDisabledReason(
-  session?: WorkContextSessionSummary
-): string | null {
-  if (!session) return 'no session selected';
-  if (session.controlFreshness === 'stale') return 'stale control state';
-  if (session.controlFreshness !== 'fresh') return 'unknown control state';
-  return null;
-}
-
 export function activeWorkMobileControlState(
   group: WorkContextActiveGroup,
   session?: WorkContextSessionSummary
 ): ActiveWorkMobileControlState {
   const liveReason = liveControlDisabledReason(group, session);
-  const freshReason = freshControlDisabledReason(session);
   const promptKind =
-    session?.agentState === 'permission-prompt'
+    session?.activityState === 'permission-prompt'
       ? 'approval'
-      : session?.agentState === 'waiting-for-input'
+      : session?.activityState === 'waiting-for-input'
         ? 'input'
         : null;
 
-  let smallInputDisabledReason = liveReason ?? freshReason;
-  if (!smallInputDisabledReason && session?.mode === 'web') {
-    smallInputDisabledReason = 'web session input is unsupported here';
-  }
+  const smallInputDisabledReason = liveReason;
 
   return {
     attachDisabledReason: liveReason,
     smallInputDisabledReason,
-    destructiveDisabledReason:
-      liveReason ??
-      freshReason ??
-      'requires explicit session:control:kill grant; no mobile allow decision is present',
     promptKind,
     smallInputLabel:
       promptKind === 'approval' ? 'reply to approval' : 'send input',

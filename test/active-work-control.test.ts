@@ -20,14 +20,11 @@ const session = (
   id: 's1',
   nodeId: DEFAULT_LOCAL_NODE_ID,
   tabKind: 'terminal',
-  type: 'agent',
+  type: 'terminal',
   mode: 'pty',
-  agent: 'codex',
   cwd: '/repo/relay-ide',
   status: 'active',
-  agentState: 'processing',
-  controlMode: 'agent-driven',
-  controlFreshness: 'fresh',
+  activityState: 'processing',
   relationship: 'primary',
   associatedAt: '2026-05-17T00:00:00.000Z',
   live: true,
@@ -54,12 +51,12 @@ describe('active work mobile control helpers', () => {
   it('prioritizes operator prompts before stale/offline/read-only states', () => {
     expect(
       activeWorkAttentionPriority(
-        group({ sessions: [session({ agentState: 'permission-prompt' })] })
+        group({ sessions: [session({ activityState: 'permission-prompt' })] })
       )
     ).toBe(0);
     expect(
       activeWorkStateLabel(
-        group({ sessions: [session({ agentState: 'waiting-for-input' })] })
+        group({ sessions: [session({ activityState: 'waiting-for-input' })] })
       )
     ).toBe('needs input');
     expect(
@@ -75,8 +72,8 @@ describe('active work mobile control helpers', () => {
   it('surfaces error before processing when a work group has mixed session states', () => {
     const mixed = group({
       sessions: [
-        session({ id: 'processing-session', agentState: 'processing' }),
-        session({ id: 'errored-session', agentState: 'error', live: false }),
+        session({ id: 'processing-session', activityState: 'processing' }),
+        session({ id: 'errored-session', activityState: 'error', live: false }),
       ],
     });
 
@@ -86,8 +83,8 @@ describe('active work mobile control helpers', () => {
 
   it('allows audited small input for fresh live local and routed pty sessions', () => {
     const state = activeWorkMobileControlState(
-      group({ sessions: [session({ agentState: 'permission-prompt' })] }),
-      session({ agentState: 'permission-prompt' })
+      group({ sessions: [session({ activityState: 'permission-prompt' })] }),
+      session({ activityState: 'permission-prompt' })
     );
 
     expect(state.smallInputDisabledReason).toBeNull();
@@ -108,9 +105,7 @@ describe('active work mobile control helpers', () => {
       id: 'remote-terminal-584',
       nodeId: 'mac-node',
       type: 'terminal',
-      agent: 'claude',
-      controlMode: 'human-driven',
-      agentState: 'idle',
+      activityState: 'idle',
       cwd: '/Users/ebi/project',
       globalSessionId: 'mac-node:remote-terminal-584',
     });
@@ -143,20 +138,15 @@ describe('active work mobile control helpers', () => {
     expect(lastKnown.attachDisabledReason).toBe('last-known session only');
   });
 
-  it('does not enable destructive kill without an explicit mobile allow decision', () => {
-    const state = activeWorkMobileControlState(group(), session());
-    expect(state.destructiveDisabledReason).toContain('session:control:kill');
-  });
-
-  it('keeps unknown control state disabled but scopes routed attach/input keys', () => {
+  it('scopes routed attach/input keys without ownership-mode state', () => {
     const state = activeWorkMobileControlState(
       group({
         node: { nodeId: 'remote-a', status: 'online', kind: 'remote' },
-        sessions: [session({ nodeId: 'remote-a', controlFreshness: 'unknown' })],
+        sessions: [session({ nodeId: 'remote-a' })],
       }),
-      session({ nodeId: 'remote-a', controlFreshness: 'unknown' })
+      session({ nodeId: 'remote-a' })
     );
-    expect(state.smallInputDisabledReason).toBe('unknown control state');
+    expect(state.smallInputDisabledReason).toBeNull();
     expect(
       activeWorkSessionActivationKey(
         session({ id: 'remote-session-1', nodeId: 'remote-a' })
@@ -184,13 +174,13 @@ describe('active work mobile control helpers', () => {
   it('selects the same live primary session the cockpit would attach to', () => {
     const prompt = session({
       id: 'needs-input',
-      agentState: 'waiting-for-input',
+      activityState: 'waiting-for-input',
       repoPath: '/repo/relay-ide',
       lastActivity: '2026-05-17T00:02:00.000Z',
     });
     const liveProcessing = session({
       id: 'processing-session',
-      agentState: 'processing',
+      activityState: 'processing',
       lastActivity: '2026-05-17T00:03:00.000Z',
     });
     const work = group({ sessions: [liveProcessing, prompt] });
@@ -225,7 +215,7 @@ describe('active work mobile control helpers', () => {
       sessions: [
         session({
           id: 'running-session',
-          agentState: 'processing',
+          activityState: 'processing',
           lastActivity: '2026-05-17T00:01:00.000Z',
         }),
       ],
@@ -235,7 +225,7 @@ describe('active work mobile control helpers', () => {
       sessions: [
         session({
           id: 'error-session',
-          agentState: 'error',
+          activityState: 'error',
           lastActivity: '2026-05-17T00:00:00.000Z',
         }),
       ],
@@ -260,7 +250,7 @@ describe('active work mobile control helpers', () => {
       sessions: [
         session({
           id: 'older-session',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           lastActivity: '2026-05-17T00:01:00.000Z',
         }),
       ],
@@ -270,7 +260,7 @@ describe('active work mobile control helpers', () => {
       sessions: [
         session({
           id: 'newer-session',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           lastActivity: '2026-05-17T00:02:00.000Z',
         }),
       ],
@@ -280,7 +270,7 @@ describe('active work mobile control helpers', () => {
       sessions: [
         session({
           id: 'same-time-a',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           lastActivity: '2026-05-17T00:02:00.000Z',
         }),
       ],

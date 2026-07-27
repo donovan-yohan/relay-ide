@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { HandoffPlan, HandoffRun } from '../../../../shared/handoff.js';
+import type { HandoffPlan } from '../../../../shared/handoff.js';
 import {
   DEFAULT_HANDOFF_FIXTURE_KEY,
   HANDOFF_CANONICAL_COPY,
@@ -11,7 +11,6 @@ import {
 } from '../../lib/handoff-fixtures.js';
 import {
   buildHandoffDraft,
-  createHandoffFromPlan,
   handoffStatusFromError,
   planHandoff,
   type HandoffApiErrorView,
@@ -34,10 +33,7 @@ interface PlanView {
   plan: HandoffPlan;
   status: HandoffLiveStatus | HandoffPlanFixture['status'];
   statusCopy: string;
-  confirmLabel: string;
-  confirmDisabledReason: string | null;
   sourceSessionOutcome: string;
-  agentContinuation: { mode: string; confidence: string; summary: string };
   showFixtures: boolean;
 }
 
@@ -48,7 +44,9 @@ function fileSizeLabel(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} mb`;
 }
 
-function statusLabel(status: HandoffLiveStatus | HandoffPlanFixture['status']): string {
+function statusLabel(
+  status: HandoffLiveStatus | HandoffPlanFixture['status']
+): string {
   return status.replaceAll('-', ' ');
 }
 
@@ -127,57 +125,35 @@ function conflictsFromError(error: HandoffApiErrorView) {
   return Array.isArray(conflicts) ? conflicts.filter(isRecord) : [];
 }
 
-function runFromError(error: HandoffApiErrorView): HandoffRun | null {
-  const run = error.details?.run;
-  return isRecord(run) ? (run as unknown as HandoffRun) : null;
-}
-
 function fixtureView(fixture: HandoffPlanFixture): PlanView {
   return {
     plan: fixture.plan,
     status: fixture.status,
     statusCopy: fixture.statusCopy,
-    confirmLabel: fixture.confirmLabel,
-    confirmDisabledReason: fixture.confirmDisabledReason,
     sourceSessionOutcome: fixture.sourceSessionOutcome,
-    agentContinuation: fixture.agentContinuation,
     showFixtures: true,
   };
 }
 
-function liveView(plan: HandoffPlan, run: HandoffRun | null): PlanView {
+function liveView(plan: HandoffPlan): PlanView {
   const hasConflicts = plan.conflicts.length > 0;
-  const needsGrants = plan.requiredGrants.some((grant) => grant.decision !== 'allow');
-  const status: HandoffLiveStatus = run
-    ? 'created'
-    : hasConflicts
-      ? 'blocked'
-      : needsGrants
-        ? 'needs-grants'
-        : 'ready';
-  const confirmDisabledReason = hasConflicts
-    ? 'blocked: resolve plan conflicts before starting a hub-side session'
-    : run
-      ? `run ${run.id} is ${run.state}`
-      : null;
+  const needsGrants = plan.requiredGrants.some(
+    (grant) => grant.decision !== 'allow'
+  );
+  const status: HandoffLiveStatus = hasConflicts
+    ? 'blocked'
+    : needsGrants
+      ? 'needs-grants'
+      : 'ready';
   return {
     plan,
     status,
-    statusCopy: run
-      ? `handoff API returned run ${run.id} (${run.state}); raw logs and transcripts are not exposed`
-      : hasConflicts
-        ? 'live API returned conflicts; cold handoff is review-only until resolved'
-        : needsGrants
-          ? 'live API returned a valid plan; confirm explicitly allows the listed grants for this cold snapshot'
-          : 'live API returned a clean plan; ready to request a hub-side continuation',
-    confirmLabel: run ? 'handoff requested' : 'start on hub',
-    confirmDisabledReason,
+    statusCopy: hasConflicts
+      ? 'live API returned conflicts; the plan is review-only'
+      : needsGrants
+        ? 'live API returned a valid read-only plan with required transfer grants'
+        : 'live API returned a clean read-only plan',
     sourceSessionOutcome: plan.source.disposition.replaceAll('-', ' '),
-    agentContinuation: {
-      mode: plan.launchPreview.runtime.kind,
-      confidence: 'server planned',
-      summary: plan.launchPreview.summary,
-    },
     showFixtures: false,
   };
 }
@@ -198,16 +174,24 @@ function PlanDetails({ view }: { view: PlanView }) {
           <KeyValue label="path" value={routeLabel} />
           <KeyValue label="workcontext" value={plan.route.workContextId} />
           <KeyValue label="source cwd" value={plan.source.cwd} />
-          <KeyValue label="destination path" value={plan.destinationProposal.cwd} />
+          <KeyValue
+            label="destination path"
+            value={plan.destinationProposal.cwd}
+          />
         </div>
       </Section>
 
       <Section title="transfer mode">
         <div className="handoff-plan-grid">
-          <KeyValue label="mode" value={fixtureTransferModeLabel(plan.transferMode)} />
+          <KeyValue
+            label="mode"
+            value={fixtureTransferModeLabel(plan.transferMode)}
+          />
           <KeyValue label="payload" value={transferSummary} />
-          <KeyValue label="destination action" value={plan.destinationProposal.action ?? 'use cwd'} />
-          <KeyValue label="launch runtime" value={plan.launchPreview.runtime.providerId ?? plan.launchPreview.runtime.kind} />
+          <KeyValue
+            label="destination action"
+            value={plan.destinationProposal.action ?? 'use cwd'}
+          />
         </div>
       </Section>
 
@@ -261,26 +245,17 @@ function PlanDetails({ view }: { view: PlanView }) {
       <Section title="source session outcome">
         <p className="handoff-plan-copy">{view.sourceSessionOutcome}</p>
       </Section>
-
-      <Section title="launch summary">
-        <p className="handoff-plan-copy">{plan.launchPreview.summary}</p>
-      </Section>
-
-      <Section title="agent continuation">
-        <div className="handoff-plan-grid">
-          <KeyValue label="mode" value={view.agentContinuation.mode.replaceAll('-', ' ')} />
-          <KeyValue label="confidence" value={view.agentContinuation.confidence} />
-        </div>
-        <p className="handoff-plan-copy">{view.agentContinuation.summary}</p>
-      </Section>
     </>
   );
 }
 
-function useLiveHandoffPlan(open: boolean, enabled: boolean, activeSession: SessionSummary | null) {
+function useLiveHandoffPlan(
+  open: boolean,
+  enabled: boolean,
+  activeSession: SessionSummary | null
+) {
   const [draft, setDraft] = useState<HandoffDraft | null>(null);
   const [plan, setPlan] = useState<HandoffPlan | null>(null);
-  const [run, setRun] = useState<HandoffRun | null>(null);
   const [status, setStatus] = useState<HandoffLiveStatus>('idle');
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [error, setError] = useState<HandoffApiErrorView | null>(null);
@@ -290,7 +265,6 @@ function useLiveHandoffPlan(open: boolean, enabled: boolean, activeSession: Sess
     const result = buildHandoffDraft(activeSession);
     setDraft(result.draft);
     setPlan(null);
-    setRun(null);
     setError(null);
     setEmptyReason(result.emptyReason ?? null);
     if (!result.draft) {
@@ -321,23 +295,7 @@ function useLiveHandoffPlan(open: boolean, enabled: boolean, activeSession: Sess
     };
   }, [activeSession, enabled, open]);
 
-  const confirm = async () => {
-    if (!draft || !plan) return;
-    setStatus('creating');
-    setError(null);
-    try {
-      const response = await createHandoffFromPlan(draft, plan);
-      setRun(response.run);
-      setStatus('created');
-    } catch (caught) {
-      const apiError = caught as HandoffApiErrorView;
-      setError(apiError);
-      setRun(runFromError(apiError));
-      setStatus(handoffStatusFromError(apiError));
-    }
-  };
-
-  return { draft, plan, run, status, emptyReason, error, confirm };
+  return { draft, plan, status, emptyReason, error };
 }
 
 function LiveFallbackBody({
@@ -377,15 +335,23 @@ function LiveFallbackBody({
         <div className="handoff-plan-grid">
           <KeyValue label="code" value={error.code} />
           <KeyValue label="retryable" value={error.retryable ? 'yes' : 'no'} />
-          {error.reasonCode && <KeyValue label="reason" value={error.reasonCode} />}
+          {error.reasonCode && (
+            <KeyValue label="reason" value={error.reasonCode} />
+          )}
           {error.status && <KeyValue label="http" value={error.status} />}
         </div>
         {conflicts.length ? (
           <ul className="handoff-plan-list handoff-plan-list--danger">
             {conflicts.map((item, index) => (
               <li key={index}>
-                <span>{String(item.code ?? 'conflict').toLowerCase().replaceAll('_', ' ')}</span>
-                <strong>{String(item.message ?? 'typed handoff conflict')}</strong>
+                <span>
+                  {String(item.code ?? 'conflict')
+                    .toLowerCase()
+                    .replaceAll('_', ' ')}
+                </span>
+                <strong>
+                  {String(item.message ?? 'typed handoff conflict')}
+                </strong>
               </li>
             ))}
           </ul>
@@ -397,36 +363,13 @@ function LiveFallbackBody({
   );
 }
 
-function HandoffFooter({
-  status,
-  transferSummary,
-  confirmDisabledReason,
-  canConfirm,
-  confirmLabel,
-  onConfirm,
-}: {
-  status: HandoffLiveStatus;
-  transferSummary: string;
-  confirmDisabledReason: string;
-  canConfirm: boolean;
-  confirmLabel: string;
-  onConfirm: () => void;
-}) {
+function HandoffFooter({ transferSummary }: { transferSummary: string }) {
   return (
     <footer className="handoff-plan-footer">
       <div>
-        <span>{status === 'creating' ? 'requesting handoff run' : transferSummary}</span>
-        <strong>{canConfirm ? 'ready: explicit grants will be confirmed for this plan only' : confirmDisabledReason}</strong>
+        <span>{transferSummary}</span>
+        <strong>read-only plan; no destination runtime is launched</strong>
       </div>
-      <TuiButton
-        size="sm"
-        variant="primary"
-        disabled={!canConfirm}
-        title={canConfirm ? 'start hub-side continuation from this cold snapshot' : confirmDisabledReason}
-        onClick={onConfirm}
-      >
-        {status === 'creating' ? 'starting...' : confirmLabel}
-      </TuiButton>
     </footer>
   );
 }
@@ -439,40 +382,44 @@ export function HandoffPlanDialog({
   activeSession = null,
 }: HandoffPlanDialogProps) {
   const effectiveMode = mode ?? (activeSession ? 'live' : 'fixture');
-  const live = useLiveHandoffPlan(open, effectiveMode === 'live', activeSession);
-  const [fixtureKey, setFixtureKey] = useState<HandoffFixtureKey>(initialFixture);
+  const live = useLiveHandoffPlan(
+    open,
+    effectiveMode === 'live',
+    activeSession
+  );
+  const [fixtureKey, setFixtureKey] =
+    useState<HandoffFixtureKey>(initialFixture);
   const fixture = getHandoffPlanFixture(fixtureKey);
   const view = useMemo(() => {
     if (effectiveMode === 'fixture') return fixtureView(fixture);
-    return live.plan ? liveView(live.plan, live.run) : null;
-  }, [effectiveMode, fixture, live.plan, live.run]);
+    return live.plan ? liveView(live.plan) : null;
+  }, [effectiveMode, fixture, live.plan]);
 
   const transferSummary = view
     ? `${view.plan.fileCount} files · ${fileSizeLabel(view.plan.byteCount)} · ${fixtureTransferModeLabel(view.plan.transferMode)}`
     : 'no plan loaded';
-  const confirmDisabledReason =
-    view?.confirmDisabledReason ??
-    live.emptyReason ??
-    (live.error ? apiErrorMessage(live.error) : 'handoff plan unavailable');
-  const canConfirm =
-    effectiveMode === 'live' &&
-    !!live.draft &&
-    !!live.plan &&
-    !!view &&
-    !view.confirmDisabledReason &&
-    live.status !== 'creating';
-
   if (!open) return null;
 
   return (
     <div className="handoff-plan-backdrop" role="presentation">
-      <section className="handoff-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="handoff-plan-title">
+      <section
+        className="handoff-plan-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="handoff-plan-title"
+      >
         <header className="handoff-plan-header">
           <div>
-            <p className="handoff-plan-eyebrow">{effectiveMode === 'live' ? 'live api dry run' : 'fixture dry run'}</p>
+            <p className="handoff-plan-eyebrow">
+              {effectiveMode === 'live'
+                ? 'live api dry run'
+                : 'fixture dry run'}
+            </p>
             <h2 id="handoff-plan-title">handoff plan</h2>
           </div>
-          <TuiButton size="sm" variant="ghost" onClick={onClose}>close</TuiButton>
+          <TuiButton size="sm" variant="ghost" onClick={onClose}>
+            close
+          </TuiButton>
         </header>
 
         <p className="handoff-plan-copy">{HANDOFF_CANONICAL_COPY}</p>
@@ -480,7 +427,13 @@ export function HandoffPlanDialog({
         {view?.showFixtures && (
           <div className="handoff-plan-fixtures" aria-label="fixture states">
             {HANDOFF_FIXTURE_ORDER.map((key) => (
-              <button key={key} type="button" className="handoff-plan-fixture" data-active={key === fixtureKey} onClick={() => setFixtureKey(key)}>
+              <button
+                key={key}
+                type="button"
+                className="handoff-plan-fixture"
+                data-active={key === fixtureKey}
+                onClick={() => setFixtureKey(key)}
+              >
                 {key.replaceAll('-', ' ')}
               </button>
             ))}
@@ -488,17 +441,18 @@ export function HandoffPlanDialog({
         )}
 
         <div className="handoff-plan-body">
-          {view ? <PlanDetails view={view} /> : <LiveFallbackBody status={live.status} emptyReason={live.emptyReason} error={live.error} />}
+          {view ? (
+            <PlanDetails view={view} />
+          ) : (
+            <LiveFallbackBody
+              status={live.status}
+              emptyReason={live.emptyReason}
+              error={live.error}
+            />
+          )}
         </div>
 
-        <HandoffFooter
-          status={live.status}
-          transferSummary={transferSummary}
-          confirmDisabledReason={confirmDisabledReason}
-          canConfirm={canConfirm}
-          confirmLabel={view?.confirmLabel ?? 'start on hub'}
-          onConfirm={live.confirm}
-        />
+        <HandoffFooter transferSummary={transferSummary} />
       </section>
     </div>
   );

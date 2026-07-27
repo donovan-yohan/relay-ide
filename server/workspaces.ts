@@ -1161,12 +1161,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const wsOverrides = config.repoSettings?.[resolved] ?? {};
     const effective = getRepoSettings(config, resolved);
     const overridden: string[] = [];
-    for (const key of [
-      'defaultFramework',
-      'defaultContinue',
-      'defaultYolo',
-      'portVariables',
-    ] as const) {
+    for (const key of ['defaultFramework', 'portVariables'] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
     }
     return { settings: effective, overridden };

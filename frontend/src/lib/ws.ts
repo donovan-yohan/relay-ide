@@ -130,7 +130,7 @@ export type EventMessage =
       channelId: string;
       agentId: string;
       status: 'spawning' | 'thinking' | 'streaming' | 'waiting' | 'idle';
-      sessionId: string | null;
+      runtimeId: string | null;
     }
   | ({
       type: 'session-durability-changed';

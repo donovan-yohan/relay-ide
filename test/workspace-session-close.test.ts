@@ -94,7 +94,7 @@ describe('resolveWorkspaceSessionCloseTarget', () => {
       {
         kind: 'session',
         sessionId: 'local-session-1',
-        sessionType: 'agent',
+        sessionType: 'terminal',
       },
     ];
 
@@ -119,7 +119,6 @@ function makeRemoteSession(): SessionSummary {
   return {
     id: 'remote-session-1',
     type: 'terminal',
-    agent: 'terminal',
     repoName: 'relay-ide',
     repoPath: '/repo',
     worktreePath: null,

@@ -5,7 +5,6 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
-import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
 import {
   ConflictError,
@@ -17,21 +16,20 @@ import {
   executeSessionRenameAction,
 } from '../lib/actions/session-lifecycle.js';
 import {
-  executeWorkspaceLaunchAction,
   executeWorktreeArchiveAction,
   executeWorktreeCreateAction,
   executeWorktreeDeleteAction,
 } from '../lib/actions/workspace-lifecycle.js';
-import { executeBranchOpenSessionAction } from '../lib/actions/start-work-lifecycle.js';
 import {
   derivePrAction,
   buildPrStateInput,
   getActionPrompt,
 } from '../lib/pr-state.js';
 import {
-  createAgentSession,
+  createTerminalSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
+import { openAgentChannel } from '../lib/agent-channels.js';
 import {
   resolveSessionByKey,
   resolveSessionCloseTarget,
@@ -52,18 +50,6 @@ function focusActiveTerminalSoon(): void {
     return;
   }
   window.setTimeout(focus, 0);
-}
-
-// The composite branches.openSession executor returns
-// RelayCliGatewayEnvelope<unknown>; success data projects to
-// workflowCommandOutputSchema with a required `session.id`. Narrow it
-// defensively rather than asserting the wire shape.
-function sessionIdFromWorkflowData(data: unknown): string | undefined {
-  if (typeof data !== 'object' || data === null) return undefined;
-  const session = (data as { session?: unknown }).session;
-  if (typeof session !== 'object' || session === null) return undefined;
-  const id = (session as { id?: unknown }).id;
-  return typeof id === 'string' ? id : undefined;
 }
 
 export interface UseSessionHandlersParams {
@@ -174,35 +160,14 @@ export function useSessionHandlers({
   );
 
   const handleQuickAgent = useCallback(async () => {
-    const { currentActiveWorkspace, currentWorktreePath } =
-      getCurrentSessionContext();
-    if (!currentActiveWorkspace) return;
-    const { cols, rows } = estimateTerminalDimensions(
-      useUiStore.getState().terminalFontSize
-    );
-    const { session, error } = await createAgentSession({
-      repoPath: currentActiveWorkspace.path,
-      worktreePath: currentWorktreePath,
-      type: 'agent',
-      cols,
-      rows,
-    });
-    if (session?.id && !(error instanceof ConflictError)) {
-      useSessionsStore
-        .getState()
-        .initSessionNotification(
-          session.id,
-          useConfigStore.getState().defaultNotifications
-        );
-    }
-    if (error && !(error instanceof ConflictError)) {
-      logger.error('Failed to create agent session:', error);
+    try {
+      await openAgentChannel();
+    } catch (error) {
+      logger.error('Failed to open agent chat:', error);
       useToastStore
         .getState()
         .showToast(
-          error instanceof Error
-            ? error.message
-            : 'failed to create agent session'
+          error instanceof Error ? error.message : 'failed to open agent chat'
         );
     }
   }, []);
@@ -212,35 +177,14 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions(
-        useUiStore.getState().terminalFontSize
-      );
-      const { session, error } = await createAgentSession({
-        repoPath,
-        worktreePath: null,
-        type: 'agent',
-        cols,
-        rows,
-      });
-      if (session?.id) {
-        useUiStore.getState().setActiveRepoPath(repoPath);
-        if (!(error instanceof ConflictError)) {
-          useSessionsStore
-            .getState()
-            .initSessionNotification(
-              session.id,
-              useConfigStore.getState().defaultNotifications
-            );
-        }
-        useUiStore.getState().closeSidebar();
-      }
-      if (error && !(error instanceof ConflictError)) {
-        useToastStore
-          .getState()
-          .showToast(
-            error instanceof Error ? error.message : 'failed to create session'
-          );
-      }
+      useUiStore.getState().setActiveRepoPath(repoPath);
+      await openAgentChannel();
+    } catch (error) {
+      useToastStore
+        .getState()
+        .showToast(
+          error instanceof Error ? error.message : 'failed to open chat'
+        );
     } finally {
       useSessionsStore.getState().clearLoading(loadingKey);
     }
@@ -250,10 +194,9 @@ export function useSessionHandlers({
     const { currentActiveWorkspace, currentWorktreePath } =
       getCurrentSessionContext();
     if (!currentActiveWorkspace) return;
-    const { session, error } = await createAgentSession({
+    const { session, error } = await createTerminalSession({
       repoPath: currentActiveWorkspace.path,
       worktreePath: currentWorktreePath,
-      type: 'terminal',
     });
     if (session?.id && !(error instanceof ConflictError)) {
       useSessionsStore
@@ -320,9 +263,6 @@ export function useSessionHandlers({
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
       try {
-        // #870: route the createWorktree step through the stable worktrees.create
-        // descriptor/executor. The createAgentSession tail below stays the #867
-        // sessions.create path. Inspect the envelope rather than fire-and-forget.
         const worktreeResult = await executeWorktreeCreateAction({
           repoPath: workspace.path,
         });
@@ -330,29 +270,12 @@ export function useSessionHandlers({
           throw new Error(worktreeResult.error.message);
         }
         const { branchName, worktreePath } = worktreeResult.data;
-        const { session, error } = await createAgentSession({
-          repoPath: workspace.path,
-          worktreePath,
-          type: 'agent',
-          branchName,
-          needsBranchRename: true,
-          newWorktree: true,
-        });
-        if (error && !(error instanceof ConflictError)) throw error;
-        if (!session) throw new Error('failed to create worktree session');
         useUiStore.getState().setActiveRepoPath(workspace.path);
-        if (!(error instanceof ConflictError)) {
-          useSessionsStore
-            .getState()
-            .initSessionNotification(
-              session.id,
-              useConfigStore.getState().defaultNotifications
-            );
-        }
-        useUiStore.getState().closeSidebar();
-        focusActiveTerminalSoon();
+        await openAgentChannel({
+          prompt: `Continue work on branch ${branchName} in ${worktreePath}.`,
+        });
       } catch (e) {
-        logger.error('Failed to create worktree session:', e);
+        logger.error('Failed to create worktree chat:', e);
         useToastStore
           .getState()
           .showToast(
@@ -376,37 +299,15 @@ export function useSessionHandlers({
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
       try {
-        // #870: route launch through the stable workspaces.launch descriptor/
-        // executor. Errors surface on the envelope (!ok) rather than as a throw,
-        // so the existing alert path keys off result.error here.
-        const launchResult = await executeWorkspaceLaunchAction({
-          workspaceId,
-        });
-        if (!launchResult.ok) {
-          logger.error(
-            '[workspace-session] launch failed:',
-            launchResult.error
-          );
-          alert(`workspace launch failed: ${launchResult.error.message}`);
-          return;
-        }
-        const result = launchResult.data;
-        await useSessionsStore.getState().refreshAll();
-        useSessionsStore.getState().setActiveSessionId(result.id);
-        useUiStore.getState().setActiveRepoPath(result.repoPath ?? null);
         useUiStore.getState().setActiveWorkspaceId(workspaceId);
-        useUiStore.getState().closeSidebar();
-
-        if (result.warnings?.length) {
-          const msgs = result.warnings
-            .map(
-              (w: { repoPath: string; error: string }) =>
-                `  ${w.repoPath}: ${w.error}`
-            )
-            .join('\n');
-          logger.warn('[workspace-session] partial failure:', result.warnings);
-          alert(`workspace launched with warnings:\n${msgs}`);
-        }
+        await openAgentChannel({ workspaceId });
+      } catch (error) {
+        logger.error('[workspace-chat] open failed:', error);
+        useToastStore
+          .getState()
+          .showToast(
+            error instanceof Error ? error.message : 'failed to open chat'
+          );
       } finally {
         useSessionsStore.getState().clearLoading(loadingKey);
       }
@@ -416,24 +317,7 @@ export function useSessionHandlers({
 
   const handleFixConflicts = useCallback(async (pr: PullRequest) => {
     const repoPath = pr.repoPath ?? useUiStore.getState().activeRepoPath;
-    const currentActiveWorkspace = repoPath
-      ? useSessionsStore.getState().repos.find((w) => w.path === repoPath)
-      : undefined;
-    if (!currentActiveWorkspace || !repoPath) return;
-
-    // Store-state reuse lookup stays the fast path: resolve an existing
-    // worktree/session for the PR head ref so the executor reuses it rather
-    // than creating a new one.
-    const currentSessions = useSessionsStore.getState().sessions;
-    const currentWorktrees = useSessionsStore.getState().worktrees;
-    const existingSession = currentSessions.find(
-      (s) => s.branchName === pr.headRefName && s.repoPath === repoPath
-    );
-    const existingWorktree = currentWorktrees.find(
-      (w) => w.branchName === pr.headRefName && w.repoPath === repoPath
-    );
-    const existingWorktreePath =
-      existingSession?.worktreePath ?? existingWorktree?.path ?? undefined;
+    if (!repoPath) return;
 
     let conflictPrompt = `Merge the branch "${pr.baseRefName}" into this branch and resolve all merge conflicts. Use \`git merge ${pr.baseRefName}\` and fix any conflicts in the working tree. After resolving, verify the build passes.`;
     try {
@@ -446,195 +330,61 @@ export function useSessionHandlers({
     } catch {
       // fall through with default prompt
     }
-
-    // #871/#876: route through the composite branches.openSession executor.
-    // The prompt rides prompt:{mode:'initial-prompt'} as a typed one-shot
-    // delivery instead of the old setTimeout(sendPtyData) anti-pattern.
-    const result = await executeBranchOpenSessionAction({
-      repo: { repoPath },
-      pr: { head: pr.headRefName, base: pr.baseRefName },
-      branch: { name: pr.headRefName },
-      worktree: { mode: 'create-if-missing' },
-      ...(existingWorktreePath ? { existingWorktreePath } : {}),
-      prompt: { mode: 'initial-prompt', prompt: conflictPrompt },
-    });
-
-    if (!result.ok) {
-      // SESSION_CONFLICT carries details.sessionId — focus the existing session
-      // (the prior ConflictError focus-existing behavior).
-      const conflictSessionId =
-        result.error.code === 'SESSION_CONFLICT' &&
-        typeof result.error.details?.sessionId === 'string'
-          ? result.error.details.sessionId
-          : undefined;
-      if (conflictSessionId) {
-        useUiStore.getState().setActiveRepoPath(repoPath);
-        useSessionsStore.getState().setActiveSessionId(conflictSessionId);
-        useUiStore.getState().closeSidebar();
-        return;
-      }
-      logger.error('Failed to start conflict resolution:', result.error);
+    try {
+      useUiStore.getState().setActiveRepoPath(repoPath);
+      await openAgentChannel({ prompt: conflictPrompt });
+    } catch (error) {
+      logger.error('Failed to open conflict-resolution chat:', error);
       useToastStore
         .getState()
         .showToast(
-          result.error.message || 'failed to start conflict resolution'
-        );
-      return;
-    }
-
-    const sessionId = sessionIdFromWorkflowData(result.data);
-    await useSessionsStore.getState().refreshAll();
-    if (sessionId) {
-      useSessionsStore.getState().setActiveSessionId(sessionId);
-    }
-    useUiStore.getState().setActiveRepoPath(repoPath);
-    if (sessionId) {
-      useSessionsStore
-        .getState()
-        .initSessionNotification(
-          sessionId,
-          useConfigStore.getState().defaultNotifications
+          error instanceof Error
+            ? error.message
+            : 'failed to open conflict-resolution chat'
         );
     }
-    useUiStore.getState().closeSidebar();
   }, []);
 
   const handleOpenPrBranch = useCallback(
     async (pr: PullRequest, prPrompt?: string) => {
       const repoPath = pr.repoPath ?? useUiStore.getState().activeRepoPath;
-      const currentActiveWorkspace = repoPath
-        ? useSessionsStore.getState().repos.find((w) => w.path === repoPath)
-        : undefined;
-      if (!currentActiveWorkspace || !repoPath) return;
-
-      // Store-state reuse lookup stays the fast path (PR head ref).
-      const currentSessions = useSessionsStore.getState().sessions;
-      const currentWorktrees = useSessionsStore.getState().worktrees;
-      const existingSession = currentSessions.find(
-        (s) => s.branchName === pr.headRefName && s.repoPath === repoPath
-      );
-      const existingWorktree = currentWorktrees.find(
-        (w) => w.branchName === pr.headRefName && w.repoPath === repoPath
-      );
-      const existingWorktreePath =
-        existingSession?.worktreePath ?? existingWorktree?.path ?? undefined;
-
-      // #871/#876: route through the composite branches.openSession executor.
-      // The optional PR prompt rides prompt:{mode:'initial-prompt'} as a typed
-      // one-shot delivery instead of the old setTimeout(sendPtyData) anti-pattern.
-      const result = await executeBranchOpenSessionAction({
-        repo: { repoPath },
-        pr: { head: pr.headRefName, base: pr.baseRefName },
-        branch: { name: pr.headRefName },
-        worktree: { mode: 'create-if-missing' },
-        ...(existingWorktreePath ? { existingWorktreePath } : {}),
-        ...(prPrompt
-          ? { prompt: { mode: 'initial-prompt', prompt: prPrompt } }
-          : {}),
-      });
-
-      if (!result.ok) {
-        const conflictSessionId =
-          result.error.code === 'SESSION_CONFLICT' &&
-          typeof result.error.details?.sessionId === 'string'
-            ? result.error.details.sessionId
-            : undefined;
-        if (conflictSessionId) {
-          useUiStore.getState().setActiveRepoPath(repoPath);
-          useSessionsStore.getState().setActiveSessionId(conflictSessionId);
-          useUiStore.getState().closeSidebar();
-          return;
-        }
-        logger.error('Failed to open PR branch session:', result.error);
+      if (!repoPath) return;
+      const prompt =
+        prPrompt?.trim() ||
+        `Open pull request #${pr.number} on branch ${pr.headRefName} and review its current state.`;
+      try {
+        useUiStore.getState().setActiveRepoPath(repoPath);
+        await openAgentChannel({ prompt });
+      } catch (error) {
+        logger.error('Failed to open PR chat:', error);
         useToastStore
           .getState()
           .showToast(
-            result.error.message || 'failed to open session on this branch'
-          );
-        return;
-      }
-
-      const sessionId = sessionIdFromWorkflowData(result.data);
-      await useSessionsStore.getState().refreshAll();
-      if (sessionId) {
-        useSessionsStore.getState().setActiveSessionId(sessionId);
-      }
-      useUiStore.getState().setActiveRepoPath(repoPath);
-      if (sessionId) {
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            sessionId,
-            useConfigStore.getState().defaultNotifications
+            error instanceof Error ? error.message : 'failed to open PR chat'
           );
       }
-      useUiStore.getState().closeSidebar();
     },
     []
   );
 
   const handleOpenBranchSession = useCallback(
     async (branchName: string, repoPath: string, branchPrompt?: string) => {
-      // Store-state reuse lookup stays the fast path (named branch).
-      const currentSessions = useSessionsStore.getState().sessions;
-      const currentWorktrees = useSessionsStore.getState().worktrees;
-      const existingSession = currentSessions.find(
-        (s) => s.branchName === branchName && s.repoPath === repoPath
-      );
-      const existingWorktree = currentWorktrees.find(
-        (w) => w.branchName === branchName && w.repoPath === repoPath
-      );
-      const existingWorktreePath =
-        existingSession?.worktreePath ?? existingWorktree?.path ?? undefined;
-
-      // #871/#876: route through the composite branches.openSession executor
-      // (branch target — no PR). The optional branch prompt rides
-      // prompt:{mode:'initial-prompt'} as a typed one-shot delivery instead of
-      // the old setTimeout(sendPtyData) anti-pattern.
-      const result = await executeBranchOpenSessionAction({
-        repo: { repoPath },
-        branch: { name: branchName },
-        worktree: { mode: 'create-if-missing' },
-        ...(existingWorktreePath ? { existingWorktreePath } : {}),
-        ...(branchPrompt
-          ? { prompt: { mode: 'initial-prompt', prompt: branchPrompt } }
-          : {}),
-      });
-
-      if (!result.ok) {
-        const conflictSessionId =
-          result.error.code === 'SESSION_CONFLICT' &&
-          typeof result.error.details?.sessionId === 'string'
-            ? result.error.details.sessionId
-            : undefined;
-        if (conflictSessionId) {
-          useUiStore.getState().setActiveRepoPath(repoPath);
-          useSessionsStore.getState().setActiveSessionId(conflictSessionId);
-          useUiStore.getState().closeSidebar();
-          return;
-        }
-        logger.error('Failed to open branch session:', result.error);
+      const prompt =
+        branchPrompt?.trim() ||
+        `Open branch ${branchName} in ${repoPath} and inspect its current state.`;
+      try {
+        useUiStore.getState().setActiveRepoPath(repoPath);
+        await openAgentChannel({ prompt });
+      } catch (error) {
+        logger.error('Failed to open branch chat:', error);
         useToastStore
           .getState()
-          .showToast(result.error.message || 'failed to open branch session');
-        return;
-      }
-
-      const sessionId = sessionIdFromWorkflowData(result.data);
-      await useSessionsStore.getState().refreshAll();
-      if (sessionId) {
-        useSessionsStore.getState().setActiveSessionId(sessionId);
-      }
-      useUiStore.getState().setActiveRepoPath(repoPath);
-      if (sessionId) {
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            sessionId,
-            useConfigStore.getState().defaultNotifications
+          .showToast(
+            error instanceof Error
+              ? error.message
+              : 'failed to open branch chat'
           );
       }
-      useUiStore.getState().closeSidebar();
     },
     []
   );
@@ -845,48 +595,16 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions(
-        useUiStore.getState().terminalFontSize
-      );
-      const { session, error } = await createAgentSession({
-        repoPath: wt.repoPath,
-        worktreePath: wt.path,
-        type: 'agent',
-        branchName: wt.branchName,
-        cols,
-        rows,
+      useUiStore.getState().setActiveRepoPath(wt.repoPath);
+      await openAgentChannel({
+        prompt: `Resume work on branch ${wt.branchName} in ${wt.path}.`,
       });
-      if (session?.id) {
-        useUiStore.getState().setActiveRepoPath(wt.repoPath);
-        useSessionsStore.getState().setActiveSessionId(session.id);
-        useSessionsStore
-          .getState()
-          .rememberSessionForWorkspace(wt.repoPath, session.id);
-        if (!(error instanceof ConflictError)) {
-          useSessionsStore
-            .getState()
-            .initSessionNotification(
-              session.id,
-              useConfigStore.getState().defaultNotifications
-            );
-        }
-        useUiStore.getState().closeSidebar();
-      }
-      if (error && !(error instanceof ConflictError)) {
-        useToastStore
-          .getState()
-          .showToast(
-            error instanceof Error
-              ? error.message
-              : 'failed to resume worktree session'
-          );
-      }
     } catch (e) {
-      logger.error('Failed to resume worktree:', e);
+      logger.error('Failed to resume worktree chat:', e);
       useToastStore
         .getState()
         .showToast(
-          e instanceof Error ? e.message : 'failed to resume worktree session'
+          e instanceof Error ? e.message : 'failed to resume worktree chat'
         );
     } finally {
       useSessionsStore.getState().clearLoading(loadingKey);

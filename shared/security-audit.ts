@@ -200,7 +200,9 @@ export function securityAuditEntryForTabControlEvent(
   };
 }
 
-function auditPeerFromControlActor(actor: ControlActor): SecurityAuditPeerIdentity {
+function auditPeerFromControlActor(
+  actor: ControlActor
+): SecurityAuditPeerIdentity {
   if (actor.kind === 'human') {
     return {
       kind: 'user',
@@ -225,7 +227,9 @@ function auditPeerFromControlActor(actor: ControlActor): SecurityAuditPeerIdenti
   };
 }
 
-function controlEventAuditScope(event: TabControlEvent): Record<string, unknown> {
+function controlEventAuditScope(
+  event: TabControlEvent
+): Record<string, unknown> {
   return {
     nodeId: event.identity.nodeId,
     sessionId: event.identity.sessionId,
@@ -236,7 +240,9 @@ function controlEventAuditScope(event: TabControlEvent): Record<string, unknown>
   };
 }
 
-function controlActorAuditSummary(actor: ControlActor): Record<string, unknown> {
+function controlActorAuditSummary(
+  actor: ControlActor
+): Record<string, unknown> {
   return {
     kind: actor.kind,
     idHash: actor.id ? sha256Hex(actor.id) : null,
@@ -246,7 +252,9 @@ function controlActorAuditSummary(actor: ControlActor): Record<string, unknown> 
   };
 }
 
-function controlEventAuditParams(event: TabControlEvent): Record<string, unknown> {
+function controlEventAuditParams(
+  event: TabControlEvent
+): Record<string, unknown> {
   const base = {
     sourceEventId: event.eventId,
     kind: event.type,
@@ -279,7 +287,9 @@ function controlEventAuditParams(event: TabControlEvent): Record<string, unknown
   };
 }
 
-function controlEventRequiredBits(event: TabControlEvent): RelayCapabilityBit[] {
+function controlEventRequiredBits(
+  event: TabControlEvent
+): RelayCapabilityBit[] {
   if (event.type === 'tab.intervention') {
     if (event.intervention.kind === 'supervisor-send-text') {
       return ['session:attach', 'tab:intervention:send-text'];
@@ -291,11 +301,7 @@ function controlEventRequiredBits(event: TabControlEvent): RelayCapabilityBit[] 
       return ['session:attach', 'tab:intervention:submit'];
     }
   }
-  const modeAfter =
-    event.type === 'tab.mode-changed'
-      ? event.controlMode
-      : event.intervention.modeAfter ?? event.controlMode;
-  return modeAfter === 'agent-driven' ? ['tab:mode:set-agent'] : [];
+  return [];
 }
 
 /**

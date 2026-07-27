@@ -4,7 +4,7 @@ import {
   fireStateChange,
   __resetStateChangeCallbacksForTests,
 } from '../server/sessions.js';
-import type { AgentState } from '../server/types.js';
+import type { TerminalActivityState } from '../server/types.js';
 
 describe('fireStateChange callbacks', () => {
   afterEach(() => {
@@ -12,7 +12,10 @@ describe('fireStateChange callbacks', () => {
   });
 
   it('calls a registered onStateChange callback with correct args', () => {
-    const received: Array<{ sessionId: string; state: AgentState }> = [];
+    const received: Array<{
+      sessionId: string;
+      state: TerminalActivityState;
+    }> = [];
 
     onStateChange((sessionId, state) => {
       received.push({ sessionId, state });
@@ -41,7 +44,7 @@ describe('fireStateChange callbacks', () => {
   });
 
   it('passes idle state to callback', () => {
-    let received: AgentState | undefined;
+    let received: TerminalActivityState | undefined;
     onStateChange((_, state) => {
       received = state;
     });
@@ -52,7 +55,7 @@ describe('fireStateChange callbacks', () => {
   });
 
   it('passes permission-prompt state to callback', () => {
-    let received: AgentState | undefined;
+    let received: TerminalActivityState | undefined;
     onStateChange((_, state) => {
       received = state;
     });
@@ -63,7 +66,7 @@ describe('fireStateChange callbacks', () => {
   });
 
   it('passes waiting-for-input state to callback', () => {
-    let received: AgentState | undefined;
+    let received: TerminalActivityState | undefined;
     onStateChange((_, state) => {
       received = state;
     });

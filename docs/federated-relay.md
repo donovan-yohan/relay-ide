@@ -1,8 +1,22 @@
 # Federated Relay
 
-Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal machines running Relay as execution hosts. From any browser connected to the hub, a user sees which nodes are online, what repositories each node has checked out, and can start terminal/agent sessions on the chosen node. This document describes the architecture, pairing lifecycle, steady-state reverse WebSocket model, session routing, security model, operator runbook, and explicitly out-of-scope items.
+Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
+machines running Relay as execution hosts. From any browser connected to the
+hub, a user sees which nodes are online, what repositories each node has
+checked out, and can start terminal sessions on the chosen node. Agents
+participate through hub-owned channels and DMs, not routed public sessions.
+This document describes the architecture, pairing lifecycle, steady-state
+reverse WebSocket model, terminal-session routing, security model, operator
+runbook, and explicitly out-of-scope items.
 
-Relay's product boundary is broader than terminal routing but narrower than an IDE/runtime clone: Relay is the federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails. It connects existing agent CLIs, Hermes/Kanban/GitHub refs, `relay-pty` terminal sessions, node-local repos/worktrees, and artifacts without replacing those source systems or scraping raw profile/transcript state. See `docs/WORKBENCH_BOUNDARY.md` for the canonical #552 nouns and mobile/pair/dogfood acceptance criteria.
+Relay's product boundary is broader than terminal routing but narrower than an
+IDE/runtime clone: Relay is the federated workbench/control plane for shared
+identity, routing, context handoff, bounded inspection/control, and audit
+trails. It connects private channel-agent runtimes, Hermes/Kanban/GitHub refs,
+`relay-pty` terminal sessions, node-local repos/worktrees, and artifacts
+without replacing those source systems or scraping raw profile/transcript
+state. See `docs/WORKBENCH_BOUNDARY.md` for the canonical #552 nouns and
+mobile/pair/dogfood acceptance criteria.
 
 > Terminology is deliberate: `hub` (control plane + UI), `node` (execution host), `client` (browser). A hub is just a `relay-ide` server that has accepted node registrations; a node is just a `relay-ide` install on another host.
 
@@ -17,7 +31,9 @@ Relay's product boundary is broader than terminal routing but narrower than an I
 ```
 
 - **Hub** — serves the React UI, exposes REST/WebSocket APIs, stores the node registry, routes PTY streams and RPC requests to online nodes, and aggregates repo inventory.
-- **Node** — executes PTY sessions, hosts git worktrees, runs agent CLIs, reports capability manifest and repo inventory to the hub. The node always initiates the outbound connection to the hub.
+- **Node** — executes terminal PTY sessions, hosts git worktrees, and reports
+  capability manifest and repo inventory to the hub. The node always initiates
+  the outbound connection to the hub.
 - **Client** — the browser. It may run on any device; execution happens on the selected node.
 
 ## Current Implementation Status
@@ -27,7 +43,11 @@ Implemented/current:
 - Pairing: `POST /hub/pair-tokens`, `POST /hub/pairing/exchange`, credential storage, heartbeat, `GET /nodes`, and `DELETE /nodes/:nodeId` are implemented in `server/hub-node-router.ts` and `server/hub-node-registry.ts`.
 - Credential rotation: `POST /hub/nodes/:nodeId/credential-rotation` supports authenticated operator manual delivery and online reverse-link delivery; heartbeat proof swaps the active credential and writes a redacted rotation audit event. Failed/delivered rotations remain provable with the next credential until `POST /hub/nodes/:nodeId/credential-rotation/clear-failure` explicitly clears them without accepting the unproved next credential.
 - Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
-- Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
+- Routed terminal sessions: the hub creates terminals with
+  `POST /hub/nodes/:nodeId/sessions`, kills them with
+  `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY
+  traffic through `/nodes/:nodeId/ws/sessions/:sessionId`. Agent types are
+  rejected at this public boundary.
 - Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary. Routed sessions require node-advertised `relay-pty`; `tmux-compat` is unsupported legacy state and is not restored.
 - Multi-node routed PTY smoke: `test/hub-cross-node-pty.test.ts` is the canonical integration harness for hub + two simulated nodes, concurrent browser PTY streams, sustained byte flow, and one-node reverse-link failure isolation. Run it with `npm run test:smoke:multi-node`.
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
@@ -66,9 +86,13 @@ Federated Relay keeps its precise low-level hub/node/repo/session terms, but map
 | **Project**   | Canonical “what” being worked on.                                               | `Repo identity` is a repo-kind Project identity derived from git remotes. Node/agent/playbook Projects may not have repo inventory.                |
 | **Instance**  | A Project realized on a node/host.                                              | `Repo instance` `(nodeId, repoPath)` is a git-specific Instance compatibility shape.                                                               |
 | **Bench**     | cwd + env inside an Instance.                                                   | `Worktree instance` `(nodeId, worktreePath)` is a git Bench compatibility shape. Free/non-git remote cwd is also a Bench-like anchor once modeled. |
-| **Tab**       | User-visible terminal/file/diff/agent-chat/preview surface.                     | A hub/node session and PTY stream back a Tab; `globalSessionId` remains internal routing identity.                                                 |
+| **Tab**       | User-visible terminal/file/diff/channel/preview surface.                        | A hub/node terminal session and PTY stream back a terminal Tab; `globalSessionId` remains internal routing identity.                               |
 
-Worker/agent identity is dynamic decoration on Bench/Tab, not a federated tree node. Use node/host labels for where work runs, repo/project labels for what is being worked on, and worker badges for who is active.
+Worker activity may decorate a Bench or terminal Tab, but participant identity
+belongs to the durable profile actor in its channel. Neither is a federated
+tree node. Use node/host labels for where work runs, repo/project labels for
+what is being worked on, channel/profile identity for who is participating,
+and worker badges only for execution activity.
 
 ### Compatibility boundaries
 
@@ -127,36 +151,54 @@ Once authenticated, the WebSocket carries multiplexed JSON envelopes:
 
 ### Session control-state summaries (#490)
 
-Routed and local session summaries carry a product `controlMode` contract that is deliberately separate from session transport `mode`:
+Routed and local public session summaries describe human-driven terminal Tabs.
+They use `relay-pty` as the execution transport and report
+`controlMode: "human-driven"`. Agent participation is represented by channel
+profile actors and private channel runtimes, never by a public session control
+mode.
 
-- `mode`: execution transport (`pty` or `web`).
-- `controlMode`: current product ownership of the Tab (`agent-driven`, `human-driven`, or `co-driven`).
+The summary fields are flattened on `SessionSummary`: `activeActors`, optional
+human terminal audit metadata (`lastInterventionAt`, `lastInterventionBy`,
+`lastInterventionEventId`), `controlFreshness` (`fresh`, `stale`, `unknown`),
+and optional `controlReason`. This lets the hub/client render terminal state
+from session list/create responses without fetching intervention history.
+Backfilled sessions normalize to `human-driven` with `unknown` freshness.
 
-The summary fields are flattened on `SessionSummary`: `activeActors`, optional `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness` (`fresh`, `stale`, `unknown`), and optional `controlReason`. This lets the hub/client render current control state from session list/create responses without fetching intervention history. Legacy or backfilled sessions normalize to `human-driven` with `unknown` freshness.
-
-`tab.mode-changed` and `tab.intervention` event envelope names are emitted on the `events` channel. Their identity shape uses `nodeId`, node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree fields (`repoPath`, `worktreePath`, `repoName`, `branchName`) are optional decoration so local repo tabs, remote node tabs, and free/non-git tabs remain representable. #470 owns the product semantics of when control modes change and when interventions are captured; #427 owns the allow/challenge/deny policy and hash-chained audit trail for those events.
+`tab.intervention` event envelopes may be emitted for auditable human terminal
+input or typed supervisor actions. Their identity shape uses `nodeId`,
+node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree
+fields are optional decoration. Historical `tab.mode-changed` and
+agent/co-driven ownership transitions are superseded and are not part of the
+current public session model.
 
 Control/intervention audit correlation is intentionally compact: audit rows carry stable event/session/node identifiers, actor identity hashes, intervention kind/source, mode before/after, payload size/hash/redaction summary, and hashes of the compact scope/params. Raw keystrokes, terminal bytes, file bytes, secrets, and full environment values must stay in the intervention/control source systems and must not be duplicated into the security audit log.
 
-#427 boundary: #490 only defines and serializes state. The #499 correlation slice records compact #470 control/intervention events into the #427 audit surface, but it does not broaden control semantics, add file/git/exec powers, or make intervention history a transcript export.
+#427 boundary: the correlation slice records compact terminal-intervention
+events into the audit surface, but it does not add file/git/exec powers, make
+intervention history a transcript export, or create agent control semantics.
 
-### Session control reads and hand-back ack (#493)
+### Human terminal control reads (#493)
 
 The scoped session API exposes current control state without requiring raw terminal history export:
 
 - `GET /sessions/:id` returns a local or routed session summary with the flattened control fields above.
 - `GET /sessions/:id/interventions?limit=<n>` returns bounded local-session intervention records plus redaction metadata (`rawPayloadAvailable: false`, `transcriptExportAvailable: false`). It is intentionally not a routed read, keylog, or terminal transcript endpoint.
-- `POST /sessions/:id/control/hand-back` accepts `{ "latestSeenInterventionEventId": "..." }` and only resumes `agent-driven` after the caller acknowledges the latest unacked human intervention id. Missing, old, stale, unknown, disconnected, or already-acked state returns a typed error.
 
 The matching CLI surface is:
 
 ```bash
 relay-ide sessions get <session-id>
 relay-ide sessions interventions <session-id> [--limit <n>]
-relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>
 ```
 
-Capability checks currently use the #427 placeholder header contract: omitted `x-relay-capabilities` preserves compatibility, while an explicit header must include `session:read` for session summaries, `tab:intervention:read` plus session visibility for intervention history, or `tab:mode:set-agent` plus the session control bit for any path that restores `agent-driven`. The `tab:mode:set-agent` bit is scoped to the mode transition only; it does not imply file write, git write, arbitrary exec, or any other high-risk capability.
+Capability checks currently use the #427 placeholder header contract: omitted
+`x-relay-capabilities` preserves compatibility, while an explicit header must
+include `session:read` for terminal summaries and
+`tab:intervention:read` plus session visibility for intervention history.
+
+The earlier hand-back endpoint/CLI and agent/co-driven terminal modes are
+superseded. A public terminal stays human-driven; channel-agent runtime
+lifecycle and conversation state never pass through this API.
 
 ### Heartbeat and Offline Detection
 
@@ -391,17 +433,17 @@ Nodes report a capability manifest during pairing and on every heartbeat. The ma
 
 ### Probed Capabilities
 
-| Capability          | Meaning                                                       |
-| ------------------- | ------------------------------------------------------------- |
-| `relay-pty`         | Direct PTY/libghostty-vt terminal backend is available        |
-| `git`               | Git CLI is available                                          |
-| `clipboard`         | Clipboard image set is available (`osascript` / `xclip`)      |
-| `browserAutomation` | Playwright Chromium automation is available                   |
-| `githubCli`         | `gh` CLI is available                                         |
-| `tailscale`         | `tailscale` CLI is available                                  |
-| `ssh`               | `ssh` client is available                                     |
-| `sessionResume`     | How the node handles browser/node-link reconnect (#467)       |
-| `agents`            | Map of agent CLI IDs (e.g. `claude`, `codex`) to availability |
+| Capability          | Meaning                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `relay-pty`         | Direct PTY/libghostty-vt terminal backend is available                                                                  |
+| `git`               | Git CLI is available                                                                                                    |
+| `clipboard`         | Clipboard image set is available (`osascript` / `xclip`)                                                                |
+| `browserAutomation` | Playwright Chromium automation is available                                                                             |
+| `githubCli`         | `gh` CLI is available                                                                                                   |
+| `tailscale`         | `tailscale` CLI is available                                                                                            |
+| `ssh`               | `ssh` client is available                                                                                               |
+| `sessionResume`     | How the node handles browser/node-link reconnect (#467)                                                                 |
+| `agents`            | Agent CLI availability for private channel-runtime/profile selection; never permission to create a public agent session |
 
 `sessionResume` is one of:
 
@@ -450,7 +492,8 @@ Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {
-  "type": "agent",
+  "type": "terminal",
+  "mode": "pty",
   "repoPath": "/Users/kyle/dev/relay-ide",
   "worktreePath": "/Users/kyle/dev/relay-ide/.worktrees/444-vocabulary-docs",
   "cwd": "/Users/kyle/dev/relay-ide/.worktrees/444-vocabulary-docs"
@@ -458,6 +501,10 @@ Content-Type: application/json
 ```
 
 The current node-side `sessions.create` parser reads `repoPath`, `worktreePath`, and `cwd`; it does not read `workspacePath`. Send `cwd` explicitly for remote repo/worktree tabs. If `cwd` is omitted, the node defaults to its host home directory until the #473 create-tab/modal split lands. In the six-layer model, `repoPath` and `worktreePath` remain compatibility fields while `cwd` maps toward the Bench anchor.
+
+`type: "agent"`, `mode: "web"`, provider/role launch fields, and
+`controlMode: "agent-driven"` are rejected at the routed session boundary.
+Open or create a channel/DM and post a message to start agent work.
 
 Preconditions checked by the hub:
 
@@ -512,7 +559,11 @@ A single hub UI can host terminal tabs attached to multiple paired nodes:
 
 - `WorkspaceTab` (`frontend/src/lib/workspace-layout.ts`) session variant carries an optional `nodeId`. Hub-local sessions omit it; routed sessions populate it from `SessionSummary.nodeId`.
 - The `+` control in `WorkspaceTabBar` is rendered by `TerminalNodePicker`, which fetches `/nodes` via `fetchHubNodes()` and lists `this host` plus paired nodes. Only `online` nodes are selectable; `stale`/`offline`/`revoked` rows are disabled and surface the heartbeat status as the tooltip reason.
-- Selecting a node calls `createAgentSession({ type: 'terminal', nodeId })`, which routes through `POST /hub/nodes/{nodeId}/sessions` and returns a node-scoped `SessionSummary`. The layout reconciler picks the new session up; `sessionToWorkspaceTab` copies `session.nodeId` onto the tab.
+- Selecting a remote node opens the remote-terminal dialog; submitting its cwd
+  calls `createTerminalSession({ nodeId, cwd, sessionLane })`, which routes
+  through `POST /hub/nodes/{nodeId}/sessions` and returns a node-scoped
+  `SessionSummary`. The layout reconciler picks the new session up;
+  `sessionToWorkspaceTab` copies `session.nodeId` onto the tab.
 - The PTY socket (`frontend/src/lib/ws.ts`) reads `nodeId` from the session (or parses it from a global session id) and opens `/nodes/{nodeId}/ws/sessions/{localSessionId}` instead of the local `/ws/{sessionId}` route.
 - Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
 
@@ -548,10 +599,11 @@ Backend shipped with the package:
 
 **Non-blocking constraints (#467/#973):**
 
-1. No tmux strings leak into hub/client contracts. Hub registry stores Relay session ids only; the node maps those ids to live `relay-pty` session records internally.
+1. No backend-private process identifiers leak into hub/client contracts. Hub registry stores Relay session ids only; the node maps those ids to live `relay-pty` session records internally.
 2. Frontend never references backend-private process handles. The resumable badge reads `node.capabilities.sessionResume`.
-3. Wire format remains opaque terminal bytes plus Relay envelopes over WS. No frontend assumes a tmux-wrapped terminal.
-4. Tests use `MockAttachment`. Pre-push CI does not spawn real tmux.
+3. Wire format remains opaque terminal bytes plus Relay envelopes over WS. No
+   frontend assumes a backend-private terminal wrapper.
+4. Tests use `MockAttachment`.
 5. Detach handling: on hub disconnect, live `relay-pty` sessions are not killed. On node-link reconnect, hub re-issues `pty.attach` and the node reattaches to the live `relay-pty` session if the owning node process stayed alive.
 
 **Session lifecycle:** closing an attachment terminates the Relay-owned PTY child process. The `relay-pty` child process keeps running only while the owning Relay node process stays alive. Browser reconnect to a live node can resume the in-memory session; Relay node/server process restart is cold resume from saved metadata/scrollback, not live child-process continuity.
@@ -691,7 +743,8 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) and so
 ## WSL Caveats
 
 - WSL is supported as a **Linux-like node**, not as a native Windows node.
-- `relay-pty`/node-pty shell and agent sessions behave normally inside WSL2 when systemd is enabled.
+- `relay-pty`/node-pty terminal sessions behave normally inside WSL2 when
+  systemd is enabled.
 - `wsl-systemd` mode requires WSL systemd and the user bus to be enabled. Set `/etc/wsl.conf` to `[boot] systemd=true`, then run `wsl.exe --shutdown` to apply. A WSL distro shutdown stops the service.
 - `wsl-manual` is a pair-only fallback; no background service is installed.
 - Native Windows node support is explicitly **out of scope**.
@@ -763,7 +816,8 @@ Use `relay-ide node status`, `relay-ide node logs`, and `relay-ide node doctor -
 
 These were considered during design but are **not implemented** and should not be assumed:
 
-- **Live session migration** — Moving an active PTY/agent session from one node to another.
+- **Live session migration** — Moving an active terminal PTY session from one
+  node to another.
 - **Automatic filesystem sync** — Mirroring `.relay` metadata or worktree state across nodes automatically.
 - **Native Windows node** — WSL2 is the supported Windows path.
 - **Hosted multi-tenant cloud** — Designed for private infrastructure, not a SaaS product.

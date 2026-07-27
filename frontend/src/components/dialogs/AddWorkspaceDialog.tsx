@@ -9,11 +9,8 @@ import { createLogger } from '../../lib/logger.js';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import FileBrowser, { type FileBrowserHandle } from '../FileBrowser.js';
-import {
-  addWorkspacesBulk,
-  fetchHubNodes,
-} from '../../lib/api.js';
-import { createAgentSession } from '../../lib/session-utils.js';
+import { addWorkspacesBulk, fetchHubNodes } from '../../lib/api.js';
+import { createTerminalSession } from '../../lib/session-utils.js';
 import {
   cleanCwd,
   defaultRemoteCwd,
@@ -49,10 +46,13 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [nodes, setNodes] = useState<HubNodeSummary[]>([]);
-    const [selectedNodeId, setSelectedNodeId] = useState<string>(LOCAL_NODE_VALUE);
+    const [selectedNodeId, setSelectedNodeId] =
+      useState<string>(LOCAL_NODE_VALUE);
     const [remoteCwd, setRemoteCwd] = useState('');
     const [fetchNodesError, setFetchNodesError] = useState<string | null>(null);
-    const [partialErrors, setPartialErrors] = useState<{ path: string; error: string }[]>([]);
+    const [partialErrors, setPartialErrors] = useState<
+      { path: string; error: string }[]
+    >([]);
 
     const isRemote = selectedNodeId !== LOCAL_NODE_VALUE;
     const selectedRemoteNode = isRemote
@@ -111,9 +111,8 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
       const { cols, rows } = estimateTerminalDimensions(
         useUiStore.getState().terminalFontSize
       );
-      const { session, error: sessionError } = await createAgentSession({
+      const { session, error: sessionError } = await createTerminalSession({
         nodeId: selectedNodeId,
-        type: 'terminal',
         mode: 'pty',
         cwd,
         sessionLane: 'remote-cwd',
@@ -175,7 +174,9 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
         }
       } catch (err) {
         logger.error(
-          isRemote ? 'failed to create remote terminal' : 'failed to add workspaces',
+          isRemote
+            ? 'failed to create remote terminal'
+            : 'failed to add workspaces',
           err
         );
         setError(
@@ -188,12 +189,16 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
       }
     }
 
-    const submitDisabled = submitting || (isRemote ? !cleanCwd(remoteCwd) : selectedPaths.length === 0);
+    const submitDisabled =
+      submitting ||
+      (isRemote ? !cleanCwd(remoteCwd) : selectedPaths.length === 0);
 
     const footer = (
       <div className="add-workspace-footer-row">
         <span className="add-workspace-selected-count">
-          {!isRemote && selectedPaths.length > 0 ? `${selectedPaths.length} selected` : ''}
+          {!isRemote && selectedPaths.length > 0
+            ? `${selectedPaths.length} selected`
+            : ''}
         </span>
         <div className="add-workspace-footer-actions">
           <TuiButton variant="ghost" onClick={() => shellRef.current?.close()}>
@@ -205,7 +210,9 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             disabled={submitDisabled}
           >
             {submitting
-              ? isRemote ? 'connecting...' : 'adding...'
+              ? isRemote
+                ? 'connecting...'
+                : 'adding...'
               : isRemote
                 ? 'open terminal'
                 : `add project${selectedPaths.length > 1 ? 's' : ''}`}
@@ -258,8 +265,8 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           {!isRemote && (
             <>
               <p className="add-workspace-dialog-desc">
-                browse for any folder on this machine. git repos get pr tracking +
-                branch management automatically.
+                browse for any folder on this machine. git repos get pr tracking
+                + branch management automatically.
               </p>
               <FileBrowser
                 ref={fileBrowserRef}
@@ -270,7 +277,10 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           )}
           {isRemote && (
             <div className="add-workspace-dialog-field">
-              <label className="add-workspace-dialog-label" htmlFor="aw-remote-cwd">
+              <label
+                className="add-workspace-dialog-label"
+                htmlFor="aw-remote-cwd"
+              >
                 cwd on {selectedRemoteNode?.displayName ?? selectedNodeId}
               </label>
               <input

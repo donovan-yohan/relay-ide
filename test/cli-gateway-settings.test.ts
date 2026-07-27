@@ -54,10 +54,7 @@ describe('CLI gateway safe settings helpers', () => {
     const settings = safeSettingsFromConfig(
       config({
         defaultFramework: 'codex',
-        defaultContinue: false,
-        defaultYolo: false,
         defaultNotifications: true,
-        claudeFullscreen: false,
         renamerTool: 'none',
         updateChannel: 'nightly',
         github: {
@@ -69,10 +66,7 @@ describe('CLI gateway safe settings helpers', () => {
 
     expect(settings).toEqual({
       defaultAgent: 'codex',
-      defaultContinue: false,
-      defaultYolo: false,
       defaultNotifications: true,
-      claudeFullscreen: false,
       renamerTool: 'none',
       updateChannel: 'nightly',
     });
@@ -123,10 +117,10 @@ describe('CLI gateway safe settings helpers', () => {
   });
 
   it('requires explicit confirmation for risky setting transitions', () => {
-    const mutable = config({ defaultYolo: false });
+    const mutable = config({ updateChannel: 'stable' });
     const denied = updateSafeSetting(mutable, {
-      key: 'defaultYolo',
-      value: true,
+      key: 'updateChannel',
+      value: 'nightly',
     });
 
     expect(denied).toMatchObject({
@@ -137,21 +131,23 @@ describe('CLI gateway safe settings helpers', () => {
         reasonCode: 'RISKY_SETTING_WRITE_CONFIRMATION_REQUIRED',
       },
     });
-    expect(mutable.defaultYolo).toBe(false);
+    expect(mutable.updateChannel).toBe('stable');
 
     const confirmed = updateSafeSetting(mutable, {
-      key: 'defaultYolo',
-      value: true,
+      key: 'updateChannel',
+      value: 'nightly',
       confirmRiskyWrite: true,
     });
     expect(confirmed.ok).toBe(true);
-    expect(mutable.defaultYolo).toBe(true);
+    expect(mutable.updateChannel).toBe('nightly');
   });
 });
 
 describe('CLI gateway settings/webhook route auth', () => {
   it('does not let CLI bearer auth self-assert settings:write through x-relay-capabilities', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gateway-settings-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'cli-gateway-settings-')
+    );
     const configPath = path.join(tmpDir, 'config.json');
     saveConfig(configPath, config({ defaultFramework: 'claude' }));
     const { url, close } = await startSettingsServer(configPath);
@@ -168,7 +164,9 @@ describe('CLI gateway settings/webhook route auth', () => {
       });
 
       expect(res.status).toBe(401);
-      const persisted = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Config;
+      const persisted = JSON.parse(
+        fs.readFileSync(configPath, 'utf8')
+      ) as Config;
       expect(persisted.defaultFramework).toBe('claude');
     } finally {
       await close();
@@ -183,7 +181,9 @@ describe('CLI gateway settings/webhook route auth', () => {
   ])(
     'keeps %s %s browser-operator-only even when x-relay-capabilities=%s is spoofed',
     async (method, pathName, capability) => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gateway-settings-'));
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'cli-gateway-settings-')
+      );
       const configPath = path.join(tmpDir, 'config.json');
       saveConfig(configPath, config({ defaultFramework: 'claude' }));
       const { url, close } = await startSettingsServer(configPath);

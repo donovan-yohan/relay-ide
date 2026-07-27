@@ -4,7 +4,10 @@ import {
   ENVIRONMENT_OPTION_SCHEMA_VERSION,
   type EnvironmentOption,
 } from '../../shared/environment-option.js';
-import { createRepoInstanceId, DEFAULT_LOCAL_NODE_ID } from '../../shared/identity.js';
+import {
+  createRepoInstanceId,
+  DEFAULT_LOCAL_NODE_ID,
+} from '../../shared/identity.js';
 import type { RelayCapabilityBit } from '../../shared/security-policy.js';
 import {
   pickDefaultEnvironment,
@@ -111,7 +114,9 @@ describe('pickDefaultEnvironment', () => {
 
     it('matches active-tab to candidates by id (round-trip preserves match)', () => {
       const active = makeOption({ nodeId: NODE_LOCAL });
-      const roundTripped: EnvironmentOption = JSON.parse(JSON.stringify(active));
+      const roundTripped: EnvironmentOption = JSON.parse(
+        JSON.stringify(active)
+      );
       const result = pickDefaultEnvironment({
         activeTab: makeActiveTab(active),
         history: [],
@@ -130,7 +135,9 @@ describe('pickDefaultEnvironment', () => {
       const activeStale = makeOption({
         nodeId: NODE_LOCAL,
         freshness: 'stale',
-        degradedReasons: [{ kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' }],
+        degradedReasons: [
+          { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
+        ],
       });
       const freshOther = makeOption({ nodeId: NODE_REMOTE });
       const result = pickDefaultEnvironment({
@@ -220,7 +227,9 @@ describe('pickDefaultEnvironment', () => {
       const staleHistoryHit = makeOption({
         nodeId: NODE_REMOTE,
         freshness: 'stale',
-        degradedReasons: [{ kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' }],
+        degradedReasons: [
+          { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
+        ],
       });
       const freshFallback = makeOption({ nodeId: NODE_OTHER });
       const result = pickDefaultEnvironment({
@@ -241,7 +250,9 @@ describe('pickDefaultEnvironment', () => {
       const stale = makeOption({
         nodeId: NODE_OTHER,
         freshness: 'stale',
-        degradedReasons: [{ kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' }],
+        degradedReasons: [
+          { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
+        ],
       });
       const fresh = makeOption({ nodeId: NODE_REMOTE });
       const result = pickDefaultEnvironment({
@@ -262,7 +273,9 @@ describe('pickDefaultEnvironment', () => {
       const stale = makeOption({
         nodeId: NODE_LOCAL,
         freshness: 'stale',
-        degradedReasons: [{ kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' }],
+        degradedReasons: [
+          { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
+        ],
       });
       const offline = makeOption({
         nodeId: NODE_REMOTE,
@@ -302,7 +315,10 @@ describe('pickDefaultEnvironment', () => {
       // a fresh same-repo candidate exists on a *different* node, the picker
       // must return `active-tab-missing` rather than silently jumping the tab
       // to a different machine. This is the critical #628 correctness rule.
-      const active = makeOption({ nodeId: NODE_LOCAL, repoIdentity: REPO_RELAY });
+      const active = makeOption({
+        nodeId: NODE_LOCAL,
+        repoIdentity: REPO_RELAY,
+      });
       const sameRepoDifferentNode = makeOption({
         nodeId: NODE_REMOTE,
         repoIdentity: REPO_RELAY,
@@ -324,8 +340,14 @@ describe('pickDefaultEnvironment', () => {
     });
 
     it('without an active tab, prefers history hit regardless of repo identity', () => {
-      const recent = makeOption({ nodeId: NODE_REMOTE, repoIdentity: REPO_OTHER });
-      const candidate = makeOption({ nodeId: NODE_OTHER, repoIdentity: REPO_RELAY });
+      const recent = makeOption({
+        nodeId: NODE_REMOTE,
+        repoIdentity: REPO_OTHER,
+      });
+      const candidate = makeOption({
+        nodeId: NODE_OTHER,
+        repoIdentity: REPO_RELAY,
+      });
       const result = pickDefaultEnvironment({
         activeTab: null,
         history: makeHistory(recent),
@@ -345,7 +367,7 @@ describe('pickDefaultEnvironment', () => {
         capabilities: ['session:read'],
       });
       const result = pickDefaultEnvironment({
-        activeTab: makeActiveTab(active, ['session:create:agent']),
+        activeTab: makeActiveTab(active, ['session:create:terminal']),
         history: [],
         candidates: [active],
       });
@@ -359,10 +381,14 @@ describe('pickDefaultEnvironment', () => {
     it('accepts active-tab when candidate has the required capability superset', () => {
       const active = makeOption({
         nodeId: NODE_LOCAL,
-        capabilities: ['session:read', 'session:create:terminal', 'session:create:agent'],
+        capabilities: [
+          'session:read',
+          'session:create:terminal',
+          'session:create:terminal',
+        ],
       });
       const result = pickDefaultEnvironment({
-        activeTab: makeActiveTab(active, ['session:create:agent']),
+        activeTab: makeActiveTab(active, ['session:create:terminal']),
         history: [],
         candidates: [active],
       });
@@ -396,14 +422,18 @@ describe('pickDefaultEnvironment', () => {
       const activeStale = makeOption({
         nodeId: NODE_LOCAL,
         freshness: 'stale',
-        degradedReasons: [{ kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' }],
+        degradedReasons: [
+          { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
+        ],
       });
       const result = pickDefaultEnvironment({
         activeTab: makeActiveTab(activeStale),
         history: [],
         candidates: [activeStale],
       });
-      const cloned = JSON.parse(JSON.stringify(result)) as PickDefaultEnvironmentError;
+      const cloned = JSON.parse(
+        JSON.stringify(result)
+      ) as PickDefaultEnvironmentError;
       expect(cloned.kind).toBe('error');
       expect(cloned.error).toBe('no-compatible');
       expect(cloned.reason).toBe('active-tab-degraded');

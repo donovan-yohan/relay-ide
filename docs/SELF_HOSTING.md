@@ -97,9 +97,15 @@ Relay keeps **all** runtime state — the config file plus every SQLite store
 beside it — in the _config directory_, i.e. `dirname(<the config path above>)`.
 The stores include `work-contexts.db`, `context-packets.db`, `workflow-runs.db`,
 `work-context-artifacts.db`, `work-context-messages.db`, `automation-runs.db`,
-`agent-presence.db`, `analytics.db`, `relay-state.db`, `ia.db`,
-`interventions.db`, `security-audit.db`, and their `*-wal` / `*-shm` siblings,
-plus `logs/`, `telemetry/`, and `worktree-meta/`.
+`analytics.db`, `channel-chat.db`, `ia.db`, `interventions.db`,
+`security-audit.db`, and their `*-wal` / `*-shm` siblings, plus `logs/`,
+`telemetry/`, and `worktree-meta/`.
+
+Older config directories may still contain `relay-state.db` from the removed
+standalone web-session runtime. Current Relay does not open or migrate that
+file. It is orphaned archival data, not an active store; after verifying the
+upgrade and preserving any backup required by local policy, an operator may
+remove it. Relay never deletes that user data automatically.
 
 Because the config directory drives where these land, **no launch mode writes
 runtime DBs into a repo checkout by default** (#961):

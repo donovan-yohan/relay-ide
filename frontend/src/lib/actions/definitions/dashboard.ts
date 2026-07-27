@@ -1,27 +1,12 @@
-import type { ActionContext, ActionMeta } from '../types.js';
-import {
-  branchOpenSessionActionAvailability,
-  branchOpenSessionActionDescriptor,
-} from '../start-work-lifecycle.js';
-
-// #871/#876: dashboard.open-pr-session opens a session on a PR branch through
-// the composite branches.openSession verb. It carries the shared descriptor so
-// agents/operators discover the stable contract; availability gates on an active
-// workspace, mirroring the existing `when` predicate (and #870).
-const branchOpenSessionDescriptor = branchOpenSessionActionDescriptor();
-const branchOpenSessionRequiresWorkspace = (ctx: ActionContext) =>
-  branchOpenSessionActionAvailability({ workspaceMissing: !ctx.workspacePath })
-    .reason;
+import type { ActionMeta } from '../types.js';
 
 export const dashboardOpenPrSession: ActionMeta = {
   id: 'dashboard.open-pr-session',
-  label: 'open session on pr branch',
-  description: 'start a session on a pull request branch',
+  label: 'open pr chat',
+  description: 'open the pull request in an agent chat',
   category: 'dashboard',
   icon: '+',
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: branchOpenSessionRequiresWorkspace,
-  descriptor: branchOpenSessionDescriptor,
 };
 
 export const dashboardSortPrs: ActionMeta = {

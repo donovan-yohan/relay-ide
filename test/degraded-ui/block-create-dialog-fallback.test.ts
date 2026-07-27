@@ -3,7 +3,7 @@
  *
  * When `nodeFileRpcAvailable` is false:
  *   - 'file' and 'artifact' kinds are hidden from the select options.
- *   - Terminal, agent, markdown, work-context, and custom kinds remain available.
+ *   - Terminal, markdown, work-context, and custom kinds remain available.
  *   - A warning note is rendered explaining why kinds are hidden.
  *
  * When `nodeFileRpcAvailable` is true or undefined:
@@ -52,7 +52,6 @@ describe('WorkbenchBlockCreateDialog — terminal-only fallback (#654)', () => {
   it('shows all supported kinds when nodeFileRpcAvailable is undefined', () => {
     const html = renderDialog({ nodeFileRpcAvailable: undefined });
     expect(html).toContain('terminal');
-    expect(html).toContain('agent');
     expect(html).toContain('file');
     expect(html).toContain('artifact');
     expect(html).toContain('markdown');
@@ -74,10 +73,9 @@ describe('WorkbenchBlockCreateDialog — terminal-only fallback (#654)', () => {
     expect(html).not.toMatch(/value="artifact"/);
   });
 
-  it('keeps terminal, agent, markdown, work-context, and custom when file rpc is unavailable', () => {
+  it('keeps terminal, markdown, work-context, and custom when file rpc is unavailable', () => {
     const html = renderDialog({ nodeFileRpcAvailable: false });
     expect(html).toContain('terminal');
-    expect(html).toContain('agent');
     expect(html).toContain('markdown');
     expect(html).toContain('work-context');
     expect(html).toContain('custom');

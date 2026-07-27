@@ -99,7 +99,7 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
   beforeEach(() => {
     useChannelAgentStatusStore.setState({
       statusByChannelAgent: {},
-      sessionByChannelAgent: {},
+      runtimeByChannelAgent: {},
       updatedAtByChannelAgent: {},
     });
   });
@@ -124,7 +124,7 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
     const c1 = channelAgentStatusKey('c1', 'mock');
     const c2 = channelAgentStatusKey('c2', 'mock');
     expect(state.statusByChannelAgent[c1]).toBeUndefined();
-    expect(state.sessionByChannelAgent[c1]).toBeUndefined();
+    expect(state.runtimeByChannelAgent[c1]).toBeUndefined();
     expect(state.updatedAtByChannelAgent[c1]).toBeUndefined();
     // The other channel is untouched.
     expect(state.statusByChannelAgent[c2]).toBe('thinking');

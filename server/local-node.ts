@@ -1,7 +1,6 @@
 import * as sessionsModule from './sessions.js';
 import type { CreateResult } from './sessions.js';
 import type { CreateParams } from './sessions.js';
-import type { CreateWebParams } from './web-session-handler.js';
 import type { SessionRenewResult } from './session-envelope-registry.js';
 import type {
   RenderedScreenSnapshotOptions,
@@ -12,11 +11,9 @@ import type { SupervisorInterventionAction } from './control-engine.js';
 import type { SessionReplaySnapshot } from '../shared/session-replay.js';
 import type {
   InterventionRecord,
-  TabControlEvent,
   ControlActor,
   ControlMode,
 } from '../shared/control-state.js';
-import type { SessionControlError } from './session-control-api.js';
 import {
   DEFAULT_LOCAL_ENVIRONMENT_ID,
   createLocalEventAuthority,
@@ -38,7 +35,6 @@ export interface NodeSessionBoundary {
     expiresAt: string;
     now?: Date;
   }): SessionRenewResult;
-  createWeb(params: CreateWebParams): Promise<{ session: SessionSummary }>;
   kill(id: string): void;
   updateDisplayName(
     id: string,
@@ -62,13 +58,6 @@ export interface NodeSessionBoundary {
     id: string,
     options?: RenderedScreenSnapshotOptions
   ): RenderedScreenSnapshotResult;
-  handBackToAgent(input: {
-    id: string;
-    latestSeenInterventionEventId?: string;
-    actor?: ControlActor;
-  }):
-    | { ok: true; events: TabControlEvent[]; ackedHumanInterventions: number }
-    | { ok: false; error: SessionControlError };
 }
 
 type LocalRelayNodeSessionOverrides = Partial<{
@@ -100,7 +89,6 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   get: sessionsModule.get,
   create: sessionsModule.create,
   renew: sessionsModule.renew,
-  createWeb: sessionsModule.createWeb,
   kill: sessionsModule.kill,
   updateDisplayName: sessionsModule.updateDisplayName,
   write: sessionsModule.write,
@@ -108,7 +96,6 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   getInterventions: sessionsModule.getInterventions,
   getReplaySnapshot: sessionsModule.getReplaySnapshot,
   getRenderedScreenSnapshot: sessionsModule.getRenderedScreenSnapshot,
-  handBackToAgent: sessionsModule.handBackToAgent,
 };
 
 export function createLocalRelayNode(

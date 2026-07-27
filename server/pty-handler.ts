@@ -1,33 +1,17 @@
 import pty from 'node-pty';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type {
-  AgentFramework,
-  AgentType,
-  AgentState,
-  ContinuePolicy,
-  EventSourceType,
+  TerminalActivityState,
   PtySession,
   Session,
   SessionStatus,
   SessionSummary,
   TerminalBackend,
-  SessionType,
-} from './types.js';
-import {
-  AGENT_COMMANDS,
-  AGENT_CONTINUE_ARGS,
-  collaborationPromptArgsForFramework,
-  resolveFramework,
 } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
-import { outputParsers } from './output-parsers/index.js';
-import type { OutputParser } from './output-parsers/index.js';
-import { installOpenCodeRelayPlugin } from './opencode-relay.js';
-import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
@@ -58,202 +42,9 @@ function shellQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
-function readGlobalStatusLineCommand(): string {
-  try {
-    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-    const raw = fs.readFileSync(settingsPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { statusLine?: { command?: string } };
-    return typeof parsed.statusLine?.command === 'string'
-      ? parsed.statusLine.command
-      : '';
-  } catch {
-    return '';
-  }
-}
-
-export function buildStatusLineRelayScript(
-  sessionId: string,
-  configDir: string,
-  globalCmd: string
-): string {
-  const telemetryDir = path.join(configDir, 'telemetry');
-  const telemetryPath = path.join(telemetryDir, `${sessionId}.json`);
-  const tempPattern = `${telemetryPath}.tmp.XXXXXX`;
-  return `#!/usr/bin/env bash
-set -u
-mkdir -p ${shellQuote(telemetryDir)}
-tmp_file=$(mktemp ${shellQuote(tempPattern)})
-cleanup() {
-  rm -f "$tmp_file"
-}
-trap cleanup EXIT
-GLOBAL_CMD=${shellQuote(globalCmd)}
-if [ -n "$GLOBAL_CMD" ] && [ -x "$GLOBAL_CMD" ]; then
-  tee "$tmp_file" | "$GLOBAL_CMD"
-  pipeline_statuses=("\${PIPESTATUS[@]}")
-else
-  tee "$tmp_file" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; process.stdout.write(model + " | " + remaining + "% ctx\n"); } catch { process.stdout.write("Claude | ?% ctx\n"); } });'
-  pipeline_statuses=("\${PIPESTATUS[@]}")
-fi
-
-pipeline_status=0
-for status in "\${pipeline_statuses[@]}"; do
-  if [ "$status" -ne 0 ]; then
-    pipeline_status=$status
-  fi
-done
-
-if [ "\${pipeline_statuses[0]}" -eq 0 ]; then
-  mv "$tmp_file" ${shellQuote(telemetryPath)}
-  trap - EXIT
-fi
-
-exit "$pipeline_status"
-`;
-}
-
-function writeStatusLineScript(
-  sessionId: string,
-  dir: string,
-  configDir: string
-): string {
-  const scriptPath = path.join(dir, 'relay-statusline.sh');
-  const script = buildStatusLineRelayScript(
-    sessionId,
-    configDir,
-    readGlobalStatusLineCommand()
-  );
-  fs.writeFileSync(scriptPath, script, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
-}
-
-/**
- * Upgrade an existing hooks-settings.json to include statusLine if missing.
- * Called on session restore to ensure sessions created before telemetry support
- * get the relay script written to disk. The running Claude process will pick this
- * up on its next statusLine poll cycle (Claude re-reads the settings file).
- */
-export function upgradeHooksSettings(
-  sessionId: string,
-  configDir: string
-): boolean {
-  const dir = path.join(os.tmpdir(), 'relay-ide', sessionId);
-  const filePath = path.join(dir, 'hooks-settings.json');
-
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const settings = JSON.parse(raw) as Record<string, unknown>;
-    if (settings.statusLine) return false; // already has statusLine
-  } catch {
-    return false; // file doesn't exist or is malformed
-  }
-
-  // Write the relay script and patch the settings file
-  try {
-    const statusLinePath = writeStatusLineScript(sessionId, dir, configDir);
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const settings = JSON.parse(raw) as Record<string, unknown>;
-    settings.statusLine = { type: 'command', command: statusLinePath };
-    fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
-    return true;
-  } catch (err) {
-    logger.warn(
-      `Failed to upgrade hooks settings for session ${sessionId}:`,
-      err
-    );
-    return false;
-  }
-}
-
-function writeHooksSettingsFile(
-  sessionId: string,
-  port: number,
-  token: string,
-  configDir: string
-): string {
-  const dir = path.join(os.tmpdir(), 'relay-ide', sessionId);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const filePath = path.join(dir, 'hooks-settings.json');
-  const statusLinePath = writeStatusLineScript(sessionId, dir, configDir);
-  const base = `http://127.0.0.1:${port}`;
-  const q = `sessionId=${sessionId}&token=${token}`;
-  const settings = {
-    hooks: {
-      Stop: [
-        {
-          hooks: [{ type: 'http', url: `${base}/hooks/stop?${q}`, timeout: 5 }],
-        },
-      ],
-      Notification: [
-        {
-          matcher: 'permission_prompt',
-          hooks: [
-            {
-              type: 'http',
-              url: `${base}/hooks/notification?${q}&type=permission_prompt`,
-              timeout: 5,
-            },
-          ],
-        },
-        {
-          matcher: 'idle_prompt',
-          hooks: [
-            {
-              type: 'http',
-              url: `${base}/hooks/notification?${q}&type=idle_prompt`,
-              timeout: 5,
-            },
-          ],
-        },
-      ],
-      UserPromptSubmit: [
-        {
-          hooks: [
-            {
-              type: 'http',
-              url: `${base}/hooks/prompt-submit?${q}`,
-              timeout: 5,
-            },
-          ],
-        },
-      ],
-      SessionEnd: [
-        {
-          hooks: [
-            { type: 'http', url: `${base}/hooks/session-end?${q}`, timeout: 5 },
-          ],
-        },
-      ],
-      PreToolUse: [
-        {
-          hooks: [
-            { type: 'http', url: `${base}/hooks/tool-use?${q}`, timeout: 5 },
-          ],
-        },
-      ],
-      PostToolUse: [
-        {
-          hooks: [
-            { type: 'http', url: `${base}/hooks/tool-result?${q}`, timeout: 5 },
-          ],
-        },
-      ],
-    },
-    statusLine: {
-      type: 'command',
-      command: statusLinePath,
-    },
-  };
-  fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
-  fs.chmodSync(filePath, 0o600);
-  return filePath;
-}
-
 export type CreatePtyParams = {
   id: string;
-  type?: SessionType | undefined;
-  agent?: AgentType | undefined;
+  type?: 'terminal' | undefined;
   repoName?: string | undefined;
   repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
@@ -272,15 +63,7 @@ export type CreatePtyParams = {
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;
-  forceOutputParser?: boolean | undefined;
-  yolo?: boolean | undefined;
-  claudeArgs?: string[] | undefined;
-  hookToken?: string | undefined;
-  hooksActive?: boolean | undefined;
-  continuePolicy?: ContinuePolicy | undefined;
   controlState?: ControlStateSummary | undefined;
-  frameworks?: Record<string, Partial<AgentFramework>> | undefined;
-  claudeFullscreen?: boolean | undefined;
   /** Environment variable names to inject with allocated ports (per-worktree) */
   portVariables?: string[] | undefined;
   /** Optional port allocator instance (uses default if not provided) */
@@ -302,7 +85,9 @@ export type CreatePtyParams = {
   envOverrides?: Record<string, string> | undefined;
   callbacks?:
     | {
-        onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
+        onStateChange?: Array<
+          (sessionId: string, state: TerminalActivityState) => void
+        >;
         onSessionEnd?: Array<
           (sessionId: string, cwd: string, branchName?: string) => void
         >;
@@ -318,88 +103,6 @@ export type CreatePtyParams = {
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
-
-function resolveAgentFramework(
-  agent: AgentType,
-  frameworks: Record<string, Partial<AgentFramework>> | undefined
-): AgentFramework {
-  try {
-    return resolveFramework(frameworks ? { frameworks } : {}, agent);
-  } catch {
-    return {
-      id: agent,
-      displayName: agent,
-      command: AGENT_COMMANDS[agent] ?? agent,
-      continueArgs: AGENT_CONTINUE_ARGS[agent] ?? [],
-      yoloArgs: [],
-      parserType: 'none',
-      eventSource: 'parser',
-      capabilities: {
-        supportsHooks: false,
-        supportsContinue: false,
-        supportsYolo: false,
-        supportsTelemetry: false,
-        supportsAttachedRuntime: false,
-      },
-    };
-  }
-}
-
-type HookSetupResult = {
-  env: NodeJS.ProcessEnv;
-  hookToken: string;
-  hooksActive: boolean;
-  settingsPath: string;
-  args: string[];
-};
-
-function setupPluginHooks(
-  id: string,
-  port: number,
-  hookToken: string,
-  env: Record<string, string>
-): { hookToken: string; hooksActive: boolean } {
-  if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
-  try {
-    installOpenCodeRelayPlugin();
-    const pluginEnv = {
-      RELAY_IDE_URL: `http://127.0.0.1:${port}`,
-      RELAY_IDE_SESSION_ID: id,
-      RELAY_IDE_TOKEN: hookToken,
-    };
-    Object.assign(env, pluginEnv);
-    return { hookToken, hooksActive: true };
-  } catch (err) {
-    logger.warn(
-      `Failed to install opencode relay plugin for session ${id}:`,
-      err
-    );
-    return { hookToken, hooksActive: false };
-  }
-}
-
-function setupCodexHooks(
-  id: string,
-  port: number,
-  hookToken: string,
-  configDir: string,
-  env: Record<string, string>
-): { hookToken: string; hooksActive: boolean } {
-  if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
-  try {
-    const codexConfigDir = writeCodexHooksAdapter(
-      id,
-      port,
-      hookToken,
-      configDir
-    );
-    env.CODEX_CONFIG_DIR = codexConfigDir;
-    return { hookToken, hooksActive: true };
-  } catch (err) {
-    logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
-    return { hookToken, hooksActive: false };
-  }
-}
 
 type PortInjectionParams = {
   repoPath: string;
@@ -609,132 +312,6 @@ function buildPortInjectionParams(
   return { repoPath, worktreePath, cwd, portVariables, portAllocator };
 }
 
-interface ClaudeHookInjection {
-  hookToken: string;
-  hooksActive: boolean;
-  settingsPath: string;
-  args: string[];
-}
-
-function injectClaudeHooks(
-  id: string,
-  port: number,
-  configDir: string | undefined,
-  existingToken: string,
-  args: string[]
-): ClaudeHookInjection {
-  const hookToken = existingToken || crypto.randomBytes(32).toString('hex');
-  try {
-    const settingsPath = writeHooksSettingsFile(
-      id,
-      port,
-      hookToken,
-      configDir ?? process.cwd()
-    );
-    return {
-      hookToken,
-      hooksActive: true,
-      settingsPath,
-      args: ['--settings', settingsPath, ...args],
-    };
-  } catch (err) {
-    logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
-    return { hookToken: '', hooksActive: false, settingsPath: '', args };
-  }
-}
-
-function setupEnvAndHooks(
-  id: string,
-  framework: AgentFramework,
-  effectiveEventSource: EventSourceType,
-  command: string | undefined,
-  port: number | undefined,
-  configDir: string | undefined,
-  paramYolo: boolean | undefined,
-  paramHookToken: string | undefined,
-  paramHooksActive: boolean | undefined,
-  paramClaudeFullscreen: boolean | undefined,
-  rawArgs: string[],
-  portInjectionParams?: PortInjectionParams,
-  relaySessionEnvParams?: RelaySessionEnvParams,
-  envOverrides?: Record<string, string> | undefined
-): HookSetupResult {
-  const env = cleanEnv();
-
-  if (framework.id === 'claude' && paramClaudeFullscreen === true) {
-    env.CLAUDE_CODE_NO_FLICKER = '1';
-  }
-
-  if (paramYolo && framework.yoloEnv) {
-    Object.assign(env, framework.yoloEnv);
-  }
-
-  let hookToken = paramHookToken ?? '';
-  let args = rawArgs;
-  let pluginHooksActive = paramHooksActive ?? false;
-  let codexHooksActive = false;
-  let claudeHooksActive = false;
-  let settingsPath = '';
-
-  if (effectiveEventSource === 'plugin' && port !== undefined) {
-    const result = setupPluginHooks(id, port, hookToken, env);
-    hookToken = result.hookToken;
-    pluginHooksActive = result.hooksActive;
-  }
-
-  if (framework.id === 'codex' && port !== undefined) {
-    const result = setupCodexHooks(
-      id,
-      port,
-      hookToken,
-      configDir ?? process.cwd(),
-      env
-    );
-    hookToken = result.hookToken;
-    codexHooksActive = result.hooksActive;
-  }
-
-  if (
-    framework.id === 'claude' &&
-    framework.capabilities.supportsHooks &&
-    effectiveEventSource === 'hooks' &&
-    !command &&
-    port !== undefined
-  ) {
-    const result = injectClaudeHooks(id, port, configDir, hookToken, args);
-    hookToken = result.hookToken;
-    args = result.args;
-    settingsPath = result.settingsPath;
-    claudeHooksActive = result.hooksActive;
-  }
-
-  if (portInjectionParams) {
-    injectPortEnvVars(env, portInjectionParams);
-  }
-
-  // #740: layer the anchoring Bench's persisted env overrides on top of the
-  // base session env. Applied BEFORE Relay identity injection below so the
-  // Relay-owned vars + relayctl PATH shim always win and can never be clobbered
-  // by caller-supplied env.
-  if (envOverrides) {
-    applyBenchEnvOverrides(env, envOverrides);
-  }
-
-  // Inject Relay-owned session identity env vars. These are set last so they
-  // are never overwritten by hook, port, or bench-override injection above.
-  if (relaySessionEnvParams) {
-    injectRelaySessionEnv(env, relaySessionEnvParams);
-  }
-
-  return {
-    env,
-    hookToken,
-    hooksActive: claudeHooksActive || codexHooksActive || pluginHooksActive,
-    settingsPath,
-    args,
-  };
-}
-
 function resolveSpawnTarget(
   resolvedCommand: string,
   args: string[],
@@ -769,10 +346,6 @@ function buildSessionObject(
   params: CreatePtyParams,
   ptyProcess: pty.IPty,
   scrollback: string[],
-  parser: OutputParser,
-  hookToken: string,
-  hooksActive: boolean,
-  effectiveEventSource: EventSourceType,
   terminalBackend: TerminalBackend,
   terminalModel: TerminalModelBackend | undefined,
   createdAt: string,
@@ -781,7 +354,6 @@ function buildSessionObject(
   const {
     id,
     type,
-    agent = 'claude',
     repoName,
     repoPath,
     worktreePath = null,
@@ -791,9 +363,6 @@ function buildSessionObject(
     command,
     sessionCustomCommand,
     restored: paramRestored,
-    yolo: paramYolo,
-    claudeArgs: paramClaudeArgs,
-    continuePolicy,
     controlState,
   } = params;
 
@@ -804,8 +373,7 @@ function buildSessionObject(
   return {
     id,
     nodeId: DEFAULT_LOCAL_NODE_ID,
-    type: type || 'agent',
-    agent,
+    type: type || 'terminal',
     mode: 'pty' as const,
     ...(repoPath ? { repoPath } : {}),
     ...(repoPath ? { worktreePath: worktreePath ?? null } : {}),
@@ -836,75 +404,17 @@ function buildSessionObject(
     status: 'active' as SessionStatus,
     restored: paramRestored || false,
     needsBranchRename: false,
-    agentState: 'initializing',
-    outputParser: parser,
-    hookToken,
-    hooksActive,
+    activityState: 'initializing',
     cleanedUp: false,
-    yolo: paramYolo ?? false,
-    sessionArgs: paramClaudeArgs ?? [],
-    claudeArgs: paramClaudeArgs ?? [],
-    continuePolicy: continuePolicy ?? 'never',
-    dataQuality: hooksActive ? effectiveEventSource : 'parser',
     controlState: normalizedControlState,
-    _lastHookTime: undefined,
   };
-}
-
-function isParserOverrideAllowed(
-  session: PtySession,
-  lastHook: number | undefined
-): boolean {
-  const sessionAge = Date.now() - new Date(session.createdAt).getTime();
-  if (lastHook && Date.now() - lastHook > 30000) return true;
-  if (!lastHook && sessionAge > 30000) return true;
-  return false;
-}
-
-function shouldAcceptStartupParserState(
-  session: PtySession,
-  newState: AgentState,
-  lastHook: number | undefined
-): boolean {
-  return (
-    !lastHook &&
-    session.agentState === 'initializing' &&
-    newState !== 'initializing'
-  );
-}
-
-function handleParserStateUpdate(
-  session: PtySession,
-  newState: AgentState,
-  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>,
-  fireBackendStateIfChanged: ((session: PtySession) => void) | undefined
-): void {
-  if (session.hooksActive) {
-    const lastHook = session._lastHookTime;
-    const allowStartupParserState = shouldAcceptStartupParserState(
-      session,
-      newState,
-      lastHook
-    );
-    if (
-      !allowStartupParserState &&
-      !isParserOverrideAllowed(session, lastHook)
-    ) {
-      return;
-    }
-  }
-  if (newState !== 'permission-prompt') {
-    delete session.permissionType;
-    delete session.permissionPromptSource;
-  }
-  session.agentState = newState;
-  for (const cb of stateChangeCallbacks) cb(session.id, newState);
-  fireBackendStateIfChanged?.(session);
 }
 
 export function handleTerminalAttentionUpdate(
   session: PtySession,
-  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>,
+  stateChangeCallbacks: Array<
+    (sessionId: string, state: TerminalActivityState) => void
+  >,
   fireBackendStateIfChanged: ((session: PtySession) => void) | undefined
 ): void {
   const terminalModel = session.terminalModel;
@@ -915,12 +425,12 @@ export function handleTerminalAttentionUpdate(
   );
   if (!attention) {
     if (
-      session.agentState === 'permission-prompt' &&
+      session.activityState === 'permission-prompt' &&
       session.permissionPromptSource === 'terminal-model'
     ) {
       delete session.permissionType;
       delete session.permissionPromptSource;
-      session.agentState = 'idle';
+      session.activityState = 'idle';
       for (const cb of stateChangeCallbacks) cb(session.id, 'idle');
       fireBackendStateIfChanged?.(session);
     }
@@ -929,15 +439,17 @@ export function handleTerminalAttentionUpdate(
 
   session.permissionType = attention.kind;
   session.permissionPromptSource = attention.source;
-  if (session.agentState !== 'permission-prompt') {
-    session.agentState = 'permission-prompt';
+  if (session.activityState !== 'permission-prompt') {
+    session.activityState = 'permission-prompt';
     for (const cb of stateChangeCallbacks) cb(session.id, 'permission-prompt');
   }
   fireBackendStateIfChanged?.(session);
 }
 
 type ResolvedPtyCallbacks = {
-  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>;
+  stateChangeCallbacks: Array<
+    (sessionId: string, state: TerminalActivityState) => void
+  >;
   sessionEndCallbacks: Array<
     (sessionId: string, cwd: string, branchName?: string) => void
   >;
@@ -962,6 +474,14 @@ export function createPtySession(
   params: CreatePtyParams,
   sessionsMap: Map<string, Session>
 ): { session: PtySession; result: CreatePtyResult } {
+  if (params.type !== undefined && params.type !== 'terminal') {
+    throw new Error(
+      'Agent conversations run in channels; PTY sessions only support terminals.'
+    );
+  }
+  if (!params.command) {
+    throw new Error('PTY terminal sessions require an explicit command.');
+  }
   const {
     stateChangeCallbacks,
     sessionEndCallbacks,
@@ -970,7 +490,6 @@ export function createPtySession(
   } = resolveCallbacks(params.callbacks);
   const {
     id,
-    agent = 'claude',
     repoPath,
     worktreePath = null,
     cwd,
@@ -979,15 +498,8 @@ export function createPtySession(
     cols = 80,
     rows = 24,
     configPath,
-    configDir,
     initialScrollback,
     port,
-    forceOutputParser,
-    yolo: paramYolo,
-    hookToken: paramHookToken,
-    hooksActive: paramHooksActive,
-    frameworks,
-    claudeFullscreen: paramClaudeFullscreen,
     portVariables,
     portAllocator,
     maxScrollbackBytes: paramMaxScrollbackBytes,
@@ -1001,28 +513,8 @@ export function createPtySession(
 
   const createdAt = new Date().toISOString();
 
-  const framework = resolveAgentFramework(agent, frameworks);
-  const resolvedCommand =
-    command || framework.commandOverride || framework.command;
+  const resolvedCommand = command;
 
-  // #955: teach Relay-launched agents to collaborate through Relay's CLI
-  // gateway by appending the provider-supported collaboration system-prompt
-  // flag (e.g. Claude `--append-system-prompt`). Appended to the TAIL so the
-  // existing continue/claudeArgs/yolo ordering is preserved verbatim. Skipped
-  // when a custom `command` overrides the framework CLI (the provider flag may
-  // be invalid there, matching the `injectClaudeHooks` gate) and for any
-  // framework that does not declare support. Derived fresh here and never
-  // persisted on the session, so it survives restore and never enters
-  // serialized state.
-  const launchArgs = command
-    ? rawArgs
-    : [...rawArgs, ...collaborationPromptArgsForFramework(framework)];
-
-  const effectiveEventSource: EventSourceType = forceOutputParser
-    ? 'parser'
-    : framework.eventSource;
-
-  // Prepare port injection params for setupEnvAndHooks
   const portInjectionParams = buildPortInjectionParams(
     repoPath,
     worktreePath,
@@ -1038,25 +530,11 @@ export function createPtySession(
     workContextId: paramWorkContextId,
   };
 
-  const hookSetup = setupEnvAndHooks(
-    id,
-    framework,
-    effectiveEventSource,
-    command,
-    port,
-    configDir,
-    paramYolo,
-    paramHookToken,
-    paramHooksActive,
-    paramClaudeFullscreen,
-    launchArgs,
-    portInjectionParams,
-    relaySessionEnvParams,
-    paramEnvOverrides
-  );
-
-  const { env, hookToken, hooksActive, settingsPath } = hookSetup;
-  const args = hookSetup.args;
+  const env = cleanEnv();
+  if (portInjectionParams) injectPortEnvVars(env, portInjectionParams);
+  if (paramEnvOverrides) applyBenchEnvOverrides(env, paramEnvOverrides);
+  injectRelaySessionEnv(env, relaySessionEnvParams);
+  const args = rawArgs;
 
   const { spawnCommand, spawnArgs, spawnEnv, terminalBackend } =
     resolveSpawnTarget(
@@ -1090,18 +568,10 @@ export function createPtySession(
       : 0,
   };
 
-  const parserFactory =
-    outputParsers[framework.parserType] ?? outputParsers['none'];
-  const parser: OutputParser = parserFactory!();
-
   const session = buildSessionObject(
     params,
     ptyProcess,
     scrollback,
-    parser,
-    hookToken,
-    hooksActive,
-    effectiveEventSource,
     terminalBackend,
     terminalModel,
     createdAt,
@@ -1138,10 +608,7 @@ export function createPtySession(
     }, IDLE_TIMEOUT_MS);
   }
 
-  const continueArgs = framework.continueArgs;
-
-  function attachHandlers(proc: pty.IPty, canRetry: boolean): void {
-    const spawnTime = Date.now();
+  function attachHandlers(proc: pty.IPty): void {
     const restoredClearTimer = session.restored
       ? setTimeout(() => {
           session.restored = false;
@@ -1187,18 +654,6 @@ export function createPtySession(
         }, 5000);
       }
 
-      const parseResult = session.outputParser.onData(
-        data,
-        scrollback.slice(-20)
-      );
-      if (parseResult && parseResult.state !== session.agentState) {
-        handleParserStateUpdate(
-          session,
-          parseResult.state,
-          stateChangeCallbacks,
-          fireBackendStateIfChanged
-        );
-      }
       handleTerminalAttentionUpdate(
         session,
         stateChangeCallbacks,
@@ -1207,37 +662,6 @@ export function createPtySession(
     });
 
     proc.onExit(() => {
-      if (canRetry && Date.now() - spawnTime < 3000) {
-        const retried = tryRetrySpawn(session, {
-          rawArgs: launchArgs,
-          continueArgs,
-          settingsPath,
-          resolvedCommand,
-          cols,
-          rows,
-          cwd,
-          env,
-          workContextId: params.workContextId,
-          scrollback,
-          scrollbackRef,
-          timers: {
-            restoredClear: restoredClearTimer,
-            idle: idleTimer,
-            metaFlush: metaFlushTimer,
-          },
-          sessionsMap,
-          id,
-        });
-        if (retried !== null) {
-          session.pty = retried;
-          for (const cb of session.onPtyReplacedCallbacks) cb(retried);
-          attachHandlers(retried, false);
-          return;
-        }
-        // Retry spawn failed — fall through to exit cleanup
-        return;
-      }
-
       if (session.cleanedUp) return;
       session.cleanedUp = true;
 
@@ -1266,15 +690,11 @@ export function createPtySession(
     });
   }
 
-  attachHandlers(
-    ptyProcess,
-    continueArgs.some((a) => args.includes(a))
-  );
+  attachHandlers(ptyProcess);
 
   const result: CreatePtyResult = {
     id,
     type: session.type,
-    agent: session.agent,
     mode: 'pty' as const,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
     ...(session.worktreePath !== undefined
@@ -1294,69 +714,11 @@ export function createPtySession(
     terminalBackend,
     status: 'active' as SessionStatus,
     needsBranchRename: false,
-    agentState: 'initializing',
+    activityState: 'initializing',
     ...session.controlState,
   };
 
   return { session, result };
-}
-
-type RetryContext = {
-  rawArgs: string[];
-  continueArgs: string[];
-  settingsPath: string;
-  resolvedCommand: string;
-  cols: number;
-  rows: number;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  workContextId: string | undefined;
-  scrollback: string[];
-  scrollbackRef: { bytes: number };
-  timers: {
-    restoredClear: ReturnType<typeof setTimeout> | null;
-    idle: ReturnType<typeof setTimeout> | null;
-    metaFlush: ReturnType<typeof setTimeout> | null;
-  };
-  sessionsMap: Map<string, Session>;
-  id: string;
-};
-
-function tryRetrySpawn(
-  session: PtySession,
-  ctx: RetryContext
-): pty.IPty | null {
-  let retryArgs = ctx.rawArgs.filter((a) => !ctx.continueArgs.includes(a));
-  if (session.hooksActive && ctx.settingsPath) {
-    retryArgs = ['--settings', ctx.settingsPath, ...retryArgs];
-  }
-
-  const retryNotice =
-    '\r\n[relay-ide] --continue not available; starting new session...\r\n';
-  ctx.scrollback.length = 0;
-  ctx.scrollbackRef.bytes = 0;
-  ctx.scrollback.push(retryNotice);
-  ctx.scrollbackRef.bytes = retryNotice.length;
-
-  try {
-    return pty.spawn(ctx.resolvedCommand, retryArgs, {
-      name: 'xterm-256color',
-      cols: ctx.cols,
-      rows: ctx.rows,
-      cwd: ctx.cwd,
-      env: buildRelayPtySessionEnv({
-        id: ctx.id,
-        env: ctx.env,
-        ...(ctx.workContextId ? { workContextId: ctx.workContextId } : {}),
-      }),
-    });
-  } catch {
-    if (ctx.timers.restoredClear) clearTimeout(ctx.timers.restoredClear);
-    if (ctx.timers.idle) clearTimeout(ctx.timers.idle);
-    if (ctx.timers.metaFlush) clearTimeout(ctx.timers.metaFlush);
-    ctx.sessionsMap.delete(ctx.id);
-    return null;
-  }
 }
 
 function runExitCleanup(

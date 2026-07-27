@@ -385,7 +385,6 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'work-context-messages.templates.list',
     'work-context-messages.templates.show',
     'work-context-messages.templates.render',
-    'roster.list',
     'workspace-surfaces.list',
     'workspace-topics.list',
     'workspace-topics.search',
@@ -586,8 +585,6 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'context.create',
     'context.pin',
     'context.unpin',
-    'roster.register',
-    'roster.updateSelf',
     'inbox.send',
     'inbox.ack',
     'inbox.resolve',
@@ -680,7 +677,7 @@ test('maps write actor commands to required Relay capability bits', () => {
     'session:read',
   ]);
   expect(cliGatewayActorCommandCapabilities('sessions.create')).toEqual([
-    'session:create:agent',
+    'session:create:terminal',
   ]);
   expect(cliGatewayActorCommandCapabilities('context.create')).toEqual([
     'context:write',
@@ -732,17 +729,6 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(
     cliGatewayActorCommandCapabilities('work-context-messages.append')
   ).toEqual(['context:write']);
-  expect(cliGatewayActorCommandCapabilities('roster.list')).toEqual([
-    'session:read',
-  ]);
-  // roster.register / roster.updateSelf (#964) are collaboration-context writes
-  // gated on context:write, NOT the artifact:write default fallthrough.
-  expect(cliGatewayActorCommandCapabilities('roster.register')).toEqual([
-    'context:write',
-  ]);
-  expect(cliGatewayActorCommandCapabilities('roster.updateSelf')).toEqual([
-    'context:write',
-  ]);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {
@@ -802,7 +788,6 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'automation-runs.get', expected: 'automation-runs.get' },
     { command: 'pr-overseer.list', expected: 'pr-overseer.list' },
     { command: 'pr-overseer.get', expected: 'pr-overseer.get' },
-    { command: 'roster.list', expected: 'roster.list' },
   ] as const;
 
   for (const { command, expected } of allowed) {
@@ -986,7 +971,7 @@ test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts
 
   const denialCases = [
     [{ audience: 'relay:operator-handshake:v1' }, 'audience_expansion'],
-    [{ capabilities: ['session:create:terminal'] }, 'capability_expansion'],
+    [{ capabilities: ['settings:write'] }, 'capability_expansion'],
     [{ capabilities: ['definitely:not-a-capability'] }, 'unknown_capability'],
     [{ capabilities: ['*'] }, 'capability_expansion'],
     [{ scope: {} }, 'scope_required'],

@@ -53,12 +53,10 @@ describe('block-registry source structure', () => {
     expect(src).toContain('export async function initFirstPartyBlocks');
   });
 
-  it('registers all 8 first-party kinds in initFirstPartyBlocks', () => {
+  it('registers all 6 first-party kinds in initFirstPartyBlocks', () => {
     const src = readFileSync(registryPath, 'utf-8');
     const kinds = [
       'terminal',
-      'agent',
-      'prompt-fanout',
       'work-context',
       'file',
       'artifact',
@@ -160,11 +158,11 @@ describe('registry runtime (real module)', () => {
   it('registeredKinds reflects all registered entries', async () => {
     const { registerBlockRenderer, registeredKinds } = await importRegistry();
     registerBlockRenderer('terminal', () => null);
-    registerBlockRenderer('agent', () => null);
+    registerBlockRenderer('artifact', () => null);
     registerBlockRenderer('markdown', () => null);
     const kinds = registeredKinds();
     expect(kinds.has('terminal')).toBe(true);
-    expect(kinds.has('agent')).toBe(true);
+    expect(kinds.has('artifact')).toBe(true);
     expect(kinds.has('markdown')).toBe(true);
     expect(kinds.size).toBe(3);
   });

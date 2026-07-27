@@ -15,13 +15,35 @@ interface SetupFormProps {
   onSubmit: () => void;
 }
 
-function SetupForm({ pinValue, confirmValue, onPinChange, onConfirmChange, onKeyDown, onSubmit }: SetupFormProps) {
+function SetupForm({
+  pinValue,
+  confirmValue,
+  onPinChange,
+  onConfirmChange,
+  onKeyDown,
+  onSubmit,
+}: SetupFormProps) {
   return (
     <>
       <p>set a browser PIN for this Relay web UI</p>
-      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="choose a PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
-      <PinInput value={confirmValue} onChange={onConfirmChange} onKeyDown={onKeyDown} placeholder="confirm PIN" maxLength={MAX_PIN_LENGTH} />
-      <TuiButton variant="primary" onClick={onSubmit}>set PIN</TuiButton>
+      <PinInput
+        value={pinValue}
+        onChange={onPinChange}
+        onKeyDown={onKeyDown}
+        placeholder="choose a PIN"
+        autoFocus={true}
+        maxLength={MAX_PIN_LENGTH}
+      />
+      <PinInput
+        value={confirmValue}
+        onChange={onConfirmChange}
+        onKeyDown={onKeyDown}
+        placeholder="confirm PIN"
+        maxLength={MAX_PIN_LENGTH}
+      />
+      <TuiButton variant="primary" onClick={onSubmit}>
+        set PIN
+      </TuiButton>
     </>
   );
 }
@@ -33,14 +55,29 @@ interface UnlockFormProps {
   onSubmit: () => void;
 }
 
-function UnlockForm({ pinValue, onPinChange, onKeyDown, onSubmit }: UnlockFormProps) {
+function UnlockForm({
+  pinValue,
+  onPinChange,
+  onKeyDown,
+  onSubmit,
+}: UnlockFormProps) {
   return (
     <>
-      <p>enter browser PIN to unlock this web session</p>
-      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
-      <TuiButton variant="primary" onClick={onSubmit}>unlock</TuiButton>
+      <p>enter browser PIN to unlock Relay</p>
+      <PinInput
+        value={pinValue}
+        onChange={onPinChange}
+        onKeyDown={onKeyDown}
+        placeholder="PIN"
+        autoFocus={true}
+        maxLength={MAX_PIN_LENGTH}
+      />
+      <TuiButton variant="primary" onClick={onSubmit}>
+        unlock
+      </TuiButton>
       <p className="hint">
-        forgot your PIN? reset browser access with <code>relay-ide pin reset</code> on this host
+        forgot your PIN? reset browser access with{' '}
+        <code>relay-ide pin reset</code> on this host
       </p>
     </>
   );
@@ -59,11 +96,24 @@ function useSetupHandler(
     setLocalError('');
     const pin = pinValue.trim();
     const confirm = confirmValue.trim();
-    if (!pin || !confirm) { setLocalError('enter a PIN and confirm it'); return; }
-    if (pin.length < 4) { setLocalError('PIN must be at least 4 characters'); return; }
-    if (pin !== confirm) { setLocalError('PINs do not match'); setConfirmValue(''); return; }
+    if (!pin || !confirm) {
+      setLocalError('enter a PIN and confirm it');
+      return;
+    }
+    if (pin.length < 4) {
+      setLocalError('PIN must be at least 4 characters');
+      return;
+    }
+    if (pin !== confirm) {
+      setLocalError('PINs do not match');
+      setConfirmValue('');
+      return;
+    }
     await setupNewPin(pin, confirm);
-    if (pinError) { setPinValue(''); setConfirmValue(''); }
+    if (pinError) {
+      setPinValue('');
+      setConfirmValue('');
+    }
   };
 }
 
@@ -82,20 +132,47 @@ export function PinGate() {
     if (pinError) setPinValue('');
   };
 
-  const handleSetup = useSetupHandler(pinValue, confirmValue, setLocalError, setConfirmValue, setPinValue, setupNewPin, pinError);
+  const handleSetup = useSetupHandler(
+    pinValue,
+    confirmValue,
+    setLocalError,
+    setConfirmValue,
+    setPinValue,
+    setupNewPin,
+    pinError
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') { if (needsSetup) { handleSetup(); } else { handleUnlock(); } }
+    if (e.key === 'Enter') {
+      if (needsSetup) {
+        handleSetup();
+      } else {
+        handleUnlock();
+      }
+    }
   };
 
   return (
     <div className="pin-gate">
       <div className="pin-container">
         <h1>Relay</h1>
-        {needsSetup
-          ? <SetupForm pinValue={pinValue} confirmValue={confirmValue} onPinChange={setPinValue} onConfirmChange={setConfirmValue} onKeyDown={handleKeyDown} onSubmit={handleSetup} />
-          : <UnlockForm pinValue={pinValue} onPinChange={setPinValue} onKeyDown={handleKeyDown} onSubmit={handleUnlock} />
-        }
+        {needsSetup ? (
+          <SetupForm
+            pinValue={pinValue}
+            confirmValue={confirmValue}
+            onPinChange={setPinValue}
+            onConfirmChange={setConfirmValue}
+            onKeyDown={handleKeyDown}
+            onSubmit={handleSetup}
+          />
+        ) : (
+          <UnlockForm
+            pinValue={pinValue}
+            onPinChange={setPinValue}
+            onKeyDown={handleKeyDown}
+            onSubmit={handleUnlock}
+          />
+        )}
         {displayError && <p className="error">{displayError}</p>}
       </div>
     </div>

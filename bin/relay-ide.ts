@@ -2,7 +2,7 @@
 /* eslint-disable no-console -- CLI entry point, user-facing stdout/stderr output */
 import path from 'node:path';
 import fs from 'node:fs';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
@@ -22,11 +22,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
-import type {
-  NodeManifest,
-  RmuxCapabilityProbe,
-  RmuxR0ChecklistItem,
-} from '../shared/node-manifest.js';
+import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config, SessionSummary } from '../server/types.js';
 import { createSupervisorSnapshot } from '../server/supervisor-snapshot.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
@@ -79,10 +75,6 @@ import {
   sanitizedGatewayErrorDetails,
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
-import {
-  OrchestrationLaunchValidationError,
-  launchOrchestrationRun,
-} from '../shared/orchestration-run-launch.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   parseRepoInstanceId,
@@ -182,7 +174,7 @@ Commands:
                                        Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
   worktree           Manage git worktrees (wraps git worktree)
-    add [path] [-b branch] [--yolo]   Create worktree and launch Claude
+    add [path] [-b branch]            Create a git worktree
     remove <path>                      Forward to git worktree remove
     list                               Forward to git worktree list
   browser            Open an HTML file in the remote viewer
@@ -200,7 +192,6 @@ Options:
   --compact          With 'manifest': print compact JSON
   --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
   --allow-degraded   Permit the hub to start with failed persistence stores (unsafe; health reports degraded)
-  --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
   --help, -h         Show this help`);
   process.exit(0);
@@ -437,13 +428,9 @@ function parseGatewayCreateInput(
     ['--cwd', 'cwd'],
     ['--type', 'type'],
     ['--mode', 'mode'],
-    ['--agent', 'agent'],
     ['--branch-name', 'branchName'],
-    ['--initial-prompt', 'initialPrompt'],
-    ['--continue-policy', 'continuePolicy'],
     ['--work-context-id', 'workContextId'],
     ['--workspace-topic-id', 'workspaceTopicId'],
-    ['--control-mode', 'controlMode'],
     ['--confirmation-token', 'confirmationToken'],
     ['--expires-at', 'expiresAt'],
   ] as const) {
@@ -1344,14 +1331,7 @@ async function runGatewayWorkflow(
     pathName: '/sessions',
     method: 'POST',
     body: validated.input,
-    capabilities: [
-      validated.sessionType === 'terminal'
-        ? 'session:create:terminal'
-        : 'session:create:agent',
-      ...(validated.input['controlMode'] === 'agent-driven'
-        ? ['tab:mode:set-agent']
-        : []),
-    ],
+    capabilities: ['session:create:terminal'],
   });
   const sessionRecord = isGatewayRecord(session) ? session : {};
   const workContextId =
@@ -1597,9 +1577,6 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.update',
   'workspace-topics.archive',
   'channels.post',
-  'roster.list',
-  'roster.register',
-  'roster.updateSelf',
   'cockpit.list',
   'cockpit.get',
 ]);
@@ -1708,85 +1685,6 @@ async function gatewayHttpJson(input: {
   return body;
 }
 
-async function gatewayHttpJsonForLaunch(input: {
-  commandName: RelayCliGatewayCommand;
-  actorCommandName?: RelayCliGatewayCommand;
-  pathName: string;
-  method?: string;
-  body?: unknown;
-  capabilities?: readonly string[];
-}): Promise<unknown> {
-  const actorToken = gatewayActorToken();
-  const actorCommandName = input.actorCommandName ?? input.commandName;
-  if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(actorCommandName)) {
-    throw new Error(
-      `--actor-token is not supported for ${actorCommandName} in this slice`
-    );
-  }
-  const token = actorToken || (process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '');
-  if (!token) {
-    printGatewayEnvelope(
-      gatewayError(input.commandName, {
-        code: 'UNAUTHORIZED',
-        message:
-          'RELAY_IDE_ACTOR_TOKEN/--actor-token or RELAY_IDE_BROWSER_TOKEN not set. Use a scoped CLI actor credential for the actor lane or run from an authenticated Relay session.',
-        retryable: false,
-      }),
-      1
-    );
-  }
-
-  const port =
-    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'x-relay-cli-gateway': 'v1',
-  };
-  if (actorToken) {
-    headers['x-relay-cli-actor-token'] = 'v1';
-    headers['x-relay-cli-command'] = actorCommandName;
-  }
-  const correlationId = gatewayCorrelationId();
-  if (correlationId) headers['x-relay-correlation-id'] = correlationId;
-  if (input.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (input.capabilities?.length) {
-    headers['x-relay-capabilities'] = input.capabilities.join(',');
-  }
-
-  let res: Response;
-  try {
-    res = await fetch(`http://127.0.0.1:${port}${input.pathName}`, {
-      method: input.method ?? 'GET',
-      headers,
-      ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `could not connect to Relay hub on port ${port}: ${message}`,
-      {
-        cause: error,
-      }
-    );
-  }
-
-  const text = await res.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { raw: text };
-  }
-  if (!res.ok) {
-    const upstream =
-      typeof body === 'object' && body !== null
-        ? (body as Record<string, unknown>)
-        : undefined;
-    throw new Error(gatewayErrorMessage(res.status, upstream));
-  }
-  return body;
-}
-
 function requireGatewaySessionId(
   commandName: RelayCliGatewayCommand,
   sessionArgs: string[]
@@ -1799,7 +1697,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|roster list|roster register|roster update-self|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|orchestration-runs launch|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2009,7 +1907,7 @@ async function runGatewayWorkspaces(gatewayArgs: string[]): Promise<never> {
       pathName: `/workspace-groups/${encodeURIComponent(workspaceId)}/session`,
       method: 'POST',
       body,
-      capabilities: ['session:create:agent'],
+      capabilities: ['session:create:terminal'],
     });
     printGatewayEnvelope(gatewayOk('workspaces.launch', result), 0);
   }
@@ -2528,13 +2426,8 @@ async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
     method: 'POST',
     body,
     capabilities: [
-      validated.sessionType === 'terminal'
-        ? 'session:create:terminal'
-        : 'session:create:agent',
+      'session:create:terminal',
       ...(validated.input['workspaceTopicId'] ? ['context:write'] : []),
-      ...(validated.input['controlMode'] === 'agent-driven'
-        ? ['tab:mode:set-agent']
-        : []),
     ],
   });
   printGatewayEnvelope(gatewayOk('sessions.create', session), 0);
@@ -3387,30 +3280,6 @@ async function runGatewaySessionInterventions(
   printGatewayEnvelope(gatewayOk('sessions.interventions', data), 0);
 }
 
-async function runGatewaySessionHandBack(
-  sessionArgs: string[]
-): Promise<never> {
-  const id = requireGatewaySessionId('sessions.handBack', sessionArgs);
-  const latestSeenInterventionEventId = gatewayArg(
-    sessionArgs,
-    '--latest-seen-intervention-event-id'
-  );
-  if (!latestSeenInterventionEventId) {
-    gatewayInvalid(
-      'sessions.handBack',
-      '--latest-seen-intervention-event-id is required'
-    );
-  }
-  const data = await gatewayHttpJson({
-    commandName: 'sessions.handBack',
-    pathName: `/sessions/${encodeURIComponent(id)}/control/hand-back`,
-    method: 'POST',
-    body: { latestSeenInterventionEventId },
-    capabilities: ['session:attach', 'tab:mode:set-agent'],
-  });
-  printGatewayEnvelope(gatewayOk('sessions.handBack', data), 0);
-}
-
 async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   const sessionSubcommand = gatewayArgs[1];
   const sessionArgs = gatewayArgs.slice(2);
@@ -3434,9 +3303,6 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
-  }
-  if (sessionSubcommand === 'hand-back') {
-    return runGatewaySessionHandBack(sessionArgs);
   }
   gatewayInvalid('sessions.list', 'unknown sessions command', {
     args: gatewayArgs,
@@ -3751,78 +3617,6 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('handoffs.plan', result), 0);
   }
-  if (subcommand === 'create') {
-    const input = parseGatewayInputObject('handoffs.create', handoffArgs);
-    const result = await gatewayHttpJson({
-      commandName: 'handoffs.create',
-      pathName: '/handoffs/create',
-      method: 'POST',
-      body: input,
-      capabilities: [
-        'rpc:fs:read',
-        'rpc:fs:write',
-        'session:create:agent',
-        'session:create:terminal',
-        'pty:exec:arbitrary',
-      ],
-    });
-    printGatewayEnvelope(gatewayOk('handoffs.create', result), 0);
-  }
-  if (subcommand === 'status') {
-    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--'))
-      gatewayInvalid('handoffs.status', '--run-id is required');
-    const result = await gatewayHttpJson({
-      commandName: 'handoffs.status',
-      pathName: `/handoffs/${encodeURIComponent(runId)}/status`,
-      capabilities: ['session:read'],
-    });
-    printGatewayEnvelope(gatewayOk('handoffs.status', result), 0);
-  }
-  if (subcommand === 'cancel') {
-    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--'))
-      gatewayInvalid('handoffs.cancel', '--run-id is required');
-    const actorId = gatewayArg(handoffArgs, '--actor-id');
-    const result = await gatewayHttpJson({
-      commandName: 'handoffs.cancel',
-      pathName: `/handoffs/${encodeURIComponent(runId)}/cancel`,
-      method: 'POST',
-      body: actorId ? { actorId } : {},
-      capabilities: ['session:read'],
-    });
-    printGatewayEnvelope(gatewayOk('handoffs.cancel', result), 0);
-  }
-  if (subcommand === 'resume') {
-    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--'))
-      gatewayInvalid('handoffs.resume', '--run-id is required');
-    const result = await gatewayHttpJson({
-      commandName: 'handoffs.resume',
-      pathName: `/handoffs/${encodeURIComponent(runId)}/resume`,
-      capabilities: ['session:read'],
-    });
-    printGatewayEnvelope(gatewayOk('handoffs.resume', result), 0);
-  }
-  if (subcommand === 'launch') {
-    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--'))
-      gatewayInvalid('handoffs.launch', '--run-id is required');
-    const actorId = gatewayArg(handoffArgs, '--actor-id');
-    const result = await gatewayHttpJson({
-      commandName: 'handoffs.launch',
-      pathName: `/handoffs/${encodeURIComponent(runId)}/launch`,
-      method: 'POST',
-      body: actorId ? { actorId } : {},
-      capabilities: [
-        'session:read',
-        'session:create:agent',
-        'session:create:terminal',
-        'pty:exec:arbitrary',
-      ],
-    });
-    printGatewayEnvelope(gatewayOk('handoffs.launch', result), 0);
-  }
   gatewayInvalid('handoffs.plan', 'unknown handoffs command', {
     args: gatewayArgs,
   });
@@ -4003,7 +3797,7 @@ async function runGatewaySupervisorAction(
 }
 
 function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
-  expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
+  expectedControlMode?: 'human-driven';
   latestSeenInterventionEventId?: string;
 } {
   const expectedControlMode = gatewayArg(
@@ -4011,15 +3805,11 @@ function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
     '--expected-control-mode'
   );
   const policy: {
-    expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
+    expectedControlMode?: 'human-driven';
     latestSeenInterventionEventId?: string;
   } = {};
   if (expectedControlMode !== undefined) {
-    if (
-      expectedControlMode !== 'agent-driven' &&
-      expectedControlMode !== 'human-driven' &&
-      expectedControlMode !== 'co-driven'
-    ) {
+    if (expectedControlMode !== 'human-driven') {
       gatewayInvalid(
         'supervisor.snapshot',
         '--expected-control-mode is invalid',
@@ -5073,100 +4863,6 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   });
 }
 
-async function runGatewayOrchestrationRuns(
-  gatewayArgs: string[]
-): Promise<never> {
-  const subcommand = gatewayArgs[1];
-  const launchArgs = gatewayArgs.slice(2);
-  if (subcommand !== 'launch') {
-    gatewayInvalid(
-      'orchestration-runs.launch',
-      'unknown orchestration-runs command',
-      { args: gatewayArgs }
-    );
-  }
-  const commandName: RelayCliGatewayCommand = 'orchestration-runs.launch';
-  const input = parseGatewayInputObject(commandName, launchArgs);
-  try {
-    const result = await launchOrchestrationRun(input, {
-      publishWorkflowRun: (body) =>
-        gatewayHttpJsonForLaunch({
-          commandName,
-          actorCommandName: 'workflow-runs.publish',
-          pathName: '/workflow-runs',
-          method: 'POST',
-          body,
-          capabilities: ['context:write'],
-        }),
-      updateWorkflowRun: (workflowRunId, body) =>
-        gatewayHttpJsonForLaunch({
-          commandName,
-          actorCommandName: 'workflow-runs.update',
-          pathName: `/workflow-runs/${encodeURIComponent(workflowRunId)}`,
-          method: 'PATCH',
-          body,
-          capabilities: ['context:write'],
-        }),
-      createSession: (rawBody) => {
-        const validated = validateAndSanitizeGatewayCreateInput(rawBody);
-        if (validated.ok === false) throw new Error(validated.error.message);
-        const nodeId = validated.nodeId;
-        const body = { ...validated.input };
-        delete body['nodeId'];
-        return gatewayHttpJsonForLaunch({
-          commandName,
-          actorCommandName: 'sessions.create',
-          pathName: nodeId
-            ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions`
-            : '/sessions',
-          method: 'POST',
-          body,
-          capabilities: [
-            validated.sessionType === 'terminal'
-              ? 'session:create:terminal'
-              : 'session:create:agent',
-            'context:write',
-            ...(validated.input['controlMode'] === 'agent-driven'
-              ? ['tab:mode:set-agent']
-              : []),
-          ],
-        });
-      },
-      sendInboxMessage: (body) =>
-        gatewayHttpJsonForLaunch({
-          commandName,
-          actorCommandName: 'inbox.send',
-          pathName: '/inbox',
-          method: 'POST',
-          body,
-          capabilities: ['inbox:write'],
-        }),
-    });
-    printGatewayEnvelope(gatewayOk(commandName, result), 0);
-  } catch (error) {
-    if (error instanceof OrchestrationLaunchValidationError) {
-      printGatewayEnvelope(
-        gatewayError(commandName, {
-          code: 'INVALID_ARGUMENT',
-          message: error.message,
-          retryable: false,
-          details: error.details,
-        }),
-        1
-      );
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    printGatewayEnvelope(
-      gatewayError(commandName, {
-        code: 'UPSTREAM_ERROR',
-        message,
-        retryable: true,
-      }),
-      1
-    );
-  }
-}
-
 function automationRunListSearch(runArgs: string[]): string {
   const query = new URLSearchParams();
   for (const [flag, key] of [
@@ -5593,62 +5289,6 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
   });
 }
 
-async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
-  const subcommand = gatewayArgs[1];
-  const rosterArgs = gatewayArgs.slice(2);
-  if (subcommand === 'register') {
-    const input = parseGatewayInputObject('roster.register', rosterArgs);
-    const result = await gatewayHttpJson({
-      commandName: 'roster.register',
-      pathName: '/roster/register',
-      method: 'POST',
-      body: input,
-      capabilities: ['context:write'],
-    });
-    printGatewayEnvelope(gatewayOk('roster.register', result), 0);
-  }
-  if (subcommand === 'update-self') {
-    const input = parseGatewayInputObject('roster.updateSelf', rosterArgs);
-    const result = await gatewayHttpJson({
-      commandName: 'roster.updateSelf',
-      pathName: '/roster/update-self',
-      method: 'POST',
-      body: input,
-      capabilities: ['context:write'],
-    });
-    printGatewayEnvelope(gatewayOk('roster.updateSelf', result), 0);
-  }
-  if (subcommand === 'list') {
-    const query = new URLSearchParams();
-    const workContextId = gatewayArg(rosterArgs, '--work-context-id');
-    const repo = gatewayArg(rosterArgs, '--repo');
-    const nodeId = gatewayArg(rosterArgs, '--node-id');
-    const provider = gatewayArg(rosterArgs, '--provider');
-    const role = gatewayArg(rosterArgs, '--role');
-    const limit = gatewayArg(rosterArgs, '--limit');
-    if (workContextId) query.set('workContextId', workContextId);
-    if (repo) query.set('repo', repo);
-    if (nodeId) query.set('nodeId', nodeId);
-    if (provider) query.set('provider', provider);
-    if (role) query.set('role', role);
-    if (limit) query.set('limit', limit);
-    if (rosterArgs.includes('--include-terminals'))
-      query.set('includeTerminals', 'true');
-    if (rosterArgs.includes('--needs-attention'))
-      query.set('needsAttention', 'true');
-    const search = query.toString();
-    const result = await gatewayHttpJson({
-      commandName: 'roster.list',
-      pathName: search ? `/roster?${search}` : '/roster',
-      capabilities: ['session:read'],
-    });
-    printGatewayEnvelope(gatewayOk('roster.list', result), 0);
-  }
-  gatewayInvalid('roster.list', 'unknown roster command', {
-    args: gatewayArgs,
-  });
-}
-
 async function readGatewayCockpitGroups(
   commandName: RelayCliGatewayCommand
 ): Promise<TerminalCockpitActiveGroupInput[]> {
@@ -5899,13 +5539,11 @@ async function runGatewayV1(): Promise<never> {
       'work-context-artifacts': runGatewayWorkContextArtifacts,
       'handoff-artifacts': runGatewayHandoffArtifacts,
       'workflow-runs': runGatewayWorkflowRuns,
-      'orchestration-runs': runGatewayOrchestrationRuns,
       'automation-runs': runGatewayAutomationRuns,
       'pr-overseer': runGatewayPrOverseer,
       'workspace-surfaces': runGatewayWorkspaceSurfaces,
       'workspace-topics': runGatewayWorkspaceTopics,
       channels: runGatewayChannels,
-      roster: runGatewayRoster,
       cockpit: runGatewayCockpit,
       artifacts: runGatewayArtifacts,
       supervisor: runGatewaySupervisor,
@@ -6673,7 +6311,8 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
       name: 'hub.health',
       status: 'skip',
       reason: 'CHECK_SKIPPED',
-      message: 'unauthenticated health check skipped because hub reachability failed.',
+      message:
+        'unauthenticated health check skipped because hub reachability failed.',
     });
   }
   let nodes: HubNodeSummary[] = [];
@@ -6874,8 +6513,6 @@ interface NodeDoctorResult {
     description: string;
     severity: string;
   }>;
-  rmuxCapability?: RmuxCapabilityProbe;
-  rmuxR0Checklist?: RmuxR0ChecklistItem[];
   hubUrl?: string;
   hubReachable?: boolean;
   hubError?: string;
@@ -6937,22 +6574,6 @@ function collectNodeDoctorReasons(
   return all;
 }
 
-function printRmuxDoctorHuman(rmux: RmuxCapabilityProbe | undefined): void {
-  if (!rmux) return;
-  logger.info(
-    `rmux optional capability: ${rmux.status} | binary: ${rmux.binaryPresent ? 'yes' : 'no'} | helper: ${rmux.helperPresent ? 'yes' : 'no'} | ipc: ${rmux.ipc.kind}`
-  );
-  if (rmux.version) logger.info(`  rmux version: ${rmux.version}`);
-  if (rmux.binaryPath) logger.info(`  rmux binary: ${rmux.binaryPath}`);
-  if (rmux.helperPath && rmux.helperPath !== rmux.binaryPath)
-    logger.info(`  rmux helper: ${rmux.helperPath}`);
-  logger.info(`  rmux probe: ${rmux.message}`);
-  logger.info(`  rmux ipc shape: ${rmux.ipc.shape}`);
-  for (const item of rmux.r0Checklist) {
-    logger.info(`  rmux R0 ${item.status} ${item.id}: ${item.message}`);
-  }
-}
-
 /** Print the human-readable doctor report. */
 function printNodeDoctorHuman(
   manifest: NodeManifest,
@@ -6973,7 +6594,6 @@ function printNodeDoctorHuman(
   logger.info(
     `service installed: ${st.installed ? 'yes' : 'no'} | running: ${st.running ? 'yes' : 'no'}`
   );
-  printRmuxDoctorHuman(manifest.capabilities.rmux);
   for (const caveat of manifest.serviceManager.caveats) {
     logger.info(`  caveat: ${caveat}`);
   }
@@ -7036,12 +6656,6 @@ async function runNodeDoctor(
         message: manifest.serviceManager.message,
       },
       degradedReasons: allDegraded,
-      ...(manifest.capabilities.rmux !== undefined
-        ? {
-            rmuxCapability: manifest.capabilities.rmux,
-            rmuxR0Checklist: manifest.capabilities.rmux.r0Checklist,
-          }
-        : {}),
       ...(hubUrl !== undefined ? { hubUrl } : {}),
       ...(hubCheck.reachable !== undefined
         ? { hubReachable: hubCheck.reachable }
@@ -8625,11 +8239,8 @@ if (command === 'worktree') {
     process.exit(0);
   }
 
-  // Handle 'add' -- strip --yolo, determine path, forward to git, then launch claude
-  const hasYolo = wtArgs.includes('--yolo');
-  const gitWtArgs = wtArgs.filter(function (a) {
-    return a !== '--yolo';
-  });
+  // Handle 'add': determine a default path when omitted, then forward to git.
+  const gitWtArgs = [...wtArgs];
   const addSubArgs = gitWtArgs.slice(1);
   let targetDir: string | undefined;
 
@@ -8669,26 +8280,7 @@ if (command === 'worktree') {
   }
 
   logger.info(`Worktree created at ${targetDir}`);
-
-  const claudeArgs: string[] = [];
-  if (hasYolo) claudeArgs.push('--dangerously-skip-permissions');
-
-  logger.info(
-    `Launching claude${hasYolo ? ' (yolo mode)' : ''} in ${targetDir}...`
-  );
-
-  const child = spawn('claude', claudeArgs, {
-    cwd: targetDir,
-    stdio: 'inherit',
-    env: { ...process.env, CLAUDECODE: undefined },
-  });
-
-  child.on('exit', (code) => {
-    process.exit(code ?? 0);
-  });
-
-  // Block until child exits via the handler above
-  await new Promise(() => {});
+  process.exit(0);
 }
 
 if (command === 'sessions') {
@@ -8754,30 +8346,6 @@ if (command === 'sessions') {
       process.exit(0);
     }
 
-    if (subCommand === 'hand-back') {
-      const sessionId = sessionArgs[1];
-      const latestSeenInterventionEventId = getNodeArg(
-        sessionArgs,
-        '--latest-seen-intervention-event-id'
-      );
-      if (!sessionId || !latestSeenInterventionEventId) {
-        logger.error(
-          'Usage: relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>'
-        );
-        process.exit(1);
-      }
-      const data = await scopedSessionRequest(
-        `/sessions/${encodeURIComponent(sessionId)}/control/hand-back`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ latestSeenInterventionEventId }),
-        }
-      );
-      console.log(JSON.stringify(data, null, 2));
-      process.exit(0);
-    }
-
     if (subCommand === 'scoped' && sessionArgs[1] === 'list') {
       const includeRevoked = sessionArgs.includes('--include-revoked')
         ? '1'
@@ -8825,7 +8393,6 @@ if (command === 'sessions') {
 Commands:
   relay-ide sessions get <session-id>
   relay-ide sessions interventions <session-id> [--limit <n>]
-  relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>
   relay-ide sessions scoped list [--include-revoked] [--active-only]
   relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]
 

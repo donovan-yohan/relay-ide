@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   mapAgentPatchV2ToChatEvents,
@@ -488,17 +486,5 @@ describe('Agent Chat v1 compatibility bridge', () => {
         delta: 'hello',
       },
     ]);
-  });
-
-  it('documents that the module is temporary and removed in Task 9', () => {
-    const source = readFileSync(
-      fileURLToPath(
-        new URL('../shared/agent-chat-v1-compat.ts', import.meta.url)
-      ),
-      'utf8'
-    );
-
-    expect(source).toContain('temporary');
-    expect(source).toContain('Task 9');
   });
 });

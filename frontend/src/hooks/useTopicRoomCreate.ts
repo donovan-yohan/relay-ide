@@ -1,15 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
-  WorkspaceTopic,
   WorkspaceTopicCreateInput,
   WorkspaceTopicLaunchIntent,
 } from '../../../shared/workspace-topics.js';
 import {
-  createWorkspaceTopic,
   createWorkspaceTopicRoomAndMaybeLaunch,
   fetchHubNodes,
-  fetchWorkspaceTopic,
   launchWorkspaceTopicRoom,
   postChannelMessage,
   HttpError,
@@ -19,14 +16,13 @@ import {
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
-  deriveTopicProviderLaunchMode,
   deriveTopicProviderOptions,
   effectiveDraftTitle,
   uniqueStrings,
   TOPIC_ROOM_DRAFT_EMPTY,
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
-import { dmChannelCreateInput, dmChannelTopicId } from '../lib/dm-channels.js';
+import { getOrCreateDmChannel } from '../lib/agent-channels.js';
 import { createBrowserId } from '../lib/browserId.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
@@ -35,29 +31,6 @@ import { useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import type { SessionSummary } from '../lib/types.js';
-
-/**
- * Get-or-create the deterministic per-(workspace, framework) DM channel (#1166).
- * Does I/O (so it lives here, not in the pure `dm-channels` module): a GET, and
- * on 404 a bare-topic create. Shared by every DM entry point (TopicComposer,
- * CustomizeSessionDialog). Re-opening the same DM reuses the same channel id, so
- * no duplicate DM channels are ever created.
- */
-export async function getOrCreateDmChannel(input: {
-  providerId: string;
-  providerDisplayName: string;
-  workspaceId: string | null;
-}): Promise<WorkspaceTopic> {
-  const id = dmChannelTopicId(input.providerId, input.workspaceId);
-  try {
-    return await fetchWorkspaceTopic(id);
-  } catch (err) {
-    if (err instanceof HttpError && err.status === 404) {
-      return createWorkspaceTopic(dmChannelCreateInput(input));
-    }
-    throw err;
-  }
-}
 
 /**
  * #1058: stateful draft + create/launch plumbing for codex-style topic
@@ -187,21 +160,6 @@ export function useTopicRoomCreate({
       taskRef,
     ]
   );
-  const launchMode = useMemo(
-    () =>
-      deriveTopicProviderLaunchMode(
-        previewCreate.routingDefaults?.providerId ?? defaultAgent,
-        draft.templateKind,
-        frameworks
-      ),
-    [
-      defaultAgent,
-      draft.templateKind,
-      frameworks,
-      previewCreate.routingDefaults,
-    ]
-  );
-
   const updateDraft = useCallback((patch: Partial<TopicRoomDraft>) => {
     setDraft((current) => ({ ...current, ...patch }));
     setCreatedRoom(null);
@@ -264,13 +222,11 @@ export function useTopicRoomCreate({
     async (intent: WorkspaceTopicLaunchIntent) => {
       if (!effectiveTitle) return;
 
-      // #1166: a web-mode agent launch is now a DM channel, not a mode:'web'
-      // session. Get-or-create the deterministic DM channel, post the first
-      // message into it, and open ChannelView — never spawn a web session.
+      // Agent work is channel-native. Get-or-create the deterministic DM,
+      // post the first message, and open ChannelView. Agent tasks never create
+      // user-visible sessions.
       const willLaunchToChannel =
-        intent === 'create-and-launch' &&
-        draft.templateKind === 'agent-task' &&
-        launchMode === 'web';
+        intent === 'create-and-launch' && draft.templateKind === 'agent-task';
       if (willLaunchToChannel) {
         setSubmittingIntent('create-and-launch');
         setLaunchFailure(null);
@@ -404,7 +360,6 @@ export function useTopicRoomCreate({
       draft.templateKind,
       effectiveTitle,
       frameworks,
-      launchMode,
       previewCreate,
       queryClient,
       selectedProviderId,
@@ -426,7 +381,6 @@ export function useTopicRoomCreate({
     providerOptions,
     selectedProviderId,
     selectedProviderOption,
-    launchMode,
     nodeOptions,
     repoPathOptions,
     worktreePathOptions,

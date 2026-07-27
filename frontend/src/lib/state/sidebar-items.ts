@@ -10,26 +10,26 @@ import { sortByAttention } from './attention.js';
 import { scopedSessionKey } from '../session-keys.js';
 
 /**
- * Derive a BackendDisplayState from a session's agentState and idle flag.
+ * Derive a BackendDisplayState from a session's activityState and idle flag.
  * Priority order (highest first): permission > error > running > initializing > idle
  *
  * Mirrors server/sessions.ts computeBackendState — keep in sync.
- * The idle flag is a fallback for sessions without a defined agentState.
+ * The idle flag is a fallback for sessions without a defined activityState.
  */
 function sessionToBackendState(session: SessionSummary): BackendDisplayState {
-  const { agentState, idle, createdAt } = session;
-  if (agentState === 'permission-prompt') return 'permission';
-  if (agentState === 'error') return 'error';
-  if (agentState === 'processing') return 'running';
-  if (agentState === 'initializing') return 'initializing';
-  // For brand-new sessions without a defined agentState, treat as initializing
+  const { activityState, idle, createdAt } = session;
+  if (activityState === 'permission-prompt') return 'permission';
+  if (activityState === 'error') return 'error';
+  if (activityState === 'processing') return 'running';
+  if (activityState === 'initializing') return 'initializing';
+  // For brand-new sessions without a defined activityState, treat as initializing
   // rather than running to avoid flashing the active indicator at 0s duration
   const isVeryNew = createdAt
     ? Date.now() - new Date(createdAt).getTime() < 30_000
     : false;
-  if (!agentState && !idle && isVeryNew) return 'initializing';
-  // For sessions without agentState (e.g. terminal sessions), fall back to the idle timer flag
-  if (!agentState && !idle) return 'running';
+  if (!activityState && !idle && isVeryNew) return 'initializing';
+  // For sessions without activityState (e.g. terminal sessions), fall back to the idle timer flag
+  if (!activityState && !idle) return 'running';
   return 'idle';
 }
 
@@ -142,10 +142,17 @@ function buildSidebarItem(
 }
 
 function sessionGroupPath(session: SessionSummary): string {
-  return session.worktreePath ?? session.repoPath ?? `session:${scopedSessionKey(session)}`;
+  return (
+    session.worktreePath ??
+    session.repoPath ??
+    `session:${scopedSessionKey(session)}`
+  );
 }
 
-function sessionDisplayPath(session: SessionSummary, groupPath: string): string {
+function sessionDisplayPath(
+  session: SessionSummary,
+  groupPath: string
+): string {
   return session.repoPath ?? session.cwd ?? groupPath;
 }
 

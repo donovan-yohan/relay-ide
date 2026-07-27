@@ -169,9 +169,8 @@ function workContext(id = 'wc-topic-1'): WorkContext {
       session: {
         nodeId: 'node-local',
         sessionId: 'session-1',
-        tabKind: 'agent',
+        tabKind: 'terminal',
         cwd: '/repo',
-        agent: 'hermes',
       },
       repo: { localPath: '/repo' },
       worktree: { localPath: '/repo/.worktrees/one' },
@@ -256,22 +255,34 @@ describe('workspace topics foundation', () => {
       workspaceTopicId: topic.id,
       repoPath: '/repo',
       worktreePath: '/repo/.worktrees/topic',
-      agent: 'hermes',
       nodeId: 'devbox',
       workContextId: 'wc-topic',
-      initialPrompt: 'explicit prompt',
-      yolo: true,
     });
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { initialPrompt: 'explicit prompt', yolo: true },
+      })
+    ).not.toHaveProperty('agent');
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { initialPrompt: 'explicit prompt', yolo: true },
+      })
+    ).not.toHaveProperty('initialPrompt');
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { initialPrompt: 'explicit prompt', yolo: true },
+      })
+    ).not.toHaveProperty('yolo');
 
     expect(
       buildWorkspaceTopicSessionCreateBody({
         topic,
         overrides: { initialPrompt: '', workContextId: '' },
       })
-    ).toMatchObject({
-      workContextId: 'wc-topic',
-      initialPrompt: 'resume this topic\n\nkeep the workspace context attached',
-    });
+    ).toMatchObject({ workContextId: 'wc-topic' });
 
     expect(
       buildWorkspaceTopicSessionCreateBody({
@@ -281,7 +292,6 @@ describe('workspace topics foundation', () => {
     ).toMatchObject({
       repoPath: '/repo',
       worktreePath: null,
-      agent: 'hermes',
       nodeId: 'devbox',
     });
 
@@ -343,18 +353,20 @@ describe('workspace topics foundation', () => {
       buildWorkspaceTopicLaunchPreview({
         create,
         intent: 'create-and-launch',
-        launchOverrides: { agent: 'claude', mode: 'web', cwd: '/repo/relay' },
+        launchOverrides: {
+          mode: 'channel',
+          cwd: '/repo/relay',
+        },
       })
     ).toMatchObject({
       intent: 'create-and-launch',
-      providerLabel: 'claude',
-      modeLabel: 'web',
+      providerLabel: 'hermes (mode explicit)',
+      modeLabel: 'channel',
       cwdLabel: '/repo/relay/.worktrees/1045',
       sideEffects: [
         'create WorkspaceTopic room',
         'create WorkContext link for this room',
-        'launch provider-neutral session through sessions.create',
-        'link created session back to WorkspaceTopic/WorkContext',
+        'open provider DM channel and post the first message',
       ],
     });
   });
@@ -747,7 +759,6 @@ describe('workspace topics foundation', () => {
         artifactIds: ['artifact-1'],
       },
       routingDefaults: {
-        providerId: 'hermes',
         nodeId: 'node-local',
         repoPath: '/repo',
         worktreePath: '/repo/.worktrees/one',

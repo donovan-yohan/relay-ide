@@ -30,11 +30,12 @@ import {
   createChannelMessageStore,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import { createChannelChatRouter } from '../server/channel-chat-router.js';
 import {
   createChannelAgentBinder,
-  type BinderSessions,
+  type BinderRuntimes,
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
@@ -51,7 +52,7 @@ import {
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
-import type { Session, WebSession } from '../server/types.js';
+import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -71,8 +72,7 @@ const TARGETS: MentionTarget[] = [
     displayName: 'Codex',
     kind: 'framework',
     available: false,
-    reason:
-      'Codex web sessions do not yet stream chat responses (see issue #301).',
+    reason: 'Codex is not currently available in channels.',
   },
 ];
 
@@ -156,13 +156,14 @@ interface Harness {
 function makeSessions(
   build: (agentType: string) => ProtocolAdapterV2,
   adapters: ProtocolAdapterV2[]
-): BinderSessions {
-  const created = new Map<string, WebSession>();
+): BinderRuntimes {
+  const created = new Map<string, ChannelAgentRuntime>();
+  const endHandlers = new Set<(id: string) => void>();
   let n = 0;
   return {
-    async createWeb(params) {
-      const id = `sess-${++n}-${params.agentType}`;
-      const adapter = build(params.agentType);
+    async create(params) {
+      const id = `sess-${++n}-${params.providerId}`;
+      const adapter = build(params.providerId);
       adapters.push(adapter);
       await adapter.connect({
         cwd: params.cwd,
@@ -171,21 +172,30 @@ function makeSessions(
         hookToken: 't',
         configDir: params.configDir,
       });
-      const session = {
+      const runtime = {
         id,
-        mode: 'web',
-        agent: params.agentType,
-        adapterV2: adapter,
+        providerId: params.providerId,
+        profileActorId: params.profileActorId,
+        status: 'active',
+        adapter,
         cwd: params.cwd,
-      } as unknown as WebSession;
-      created.set(id, session);
-      return { session };
+        providerSession: {},
+      } as unknown as ChannelAgentRuntime;
+      created.set(id, runtime);
+      return runtime;
     },
     get(id) {
-      return created.get(id) as unknown as Session | undefined;
+      return created.get(id);
     },
-    onSessionEnd() {
-      return () => {};
+    async destroy(id) {
+      const runtime = created.get(id);
+      if (!runtime) return;
+      created.delete(id);
+      for (const handler of endHandlers) handler(id);
+    },
+    onRuntimeEnd(handler) {
+      endHandlers.add(handler);
+      return () => endHandlers.delete(handler);
     },
   };
 }
@@ -263,7 +273,7 @@ async function harness(
     store,
     hub,
     topicStore,
-    sessions: makeSessions(build, adapters),
+    runtimes: makeSessions(build, adapters),
     knownProviderIds: ['mock', 'claude', 'codex', 'opencode', 'hermes'],
     mentionTargets: async () => TARGETS,
     port: 0,
@@ -353,7 +363,7 @@ function agentReply(store: ChannelMessageStore, channelId: string) {
 }
 
 describe('mention routing — end-to-end via the router', () => {
-  it('a browser @mock post spawns a mock web session and streams the reply back', async () => {
+  it('a browser @mock post spawns a channel runtime and streams the reply back', async () => {
     const h = await harness();
     const res = await req<{ message: ChannelMessage }>({
       port: h.port,
@@ -371,9 +381,8 @@ describe('mention routing — end-to-end via the router', () => {
     expect(reply.parentMessageId).toBeNull();
     // cursor advanced to the trigger seq
     expect(
-      h.store.getBinding(h.channelId, 'mock')?.providerSession[
-        'lastDeliveredSeq'
-      ]
+      h.store.getBinding(h.channelId, builtInAgentProfileId('mock'))
+        ?.providerSession['lastDeliveredSeq']
     ).toBe(res.body.message.seq);
   });
 
@@ -447,9 +456,8 @@ describe('mention routing — end-to-end via the router', () => {
     // Thread delivery must not advance the channel-global cursor. Otherwise a
     // later top-level mention would silently skip intervening channel rows.
     expect(
-      h.store.getBinding(h.channelId, 'mock')?.providerSession[
-        'lastDeliveredSeq'
-      ]
+      h.store.getBinding(h.channelId, builtInAgentProfileId('mock'))
+        ?.providerSession['lastDeliveredSeq']
     ).toBeUndefined();
     await req({
       port: h.port,
@@ -568,7 +576,7 @@ describe('mention routing — end-to-end via the router', () => {
     expect(mock.available).toBe(true);
     const codex = res.body.roster.find((r) => r.providerId === 'codex')!;
     expect(codex.available).toBe(false);
-    expect(codex.reason).toContain('#301');
+    expect(codex.reason).toContain('not currently available in channels');
   });
 
   it('interrupt returns 409 NO_ACTIVE_TURN when the agent is idle', async () => {

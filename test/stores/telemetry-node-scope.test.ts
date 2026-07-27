@@ -14,8 +14,7 @@ import { useTelemetryStore } from '../../frontend/src/lib/stores/telemetry.js';
 
 const nodeASession: SessionSummary = {
   id: 'same-local-id',
-  type: 'agent',
-  agent: 'claude',
+  type: 'terminal',
   mode: 'pty',
   repoName: 'relay-ide',
   repoPath: '/node-a/relay-ide',
@@ -132,8 +131,9 @@ describe('telemetry store node-scoped sessions', () => {
       '2026-05-11T00:00:00.000Z'
     );
 
-    expect(Object.keys(useTelemetryStore.getState().sessionTelemetryById).sort())
-      .toEqual(['node-a:same-local-id', 'node-b:same-local-id']);
+    expect(
+      Object.keys(useTelemetryStore.getState().sessionTelemetryById).sort()
+    ).toEqual(['node-a:same-local-id', 'node-b:same-local-id']);
 
     useTelemetryStore.getState().pruneSessionTelemetry([nodeBSession]);
 
@@ -142,8 +142,8 @@ describe('telemetry store node-scoped sessions', () => {
       'node-b:same-local-id',
     ]);
     expect(latest.summarizeSessionTelemetry(nodeASession)).toBeNull();
-    expect(latest.summarizeSessionTelemetry(nodeBSession)?.totalInputTokens).toBe(
-      22
-    );
+    expect(
+      latest.summarizeSessionTelemetry(nodeBSession)?.totalInputTokens
+    ).toBe(22);
   });
 });

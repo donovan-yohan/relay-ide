@@ -7,14 +7,20 @@ Categories: `architecture` | `testing` | `patterns` | `workflow` | `debugging` |
 
 ---
 
-### L-20260320-alternate-screen-scroll: Non-tmux alternate screen sessions need a viewport freeze layer to support scroll during streaming
+### L-20260320-alternate-screen-scroll: Alternate-screen terminals need a viewport freeze layer to support scroll during streaming
 
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-20
 - branch: master
 
-When building terminal features for alternate screen apps (Claude Code, vim), remember that xterm.js has no scrollback in alternate screen mode (baseY=0). Scroll events reach the TUI app correctly, but the TUI's continuous re-rendering during streaming immediately overrides scroll position. Any feature requiring user-controlled scrolling in non-tmux alternate screen sessions must implement an intermediary buffer layer (screen snapshotting or output gating) — simply forwarding scroll events is insufficient. Tmux copy-mode provides this layer automatically, which is why tmux sessions don't have this problem.
+When building terminal features for alternate-screen apps such as vim,
+remember that xterm.js has no scrollback in alternate-screen mode (`baseY=0`).
+Scroll events reach the TUI correctly, but continuous re-rendering during
+streaming immediately overrides the scroll position. A feature requiring
+user-controlled scrolling must implement an intermediary buffer layer, such as
+screen snapshotting or output gating; simply forwarding scroll events is
+insufficient.
 
 ---
 
@@ -109,17 +115,6 @@ The org dashboard backend queries `is:open` in its GitHub search. The frontend "
 - branch: fix-sidenav-tabs-isolation
 
 When a sidebar row represents a group of sessions (e.g., all tabs for a worktree), the row's name and icon must come from the group's identity (worktree path, branch name), not from a "representative" session selected by recency. Picking the most-recently-active session as the representative leaks tab-level details (session type, auto-generated tab name) into the sidebar. Tab identity belongs to the tab bar; sidebar identity belongs to the worktree/group. When adding grouped UI patterns, always ask: "does the group's display change when the user interacts with an individual item within it?"
-
----
-
-### L-20260322-session-creation-params: Session creation parameters must be stored on the session object if they need to survive restarts
-
-- status: active
-- category: architecture
-- source: /harness:bug 2026-03-22
-- branch: erebus
-
-When session creation accepts flags that affect runtime behavior (yolo mode, custom CLI args, continue mode), these must be stored on the Session object — not just consumed to build a spawn command and discarded. The serialization/restoration cycle can only preserve what's on the session object. In this project, `yolo`, `claudeArgs`, and `args` were converted to CLI arguments at route handler level and passed through to `createPtySession()` as a transient `args` parameter, making it impossible to serialize them for post-update restoration. When adding any creation-time parameter that should persist across restarts, add it to both the `PtySession` interface and `SerializedPtySession`.
 
 ---
 
@@ -383,18 +378,12 @@ When a config field changes its type (e.g., `Config.workspaces` from `string[]` 
 - source: /harness:bug 2026-03-28
 - branch: nightly
 
-When a system uses whitelist-based serialization (`SerializedPtySession` manually picks fields from `PtySession`), adding a new property to the runtime type does NOT cause a compile error if serialization is missing. This has caused the same bug class three times: `tmuxSessionName` (2026-03-17), `yolo`/`claudeArgs` (2026-03-22), `hookToken`/`hooksActive` (2026-03-28). When adding any property to a long-lived object that participates in serialization, always check the serialized type and `serializeAll()`. Better: use `Pick<>` or a compile-time exhaustiveness check so TypeScript flags the gap.
-
----
-
-### L-20260328-surviving-process-stale-config: When a process survives a restart of its parent, the parent must accept the process's stale credentials — not just its own fresh ones
-
-- status: active
-- category: architecture
-- source: /harness:bug 2026-03-28
-- branch: nightly
-
-When process A (server) spawns process B (Claude Code in tmux) with credentials (hookToken), and process A restarts while process B survives (tmux daemon keeps B alive), the restarted A must still accept B's original credentials. Generating fresh credentials for the "restored" session while the old process still holds the original credentials creates an authentication mismatch. Either serialize and restore the original credentials, or have a mechanism to re-provision credentials to the surviving process.
+When a system uses whitelist-based serialization and manually picks fields from
+a runtime object, adding a property to the runtime type does not cause a
+compile error when serialization is missing. When adding any property to a
+long-lived object that participates in serialization, check the serialized
+type and serializer. Prefer `Pick<>` or a compile-time exhaustiveness check so
+TypeScript flags the gap.
 
 ---
 
@@ -405,7 +394,12 @@ When process A (server) spawns process B (Claude Code in tmux) with credentials 
 - source: /harness:bug 2026-03-28
 - branch: nightly
 
-Even with the current `getTmuxPrefix()` implementation, the same pitfall applies if a module computes a value from it at import time (for example, `const tmuxPrefix = getTmuxPrefix();` at module scope). That expression is evaluated when the module is first imported. Tests that import this module get whatever dev-identity environment (`RELAY_IDE_DEV_INSTANCE`, `RELAY_IDE_TMUX_PREFIX`) was present at import time — the value cannot be changed per-test. If the user's shell exports dev-mode variables, all tests in the same process see the dev value. Either: (1) make it a function that can be called with explicit parameters, (2) use a getter that reads the env on each access, or (3) ensure tests clean the environment before importing the module.
+If a module computes a value from `process.env` at module scope, that
+expression is evaluated when the module is first imported. Tests then inherit
+whatever environment was present at import time and cannot change it per case.
+Either make it a function with explicit parameters, use a getter that reads the
+environment on access, or ensure tests clean the environment before importing
+the module.
 
 ---
 
@@ -416,7 +410,13 @@ Even with the current `getTmuxPrefix()` implementation, the same pitfall applies
 - source: /harness:reflect 2026-03-28
 - branch: fix/hooks-403-after-restart
 
-When a server serializes a session's authentication token (e.g., hookToken) and restores it on restart, the token alone is not enough. If the spawned process reads its credentials from a config file on disk (e.g., Claude Code's `--settings` hooks-settings.json in `/tmp/`), that file may have been cleaned up by the OS between restarts. The restore path must distinguish two scenarios: (1) surviving process (e.g., tmux attach) — the old process already has the file path and the file likely still exists, no re-creation needed; (2) dead process being respawned — the new process needs the config file re-written to disk AND the `--settings` arg injected into its spawn args. Gating the file-write block on "token already exists" silently skips file creation for case (2), leaving the new process without its configuration. When preserving credentials across restarts, always ask: "does the consumer need a file on disk, or just an in-memory token?"
+When a runtime reads credentials from a generated config file, preserving an
+in-memory token alone is not enough: the OS may remove the file before the
+runtime is recreated. A newly spawned runtime needs the config file written
+again and the provider launch argument restored. Gating file creation on
+“token already exists” silently leaves the new runtime unconfigured. When
+preserving credentials, ask whether the consumer needs an on-disk artifact or
+only the in-memory value.
 
 ---
 
@@ -525,19 +525,26 @@ In relay-ide's Terminal.tsx, the WebGPU renderer addon should be skipped when `i
 
 ---
 
-## May 2026 — routed PTY hardening
+## May 2026 — routed terminal hardening
 
-Consolidated cross-session learnings from PR #583 (routed Active Work live controls), #585 (routed terminal shell liveness, commit `7fdfc3b4`), #587/#588 (routed agent runtime spawn, commits `d2ffe567` / `083ec3be`), and the earlier #470 / #491 / #493 / #499 control-mode work. Routing a PTY across the hub/node boundary is not "PTY plus a websocket" — every assumption a local PTY makes about the calling process is wrong by default in the routed path.
+The original work also experimented with routed public agent sessions. That
+model is retired by ADR-020: public routed sessions are terminal-only, while
+agents participate through channels and DMs. The transport lessons that remain
+current are:
 
-- L-20260517-routed-control-mode-default: routed sessions must declare a concrete `controlMode` at create time. Defaulting to `unknown` looks safe but downgrades Active Work to read-only and hides the bug behind disabled buttons. Treat `unknown` as a parser failure, not a valid state.
-- L-20260517-active-work-event-scoping: routed Active Work invalidation must scope on the global session id (`node_<nodeId>:<sessionId>`), not the local `sessionId`. Surfaces mounted before the create finished will keep stale data forever if invalidation hits the wrong key. Pairs with L-20260325-ws-query-invalidation.
-- L-20260517-policy-default-capabilities: legacy security policies need a sensible default for every capability the routed path checks at runtime, not just the ones present when the policy was written. Missing `tab-mode` flipped routed creates between agent and human control state depending on which evaluator branch ran first.
-- L-20260518-routed-create-no-command-fallback: the node-link RPC host must own the "no command" default for routed terminals — the browser does not send `command` and the node cannot prompt. Without a `defaultTerminalCommand()` fallback the PTY spawns nothing, exits in milliseconds, and Active Work falls back to last-known-only.
-- L-20260518-routed-agent-command-suppression: for `type: agent` routed creates, a `command` field arriving from the hub/browser is always wrong — even when it looks harmless. The native runtime is selected by `agent: codex|hermes|claude`, and any browser-supplied `command` will silently win and start a shell while metadata still says "agent". The boundary check belongs at the node-link RPC host, not deeper.
-- L-20260518-attach-to-live-native-session: routed PTY attach must bind to an existing native session via `localRelayNode.sessions.get(sessionId)` before falling back to spawning a new PTY. Re-spawning on attach was the second half of the "agent says codex, PTY says zsh" bug — even after #588 fixed the spawn path, attach kept opening a fresh shell.
-- L-20260518-detach-must-not-kill: in the routed attach path, browser detach must close the stream but leave the native process running for later reattach. The default "close attachment" behaviour kills the PTY, which silently broke handoff/resume even when everything else looked correct.
-- L-20260518-version-skew-masquerades: routed-PTY bugs love version skew. A hub on the fix and a Mac node still on a pre-fix nightly looks identical in Active Work but reproduces the original symptom (shell instead of agent, dead terminal, read-only controls). `relay-ide hub nodes --json` plus `--version` on both sides is the cheapest first check before opening a regression issue.
-- L-20260518-bounded-frame-as-proof: routed-agent metadata (`type: agent`, `agent: codex`, `controlMode: agent-driven`, `controlFreshness: fresh`) is necessary but not sufficient proof. The bounded PTY frame must show the runtime banner — `[oh-my-zsh] Would you like to update?` is a regression signal even when every metadata field looks correct.
-- L-20260518-control-mode-audit-stays-on-source: the #470 / #491 / #493 / #499 invariant still holds through all of these fixes. Control-mode changes and human interventions on `agent-driven` tabs emit hash-chained audit envelopes, but raw keystrokes/bytes never leave the source system. Every new routed-PTY surface (mobile attach/send, second-client reattach, Active Work refresh) must respect that — bounded summaries and event ids only.
+- New routed terminals use the concrete `human-driven` control mode. `unknown`
+  is a stale or malformed compatibility state, not a valid create default.
+- Routed Active Work invalidation scopes on the global session id
+  (`node_<nodeId>:<sessionId>`), not the local `sessionId`.
+- The node-link RPC host owns the “no command” fallback for routed terminals
+  because a remote node cannot prompt.
+- Browser detach closes the attachment stream but leaves the terminal process
+  running for later reattach.
+- Compare hub and node versions before diagnosing routed-terminal liveness or
+  control-state failures.
+- Metadata alone does not prove a routed terminal is usable; verify a bounded
+  rendered frame on the real surface.
+- Bounded audit summaries may cross the hub/node boundary, but raw keystrokes
+  and terminal bytes stay on the source system.
 
 ---

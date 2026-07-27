@@ -315,7 +315,6 @@ const expectedInventoryCoverage = [
       '/sessions/:id',
       '/sessions/:id/replay',
       '/sessions/:id/interventions',
-      '/sessions/:id/control/hand-back',
       '/sessions/:id/input',
       '/supervisor/sessions',
       '/supervisor/actions/:action',

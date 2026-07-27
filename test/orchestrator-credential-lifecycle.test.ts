@@ -15,11 +15,14 @@ function credential(
 ): ScopedActorCredentialRecord {
   return {
     id,
-    actor: { type: 'agent', id: 'session-orchestrator' },
+    actor: { type: 'agent', id: 'agent-profile:test' },
     issuer: { id: 'relay-ide' },
     audience: 'relay:cli-gateway:v1',
     capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
-    scope: { taskRefs: ['relay:cli-gateway:v1:read'] },
+    scope: {
+      sessionIds: ['runtime-orchestrator'],
+      taskRefs: ['relay:cli-gateway:v1:read'],
+    },
     metadata: { reason: 'persistent-orchestrator' },
     issuedAt: new Date(issuedAtMs).toISOString(),
     expiresAt: new Date(
@@ -91,7 +94,8 @@ describe('OrchestratorCredentialLifecycle', () => {
 
     const lease = startOrchestratorCredentialLifecycle(
       {
-        sessionId: 'session-orchestrator',
+        runtimeId: 'runtime-orchestrator',
+        profileActorId: 'agent-profile:test',
         port: 4567,
         displayName: 'Product orchestrator',
       },
@@ -101,17 +105,18 @@ describe('OrchestratorCredentialLifecycle', () => {
     expect(h.issueCredential).toHaveBeenCalledWith({
       actor: {
         type: 'agent',
-        id: 'session-orchestrator',
+        id: 'agent-profile:test',
         displayName: 'Product orchestrator',
       },
       issuer: { id: 'relay-ide', displayName: 'Relay' },
       capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+      scope: { sessionIds: ['runtime-orchestrator'] },
       ttlMs: 15 * 60 * 1000,
     });
     expect(lease.processEnv).toEqual({
       RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-1.secret-1',
       RELAY_IDE_PORT: '4567',
-      RELAY_IDE_SESSION_ID: 'session-orchestrator',
+      RELAY_IDE_RUNTIME_ID: 'runtime-orchestrator',
     });
     expect(h.applyRuntimeEnv).not.toHaveBeenCalled();
 
@@ -123,7 +128,11 @@ describe('OrchestratorCredentialLifecycle', () => {
     vi.setSystemTime(START_MS);
     const h = harness();
     const lease = startOrchestratorCredentialLifecycle(
-      { sessionId: 'session-orchestrator', port: 4567 },
+      {
+        runtimeId: 'runtime-orchestrator',
+        profileActorId: 'agent-profile:test',
+        port: 4567,
+      },
       h.deps
     );
 
@@ -135,7 +144,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     expect(h.applyRuntimeEnv).toHaveBeenCalledWith({
       RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-2.secret-2',
       RELAY_IDE_PORT: '4567',
-      RELAY_IDE_SESSION_ID: 'session-orchestrator',
+      RELAY_IDE_RUNTIME_ID: 'runtime-orchestrator',
     });
     expect(h.events).toEqual([
       'issue:credential-1',
@@ -146,18 +155,22 @@ describe('OrchestratorCredentialLifecycle', () => {
     expect(lease.processEnv).toEqual({
       RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-2.secret-2',
       RELAY_IDE_PORT: '4567',
-      RELAY_IDE_SESSION_ID: 'session-orchestrator',
+      RELAY_IDE_RUNTIME_ID: 'runtime-orchestrator',
     });
 
     lease.stop();
   });
 
-  it('stops the timer and revokes the current credential on session end', async () => {
+  it('stops the timer and revokes the current credential on runtime end', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START_MS);
     const h = harness();
     const lease = startOrchestratorCredentialLifecycle(
-      { sessionId: 'session-orchestrator', port: 4567 },
+      {
+        runtimeId: 'runtime-orchestrator',
+        profileActorId: 'agent-profile:test',
+        port: 4567,
+      },
       h.deps
     );
 
@@ -168,7 +181,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     expect(h.revokeCredential).toHaveBeenCalledTimes(1);
     expect(h.revokeCredential).toHaveBeenCalledWith('credential-1', {
       revokedBy: 'relay-ide',
-      reason: 'orchestrator-session-ended',
+      reason: 'orchestrator-runtime-ended',
     });
   });
 
@@ -183,13 +196,21 @@ describe('OrchestratorCredentialLifecycle', () => {
 
     expect(() =>
       startOrchestratorCredentialLifecycle(
-        { sessionId: 'session-orchestrator', port: 4567 },
+        {
+          runtimeId: 'runtime-orchestrator',
+          profileActorId: 'agent-profile:test',
+          port: 4567,
+        },
         h.deps
       )
     ).toThrowError('Failed to provision orchestrator actor credential');
     try {
       startOrchestratorCredentialLifecycle(
-        { sessionId: 'session-orchestrator', port: 4567 },
+        {
+          runtimeId: 'runtime-orchestrator',
+          profileActorId: 'agent-profile:test',
+          port: 4567,
+        },
         h.deps
       );
     } catch (error) {
@@ -206,7 +227,11 @@ describe('OrchestratorCredentialLifecycle', () => {
       ),
     });
     const lease = startOrchestratorCredentialLifecycle(
-      { sessionId: 'session-orchestrator', port: 4567 },
+      {
+        runtimeId: 'runtime-orchestrator',
+        profileActorId: 'agent-profile:test',
+        port: 4567,
+      },
       h.deps
     );
 
@@ -242,7 +267,11 @@ describe('OrchestratorCredentialLifecycle', () => {
         })
     );
     const lease = startOrchestratorCredentialLifecycle(
-      { sessionId: 'session-orchestrator', port: 4567 },
+      {
+        runtimeId: 'runtime-orchestrator',
+        profileActorId: 'agent-profile:test',
+        port: 4567,
+      },
       h.deps
     );
 

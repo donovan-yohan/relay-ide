@@ -110,7 +110,7 @@ describe('buildTopicNavModel', () => {
           id: 'local-session',
           globalSessionId: 'global:agent-1',
           displayName: 'Agent lane',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'question',
           nodeId: 'devbox',
           status: 'active',
@@ -308,10 +308,10 @@ describe('buildTopicNavModel', () => {
     const model = buildTopicNavModel({
       topics: [pinned, attention],
       sessions: [
-        makeSession({ id: 'idle-session', idle: true, agentState: 'idle' }),
+        makeSession({ id: 'idle-session', idle: true, activityState: 'idle' }),
         makeSession({
           id: 'attention-session',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
         }),
       ],
@@ -337,20 +337,16 @@ describe('buildTopicNavModel', () => {
           id: 'ika-local',
           globalSessionId: 'global:ika',
           displayName: 'Ika frontend lane',
-          agent: 'claude',
           mode: 'pty',
-          activeWorker: { kind: 'agent', displayName: 'ika-frontend' },
-          agentState: 'processing',
+          activityState: 'processing',
           currentActivity: { tool: 'npm', detail: longSummary },
         }),
         makeSession({
           id: 'kame-local',
           globalSessionId: 'global:kame',
           displayName: 'Kame QA gate',
-          agent: 'codex',
-          mode: 'web',
-          activeWorker: { kind: 'agent', displayName: 'kame-qa' },
-          agentState: 'idle',
+          mode: 'pty',
+          activityState: 'idle',
           idle: true,
         }),
       ],
@@ -360,23 +356,27 @@ describe('buildTopicNavModel', () => {
     const item = model.byId.get('topic:alpha');
     expect(item?.participants).toMatchObject([
       {
-        label: 'Ika frontend lane',
-        roleLabel: 'frontend',
-        providerLabel: 'claude',
-        runtimeLabel: 'agent · pty',
-        statusLabel: 'running',
-        selectKey: 'global:ika',
-      },
-      {
         label: 'Kame QA gate',
-        roleLabel: 'qa',
-        providerLabel: 'codex',
-        runtimeLabel: 'agent · web',
+        roleLabel: 'terminal',
+        providerLabel: 'idle',
+        runtimeLabel: 'terminal · pty',
         statusLabel: 'idle',
         selectKey: 'global:kame',
       },
+      {
+        label: 'Ika frontend lane',
+        roleLabel: 'terminal',
+        providerLabel: 'running',
+        runtimeLabel: 'terminal · pty',
+        statusLabel: 'running',
+        selectKey: 'global:ika',
+      },
     ]);
-    expect(item?.participants[0]?.summaryLabel?.length).toBeLessThanOrEqual(96);
+    expect(
+      item?.participants.find(
+        (participant) => participant.selectKey === 'global:ika'
+      )?.summaryLabel?.length
+    ).toBeLessThanOrEqual(96);
   });
 
   it('bounds participant attention summaries when only tool names are available', () => {
@@ -389,13 +389,13 @@ describe('buildTopicNavModel', () => {
       sessions: [
         makeSession({
           id: 'approval',
-          agentState: 'permission-prompt',
+          activityState: 'permission-prompt',
           permissionType: 'approval',
           currentActivity: { tool: longToolName },
         }),
         makeSession({
           id: 'question',
-          agentState: 'waiting-for-input',
+          activityState: 'waiting-for-input',
           currentActivity: { tool: longToolName },
         }),
       ],
@@ -423,10 +423,10 @@ describe('buildTopicNavModel', () => {
         }),
       ],
       sessions: [
-        makeSession({ id: 'running', agentState: 'processing' }),
+        makeSession({ id: 'running', activityState: 'processing' }),
         makeSession({
           id: 'prompt',
-          agentState: 'waiting-for-input',
+          activityState: 'waiting-for-input',
           currentActivity: { tool: 'question', detail: 'pick route' },
         }),
         makeSession({ id: 'offline', status: 'disconnected' }),
@@ -444,7 +444,7 @@ describe('buildTopicNavModel', () => {
     });
   });
 
-  it('marks stale/offline participants without losing exact selection keys', () => {
+  it('marks offline participants without losing exact selection keys', () => {
     const model = buildTopicNavModel({
       topics: [
         makeTopic({
@@ -462,9 +462,8 @@ describe('buildTopicNavModel', () => {
         }),
         makeSession({
           id: 'stale-session',
-          displayName: 'stale lane',
-          controlFreshness: 'stale',
-          controlReason: 'node heartbeat expired',
+          displayName: 'second offline lane',
+          status: 'disconnected',
         }),
       ],
       surfaces: [],
@@ -479,9 +478,9 @@ describe('buildTopicNavModel', () => {
           selectKey: 'devbox:remote-session',
         }),
         expect.objectContaining({
-          label: 'stale lane',
-          statusLabel: 'stale',
-          controlLabel: 'control stale',
+          label: 'second offline lane',
+          statusLabel: 'offline',
+          selectKey: 'stale-session',
         }),
       ])
     );

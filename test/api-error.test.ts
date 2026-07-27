@@ -32,7 +32,7 @@ describe('frontend api errors', () => {
     );
 
     await expect(
-      createSession({ repoPath: '/repo', type: 'agent' })
+      createSession({ repoPath: '/repo', type: 'terminal' })
     ).rejects.toMatchObject({
       name: 'HttpError',
       status: 502,
@@ -51,10 +51,10 @@ describe('frontend api errors', () => {
     );
 
     await expect(
-      createSession({ repoPath: '/repo', type: 'agent' })
+      createSession({ repoPath: '/repo', type: 'terminal' })
     ).rejects.toBeInstanceOf(HttpError);
     await expect(
-      createSession({ repoPath: '/repo', type: 'agent' })
+      createSession({ repoPath: '/repo', type: 'terminal' })
     ).rejects.toMatchObject({
       status: 503,
       message:
@@ -82,7 +82,7 @@ describe('frontend api errors', () => {
     );
 
     await expect(
-      createSession({ repoPath: '/repo', type: 'agent' })
+      createSession({ repoPath: '/repo', type: 'terminal' })
     ).rejects.toMatchObject({
       name: 'HttpError',
       status: 503,
@@ -139,7 +139,7 @@ describe('frontend api errors', () => {
     );
   });
 
-  it('launches sessions with WorkspaceTopic and WorkContext links', async () => {
+  it('launches terminals with WorkspaceTopic and WorkContext links', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -164,7 +164,7 @@ describe('frontend api errors', () => {
 
     const result = await createWorkspaceTopicRoomAndMaybeLaunch({
       room: { topic: { workspaceId: 'ws-main', title: 'Task room' } },
-      launch: { type: 'agent', agent: 'hermes', mode: 'pty' },
+      launch: { type: 'terminal', mode: 'pty' },
     });
 
     expect(result).toMatchObject({
@@ -177,8 +177,7 @@ describe('frontend api errors', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'agent',
-        agent: 'hermes',
+        type: 'terminal',
         mode: 'pty',
         workspaceTopicId: 'topic-task',
         workContextId: 'wc-topic',
@@ -206,7 +205,7 @@ describe('frontend api errors', () => {
           JSON.stringify({
             error: {
               code: 'SESSION_LAUNCH_FAILED',
-              message: 'agent launch failed',
+              message: 'terminal launch failed',
               retryable: true,
             },
           }),
@@ -217,7 +216,7 @@ describe('frontend api errors', () => {
 
     const result = await createWorkspaceTopicRoomAndMaybeLaunch({
       room: { topic: { workspaceId: 'ws-main', title: 'Task room' } },
-      launch: { type: 'agent', agent: 'hermes' },
+      launch: { type: 'terminal' },
     });
 
     expect(result).toMatchObject({
@@ -227,7 +226,7 @@ describe('frontend api errors', () => {
       failure: {
         stage: 'session',
         code: 'SESSION_LAUNCH_FAILED',
-        message: 'agent launch failed',
+        message: 'terminal launch failed',
         retryable: true,
         status: 503,
       },
@@ -249,7 +248,7 @@ describe('frontend api errors', () => {
         topic: { id: 'topic-task' } as never,
         workContext: { id: 'wc-topic' } as never,
       },
-      launch: { type: 'agent', agent: 'hermes' },
+      launch: { type: 'terminal' },
     });
 
     expect(result).toMatchObject({
@@ -261,8 +260,7 @@ describe('frontend api errors', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'agent',
-        agent: 'hermes',
+        type: 'terminal',
         workspaceTopicId: 'topic-task',
         workContextId: 'wc-topic',
       }),
@@ -447,7 +445,7 @@ describe('frontend api errors', () => {
 
     await createSession({
       repoPath: '/repo',
-      type: 'agent',
+      type: 'terminal',
       sessionLane: 'local-repo',
     });
 
@@ -456,7 +454,7 @@ describe('frontend api errors', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         repoPath: '/repo',
-        type: 'agent',
+        type: 'terminal',
         sessionLane: 'local-repo',
       }),
     });

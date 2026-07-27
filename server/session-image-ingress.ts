@@ -105,25 +105,11 @@ export async function ingressSessionImage(input: {
   await fs.promises.mkdir(dir, { recursive: true });
   const stamp = input.now?.() ?? Date.now();
   const filePath = path.join(dir, `paste-${stamp}${ext}`);
-  await fs.promises.writeFile(filePath, Buffer.from(input.payload.data, 'base64'));
+  await fs.promises.writeFile(
+    filePath,
+    Buffer.from(input.payload.data, 'base64')
+  );
   scheduleSessionImageCleanup(filePath);
-
-  if (session.mode === 'web') {
-    if (!session.adapterV2) {
-      throw new SessionImageIngressError(
-        400,
-        'Web session adapter is not initialized'
-      );
-    }
-    await session.adapterV2.sendMessage({
-      turnId: `image-paste-${stamp}`,
-      content: '',
-      attachments: [
-        { type: 'image', path: filePath, mimeType: input.payload.mimeType },
-      ],
-    });
-    return { path: filePath, clipboardSet: false, inserted: true, mode: 'attachment' };
-  }
 
   let clipboardSet = false;
   try {

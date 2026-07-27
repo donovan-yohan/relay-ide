@@ -8,7 +8,6 @@ import {
   SessionImageIngressError,
 } from '../server/session-image-ingress.js';
 import { _resetForTesting as resetClipboardToolCache } from '../server/clipboard.js';
-import type { Session } from '../server/types.js';
 
 const OLD_DISPLAY = process.env['DISPLAY'];
 const OLD_WAYLAND_DISPLAY = process.env['WAYLAND_DISPLAY'];
@@ -25,12 +24,17 @@ afterEach(() => {
 
 describe('session image ingress', () => {
   it('validates MIME and size before writing', () => {
-    expect(() => parseSessionImagePayload({ data: 'abc', mimeType: 'image/png' })).not.toThrow();
-    expect(() => parseSessionImagePayload({ data: 'abc', mimeType: 'text/plain' })).toThrow(
-      SessionImageIngressError
-    );
     expect(() =>
-      parseSessionImagePayload({ data: 'x'.repeat(15 * 1024 * 1024), mimeType: 'image/png' })
+      parseSessionImagePayload({ data: 'abc', mimeType: 'image/png' })
+    ).not.toThrow();
+    expect(() =>
+      parseSessionImagePayload({ data: 'abc', mimeType: 'text/plain' })
+    ).toThrow(SessionImageIngressError);
+    expect(() =>
+      parseSessionImagePayload({
+        data: 'x'.repeat(15 * 1024 * 1024),
+        mimeType: 'image/png',
+      })
     ).toThrow(/too large/i);
   });
 
@@ -51,11 +55,18 @@ describe('session image ingress', () => {
     const result = await ingressSessionImage({
       sessions,
       sessionId: 'sess-image-test',
-      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      payload: {
+        data: Buffer.from('png-bytes').toString('base64'),
+        mimeType: 'image/png',
+      },
       now: () => 123,
     });
 
-    expect(result).toMatchObject({ clipboardSet: false, inserted: true, mode: 'path' });
+    expect(result).toMatchObject({
+      clipboardSet: false,
+      inserted: true,
+      mode: 'path',
+    });
     expect(result.path).toContain(
       Buffer.from('sess-image-test', 'utf8').toString('base64url')
     );
@@ -72,14 +83,19 @@ describe('session image ingress', () => {
     const traversalId = '../evil';
     const sessions = {
       get: (id: string) =>
-        id === traversalId ? ({ id, mode: 'pty' } as unknown as Session) : undefined,
+        id === traversalId
+          ? ({ id, mode: 'pty' } as unknown as Session)
+          : undefined,
       write: () => undefined,
     };
 
     const result = await ingressSessionImage({
       sessions,
       sessionId: traversalId,
-      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      payload: {
+        data: Buffer.from('png-bytes').toString('base64'),
+        mimeType: 'image/png',
+      },
       now: () => 321,
     });
 
@@ -102,15 +118,21 @@ describe('session image ingress', () => {
           ? ({ id, mode: 'pty' } as unknown as Session)
           : undefined,
       write: () => {
-        throw new Error('raw PTY write should not be used when supervisorWrite exists');
+        throw new Error(
+          'raw PTY write should not be used when supervisorWrite exists'
+        );
       },
-      supervisorWrite: (_id: string, input: unknown) => supervisorWrites.push(input),
+      supervisorWrite: (_id: string, input: unknown) =>
+        supervisorWrites.push(input),
     };
 
     const result = await ingressSessionImage({
       sessions,
       sessionId: 'sess-image-test',
-      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      payload: {
+        data: Buffer.from('png-bytes').toString('base64'),
+        mimeType: 'image/png',
+      },
       now: () => 789,
     });
 
@@ -123,60 +145,6 @@ describe('session image ingress', () => {
           displayName: 'Browser image paste',
         },
         payload: `\x1b[200~${result.path}\x1b[201~`,
-      },
-    ]);
-  });
-
-  it('rejects web image ingress when the adapter is missing', async () => {
-    const sessions = {
-      get: (id: string) =>
-        id === 'sess-image-test'
-          ? ({ id, mode: 'web', adapterV2: undefined } as unknown as Session)
-          : undefined,
-      write: () => {
-        throw new Error('PTY write should not be used for web image ingress');
-      },
-    };
-
-    await expect(
-      ingressSessionImage({
-        sessions,
-        sessionId: 'sess-image-test',
-        payload: { data: Buffer.from('jpg-bytes').toString('base64'), mimeType: 'image/jpeg' },
-        now: () => 456,
-      })
-    ).rejects.toThrow('Web session adapter is not initialized');
-  });
-
-  it('sends structured image attachments to web sessions instead of writing PTY bytes', async () => {
-    const messages: unknown[] = [];
-    const sessions = {
-      get: (id: string) =>
-        id === 'sess-image-test'
-          ? ({
-              id,
-              mode: 'web',
-              adapterV2: { sendMessage: async (input: unknown) => messages.push(input) },
-            } as unknown as Session)
-          : undefined,
-      write: () => {
-        throw new Error('PTY write should not be used for web image ingress');
-      },
-    };
-
-    const result = await ingressSessionImage({
-      sessions,
-      sessionId: 'sess-image-test',
-      payload: { data: Buffer.from('jpg-bytes').toString('base64'), mimeType: 'image/jpeg' },
-      now: () => 456,
-    });
-
-    expect(result).toMatchObject({ clipboardSet: false, inserted: true, mode: 'attachment' });
-    expect(messages).toEqual([
-      {
-        turnId: 'image-paste-456',
-        content: '',
-        attachments: [{ type: 'image', path: result.path, mimeType: 'image/jpeg' }],
       },
     ]);
   });

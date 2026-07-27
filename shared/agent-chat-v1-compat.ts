@@ -1,6 +1,6 @@
 // This is a temporary Agent Chat Protocol v1 compatibility bridge.
-// Remove this module in Task 9 after web-session migration code and tests no
-// longer need legacy ChatEvent replay. New provider adapters must not import it.
+// Retained only for live provider adapters that still emit legacy ChatEvents.
+// New provider adapters must emit v2 patches directly.
 
 import type {
   AgentApprovalDecisionV2,
@@ -356,7 +356,7 @@ function liveStateFromSessionStatus(
     case 'error':
       return {
         status: 'error',
-        error: event.error ?? 'Agent session error',
+        error: event.error ?? 'Agent runtime error',
       };
     case 'disconnected':
     case 'idle':

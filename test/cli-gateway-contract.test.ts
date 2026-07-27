@@ -163,7 +163,6 @@ describe('CLI gateway contract', () => {
       'sessions.screen',
       'sessions.input',
       'sessions.interventions',
-      'sessions.handBack',
       'files.list',
       'files.stat',
       'files.read',
@@ -200,11 +199,6 @@ describe('CLI gateway contract', () => {
       'inbox.resolve',
       'inbox.ignore',
       'handoffs.plan',
-      'handoffs.create',
-      'handoffs.status',
-      'handoffs.cancel',
-      'handoffs.resume',
-      'handoffs.launch',
       'artifacts.read',
       'supervisor.snapshot',
       'supervisor.sessions',
@@ -215,7 +209,6 @@ describe('CLI gateway contract', () => {
       'workflow-runs.update',
       'workflow-runs.list',
       'workflow-runs.get',
-      'orchestration-runs.launch',
       'automation-runs.register',
       'automation-runs.observe',
       'automation-runs.retire',
@@ -235,9 +228,6 @@ describe('CLI gateway contract', () => {
       'workspace-topics.update',
       'workspace-topics.archive',
       'channels.post',
-      'roster.list',
-      'roster.register',
-      'roster.updateSelf',
       'cockpit.list',
       'cockpit.get',
       'events.subscribe',
@@ -397,51 +387,6 @@ describe('CLI gateway contract', () => {
       requiresConfirmation: false,
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['repo', 'worktree'],
-    });
-    expect(commandSpec('roster.list')).toMatchObject({
-      capabilityHints: ['session:read'],
-      cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
-    });
-    expect(JSON.stringify(commandSpec('roster.list').outputSchema)).toContain(
-      '"spawnedBySessionId"'
-    );
-    expect(relayCommandDefinition('roster.list')).toMatchObject({
-      sideEffect: 'read',
-      requiresConfirmation: false,
-      auditRedaction: { expectation: 'bounded-redacted' },
-      scopeKinds: ['repo', 'work-context', 'session'],
-    });
-    // roster.register / roster.updateSelf (#964): explicit self-declared
-    // presence writes — capability-gated on context:write (not session:read),
-    // never confirmation-gated, and the input schema fails closed on unknown
-    // (potentially secret-shaped) fields.
-    expect(commandSpec('roster.register')).toMatchObject({
-      capabilityHints: ['context:write'],
-      cli: [
-        'relay-ide',
-        'v1',
-        'roster',
-        'register',
-        '--input-json',
-        '<json>',
-        '--json',
-      ],
-    });
-    expect(
-      commandSpec('roster.register').inputSchema.additionalProperties
-    ).toBe(false);
-    expect(
-      commandSpec('roster.updateSelf').inputSchema.additionalProperties
-    ).toBe(false);
-    expect(relayCommandDefinition('roster.register')).toMatchObject({
-      sideEffect: 'write',
-      requiresConfirmation: false,
-      scopeKinds: ['repo', 'work-context', 'session'],
-    });
-    expect(relayCommandDefinition('roster.updateSelf')).toMatchObject({
-      sideEffect: 'write',
-      requiresConfirmation: false,
-      scopeKinds: ['repo', 'work-context', 'session'],
     });
     expect(relayCommandDefinition('worktrees.create')).toMatchObject({
       sideEffect: 'write',
@@ -654,10 +599,9 @@ describe('CLI gateway contract', () => {
     expect(
       schemaAcceptsSessionWait({ id: 's1', outputText: 'ready', idleMs: 1000 })
     ).toBe(false);
-    expect(relayCommandDefinition('handoffs.create')).toMatchObject({
-      sideEffect: 'destructive',
-      requiresConfirmation: true,
-      controlRequirements: ['confirmation-challenge'],
+    expect(relayCommandDefinition('handoffs.plan')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
     });
     expect(relayCommandDefinition('supervisor.snapshot')).toMatchObject({
       sideEffect: 'read',
@@ -743,10 +687,7 @@ describe('CLI gateway contract', () => {
     });
     expect(settingsUpdate.inputSchema.properties?.['key']?.enum).toEqual([
       'defaultAgent',
-      'defaultContinue',
-      'defaultYolo',
       'defaultNotifications',
-      'claudeFullscreen',
       'renamerTool',
       'updateChannel',
     ]);
@@ -944,11 +885,7 @@ describe('CLI gateway contract', () => {
       additionalProperties: false,
     });
     expect(create.errorCodes).toContain('UNSUPPORTED');
-    expect(create.capabilityHints).toEqual([
-      'session:create:terminal',
-      'session:create:agent',
-      'tab:mode:set-agent',
-    ]);
+    expect(create.capabilityHints).toEqual(['session:create:terminal']);
 
     const createProperties = create.inputSchema.properties ?? {};
     expect(createProperties['sessionEnvelope']).toBeDefined();
@@ -970,7 +907,7 @@ describe('CLI gateway contract', () => {
     });
     expect(hidden).toMatchObject({
       ok: false,
-      error: { code: 'INVALID_ARGUMENT', details: { field: 'claudeArgs' } },
+      error: { code: 'UNSUPPORTED', details: { field: 'claudeArgs' } },
     });
 
     const localLifecycle = validateAndSanitizeGatewayCreateInput({
@@ -990,7 +927,6 @@ describe('CLI gateway contract', () => {
           'cwd',
           'type',
           'mode',
-          'agent',
           'terminalBackend',
           'cols',
           'rows',
@@ -1044,11 +980,11 @@ describe('CLI gateway contract', () => {
     });
     if (routedDefault.ok !== true)
       throw new Error('expected routed create input to validate');
-    expect(routedDefault.sessionType).toBe('agent');
+    expect(routedDefault.sessionType).toBe('terminal');
     expect(routedDefault.input).toMatchObject({
       nodeId: 'node-a',
       repoPath: '/tmp/repo',
-      type: 'agent',
+      type: 'terminal',
     });
   });
 
@@ -1059,7 +995,7 @@ describe('CLI gateway contract', () => {
     });
     expect(hidden).toMatchObject({
       ok: false,
-      error: { code: 'INVALID_ARGUMENT', details: { field: 'claudeArgs' } },
+      error: { code: 'UNSUPPORTED', details: { field: 'claudeArgs' } },
     });
 
     const routedOnly = validateAndSanitizeLocalGatewayCreateInput({
@@ -1099,31 +1035,19 @@ describe('CLI gateway contract', () => {
     const cwdOnly = validateAndSanitizeLocalGatewayCreateInput({
       cwd: '/tmp/non-git-project',
       type: 'agent',
-      agent: 'codex',
     });
     expect(cwdOnly).toMatchObject({
-      ok: true,
-      input: {
-        cwd: '/tmp/non-git-project',
-        type: 'agent',
-        agent: 'codex',
-      },
-      sessionType: 'agent',
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT', details: { field: 'type' } },
     });
 
     const topicLaunch = validateAndSanitizeLocalGatewayCreateInput({
       workspaceTopicId: 'topic:ws-launch-hermes',
       type: 'agent',
-      agent: 'hermes',
     });
     expect(topicLaunch).toMatchObject({
-      ok: true,
-      input: {
-        workspaceTopicId: 'topic:ws-launch-hermes',
-        type: 'agent',
-        agent: 'hermes',
-      },
-      sessionType: 'agent',
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT', details: { field: 'type' } },
     });
   });
 
@@ -1150,7 +1074,6 @@ describe('CLI gateway contract', () => {
       'sessions.screen',
       'sessions.input',
       'sessions.interventions',
-      'sessions.handBack',
       'files.list',
       'files.stat',
       'files.read',
@@ -1187,11 +1110,6 @@ describe('CLI gateway contract', () => {
       'inbox.resolve',
       'inbox.ignore',
       'handoffs.plan',
-      'handoffs.create',
-      'handoffs.status',
-      'handoffs.cancel',
-      'handoffs.resume',
-      'handoffs.launch',
       'artifacts.read',
       'supervisor.snapshot',
       'supervisor.sessions',
@@ -1202,7 +1120,6 @@ describe('CLI gateway contract', () => {
       'workflow-runs.update',
       'workflow-runs.list',
       'workflow-runs.get',
-      'orchestration-runs.launch',
       'automation-runs.register',
       'automation-runs.observe',
       'automation-runs.retire',
@@ -1221,9 +1138,6 @@ describe('CLI gateway contract', () => {
       'workspace-topics.create',
       'workspace-topics.update',
       'workspace-topics.archive',
-      'roster.list',
-      'roster.register',
-      'roster.updateSelf',
       'events.subscribe',
     ] as const;
 
@@ -1475,7 +1389,7 @@ describe('CLI gateway contract', () => {
     );
   });
 
-  it('advertises handoff/work-context/artifact gateway commands with cold-handoff safety gates', () => {
+  it('advertises plan-only handoff and passive artifact reads', () => {
     expect(commandSpec('work-contexts.get')).toMatchObject({
       capabilityHints: ['session:read'],
       transport: 'hub-http',
@@ -1496,32 +1410,14 @@ describe('CLI gateway contract', () => {
       },
     });
 
-    const create = commandSpec('handoffs.create');
-    expect(create.capabilityHints).toEqual([
-      'rpc:fs:read',
-      'rpc:fs:write',
-      'session:create:agent',
-      'session:create:terminal',
-      'pty:exec:arbitrary',
-    ]);
-    expect(create.inputSchema).toMatchObject({
-      required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
-      anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
-    });
-    expect(create.summary).toContain('refuses fake success');
-    expect(create.errorCodes).toEqual(
+    expect(stableCommandNames()).not.toEqual(
       expect.arrayContaining([
-        'FORBIDDEN',
-        'SESSION_CONFLICT',
-        'SERVER_UNAVAILABLE',
+        'handoffs.create',
+        'handoffs.status',
+        'handoffs.cancel',
+        'handoffs.resume',
+        'handoffs.launch',
       ])
-    );
-
-    expect(commandSpec('handoffs.status').summary).toContain(
-      'bounded/redacted'
-    );
-    expect(commandSpec('handoffs.resume').summary).toContain(
-      'without raw transcript'
     );
     expect(commandSpec('artifacts.read').summary).toContain(
       'raw logs/secrets/transcripts are unavailable'
@@ -1537,7 +1433,7 @@ describe('CLI gateway contract', () => {
       required: ['id'],
       properties: {
         expectedControlMode: {
-          enum: ['agent-driven', 'human-driven', 'co-driven'],
+          enum: ['human-driven'],
         },
       },
     });

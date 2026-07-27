@@ -221,7 +221,7 @@ describe('security audit primitives', () => {
       },
       actor: { kind: 'human', id: 'operator-a', displayName: 'operator' },
       reason: 'human input',
-      controlMode: 'co-driven',
+      controlMode: 'human-driven',
       intervention: {
         id: 'intervention-evt-1',
         sessionId: 'session-a',
@@ -242,8 +242,8 @@ describe('security audit primitives', () => {
           hashSha256: 'abc123',
           classes: ['secret-like'],
         },
-        modeBefore: 'agent-driven',
-        modeAfter: 'co-driven',
+        modeBefore: 'human-driven',
+        modeAfter: 'human-driven',
       },
     });
 
@@ -267,35 +267,11 @@ describe('security audit primitives', () => {
       interventionKind: 'human-input',
       interventionSource: 'pty-input',
       payload: { hashSha256: 'abc123', classes: ['secret-like'] },
-      modeBefore: 'agent-driven',
-      modeAfter: 'co-driven',
+      modeBefore: 'human-driven',
+      modeAfter: 'human-driven',
     });
     expect(JSON.stringify(entry)).not.toContain(rawTypedInput);
     expect(fs.readFileSync(dbPath, 'utf8')).not.toContain(rawTypedInput);
-  });
-
-  it('marks agent-driven mode restore audit entries with only the mode-set capability', () => {
-    const entry = securityAuditEntryForTabControlEvent({
-      eventId: 'mode-evt-1',
-      type: 'tab.mode-changed',
-      occurredAt: '2026-05-16T00:00:01.000Z',
-      identity: { nodeId: 'node-a', sessionId: 'session-a', cwd: '/repo' },
-      actor: { kind: 'agent', id: 'worker-1', nodeId: 'node-a' },
-      reason: 'hand-back',
-      previousControlMode: 'co-driven',
-      controlMode: 'agent-driven',
-    });
-
-    expect(entry.requiredBits).toEqual(['tab:mode:set-agent']);
-    expect(entry.grantedBits).toEqual(['tab:mode:set-agent']);
-    expect(entry.deniedBits).toEqual([]);
-    expect(entry.requiredBits).not.toEqual(
-      expect.arrayContaining([
-        'rpc:fs:write',
-        'rpc:git:write',
-        'pty:exec:arbitrary',
-      ])
-    );
   });
 
   it('verifies a clean append-only chain', () => {

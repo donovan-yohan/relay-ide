@@ -76,16 +76,19 @@ function issuedCredential(
     token,
     credential: {
       id,
-      actor: { type: 'agent', id: 'orchestrator-session' },
+      actor: { type: 'agent', id: 'agent-profile:test' },
       issuer: { id: 'relay-ide' },
       audience: 'relay:cli-gateway:v1',
       capabilities: [
         'session:read',
         'context:read',
         'context:write',
-        'session:create:agent',
+        'session:create:terminal',
       ],
-      scope: { taskRefs: ['relay:cli-gateway:v1:read'] },
+      scope: {
+        sessionIds: ['orchestrator-runtime'],
+        taskRefs: ['relay:cli-gateway:v1:read'],
+      },
       metadata: { reason: 'persistent-orchestrator' },
       issuedAt: new Date(issuedAt).toISOString(),
       expiresAt: new Date(issuedAt + 15 * 60 * 1000).toISOString(),
@@ -94,7 +97,7 @@ function issuedCredential(
   };
 }
 
-describe('sessions orchestrator credential integration', () => {
+describe('channel runtime orchestrator credential integration', () => {
   beforeEach(() => {
     connect.mockReset().mockResolvedValue();
     disconnect.mockReset().mockResolvedValue();
@@ -104,15 +107,9 @@ describe('sessions orchestrator credential integration', () => {
   });
 
   afterEach(async () => {
-    const sessions = await import('../server/sessions.js');
-    for (const session of sessions.list()) {
-      try {
-        sessions.kill(session.id);
-      } catch {
-        // already fail-closed
-      }
-    }
-    sessions.configure({});
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    await runtimes.channelAgentRuntimes.close();
+    runtimes.configureChannelAgentRuntimes({});
     vi.useRealTimers();
   });
 
@@ -131,17 +128,16 @@ describe('sessions orchestrator credential integration', () => {
     const revokeCredential = vi.fn(() => {
       events.push('revoke');
     });
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: { issueCredential, revokeCredential },
     });
 
-    const { session } = await sessions.createWeb({
-      id: 'orchestrator-session',
+    const runtime = await runtimes.channelAgentRuntimes.create({
+      id: 'orchestrator-runtime',
+      providerId: 'mock',
       role: 'orchestrator',
-      agentType: 'mock',
+      profileActorId: 'agent-profile:test',
       cwd: '/tmp',
       displayName: 'Product orchestrator',
       port: 4567,
@@ -154,24 +150,28 @@ describe('sessions orchestrator credential integration', () => {
         processEnv: {
           RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-1.redacted',
           RELAY_IDE_PORT: '4567',
-          RELAY_IDE_SESSION_ID: 'orchestrator-session',
+          RELAY_IDE_RUNTIME_ID: 'orchestrator-runtime',
         },
       })
     );
-    expect(session.role).toBe('orchestrator');
+    expect(runtime.role).toBe('orchestrator');
+    expect(issueCredential).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: expect.objectContaining({ id: 'agent-profile:test' }),
+        scope: { sessionIds: ['orchestrator-runtime'] },
+      })
+    );
 
-    sessions.kill(session.id);
+    await runtimes.channelAgentRuntimes.destroy(runtime.id);
     expect(revokeCredential).toHaveBeenCalledWith('credential-1', {
       revokedBy: 'relay-ide',
-      reason: 'orchestrator-session-ended',
+      reason: 'orchestrator-runtime-ended',
     });
   });
 
   it('fails before adapter connect when initial minting fails', async () => {
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: {
         issueCredential: () => {
           throw new Error('secret issuer details');
@@ -181,10 +181,11 @@ describe('sessions orchestrator credential integration', () => {
     });
 
     await expect(
-      sessions.createWeb({
+      runtimes.channelAgentRuntimes.create({
         id: 'orchestrator-session',
+        providerId: 'mock',
         role: 'orchestrator',
-        agentType: 'mock',
+        profileActorId: 'agent-profile:test',
         cwd: '/tmp',
         displayName: 'Product orchestrator',
         port: 4567,
@@ -192,7 +193,9 @@ describe('sessions orchestrator credential integration', () => {
       })
     ).rejects.toThrow('Failed to provision orchestrator actor credential');
     expect(connect).not.toHaveBeenCalled();
-    expect(sessions.get('orchestrator-session')).toBeUndefined();
+    expect(
+      runtimes.channelAgentRuntimes.get('orchestrator-session')
+    ).toBeUndefined();
   });
 
   it('keeps a derived Hermes display role unprivileged without minting a credential', async () => {
@@ -203,19 +206,18 @@ describe('sessions orchestrator credential integration', () => {
         'relay-sac-v1.credential-should-not-exist.redacted'
       )
     );
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: {
         issueCredential,
         revokeCredential: vi.fn(),
       },
     });
 
-    const { session } = await sessions.createWeb({
+    const session = await runtimes.channelAgentRuntimes.create({
       id: 'hermes-worker-session',
-      agentType: 'hermes',
+      providerId: 'hermes',
+      profileActorId: 'agent-profile:test',
       cwd: '/tmp',
       displayName: 'Hermes worker',
       port: 4567,
@@ -226,35 +228,34 @@ describe('sessions orchestrator credential integration', () => {
     expect(issueCredential).not.toHaveBeenCalled();
     expect(connect).toHaveBeenCalledWith(
       expect.objectContaining({
-        systemPromptAppendix: expect.stringContaining(
-          'operator’s Relay-managed orchestrator'
-        ),
+        systemPromptAppendix: expect.stringContaining('role: collaborator'),
       })
     );
   });
 
-  it('revokes and rejects an orchestrator adapter without env refresh', async () => {
+  it('rejects an orchestrator adapter without env refresh before minting', async () => {
     supportsRuntimeEnvRefresh = false;
+    const issueCredential = vi.fn(() =>
+      issuedCredential(
+        'credential-unsupported',
+        'relay-sac-v1.credential-unsupported.redacted'
+      )
+    );
     const revokeCredential = vi.fn();
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: {
-        issueCredential: () =>
-          issuedCredential(
-            'credential-unsupported',
-            'relay-sac-v1.credential-unsupported.redacted'
-          ),
+        issueCredential,
         revokeCredential,
       },
     });
 
     await expect(
-      sessions.createWeb({
+      runtimes.channelAgentRuntimes.create({
         id: 'orchestrator-session',
+        providerId: 'mock',
         role: 'orchestrator',
-        agentType: 'mock',
+        profileActorId: 'agent-profile:test',
         cwd: '/tmp',
         displayName: 'Product orchestrator',
         port: 4567,
@@ -262,10 +263,8 @@ describe('sessions orchestrator credential integration', () => {
       })
     ).rejects.toThrow('does not support orchestrator credential refresh');
     expect(connect).not.toHaveBeenCalled();
-    expect(revokeCredential).toHaveBeenCalledWith('credential-unsupported', {
-      revokedBy: 'relay-ide',
-      reason: 'orchestrator-session-ended',
-    });
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(revokeCredential).not.toHaveBeenCalled();
   });
 
   it('kills the session when scheduled credential application fails', async () => {
@@ -276,10 +275,8 @@ describe('sessions orchestrator credential integration', () => {
     refreshRuntimeEnv.mockRejectedValue(
       new Error('runtime refresh failed around secret material')
     );
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: {
         issueCredential: () => {
           issueCount++;
@@ -292,10 +289,11 @@ describe('sessions orchestrator credential integration', () => {
       },
     });
 
-    await sessions.createWeb({
+    await runtimes.channelAgentRuntimes.create({
       id: 'orchestrator-session',
+      providerId: 'mock',
       role: 'orchestrator',
-      agentType: 'mock',
+      profileActorId: 'agent-profile:test',
       cwd: '/tmp',
       displayName: 'Product orchestrator',
       port: 4567,
@@ -304,14 +302,16 @@ describe('sessions orchestrator credential integration', () => {
 
     await vi.advanceTimersByTimeAsync(7.5 * 60 * 1000);
 
-    expect(sessions.get('orchestrator-session')).toBeUndefined();
+    expect(
+      runtimes.channelAgentRuntimes.get('orchestrator-session')
+    ).toBeUndefined();
     expect(revokeCredential).toHaveBeenCalledWith('credential-2', {
       revokedBy: 'relay-ide',
       reason: 'orchestrator-token-refresh-failed',
     });
     expect(revokeCredential).toHaveBeenCalledWith('credential-1', {
       revokedBy: 'relay-ide',
-      reason: 'orchestrator-session-ended',
+      reason: 'orchestrator-runtime-ended',
     });
   });
 
@@ -320,10 +320,8 @@ describe('sessions orchestrator credential integration', () => {
     vi.setSystemTime('2026-07-25T00:00:00.000Z');
     let issueCount = 0;
     const revokeCredential = vi.fn();
-    const sessions = await import('../server/sessions.js');
-    sessions.configure({
-      port: 4567,
-      configDir: '/tmp',
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
       orchestratorCredentials: {
         issueCredential: () => {
           issueCount++;
@@ -336,27 +334,23 @@ describe('sessions orchestrator credential integration', () => {
       },
     });
 
-    const { session } = await sessions.createWeb({
+    const session = await runtimes.channelAgentRuntimes.create({
       id: 'orchestrator-session',
+      providerId: 'mock',
       role: 'orchestrator',
-      agentType: 'mock',
+      profileActorId: 'agent-profile:test',
       cwd: '/tmp',
       displayName: 'Product orchestrator',
       port: 4567,
       configDir: '/tmp',
     });
     adapterStatus = 'disconnected';
-    sessions.fireBackendStateIfChanged(session);
+    await runtimes.channelAgentRuntimes.destroy(session.id);
 
-    await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
-
-    expect(sessions.get(session.id)).toBe(session);
-    expect(issueCount).toBe(1);
-    expect(refreshRuntimeEnv).not.toHaveBeenCalled();
-    expect(revokeCredential).toHaveBeenCalledTimes(1);
+    expect(runtimes.channelAgentRuntimes.get(session.id)).toBeUndefined();
     expect(revokeCredential).toHaveBeenCalledWith('credential-1', {
       revokedBy: 'relay-ide',
-      reason: 'orchestrator-session-ended',
+      reason: 'orchestrator-runtime-ended',
     });
   });
 });

@@ -4,14 +4,11 @@ import type { BackendDisplayState } from '../lib/state/display-state.js';
 import { deriveBackendState } from '../lib/state/sidebar-items.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import StatusDot, { type StatusDotStatus } from './StatusDot.js';
-import AgentBadge from './AgentBadge.js';
 import './LiveSessionsPanel.css';
 
 /**
- * #1058: the chat-first landing surfaces live PTY agent/terminal sessions so
- * the TUIs Relay spawned (Claude, Codex, Hermes, or a bare terminal) are
- * actually reachable. Selecting a row activates that session; App routes a
- * non-web session to the terminal view (see resolveAppViewMode).
+ * The chat-first landing surfaces live PTY terminal sessions. Agent work lives
+ * in channels and never appears in the public session registry.
  */
 const STATE_META: Record<
   BackendDisplayState,
@@ -74,17 +71,15 @@ export default function LiveSessionsPanel({
               <span className="live-sessions__dot">
                 <StatusDot status={meta.dot} size={8} />
               </span>
-              <span className="live-sessions__agent" aria-hidden="true">
-                <AgentBadge agent={session.agent} />
+              <span className="live-sessions__terminal" aria-hidden="true">
+                &gt;_
               </span>
               <span className="live-sessions__body">
                 <span className="live-sessions__name">
                   {session.displayName}
                 </span>
                 <span className="live-sessions__meta">
-                  <span className="live-sessions__agent-name">
-                    {session.agent}
-                  </span>
+                  <span className="live-sessions__terminal-name">terminal</span>
                   <span className="live-sessions__sep" aria-hidden="true">
                     ·
                   </span>

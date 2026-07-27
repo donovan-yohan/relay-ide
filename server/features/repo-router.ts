@@ -28,7 +28,6 @@ import {
 } from '../hub-node-router.js';
 import {
   evaluateHubPolicy,
-  isSessionCreateType,
   sessionCreateCapabilities,
   type SessionCreateType,
 } from '../hub-policy-evaluator.js';
@@ -87,17 +86,12 @@ function sessionCreateTypeFromBody(
   body: Record<string, unknown>
 ): SessionCreateType | RelayNodeError {
   const rawSessionType = body['type'];
-  if (rawSessionType === undefined) return 'agent';
-  if (isSessionCreateType(rawSessionType)) return rawSessionType;
-  return relayError(
-    'INVALID_REQUEST',
-    'type must be agent or terminal',
-    false,
-    {
-      reasonCode: 'INVALID_SESSION_TYPE',
-      field: 'type',
-    }
-  );
+  if (rawSessionType === undefined) return 'terminal';
+  if (rawSessionType === 'terminal') return 'terminal';
+  return relayError('INVALID_REQUEST', 'type must be terminal', false, {
+    reasonCode: 'INVALID_SESSION_TYPE',
+    field: 'type',
+  });
 }
 
 // ── Bench overlay validation (#735) ─────────────────────────────────────────

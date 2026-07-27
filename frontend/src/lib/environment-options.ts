@@ -47,15 +47,11 @@ import {
   type NodeId,
 } from '../../../shared/identity.js';
 import type { RelayCapabilityBit } from '../../../shared/security-policy.js';
-import type { AgentType } from './types.js';
 
 export interface BuildEnvironmentOptionsInput {
   inventory: AggregatedRepoInventoryResponse | null;
   nodes: HubNodeSummary[];
-  /** Agent the dialog has selected — controls capability-missing reasons. */
-  selectedAgent: AgentType;
-  /** 'agent' uses agent + shell + terminal backend requirement; 'terminal' is shell + terminal backend only. */
-  sessionType: 'agent' | 'terminal';
+  sessionType: 'terminal';
   /** Fallback when inventory is empty — typically the active workspace. */
   fallbackWorkspace?: {
     name: string;
@@ -73,8 +69,6 @@ export interface BuildEnvironmentOptionsInput {
 // transport shape (string → typed union) changes.
 function nodeFreshnessAndReasons(
   node: HubNodeSummary | null,
-  sessionType: 'agent' | 'terminal',
-  selectedAgent: AgentType,
   lastSeenAt: string | undefined
 ): { freshness: EnvironmentFreshness; reasons: EnvironmentDegradedReason[] } {
   const reasons: EnvironmentDegradedReason[] = [];
@@ -137,21 +131,6 @@ function nodeFreshnessAndReasons(
       message: `terminal backend unavailable (relay-pty ${backends['relay-pty']})`,
     });
   }
-  if (sessionType === 'agent') {
-    const agentStatus = node.capabilities.agents[selectedAgent];
-    if (capabilityProblem(agentStatus) !== null) {
-      if (freshness === 'fresh') freshness = 'stale';
-      // `displayName` is optional on `HubNodeSummary` — fall back to
-      // `nodeId` so the message stays meaningful instead of printing
-      // "on undefined" (Gemini PR #647 review).
-      reasons.push({
-        kind: 'capability-missing',
-        capability: 'session:create:agent',
-        message: `${selectedAgent} ${agentStatus ?? 'unknown'} on ${node.displayName ?? node.nodeId}`,
-      });
-    }
-  }
-
   return { freshness, reasons };
 }
 
@@ -205,8 +184,7 @@ function capabilityProblem(
 }
 
 function baseCapabilitiesFor(
-  node: HubNodeSummary | null,
-  sessionType: 'agent' | 'terminal'
+  node: HubNodeSummary | null
 ): RelayCapabilityBit[] {
   if (!node) return [];
   const caps: RelayCapabilityBit[] = ['session:read'];
@@ -215,9 +193,6 @@ function baseCapabilitiesFor(
   const terminalBackendOk = nodeHasTerminalBackend(node);
   if (shellOk && terminalBackendOk) {
     caps.push('session:create:terminal');
-    if (sessionType === 'agent') {
-      caps.push('session:create:agent');
-    }
   }
   return caps;
 }
@@ -436,11 +411,9 @@ function fallbackOptions(
   if (!fallback) return [];
   const { freshness, reasons } = nodeFreshnessAndReasons(
     syntheticNode,
-    input.sessionType,
-    input.selectedAgent,
     undefined
   );
-  const caps = baseCapabilitiesFor(syntheticNode, input.sessionType);
+  const caps = baseCapabilitiesFor(syntheticNode);
   const isGit = fallback.isGitRepo !== false;
   const id = optionIdFor(syntheticNode.nodeId, fallback.path, null);
   const options: EnvironmentOption[] = [];
@@ -537,11 +510,9 @@ export function buildEnvironmentOptions(
         syntheticForUnknownNode(instance.nodeId);
       const { freshness, reasons } = nodeFreshnessAndReasons(
         node,
-        input.sessionType,
-        input.selectedAgent,
         node.lastSeenAt
       );
-      const caps = baseCapabilitiesFor(node, input.sessionType);
+      const caps = baseCapabilitiesFor(node);
       const next = emitRepoInstanceOptions(
         instance,
         node,
@@ -583,11 +554,9 @@ export function buildEnvironmentOptions(
     if (emittedNodeIds.has(node.nodeId)) continue;
     const { freshness, reasons } = nodeFreshnessAndReasons(
       node,
-      input.sessionType,
-      input.selectedAgent,
       node.lastSeenAt
     );
-    const caps = baseCapabilitiesFor(node, input.sessionType);
+    const caps = baseCapabilitiesFor(node);
     options.push({
       schemaVersion: 1,
       id: optionIdFor(node.nodeId, null, null),

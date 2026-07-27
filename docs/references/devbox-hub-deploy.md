@@ -137,7 +137,6 @@ The `--prefix` is not optional. A plain `npm i -g` installs into the Hermes prof
 - `channel-chat.db`
 - `workspace-topics.db`
 - `ia.db`
-- `agent-presence.db`
 - `work-context-messages.db`
 - `work-contexts.db`
 - `context-packets.db`
@@ -165,7 +164,10 @@ systemctl --user start relay-daily-hub.service
 curl -s http://127.0.0.1:3459/healthz
 ```
 
-The #1200 lazy-restore usually prevents the boot wedge now. The last resort is the fresh-config-dir workaround: start from a clean config dir carrying only `config.json` and the channel/workspace/presence DBs (`channel-chat.db`, `workspace-topics.db`, `agent-presence.db`) with zero serialized sessions.
+The #1200 lazy-restore usually prevents the boot wedge now. The last resort is
+the fresh-config-dir workaround: start from a clean config dir carrying only
+`config.json`, `channel-chat.db`, and `workspace-topics.db`, with zero
+serialized sessions.
 
 ### Duplicate-row healing (channel-chat v1 → v2)
 
@@ -331,7 +333,7 @@ A series of routed-PTY fixes landed against the dogfood loop. After a hub redepl
 
 - Failure mode on devbox: mobile/desktop Active Work showed a routed session as live, but Attach silently did nothing and Send hit the wrong session. Routing went through unscoped session ids and never invalidated on `session`/`control`/`node` events, so already-mounted surfaces stayed stale after a routed create. Some Mac-node routed terminals also booted with `controlMode: unknown`, which downgraded controls to read-only. CI also lacked a default `tab-mode` capability in the legacy policy, so policy-evaluated routed creates flapped between agent and human control state.
 - Verification after hub redeploy:
-  - Create a routed terminal against `macbook-relay-node` from desktop and mobile; confirm both surface it as `controlFreshness: fresh` with `controlMode: human-driven` (terminal) or `agent-driven` (agent) — never `unknown`.
+  - Create a routed terminal against `macbook-relay-node` from desktop and mobile; confirm both surface it as `controlFreshness: fresh` with `controlMode: human-driven` — never `unknown`.
   - From the mobile Active Work card, press Attach: the PTY should mount with the existing scrollback. Send a small input (`pwd`) and confirm it lands on the routed node.
   - Trigger a `session`/`control` event (open a second tab on the same routed session) and confirm the first surface refreshes without a manual reload.
 - Mac node-link sequence: no node restart needed for the #583 fixes — they live on the hub. Only restart the node-link if `relay-ide hub nodes` reports `VERSION_SKEW` or `PROTOCOL_INCOMPATIBLE` against the redeployed hub.
@@ -350,23 +352,17 @@ A series of routed-PTY fixes landed against the dogfood loop. After a hub redepl
   relay-ide node logs
   ```
 
-### #587 / #588 — routed agent runtime spawn (commits `d2ffe567`, `083ec3be`)
+### Agent channel verification
 
-- Failure mode on devbox: routed `type: agent` / `agent: codex|hermes|claude` sessions reported the right metadata in Active Work and the resume snapshot, but the attached PTY rendered the user's zsh startup (e.g. `[oh-my-zsh] Would you like to update?`) instead of the selected native runtime. A stray `command` from the browser was sneaking through node-link create, and the routed attach path was re-opening a fresh PTY instead of binding to the already-spawned native session.
-- Verification after hub redeploy:
-  - POST a routed agent create against `macbook-relay-node` (`type: agent`, `agent: codex` — substitute whichever agent `relay-ide hub doctor` reports as `available` for that node).
-  - Confirm Active Work shows `type: agent`, `controlMode: agent-driven`, `controlFreshness: fresh`, with a WorkContext linked.
-  - Attach from desktop AND mobile. The bounded PTY frame must be the agent runtime UI (Codex/Hermes/Claude banner), not a shell prompt. Re-attach from a second client and confirm both clients see the same live session — that exercises the `node-link-pty-host` "attach to live native sessions" path.
-- Mac node-link sequence: both halves of #587/#588 live on the Mac node. `node-link-rpc-host` command suppression for agent creates is in `server/node-link-rpc-host.ts`; `node-link-pty-host` live-session attach is in `server/node-link-pty-host.ts`. Both run inside `relay-ide node link`, so a hub-only redeploy is insufficient. If the Mac node is on an older nightly than the hub, the routed agent will spawn a shell again. Update and restart the node-link:
+Agents are not routed as public node sessions. Verify agent work through the
+channel surface instead:
 
-  ```bash
-  npm install -g relay-ide@nightly   # or scripts/dev-resync.sh for source mode
-  relay-ide --version
-  launchctl kickstart -k gui/$(id -u)/com.relay-ide
-  relay-ide node doctor --hub <devbox-hub-url>
-  ```
-
-  Then re-run the routed agent create above and confirm Codex/Hermes/Claude UI in the bounded PTY frame before claiming the regression is gone.
+- Open or create a DM for a configured agent profile.
+- Post a message and confirm the reply, streaming state, and detail cards appear
+  in `ChannelView`.
+- Confirm `GET /sessions` does not include the private channel runtime.
+- Confirm local, routed-node, and CLI session creation reject `type: agent` and
+  `mode: web`.
 
 ### Cross-fix invariants to re-prove
 
@@ -374,7 +370,9 @@ When a regression looks routed-PTY shaped, these are the cheapest invariants to 
 
 1. Hub `/health` returns `{"status":"ok"}` and `relay-ide --version` on the devbox matches the SHA/package channel under test.
 2. `relay-ide hub nodes --json` shows the target node online, protocol-compatible, on the same channel/SHA.
-3. A routed terminal and a routed agent session both reach `controlFreshness: fresh` with the expected `controlMode`, and the bounded PTY frame matches the requested kind (shell prompt for terminal, runtime banner for agent).
+3. A routed terminal reaches `controlFreshness: fresh` with
+   `controlMode: human-driven`, and the bounded PTY frame shows the target
+   node's shell.
 4. Re-attaching from a second client lands on the same live session, not a fresh PTY.
 5. No raw bytes, pair tokens, bearer tokens, or auth-bearing URLs appear in evidence — only ids, statuses, redacted summaries, screenshots, and artifact paths.
 

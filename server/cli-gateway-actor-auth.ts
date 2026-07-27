@@ -30,7 +30,7 @@ export const CLI_GATEWAY_CORRELATION_ID_HEADER =
   'x-relay-correlation-id' as const;
 export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
-  'session:create:agent',
+  'session:create:terminal',
   'context:read',
   'context:write',
   'inbox:read',
@@ -64,7 +64,6 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-messages.templates.list',
   'work-context-messages.templates.show',
   'work-context-messages.templates.render',
-  'roster.list',
   'workspace-surfaces.list',
   'workspace-topics.list',
   'workspace-topics.search',
@@ -87,8 +86,6 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'context.create',
   'context.pin',
   'context.unpin',
-  'roster.register',
-  'roster.updateSelf',
   'inbox.send',
   'inbox.ack',
   'inbox.resolve',
@@ -338,7 +335,7 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
-  if (command === 'sessions.create') return ['session:create:agent'];
+  if (command === 'sessions.create') return ['session:create:terminal'];
   if (command === 'events.subscribe') return ['context:read'];
   // context/inbox reads must resolve to their read capability BEFORE the generic
   // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
@@ -390,10 +387,6 @@ export function cliGatewayActorCommandCapabilities(
   if (command.startsWith('automation-runs.')) return ['context:write'];
   if (command.startsWith('pr-overseer.')) return ['context:write'];
   if (command.startsWith('context.')) return ['context:write'];
-  // Explicit self-declared presence (#964) is collaboration-context metadata —
-  // gate the writes on context:write (roster.list reads stay session:read).
-  if (command === 'roster.register' || command === 'roster.updateSelf')
-    return ['context:write'];
   if (command.startsWith('inbox.')) return ['inbox:write'];
   return ['artifact:write'];
 }

@@ -55,7 +55,6 @@ function baseWorkContext(): WorkContext {
         globalSessionId: 'global-session-source-1',
         tabKind: 'agent',
         cwd: sourceCwd,
-        agent: 'kani-backend',
         controlMode: 'agent-driven',
       },
       repo: {
@@ -202,7 +201,7 @@ function harness(
       argvPreview: ['claude', '--resume', '<native-session-id>'],
       requiresSameNode: !supportedResumeModes.includes('native-cross-node'),
       requiresAuth: true,
-      requiredCapabilities: ['session:create:agent'],
+      requiredCapabilities: ['session:create:terminal'],
     },
     destinationReadiness: readiness(true),
   };
@@ -336,7 +335,8 @@ describe('agent continuation shared contract', () => {
           {
             kind: 'provider-auth-store',
             ref: '~/.claude/auth.json',
-            summary: 'provider auth should not be portable or copied by default',
+            summary:
+              'provider auth should not be portable or copied by default',
             portable: true,
             includeByDefault: true,
           },

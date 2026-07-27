@@ -1,8 +1,14 @@
 # Terminal backend: relay-pty only
 
-Relay now has one supported PTY execution backend for local and routed node sessions:
+Relay now has one supported PTY execution backend for local and routed public
+terminal sessions:
 
-- `relay-pty`: Relay's direct PTY/libghostty-vt-backed pipeline. It is the default and the only accepted terminal backend for interactive agent and terminal sessions.
+- `relay-pty`: Relay's direct PTY/libghostty-vt-backed pipeline. It is the
+  default and the only accepted backend for public terminal sessions.
+
+Agents participate in channels and DMs. Their private channel runtimes do not
+use the public terminal-session backend contract and never appear in public
+session lists.
 
 `tmux-compat` is removed as a runtime backend. New session requests, repo/workspace defaults, node manifests, and CLI gateway inputs must treat `tmux-compat` as unsupported/rejected instead of selecting a compatibility path.
 
@@ -58,7 +64,8 @@ Public stable adapter contract today:
 
 Not stable adapter API:
 
-- direct access to libghostty state, browser xterm.js internals, private `/hub/node-link` frames, or any tmux/rmux command;
+- direct access to libghostty state, browser xterm.js internals, private
+  `/hub/node-link` frames, or backend-private terminal commands;
 - pretending raw PTY bytes are the same as rendered viewport/cursor/title state;
 - live process recovery across Relay server restarts without a future supervisor/daemon.
 

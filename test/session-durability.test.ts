@@ -10,7 +10,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
       })
     ).toBe('running-attached');
@@ -20,7 +20,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'disconnected',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
       })
     ).toBe('running-detached');
@@ -30,7 +30,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
         hasLiveAttach: false,
       })
@@ -41,7 +41,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'initializing',
+        activityState: 'initializing',
         idle: true,
       })
     ).toBe('awaiting-start');
@@ -53,7 +53,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'initializing',
+        activityState: 'initializing',
         idle: false,
       })
     ).toBe('running-attached');
@@ -63,24 +63,24 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'permission-prompt',
+        activityState: 'permission-prompt',
         idle: false,
       })
     ).toBe('permission-needed');
     expect(
       deriveSessionDurability({
         status: 'disconnected',
-        agentState: 'permission-prompt',
+        activityState: 'permission-prompt',
         idle: true,
       })
     ).toBe('permission-needed');
   });
 
-  it('maps agentState=error to error', () => {
+  it('maps activityState=error to error', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'error',
+        activityState: 'error',
         idle: true,
       })
     ).toBe('error');
@@ -90,7 +90,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'disconnected',
-        agentState: 'idle',
+        activityState: 'idle',
         idle: true,
         cleanedUp: true,
       })
@@ -105,7 +105,7 @@ describe('deriveSessionDurability', () => {
       expect(
         deriveSessionDurability({
           status: 'active',
-          agentState: 'processing',
+          activityState: 'processing',
           idle: false,
           nodeStatus: status,
         })
@@ -117,7 +117,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
         nodeStatus: 'online',
       })
@@ -125,7 +125,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
         nodeStatus: null,
       })
@@ -139,7 +139,7 @@ describe('deriveSessionDurability', () => {
     expect(
       deriveSessionDurability({
         status: 'disconnected',
-        agentState: 'idle',
+        activityState: 'idle',
         idle: true,
         cleanedUp: true,
         nodeStatus: 'offline',
@@ -151,17 +151,17 @@ describe('deriveSessionDurability', () => {
     const samples = [
       deriveSessionDurability({
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         idle: false,
       }),
       deriveSessionDurability({
         status: 'disconnected',
-        agentState: 'idle',
+        activityState: 'idle',
         idle: true,
       }),
       deriveSessionDurability({
         status: 'active',
-        agentState: 'error',
+        activityState: 'error',
         idle: true,
       }),
     ];

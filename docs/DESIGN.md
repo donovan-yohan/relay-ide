@@ -1,175 +1,130 @@
-# Design
+# Backend design
 
-Backend patterns and conventions for Relay IDE. The server is a composition-root architecture where `index.ts` wires together single-concern modules communicating via ESM imports.
+Relay's TypeScript backend uses a composition-root architecture:
+`server/index.ts` initializes required stores and wires single-purpose modules,
+routers, WebSocket upgrades, auth, policy, and shutdown.
 
-## Key Decisions
+## Core decisions
 
-| Decision                                                  | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Source                            |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| No dependency injection                                   | Direct ESM imports are simpler for a small module count                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | ADR-001                           |
-| Terminal backend selection                                | `terminalBackend` is the canonical knob, but `relay-pty` is the only supported value for interactive agent and terminal sessions. `tmux-compat` and legacy `useTmux`/tmux-name state are unsupported tombstones, not a selectable backend.                                                                                                                                                                                                                                                                                                                                                                                                   | ADR-003, issue #973               |
-| Session metadata restore with relay-pty process ownership | Session metadata and scrollback are serialized before auto-updates. `relay-pty` can reattach/replay while the Relay server process remains alive, but server restart is cold resume from saved metadata/scrollback only; preserving live child processes across restart requires future daemon/supervisor work.                                                                                                                                                                                                                                                                                                                              | ADR-003, issue #973               |
-| scrypt + browser-session cookies                          | PIN hashed with scrypt (migrated from bcrypt), browser-session cookie auth, rate limiting                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | ADR-004                           |
-| Dual-path PIN setup                                       | TTY: interactive CLI prompt at startup. Non-TTY (background service): server starts PIN-less, PinGate frontend gates all access until PIN set via `POST /auth/setup`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Bug fix 2026-03-28                |
-| Dev instance isolation                                    | Dev mode (`RELAY_IDE_DEV_INSTANCE=1`) and self-host mode (`relay-ide dev --self-host` / `npm run dev:self`) use per-worktree config under user config state plus isolated ports/process metadata. Dev identity controls cleanup/restart behavior only; it does not bypass auth.                                                                                                                                                                                                                                                                                                                                                              | Bug fix 2026-03-28, issue #367    |
-| Vitest as the single test runner                          | Single runner for server + frontend (jsdom env), component tests via @testing-library/react, coverage via v8; replaced `node:test` on 2026-04-03                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | ADR-005                           |
-| Dual distribution (global + local)                        | npm global for production, local clone for dev                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | ADR-006                           |
-| Single-package hub/node command shape                     | Federated Relay hub and node modes remain in one `relay-ide` npm package with `relay-ide hub` and `relay-ide node` subcommands until runtime/update boundaries prove a split is worth the version-skew cost                                                                                                                                                                                                                                                                                                                                                                                                                                  | issue #400, packaging decision    |
-| TypeScript + ESM migration                                | Type safety, modern module system, strict mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | ADR-008                           |
-| Multi-agent CLI support                                   | Abstract UI concepts (yolo, continue) map to agent-specific flags via `AGENT_COMMANDS`/`AGENT_YOLO_ARGS`/`AGENT_CONTINUE_ARGS` records in sessions.ts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Design doc                        |
-| Global session defaults                                   | `defaultContinue`, `defaultYolo`, and `terminalBackend` extend the `defaultAgent` pattern; shared Zustand config store (`frontend/src/lib/stores/settings.ts`) ensures all components see fresh values after settings changes. `relay-pty` is the only accepted terminal backend.                                                                                                                                                                                                                                                                                                                                                            | Design doc, issue #973            |
-| Push notifications                                        | Browser Notification API (desktop/open tab) + Web Push via service worker (mobile PWA). Per-session toggle in context menu, global default in settings. Server-side `push.ts` module owns `web-push` dependency and VAPID keys.                                                                                                                                                                                                                                                                                                                                                                                                              | Design doc                        |
-| Fixture-based mobile input testing                        | Event-intent pipeline extracted to `shared/mobile-input-pipeline.ts` for unit testing; JSON fixtures in `test/fixtures/mobile-input/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Design doc                        |
-| File system browser API                                   | `GET /workspaces/browse` returns directory entries with `isGitRepo`/`hasChildren` metadata. `POST /workspaces/bulk` for multi-add. The React `FileBrowser.tsx` component provides a lazy tree UI with filter, multi-select, and keyboard nav. Denylist skips `node_modules`/.git/etc, 100 entry cap.                                                                                                                                                                                                                                                                                                                                         | Design doc                        |
-| Session-end broadcast                                     | `session-ended` event emitted via `/ws/events` on PTY exit and `kill()`. Follows `onIdleChange` callback pattern in sessions.ts. Frontend invalidates TanStack Query PR/CI caches on receipt.                                                                                                                                                                                                                                                                                                                                                                                                                                                | Design doc                        |
-| PR lifecycle state machine                                | `pr-state.ts` derives action from PR state + CI + mergeable + unresolved comments. Supports dual buttons (resolve + review). Archive flow kills session + deletes worktree. GraphQL query for unresolved review thread count.                                                                                                                                                                                                                                                                                                                                                                                                                | Design doc                        |
-| Hooks-based state detection                               | Claude Code hooks (--settings injection) replace fragile regex parsing for AgentState. Parser kept as fallback with 30s reconciliation timeout.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Design doc, CEO review            |
-| Hook-driven branch rename                                 | UserPromptSubmit hook triggers `server/session-rename-resolver.ts` which resolves names through a 5-tier precedence: explicit-user → pinned → agent-suggested (via `Config.renamerTool`: `'claude' \| 'codex' \| 'none' \| 'custom-script'`) → heuristic → default. Setting `renamerTool: 'none'` skips the rename entirely (no heuristic fallback). Custom scripts receive the prompt via `RELAY_RENAME_PROMPT` env var. `BranchWatcher` (`server/watcher.ts`) detects subsequent branch changes via `fs.watch` on `.git/HEAD` and broadcasts `session-renamed`. Each resolver call emits a structured log line (`[rename] source=<tier>`). | CEO review override of design doc |
-| forceOutputParser config                                  | Escape hatch to disable hooks and use parser-only mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Eng review                        |
-| Local analytics                                           | SQLite-backed event tracking (`analytics.ts` module). Auto-capture clicks via `data-track` attributes + explicit `trackEvent()` calls. Agent-queryable via direct `sqlite3` CLI access to `~/.config/relay-ide/analytics.db`. Frontend batches events to `POST /analytics/events`.                                                                                                                                                                                                                                                                                                                                                           | Design doc                        |
-| GitHub webhook self-service                               | `webhook-manager.ts` owns webhook CRUD, smee-client lifecycle, health state, per-repo webhook source status (`live`, `manual`, `limited`, `error`), and last webhook receipt timestamps. The webhook receiver (`/webhooks`) is mounted unconditionally so it is ready before any webhook is configured, records `lastWebhookEventAt` by repository, and broadcasts real `pr-updated`/`ci-updated` events for GitHub webhook deliveries. Auto-provision backfill (`POST /webhooks/manage/backfill`) creates webhooks for all configured workspaces in one shot.                                                                               | Design doc                        |
-| OAuth scope for webhooks                                  | GitHub OAuth App authorisation requests `repo admin:repo_hook` scope (previously `repo` only). The extra scope is required for `POST /repos/{owner}/{repo}/hooks` webhook creation.                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Design doc                        |
-| `extractOwnerRepo` + `buildRepoMap` in git.ts             | Helper functions for resolving "owner/repo" from a git remote URL (SSH and HTTPS forms) and building a workspace-path lookup map. Extracted to `git.ts` so both `webhook-manager.ts` and `review-poller.ts` share one implementation.                                                                                                                                                                                                                                                                                                                                                                                                        | Design doc                        |
-| Enriched branch API                                       | `GET /branches` returns `BranchInfo[]` with `isLocal`, `isRemote`, and `checkedOutIn` (worktree path + session ID). Cross-references `git worktree list --porcelain` with active sessions.                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Design doc                        |
-| Agent-running guard on branch ops                         | Branch switching, rename, and PR base change are disabled when `agentState === 'processing'`. Copy branch name is always available (read-only).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Design doc                        |
-| Agent-driven browser automation                           | `server/agent-browser.ts` owns Playwright-based Chromium automation (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`). Sessions are represented by `BrowserSession` and console errors are collected via `pageErrors` WeakMap. Headless mode is configurable; `domcontentloaded` is the default navigation wait event to avoid flakiness. Used by the `relay-ide-browser` CLI for agent QA workflows.                                                                                                                                                                                                                          | ADR-011                           |
-| PR base branch change                                     | `POST /workspaces/pr-base` runs `gh pr edit --base` to change a PR's target branch from the UI. TargetBranchSwitcher dropdown shows remote-only branches.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Design doc                        |
-| Inline branch rename + PR warning modal                   | Pencil icon triggers inline rename input. If a PR exists for the old branch, a warning modal offers Push (to remote), Ignore, or Cancel (undo rename).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Design doc                        |
+- Channels own conversation history.
+- Agent profiles own participant identity.
+- Private channel-agent runtimes own provider execution.
+- Public sessions own terminal/process execution.
+- SQLite stores initialize before the server accepts work.
+- The hub owns routing and policy; nodes own local paths and processes.
+- Stable agent integrations use the versioned CLI/action contract.
+- Interactive terminals use `relay-pty`/libghostty-vt.
 
-## Current vs Planned Information Architecture
+## Configuration and state
 
-Relay is moving from a repo/worktree-first UI toward the #444 six-layer model: `View -> Workspace -> Project -> Instance -> Bench -> Tab`. Treat this vocabulary as the product direction, not as a claim that every layer is fully wired today.
+Configuration precedence:
 
-### Implemented now
+1. CLI flags
+2. environment variables
+3. config file
+4. defaults
 
-- `shared/workspace.ts`, `shared/project.ts`, and `shared/bench.ts` provide scaffold-only identity types and helpers for Workspace, Project, Instance, and Bench. Their file comments explicitly say there is no server CRUD, migration, or frontend render wiring yet.
-- `ProjectIdentity` already distinguishes `repo`, `node`, `agent`, and `playbook` identities, but this is type scaffolding rather than shipped UI navigation.
-- Session records and frontend types still carry `workspacePath`, `repoPath`, `worktreePath`, `repoName`, and `branchName` for the current repo/worktree implementation. They also carry `cwd`, and routed sessions may carry `nodeId` / `globalSessionId`.
-- Remote terminal creation and PTY routing are implemented: frontend session creation targets `/hub/nodes/:nodeId/sessions` for non-local nodes, and PTY sockets route through `/nodes/:nodeId/ws/sessions/:sessionId`.
-- The utility rail now derives its anchor from the active tab/session context and separates the rail state key from file/git resource paths. Remote node tabs and free/non-git tabs get explicit unavailable/no-git states instead of silently using hub-local repo data.
+Global state lives under `~/.config/relay-ide/`. Source development uses an
+isolated path under `~/.config/relay-ide/dev/`. The checkout is not the runtime
+database directory.
 
-### Planned / do not describe as shipped
+Durable stores use schema-versioned migrations and fail startup when a
+required store cannot initialize. Channel messages and bindings live in
+`channel-chat.db`; attachments use their own store and content-addressed
+payload directory.
 
-- Saved Views and the full visible `Workspace -> Project -> Instance -> Bench -> Tab` sidebar migration.
-- Server CRUD/persistence for the #444 Workspace/Project/Instance/Bench scaffold types.
-- #428 remote File RPC and remote file/git browsing.
-- #470 Worker decoration (`Tab.mode`, active worker badges, intervention log, Workers View).
-- A repo-wide rename from legacy `workspace`/`worktree` API fields to Project/Bench vocabulary.
+## Channel conversations
 
-### Vocabulary rules
+`ChannelMessageStore` owns ordered rows, members, threads, idempotency keys, and
+profile bindings. The channel hub owns live subscribers and streaming
+accumulators. SQLite is the replay/catch-up buffer.
 
-- **Tab** is the leaf surface. The active tab context is the surface-level source of truth: `nodeId` (local or remote), `cwd`, and `kind` (session/file/diff/html/etc.).
-- **Workspace** is a named grouping/pin set. It is not synonymous with a repo, even though the current local implementation still uses repo-like workspace records in many paths.
-- **Project** is canonical identity for what is being worked on. A git repo is the common Project kind; node, agent provider, and playbook identities are planned/typed cases.
-- **Instance** is a Project materialized on a host/node.
-- **Bench** is cwd + environment inside an Instance. For repo Projects this is usually a git worktree; for node/free contexts it can be an arbitrary cwd.
-- **Worker** is dynamic decoration on a Bench/Tab, not a Project tree node.
-- **Repo binding** is optional decoration. Show repo/git/branch/PR widgets only when the active tab has a verified repo/worktree binding (`repoPath`, `worktreePath`, or a future repo-kind Project/Bench binding).
+The channel router applies browser or scoped actor auth plus `context:read` /
+`context:write` capability checks. Agent attribution is server-derived from
+the private runtime; callers cannot forge an agent sender with request JSON.
 
-## Config Precedence (canonical)
+The binder resolves mentions to profiles, creates/reuses a private runtime,
+assembles bounded context, queues the turn, and invokes the adapter. The bridge
+reduces provider patches into durable channel rows and rich detail cards.
 
-1. CLI flags (`--port`, `--host`, `--config`)
-2. Environment variables (`RELAY_IDE_PORT`, `RELAY_IDE_HOST`, `RELAY_IDE_CONFIG`)
-3. Config file (`~/.config/relay-ide/config.json` global, `./config.json` dev)
-4. Hardcoded defaults
+## Private agent runtimes
 
-## PTY Management
+`ChannelAgentRuntime` is intentionally not a public `Session`. It is:
 
-- `CLAUDECODE` env var stripped from PTY env to allow nesting
-- Scrollback buffer: max 256KB per session, FIFO eviction
-- `relay-pty`/libghostty-vt is the only supported backend for PTY sessions. `tmux-compat` state is legacy/tombstoned and must not be restored.
-- PTY sessions survive browser disconnects while the Relay server process remains alive: `relay-pty` keeps the direct PTY process attached to the running Relay server and can replay bounded scrollback. Relay server restart is cold resume from saved metadata/scrollback only; live child-process continuity requires future daemon/supervisor work.
-- Session auto-deleted when PTY exits; WebSocket closed with code 1000; if a write or resize arrives after the session has been reaped, the socket is closed with application close code 4404 (`session-not-found`) instead of surfacing an unhandled throw (#905)
-- `claudeArgs` from POST body merged with `config.claudeArgs` (config args first)
-- Re-attaching to a previous agent conversation uses agent-specific continue args (`--continue` for Claude, `resume --last` for Codex); reconnecting to a live PTY session requires no special args
-- **Legacy tmux state:** Old `tmux-compat` session names, `tmuxSessionName`, or `useTmux: true` records are unsupported tombstones. They are not used to spawn or reattach tmux.
-- **Session persistence across updates:** When `POST /update` triggers a restart, `serializeAll()` writes session metadata (including `yolo`, `claudeArgs`, `hookToken`, `hooksActive`, `needsBranchRename`, `branchRenamePrompt`, `continuePolicy`, and `terminalBackend`) to `pending-sessions.json` and scrollback buffers to `scrollback/<id>.buf` in the config directory. On startup, `restoreFromDisk()` reads them back as cold resume from saved metadata/scrollback. Stale files (>5 min) are ignored.
-- **PTY retry on `--continue` failure:** If a session spawned with continue args exits within 3 seconds (regardless of exit code), the retry mechanism strips continue args and respawns. Exit code is intentionally not the only signal because wrappers can mask inner failures. WebSocket clients are reattached via `onPtyReplacedCallbacks` (supports multiple concurrent connections).
-- **Workspace/tab/pane customization:** UI tabs and split panes can move or resize without becoming the process boundary. `relay-pty` keeps the browser tab model while using the direct PTY path.
+- held in the channel runtime manager;
+- owned by one channel/profile binding;
+- absent from session lists and terminal routes;
+- destroyed when its binding/runtime ends;
+- recreated with stored provider resume state when supported.
 
-## Session Types
+Provider adapters implement `ProtocolAdapterV2`. Adapter capabilities,
+environment refresh, interruption, approvals, provider session ids, and patch
+lifecycle remain internal runtime contracts.
 
-Sessions are typed as `'agent' | 'terminal'`. In the current implementation, local repo sessions carry `workspacePath` / `repoPath` (repo root) plus optional `worktreePath` (null for repo-root sessions, populated for worktree sessions). All sessions carry a `cwd`; remote sessions may carry `nodeId` and `globalSessionId`. In tab-first documentation, use repo/worktree as the local repo Project/Bench case, not as the universal model.
+## Public sessions and terminals
 
-- **Agent sessions** — The selected coding agent (built-ins are Claude Code, Codex, OpenCode, and Hermes) runs in either the repo root (`worktreePath` is null), a git worktree (`worktreePath` is set), or a routed node cwd when created through hub/node paths. Workspace-root agent sessions support `continuePolicy: 'always'`, which maps to agent-specific continue args. The old `continue: boolean` config is mapped to `continuePolicy` for backward compatibility. New worktree sessions always use `continuePolicy: 'never'` — the `.claude` directory heuristic was removed. Multiple sessions per workspace/repo are allowed.
-- **Terminal sessions** — A bare shell running through `relay-pty` for a local repo/worktree cwd, or a routed terminal on a paired node. Useful for running commands alongside agent sessions. Terminal tabs are still Tabs; their repo/git affordances depend on whether the active tab has a verified repo binding.
-- **Worktree creation** — `POST /workspaces/worktree` creates a new git worktree with the next mountain name (everest, kilimanjaro, denali, ...) tracked per-config via `nextMountainIndex`. The frontend then calls `POST /sessions` with the returned `worktreePath` to start a session in the new worktree. `POST /sessions` does not create worktrees itself. This is the implemented repo Project/Bench path.
-- **Remote node terminal creation** — Frontend creation paths can pass `nodeId`; non-local nodes route through `/hub/nodes/:nodeId/sessions` and return node-scoped session metadata. Remote file/git browsing is still unavailable until #428, so docs must not describe routed terminals as remotely browseable worktrees yet.
-- **Control state summary (#490)** — Session summaries carry product-level `controlMode` separately from transport `mode`. `mode` remains the execution transport (`pty` or `web`); `controlMode` answers who is driving the Tab (`agent-driven`, `human-driven`, or `co-driven`). Summaries include `activeActors`, optional `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness` (`fresh`, `stale`, `unknown`), and optional `controlReason`, so the UI can render current control state without fetching intervention history. Legacy/backfilled PTY and web sessions normalize to `human-driven` with `unknown` freshness. The shared contract lives in `shared/control-state.ts`; event envelope names reserved for later intervention persistence are `tab.mode-changed` and `tab.intervention`.
-- **Control identity shape** — Control-state events and summaries identify the active Tab with `nodeId`, node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree fields (`repoPath`, `worktreePath`, `repoName`, `branchName`) are optional decoration. Local repo tabs, remote node tabs, and free/non-git tabs must all be representable without synthesizing hub-local repo bindings.
-- **Branch auto-rename** — New worktrees with mountain names get `needsBranchRename: true`. The rename instruction is delivered via `server/session-rename-resolver.ts` rather than PTY injection, keeping the main session's input stream clean. The `BranchWatcher` (`server/watcher.ts`) uses `fs.watch` on `.git/HEAD` files to detect branch changes reactively and broadcasts `session-renamed` when a branch changes. Additionally, `GET /sessions` enriches session data with live branch names (rate-limited to 10s intervals).
-- **Rename resolver precedence** (`server/session-rename-resolver.ts`) — All session/branch naming goes through a single deterministic resolver with this order (highest wins):
-  1. **explicit-user** — name explicitly set by the user in the session (not currently surfaced in UI; reserved for Phase 3 per-workspace overrides)
-  2. **pinned** — display name persisted in worktree metadata (`~/.config/relay-ide/worktree-meta/*.json`) from a previous session
-  3. **agent-suggested** — first line of stdout from the configured renamer tool (default: `claude -p --model haiku`); tool choice is `Config.renamerTool` (`'claude' | 'codex' | 'none' | 'custom-script'`); custom-script receives the prompt via `RELAY_RENAME_PROMPT` env var and must have an absolute path; branch name comes from the second line of output
-  4. **heuristic** — derived from `repoName/branchName`, `repoName`, `branchName`, or `path.basename(cwd)` (in that order of availability)
-  5. **default** — ISO timestamp + repo context (last resort)
-     The resolver logs which branch fired (`[rename] source=<branch>`). Telemetry: each call emits a structured log line identifying the winning branch. Phase 3 (per-Workspace overrides, blocked by #444) and Phase 4 (web-interface metadata, blocked by #301) are deferred.
-- **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted. Returns 409 if active sessions exist in the worktree (use `force: true` to kill sessions first). `GET /worktrees/status` provides pre-cleanup checks (active sessions, uncommitted changes) and validates that the path is a recognized worktree directory.
+Public sessions are terminal process handles with cwd, node, optional
+repo/worktree context, display/control state, and bounded scrollback. Agents do
+not own public sessions; they participate in channels through private
+`ChannelAgentRuntime` handles.
 
-## Session State Detection
+`relay-pty` owns interactive child-process execution. xterm.js is the browser
+renderer. Browser reconnect can reattach while the Relay server and child
+remain live. Relay server restart cold-resumes saved terminal
+metadata/scrollback; it does not preserve the old child process.
 
-- Backend computes a merged `BackendDisplayState` (`initializing | running | idle | permission`) from `agentState` + PTY idle timer, deduplicated (only emits when state changes)
-- `session-backend-state-changed` is the single WebSocket event for all state changes (replaces the old dual `session-idle-changed` + `session-state-changed` events)
-- PTY idle timer (`5s` silence) and output parser are inputs to `computeBackendState()` in `sessions.ts`; the merge eliminates spurious idle cycling from PTY noise
-- For agents with hooks (Claude), `agentState` from hooks is authoritative. Parser reconciliation overrides after 30s of stale hooks. Raw idle is the fallback for agents without parsers (Codex stub).
+Scrollback is capped and evicted FIFO. Writes/resizes after session reaping fail
+closed rather than throwing through the socket.
 
-## Output Parser
+## Hub and nodes
 
-The `server/output-parsers/` directory implements a vendor-extensible registry for parsing terminal output into semantic `AgentState` values.
+The local hub is also a node. Paired nodes authenticate independently and hold
+an outbound reverse link. The hub:
 
-- **Registry pattern:** `index.ts` exports a `getParser(agentType)` function that returns the appropriate parser keyed by `AgentType`. Callers do not import individual parsers directly.
-- **Per-vendor parsers:** `claude-parser.ts` and `codex-parser.ts` each export a stateless parse function `(chunk: string, currentState: AgentState) => AgentState`.
-- **No cross-module deps:** The `output-parsers/` module only imports from `types.ts`; it does not depend on any other server module.
-- **Extending:** To add a new agent, create `<vendor>-parser.ts` and register it in `index.ts`.
+- tracks heartbeat/capability state;
+- authorizes each routed operation;
+- aggregates federated reads;
+- routes terminal/file/session operations to the owning node.
 
-## Hook System
+A node never receives another node's credential or acts as another node.
 
-`server/hooks.ts` registers an Express Router mounted at `/hooks` in `index.ts`. Endpoints receive callbacks from Claude Code's hooks mechanism, which is injected via `--settings` when spawning PTY sessions.
+## Auth and policy
 
-- **State detection:** `POST /hooks/stop` sets session state to idle; `POST /hooks/notification` sets `permission-prompt` or `waiting-for-input` based on the notification title; `POST /hooks/prompt-submit` sets state to `processing`.
-- **Activity tracking:** `POST /hooks/tool-use` sets `currentActivity` (tool name + detail); `POST /hooks/tool-result` clears it.
-- **Session cleanup:** `POST /hooks/session-end` triggers session cleanup with deduplication (ignores duplicate events within a short window).
-- **Branch rename:** `POST /hooks/prompt-submit` also triggers the branch rename flow on the first user message, replacing the previous ws.ts keystroke-capture approach.
-- **Claude-only:** Hooks are injected only for Claude PTY sessions. Codex sessions continue to use the output parser exclusively.
-- **Parser fallback:** The output parser remains active with a 30-second reconciliation timeout — if a hook-derived state has not been confirmed by a subsequent hook event within 30s, the parser state takes precedence.
-- **Cold-resumed relay-pty sessions:** `hookToken` and `hooksActive` are serialized and restored with session metadata. After a Relay server restart, any continued agent work runs in a new `relay-pty` child process with restored settings where applicable; old tmux-backed state is not restored.
-- **Auth:** Endpoints are localhost-only. Each session uses a per-session token (not the user's PIN cookie) to authenticate hook callbacks.
+- Browser clients authenticate with the Relay PIN cookie.
+- Hooks use per-runtime or per-session scoped tokens.
+- CLI actors use scoped credentials and advertised capabilities.
+- High-risk node actions pass through policy and confirmation lanes.
+- Audit rows store compact ids, decisions, hashes, and redaction metadata.
 
-## Clipboard Image Passthrough
+## Images
 
-1. Browser paste/drop detects image, base64-encodes and POSTs to `/sessions/:id/image`
-2. Server saves to `/tmp/relay-ide/:sessionId/paste-:timestamp.:ext`
-3. Attempts system clipboard set (osascript on macOS, xclip on Linux)
-4. If clipboard set succeeds: sends `\x16` (Ctrl+V) to PTY stdin
-5. If fails: returns file path; frontend shows "Insert Path" button
+Channel image ingress:
 
-**Platform-specific:** On Windows/Linux, xterm.js intercepts Ctrl+V (custom key handler reads Clipboard API). On macOS, only Cmd+V triggers paste.
+1. accepts bounded multipart uploads;
+2. decodes bytes to determine actual format;
+3. rejects unsupported types, excessive bytes, or excessive pixels;
+4. strips metadata by re-encoding;
+5. content-addresses the sanitized payload;
+6. persists a typed channel image part.
 
-## Background Service
+Terminal paste remains a separate session input feature and must not be used as
+channel image storage.
 
-- `--bg` is shortcut for `install` (installs + starts)
-- Service files generated with current CLI flags baked in
-- Service manager detection is capability-based, not platform-only: macOS uses launchd user agents; Linux uses systemd `--user` only when the user manager is actually available; WSL reports `wsl-systemd` only when WSL systemd and the user bus are both present, otherwise `wsl-manual`.
-- `GET /api/node/manifest` exposes the same local node capability schema as `relay-ide manifest`; hub pairing uses `POST /hub/pair-tokens` to return a short-lived token plus local/SSH/Tailscale bootstrap commands, and `relay-ide node status|logs|doctor` prints redacted diagnostics for reachability, service, token, connect-back, protocol, and heartbeat failures. SSH/Tailscale are bootstrap/fallback transports only. `relay-ide node connect` / `node install` pair credentials and send an initial heartbeat; `relay-ide node link --hub <url>` is the foreground reverse WebSocket that maintains `/hub/node-link`, reports manifest + repo inventory, handles `sessions.create` / `sessions.kill` RPC, and carries routed PTY traffic. File/git RPC and richer log proxying remain follow-ups. See `docs/federated-relay.md` for the full hub/node architecture and runbook.
-- macOS: launchd plist (`RunAtLoad` + `KeepAlive`); Linux: systemd user unit (`Restart=on-failure`)
-- To change port/host: `uninstall` then re-install with new flags
+## Services
 
-## Slash Commands
+The background hub runs under launchd on macOS or a user systemd service when
+available on Linux. Service install/status/logs/uninstall are exposed by the
+CLI. Node service support is capability-detected, including WSL2 variants.
 
-- Claude Code slash commands live in `.claude/commands/` and are tracked in git
-- `.gitignore` ignores `.claude/` subdirectories individually (not blanket) to allow `commands/` to be versioned
-- Commands are markdown prompt templates executed interactively by Claude
+## Extension rules
 
-## Deep Docs
+- Add a focused module instead of expanding `index.ts` with domain logic.
+- Put shared wire/schema types under `shared/`.
+- Keep provider-native behavior inside adapter modules.
+- Add storage migrations through the owning store's version runner.
+- Bound every history, stream, queue, attachment, and agent-output path.
+- Put tests at the interface that owns the invariant.
 
-| Document                      | Purpose                                       |
-| ----------------------------- | --------------------------------------------- |
-| `design-docs/core-beliefs.md` | Agent-first operating principles              |
-| `design-docs/`                | Feature design documents (brainstorm outputs) |
-
-## See Also
-
-- [Architecture](ARCHITECTURE.md) — module boundaries and invariants
-- [Frontend](FRONTEND.md) — React 19 patterns and component conventions
-- [Quality](QUALITY.md) — testing patterns and test isolation
+See [`ARCHITECTURE.md`](ARCHITECTURE.md),
+[`CHANNEL_CHAT.md`](CHANNEL_CHAT.md), and
+[`provider-guide.md`](provider-guide.md).

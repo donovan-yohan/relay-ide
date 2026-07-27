@@ -595,7 +595,7 @@ export const claudeProcessRegistry = new ClaudeProcessRegistry();
 /**
  * ClaudeProtocolAdapter — persistent-subprocess adapter over stream-json.
  *
- * One `claude` child per web session (lazy: `connect()` never spawns, the first
+ * One `claude` child per channel runtime (lazy: `connect()` never spawns, the first
  * `sendMessage` does). Warm-idle eviction kills the child while the adapter
  * stays `connected`; the next send respawns with `--resume <claudeSessionId>` —
  * the same mechanism serves crash recovery and relay-restart cold recovery
@@ -720,8 +720,8 @@ export class ClaudeProtocolAdapter
   /**
    * A live adapter transitively holds JSON-hostile references — the shared
    * registry's `setInterval` handle and, once spawned, a `ChildProcess`. The
-   * session-create route serializes the whole WebSession (adapter included) into
-   * its HTTP response, so expose only a safe summary rather than the live graph.
+   * runtime registry holds the adapter graph, so expose only a safe summary
+   * if it is ever serialized for diagnostics.
    */
   toJSON(): Record<string, unknown> {
     return {
@@ -2318,7 +2318,7 @@ export class ClaudeProtocolAdapter
     // Questions are gated off in slice 1 — deny so the subprocess is not wedged.
     this.writeControlResponse(requestId, {
       behavior: 'deny',
-      message: 'Interactive questions are not yet supported in web sessions.',
+      message: 'Interactive questions are not yet supported in channels.',
     });
   }
 

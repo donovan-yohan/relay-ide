@@ -124,7 +124,7 @@ describe('PTY WebSocket intervention control', () => {
     const address = server.address() as AddressInfo;
 
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
       repoPath: configDir,
       worktreePath: null,
@@ -135,9 +135,8 @@ describe('PTY WebSocket intervention control', () => {
       cols: 80,
       rows: 24,
       controlState: {
-        controlMode: 'agent-driven',
-        activeActors: [{ kind: 'agent', id: 'worker-1' }],
-        activeWorker: { kind: 'agent', id: 'worker-1' },
+        controlMode: 'human-driven',
+        activeActors: [{ kind: 'human', id: 'local-user' }],
         lastInterventionAt: null,
         lastInterventionBy: null,
         lastInterventionEventId: null,
@@ -173,7 +172,7 @@ describe('PTY WebSocket intervention control', () => {
     expect(sessions.getInterventions(result.id)).toEqual([]);
     expect(
       (sessions.get(result.id) as PtySession).controlState?.controlMode
-    ).toBe('agent-driven');
+    ).toBe('human-driven');
 
     ws.send('hello from browser\n');
     await waitForInterventionCount(result.id, 1);
@@ -183,11 +182,11 @@ describe('PTY WebSocket intervention control', () => {
       sessionId: result.id,
       source: 'pty-input',
       kind: 'human-input',
-      modeBefore: 'agent-driven',
-      modeAfter: 'co-driven',
+      modeBefore: 'human-driven',
+      modeAfter: 'human-driven',
     });
     expect((sessions.get(result.id) as PtySession).controlState).toMatchObject({
-      controlMode: 'co-driven',
+      controlMode: 'human-driven',
       controlReason: 'human input',
       lastInterventionEventId: records[0]!.id,
     });
@@ -227,14 +226,11 @@ describe('PTY WebSocket intervention control', () => {
       globalSessionId: 'remote-node-a:remote-session-a',
       source: 'pty-input',
       kind: 'human-input',
-      modeBefore: 'agent-driven',
-      modeAfter: 'co-driven',
+      modeBefore: 'human-driven',
+      modeAfter: 'human-driven',
       payloadPreview: 'echo routed\\n',
     });
-    expect(events.map((event) => event.type)).toEqual([
-      'tab.mode-changed',
-      'tab.intervention',
-    ]);
+    expect(events.map((event) => event.type)).toEqual(['tab.intervention']);
     expect(events[0]?.identity).toMatchObject({
       nodeId: 'remote-node-a',
       sessionId: 'remote-session-a',
@@ -272,16 +268,13 @@ describe('PTY WebSocket intervention control', () => {
     ).not.toThrow();
     await waitForInterventionCount('remote-session-a-throw', 1);
     expect(deliveredEvents.map((event) => event.type)).toEqual([
-      'tab.mode-changed',
       'tab.intervention',
     ]);
-    expect(auditEntries).toHaveLength(2);
+    expect(auditEntries).toHaveLength(1);
     expect(auditEntries.map((entry) => entry.intent.action)).toEqual([
-      'tab.mode-changed',
       'tab.intervention',
     ]);
     expect(auditEntries.map((entry) => entry.eventType)).toEqual([
-      'bridge_event',
       'bridge_event',
     ]);
   });

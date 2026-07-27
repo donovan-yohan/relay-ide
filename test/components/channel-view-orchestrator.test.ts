@@ -1,14 +1,7 @@
 // @vitest-environment happy-dom
 
 import React, { act } from 'react';
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -23,7 +16,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../frontend/src/lib/api.js')>();
+  const actual =
+    await importOriginal<typeof import('../../frontend/src/lib/api.js')>();
   return {
     ...actual,
     fetchWorkspaceTopic: mocks.fetchWorkspaceTopic,
@@ -76,9 +70,8 @@ vi.mock('../../frontend/src/components/chat/ChannelThreadPanel.js', () => ({
   ChannelThreadPanel: () => null,
 }));
 
-const { ChannelView } = await import(
-  '../../frontend/src/components/chat/ChannelView.js'
-);
+const { ChannelView } =
+  await import('../../frontend/src/components/chat/ChannelView.js');
 
 const CHANNEL_ID = 'topic:operator-lane';
 
@@ -100,7 +93,7 @@ function rosterEntry(role?: 'orchestrator' | 'implementer') {
     reason: null,
     ...(role ? { role } : {}),
     binding: {
-      sessionId: 'session:claude-1',
+      runtimeId: 'runtime:claude-1',
       status: 'idle' as const,
     },
   };
@@ -164,7 +157,9 @@ afterEach(async () => {
 
 describe('ChannelView orchestrator control (#1242)', () => {
   it('waits for the roster before offering designation', async () => {
-    let resolveRoster: ((entries: ReturnType<typeof rosterEntry>[]) => void) | null = null;
+    let resolveRoster:
+      | ((entries: ReturnType<typeof rosterEntry>[]) => void)
+      | null = null;
     mocks.fetchChannelRoster.mockReturnValue(
       new Promise<ReturnType<typeof rosterEntry>[]>((resolve) => {
         resolveRoster = resolve;
@@ -178,7 +173,9 @@ describe('ChannelView orchestrator control (#1242)', () => {
     resolveRoster?.([rosterEntry('implementer')]);
     await flush();
 
-    expect(container.querySelector('.ch-designate-orchestrator')).not.toBeNull();
+    expect(
+      container.querySelector('.ch-designate-orchestrator')
+    ).not.toBeNull();
   });
 
   it('designates from the missing-orchestrator header and invalidates its roster', async () => {
@@ -186,7 +183,7 @@ describe('ChannelView orchestrator control (#1242)', () => {
     mocks.designateChannelOrchestrator.mockResolvedValue({
       ok: true,
       orchestrator: {
-        sessionId: 'session:orchestrator-1',
+        runtimeId: 'runtime:orchestrator-1',
         status: 'idle',
         framework: 'claude',
       },

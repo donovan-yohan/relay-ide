@@ -64,7 +64,7 @@ describe('resolveAppViewMode', () => {
     ).toBe('analytics');
   });
 
-  it('keeps a web chat session in the chat shell while preserving analytics and explicit repo dashboard priority', () => {
+  it('preserves analytics and explicit repo dashboard priority', () => {
     expect(
       resolveAppViewMode({
         analyticsView: { sessionId: 'session-1' },
@@ -84,24 +84,6 @@ describe('resolveAppViewMode', () => {
     expect(
       resolveAppViewMode({
         analyticsView: null,
-        hasActiveSession: true,
-        activeRepoPath: null,
-        activeSessionMode: 'web',
-      })
-    ).toBe('chat');
-
-    expect(
-      resolveAppViewMode({
-        analyticsView: null,
-        hasActiveSession: true,
-        activeRepoPath: '/repo/relay-ide',
-        activeSessionMode: 'web',
-      })
-    ).toBe('chat');
-
-    expect(
-      resolveAppViewMode({
-        analyticsView: null,
         hasActiveSession: false,
         activeRepoPath: '/repo/relay-ide',
       })
@@ -115,7 +97,6 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: null,
-        activeSessionMode: 'pty',
       })
     ).toBe('session');
 
@@ -124,12 +105,9 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: '/repo/relay-ide',
-        activeSessionMode: 'pty',
       })
     ).toBe('session');
 
-    // Legacy/undefined mode is treated as a PTY terminal, matching ChatHome's
-    // own `mode === 'web'` gate.
     expect(
       resolveAppViewMode({
         analyticsView: null,
@@ -144,7 +122,6 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: null,
-        activeSessionMode: 'pty',
         topicComposerOpen: true,
       })
     ).toBe('chat');

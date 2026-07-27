@@ -28,14 +28,13 @@ describe('server shutdown store closing contract', () => {
     expect(gracefulShutdownSource).toContain(
       'workContextMessageStore?.close();'
     );
-    expect(gracefulShutdownSource).toContain('agentPresenceStore?.close();');
     expect(gracefulShutdownSource).toContain('agentProfileStore?.close();');
     expect(gracefulShutdownSource).toContain('workspaceSurfaceStore?.close();');
     expect(gracefulShutdownSource).toContain(
       'channelAttachmentStore?.close();'
     );
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
@@ -51,14 +50,13 @@ describe('server shutdown store closing contract', () => {
 
     expect(updateRestartStart).toBeGreaterThanOrEqual(0);
     expect(updateResponseStart).toBeGreaterThan(updateRestartStart);
-    expect(updateRestartSource).toContain('agentPresenceStore?.close();');
     expect(updateRestartSource).toContain('agentProfileStore?.close();');
     expect(updateRestartSource).toContain('workContextArtifactStore?.close();');
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
     expect(updateRestartSource).toContain('workspaceSurfaceStore?.close();');
     expect(updateRestartSource).toContain('channelAttachmentStore?.close();');
     expect(updateRestartSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentProfileStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+await channelAgentRuntimes\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);/
     );
   });
 });

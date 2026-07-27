@@ -15,7 +15,7 @@ export interface FrameworkAvailability {
   reason?: string;
 }
 
-export interface FrameworkWebAvailability {
+export interface FrameworkChannelAvailability {
   available: boolean;
   endpoint?: string;
   reason?: string;
@@ -28,7 +28,7 @@ export interface FrameworkClientInfo {
   capabilities: AgentFramework['capabilities'];
   eventSource: EventSourceType;
   availability: FrameworkAvailability;
-  webAvailability?: FrameworkWebAvailability;
+  channelAvailability?: FrameworkChannelAvailability;
 }
 
 function executableCandidates(
@@ -119,7 +119,7 @@ export async function getFrameworkClientInfoWithRuntime(
       const probe = await probeHermesGatewayApi(undefined, 300);
       return {
         ...framework,
-        webAvailability: {
+        channelAvailability: {
           available: probe.available,
           endpoint: probe.endpoint,
           ...(probe.reason ? { reason: probe.reason } : {}),
@@ -129,21 +129,17 @@ export async function getFrameworkClientInfoWithRuntime(
   );
 }
 
-// Reasons surfaced when a framework's `supportsWebSessions` capability is
-// false. Keep entries here keyed by framework id; the fallback below covers
-// any framework that simply doesn't declare web support yet. Codex's #301
-// entry was removed when #1169 re-advertised the native app-server adapter.
-const WEB_DEADVERTISE_REASONS: Record<string, string> = {};
+const CHANNEL_DEADVERTISE_REASONS: Record<string, string> = {};
 
-export async function getFrameworkWebAvailability(
+export async function getFrameworkChannelAvailability(
   framework: AgentFramework
-): Promise<FrameworkWebAvailability> {
-  if (!framework.capabilities.supportsWebSessions) {
+): Promise<FrameworkChannelAvailability> {
+  if (!framework.capabilities.supportsChannelAgents) {
     return {
       available: false,
       reason:
-        WEB_DEADVERTISE_REASONS[framework.id] ??
-        `${framework.displayName} web sessions are not currently available.`,
+        CHANNEL_DEADVERTISE_REASONS[framework.id] ??
+        `${framework.displayName} is not currently available in channels.`,
     };
   }
   if (framework.id !== 'hermes') {

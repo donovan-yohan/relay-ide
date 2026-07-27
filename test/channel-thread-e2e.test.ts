@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createChannelAgentBinder,
-  type BinderSessions,
+  type BinderRuntimes,
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
 import { createChannelChatRouter } from '../server/channel-chat-router.js';
@@ -19,7 +19,7 @@ import {
 } from '../server/channel-message-store.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { ProtocolAdapterV2 } from '../server/protocol-adapter-v2.js';
-import type { Session, WebSession } from '../server/types.js';
+import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
 import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
@@ -50,10 +50,11 @@ interface Harness {
   channelId: string;
 }
 
-function mockSessions(): BinderSessions {
-  const sessions = new Map<string, WebSession>();
+function mockSessions(): BinderRuntimes {
+  const sessions = new Map<string, ChannelAgentRuntime>();
+  const endHandlers = new Set<(id: string) => void>();
   return {
-    async createWeb(params) {
+    async create(params) {
       const id = `session-${sessions.size + 1}`;
       const adapter: ProtocolAdapterV2 = new MockProtocolAdapterV2({
         connectMs: 1,
@@ -66,21 +67,28 @@ function mockSessions(): BinderSessions {
         hookToken: 'thread-e2e',
         configDir: params.configDir,
       });
-      const session = {
+      const runtime = {
         id,
-        mode: 'web',
-        agent: params.agentType,
-        adapterV2: adapter,
+        providerId: params.providerId,
+        profileActorId: params.profileActorId,
+        status: 'active',
+        adapter,
         cwd: params.cwd,
-      } as unknown as WebSession;
-      sessions.set(id, session);
-      return { session };
+        providerSession: {},
+      } as unknown as ChannelAgentRuntime;
+      sessions.set(id, runtime);
+      return runtime;
     },
     get(id) {
-      return sessions.get(id) as unknown as Session | undefined;
+      return sessions.get(id);
     },
-    onSessionEnd() {
-      return () => {};
+    async destroy(id) {
+      if (!sessions.delete(id)) return;
+      for (const handler of endHandlers) handler(id);
+    },
+    onRuntimeEnd(handler) {
+      endHandlers.add(handler);
+      return () => endHandlers.delete(handler);
     },
   };
 }
@@ -110,7 +118,7 @@ async function createHarness(): Promise<Harness> {
     store,
     hub,
     topicStore,
-    sessions: mockSessions(),
+    runtimes: mockSessions(),
     knownProviderIds: ['mock'],
     mentionTargets: async () => TARGETS,
     port: 0,

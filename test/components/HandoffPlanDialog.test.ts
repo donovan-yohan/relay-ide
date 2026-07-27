@@ -61,7 +61,7 @@ describe('handoff dry-run fixtures', () => {
       'stale-source',
       'offline-hub',
       'non-git-snapshot',
-      'summary-only-agent-continuation',
+      'summary-only-continuation',
     ]);
 
     for (const key of HANDOFF_FIXTURE_ORDER) {
@@ -74,7 +74,9 @@ describe('handoff dry-run fixtures', () => {
 
   it('models blocked, grant-required, non-git, and summary-only cases explicitly', () => {
     expect(getHandoffPlanFixture('clean').plan.conflicts).toHaveLength(0);
-    expect(getHandoffPlanFixture('conflicts').plan.conflicts.length).toBeGreaterThan(0);
+    expect(
+      getHandoffPlanFixture('conflicts').plan.conflicts.length
+    ).toBeGreaterThan(0);
     expect(
       getHandoffPlanFixture('grants-required').plan.requiredGrants.length
     ).toBeGreaterThan(0);
@@ -90,11 +92,10 @@ describe('handoff dry-run fixtures', () => {
       'approved-untracked-files'
     );
     expect(
-      getHandoffPlanFixture('summary-only-agent-continuation').agentContinuation
-        .mode
+      getHandoffPlanFixture('summary-only-continuation').agentContinuation.mode
     ).toBe('summary-only');
     expect(
-      getHandoffPlanFixture('summary-only-agent-continuation').plan.pathMappings
+      getHandoffPlanFixture('summary-only-continuation').plan.pathMappings
     ).toHaveLength(0);
   });
 });
@@ -127,11 +128,12 @@ describe('<HandoffPlanDialog />', () => {
     });
   }
 
-  function activeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
+  function activeSession(
+    overrides: Partial<SessionSummary> = {}
+  ): SessionSummary {
     return {
       id: 'sess-local-692',
-      type: 'agent',
-      agent: 'claude',
+      type: 'terminal',
       repoName: 'relay-ide',
       repoPath: '/Users/dev/relay-ide',
       worktreePath: '/Users/dev/relay-ide/.worktrees/692-handoff-ui-live-api',
@@ -151,7 +153,7 @@ describe('<HandoffPlanDialog />', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('renders canonical copy, required sections, and disabled confirm in fixture mode', async () => {
+  it('renders canonical copy and required plan sections in fixture mode', async () => {
     await render({ open: true, onClose: vi.fn(), initialFixture: 'clean' });
     const text = container.textContent ?? '';
     expect(text).toContain(HANDOFF_CANONICAL_COPY);
@@ -163,16 +165,12 @@ describe('<HandoffPlanDialog />', () => {
       'conflicts',
       'grants',
       'source session outcome',
-      'launch summary',
-      'agent continuation',
     ]) {
       expect(text).toContain(section);
     }
-    const startButton = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent === 'start on hub'
+    expect(text).toContain(
+      'read-only plan; no destination runtime is launched'
     );
-    expect(startButton).toBeTruthy();
-    expect(startButton?.hasAttribute('disabled')).toBe(true);
   });
 
   it('can switch fixture states without transferring', async () => {
@@ -194,7 +192,12 @@ describe('<HandoffPlanDialog />', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await render({ open: true, onClose: vi.fn(), mode: 'live', activeSession: null });
+    await render({
+      open: true,
+      onClose: vi.fn(),
+      mode: 'live',
+      activeSession: null,
+    });
     await flushEffects();
 
     expect(container.textContent).toContain('empty');
@@ -202,7 +205,7 @@ describe('<HandoffPlanDialog />', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('requests a live plan and enables confirm only for the returned plan', async () => {
+  it('requests and renders a live read-only plan without creating a run', async () => {
     const fixturePlan = getHandoffPlanFixture('grants-required').plan;
     const plan = {
       ...fixturePlan,
@@ -210,8 +213,6 @@ describe('<HandoffPlanDialog />', () => {
       requiredGrants: [
         { leg: 'source-read', nodeId: 'local', capability: 'rpc:fs:read' },
         { leg: 'destination-write', nodeId: 'hub', capability: 'rpc:fs:write' },
-        { leg: 'destination-session-create', nodeId: 'hub', capability: 'session:create:agent' },
-        { leg: 'destination-exec', nodeId: 'hub', capability: 'pty:exec:arbitrary' },
       ],
     };
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -219,80 +220,65 @@ describe('<HandoffPlanDialog />', () => {
         const body = JSON.parse(String(init?.body));
         expect(body.request.source.workContextId).toBe('wc:issue-692');
         expect(body.request.source.cwd).toContain('692-handoff-ui-live-api');
-        return new Response(JSON.stringify({ plan, readOnly: true }), { status: 200 });
-      }
-      if (url === '/handoffs/create') {
-        const body = JSON.parse(String(init?.body));
-        expect(body.planId).toBe(plan.id);
-        expect(body.confirmedGrants.every((grant: { decision?: string }) => grant.decision === 'allow')).toBe(true);
-        return new Response(
-          JSON.stringify({
-            run: {
-              schemaVersion: 1,
-              id: 'handoff-run-test',
-              requestId: plan.requestId,
-              planId: plan.id,
-              state: 'planned',
-              sourceDisposition: 'left-running',
-              conflicts: [],
-              transitions: [],
-              createdAt: '2026-05-22T04:00:00.000Z',
-              updatedAt: '2026-05-22T04:00:00.000Z',
-            },
-            artifacts: [],
-          }),
-          { status: 201 }
-        );
+        return new Response(JSON.stringify({ plan, readOnly: true }), {
+          status: 200,
+        });
       }
       throw new Error(`unexpected fetch ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await render({ open: true, onClose: vi.fn(), mode: 'live', activeSession: activeSession() });
+    await render({
+      open: true,
+      onClose: vi.fn(),
+      mode: 'live',
+      activeSession: activeSession(),
+    });
     await flushEffects();
 
     expect(container.textContent).toContain('live api dry run');
-    expect(container.textContent).toContain('live API returned a valid plan');
-    const startButton = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent === 'start on hub'
+    expect(container.textContent).toContain(
+      'live API returned a valid read-only plan with required transfer grants'
     );
-    expect(startButton?.hasAttribute('disabled')).toBe(false);
-
-    await act(async () => {
-      startButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flushEffects();
-    expect(fetchMock).toHaveBeenCalledWith('/handoffs/create', expect.any(Object));
-    expect(container.textContent).toContain('handoff API returned run handoff-run-test');
+    expect(container.textContent).toContain(
+      'read-only plan; no destination runtime is launched'
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('maps live API capability denial to a typed blocked state', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code: 'CAPABILITY_DENIED',
-              message: 'missing validated capability context for handoff route',
-              retryable: false,
-              details: { missingCapabilities: ['session:read'] },
-            },
-          }),
-          { status: 403 }
-        )
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'CAPABILITY_DENIED',
+                message:
+                  'missing validated capability context for handoff route',
+                retryable: false,
+                details: { missingCapabilities: ['session:read'] },
+              },
+            }),
+            { status: 403 }
+          )
       )
     );
 
-    await render({ open: true, onClose: vi.fn(), mode: 'live', activeSession: activeSession() });
+    await render({
+      open: true,
+      onClose: vi.fn(),
+      mode: 'live',
+      activeSession: activeSession(),
+    });
     await flushEffects();
 
     expect(container.textContent).toContain('capability denied');
-    expect(container.textContent).toContain('no raw logs, transcripts, provider auth, or secrets are exposed');
-    const startButton = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent === 'start on hub'
+    expect(container.textContent).toContain(
+      'no raw logs, transcripts, provider auth, or secrets are exposed'
     );
-    expect(startButton?.hasAttribute('disabled')).toBe(true);
+    expect(container.textContent).not.toContain('start on hub');
   });
 
   it.each([
@@ -306,37 +292,49 @@ describe('<HandoffPlanDialog />', () => {
       status: 503,
       expected: 'hub unavailable',
     },
-  ])('maps live API $code to a typed non-secret error state', async ({ code, status, expected }) => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code,
-              message: `${code} should not expose raw payloads`,
-              retryable: false,
-              details: {
-                conflicts: [
-                  {
-                    code: code === 'DESTINATION_UNAVAILABLE' ? 'DESTINATION_UNAVAILABLE' : 'STALE_SOURCE',
-                    message: 'typed conflict summary only',
+  ])(
+    'maps live API $code to a typed non-secret error state',
+    async ({ code, status, expected }) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: {
+                  code,
+                  message: `${code} should not expose raw payloads`,
+                  retryable: false,
+                  details: {
+                    conflicts: [
+                      {
+                        code:
+                          code === 'DESTINATION_UNAVAILABLE'
+                            ? 'DESTINATION_UNAVAILABLE'
+                            : 'STALE_SOURCE',
+                        message: 'typed conflict summary only',
+                      },
+                    ],
                   },
-                ],
-              },
-            },
-          }),
-          { status }
+                },
+              }),
+              { status }
+            )
         )
-      )
-    );
+      );
 
-    await render({ open: true, onClose: vi.fn(), mode: 'live', activeSession: activeSession() });
-    await flushEffects();
+      await render({
+        open: true,
+        onClose: vi.fn(),
+        mode: 'live',
+        activeSession: activeSession(),
+      });
+      await flushEffects();
 
-    expect(container.textContent).toContain(expected);
-    expect(container.textContent).toContain('typed conflict summary only');
-    expect(container.textContent).not.toContain('SECRET=');
-    expect(container.textContent).not.toContain('raw transcript');
-  });
+      expect(container.textContent).toContain(expected);
+      expect(container.textContent).toContain('typed conflict summary only');
+      expect(container.textContent).not.toContain('SECRET=');
+      expect(container.textContent).not.toContain('raw transcript');
+    }
+  );
 });

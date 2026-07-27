@@ -149,7 +149,7 @@ describe('#861 node launch targets — acceptance', () => {
       inventory: inventory(),
       nodes: [node(), remote()],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linux = options.find((o) => o.node.nodeId === 'linux');
@@ -163,7 +163,7 @@ describe('#861 node launch targets — acceptance', () => {
       inventory: inventory(),
       nodes: [node(), remote({ status: 'updating' })],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linux = options.find((o) => o.node.nodeId === 'linux');
@@ -186,7 +186,7 @@ describe('#861 node launch targets — acceptance', () => {
       inventory: inventory(),
       nodes: [node()],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const local = options.find((o) => o.node.nodeId === 'local');
@@ -231,7 +231,7 @@ describe('#861 node launch targets — acceptance', () => {
       inventory: null,
       nodes: [node(), remote()],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linux = options.find((o) => o.node.nodeId === 'linux');
@@ -303,7 +303,7 @@ describe('#861 node launch targets — acceptance', () => {
         }),
       ],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const local = options.find((o) => o.node.nodeId === 'local');
@@ -332,7 +332,7 @@ describe('#861 node launch targets — acceptance', () => {
         }),
       ],
       selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linux = options.find((o) => o.node.nodeId === 'linux');

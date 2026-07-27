@@ -77,9 +77,9 @@ export function buildCodexTurnInput(
   return inputs;
 }
 
-// ── Web-session capability status ──────────────────────────────────────────
+// ── Channel-runtime capability status ──────────────────────────────────────
 //
-// Codex web sessions are advertised (`supportsWebSessions: true` in
+// Codex channel agents are advertised (`supportsChannelAgents: true` in
 // `server/types.ts`) as of #1169 (closes #301). This adapter drives the native
 // `codex app-server` JSON-RPC transport (server/codex-app-server-client.ts) and
 // maps assistant text end-to-end into the V2 chat protocol:

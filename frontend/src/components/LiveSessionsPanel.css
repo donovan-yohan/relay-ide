@@ -73,7 +73,7 @@
   flex-shrink: 0;
 }
 
-.live-sessions__agent {
+.live-sessions__terminal {
   display: inline-flex;
   align-items: center;
   color: var(--text-muted);
@@ -104,7 +104,7 @@
   font-size: var(--font-size-xs);
 }
 
-.live-sessions__agent-name {
+.live-sessions__terminal-name {
   flex-shrink: 0;
 }
 

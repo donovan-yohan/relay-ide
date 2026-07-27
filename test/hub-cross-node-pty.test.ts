@@ -101,7 +101,6 @@ function remoteSession(input: {
   return {
     id: input.sessionId,
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath,
     worktreePath: null,
@@ -120,7 +119,7 @@ function remoteSession(input: {
     tmuxSessionName: `relay-ide-${input.sessionId}`,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 
@@ -162,10 +161,14 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
   });
 }
 
-async function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
+async function waitForClose(
+  ws: WebSocket
+): Promise<{ code: number; reason: string }> {
   if (ws.readyState === WebSocket.CLOSED) return { code: 1005, reason: '' };
   return await new Promise<{ code: number; reason: string }>((resolve) => {
-    ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    ws.once('close', (code, reason) =>
+      resolve({ code, reason: reason.toString() })
+    );
   });
 }
 
@@ -222,7 +225,9 @@ class SimulatedNode {
         break;
       }
     });
-    ws.on('close', () => this.rejectWaiters(`${this.hostname} node link closed`));
+    ws.on('close', () =>
+      this.rejectWaiters(`${this.hostname} node link closed`)
+    );
     ws.on('error', (error) =>
       this.rejectWaiters(`${this.hostname} node link error: ${error.message}`)
     );
@@ -234,7 +239,8 @@ class SimulatedNode {
     timeoutMs = 2_000
   ): Promise<RelayNodeEnvelope> {
     const existingIndex = this.messages.findIndex(
-      (message, index) => !this.consumedMessageIndexes.has(index) && predicate(message)
+      (message, index) =>
+        !this.consumedMessageIndexes.has(index) && predicate(message)
     );
     if (existingIndex >= 0) {
       this.consumedMessageIndexes.add(existingIndex);
@@ -278,7 +284,11 @@ class SimulatedNode {
       requestId: request.requestId,
       payload: {
         session: {
-          ...remoteSession({ nodeId: this.nodeId, hostname: this.hostname, sessionId }),
+          ...remoteSession({
+            nodeId: this.nodeId,
+            hostname: this.hostname,
+            sessionId,
+          }),
           // Deliberately spoof these; the hub must own routing identity.
           nodeId: 'spoofed-by-node',
           globalSessionId: 'spoofed-by-node:session',
@@ -307,7 +317,9 @@ class SimulatedNode {
   private rejectWaiters(reason: string): void {
     for (const waiter of [...this.waiters]) {
       this.removeWaiter(waiter);
-      waiter.reject(new Error(`stopped waiting for ${waiter.label}: ${reason}`));
+      waiter.reject(
+        new Error(`stopped waiting for ${waiter.label}: ${reason}`)
+      );
     }
   }
 }
@@ -435,13 +447,17 @@ class BrowserClient {
   private rejectWaiters(reason: string): void {
     for (const waiter of [...this.waiters]) {
       this.removeWaiter(waiter);
-      waiter.reject(new Error(`stopped waiting for ${waiter.label}: ${reason}`));
+      waiter.reject(
+        new Error(`stopped waiting for ${waiter.label}: ${reason}`)
+      );
     }
   }
 }
 
 async function startHub() {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cross-node-pty-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cross-node-pty-')
+  );
   const registry = createHubNodeRegistry({
     storagePath: path.join(tmpDir, 'hub', 'nodes.json'),
     staleMs: 45_000,
@@ -493,9 +509,14 @@ async function pairAndConnectNode(input: {
   const exchangeRes = await fetch(`${input.base}/hub/pairing/exchange`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest(input.hostname) }),
+    body: JSON.stringify({
+      pairToken: pair.pairToken,
+      manifest: manifest(input.hostname),
+    }),
   });
-  expect(exchangeRes.status, `pair exchange failed for ${input.hostname}`).toBe(201);
+  expect(exchangeRes.status, `pair exchange failed for ${input.hostname}`).toBe(
+    201
+  );
   const exchange = (await exchangeRes.json()) as {
     credential: { token: string; nodeId: string };
   };
@@ -532,7 +553,8 @@ async function createRemoteSession(input: {
   let createRequest: RelayNodeEnvelope;
   try {
     createRequest = await input.node.waitFor(
-      (message) => message.channel === 'rpc' && message.type === 'sessions.create',
+      (message) =>
+        message.channel === 'rpc' && message.type === 'sessions.create',
       `${input.node.hostname} sessions.create`
     );
   } catch (error) {
@@ -542,7 +564,9 @@ async function createRemoteSession(input: {
   }
   input.node.answerCreate(createRequest, input.sessionId);
   const createRes = await createPromise;
-  expect(createRes.status, `${input.node.hostname} session create failed`).toBe(201);
+  expect(createRes.status, `${input.node.hostname} session create failed`).toBe(
+    201
+  );
   return (await createRes.json()) as SessionSummary;
 }
 
@@ -602,7 +626,8 @@ async function runSustainedEcho(input: {
     while (bytesObservedByNode < STRESS_TOTAL_BYTES) {
       const ptyInput = await input.node.waitFor(
         (message) => {
-          const data = (message.payload as { data?: unknown } | undefined)?.data;
+          const data = (message.payload as { data?: unknown } | undefined)
+            ?.data;
           return (
             message.channel === 'pty' &&
             message.type === 'pty.input' &&
@@ -642,7 +667,11 @@ function browserBytes(browser: BrowserClient, marker: string): number {
   );
 }
 
-function nodeInputBytes(node: SimulatedNode, streamId: string, marker: string): number {
+function nodeInputBytes(
+  node: SimulatedNode,
+  streamId: string,
+  marker: string
+): number {
   return node.messages.reduce((total, message) => {
     const data = (message.payload as { data?: unknown } | undefined)?.data;
     if (
@@ -694,8 +723,16 @@ describe('hub cross-node PTY smoke harness', () => {
     cleanup.push(() => closeServer(hub.server));
 
     const [nodeA, nodeB] = await Promise.all([
-      pairAndConnectNode({ base: hub.base, wsBase: hub.wsBase, hostname: 'smoke-node-a' }),
-      pairAndConnectNode({ base: hub.base, wsBase: hub.wsBase, hostname: 'smoke-node-b' }),
+      pairAndConnectNode({
+        base: hub.base,
+        wsBase: hub.wsBase,
+        hostname: 'smoke-node-a',
+      }),
+      pairAndConnectNode({
+        base: hub.base,
+        wsBase: hub.wsBase,
+        hostname: 'smoke-node-b',
+      }),
     ]);
     cleanup.push(() => nodeA.close());
     cleanup.push(() => nodeB.close());
@@ -703,8 +740,16 @@ describe('hub cross-node PTY smoke harness', () => {
     await Promise.all([nodeA.hello(), nodeB.hello()]);
 
     const [sessionA, sessionB] = await Promise.all([
-      createRemoteSession({ base: hub.base, node: nodeA, sessionId: 'terminal-a' }),
-      createRemoteSession({ base: hub.base, node: nodeB, sessionId: 'terminal-b' }),
+      createRemoteSession({
+        base: hub.base,
+        node: nodeA,
+        sessionId: 'terminal-a',
+      }),
+      createRemoteSession({
+        base: hub.base,
+        node: nodeB,
+        sessionId: 'terminal-b',
+      }),
     ]);
     expect(sessionA).toMatchObject({
       id: 'terminal-a',
@@ -717,11 +762,21 @@ describe('hub cross-node PTY smoke harness', () => {
       globalSessionId: createGlobalSessionId(nodeB.nodeId, 'terminal-b'),
     });
 
-    const [{ browser: browserA, attach: attachA }, { browser: browserB, attach: attachB }] =
-      await Promise.all([
-        attachBrowser({ wsBase: hub.wsBase, node: nodeA, sessionId: 'terminal-a' }),
-        attachBrowser({ wsBase: hub.wsBase, node: nodeB, sessionId: 'terminal-b' }),
-      ]);
+    const [
+      { browser: browserA, attach: attachA },
+      { browser: browserB, attach: attachB },
+    ] = await Promise.all([
+      attachBrowser({
+        wsBase: hub.wsBase,
+        node: nodeA,
+        sessionId: 'terminal-a',
+      }),
+      attachBrowser({
+        wsBase: hub.wsBase,
+        node: nodeB,
+        sessionId: 'terminal-b',
+      }),
+    ]);
     cleanup.push(() => browserA.close());
     cleanup.push(() => browserB.close());
 
@@ -757,10 +812,14 @@ describe('hub cross-node PTY smoke harness', () => {
       }),
     ]);
     expect(stressA.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
-    expect(stressA.bytesObservedByNode).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(stressA.bytesObservedByNode).toBeGreaterThanOrEqual(
+      STRESS_TOTAL_BYTES
+    );
     expect(stressA.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(stressB.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
-    expect(stressB.bytesObservedByNode).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(stressB.bytesObservedByNode).toBeGreaterThanOrEqual(
+      STRESS_TOTAL_BYTES
+    );
     expect(stressB.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(browserA.messages.join('')).not.toContain('BBBB');
     expect(browserB.messages.join('')).not.toContain('AAAA');
@@ -813,14 +872,18 @@ describe('hub cross-node PTY smoke harness', () => {
     await expect(nodeBInterrupted).rejects.toThrow(/node link closed/);
 
     const nodeAAfterNodeBFailure = await nodeAThroughFailure;
-    expect(nodeAAfterNodeBFailure.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(nodeAAfterNodeBFailure.bytesFromBrowser).toBeGreaterThanOrEqual(
+      STRESS_TOTAL_BYTES
+    );
     expect(nodeAAfterNodeBFailure.bytesObservedByNode).toBeGreaterThanOrEqual(
       STRESS_TOTAL_BYTES
     );
-    expect(nodeAAfterNodeBFailure.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
-    expect(browserBytes(browserA, markerAThroughFailure)).toBeGreaterThanOrEqual(
+    expect(nodeAAfterNodeBFailure.bytesToBrowser).toBeGreaterThanOrEqual(
       STRESS_TOTAL_BYTES
     );
+    expect(
+      browserBytes(browserA, markerAThroughFailure)
+    ).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(browserA.closes).toHaveLength(0);
     expect(browserA.messages.join('')).not.toContain(markerBInterrupted);
     expect(browserB.messages.join('')).not.toContain(markerAThroughFailure);

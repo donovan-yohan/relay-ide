@@ -33,14 +33,17 @@ function frameworkProbeFromClientInfo(
         availability?.reason ?? `${framework.displayName} is not installed.`,
     };
   }
-  if (framework.webAvailability && !framework.webAvailability.available) {
+  if (
+    framework.channelAvailability &&
+    !framework.channelAvailability.available
+  ) {
     return {
       id: framework.id,
       label: framework.displayName,
       status: 'degraded',
       message:
-        framework.webAvailability.reason ??
-        'CLI is installed but web runtime probe failed.',
+        framework.channelAvailability.reason ??
+        'CLI is installed but the channel runtime probe failed.',
       ...(availability.path ? { path: availability.path } : {}),
     };
   }

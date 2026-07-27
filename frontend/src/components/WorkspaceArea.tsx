@@ -14,10 +14,10 @@ import {
 } from '../lib/remote-node-cwd.js';
 import { createLogger } from '../lib/logger.js';
 import {
-  createAgentSession,
+  createTerminalSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
-import { getOrCreateDmChannel } from '../hooks/useTopicRoomCreate.js';
+import { getOrCreateDmChannel } from '../lib/agent-channels.js';
 import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
@@ -53,7 +53,6 @@ import {
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
-import EmptyState from './EmptyState.js';
 import CodeMirrorFileEditor from './CodeMirrorFileEditor.js';
 import './WorkspaceArea.css';
 
@@ -493,21 +492,6 @@ function SessionContentMount({
   onCopyModeChange,
   onFilePathClick,
 }: SessionContentMountProps) {
-  if (session.mode === 'web') {
-    // #1224: the legacy per-session web-chat surface (ChatView/Turn) is
-    // retired. A `mode:'web'` row that reaches the WorkContext cockpit now
-    // renders an explicit archived-state tombstone instead of the deleted
-    // chat surface; the transcript row is preserved, not discarded.
-    return (
-      <div className="ws-session-mount ws-session-mount--web">
-        <EmptyState
-          icon="⌁"
-          heading="This chat session has been archived"
-          description="The legacy per-session web chat surface has been retired. New work happens in channels."
-        />
-      </div>
-    );
-  }
   return (
     <div className="ws-session-mount ws-session-mount--pty">
       <Terminal
@@ -876,8 +860,7 @@ export function WorkspaceArea({
       setRemoteTerminalCreating(true);
       setRemoteTerminalError(null);
       try {
-        const { session, error } = await createAgentSession({
-          type: 'terminal',
+        const { session, error } = await createTerminalSession({
           nodeId: pendingRemoteTerminal.nodeId,
           cwd: remoteCwd,
           sessionLane: lane,
@@ -909,12 +892,9 @@ export function WorkspaceArea({
     [pendingRemoteTerminal, remoteTerminalCreating]
   );
 
-  // #1166/#1178: the pane-header '+chat' button opens a Hermes DM channel, not a
-  // mode:'web' session that renders the retired ChatView. Route it through the
-  // same get-or-create DM channel flow as every other entry point (TopicComposer,
-  // CustomizeSessionDialog) so no UI path can still mint a web session. A channel
-  // is a full-surface view, so this activates ChannelView directly rather than a
-  // split pane (the old "beside" placement no longer applies).
+  // The pane-header '+chat' button opens a Hermes DM channel through the same
+  // channel entry point as TopicComposer and CustomizeSessionDialog. A channel
+  // is a full-surface view, so this activates ChannelView directly.
   const spawnHermesBeside = useCallback(
     async (paneId: string) => {
       const { currentActiveWorkspace } = getCurrentSessionContext();
@@ -995,10 +975,9 @@ export function WorkspaceArea({
               });
               return;
             }
-            const { session, error } = await createAgentSession({
+            const { session, error } = await createTerminalSession({
               repoPath: currentActiveWorkspace.path,
               worktreePath: currentWorktreePath,
-              type: 'terminal',
               sessionLane: 'local-repo',
             });
             if (error && !(error instanceof ConflictError)) {

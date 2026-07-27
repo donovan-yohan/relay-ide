@@ -54,12 +54,11 @@ function group(
         spawnedBySessionId: 'orchestrator-session',
         nodeId: 'local',
         globalSessionId: `local:session-${id}`,
-        type: 'agent',
+        type: 'terminal',
         mode: 'pty',
-        agent: 'codex',
         displayName: `Session ${id}`,
         status: 'active',
-        agentState: 'processing',
+        activityState: 'processing',
         durability: 'running-attached',
         controlMode: 'co-driven',
         controlFreshness: 'fresh',
@@ -84,7 +83,7 @@ describe('terminal cockpit view', () => {
             {
               ...group('running').sessions[0]!,
               id: 'running-session',
-              agentState: 'processing',
+              activityState: 'processing',
             },
           ],
         }),
@@ -104,7 +103,7 @@ describe('terminal cockpit view', () => {
             {
               ...group('permission').sessions[0]!,
               id: 'permission-session',
-              agentState: 'permission-prompt',
+              activityState: 'permission-prompt',
               durability: 'permission-needed',
               lastActivity: '2026-01-01T00:02:00.000Z',
             },
@@ -115,7 +114,7 @@ describe('terminal cockpit view', () => {
             {
               ...group('error').sessions[0]!,
               id: 'error-session',
-              agentState: 'error',
+              activityState: 'error',
               durability: 'error',
             },
           ],
@@ -198,7 +197,7 @@ describe('terminal cockpit view', () => {
           sessions: [
             {
               ...group('render').sessions[0]!,
-              agentState: 'waiting-for-input',
+              activityState: 'waiting-for-input',
               durability: 'running-attached',
             },
           ],

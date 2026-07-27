@@ -14,7 +14,7 @@ import { useWorkspaceLayoutStore } from '../frontend/src/lib/stores/workspace-la
 const sessionTab = (id: string): WorkspaceTab => ({
   kind: 'session',
   sessionId: id,
-  sessionType: 'agent',
+  sessionType: 'terminal',
 });
 
 const fileTab = (path: string): WorkspaceTab => ({

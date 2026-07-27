@@ -1,7 +1,4 @@
-import {
-  sha256Hex,
-  stableStringify,
-} from '../shared/security-audit.js';
+import { sha256Hex, stableStringify } from '../shared/security-audit.js';
 import {
   HIGH_RISK_CAPABILITIES,
   isRelayCapabilityBit,
@@ -149,7 +146,10 @@ export interface HighRiskApprovalContract {
     sessionId?: string;
     workContextId?: string;
   };
-  risk: Pick<HighRiskOperationClassification, 'decision' | 'riskReason' | 'unknownBits'>;
+  risk: Pick<
+    HighRiskOperationClassification,
+    'decision' | 'riskReason' | 'unknownBits'
+  >;
   policy: {
     aclRef?: string;
     policyVersion?: string;
@@ -205,11 +205,9 @@ const KNOWN_ACTIONS = new Set([
   ...Array.from(LOW_RISK_READ_ACTIONS),
   ...Array.from(LOW_RISK_REF_ONLY_ACTIONS),
   'sessions.create',
-  'sessions.create.agent',
   'sessions.create.terminal',
   'sessions.attach',
   'sessions.kill',
-  'sessions.control.set-agent',
   'pty.exec.arbitrary',
   'preview.port-forward',
   'rpc.fs.write',
@@ -278,11 +276,18 @@ export function classifyHighRiskOperation(
 export function createHighRiskApprovalContract(
   input: CreateHighRiskApprovalContractInput
 ): HighRiskApprovalContract {
-  const classification = input.classification ?? classifyHighRiskOperation(
-    input.classificationInput ?? classificationInputFromDecision(input.decision)
-  );
+  const classification =
+    input.classification ??
+    classifyHighRiskOperation(
+      input.classificationInput ??
+        classificationInputFromDecision(input.decision)
+    );
   const workContextId =
-    input.requester.workContextId ?? stringField(input.decision.scope as unknown as Record<string, unknown>, 'workspaceId');
+    input.requester.workContextId ??
+    stringField(
+      input.decision.scope as unknown as Record<string, unknown>,
+      'workspaceId'
+    );
   const redemptionNonceHash = input.redemptionNonce
     ? sha256Hex(`relay-approval-nonce:${input.redemptionNonce}`)
     : input.redemptionNonceHash;
@@ -295,8 +300,12 @@ export function createHighRiskApprovalContract(
     operation: {
       action: input.decision.intent.action,
       nodeId: input.decision.nodeId,
-      ...(input.decision.intent.target ? { target: input.decision.intent.target } : {}),
-      ...(input.decision.sessionId ? { sessionId: input.decision.sessionId } : {}),
+      ...(input.decision.intent.target
+        ? { target: input.decision.intent.target }
+        : {}),
+      ...(input.decision.sessionId
+        ? { sessionId: input.decision.sessionId }
+        : {}),
       ...(workContextId ? { workContextId } : {}),
     },
     risk: {
@@ -309,7 +318,9 @@ export function createHighRiskApprovalContract(
       ...(input.decision.policyVersion
         ? { policyVersion: input.decision.policyVersion }
         : {}),
-      ...(input.decision.trustTier ? { trustTier: input.decision.trustTier } : {}),
+      ...(input.decision.trustTier
+        ? { trustTier: input.decision.trustTier }
+        : {}),
       requiredBits: [...input.decision.requiredBits],
       challengeBits: [...input.decision.challengeBits],
       scopeHash: sha256Hex(stableStringify(input.decision.scope)),
@@ -350,9 +361,9 @@ export function sameHighRiskActor(
   if (!requester || !approver) return false;
   return Boolean(
     requester.actorId &&
-      approver.actorId &&
-      requester.actorType === approver.actorType &&
-      hashIdentity(requester.actorId) === hashIdentity(approver.actorId)
+    approver.actorId &&
+    requester.actorType === approver.actorType &&
+    hashIdentity(requester.actorId) === hashIdentity(approver.actorId)
   );
 }
 
@@ -363,8 +374,8 @@ export function sameHighRiskCredential(
   if (!requester || !approver) return false;
   return Boolean(
     requester.credentialId &&
-      approver.credentialId &&
-      hashIdentity(requester.credentialId) === hashIdentity(approver.credentialId)
+    approver.credentialId &&
+    hashIdentity(requester.credentialId) === hashIdentity(approver.credentialId)
   );
 }
 
@@ -375,8 +386,8 @@ export function sameHighRiskSession(
   if (!requester || !approver) return false;
   return Boolean(
     requester.sessionId &&
-      approver.sessionId &&
-      hashIdentity(requester.sessionId) === hashIdentity(approver.sessionId)
+    approver.sessionId &&
+    hashIdentity(requester.sessionId) === hashIdentity(approver.sessionId)
   );
 }
 
@@ -397,36 +408,52 @@ function normalizeRequiredBits(requiredCapabilities: readonly string[]): {
 }
 
 function deny(
-  riskReason: Extract<HighRiskRiskReason, 'unknown_capability' | 'unknown_operation'>,
+  riskReason: Extract<
+    HighRiskRiskReason,
+    'unknown_capability' | 'unknown_operation'
+  >,
   bits: { requiredBits: RelayCapabilityBit[]; unknownBits: string[] }
 ): HighRiskOperationClassification {
   return { decision: 'deny', riskReason, ...bits };
 }
 
 function silent(
-  riskReason: Extract<HighRiskRiskReason, 'low_risk_ref_only' | 'low_risk_read'>,
+  riskReason: Extract<
+    HighRiskRiskReason,
+    'low_risk_ref_only' | 'low_risk_read'
+  >,
   bits: { requiredBits: RelayCapabilityBit[]; unknownBits: string[] }
 ): HighRiskOperationClassification {
   return { decision: 'silentAllowIfPolicyAllows', riskReason, ...bits };
 }
 
 function approvalRequired(
-  riskReason: Exclude<HighRiskRiskReason, 'low_risk_ref_only' | 'low_risk_read' | 'unknown_capability' | 'unknown_operation'>,
+  riskReason: Exclude<
+    HighRiskRiskReason,
+    | 'low_risk_ref_only'
+    | 'low_risk_read'
+    | 'unknown_capability'
+    | 'unknown_operation'
+  >,
   bits: { requiredBits: RelayCapabilityBit[]; unknownBits: string[] }
 ): HighRiskOperationClassification {
   return { decision: 'approvalRequired', riskReason, ...bits };
 }
 
-function isCrossNodeControl(input: HighRiskOperationClassificationInput): boolean {
+function isCrossNodeControl(
+  input: HighRiskOperationClassificationInput
+): boolean {
   return Boolean(
     input.sourceNodeId &&
-      input.targetNodeId &&
-      input.sourceNodeId !== input.targetNodeId &&
-      (input.action.startsWith('sessions.') || input.action.startsWith('nodes.'))
+    input.targetNodeId &&
+    input.sourceNodeId !== input.targetNodeId &&
+    (input.action.startsWith('sessions.') || input.action.startsWith('nodes.'))
   );
 }
 
-function isCapabilityEscalation(input: HighRiskOperationClassificationInput): boolean {
+function isCapabilityEscalation(
+  input: HighRiskOperationClassificationInput
+): boolean {
   return (
     input.action === 'nodes.acl.widen' ||
     input.action === 'capabilities.grant' ||
@@ -437,11 +464,14 @@ function isCapabilityEscalation(input: HighRiskOperationClassificationInput): bo
 function isShellExec(input: HighRiskOperationClassificationInput): boolean {
   return (
     input.action === 'pty.exec.arbitrary' ||
-    (input.trustTier === 'prod' && input.requiredCapabilities.includes('pty:exec:arbitrary'))
+    (input.trustTier === 'prod' &&
+      input.requiredCapabilities.includes('pty:exec:arbitrary'))
   );
 }
 
-function isFileBoundaryMutation(input: HighRiskOperationClassificationInput): boolean {
+function isFileBoundaryMutation(
+  input: HighRiskOperationClassificationInput
+): boolean {
   return (
     input.action === 'rpc.fs.write' ||
     input.action === 'rpc.fs.delete' ||
@@ -451,7 +481,9 @@ function isFileBoundaryMutation(input: HighRiskOperationClassificationInput): bo
   );
 }
 
-function isCredentialExport(input: HighRiskOperationClassificationInput): boolean {
+function isCredentialExport(
+  input: HighRiskOperationClassificationInput
+): boolean {
   return (
     input.action === 'credentials.export' ||
     input.action === 'secrets.export' ||
@@ -470,7 +502,9 @@ function isNodeLifecycle(input: HighRiskOperationClassificationInput): boolean {
   );
 }
 
-function isDestructiveSessionControl(input: HighRiskOperationClassificationInput): boolean {
+function isDestructiveSessionControl(
+  input: HighRiskOperationClassificationInput
+): boolean {
   return (
     input.action === 'sessions.kill' ||
     input.requiredCapabilities.includes('session:control:kill')
@@ -484,7 +518,9 @@ function safeRequester(
     kind: requester.kind,
     authSessionHash: requester.authSessionHash,
     ...(requester.actorType ? { actorType: requester.actorType } : {}),
-    ...(requester.actorId ? { actorIdHash: hashIdentity(requester.actorId) } : {}),
+    ...(requester.actorId
+      ? { actorIdHash: hashIdentity(requester.actorId) }
+      : {}),
     ...(requester.credentialId
       ? { credentialIdHash: hashIdentity(requester.credentialId) }
       : {}),
@@ -493,7 +529,9 @@ function safeRequester(
       : {}),
     ...(requester.nodeId ? { nodeId: requester.nodeId } : {}),
     ...(requester.sessionId ? { sessionId: requester.sessionId } : {}),
-    ...(requester.workContextId ? { workContextId: requester.workContextId } : {}),
+    ...(requester.workContextId
+      ? { workContextId: requester.workContextId }
+      : {}),
     ...(requester.displayName ? { displayName: requester.displayName } : {}),
   };
 }
@@ -504,7 +542,9 @@ function safeApprover(
   return {
     kind: approver.kind,
     ...(approver.actorType ? { actorType: approver.actorType } : {}),
-    ...(approver.actorId ? { actorIdHash: hashIdentity(approver.actorId) } : {}),
+    ...(approver.actorId
+      ? { actorIdHash: hashIdentity(approver.actorId) }
+      : {}),
     ...(approver.credentialId
       ? { credentialIdHash: hashIdentity(approver.credentialId) }
       : {}),
@@ -513,12 +553,16 @@ function safeApprover(
       : {}),
     ...(approver.nodeId ? { nodeId: approver.nodeId } : {}),
     ...(approver.sessionId ? { sessionId: approver.sessionId } : {}),
-    ...(approver.workContextId ? { workContextId: approver.workContextId } : {}),
+    ...(approver.workContextId
+      ? { workContextId: approver.workContextId }
+      : {}),
     ...(approver.displayName ? { displayName: approver.displayName } : {}),
   };
 }
 
-function safeTarget(target: HighRiskApprovalTarget): SafeHighRiskApprovalTarget {
+function safeTarget(
+  target: HighRiskApprovalTarget
+): SafeHighRiskApprovalTarget {
   return {
     kind: target.kind,
     ...(target.id ? { idHash: hashIdentity(target.id) } : {}),
@@ -531,7 +575,10 @@ function hashIdentity(value: string): string {
   return sha256Hex(`relay-high-risk-approval:${value}`);
 }
 
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
+function stringField(
+  record: Record<string, unknown>,
+  key: string
+): string | undefined {
   const value = record[key];
   return typeof value === 'string' ? value : undefined;
 }

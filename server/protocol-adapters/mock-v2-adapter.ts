@@ -429,7 +429,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       id: `file-${turnId}`,
       paths: [
         {
-          path: 'frontend/src/components/chat/ChatView.tsx',
+          path: 'frontend/src/components/chat/ChannelMessageRow.tsx',
           status: 'edited',
         },
       ],

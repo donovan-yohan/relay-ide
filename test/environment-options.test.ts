@@ -125,8 +125,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     expect(options.map((o) => o.id)).toEqual([
@@ -151,8 +150,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
@@ -176,8 +174,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
@@ -187,30 +184,6 @@ describe('buildEnvironmentOptions', () => {
     if (reason?.kind === 'node-stale') {
       expect(reason.lastSeenAt).toBe('2026-05-18T00:00:00.000Z');
     }
-  });
-
-  it('marks agents-missing nodes as stale with capability-missing reason in agent mode', () => {
-    const options = buildEnvironmentOptions({
-      inventory: inventory(),
-      nodes: [
-        node(),
-        node({
-          nodeId: 'linux',
-          displayName: 'linux lab',
-          capabilities: {
-            ...node().capabilities,
-            agents: { claude: 'unavailable' },
-          },
-        }),
-      ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
-      generatedAt: GENERATED_AT,
-    });
-    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
-    expect(linuxOpt?.freshness).toBe('stale');
-    const reason = linuxOpt?.degradedReasons?.[0];
-    expect(reason?.kind).toBe('capability-missing');
   });
 
   it('terminal mode ignores missing agents and stays fresh on shell plus terminal backend available', () => {
@@ -227,7 +200,6 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -240,8 +212,7 @@ describe('buildEnvironmentOptions', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node()],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const worktreeOpt = options.find((o) => o.bench !== undefined);
@@ -259,8 +230,7 @@ describe('buildEnvironmentOptions', () => {
     const options = buildEnvironmentOptions({
       inventory: null,
       nodes: [node()],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       fallbackWorkspace: {
         name: 'scratch',
         path: '/Users/kyle/scratch',
@@ -290,8 +260,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const remote = options.find((o) => o.node.nodeId === 'linux');
@@ -321,14 +290,14 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
     expect(linuxOpt?.capabilities).toContain('session:create:terminal');
     expect(
-      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing') ?? false
+      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing') ??
+        false
     ).toBe(false);
   });
 
@@ -354,7 +323,6 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -363,37 +331,6 @@ describe('buildEnvironmentOptions', () => {
     expect(
       linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing')
     ).toBe(true);
-  });
-
-  it('omits session:create:agent capability when no terminal backend is available in agent mode', () => {
-    const options = buildEnvironmentOptions({
-      inventory: inventory(),
-      nodes: [
-        node(),
-        node({
-          nodeId: 'linux',
-          displayName: 'linux lab',
-          capabilities: {
-            ...node().capabilities,
-            core: {
-              ...node().capabilities.core,
-              tmux: 'unavailable',
-            },
-            terminalBackends: {
-              'relay-pty': 'unavailable',
-              'tmux-compat': 'unavailable',
-            },
-            agents: { claude: 'available' },
-          },
-        }),
-      ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
-      generatedAt: GENERATED_AT,
-    });
-    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
-    expect(linuxOpt?.capabilities).not.toContain('session:create:agent');
-    expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
   });
 
   it('marks updating nodes as freshness=updating with a reason (#861(A))', () => {
@@ -411,8 +348,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
@@ -441,8 +377,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
@@ -478,8 +413,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
@@ -519,8 +453,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const opt = options.find((o) => o.node.nodeId === 'local');
@@ -548,7 +481,6 @@ describe('buildEnvironmentOptions', () => {
           capabilities: { ...node().capabilities, agents: {} },
         }),
       ],
-      selectedAgent: 'claude',
       sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
@@ -573,8 +505,7 @@ describe('buildEnvironmentOptions', () => {
           },
         }),
       ],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const remote = options.find((o) => o.node.nodeId === 'linux');
@@ -602,8 +533,7 @@ describe('buildEnvironmentOptions', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [node(), offlineNode],
-      selectedAgent: 'claude',
-      sessionType: 'agent',
+      sessionType: 'terminal',
       generatedAt: GENERATED_AT,
     });
     const linuxOpts = options.filter((o) => o.node.nodeId === 'linux');

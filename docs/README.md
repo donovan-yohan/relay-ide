@@ -1,78 +1,69 @@
-# Relay IDE documentation
+# Relay documentation
 
-This index separates current source-of-truth docs from historical plans and spikes. Treat files in `docs/plans/`, `docs/spikes/`, and `docs/superpowers/plans/` as time-stamped design/implementation records unless another current doc explicitly promotes their behavior as shipped.
+These documents describe behavior present in the repository today. Git history
+holds superseded plans and removed product models; the working tree does not use
+historical design documents as product documentation.
 
-## Current source of truth
+## Start here
 
-| Area                  | File                                    | Use it for                                                                                   |
-| --------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Top-level agent map   | `../AGENTS.md`                          | Repo conventions, command quick reference, compact docs map                                  |
-| User onboarding       | `../README.md`                          | Install, run, CLI, config, hub/node overview                                                 |
-| Product/design system | `../DESIGN.md`                          | Product positioning, visual language, spacing/color/button rules                             |
-| Architecture          | `ARCHITECTURE.md`                       | Module boundaries, API routes, data flow, ADR index                                          |
-| Boo/session substrate | `BOO_PHILOSOPHY.md`                     | Scriptable session substrate audit, rendered-screen gaps, operator-cockpit roadmap           |
-| Workbench boundary    | `WORKBENCH_BOUNDARY.md`                 | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys                       |
-| Backend design notes  | `DESIGN.md`                             | Backend patterns, auth/session/PTY behavior                                                  |
-| Frontend              | `FRONTEND.md`                           | React components, frontend state, UI entrypoints                                             |
-| Quality               | `QUALITY.md`                            | Test strategy, isolation rules, known gate behavior                                          |
-| Handoff artifacts     | `pipeline-handoff-artifact-template.md` | Live worker publication pattern and public-safe PipelineHandoffArtifact templates            |
-| CLI gateway           | `CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` adapter contract, auth lanes, command taxonomy           |
-| Agent view artifacts  | `AGENT_VIEW_ARTIFACTS.md`               | Static HTML/CSS WorkContext view artifact contract, package route, security model            |
-| Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
-| Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
-| Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission        |
-| WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                      |
-| Channel chat          | `CHANNEL_CHAT.md`                       | Slack-style workspace chat vision (epic #1163): channel=conversation, agents-as-participants  |
-| Provider guide        | `provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)        |
-| Terminal backend      | `TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics         |
-| Review                | `REVIEW_GUIDANCE.md`                    | Reviewer prompts, risk areas, escape log                                                     |
-| Deployment            | `references/deployment.md`              | Branching, npm channels, publishing flow                                                     |
-| Devbox deploy         | `references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene      |
-| Dogfood recovery      | `references/dogfood-recovery.md`        | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate           |
-| Self-hosting          | `SELF_HOSTING.md`                       | Running Relay from inside Relay with isolated config/ports                                   |
-| Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`           | Hub/node command shape and npm packaging decisions                                           |
-| Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair flows and diagnostics                                             |
-| Add Node / Pair UX    | `ADD_NODE_PAIR_DEVICE_UX.md`            | Add Node wizard, device-code pairing, trust profiles, node lifecycle states, CLI/UI copy     |
-| Federated dev         | `FEDERATED_DEV.md`                      | Multi-machine dev workflow and version-skew handling                                         |
-| Federated Relay       | `federated-relay.md`                    | Hub/node architecture, pairing, routing, ADR history                                         |
-| Learnings             | `LEARNINGS.md`                          | Durable repo learnings gathered across sessions                                              |
+| Area               | Source                                           |
+| ------------------ | ------------------------------------------------ |
+| User onboarding    | [`../README.md`](../README.md)                   |
+| Agent/repo map     | [`../AGENTS.md`](../AGENTS.md)                   |
+| Channel model      | [`CHANNEL_CHAT.md`](CHANNEL_CHAT.md)             |
+| Architecture       | [`ARCHITECTURE.md`](ARCHITECTURE.md)             |
+| Frontend           | [`FRONTEND.md`](FRONTEND.md)                     |
+| Visual system      | [`../DESIGN.md`](../DESIGN.md)                   |
+| Backend patterns   | [`DESIGN.md`](DESIGN.md)                         |
+| Quality            | [`QUALITY.md`](QUALITY.md)                       |
+| Provider adapters  | [`provider-guide.md`](provider-guide.md)         |
+| Security           | [`SECURITY_POLICY.md`](SECURITY_POLICY.md)       |
+| Session durability | [`SESSION_DURABILITY.md`](SESSION_DURABILITY.md) |
+| Terminal backend   | [`TERMINAL_BACKENDS.md`](TERMINAL_BACKENDS.md)   |
+| Self-hosting       | [`SELF_HOSTING.md`](SELF_HOSTING.md)             |
+| CLI gateway        | [`CLI_GATEWAY.md`](CLI_GATEWAY.md)               |
+| Workbench boundary | [`WORKBENCH_BOUNDARY.md`](WORKBENCH_BOUNDARY.md) |
 
-## Vocabulary baseline
+## Hub, node, and operations
 
-`WORKBENCH_BOUNDARY.md` is the canonical source for Relay's workbench/control-plane boundary, #552 nouns, and mobile/pair/dogfood journey acceptance criteria. Use the six-layer IA vocabulary consistently in current docs:
+| Area             | Source                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| Hub/node package | [`RELAY_HUB_NODE_PACKAGING.md`](RELAY_HUB_NODE_PACKAGING.md)                           |
+| Node bootstrap   | [`RELAY_NODE_BOOTSTRAP.md`](RELAY_NODE_BOOTSTRAP.md)                                   |
+| Pairing UX       | [`ADD_NODE_PAIR_DEVICE_UX.md`](ADD_NODE_PAIR_DEVICE_UX.md)                             |
+| WSL2             | [`WSL2_RELAY_NODE_SUPPORT.md`](WSL2_RELAY_NODE_SUPPORT.md)                             |
+| Federated dev    | [`FEDERATED_DEV.md`](FEDERATED_DEV.md)                                                 |
+| Federation       | [`federated-relay.md`](federated-relay.md)                                             |
+| Deployment       | [`references/deployment.md`](references/deployment.md)                                 |
+| Devbox hub       | [`references/devbox-hub-deploy.md`](references/devbox-hub-deploy.md)                   |
+| Dogfood recovery | [`references/dogfood-recovery.md`](references/dogfood-recovery.md)                     |
+| Browser checks   | [`references/agent-browser-verification.md`](references/agent-browser-verification.md) |
 
-1. View — UI mode or surface.
-2. Workspace — grouping/config/pins layer; not a synonym for repo.
-3. Project — work/product scope.
-4. Instance — concrete node/repo/worktree occurrence.
-5. Bench — arrangement of working surfaces.
-6. Tab — leaf surface carrying active context such as node id, cwd, kind, and optional repo/worktree binding.
+## Product invariants
 
-The six-layer vocabulary is the current product language. Treat repo/worktree/session identifiers as git/process compatibility fields unless a current contract explicitly makes them the user-facing IA label.
+- A channel is the durable conversation.
+- A DM is a channel with one agent profile.
+- Agents are participants identified by durable profile actors.
+- Agent runtimes are private execution details, not public sessions or chat
+  destinations.
+- Public sessions are terminal-only and use `relay-pty`.
+- New conversation UI work lands in the live channel component tree.
+- The hub owns conversation history, routing, profiles, policy, and
+  federation; nodes own local execution and filesystem paths.
+- `relay-pty` is the supported interactive terminal backend.
+- The stable external agent surface is `relay-ide v1 ... --json`.
 
-## Boo-style session substrate baseline
+## Architecture decisions
 
-`BOO_PHILOSOPHY.md` is the current audit and boundary doc for the `coder/boo`-inspired direction: Relay should be both a scriptable CLI/API session substrate and an operator cockpit over existing agent CLIs/terminals. The stable adapter contract is `relay-ide v1 ... --json`; private node-link/browser routes, direct tmux/rmux commands, provider profile stores, and raw transcript scraping are not adapter contracts. Keep the detailed raw-PTY vs supervisor vs rendered-screen taxonomy in that focused doc.
+Accepted decisions live in [`adrs/`](adrs/):
 
-## Historical, proposed, and audit material
+- ADR-015 — domain-agnostic core
+- ADR-016 — node-to-node isolation
+- ADR-017 — CLI boundary retained; conversation ownership superseded by ADR-020
+- ADR-018 — command-mediated handoff and supervision
+- ADR-019 — context-packet storage
+- ADR-020 — current conversation and agent-runtime ownership model
 
-These directories are useful evidence, but they are not current product docs by default:
-
-| Directory                 | Status                                                                                                                                         |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plans/`                  | Historical implementation plans and design proposals. Check code/current docs before treating as shipped.                                      |
-| `spikes/`                 | Research spikes and proposed protocols. Some findings may be implemented elsewhere; the spike itself is not a current guarantee.               |
-| `superpowers/plans/`      | Historical plan records for earlier agent/chat protocol work.                                                                                  |
-| `superpowers/specs/`      | Specs/design records; verify against `shared/`, `server/`, `frontend/`, and tests.                                                             |
-| `bug-analyses/`           | Debugging writeups and postmortems. Use as history, not current behavior.                                                                      |
-| `refactor/`               | Audit/refactor notes. Use as evidence for cleanup decisions.                                                                                   |
-| `adrs/`                   | Accepted/current ADR files where present. Older ADR summaries may still live in `federated-relay.md` or `ARCHITECTURE.md`.                     |
-| `RMUX_HELPER_PROTOCOL.md` | Historical prototype boundary. Current runtime behavior is `relay-pty`; rmux remains diagnostic/prototype-only unless a new issue promotes it. |
-
-## Guardrails for future doc edits
-
-- Evidence first: source files, tests, package scripts, and CLI help beat old plans.
-- Keep shipped claims tied to current source files, tests, and CLI help: remote file/log RPCs, approval UX/auth strength, and IA persistence should be described only at the level implemented today.
-- Do not overclaim Boo-style primitives as shipped: rendered-screen wait, a primary WorkContext cockpit, and live child-process continuity across Relay server restart remain follow-up work unless the current docs/code prove otherwise. `relay-pty` can cold-resume from saved metadata/scrollback after restart; it is not a supervisor.
-- Keep `AGENTS.md` compact; add details here or in focused docs instead.
-- When a historical plan is still linked from a current doc, label it as historical/proposed unless implementation has been verified.
+When docs and source disagree, verify the implementation and tests, then fix
+the docs in the same change. Do not add a redirect or historical compatibility
+document for a removed product surface.

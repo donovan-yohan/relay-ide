@@ -14,7 +14,11 @@ import {
   workspaceLaunchActionAvailability,
   workspaceLaunchActionDescriptor,
 } from '../frontend/src/lib/actions/workspace-lifecycle.js';
-import { HttpError, createWorktree, deleteWorktree } from '../frontend/src/lib/api.js';
+import {
+  HttpError,
+  createWorktree,
+  deleteWorktree,
+} from '../frontend/src/lib/api.js';
 
 function schemaTypeMatches(type: string, value: unknown): boolean {
   if (type === 'array') return Array.isArray(value);
@@ -27,7 +31,7 @@ function schemaTypeMatches(type: string, value: unknown): boolean {
 
 // Mirrors the tiny JSON Schema subset used in test/session-lifecycle-action.test.ts
 // so the regression doesn't depend on an undeclared Ajv package.
-// eslint-disable-next-line sonarjs/cognitive-complexity
+
 function validateJsonSchema(
   schema: RelayJsonSchema | undefined,
   value: unknown,
@@ -71,18 +75,23 @@ function validateJsonSchema(
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(objectValue)) {
-        if (!(key in properties)) errors.push(`${path} has additional property ${key}`);
+        if (!(key in properties))
+          errors.push(`${path} has additional property ${key}`);
       }
     }
     for (const [key, childSchema] of Object.entries(properties)) {
       if (key in objectValue) {
-        errors.push(...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`));
+        errors.push(
+          ...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`)
+        );
       }
     }
   }
   if (schema.type === 'array' && Array.isArray(value) && schema.items) {
     for (let index = 0; index < value.length; index += 1) {
-      errors.push(...validateJsonSchema(schema.items, value[index], `${path}[${index}]`));
+      errors.push(
+        ...validateJsonSchema(schema.items, value[index], `${path}[${index}]`)
+      );
     }
   }
   return errors;
@@ -175,7 +184,7 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     it('fails closed when create returns a null worktreePath (no contract-violating empty path)', async () => {
       // The contract output requires a non-empty string worktreePath. A null path
       // on a "success" must surface as an error envelope rather than be coerced to
-      // '' (which the backend createAgentSession would reject with an opaque path error).
+      // '' (which the backend terminal launcher would reject with an opaque path error).
       const result = await executeWorktreeCreateAction(
         { repoPath: '/repo' },
         async () => ({
@@ -192,7 +201,11 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     it('deletes a worktree as the destructive success envelope (branch deleted)', async () => {
       const descriptor = worktreeDeleteActionDescriptor();
       const result = await executeWorktreeDeleteAction(
-        { worktreePath: '/repo/.worktrees/feat-foo', repoPath: '/repo', force: true },
+        {
+          worktreePath: '/repo/.worktrees/feat-foo',
+          repoPath: '/repo',
+          force: true,
+        },
         async () => undefined
       );
 
@@ -205,21 +218,21 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       expect(validateJsonSchema(descriptor.result.schema, result)).toEqual([]);
     });
 
-    it('launches a workspace session, passing the SessionSummary through unchanged', async () => {
+    it('launches a workspace terminal, passing the SessionSummary through unchanged', async () => {
       const descriptor = workspaceLaunchActionDescriptor();
       const result = await executeWorkspaceLaunchAction(
-        { workspaceId: 'ws-1', agent: 'claude' },
+        { workspaceId: 'ws-1' },
         async () => ({
           id: 'sess-1',
-          type: 'agent',
-          agent: 'claude',
+          type: 'terminal',
           mode: 'pty',
           cwd: '/repo',
           repoPath: '/repo',
-          displayName: 'ws-1 agent',
+          displayName: 'ws-1 terminal',
           createdAt: '2026-06-10T00:00:00.000Z',
           lastActivity: '2026-06-10T00:00:00.000Z',
           idle: false,
+          activityState: 'processing',
           status: 'active',
         })
       );
@@ -227,7 +240,11 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       expect(result).toMatchObject({
         ok: true,
         command: 'workspaces.launch',
-        data: { id: 'sess-1', type: 'agent', agent: 'claude', status: 'active' },
+        data: {
+          id: 'sess-1',
+          type: 'terminal',
+          status: 'active',
+        },
       });
       if (!result.ok) throw new Error('expected ok envelope');
       // sessionDescriptorSchema is open (additionalProperties:true) — the whole
@@ -243,7 +260,11 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     it('archives a worktree with branchDeleted:false (branch PRESERVED)', async () => {
       const descriptor = worktreeArchiveActionDescriptor();
       const result = await executeWorktreeArchiveAction(
-        { worktreePath: '/repo/.worktrees/feat-foo', repoPath: '/repo', force: true },
+        {
+          worktreePath: '/repo/.worktrees/feat-foo',
+          repoPath: '/repo',
+          force: true,
+        },
         async () => undefined
       );
 
@@ -279,9 +300,15 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         async () => {
           // Wire format: 409 { error: 'uncommitted_changes', hasUncommittedChanges: true }
           // httpErrorFromResponse surfaces the plain string on error.code.
-          throw new HttpError(409, 'uncommitted_changes', 'uncommitted_changes', false, {
-            hasUncommittedChanges: true,
-          });
+          throw new HttpError(
+            409,
+            'uncommitted_changes',
+            'uncommitted_changes',
+            false,
+            {
+              hasUncommittedChanges: true,
+            }
+          );
         }
       );
 
@@ -290,7 +317,10 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         command: 'worktrees.delete',
         error: {
           code: 'CONFIRMATION_REQUIRED',
-          details: { reasonCode: 'uncommitted_changes', hasUncommittedChanges: true },
+          details: {
+            reasonCode: 'uncommitted_changes',
+            hasUncommittedChanges: true,
+          },
         },
       });
       if (result.ok) throw new Error('expected error envelope');
@@ -301,9 +331,15 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       const result = await executeWorktreeDeleteAction(
         { worktreePath: '/wt', repoPath: '/repo' },
         async () => {
-          throw new HttpError(409, 'active_sessions', 'active_sessions', false, {
-            sessionIds: ['s1', 's2'],
-          });
+          throw new HttpError(
+            409,
+            'active_sessions',
+            'active_sessions',
+            false,
+            {
+              sessionIds: ['s1', 's2'],
+            }
+          );
         }
       );
 
@@ -399,16 +435,25 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       const result = await executeWorktreeArchiveAction(
         { worktreePath: '/wt', repoPath: '/repo' },
         async () => {
-          throw new HttpError(409, 'active_sessions', 'active_sessions', false, {
-            sessionIds: ['s1'],
-          });
+          throw new HttpError(
+            409,
+            'active_sessions',
+            'active_sessions',
+            false,
+            {
+              sessionIds: ['s1'],
+            }
+          );
         }
       );
 
       expect(result).toMatchObject({
         ok: false,
         command: 'worktrees.archive',
-        error: { code: 'SESSION_CONFLICT', details: { reasonCode: 'active_sessions' } },
+        error: {
+          code: 'SESSION_CONFLICT',
+          details: { reasonCode: 'active_sessions' },
+        },
       });
     });
   });
@@ -417,15 +462,24 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     it('deleteWorktree re-issues with force without registering a confirmation retry', async () => {
       // Confirms the api.ts deleteWorktree path is plain fetch + typed HttpError,
       // not the challenge/registerConfirmationRetry path (per the wire investigation).
-      const fetchMock = vi.fn(async () =>
-        new Response(JSON.stringify({ error: 'uncommitted_changes', hasUncommittedChanges: true }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        })
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: 'uncommitted_changes',
+              hasUncommittedChanges: true,
+            }),
+            {
+              status: 409,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
       );
       vi.stubGlobal('fetch', fetchMock);
       try {
-        await expect(deleteWorktree('/wt', '/repo', true)).rejects.toMatchObject({
+        await expect(
+          deleteWorktree('/wt', '/repo', true)
+        ).rejects.toMatchObject({
           name: 'HttpError',
           status: 409,
           // plain-string body surfaces on code (NOT a CONFIRMATION_REQUIRED challenge)
@@ -435,7 +489,11 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         const body = JSON.parse(
           (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
         );
-        expect(body).toMatchObject({ worktreePath: '/wt', repoPath: '/repo', force: true });
+        expect(body).toMatchObject({
+          worktreePath: '/wt',
+          repoPath: '/repo',
+          force: true,
+        });
       } finally {
         vi.unstubAllGlobals();
       }
@@ -447,11 +505,12 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       // archive envelope reports branchDeleted:false. The default archive executor
       // MUST send deleteBranch:false so the wire matches the branch-preserving
       // contract. Uses the REAL default executor (no injected stub).
-      const fetchMock = vi.fn(async () =>
-        new Response(JSON.stringify({ ok: true, branchDeleted: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ok: true, branchDeleted: false }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
       );
       vi.stubGlobal('fetch', fetchMock);
       try {
@@ -478,11 +537,12 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     it('default delete executor omits deleteBranch (route default deletes branch)', async () => {
       // Delete is branch-DELETING; it must NOT send deleteBranch so the route's
       // `deleteBranch !== false` default (true) applies, matching branchDeleted:true.
-      const fetchMock = vi.fn(async () =>
-        new Response(JSON.stringify({ ok: true, branchDeleted: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ok: true, branchDeleted: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
       );
       vi.stubGlobal('fetch', fetchMock);
       try {
@@ -502,11 +562,15 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
     });
 
     it('createWorktree surfaces res.ok failures as a typed HttpError', async () => {
-      const fetchMock = vi.fn(async () =>
-        new Response(JSON.stringify({ error: 'Path is not a recognized git worktree' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        })
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ error: 'Path is not a recognized git worktree' }),
+            {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
       );
       vi.stubGlobal('fetch', fetchMock);
       try {
@@ -529,13 +593,17 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
         reason: 'creating a worktree requires an active workspace',
         capabilityHints: expect.arrayContaining(['rpc:git:write']),
       });
-      expect(worktreeDeleteActionAvailability({ worktreeMissing: true })).toMatchObject({
+      expect(
+        worktreeDeleteActionAvailability({ worktreeMissing: true })
+      ).toMatchObject({
         state: 'unavailable',
         reason: 'deleting a worktree requires an existing worktree',
         capabilityHints: expect.arrayContaining(['session:control:kill']),
       });
       expect(
-        worktreeArchiveActionAvailability({ nodeUnavailableReason: 'node is offline' })
+        worktreeArchiveActionAvailability({
+          nodeUnavailableReason: 'node is offline',
+        })
       ).toMatchObject({ state: 'unavailable', reason: 'node is offline' });
       expect(
         worktreeDeleteActionAvailability({
@@ -558,14 +626,16 @@ describe('worktrees + workspaces lifecycle frontend action contract', () => {
       ).toMatchObject({
         state: 'unavailable',
         reason: 'launching a workspace requires a workspace',
-        capabilityHints: expect.arrayContaining(['session:create:agent']),
+        capabilityHints: expect.arrayContaining(['session:create:terminal']),
       });
       expect(
-        workspaceLaunchActionAvailability({ nodeUnavailableReason: 'node is offline' })
+        workspaceLaunchActionAvailability({
+          nodeUnavailableReason: 'node is offline',
+        })
       ).toMatchObject({ state: 'unavailable', reason: 'node is offline' });
       expect(workspaceLaunchActionAvailability({})).toMatchObject({
         state: 'available',
-        capabilityHints: expect.arrayContaining(['session:create:agent']),
+        capabilityHints: expect.arrayContaining(['session:create:terminal']),
       });
     });
   });

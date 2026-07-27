@@ -418,7 +418,7 @@ export function useEventSocket({
       'channel-agent-status': (msg) => {
         useChannelAgentStatusStore
           .getState()
-          .recordStatus(msg.channelId, msg.agentId, msg.status, msg.sessionId);
+          .recordStatus(msg.channelId, msg.agentId, msg.status, msg.runtimeId);
       },
       'browser-tab-opened': (msg) => {
         useUiStore.getState().openHtmlTab(msg.filePath, msg.token);

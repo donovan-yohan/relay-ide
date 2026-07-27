@@ -8,7 +8,10 @@ import {
   buildWorkContextResumePacket,
   readWorkContextArtifactsForResume,
 } from '../server/work-context-resume-packet.js';
-import { createWorkContextArtifactStore, type WorkContextArtifactReadResult } from '../server/work-context-artifacts.js';
+import {
+  createWorkContextArtifactStore,
+  type WorkContextArtifactReadResult,
+} from '../server/work-context-artifacts.js';
 import { createWorkContextStore } from '../server/work-contexts.js';
 import {
   PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION,
@@ -44,7 +47,9 @@ const issueRef: TaskRef = {
   url: 'https://github.com/donovan-yohan/relay-ide/issues/891',
 };
 
-function stage(input: Partial<PipelineHandoffStage> & Pick<PipelineHandoffStage, 'stage'>): PipelineHandoffStage {
+function stage(
+  input: Partial<PipelineHandoffStage> & Pick<PipelineHandoffStage, 'stage'>
+): PipelineHandoffStage {
   const base = {
     addedAt: now,
     actorId: 'agent:kani-backend',
@@ -146,7 +151,10 @@ function handoff(input: {
   };
 }
 
-function pinnedRef(id: string, classification: WorkContextPrivacyClass = 'internal'): ArtifactRef {
+function pinnedRef(
+  id: string,
+  classification: WorkContextPrivacyClass = 'internal'
+): ArtifactRef {
   return {
     id: `artifact:work-context-artifact:${id}`,
     kind: 'report',
@@ -165,7 +173,9 @@ function pinnedRef(id: string, classification: WorkContextPrivacyClass = 'intern
 
 function stores() {
   const root = tmpRoot();
-  const contextStore = createWorkContextStore(path.join(root, 'work-contexts.db'));
+  const contextStore = createWorkContextStore(
+    path.join(root, 'work-contexts.db')
+  );
   const artifactStore = createWorkContextArtifactStore({
     dbPath: path.join(root, 'artifacts.db'),
     payloadRoot: path.join(root, 'payloads'),
@@ -196,7 +206,10 @@ describe('WorkContext resume packet generator', () => {
     });
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:resume', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:resume', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:resume',
@@ -233,7 +246,10 @@ describe('WorkContext resume packet generator', () => {
     });
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:stale', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:stale', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:stale',
@@ -245,7 +261,9 @@ describe('WorkContext resume packet generator', () => {
     });
 
     expect(packet.evidence.current).toEqual([]);
-    expect(packet.evidence.historical.map((item) => item.stage)).toContain('review');
+    expect(packet.evidence.historical.map((item) => item.stage)).toContain(
+      'review'
+    );
     expect(packet.evidence.historical.every((item) => item.stale)).toBe(true);
     expect(packet.suggestedNextAction.kind).toBe('resolve-blockers');
   });
@@ -255,7 +273,10 @@ describe('WorkContext resume packet generator', () => {
     contextStore.create({ id: 'wc:missing', tasks: [issueRef] });
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:missing', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:missing', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: [],
       artifactStoreAvailable: false,
       options: { currentHeadSha },
@@ -292,7 +313,10 @@ describe('WorkContext resume packet generator', () => {
     ] as unknown as WorkContextArtifactReadResult[];
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:null-payload', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:null-payload', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords,
       artifactStoreAvailable: true,
       options: { currentHeadSha },
@@ -308,7 +332,10 @@ describe('WorkContext resume packet generator', () => {
     const { contextStore } = stores();
     contextStore.create({ id: 'wc:malformed-stages', tasks: [issueRef] });
     const malformed = {
-      ...handoff({ id: 'pipeline-handoff:malformed-stages', stages: [stage({ stage: 'implementation' })] }),
+      ...handoff({
+        id: 'pipeline-handoff:malformed-stages',
+        stages: [stage({ stage: 'implementation' })],
+      }),
       stages: null,
     };
     const artifactRecords = [
@@ -334,7 +361,10 @@ describe('WorkContext resume packet generator', () => {
     ] as unknown as WorkContextArtifactReadResult[];
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:malformed-stages', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:malformed-stages', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords,
       artifactStoreAvailable: true,
       options: { currentHeadSha },
@@ -348,7 +378,10 @@ describe('WorkContext resume packet generator', () => {
   it('does not throw on malformed pinned artifact URI percent encoding', () => {
     const { contextStore } = stores();
     contextStore.create({ id: 'wc:bad-uri', tasks: [issueRef] });
-    const snapshot = contextStore.getResumeSnapshot('wc:bad-uri', { sessions: [], nodes: [] });
+    const snapshot = contextStore.getResumeSnapshot('wc:bad-uri', {
+      sessions: [],
+      nodes: [],
+    });
 
     const packet = buildWorkContextResumePacket({
       snapshot: {
@@ -365,13 +398,18 @@ describe('WorkContext resume packet generator', () => {
       generatedAt: now,
     });
 
-    expect(packet.pinnedArtifacts[0]?.uri).toBe('relay://work-context-artifacts/%25E0%25A4%25A');
+    expect(packet.pinnedArtifacts[0]?.uri).toBe(
+      'relay://work-context-artifacts/%25E0%25A4%25A'
+    );
   });
 
   it('omits private artifact refs from public-safe pinned and artifact summaries', () => {
     const { contextStore } = stores();
     contextStore.create({ id: 'wc:private-artifacts', tasks: [issueRef] });
-    const snapshot = contextStore.getResumeSnapshot('wc:private-artifacts', { sessions: [], nodes: [] });
+    const snapshot = contextStore.getResumeSnapshot('wc:private-artifacts', {
+      sessions: [],
+      nodes: [],
+    });
     const privatePinned = {
       ...pinnedRef('private-artifact'),
       id: 'PRIVATE ID MUST NOT LEAK',
@@ -396,17 +434,42 @@ describe('WorkContext resume packet generator', () => {
     });
 
     const json = JSON.stringify(packet);
-    const emittedArtifactRefs = [...packet.pinnedArtifacts, ...packet.artifacts];
+    const emittedArtifactRefs = [
+      ...packet.pinnedArtifacts,
+      ...packet.artifacts,
+    ];
     expect(packet.pinnedArtifacts).toHaveLength(1);
     expect(packet.artifacts).toHaveLength(1);
     expect(packet.pinnedArtifacts[0]?.title).toBe('public artifact title');
     expect(packet.artifacts[0]?.title).toBe('public artifact title');
-    expect(emittedArtifactRefs.every((artifact) => artifact.privacyClass === 'public')).toBe(true);
-    expect(emittedArtifactRefs.every((artifact) => artifact.publicSafe)).toBe(true);
-    expect(emittedArtifactRefs.some((artifact) => artifact.id === 'PRIVATE ID MUST NOT LEAK')).toBe(false);
-    expect(emittedArtifactRefs.some((artifact) => artifact.title === 'PRIVATE TITLE MUST NOT LEAK')).toBe(false);
-    expect(emittedArtifactRefs.some((artifact) => artifact.summary === 'PRIVATE SUMMARY MUST NOT LEAK')).toBe(false);
-    expect(emittedArtifactRefs.some((artifact) => artifact.uri?.includes('private-artifact'))).toBe(false);
+    expect(
+      emittedArtifactRefs.every(
+        (artifact) => artifact.privacyClass === 'public'
+      )
+    ).toBe(true);
+    expect(emittedArtifactRefs.every((artifact) => artifact.publicSafe)).toBe(
+      true
+    );
+    expect(
+      emittedArtifactRefs.some(
+        (artifact) => artifact.id === 'PRIVATE ID MUST NOT LEAK'
+      )
+    ).toBe(false);
+    expect(
+      emittedArtifactRefs.some(
+        (artifact) => artifact.title === 'PRIVATE TITLE MUST NOT LEAK'
+      )
+    ).toBe(false);
+    expect(
+      emittedArtifactRefs.some(
+        (artifact) => artifact.summary === 'PRIVATE SUMMARY MUST NOT LEAK'
+      )
+    ).toBe(false);
+    expect(
+      emittedArtifactRefs.some((artifact) =>
+        artifact.uri?.includes('private-artifact')
+      )
+    ).toBe(false);
     expect(json).not.toContain('PRIVATE ID MUST NOT LEAK');
     expect(json).not.toContain('PRIVATE TITLE MUST NOT LEAK');
     expect(json).not.toContain('PRIVATE SUMMARY MUST NOT LEAK');
@@ -440,7 +503,10 @@ describe('WorkContext resume packet generator', () => {
     });
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:blocked', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:blocked', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:blocked',
@@ -451,8 +517,12 @@ describe('WorkContext resume packet generator', () => {
       generatedAt: now,
     });
 
-    expect(packet.blockers.open.some((item) => item.summary.includes('blocked'))).toBe(true);
-    expect(packet.blockers.unresolvedDecisions[0]).toContain('qa decision blocked');
+    expect(
+      packet.blockers.open.some((item) => item.summary.includes('blocked'))
+    ).toBe(true);
+    expect(packet.blockers.unresolvedDecisions[0]).toContain(
+      'qa decision blocked'
+    );
   });
 
   it('bounds packet output deterministically under many artifacts', () => {
@@ -463,32 +533,53 @@ describe('WorkContext resume packet generator', () => {
         workContextId: 'wc:bounded',
         artifact: handoff({
           id: `pipeline-handoff:bounded-${index}`,
-          stages: [stage({ stage: 'implementation', summary: `implementation ${index}` })],
+          stages: [
+            stage({
+              stage: 'implementation',
+              summary: `implementation ${index}`,
+            }),
+          ],
         }),
         stage: 'implementation',
       });
     }
 
     const first = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:bounded', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:bounded', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:bounded',
         limit: 200,
       }),
       artifactStoreAvailable: true,
-      options: { currentHeadSha, maxArtifacts: 5, maxAuditRefs: 5, maxChars: 4_000 },
+      options: {
+        currentHeadSha,
+        maxArtifacts: 5,
+        maxAuditRefs: 5,
+        maxChars: 4_000,
+      },
       generatedAt: now,
     });
     const second = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:bounded', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot('wc:bounded', {
+        sessions: [],
+        nodes: [],
+      }),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:bounded',
         limit: 200,
       }),
       artifactStoreAvailable: true,
-      options: { currentHeadSha, maxArtifacts: 5, maxAuditRefs: 5, maxChars: 4_000 },
+      options: {
+        currentHeadSha,
+        maxArtifacts: 5,
+        maxAuditRefs: 5,
+        maxChars: 4_000,
+      },
       generatedAt: now,
     });
 
@@ -499,7 +590,10 @@ describe('WorkContext resume packet generator', () => {
 
   it('does not count stale blocked evidence when current-head evidence passes', () => {
     const { contextStore, artifactStore } = stores();
-    contextStore.create({ id: 'wc:stale-blocked-current-pass', tasks: [issueRef] });
+    contextStore.create({
+      id: 'wc:stale-blocked-current-pass',
+      tasks: [issueRef],
+    });
     artifactStore.storePipelineHandoffArtifact({
       workContextId: 'wc:stale-blocked-current-pass',
       artifact: handoff({
@@ -507,7 +601,11 @@ describe('WorkContext resume packet generator', () => {
         headSha: staleHeadSha,
         stages: [
           stage({ stage: 'implementation' }),
-          stage({ stage: 'qa', verdict: 'blocked', testedHeadSha: staleHeadSha }),
+          stage({
+            stage: 'qa',
+            verdict: 'blocked',
+            testedHeadSha: staleHeadSha,
+          }),
         ],
       }),
       stage: 'qa',
@@ -518,14 +616,21 @@ describe('WorkContext resume packet generator', () => {
         id: 'pipeline-handoff:current-pass',
         stages: [
           stage({ stage: 'implementation' }),
-          stage({ stage: 'qa', verdict: 'passed', testedHeadSha: currentHeadSha }),
+          stage({
+            stage: 'qa',
+            verdict: 'passed',
+            testedHeadSha: currentHeadSha,
+          }),
         ],
       }),
       stage: 'qa',
     });
 
     const packet = buildWorkContextResumePacket({
-      snapshot: contextStore.getResumeSnapshot('wc:stale-blocked-current-pass', { sessions: [], nodes: [] }),
+      snapshot: contextStore.getResumeSnapshot(
+        'wc:stale-blocked-current-pass',
+        { sessions: [], nodes: [] }
+      ),
       artifactRecords: readWorkContextArtifactsForResume({
         store: artifactStore,
         workContextId: 'wc:stale-blocked-current-pass',
@@ -536,8 +641,12 @@ describe('WorkContext resume packet generator', () => {
       generatedAt: now,
     });
 
-    expect(packet.evidence.current.some((item) => item.status === 'passed')).toBe(true);
-    expect(packet.evidence.historical.some((item) => item.status === 'blocked')).toBe(true);
+    expect(
+      packet.evidence.current.some((item) => item.status === 'passed')
+    ).toBe(true);
+    expect(
+      packet.evidence.historical.some((item) => item.status === 'blocked')
+    ).toBe(true);
     expect(packet.blockers.open).toEqual([]);
     expect(packet.blockers.unresolvedDecisions).toEqual([]);
   });
@@ -545,26 +654,36 @@ describe('WorkContext resume packet generator', () => {
   it('redacts public-safe workContext, session, and task refs', () => {
     const { contextStore } = stores();
     contextStore.create({ id: 'wc:public', tasks: [issueRef] });
-    const snapshot = contextStore.getResumeSnapshot('wc:public', { sessions: [], nodes: [] });
+    const snapshot = contextStore.getResumeSnapshot('wc:public', {
+      sessions: [],
+      nodes: [],
+    });
     const packet = buildWorkContextResumePacket({
       snapshot: {
         ...snapshot,
         workContext: {
           ...snapshot.workContext,
-          title: 'handoff t_deadbeef from /home/donovan/private and C:\\Users\\donovan\\secret\\repo',
+          title:
+            'handoff t_deadbeef from /home/donovan/private and C:\\Users\\donovan\\secret\\repo',
           anchors: {
             session: {
               nodeId: 'local',
               sessionId: 'sess-secret',
               tabKind: 'agent',
               cwd: 'C:\\Users\\donovan\\secret\\repo',
-              agent: 'claude',
             },
             repo: { localPath: 'C:\\Users\\donovan\\secret\\repo' },
             worktree: { localPath: '/home/donovan/private/repo/.worktrees/x' },
           },
           actors: [{ kind: 'agent', id: 'agent:kani-backend' }],
-          tasks: [issueRef, { kind: 'kanban-task', id: 't_deadbeef', title: '/home/private task' }],
+          tasks: [
+            issueRef,
+            {
+              kind: 'kanban-task',
+              id: 't_deadbeef',
+              title: '/home/private task',
+            },
+          ],
         },
         artifacts: [pinnedRef('t_deadbeef')],
         sessions: [
@@ -572,7 +691,6 @@ describe('WorkContext resume packet generator', () => {
             id: 'sess-secret',
             nodeId: 'local',
             tabKind: 'agent',
-            agent: 'claude',
             cwd: '/home/donovan/private/repo',
             repoPath: '/home/donovan/private/repo',
             worktreePath: '/home/donovan/private/repo/.worktrees/x',
@@ -603,7 +721,11 @@ describe('WorkContext resume packet generator', () => {
   it('hard-enforces maxChars with oversized summaries and session fields', () => {
     const { contextStore, artifactStore } = stores();
     const oversized = 'x'.repeat(20_000);
-    contextStore.create({ id: 'wc:oversized', title: oversized, tasks: [issueRef] });
+    contextStore.create({
+      id: 'wc:oversized',
+      title: oversized,
+      tasks: [issueRef],
+    });
     artifactStore.storePipelineHandoffArtifact({
       workContextId: 'wc:oversized',
       artifact: handoff({
@@ -614,13 +736,23 @@ describe('WorkContext resume packet generator', () => {
             stage: 'implementation',
             summary: oversized,
             downstreamFocus: [oversized],
-            commands: [{ label: oversized, command: oversized, status: 'passed', summary: oversized }],
+            commands: [
+              {
+                label: oversized,
+                command: oversized,
+                status: 'passed',
+                summary: oversized,
+              },
+            ],
           }),
         ],
       }),
       stage: 'implementation',
     });
-    const snapshot = contextStore.getResumeSnapshot('wc:oversized', { sessions: [], nodes: [] });
+    const snapshot = contextStore.getResumeSnapshot('wc:oversized', {
+      sessions: [],
+      nodes: [],
+    });
     const packet = buildWorkContextResumePacket({
       snapshot: {
         ...snapshot,

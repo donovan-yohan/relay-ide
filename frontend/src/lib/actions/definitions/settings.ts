@@ -16,14 +16,6 @@ export const settingsConnectGithub: ActionMeta = {
   icon: '>',
 };
 
-export const settingsToggleYolo: ActionMeta = {
-  id: 'settings.toggle-yolo',
-  label: 'toggle yolo mode',
-  description: 'skip permission checks',
-  category: 'settings',
-  icon: '!',
-};
-
 export const settingsCheckUpdates: ActionMeta = {
   id: 'settings.check-updates',
   label: 'check for updates',
@@ -96,14 +88,6 @@ export const settingsClearAnalytics: ActionMeta = {
   icon: '×',
 };
 
-export const settingsToggleContinue: ActionMeta = {
-  id: 'settings.toggle-continue',
-  label: 'toggle continue session',
-  description: 'resume last session when opening a repo',
-  category: 'settings',
-  icon: '↻',
-};
-
 export const settingsToggleNotifications: ActionMeta = {
   id: 'settings.toggle-notifications',
   label: 'toggle notifications',
@@ -123,7 +107,6 @@ export const settingsChangeDefaultAgent: ActionMeta = {
 export const settingsActions: ActionMeta[] = [
   settingsOpen,
   settingsConnectGithub,
-  settingsToggleYolo,
   settingsCheckUpdates,
   settingsDisconnectGithub,
   settingsSetupWebhooks,
@@ -133,7 +116,6 @@ export const settingsActions: ActionMeta[] = [
   settingsDisconnectJira,
   settingsToggleDevTools,
   settingsClearAnalytics,
-  settingsToggleContinue,
   settingsToggleNotifications,
   settingsChangeDefaultAgent,
 ];

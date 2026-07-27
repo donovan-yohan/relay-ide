@@ -9,8 +9,7 @@ import type { SessionSummary } from '../../server/types.js';
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 'session-a',
-    type: 'agent',
-    agent: 'claude',
+    type: 'terminal',
     mode: 'pty',
     cwd: '/repo',
     displayName: 'Claude /repo',
@@ -20,10 +19,9 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     customCommand: null,
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
-    controlMode: 'agent-driven',
-    activeActors: [{ kind: 'agent', id: 'claude', displayName: 'Claude Code' }],
-    activeWorker: { kind: 'agent', id: 'claude', displayName: 'Claude Code' },
+    activityState: 'idle',
+    controlMode: 'human-driven',
+    activeActors: [{ kind: 'human', id: 'operator', displayName: 'Operator' }],
     lastInterventionAt: null,
     lastInterventionBy: null,
     lastInterventionEventId: null,
@@ -40,7 +38,9 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
 describe('supervisor snapshot contract', () => {
   it('returns a read-only typed snapshot with redacted intervention and audit metadata', async () => {
     const result = await createSupervisorSnapshot({
-      session: session({ rawPrompt: 'secret prompt that must not leak' } as unknown as Partial<SessionSummary>),
+      session: session({
+        rawPrompt: 'secret prompt that must not leak',
+      } as unknown as Partial<SessionSummary>),
       grantedCapabilities: SUPERVISOR_SNAPSHOT_REQUIRED_CAPABILITIES,
       actorId: 'brain-a',
       now: new Date('2026-05-25T01:02:03.000Z'),
@@ -69,13 +69,7 @@ describe('supervisor snapshot contract', () => {
         nodeId: 'node-a',
         workContextId: 'wc-a',
       },
-      control: { controlMode: 'agent-driven', controlFreshness: 'fresh' },
-      provider: {
-        providerId: 'claude',
-        capabilityBoundary: 'relay-command-contract',
-        readOnlyAdapterState: true,
-        rawProviderStateStored: false,
-      },
+      control: { controlMode: 'human-driven', controlFreshness: 'fresh' },
       interventions: {
         available: true,
         rawPayloadAvailable: false,
@@ -123,24 +117,31 @@ describe('supervisor snapshot contract', () => {
     });
   });
 
-  it('refuses stale or mismatched control-mode preflight instead of supervising blindly', async () => {
+  it('refuses stale control-mode preflight instead of supervising blindly', async () => {
     const result = await createSupervisorSnapshot({
-      session: session({ controlMode: 'human-driven', controlFreshness: 'stale' }),
+      session: session({
+        controlMode: 'human-driven',
+        controlFreshness: 'stale',
+      }),
       grantedCapabilities: SUPERVISOR_SNAPSHOT_REQUIRED_CAPABILITIES,
-      policy: { expectedControlMode: 'agent-driven' },
+      policy: { expectedControlMode: 'human-driven' },
     });
 
     expect(result).toMatchObject({
       ok: false,
       error: { code: 'CONTROL_STATE_STALE', retryable: true },
-      audit: { decision: 'denied', controlMode: 'human-driven', controlFreshness: 'stale' },
+      audit: {
+        decision: 'denied',
+        controlMode: 'human-driven',
+        controlFreshness: 'stale',
+      },
     });
   });
 
   it('requires callers to observe the latest human intervention before continuing typed actions', async () => {
     const result = await createSupervisorSnapshot({
       session: session({
-        controlMode: 'co-driven',
+        controlMode: 'human-driven',
         lastInterventionEventId: 'intervention-latest-secret-ish-id',
       }),
       grantedCapabilities: SUPERVISOR_SNAPSHOT_REQUIRED_CAPABILITIES,
@@ -149,9 +150,14 @@ describe('supervisor snapshot contract', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected ack-required denial');
-    expect(result.error).toMatchObject({ code: 'INTERVENTION_ACK_REQUIRED', retryable: true });
+    expect(result.error).toMatchObject({
+      code: 'INTERVENTION_ACK_REQUIRED',
+      retryable: true,
+    });
     expect(result.audit.latestInterventionEventIdHash).toBeDefined();
-    expect(JSON.stringify(result.audit)).not.toContain('intervention-latest-secret-ish-id');
+    expect(JSON.stringify(result.audit)).not.toContain(
+      'intervention-latest-secret-ish-id'
+    );
   });
 
   it('returns partial-failure metadata when optional redacted intervention reads fail', async () => {

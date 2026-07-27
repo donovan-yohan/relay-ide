@@ -3,13 +3,12 @@ import type {
   RelayCliGatewayError,
   RelayCliGatewayErrorCode,
 } from './cli-gateway-contract.js';
-import { AGENT_ROLES } from './agent-roster.js';
 
 export interface GatewayCreateValidationOk {
   ok: true;
   input: Record<string, unknown>;
   nodeId?: string;
-  sessionType: 'agent' | 'terminal';
+  sessionType: 'terminal';
 }
 
 export interface GatewayCreateValidationFailure {
@@ -29,31 +28,36 @@ const createSessionAllowedFields = new Set([
   'cwd',
   'type',
   'mode',
-  'agent',
-  'role',
-  'yolo',
   'terminalBackend',
   'cols',
   'rows',
   'branchName',
   'displayName',
   'spawnedBySessionId',
-  'initialPrompt',
-  'continuePolicy',
   'workContextId',
   'workspaceTopicId',
-  'controlMode',
   'sessionEnvelope',
   'ttlSeconds',
   'expiresAt',
   'confirmationToken',
 ]);
 
+const retiredAgentSessionFields = new Set([
+  'agent',
+  'role',
+  'yolo',
+  'claudeArgs',
+  'continue',
+  'continuePolicy',
+  'initialPrompt',
+  'ticketContext',
+]);
+
 /**
  * Fields on the typed `environment` object accepted by `sessions.create` for
  * #626. Free-form `host` / `path` strings are intentionally NOT in this set:
  * the whole point of the typed-environment contract is to keep raw host/path
- * pairs out of the agent task surface.
+ * pairs out of the terminal session surface.
  */
 const createSessionEnvironmentAllowedFields = new Set([
   'nodeId',
@@ -78,13 +82,10 @@ const stringFields = [
   'nodeId',
   'repoPath',
   'cwd',
-  'agent',
-  'role',
   'terminalBackend',
   'branchName',
   'displayName',
   'spawnedBySessionId',
-  'initialPrompt',
   'workContextId',
   'workspaceTopicId',
   'expiresAt',
@@ -104,20 +105,14 @@ const localCreateSupportedFields = [
   'cwd',
   'type',
   'mode',
-  'agent',
-  'role',
-  'yolo',
   'terminalBackend',
   'cols',
   'rows',
   'branchName',
   'displayName',
   'spawnedBySessionId',
-  'initialPrompt',
-  'continuePolicy',
   'workContextId',
   'workspaceTopicId',
-  'controlMode',
 ] as const;
 
 function createValidationError(
@@ -403,6 +398,12 @@ function sanitizedCreateInput(
   | { ok: true; input: Record<string, unknown> } {
   const sanitized: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(rawInput)) {
+    if (retiredAgentSessionFields.has(field)) {
+      return unsupportedCreateInput(
+        `sessions.create field "${field}" belonged to retired agent sessions; start agent conversations in a channel or DM`,
+        { field, replacement: 'channel-or-dm' }
+      );
+    }
     if (!createSessionAllowedFields.has(field)) {
       return invalidCreateInput(
         `sessions.create field is not in the v1 contract: ${field}`,
@@ -435,11 +436,6 @@ function validateCreateFieldTypes(
       }
     );
   }
-  if (input['yolo'] !== undefined && typeof input['yolo'] !== 'boolean') {
-    return invalidCreateInput('sessions.create yolo must be a boolean', {
-      field: 'yolo',
-    });
-  }
   for (const [field, min, max] of [
     ['cols', 1, 500],
     ['rows', 1, 200],
@@ -454,33 +450,15 @@ function validateCreateFieldTypes(
 function validateCreateEnums(
   input: Record<string, unknown>
 ): GatewayCreateValidationFailure | null {
-  if (
-    input['type'] !== undefined &&
-    input['type'] !== 'agent' &&
-    input['type'] !== 'terminal'
-  ) {
-    return invalidCreateInput(
-      'sessions.create type must be agent or terminal',
-      { field: 'type' }
-    );
-  }
-  if (
-    input['mode'] !== undefined &&
-    input['mode'] !== 'pty' &&
-    input['mode'] !== 'web'
-  ) {
-    return invalidCreateInput('sessions.create mode must be pty or web', {
-      field: 'mode',
+  if (input['type'] !== undefined && input['type'] !== 'terminal') {
+    return invalidCreateInput('sessions.create type must be terminal', {
+      field: 'type',
     });
   }
-  if (
-    input['role'] !== undefined &&
-    !(AGENT_ROLES as readonly unknown[]).includes(input['role'])
-  ) {
-    return invalidCreateInput(
-      `sessions.create role must be one of: ${AGENT_ROLES.join(', ')}`,
-      { field: 'role' }
-    );
+  if (input['mode'] !== undefined && input['mode'] !== 'pty') {
+    return invalidCreateInput('sessions.create mode must be pty', {
+      field: 'mode',
+    });
   }
   if (
     input['terminalBackend'] !== undefined &&
@@ -490,30 +468,6 @@ function validateCreateEnums(
       'sessions.create terminalBackend must be relay-pty',
       {
         field: 'terminalBackend',
-      }
-    );
-  }
-  if (
-    input['continuePolicy'] !== undefined &&
-    input['continuePolicy'] !== 'always' &&
-    input['continuePolicy'] !== 'never'
-  ) {
-    return invalidCreateInput(
-      'sessions.create continuePolicy must be always or never',
-      {
-        field: 'continuePolicy',
-      }
-    );
-  }
-  if (
-    input['controlMode'] !== undefined &&
-    input['controlMode'] !== 'agent-driven' &&
-    input['controlMode'] !== 'human-driven'
-  ) {
-    return invalidCreateInput(
-      'sessions.create controlMode must be agent-driven or human-driven',
-      {
-        field: 'controlMode',
       }
     );
   }
@@ -544,12 +498,6 @@ function validateLocalCreateSupport(
         }
       );
     }
-  }
-  if (input['controlMode'] === 'agent-driven') {
-    return unsupportedCreateInput(
-      'local /sessions creation does not yet policy-gate initial controlMode=agent-driven; use routed node creation or omit controlMode',
-      { field: 'controlMode', supported: ['human-driven', undefined] }
-    );
   }
   if (
     typeof input['repoPath'] !== 'string' &&
@@ -605,7 +553,7 @@ export function validateAndSanitizeGatewayCreateInput(
     if (localError) return localError;
   }
 
-  const sessionType = sanitized['type'] === 'terminal' ? 'terminal' : 'agent';
+  const sessionType = 'terminal';
   sanitized['type'] = sessionType;
   return {
     ok: true,

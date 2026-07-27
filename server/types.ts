@@ -16,12 +16,6 @@ import type {
   RepoIdentityWarning,
   ResolvedRemoteIdentity,
 } from '../shared/repo-identity.js';
-import type { OutputParser } from './output-parsers/index.js';
-import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
-import type {
-  AgentPatchV2,
-  AgentSessionV2,
-} from '../shared/agent-chat-protocol-v2.js';
 import type {
   ControlActor,
   ControlFreshness,
@@ -30,16 +24,9 @@ import type {
 } from '../shared/control-state.js';
 import type { SessionEnvelope } from '../shared/session-envelope.js';
 import type { SessionDurabilityState } from '../shared/session-durability.js';
-// Runtime value import (#955): the single shared authoring source for the
-// launch-time collaboration system-prompt appendix. `shared/agent-roster.ts`
-// has no `server/` imports, so this stays a one-way, cycle-free dependency.
-import {
-  collaborationPromptAppendix,
-  type AgentRole,
-} from '../shared/agent-roster.js';
 import type { TerminalModelBackend } from './terminal-model-backend.js';
 
-export type AgentState =
+export type TerminalActivityState =
   | 'initializing'
   | 'waiting-for-input'
   | 'processing'
@@ -53,7 +40,14 @@ export type BackendDisplayState =
   | 'permission'
   | 'error';
 
-export type SessionType = 'agent' | 'terminal';
+/**
+ * Public Relay sessions are interactive terminals only.
+ *
+ * Agent processes are private channel runtimes managed by
+ * `ChannelAgentRuntimeManager`; they are not members of the public session
+ * registry or its REST/node-link contracts.
+ */
+export type SessionType = 'terminal';
 export type AgentType = string;
 export type BuiltinFrameworkId = 'claude' | 'codex' | 'opencode' | 'hermes';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
@@ -61,7 +55,7 @@ export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionRestoreState = 'restoring' | 'reattach-failed';
-export type SessionMode = 'pty' | 'web';
+export type SessionMode = 'pty';
 export type TerminalBackend = 'relay-pty';
 
 // ── Agent Framework Registry ──
@@ -75,15 +69,6 @@ export interface AgentFramework {
   yoloArgs: string[];
   yoloEnv?: Record<string, string>;
   extraArgs?: string[];
-  /**
-   * Provider-specific CLI flag used to APPEND text to the framework's default
-   * system prompt at launch (#955). Set only for frameworks that natively
-   * support it (e.g. Claude Code `--append-system-prompt`). Paired with the
-   * `supportsCollaborationPrompt` capability so unsupported providers never
-   * receive another provider's flag. The injected text is the shared
-   * collaboration appendix, never raw transcripts/secrets/provider state.
-   */
-  collaborationPromptArg?: string;
   parserType: string;
   eventSource: EventSourceType;
   capabilities: {
@@ -92,15 +77,7 @@ export interface AgentFramework {
     supportsYolo: boolean;
     supportsTelemetry: boolean;
     supportsAttachedRuntime: boolean;
-    supportsWebSessions?: boolean;
-    /**
-     * Whether Relay may inject the launch-time collaboration system-prompt
-     * appendix (#955) via `collaborationPromptArg`. Optional so custom
-     * frameworks resolved by `resolveFramework` are unaffected (they default
-     * to unsupported and skip safely). An operator can opt a builtin out by
-     * overriding this to `false` in `config.frameworks`.
-     */
-    supportsCollaborationPrompt?: boolean;
+    supportsChannelAgents?: boolean;
   };
 }
 
@@ -111,9 +88,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
     command: 'claude',
     continueArgs: ['--continue'],
     yoloArgs: ['--dangerously-skip-permissions'],
-    // Claude Code natively appends (not replaces) the default system prompt
-    // with this flag, in both interactive/TUI and print modes (#955).
-    collaborationPromptArg: '--append-system-prompt',
     parserType: 'claude',
     eventSource: 'hooks',
     capabilities: {
@@ -122,16 +96,12 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      // Relay teaches Claude-launched sessions to collaborate through the CLI
-      // gateway at launch (#955). Other providers stay opted out until their
-      // own append-prompt mechanism is verified (see provider-guide §12).
-      supportsCollaborationPrompt: true,
-      // Web sessions run the persistent-subprocess adapter over stream-json
+      // Channel agents run the persistent-subprocess adapter over stream-json
       // (server/protocol-adapters/claude-adapter.ts + server/claude-stream-client.ts).
       // Re-enabled by #1168 (closes #300): no Agent SDK, real assistant-text
       // streaming, fixture-replayed end-to-end round-trip, and one live
       // hello-world proof. See the #1168 PR for verification evidence.
-      supportsWebSessions: true,
+      supportsChannelAgents: true,
     },
   },
   codex: {
@@ -148,7 +118,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
-      // Web sessions run the native `codex app-server` JSON-RPC adapter
+      // Channel agents run the native `codex app-server` JSON-RPC adapter
       // (server/protocol-adapters/codex-native-adapter.ts +
       // server/codex-app-server-client.ts). Re-advertised by #1169 (closes
       // #301): the adapter maps assistant text end-to-end
@@ -157,7 +127,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       // asserts the prompt → text-delta → completion round-trip, and one live
       // hello-world proof drove the built adapter through a real thread. The
       // old `chat:text-delta` gap belonged to the retired hook-based adapter.
-      supportsWebSessions: true,
+      supportsChannelAgents: true,
     },
   },
   opencode: {
@@ -192,7 +162,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      supportsWebSessions: true,
+      supportsChannelAgents: true,
     },
   },
   hermes: {
@@ -209,7 +179,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      supportsWebSessions: true,
+      supportsChannelAgents: true,
     },
   },
 };
@@ -290,41 +260,6 @@ export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
   Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.yoloArgs])
 );
 
-/**
- * Launch-time collaboration prompt args for a framework (#955 / #952 / #953).
- *
- * Returns `[collaborationPromptArg, <appendix>]` when the framework explicitly
- * declares `capabilities.supportsCollaborationPrompt` AND a provider-specific
- * `collaborationPromptArg` (e.g. Claude `--append-system-prompt`); otherwise
- * `[]` so unsupported providers (codex/opencode/hermes/custom) skip safely and
- * never receive another provider's flag.
- *
- * The appendix text is sourced from the single shared authoring helper
- * `collaborationPromptAppendix` (no duplicated/drifting prose) and contains
- * only Relay CLI-gateway guidance — never raw transcripts, secrets, tokens, or
- * provider-store paths. It is derived fresh at each spawn and is intentionally
- * NOT persisted on the session, so it stays consistent across restores and
- * never enters serialized session state.
- */
-export function collaborationPromptArgsForFramework(
-  framework: AgentFramework,
-  role?: AgentRole
-): string[] {
-  if (
-    !framework.capabilities.supportsCollaborationPrompt ||
-    !framework.collaborationPromptArg
-  ) {
-    return [];
-  }
-  return [
-    framework.collaborationPromptArg,
-    collaborationPromptAppendix({
-      provider: framework.id,
-      ...(role ? { role } : {}),
-    }),
-  ];
-}
-
 // Session types — discriminated union on `mode`
 interface BaseSession {
   id: string;
@@ -337,9 +272,6 @@ interface BaseSession {
   /** Execution node that owns this live session. */
   nodeId?: NodeId;
   type: SessionType;
-  agent: AgentType;
-  /** Durable collaboration role. A hint for routing/UI, not authorization. */
-  role?: AgentRole;
   mode: SessionMode;
   /**
    * Filesystem path of the repo this session is bound to. Omitted for
@@ -365,12 +297,13 @@ interface BaseSession {
   /** Background provider reattach state for sessions materialized at boot. */
   restoreState?: SessionRestoreState;
   needsBranchRename: boolean;
-  agentState: AgentState;
+  /** Derived terminal activity/attention state; never an agent identity. */
+  activityState: TerminalActivityState;
   workspaceId?: string;
   additionalDirs?: string[];
-  // Shared mutable state (used by both PTY and web sessions)
+  // Shared mutable PTY session state.
   currentActivity?: { tool: string; detail?: string } | undefined;
-  /** Product control state; separate from transport `mode` (`pty` | `web`). */
+  /** Product control state; separate from the PTY transport mode. */
   controlState?: ControlStateSummary | undefined;
   /** Typed intent/scope envelope for future revoke/expiry enforcement hooks. */
   sessionEnvelope?: SessionEnvelope | undefined;
@@ -410,52 +343,11 @@ export interface PtySession extends BaseSession {
   onPtyReplacedCallbacks: Array<(newPty: IPty) => void>;
   restored: boolean;
   branchRenamePrompt?: string;
-  initialPrompt?: string | undefined;
-  outputParser: OutputParser;
-  hookToken: string;
-  hooksActive: boolean;
   cleanedUp: boolean;
   preserveRuntimeFilesOnExit?: boolean;
-  _lastHookTime?: number | undefined;
-  yolo: boolean;
-  /** Framework-specific args (replaces deprecated claudeArgs) */
-  sessionArgs?: string[];
-  /** @deprecated Use sessionArgs instead */
-  claudeArgs: string[];
-  continuePolicy: ContinuePolicy;
-  /** Actual event source quality (hooks/plugin/parser/timer) */
-  dataQuality?: EventSourceType;
 }
 
-export interface WebSession extends BaseSession {
-  mode: 'web';
-  /** Durable AgentProfile actor that selected this runtime, when profile-bound. */
-  profileId?: string;
-  /** Native v2 protocol adapter for web-chat sessions. */
-  adapterV2: ProtocolAdapterV2;
-  /** Canonical v2 web-chat state. */
-  agentSessionV2: AgentSessionV2;
-  /** Bounded v2 patch buffer for reconnect catch-up. */
-  agentPatchesV2: AgentPatchV2[];
-  /** Current web-chat protocol version. */
-  protocolVersion: 2;
-  /**
-   * Agent type identifier (matches AgentFramework.id, e.g. 'codex' | 'opencode' | 'claude').
-   * Mirrors adapter.agentType — kept as a plain field so session summaries and logs
-   * can reference it without dereferencing the adapter object.
-   */
-  adapterType: string;
-  /** Currently active turn ID, or null when idle */
-  currentTurnId: string | null;
-  /** Who owns the agent runtime process */
-  runtimeOwnership: 'spawned' | 'attached';
-  /** Token for authenticating inbound hook callbacks */
-  hookToken: string;
-  /** Whether hook infrastructure is currently active */
-  hooksActive: boolean;
-}
-
-export type Session = PtySession | WebSession;
+export type Session = PtySession;
 
 // Summary type for REST API responses (no internal handles)
 export interface SessionSummary {
@@ -463,12 +355,7 @@ export interface SessionSummary {
   /** Parent Relay session supplied by the spawner, when known. */
   spawnedBySessionId?: string;
   type: SessionType;
-  agent: AgentType;
-  /** Durable collaboration role. A hint for routing/UI, not authorization. */
-  role?: AgentRole;
   mode: SessionMode;
-  /** Durable AgentProfile actor that selected this web runtime, when profile-bound. */
-  profileId?: string;
   /**
    * Filesystem path of the repo this session is bound to. Optional so
    * non-repo (node-only / raw-shell) routed sessions can flow through
@@ -518,12 +405,12 @@ export interface SessionSummary {
    */
   durability?: SessionDurabilityState;
   needsBranchRename: boolean;
-  agentState: AgentState;
+  /** Derived terminal activity/attention state; never an agent identity. */
+  activityState: TerminalActivityState;
   currentActivity?: { tool: string; detail?: string } | undefined;
-  /** Product control state; separate from transport `mode` (`pty` | `web`). */
+  /** Product control state; separate from the PTY transport mode. */
   controlMode?: ControlMode;
   activeActors?: ControlActor[];
-  activeWorker?: ControlActor;
   lastInterventionAt?: string | null;
   lastInterventionBy?: ControlActor | null;
   lastInterventionEventId?: string | null;
@@ -531,8 +418,6 @@ export interface SessionSummary {
   controlReason?: string;
   workspaceId?: string;
   additionalDirs?: string[];
-  /** PTY sessions only — tracks data quality of telemetry source */
-  dataQuality?: EventSourceType;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
   /** WorkContext linked to this session, when the create/list surface can resolve one. */
@@ -585,27 +470,18 @@ export interface WorktreeMetadata {
 }
 
 export interface WorkspaceSettings {
-  // Session defaults
+  // Channel provider and terminal defaults
   defaultFramework?: string; // canonical agent framework (v5+)
   frameworkOverrides?: Partial<AgentFramework>; // per-repo framework customization
-  defaultContinue?: boolean;
-  defaultContinuePolicy?: ContinuePolicy;
-  defaultYolo?: boolean;
   terminalBackend?: TerminalBackend;
-  claudeArgs?: string[];
 
   // Git settings
   defaultBranch?: string;
   remote?: string;
   branchPrefix?: string;
 
-  // Custom prompts (Conductor-style)
-  promptCodeReview?: string;
-  promptCreatePr?: string;
-  promptBranchRename?: string;
-  promptGeneral?: string;
+  // Channel-native work prompt
   promptFixConflicts?: string;
-  promptStartWork?: string;
 
   // Worktree naming — mountains theme
   nextMountainIndex?: number;
@@ -687,15 +563,11 @@ export interface Config {
    * only; Relay never launches commands or scans ports from this list.
    */
   workspaceSurfaces?: WorkspaceSurfaceConfiguredInput[] | undefined;
-  claudeArgs: string[];
   defaultFramework: string; // canonical agent framework, defaults to 'claude'
   frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
-  defaultContinue: boolean;
-  defaultYolo: boolean;
   maxPtySessions: number;
   terminalBackend: TerminalBackend;
   defaultNotifications: boolean;
-  claudeFullscreen: boolean;
   /**
    * Which CLI tool to use for AI-suggested session/branch names.
    * Defaults to 'claude'. See RenamerTool for all options.
@@ -715,7 +587,6 @@ export interface Config {
   vapidPublicKey?: string | undefined;
   vapidPrivateKey?: string | undefined;
   debugLog?: boolean | undefined;
-  forceOutputParser?: boolean | undefined;
   /**
    * Per-session scrollback cap in bytes. Default: 256 KB.
    * Config-file-only for this release; no settings UI surface yet.
@@ -760,7 +631,6 @@ export interface Config {
 
 export interface AutomationSettings {
   autoCheckoutReviewRequests?: boolean;
-  autoReviewOnCheckout?: boolean;
   pollIntervalMs?: number;
   lastPollTimestamp?: string;
 }
@@ -986,21 +856,12 @@ export interface WorkspaceTemplate {
   repoRoles?: Record<string, RepoRole>;
   defaultAgent?: string;
   customPrompt?: string;
-  claudeArgs?: string[];
 }
 
 export interface WorkspaceLevelSettings {
   defaultFramework?: string; // canonical agent framework (v5+)
-  defaultContinue?: boolean;
-  defaultYolo?: boolean;
   terminalBackend?: TerminalBackend;
-  claudeArgs?: string[];
-  promptCodeReview?: string;
-  promptCreatePr?: string;
-  promptBranchRename?: string;
-  promptGeneral?: string;
   promptFixConflicts?: string;
-  promptStartWork?: string;
   /** #614 slice 4: per-workspace durability overrides; same shape as WorkspaceSettings. */
   sessionDurability?: SessionDurabilitySettings;
 }

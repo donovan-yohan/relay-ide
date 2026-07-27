@@ -176,7 +176,7 @@ interface AssistantMarkdownProps {
   text: string;
   /** Stable id used to scope syntax-highlight cache keys for code fences in this message. */
   keyPrefix: string;
-  /** Channel rows collapse block code; legacy Turn rendering remains unchanged. */
+  /** Agent channel rows collapse block code into detail cards. */
   codeBlockPresentation?: 'plain' | 'card';
   codeBlockStatus?: AgentDetailCardStatusV2;
 }

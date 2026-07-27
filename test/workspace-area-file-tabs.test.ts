@@ -49,7 +49,7 @@ vi.mock('../frontend/src/hooks/useFileDiff.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: vi.fn(),
+  createTerminalSession: vi.fn(),
   getCurrentSessionContext: () => ({ currentActiveWorkspace: null }),
 }));
 
@@ -94,9 +94,9 @@ const { WorkspaceArea } =
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 's1',
-    type: 'agent',
-    name: 'Agent 1',
-    displayName: 'Agent 1',
+    type: 'terminal',
+    name: 'Terminal 1',
+    displayName: 'Terminal 1',
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),
     status: 'running',
@@ -104,8 +104,7 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     repoPath: '/repo',
     worktreePath: '/repo',
     branchName: 'main',
-    agent: 'claude',
-    agentState: 'idle',
+    activityState: 'idle',
     ...overrides,
   } as SessionSummary;
 }

@@ -16,12 +16,10 @@ import {
 import type {
   Config,
   Workspace,
-  AgentType,
   WorkspaceLevelSettings,
   WorkspaceTemplate,
   TerminalBackend,
 } from './types.js';
-import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { detectGitRepo } from './workspaces.js';
 import type { CreateParams, CreateResult } from './sessions.js';
@@ -55,7 +53,7 @@ interface SessionDeps {
   sessions: {
     create: (params: CreateParams) => CreateResult;
     list?: () => Array<{ mode?: string; status?: string }>;
-    nextAgentName: () => string;
+    nextTerminalName: () => string;
   };
   gitWatcher: { watchSession(sessionId: string, cwd: string): void };
   configPath: string;
@@ -108,60 +106,6 @@ async function resolveRepoPath(
       error: err instanceof Error ? err.message : 'worktree creation failed',
     };
   }
-}
-
-function buildFinalArgs(
-  config: Config,
-  primary: { repoPath: string; resolvedPath: string },
-  additionalDirs: string[],
-  overrides: {
-    agent: string | undefined;
-    yolo: boolean | undefined;
-    terminalBackend: TerminalBackend | undefined;
-    claudeArgs: string[] | undefined;
-  },
-  workspaceId: string
-): {
-  resolved: ReturnType<typeof resolveSessionSettings>;
-  combinedClaudeArgs: string[];
-  finalArgs: string[];
-} {
-  const sessionOverrides: Parameters<typeof resolveSessionSettings>[2] = {};
-  if (overrides.agent !== undefined)
-    sessionOverrides.agent = overrides.agent as AgentType;
-  if (overrides.yolo !== undefined) sessionOverrides.yolo = overrides.yolo;
-  if (overrides.terminalBackend !== undefined)
-    sessionOverrides.terminalBackend = overrides.terminalBackend;
-  if (overrides.claudeArgs !== undefined)
-    sessionOverrides.claudeArgs = overrides.claudeArgs;
-
-  const resolved = resolveSessionSettings(
-    config,
-    primary.repoPath,
-    sessionOverrides,
-    workspaceId
-  );
-  const resolvedAgent = resolved.agent;
-  // config.claudeArgs carries Claude-specific flags (--model/--effort) and
-  // --add-dir is likewise a Claude-only multi-repo flag; folding either into
-  // codex/opencode/hermes spawns exits those CLIs with code 2 (#1238, same
-  // class as #1237). Gate BOTH to the claude agent. No other framework declares
-  // a multi-repo flag, so non-claude group spawns launch in the primary repo.
-  const agentClaudeArgs = resolvedAgent === 'claude' ? resolved.claudeArgs : [];
-  const addDirArgs =
-    resolvedAgent === 'claude'
-      ? additionalDirs.flatMap((dir) => ['--add-dir', dir])
-      : [];
-  const combinedClaudeArgs = [...agentClaudeArgs, ...addDirArgs];
-  const baseArgs = [
-    ...combinedClaudeArgs,
-    ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
-  ];
-  const finalArgs =
-    resolved.continuePolicy === 'always'
-      ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
-      : [...baseArgs];
-  return { resolved, combinedClaudeArgs, finalArgs };
 }
 
 export function createWorkspaceGroupsRouter(
@@ -408,7 +352,8 @@ export function createWorkspaceGroupsRouter(
     res.status(204).end();
   });
 
-  // POST /workspace-groups/:id/session — launch a workspace session with coordinated worktrees
+  // POST /workspace-groups/:id/session — launch a terminal in a workspace.
+  // Agent participants are private channel runtimes and cannot be created here.
   if (sessionDeps) {
     router.post(
       '/:id/session',
@@ -418,6 +363,18 @@ export function createWorkspaceGroupsRouter(
         const body = req.body as unknown;
         if (!isRecord(body)) {
           res.status(400).json({ error: 'request body must be an object' });
+          return;
+        }
+        const removedAgentFields = ['agent', 'yolo', 'claudeArgs'].filter(
+          (field) => Object.prototype.hasOwnProperty.call(body, field)
+        );
+        if (removedAgentFields.length > 0) {
+          res.status(400).json({
+            code: 'CHANNEL_AGENT_REQUIRED',
+            error:
+              'workspace agent sessions are unsupported; create or mention the agent in a channel',
+            fields: removedAgentFields,
+          });
           return;
         }
         if (Object.prototype.hasOwnProperty.call(body, 'useTmux')) {
@@ -436,15 +393,11 @@ export function createWorkspaceGroupsRouter(
             return;
           }
         }
-        const { agent, yolo, terminalBackend, claudeArgs, cols, rows } =
-          body as {
-            agent?: string;
-            yolo?: boolean;
-            terminalBackend?: TerminalBackend;
-            claudeArgs?: string[];
-            cols?: number;
-            rows?: number;
-          };
+        const { terminalBackend, cols, rows } = body as {
+          terminalBackend?: TerminalBackend;
+          cols?: number;
+          rows?: number;
+        };
         const requestedTerminalBackend =
           normalizeTerminalBackend(terminalBackend);
 
@@ -501,23 +454,16 @@ export function createWorkspaceGroupsRouter(
         const primary = successes[0]!;
         const additionalDirs = successes.slice(1).map((s) => s.resolvedPath);
 
-        // Resolve settings first (respects global < workspace < repo cascade),
-        // then append --add-dir args so they don't replace configured claudeArgs
-        const { resolved, combinedClaudeArgs, finalArgs } = buildFinalArgs(
+        const resolved = resolveSessionSettings(
           config,
-          primary,
-          additionalDirs,
-          {
-            agent,
-            yolo,
-            terminalBackend: requestedTerminalBackend,
-            claudeArgs,
-          },
+          primary.repoPath,
+          requestedTerminalBackend
+            ? { terminalBackend: requestedTerminalBackend }
+            : {},
           workspace.id
         );
 
-        const resolvedAgent = resolved.agent;
-        const displayName = sessionDeps.sessions.nextAgentName();
+        const displayName = sessionDeps.sessions.nextTerminalName();
         const safeCols = clampDimension(cols, 1, 500);
         const safeRows = clampDimension(rows, 1, 200);
 
@@ -529,20 +475,17 @@ export function createWorkspaceGroupsRouter(
 
         try {
           const createParams: CreateParams = {
-            type: 'agent',
-            agent: resolvedAgent,
+            type: 'terminal',
+            command: process.env['SHELL'] || '/bin/sh',
             repoName: workspace.name,
             repoPath: primary.repoPath,
             worktreePath,
             cwd,
             branchName: '',
             displayName,
-            args: finalArgs,
+            args: [],
             configPath: sessionDeps.configPath,
             terminalBackend: resolved.terminalBackend,
-            yolo: resolved.yolo,
-            claudeArgs: combinedClaudeArgs,
-            continuePolicy: resolved.continuePolicy,
             workspaceId: workspace.id,
           };
           if (additionalDirs.length > 0)

@@ -1,17 +1,4 @@
-import type { ActionContext, ActionMeta } from '../types.js';
-import {
-  branchOpenSessionActionAvailability,
-  branchOpenSessionActionDescriptor,
-} from '../start-work-lifecycle.js';
-
-// #871/#876: pr.fix-conflicts and pr.switch-branch open a session on a PR/branch
-// target through the composite branches.openSession verb. Both carry the shared
-// descriptor so agents/operators discover the stable contract; availability gates
-// on an active workspace, mirroring the existing `when` predicate (and #870).
-const branchOpenSessionDescriptor = branchOpenSessionActionDescriptor();
-const branchOpenSessionRequiresWorkspace = (ctx: ActionContext) =>
-  branchOpenSessionActionAvailability({ workspaceMissing: !ctx.workspacePath })
-    .reason;
+import type { ActionMeta } from '../types.js';
 
 export const prCreate: ActionMeta = {
   id: 'pr.create',
@@ -37,13 +24,11 @@ export const prPushBranch: ActionMeta = {
 export const prSwitchBranch: ActionMeta = {
   id: 'pr.switch-branch',
   label: 'switch branch',
-  description: 'check out a different branch',
+  description: 'open a branch in agent chat',
   aliases: ['checkout', 'branch'],
   category: 'pr',
   icon: '⇄',
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: branchOpenSessionRequiresWorkspace,
-  descriptor: branchOpenSessionDescriptor,
 };
 
 export const prFixConflicts: ActionMeta = {
@@ -53,8 +38,6 @@ export const prFixConflicts: ActionMeta = {
   category: 'pr',
   icon: '!',
   when: (ctx) => !!ctx.workspacePath,
-  disabledReason: branchOpenSessionRequiresWorkspace,
-  descriptor: branchOpenSessionDescriptor,
 };
 
 export const prArchiveBranch: ActionMeta = {

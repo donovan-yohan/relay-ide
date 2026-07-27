@@ -7,7 +7,6 @@ import type {
 } from '../../../shared/identity.js';
 import type { SessionEnvelope } from '../../../shared/session-envelope.js';
 import type { SessionDurabilityState } from '../../../shared/session-durability.js';
-import type { AgentRole } from '../../../shared/agent-roster.js';
 import type {
   RepoIdentityWarning,
   ResolvedRemoteIdentity,
@@ -16,11 +15,7 @@ import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
-import type {
-  ControlActor,
-  ControlFreshness,
-  ControlMode,
-} from '../../../shared/control-state.js';
+import type { ControlActor } from '../../../shared/control-state.js';
 import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
 import type {
   WorkContext,
@@ -45,7 +40,7 @@ export type PrDotStatus =
   | 'unknown';
 
 export type AgentType = string;
-export type AgentState =
+export type TerminalActivityState =
   | 'initializing'
   | 'waiting-for-input'
   | 'processing'
@@ -64,17 +59,11 @@ export interface FrameworkInfo {
     supportsYolo: boolean;
     supportsHooks: boolean;
     supportsTelemetry: boolean;
-    supportsWebSessions?: boolean;
   };
   eventSource: EventSourceType;
   availability?: {
     installed: boolean;
     path?: string;
-    reason?: string;
-  };
-  webAvailability?: {
-    available: boolean;
-    endpoint?: string;
     reason?: string;
   };
 }
@@ -159,13 +148,8 @@ export interface Workspace {
 
 export interface SessionSummary {
   id: string;
-  type: 'agent' | 'terminal';
-  agent: AgentType;
-  /** Durable collaboration role. A hint for routing/UI, not authorization. */
-  role?: AgentRole;
-  /** Session that spawned this worker, when the backend retained its lineage. */
-  spawnedBySessionId?: string;
-  mode?: 'pty' | 'web' | undefined;
+  type: 'terminal';
+  mode?: 'pty' | undefined;
   repoName?: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -186,19 +170,14 @@ export interface SessionSummary {
   status?: 'active' | 'disconnected' | undefined;
   /** #614: derived durability state. Optional for legacy summaries. */
   durability?: SessionDurabilityState | undefined;
-  agentState?: AgentState | undefined;
+  /** Derived terminal activity/attention state; never an agent identity. */
+  activityState: TerminalActivityState;
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
   currentActivity?: CurrentActivity | undefined;
-  /** Product control state; separate from transport `mode` (`pty` | `web`). */
-  controlMode?: ControlMode;
-  activeActors?: ControlActor[];
-  activeWorker?: ControlActor;
   lastInterventionAt?: string | null;
   lastInterventionBy?: ControlActor | null;
   lastInterventionEventId?: string | null;
-  controlFreshness?: ControlFreshness;
-  controlReason?: string;
   dataQuality?: EventSourceType | undefined;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
@@ -215,7 +194,6 @@ export interface WorkContextSessionSummary {
   tabKind: WorkContextTabKind;
   type?: SessionSummary['type'];
   mode?: SessionSummary['mode'];
-  agent?: SessionSummary['agent'];
   cwd: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -224,16 +202,11 @@ export interface WorkContextSessionSummary {
   displayName?: string;
   status?: SessionSummary['status'];
   durability?: SessionSummary['durability'];
-  agentState?: SessionSummary['agentState'];
+  activityState?: SessionSummary['activityState'];
   currentActivity?: SessionSummary['currentActivity'];
-  controlMode?: ControlMode;
-  activeActors?: ControlActor[];
-  activeWorker?: ControlActor;
   lastInterventionAt?: string | null;
   lastInterventionBy?: ControlActor | null;
   lastInterventionEventId?: string | null;
-  controlFreshness?: ControlFreshness;
-  controlReason?: string;
   lastActivity?: string;
   relationship: string;
   associatedAt: string;
@@ -275,14 +248,6 @@ export interface RepoInfo {
   path: string;
   root: string;
   defaultBranch?: string | null;
-}
-
-export interface OpenSessionOptions {
-  yolo?: boolean;
-  branchName?: string;
-  agent?: AgentType;
-  claudeArgs?: string;
-  terminalBackend?: 'relay-pty';
 }
 
 export interface SessionMeta {
@@ -442,29 +407,14 @@ export interface PrInfo {
 
 export interface WorkspaceSettings {
   defaultAgent?: AgentType;
-  defaultContinue?: boolean;
-  defaultYolo?: boolean;
   terminalBackend?: 'relay-pty';
-  claudeArgs?: string[];
   defaultBranch?: string;
   remote?: string;
   branchPrefix?: string;
-  promptCodeReview?: string;
-  promptCreatePr?: string;
-  promptBranchRename?: string;
-  promptGeneral?: string;
   promptFixConflicts?: string;
-  promptStartWork?: string;
   nextMountainIndex?: number;
   /** Environment variable names that should receive per-worktree allocated ports. */
   portVariables?: string[];
-}
-
-export interface AutomationSettings {
-  autoCheckoutReviewRequests?: boolean;
-  autoReviewOnCheckout?: boolean;
-  pollIntervalMs?: number;
-  lastPollTimestamp?: string;
 }
 
 export interface FilterPreset {

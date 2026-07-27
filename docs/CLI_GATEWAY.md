@@ -28,7 +28,6 @@ relay-ide v1 sessions wait --id <session-id-or-global-id> --output-text 'ready' 
 relay-ide v1 sessions screen --id <session-id-or-global-id> [--scrollback --max-lines 200] --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 sessions interventions --id <session-id> --json
-relay-ide v1 sessions hand-back --id <session-id> --latest-seen-intervention-event-id <event-id> --json
 relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
@@ -65,14 +64,11 @@ relay-ide v1 inbox get --id <inbox-message-id> --json
 relay-ide v1 inbox ack --id <inbox-message-id> --json
 relay-ide v1 inbox resolve --id <inbox-message-id> --json
 relay-ide v1 inbox ignore --id <inbox-message-id> --json
-relay-ide v1 roster list [--repo <repo-name-or-path>] [--work-context-id <work-context-id>] [--provider <agent-kind>] [--role <implementer|reviewer|orchestrator|context|collaborator>] [--node-id <node-id>] [--needs-attention] [--include-terminals] [--limit <n>] --json
 relay-ide v1 cockpit list [--limit <n>] --json
 relay-ide v1 cockpit get --work-context-id <work-context-id> --json
 relay-ide cockpit [--limit <n>] [--json]
 relay-ide cockpit get <work-context-id> [--json]
 relay-ide cockpit --work-context-id <work-context-id> [--json]
-relay-ide v1 roster register --input-json '{"role":"implementer","useCase":"...","sessionId":"...","statusText":"...","capabilityHints":["..."],"ttlSeconds":120}' --json
-relay-ide v1 roster update-self --input-json '{"sessionId":"...","statusText":"...","needsAttention":true}' --json
 relay-ide v1 automation-runs register --input-json '{"name":"...","kind":"watchdog","owner":{"orchestrator":"hermes"},"targets":[{"sessionId":"..."}],"workContextId":"...","ttlSeconds":300}' --json
 relay-ide v1 automation-runs observe --id <automation-run-id> --input-json '{"summary":"..."}' --json
 relay-ide v1 automation-runs retire --id <automation-run-id> [--reason '<why>'] [--retired-by '<who>'] --json
@@ -91,11 +87,6 @@ relay-ide v1 workspace-topics create --input-json '{"workspaceId":"...","title":
 relay-ide v1 workspace-topics update --id <topic:id> --input-json '{...}' --json
 relay-ide v1 workspace-topics archive --id <topic:id> --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
-relay-ide v1 handoffs create --input-json '{...}' --json
-relay-ide v1 handoffs status --run-id <run-id> --json
-relay-ide v1 handoffs cancel --run-id <run-id> --json
-relay-ide v1 handoffs resume --run-id <run-id> --json
-relay-ide v1 handoffs launch --run-id <run-id> --json
 relay-ide v1 artifacts read --ref <artifact-ref> --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
@@ -108,38 +99,43 @@ relay-ide v1 supervisor submit --id <session-id-or-global-id> --text 'multi-line
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs|automation-runs|pr-overseer> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
 relay-ide v1 settings get --json
-relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
+relay-ide v1 settings update --input-json '{"key":"updateChannel","value":"nightly","confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
 relay-ide v1 webhooks ping --json
 ```
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas. `inbox list --target-session-id` expects the scoped session key form (`local:<session-id>` for local sessions or `<nodeId>:<session-id>` for routed sessions); passing a raw session id (without the node prefix) returns an empty list.
 
-Boo/adapter rule: `relay-ide v1 ... --json` is Relay's scriptable session substrate. External agents should compose sessions, files, WorkContexts, artifacts, events, inbox, and supervisor actions through this contract. They must not speak private `/hub/node-link`, scrape browser WebSockets, read provider databases, shell out to tmux/rmux directly, or infer durable state from raw transcripts when a Relay-owned command exists or needs to be added.
+Boo/adapter rule: `relay-ide v1 ... --json` is Relay's scriptable command
+substrate. External agents should compose terminal sessions, channels, files,
+WorkContexts, artifacts, events, inbox, and supervisor actions through this
+contract. They must not speak private `/hub/node-link`, scrape browser
+WebSockets, read provider databases, call backend-private terminal commands, or
+infer durable state from raw transcripts when a Relay-owned command exists or
+needs to be added.
 
 Terminal backend note (#973): v1 keeps the `terminalBackend` field for create/workflow compatibility, but `relay-pty` is the only accepted value. `tmux-compat` and old tmux-shaped fields are rejected/ignored as unsupported legacy state; they are not a request to restore tmux-backed processes.
 
-## Active-agent roster + evented steering (#952/#953)
+## Channel-native agents
 
-Relay exposes agent collaboration as generic, Relay-owned primitives — not a Hermes-specific endpoint and not raw PTY/tmux byte injection. Two surfaces work together so agents and operators steer running work without polling loops:
+The channel roster (`GET /channels/:id/roster`) and channel message/status
+protocol are the source of truth for agent participation. A profile actor, not
+a public session id, identifies an agent in a conversation. Public session and
+inbox commands operate on terminal execution records or WorkContexts; they do not
+launch, resume, or address private channel runtimes.
 
-- **Evented delivery (#945).** `events subscribe --topic inbox` streams `inbox.sent` / `inbox.state-changed` (with `previousState`) metadata frames as messages move through `queued → delivered → acknowledged → resolved|ignored`. Sibling topics cover `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs`. Every frame is metadata-only (ids, refs, state transition, actor/source summary, cursor) — never raw bodies, prompts, transcripts, tokens, or env — and is filterable by `--work-context-id` / `--session-id` / `--global-session-id` with `--cursor` replay. This is the push surface for "tell this agent something now" and "know when an agent needs attention"; do not build timer-poll loops as the product answer.
-- **Evented attention/session-state (#963, child of #952).** `events subscribe --topic attention` streams `attention.state-changed` metadata frames whenever a local agent session's backend display state transitions (`idle | running | permission | error | initializing`). Each frame's payload carries the derived collaboration signal — `backendState`, `previousBackendState`, `agentState`, `needsAttention`, `reasons[]` (`permission-prompt | waiting-for-input | error | pending-inbox`), `pendingInboxCount`, optional `permissionType`, plus identity hints (`sessionId`, `globalSessionId`, `provider`, `role`, `repoName`, `branchName`, `worktreePath`). `needsAttention`/`reasons` use the same `deriveRosterAttention` heuristic as `roster.list`, so a given frame's derived signal matches what `roster.list` would report at that instant. The topic fires **on backend-state transitions only**: it is the right surface for permission/error/idle/waiting transitions. It is NOT a complete inbox-backlog feed — a message arriving for an otherwise-idle agent does not change backend state, so it surfaces on `--topic inbox` (and is reflected in the next attention frame's `pendingInboxCount` whenever a transition next fires), not as its own attention frame. Subscribe to both `attention` and `inbox` to cover "agent changed state" and "agent has mail". Terminals are excluded; session create/end stays on the `sessions` topic. This is the Relay-owned replacement for cron jobs and screen/replay watchdog loops that scrape a PTY to ask "is this agent waiting on me yet?" — subscribe once and react to the transition instead. Capability-gated on `session:read`.
-- **Discovery (`roster.list`).** A read-only, **derived, redaction-safe** projection of the live session read model so an agent can answer "who else is working in this repo / WorkContext, and who needs me?" before sending a message. The derived projection is the trusted base; explicit self-declared presence (below) is merged on top without ever overriding identity/control fields. Capability-gated on `session:read`. When called with `--work-context-id`, a scoped actor credential must also carry that WorkContext (fail-closed); without it the command behaves like `sessions.list` (broad `session:read` read scope).
+The former public agent-session and terminal hand-back contracts are
+superseded. Public terminals are always human-driven. `sessions.input` and
+`supervisor.*` control terminal programs; they are not an alternate agent
+conversation transport.
+
+- **Evented delivery (#945).** `events subscribe --topic inbox` streams `inbox.sent` / `inbox.state-changed` (with `previousState`) metadata frames as records move through `queued → delivered → acknowledged → resolved|ignored`. Sibling topics cover `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs`. Every frame is metadata-only (ids, refs, state transition, actor/source summary, cursor) — never raw bodies, prompts, transcripts, tokens, or env — and is filterable by `--work-context-id` / `--session-id` / `--global-session-id` with `--cursor` replay. Use this topic to observe inbox state attached to terminal execution records or WorkContexts. Agent conversation and attention remain channel-native.
+- **Channel status and attention.** Agent lifecycle is channel-native. Consumers
+  observe channel messages, roster/profile state, and channel status events;
+  private runtime ids are not published as session lifecycle or attention
+  events. The `attention` topic remains a compatibility read for public
+  execution records and must not be used to discover channel runtimes.
 - **Terminal cockpit (`cockpit.list` / `cockpit.get` / `relay-ide cockpit`, #934 slices).** A read-first terminal surface for operators on SSH/devboxes. It composes Active Work through the CLI gateway and orders WorkContexts with the same attention copy as the Active Work UI: approval/input first, then offline/revoked/stale last-known contexts, then errors/running/live. Each list row carries why attention is needed, node freshness, session durability, actor/control mode, TaskRefs, artifact counts/latest refs, and explicit action availability before attach. Offline/stale/revoked nodes keep the last-known WorkContext/session context but live controls are disabled with typed reasons; destructive controls are outside this MVP. The selected-item detail path (`cockpit get --work-context-id`) adds exact follow-up command hints for bounded status/evidence (`work-contexts get/resume`, `context list`, artifact list/show/export/read, inbox/interventions) and attach discovery when the session is live/fresh. Capability hints: `session:read` + `context:read`.
-- **Explicit presence (`roster.register` / `roster.updateSelf`, #964).** The first roster **write**: an agent self-declares its own collaboration metadata so non-Relay-launched agents and richer role/use-case/status surface for discovery. Capability-gated on `context:write` (writes, never `session:read`). `register` create-or-replaces the calling agent's presence record; `update-self` patches an existing record and refreshes its heartbeat (fail-closed `NOT_FOUND` if none lives, `FORBIDDEN` if it belongs to another actor). See the safe-field allowlist, expiry/heartbeat, and merge rules below.
-
-### Explicit presence safe-field allowlist + expiry (#964)
-
-`roster.register` / `roster.updateSelf` accept ONLY this allowlisted, sanitized field set — the input schema is `additionalProperties: false` and the store re-sanitizes (defense in depth), so a secret-shaped key (`token`, `secret`, `env`, `transcript`, `prompt`, `payload`, …) is **rejected** (`INVALID_ARGUMENT`), unknown non-secret keys are dropped, and text fields are control-char-stripped + length-bounded:
-
-- **Soft collaboration fields:** `role` (one of the `roster.list` role enum; rejected otherwise), `displayName`, `useCase` (free-text role/use-case hint), `statusText` (coarse status), `needsAttention` (additive attention hint), `capabilityHints[]` (normalized tokens).
-- **Scope / addressing (self-claimed, used only to JOIN the derived roster — never trusted for security):** `sessionId`, `globalSessionId`, `workContextId`, `repoPath`, `nodeId`, `provider`.
-- **Lifecycle:** `ttlSeconds` (heartbeat TTL, clamped to 10–3600, default 120). The store stamps `expiresAt = now + ttl`; `roster.list` filters stale records at read time and writes sweep expired rows, so explicit presence never lives forever. Re-`register` or `update-self` before expiry to stay live.
-
-`registeredBy` is the **authenticated actor id** (audit attribution); a body `createdBy` is only a fallback when no actor is resolved. Presence is non-authoritative discovery metadata, never an authorization input.
-
-**Merge precedence (`roster.list`).** Derived session fields always win for identity/control/security (`sessionId`, `globalSessionId`, `nodeId`, `provider`, `controlMode`, `status`, `agentState`, `activeActors`). Self-declaration only overlays the soft subset (`role`, `displayName`, capability-hint union, additive attention) and attaches a `selfDeclared` block; such entries are tagged `origin: "merged"`. A live presence record with no matching session is surfaced as an `origin: "self-declared"` entry (e.g. an external/non-Relay agent). `needsAttention` is additive: a self-declared hint can RAISE attention (adding the `self-declared` reason) but never clears a derived reason.
 
 ### Cursor / resume / gap / backpressure (metadata topics)
 
@@ -147,128 +143,66 @@ Relay exposes agent collaboration as generic, Relay-owned primitives — not a H
 
 - **Cursor.** Every live and replayed event frame carries an opaque `cursor`. Persist the last-seen cursor; on reconnect pass it as `--cursor <cursor>`. Replayed frames are tagged `replay: true`.
 - **Resume.** With a known cursor, the hub replays only the buffered frames _after_ it, then continues live. Scope filters (`--session-id`, `--global-session-id`, `--work-context-id`, `--repo-path`) apply to replayed frames too.
-- **Gap / drop.** The replay buffer is bounded (default 1000 frames/topic, oldest trimmed FIFO). If your cursor has already aged out, the hub emits an extra `open` frame with `replayDropped: true` before replaying everything it still holds. Treat `replayDropped` as "you may have missed frames between your cursor and the oldest retained one" — re-sync via `roster.list` / `inbox list` if you need exact state.
+- **Gap / drop.** The replay buffer is bounded (default 1000 frames/topic, oldest trimmed FIFO). If your cursor has already aged out, the hub emits an extra `open` frame with `replayDropped: true` before replaying everything it still holds. Treat `replayDropped` as "you may have missed frames between your cursor and the oldest retained one" — re-sync through the owning channel or the relevant terminal/inbox read command if you need exact state.
 - **Backpressure.** If a subscriber stops reading and the socket buffer fills, the hub drops that subscriber and closes the stream rather than growing memory unbounded; the CLI emits a `closed` frame (`closeCode 1013`, `reason: "stdout backpressure"` on the CLI side). Reconnect with your last cursor to resume.
 - **Scope.** `--repo-path` is an exact checkout-path match and is only meaningful for the `attention` topic (other topics do not carry `repoPath`, so they never match it). Worktree-level granularity is available via `--session-id` (each worktree session has a distinct id). Cross-node attention aggregation and durable (cross-restart) replay are documented residuals — this slice is local-node / in-memory.
 
 This is local-node, in-memory only: the buffer does not survive a hub restart and does not aggregate remote-node sessions. Durable + cross-node attention/inbox streaming is the next slice.
 
-`roster.list` fields (per entry): `sessionId`, `globalSessionId`, `nodeId`, `provider` (agent kind), `sessionType` (`agent`|`terminal`), `role`, `displayName`, `repoPath`/`repoName`/`worktreePath`/`branchName`/`cwd`, `workContextId`, `controlMode`, `status`, `agentState`, `attention` (`{ needsAttention, reasons[], pendingInboxCount }`, where `reasons` may include `self-declared` from an explicit presence hint), `capabilities[]` (framework flags), `activeActors[]` (kind/id/displayName), `lastActivity`, `createdAt`. When explicit presence (#964) is folded in, an entry also carries `origin` (`derived` | `merged` | `self-declared`; omitted means `derived`) and `selfDeclared` (`{ presenceId, registeredBy?, role?, displayName?, useCase?, statusText?, needsAttention?, capabilityHints?, updatedAt, expiresAt }`). The envelope adds `generatedAt`, `count`, and `nodeId`.
+## Generic workflow evidence (#1016/#1129)
 
-`role` is a lightweight collaboration **hint** (default map: `claude → implementer`, `codex → reviewer`, `hermes`/`ebi → orchestrator`, else `collaborator`), not an authorization boundary and not a hard-coded architecture — Relay projects one collaboration vocabulary across providers. `attention.needsAttention` is derived (`agentState ∈ {permission-prompt, waiting-for-input, error}` or a non-empty pending inbox backlog); the roster never mutates inbox state (it reads with delivery suppressed). Terminals are excluded unless `--include-terminals`. Cross-node aggregation of remote sessions into the roster is a documented follow-up; this slice projects locally-owned sessions (already WorkContext-decorated).
+`workflow-runs.*` stores bounded, WorkContext-scoped evidence from an external
+workflow runtime. It is a passive projection, not a Relay agent orchestrator.
+The supported shape records a runtime label, definition hash, state, progress,
+phases, steps, bounded journal summaries, result/error summaries, and refs to
+terminal sessions, artifacts, inbox records, or tasks.
 
-## Workflow run topology (#1016/#1129)
-
-`workflow-runs.*` stores bounded WorkContext-scoped workflow projections and, as of the
-visible orchestration work, can also carry Relay-owned planner/worker topology. This
-keeps provider-runtime projections compatible while giving Relay enough structure to
-render and steer visible agent teams.
-
-A Relay orchestration run sets `runKind: "relay-orchestration"` and usually
-`providerRuntime: "relay-orchestration"`. Its optional `orchestration` block is
-metadata-only:
+The former `runKind: "relay-orchestration"` plus
+`orchestration.planner`/`children` topology is superseded and unsupported.
+Workflow records do not launch agents, assign participant roles, address
+private channel runtimes, or define a second conversation roster. Agent
+identity and conversation topology remain in the owning channel or DM.
 
 ```json
 {
-  "planner": {
-    "role": "planner",
-    "sessionId": "planner-session-id",
-    "globalSessionId": "local:planner-session-id",
-    "provider": "hermes",
-    "nodeId": "local",
-    "cwd": "/repo/relay-ide",
-    "repoPath": "/repo/relay-ide",
-    "worktreePath": "/repo/relay-ide/.worktrees/...",
-    "state": "running",
-    "attention": {
-      "needsAttention": false,
-      "pendingInboxCount": 0
-    }
+  "runId": "ci-123",
+  "providerRuntime": "github-actions",
+  "workContextId": "work-context:123",
+  "definition": {
+    "hash": "sha256:...",
+    "version": "1"
   },
-  "children": [
+  "state": "running",
+  "progress": {
+    "total": 4,
+    "completed": 2
+  },
+  "phases": [
     {
-      "role": "implementer",
-      "sessionId": "claude-session-id",
-      "provider": "claude",
+      "id": "test",
+      "label": "Test",
       "state": "running"
-    },
-    {
-      "role": "reviewer",
-      "sessionId": "codex-session-id",
-      "provider": "codex",
-      "state": "waiting",
-      "attention": {
-        "needsAttention": true,
-        "reasons": ["pending-inbox"],
-        "pendingInboxCount": 1
-      }
     }
-  ]
+  ],
+  "links": {
+    "artifactIds": ["artifact:test-log"],
+    "taskRefs": [
+      {
+        "kind": "github-pr",
+        "id": "123"
+      }
+    ]
+  }
 }
 ```
 
-Rules:
-
-- `planner` and each `children[]` entry must include `role` plus `sessionId` or
-  `globalSessionId`.
-- Roles are collaboration hints, not authorization boundaries.
-- Session links may include provider/node/cwd/repo/worktree/state/attention hints,
-  but raw transcripts, prompts, provider private state, env, tokens, and message
-  bodies remain forbidden.
-- Event summaries include planner ids, participant ids, child ids/count, artifact refs,
-  inbox refs, handoff refs, and task refs so the UI can refresh without transcript
-  scraping.
-- The v0 contract is local-run topology only. The trusted local launcher below is
-  the first dogfood path for creating that topology; the WorkContext cockpit is
-  tracked by #158.
-
-### Trusted local orchestration launcher (#1130)
-
-`orchestration-runs.launch` composes existing Relay-owned APIs instead of writing
-provider state directly:
-
-1. `workflow-runs.publish` creates a `relay-orchestration` run for a WorkContext.
-2. Each lane calls normal `sessions.create`, so workers are visible Relay tabs.
-3. Optional lane `inboxMessage` values go through `inbox.send`.
-4. `workflow-runs.update` patches the run with child session links and partial
-   failure state.
-
-```bash
-relay-ide v1 orchestration-runs launch --input-json '{
-  "workContextId": "wc:relay-dogfood",
-  "planner": {
-    "role": "planner",
-    "sessionId": "current-planner-session",
-    "provider": "hermes"
-  },
-  "lanes": [
-    {
-      "role": "implementer",
-      "provider": "claude",
-      "repoPath": "/home/me/relay-ide",
-      "worktreePath": "/home/me/relay-ide/.worktrees/launcher",
-      "initialPrompt": "Implement the scoped launcher task."
-    },
-    {
-      "role": "reviewer",
-      "provider": "codex",
-      "repoPath": "/home/me/relay-ide",
-      "worktreePath": "/home/me/relay-ide/.worktrees/launcher",
-      "inboxMessage": "Review the launcher diff once the implementer lands it."
-    }
-  ]
-}' --json
-```
-
-The command returns `workflowRunId`, child `sessionId`/`globalSessionId` values,
-per-lane launch status, `partialFailure`, and follow-up `workflow-runs get` /
-`events subscribe` command hints. Partial lane failures do not erase successfully
-launched sessions; they mark the run `waiting` and add attention metadata to the
-affected child link when possible.
+Raw prompts, messages, transcripts, provider-private state, environment
+values, and tokens are forbidden. Session refs, when present, identify
+human-driven terminal evidence only; they never identify an agent participant.
 
 ## Automation / watchdog run registry (#959)
 
-`automation-runs.*` is a Relay-visible registry of operator crons, watchdogs, and automations that drive Relay sessions. It exists so a watcher that keeps firing at a session id that no longer exists is **obvious and retirable** instead of silent: the run's target session ids, owner/orchestrator, linked issue/PR, last observation, and cleanup state all live in Relay, and Relay itself probes whether the target sessions are still alive. This is intentionally distinct from `workflow-runs.*` (the provider-runtime workflow-VM projection); it does not replace Hermes cron and is not a Kanban board.
+`automation-runs.*` is a Relay-visible registry of operator crons, watchdogs, and automations that drive Relay terminal sessions. It exists so a watcher that keeps firing at a session id that no longer exists is **obvious and retirable** instead of silent: the run's target session ids, owner/orchestrator, linked issue/PR, last observation, and cleanup state all live in Relay, and Relay itself probes whether the target sessions are still alive. This is intentionally distinct from `workflow-runs.*` (the bounded workflow projection); it does not replace Hermes cron and is not a Kanban board.
 
 A run record carries: `id` (Relay-owned), `name`, `kind` (`watchdog|cron|automation|oversight|manual`), optional external `runId` (e.g. a Hermes cron id), `owner.orchestrator`, optional `repoPath`/`workContextId`, `targets[]` (session ids), `links` (`taskRefs`, `prUrls`, `issueUrls`), `heartbeat` (TTL + `expiresAt`), optional hard `expiresAt`, `lastObservation`, `cleanup`, `createdAt`/`updatedAt`/`version`, and a `redaction` block. `status` and `staleReasons` are **derived at read time**, never written directly.
 
@@ -288,11 +222,11 @@ How operator crons/watchdogs should register and retire themselves:
 
 Reads are side-effect free — `get`/`list` overlay a fresh liveness probe and derive status without bumping `version`. Target liveness is resolved against the **local** session registry in this slice; remote-node targets resolve `unknown` (cross-node target liveness is a documented follow-up). Like `workflow-runs`, run lifecycle frames publish on the metadata event bus under `events subscribe --topic automation-runs` (`automation-run.registered` / `.observed` / `.status-changed` / `.retired`), metadata-only and redaction-safe (no raw payloads, transcripts, or secrets; secret-shaped register/observe fields are rejected with `AUTOMATION_RUN_VALIDATION_FAILED`).
 
-Dynamic Workflows-compatible finalizers can register Relay-owned cleanup with `registerRelayAutomationRunFinalizers(...)` from `server/automation-run-finalizers.ts`. The action is `relay.automation_run.retire`; the automation-run id can be supplied as `resource.handle.automationRunId`, `resource.handle.automation_run_id`, `resource.handle.id`, `finalizer.args.automationRunId`, or `finalizer.args.automation_run_id`. The handler calls the same store-level retire primitive as `automation-runs retire`. It is idempotent for already-retired or absent records, can optionally enforce `ownerOrchestrator`, and returns bounded evidence without raw transcripts, prompts, env, or token material. This is the safe Relay-side adapter boundary for release-ops closeout today: it retires the automation/watchdog record and makes cleanup state auditable. Actual artifact-preserving termination of Relay child agent sessions is broader #1019 work and must remain a Relay-owned session/process primitive, not a Dynamic Workflows core concern.
+Dynamic Workflows-compatible finalizers can register Relay-owned cleanup with `registerRelayAutomationRunFinalizers(...)` from `server/automation-run-finalizers.ts`. The action is `relay.automation_run.retire`; the automation-run id can be supplied as `resource.handle.automationRunId`, `resource.handle.automation_run_id`, `resource.handle.id`, `finalizer.args.automationRunId`, or `finalizer.args.automation_run_id`. The handler calls the same store-level retire primitive as `automation-runs retire`. It is idempotent for already-retired or absent records, can optionally enforce `ownerOrchestrator`, and returns bounded evidence without raw transcripts, prompts, env, or token material. This is the safe Relay-side adapter boundary for release-ops closeout today: it retires the automation/watchdog record and makes cleanup state auditable. Artifact-preserving termination of public terminal workers remains a Relay-owned session/process primitive. Private channel-runtime lifecycle stays with the channel binder and is not exposed to Dynamic Workflows.
 
 ## PR / check / review overseer (#960, refs #956)
 
-`pr-overseer.*` links a Relay-driven implementation session to the GitHub PR it is shipping and turns the manual "poll the PR, read the checks/reviews, decide what's blocking, steer the agent, hand off for release" loop into a Relay-owned product surface. The overnight #956 run only worked because Ebi did that polling by hand; this primitive is the Relay-owned replacement. It is **observe + evidence only**: it never merges, approves, or mutates the PR — the actual QA/review/merge decision stays with the authorized tester/release agent (Codex or other). It is intentionally distinct from `handoff-artifacts.*` (durable stage evidence an agent authors) and `automation-runs.*` (the watcher driving it); a watchdog cron can register an `automation-run` whose linked PR is overseen by a `pr-overseer`.
+`pr-overseer.*` links an implementation terminal or WorkContext to the GitHub PR it is shipping and turns the manual "poll the PR, read the checks/reviews, decide what's blocking, route the next action, hand off for release" loop into a Relay-owned product surface. The overnight #956 run only worked because Ebi did that polling by hand; this primitive is the Relay-owned replacement. It is **observe + evidence only**: it never merges, approves, or mutates the PR — the actual QA/review/merge decision stays with the authorized tester/release agent (Codex or other). It is intentionally distinct from `handoff-artifacts.*` (durable stage evidence an agent authors) and `automation-runs.*` (the watcher driving it); a watchdog cron can register an `automation-run` whose linked PR is overseen by a `pr-overseer`.
 
 A record carries: `id` (Relay-owned), `name`, `owner.orchestrator`, optional `repoPath`/`workContextId`, optional `session` (the implementation session being steered), optional `issue` (the issue being shipped), required `pr` (`{ ownerRepo, number, url? }`), optional `expectedHeadSha` (the head the session believes it pushed), `links`, `heartbeat` (TTL + `expiresAt`), `lastObservation` (the last **successful** GitHub snapshot), `lastFetch` (the most recent fetch attempt, success or failure), `cleanup`, timestamps/`version`, and a `redaction` block. `status`, `blockers`, `requiredNextAction`, `handoff`, and `staleHeadRisk` are **derived at read time**, never written directly.
 
@@ -313,7 +247,7 @@ Derived `status` (precedence `retired > pending > merged > closed > blocked > st
 How a release train uses it:
 
 1. **Register at PR open.** The implementer (or its orchestrator) calls `pr-overseer register` with the `pr`, the `issue` being shipped, the `session` id, the `workContextId`, and optionally the `expectedHeadSha` it just pushed. Capability: `context:write`.
-2. **Observe each tick.** `pr-overseer observe --id <id>` refreshes the GitHub snapshot + heartbeat and returns the derived blockers + next action. An orchestrator reads `requiredNextAction` to steer the implementation session (e.g. via `supervisor submit`). Capability: `context:write`.
+2. **Observe each tick.** `pr-overseer observe --id <id>` refreshes the GitHub snapshot + heartbeat and returns the derived blockers + next action. An orchestrator reads `requiredNextAction`, posts agent instructions in the owning channel, and may use scoped supervisor commands for an explicitly linked terminal. Capability: `context:write`.
 3. **Hand off only when `handoff.ready` and exact-head-current.** A tester/release agent calls `pr-overseer get --id <id> --current-head-sha <head>`; it proceeds to QA/review/merge **only** if `handoff.ready === true` for that exact head. The primitive itself never merges. Capabilities: `context:read`.
 4. **Retire when done.** On merge/abandon, `pr-overseer retire --id <id> --reason '<why>'` (idempotent). Capability: `context:write`.
 
@@ -321,10 +255,12 @@ Run lifecycle frames publish on the metadata event bus under `events subscribe -
 
 ### Release-train roles (#956)
 
-The same record is consumed by every framework — Relay hard-codes no Claude-only behavior. The roles below are collaboration **hints** (matching the `roster.list` default map), not authorization boundaries:
+The same record is consumed by every framework — Relay hard-codes no
+Claude-only behavior. The roles below are channel collaboration hints, not
+authorization boundaries:
 
-- **Ebi / Hermes (orchestrator).** Owns the loop: registers the overseer, runs `observe` on a cadence (often as a registered `automation-run` watchdog), reads `requiredNextAction`, and steers the right session — without hand-rolled GitHub polling or cookie scripts.
-- **Claude (implementer).** The Relay-launched session shipping the PR. Acts on `actor: implementer` next actions (`fix-checks`, `address-review`, `resync-head`, `fix-issue-closeout`) and pushes; the next `observe` re-checks exact-head evidence.
+- **Ebi / Hermes (orchestrator).** Owns the loop: registers the overseer, runs `observe` on a cadence (often as a registered `automation-run` watchdog), reads `requiredNextAction`, and addresses the right channel participant — without hand-rolled GitHub polling or cookie scripts.
+- **Claude (implementer).** A profile participating in the owning channel. It acts on `actor: implementer` next actions (`fix-checks`, `address-review`, `resync-head`, `fix-issue-closeout`) and pushes; the next `observe` re-checks exact-head evidence.
 - **Codex / tester / release agent (release-train).** Consumes `handoff.ready` + `--current-head-sha` as the safe gate to QA/review and merge through its own authorized path. It never relies on the overseer to merge, and it refuses to act on stale, failed, or unknown evidence (`handoff.ready: false`).
 
 ## Envelope
@@ -363,7 +299,7 @@ Error:
 }
 ```
 
-The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), control hand-back state errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`), and typed supervisor action errors. Multi-target supervisor action denials can also appear inside a successful action envelope as per-target `results[].error` entries; see [Supervisor typed actions and rmux mapping](#supervisor-typed-actions-and-rmux-mapping-704). `CONFIRMATION_REQUIRED` means the agent must pause for a human/operator approval of the exact operation described by the returned challenge; it is not a prompt to ask for a broader grant.
+The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), terminal control/intervention preflight errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`), and typed supervisor action errors. Multi-target supervisor action denials can also appear inside a successful action envelope as per-target `results[].error` entries; see [Supervisor typed actions](#supervisor-typed-actions-704). `CONFIRMATION_REQUIRED` means the agent must pause for a human/operator approval of the exact operation described by the returned challenge; it is not a prompt to ask for a broader grant.
 
 ## Discovery and schemas
 
@@ -415,17 +351,15 @@ The Command Center may search and describe stable gateway commands using the sha
 
 Command Center resolver fixtures and explain/help copy are part of this contract, not a private prompt registry. Resolver-capable commands must preserve descriptor parity across `shared/cli-gateway-contract.ts`, `shared/relay-command-manifest.ts`, `shared/action-descriptor.ts`, Command Center action metadata, and the docs-backed explain corpus. Drift tests should fail when a resolver-capable command lacks side-effect class, confirmation/control policy, surfaces, schema, scope, availability/disabled reason, explain coverage, or an explicit UI-only/private opt-out rationale. Explain answers may cite docs/descriptor snippets and related command ids/action ids; they must not invent unlisted flows, raw shell execution, provider-agent launches, or write/destructive execution paths.
 
-### Web UI action parity rule (#849/#860)
+### UI action parity rule
 
 Relay's web UI is one client over this action contract. The agent-facing source of truth is the stable v1 gateway contract and shared manifest, not React handler names, Command Center labels, or private browser REST calls. UI-only helpers such as tab switching, dashboard sorting/filtering, dialog openers, clipboard helpers, terminal viewport scrolling, and external-link navigation must stay classified as UI-only until a follow-up issue defines a real agent/operator use case and adds a stable Relay-owned command descriptor.
-
-The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](refactor/857-action-parity-inventory.md), and the #860 follow-up map is kept in [`docs/refactor/860-action-contract-follow-up-map.md`](refactor/860-action-contract-follow-up-map.md). Remaining major web-only groups are tracked as explicit issues instead of TODO comments: session lifecycle (#869), workspace/worktree lifecycle (#870), ticket/PR branch workflows (#871), UI bridges to existing gateway commands (#872), and settings/integration mutations (#873).
 
 ## Auth and hub access
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `workflow-runs.*`, `orchestration-runs.*`, `automation-runs.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `workflow-runs.*`, `automation-runs.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 
@@ -435,7 +369,6 @@ The scoped actor credential slice supports the read-only hub-backed set plus the
 | ------------------------------------------------------------------------ | ------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `relay-ide v1 nodes list --json`                                         | `nodes.list`                    | `session:read`      | Reads summarized hub/node inventory.                                                                                                             |
 | `relay-ide v1 sessions list --json`                                      | `sessions.list`                 | `session:read`      | Reads session descriptors and control summaries.                                                                                                 |
-| `relay-ide v1 roster list --json`                                        | `roster.list`                   | `session:read`      | Reads the redacted active-agent roster; validates WorkContext scope when `--work-context-id` is present.                                         |
 | `relay-ide v1 cockpit get --work-context-id <id> --json`                 | `cockpit.get`                   | `session:read`      | Reads one Active Work cockpit item and safe follow-up command hints; requires `context:read` and does not execute live controls.                 |
 | `relay-ide v1 sessions get --id <id> --json`                             | `sessions.get`                  | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly.                                              |
 | `relay-ide v1 sessions screen --id <id> --json`                          | `sessions.screen`               | `session:read`      | Returns a bounded relay-pty/libghostty rendered screen snapshot; tmux-compat and remote-unavailable sessions fail closed with typed errors.      |
@@ -449,24 +382,23 @@ The scoped actor credential slice supports the read-only hub-backed set plus the
 | `relay-ide v1 inbox list --json`                                         | `inbox.list`                    | `inbox:read`        | Lists inbox messages for the matched target session/WorkContext scope; PULL delivery flips `queued → delivered` as a read side effect.           |
 | `relay-ide v1 inbox get --id <id> --json`                                | `inbox.get`                     | `inbox:read`        | Reads one inbox message; scope is checked against the message's own target session/WorkContext; PULL delivery flips `queued → delivered`.        |
 
-The `inbox.list`/`inbox.get` reads require the `inbox:read` capability bit, which is part of the scoped actor credential grant allowlist (alongside `session:read`, `context:read`, `context:write`, `inbox:write`, `artifact:write`). Combined with the `inbox.send`/`inbox.ack`/`inbox.resolve`/`inbox.ignore` and `context.create`/`context.get`/`context.list`/`context.pin`/`context.unpin` verbs below, a single scoped actor credential can run the full agent mail loop (create context, send, read/list, and transition) and subscribe to the `inbox` events topic — no browser token required. Inbox transitions record the acting actor (`transitionedBy`) from `--actor-id`.
+The `inbox.list`/`inbox.get` reads require the `inbox:read` capability bit, which is part of the scoped actor credential grant allowlist (alongside `session:read`, `context:read`, `context:write`, `inbox:write`, `artifact:write`). Combined with the `inbox.send`/`inbox.ack`/`inbox.resolve`/`inbox.ignore` and `context.create`/`context.get`/`context.list`/`context.pin`/`context.unpin` verbs below, a single scoped actor credential can run the full context-inbox lifecycle for an authorized terminal record or WorkContext (create context, send, read/list, and transition) and subscribe to the `inbox` events topic — no browser token required. This is not a conversation surface; agent messages belong in channels. Inbox transitions record the acting actor (`transitionedBy`) from `--actor-id`.
 
 Write allowlist:
 
-| CLI command                                                                           | Stable command id                                                                                | Required capability | Notes                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `relay-ide v1 context create ... --actor-token <token>`                               | `context.create`                                                                                 | `context:write`     | Creates a context packet when the body target scope matches.                                                                                                                                                                                                                                                              |
-| `relay-ide v1 context pin/unpin ... --actor-token <token>`                            | `context.pin` / `context.unpin`                                                                  | `context:write`     | Pins or unpins a context packet for an authorized target.                                                                                                                                                                                                                                                                 |
-| `relay-ide v1 inbox send ... --actor-token <token>`                                   | `inbox.send`                                                                                     | `inbox:write`       | Sends an inbox message only for the matched target session/global session/work-context/repo/task scope.                                                                                                                                                                                                                   |
-| `relay-ide v1 inbox ack/resolve/ignore ... --actor-token <token>`                     | `inbox.ack` / `inbox.resolve` / `inbox.ignore`                                                   | `inbox:write`       | Applies state transitions; message/work-context scope is checked before mutation.                                                                                                                                                                                                                                         |
-| `relay-ide v1 roster register/update-self --input-json '{...}' --actor-token <token>` | `roster.register` / `roster.updateSelf`                                                          | `context:write`     | Self-declared presence overlay (#964). Allowlisted safe fields only; unknown/secret-shaped keys rejected; heartbeat-expiring (TTL); `update-self` is owner-scoped and fails closed `NOT_FOUND`/`FORBIDDEN`.                                                                                                               |
-| `relay-ide v1 automation-runs register/observe/retire ... --actor-token <token>`      | `automation-runs.register` / `automation-runs.observe` / `automation-runs.retire`                | `context:write`     | Watchdog/cron run registry (#959). Secret-shaped fields rejected; WorkContext scope checked when the run carries one; retire is idempotent. Reads (`automation-runs.list`/`automation-runs.get`) require `context:read`.                                                                                                  |
-| `relay-ide v1 pr-overseer register/observe/retire ... --actor-token <token>`          | `pr-overseer.register` / `pr-overseer.observe` / `pr-overseer.retire`                            | `context:write`     | PR/check/review overseer (#960). Secret-shaped fields rejected; `workContextId` immutable across re-register and scope checked when the record carries one; `observe` fetches GitHub via the operator's `gh` and never merges; retire is idempotent. Reads (`pr-overseer.list`/`pr-overseer.get`) require `context:read`. |
-| `relay-ide v1 work-context-artifacts publish/pin/unpin ... --actor-token <token>`     | `work-context-artifacts.publish` / `work-context-artifacts.pin` / `work-context-artifacts.unpin` | `artifact:write`    | Writes artifact-store entries only for matched WorkContext/repo/task metadata; artifact id routes re-check stored metadata before mutation.                                                                                                                                                                               |
-| `relay-ide v1 handoff-artifacts attach ... --actor-token <token>`                     | `handoff-artifacts.attach`                                                                       | `artifact:write`    | Uses the same artifact-store write lane as `work-context-artifacts.publish`.                                                                                                                                                                                                                                              |
-| `relay-ide v1 handoff-artifacts list --work-context-id <id> --json`                   | `handoff-artifacts.list`                                                                         | `session:read`      | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present.                                                                                                                                                                                                |
-| `relay-ide v1 handoff-artifacts show --id <id> --json`                                | `handoff-artifacts.show`                                                                         | `session:read`      | Reads one PipelineHandoffArtifact envelope or safe public copy after metadata-derived WorkContext scope authorization; requires `context:read`.                                                                                                                                                                           |
-| `relay-ide v1 handoff-artifacts copy --id <id> --json`                                | `handoff-artifacts.copy`                                                                         | `session:read`      | Copies only the sanitized public-summary form after metadata-derived WorkContext scope authorization; raw payload export is unsupported and requires `context:read`.                                                                                                                                                      |
+| CLI command                                                                       | Stable command id                                                                                | Required capability | Notes                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `relay-ide v1 context create ... --actor-token <token>`                           | `context.create`                                                                                 | `context:write`     | Creates a context packet when the body target scope matches.                                                                                                                                                                                                                                                              |
+| `relay-ide v1 context pin/unpin ... --actor-token <token>`                        | `context.pin` / `context.unpin`                                                                  | `context:write`     | Pins or unpins a context packet for an authorized target.                                                                                                                                                                                                                                                                 |
+| `relay-ide v1 inbox send ... --actor-token <token>`                               | `inbox.send`                                                                                     | `inbox:write`       | Sends an inbox message only for the matched target session/global session/work-context/repo/task scope.                                                                                                                                                                                                                   |
+| `relay-ide v1 inbox ack/resolve/ignore ... --actor-token <token>`                 | `inbox.ack` / `inbox.resolve` / `inbox.ignore`                                                   | `inbox:write`       | Applies state transitions; message/work-context scope is checked before mutation.                                                                                                                                                                                                                                         |
+| `relay-ide v1 automation-runs register/observe/retire ... --actor-token <token>`  | `automation-runs.register` / `automation-runs.observe` / `automation-runs.retire`                | `context:write`     | Watchdog/cron run registry (#959). Secret-shaped fields rejected; WorkContext scope checked when the run carries one; retire is idempotent. Reads (`automation-runs.list`/`automation-runs.get`) require `context:read`.                                                                                                  |
+| `relay-ide v1 pr-overseer register/observe/retire ... --actor-token <token>`      | `pr-overseer.register` / `pr-overseer.observe` / `pr-overseer.retire`                            | `context:write`     | PR/check/review overseer (#960). Secret-shaped fields rejected; `workContextId` immutable across re-register and scope checked when the record carries one; `observe` fetches GitHub via the operator's `gh` and never merges; retire is idempotent. Reads (`pr-overseer.list`/`pr-overseer.get`) require `context:read`. |
+| `relay-ide v1 work-context-artifacts publish/pin/unpin ... --actor-token <token>` | `work-context-artifacts.publish` / `work-context-artifacts.pin` / `work-context-artifacts.unpin` | `artifact:write`    | Writes artifact-store entries only for matched WorkContext/repo/task metadata; artifact id routes re-check stored metadata before mutation.                                                                                                                                                                               |
+| `relay-ide v1 handoff-artifacts attach ... --actor-token <token>`                 | `handoff-artifacts.attach`                                                                       | `artifact:write`    | Uses the same artifact-store write lane as `work-context-artifacts.publish`.                                                                                                                                                                                                                                              |
+| `relay-ide v1 handoff-artifacts list --work-context-id <id> --json`               | `handoff-artifacts.list`                                                                         | `session:read`      | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present.                                                                                                                                                                                                |
+| `relay-ide v1 handoff-artifacts show --id <id> --json`                            | `handoff-artifacts.show`                                                                         | `session:read`      | Reads one PipelineHandoffArtifact envelope or safe public copy after metadata-derived WorkContext scope authorization; requires `context:read`.                                                                                                                                                                           |
+| `relay-ide v1 handoff-artifacts copy --id <id> --json`                            | `handoff-artifacts.copy`                                                                         | `session:read`      | Copies only the sanitized public-summary form after metadata-derived WorkContext scope authorization; raw payload export is unsupported and requires `context:read`.                                                                                                                                                      |
 
 Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
 
@@ -600,14 +532,14 @@ This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/
 
 `settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API, and they are browser-operator-session-only for now.
 
-| Command                                                    | Current auth boundary    | Side effect | Contract                                                                                                                                                                |
-| ---------------------------------------------------------- | ------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `relay-ide v1 settings get --json`                         | Browser operator session | read        | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
-| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write       | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed.                        |
-| `relay-ide v1 webhooks status --json`                      | Browser operator session | read        | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata.                                                              |
-| `relay-ide v1 webhooks ping --json`                        | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs.                                                                             |
+| Command                                                    | Current auth boundary    | Side effect | Contract                                                                                                                                         |
+| ---------------------------------------------------------- | ------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `relay-ide v1 settings get --json`                         | Browser operator session | read        | Returns only `defaultAgent`, `defaultNotifications`, `renamerTool`, and `updateChannel`, plus redaction metadata.                                |
+| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write       | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
+| `relay-ide v1 webhooks status --json`                      | Browser operator session | read        | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata.                                       |
+| `relay-ide v1 webhooks ping --json`                        | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs.                                                      |
 
-Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
+Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
 
 All responses include redaction metadata. The gateway must never return raw config, bearer/browser/node tokens, GitHub tokens, webhook secrets, Smee URLs, connection strings, or secret-looking values. `webhooks.status` and `webhooks.ping` intentionally expose booleans/status strings instead of `github.webhookSecret` or `github.smeeUrl`.
 
@@ -615,36 +547,70 @@ These routes are mounted under `/cli-gateway`, but they are wired through the br
 
 ## Session descriptors
 
-`nodes list`, `sessions list`, `sessions get`, `sessions create`, `sessions attach`, `sessions detach`, `sessions kill`, and `sessions rename` return existing backend descriptors or lifecycle summaries, wrapped in gateway envelopes. Session descriptors are expected to include the already-available identity and control fields where present:
+`nodes list`, `sessions list`, `sessions get`, `sessions create`,
+`sessions attach`, `sessions detach`, `sessions kill`, and `sessions rename`
+return public terminal descriptors or lifecycle summaries, wrapped in gateway
+envelopes. Private channel-agent runtimes never appear in these results.
+Terminal descriptors include the already-available identity and control fields
+where present:
 
 - `id`, `globalSessionId`, `nodeId`
-- `type`, `agent`, `mode`, `cwd`
+- `type: "terminal"`, `mode: "pty"`, and `cwd`
 - optional `repoPath` / `worktreePath` as context, not identity
 - `sessionEnvelope` with #426 intent/scope/lifecycle/peer identity
-- #470/#493 control summary fields such as `controlMode`, `activeActors`, `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness`, and `controlReason`
+- `controlMode: "human-driven"` plus bounded human terminal-intervention audit
+  fields where present
 
-External brain/agent peer identity is reserved for hub-owned credential/session registry work. v1 currently documents the envelope field but only round-trips `local-user`, `relay-node`, and `unknown` peer identities; routed creates are represented as `relay-node` peers. Adapters must not add impersonation flags such as `--act-as-node` or `--brain`.
+Agent actor identity belongs to scoped credentials and channel profiles, not
+terminal descriptors. Adapters must not add impersonation flags such as
+`--act-as-node` or `--brain`.
 
 ## Session create, attach, and detach
 
-`sessions create` accepts either `--input-json`, `--input-file`, or typed flags. `nodeId` selects routed node creation through `/hub/nodes/:nodeId/sessions`; omitting it uses the current local `/sessions` path.
-
-Web launch parity (#859): the converted browser launch actions use the same stable command id, descriptor, and envelope as this CLI command. `sessionCreateActionDescriptor()` is generated from `relayCommandDefinition('sessions.create')`; `session.new-agent`, `session.new-terminal`, `session.start-on-repo`, and `session.start-work-in-env` attach that descriptor in the action registry. Their input is the `sessions.create` schema / `CreateSessionBody`, success is `RelayCliGatewayEnvelope<SessionSummary>`, and errors use the normal gateway error envelope. `sessionCreateActionAvailability()` carries the shared availability state for missing workspace/cwd/selected environment, offline node, and unsupported capability reasons. Do not document unconverted browser actions as `sessions.create` parity just because they eventually start a session after private branch/worktree/ticket semantics.
+`sessions create` accepts either `--input-json`, `--input-file`, or typed flags.
+It creates terminals only. `nodeId` selects routed node creation through
+`/hub/nodes/:nodeId/sessions`; omitting it uses the current local `/sessions`
+path. Agent conversations start by creating/opening a channel or DM and posting
+a message.
 
 Supported now:
 
-- local session creation using `cwd`, or repo-backed `repoPath` plus optional `worktreePath`
-- optional `displayName` to label the session in session lists and the web UI (defaults to `Agent N` / `Terminal N`)
-- routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
-- routed node creation with the typed `environment` object (see [Typed environment IDs](#typed-environment-ids-626) below)
-- optional `terminalBackend`, with `relay-pty` as the only accepted value; `tmux-compat` fails closed as an unsupported legacy backend
-- `controlMode=agent-driven` only for routed node creation, where hub/node policy and hand-back state can be checked
+- local terminal creation using `cwd`, or repo-backed `repoPath` plus optional
+  `worktreePath`
+- optional `displayName` to label the terminal in session lists and the web UI
+- routed terminal creation with `nodeId`, `cwd`, `type: "terminal"`, and
+  `mode: "pty"`
+- routed creation with the typed `environment` object (see
+  [Typed environment IDs](#typed-environment-ids-626) below)
+- optional `terminalBackend`, with `relay-pty` as the only accepted value;
+  `tmux-compat` fails closed as unsupported legacy state
+- `controlMode: "human-driven"` when an initial mode is supplied
 - descriptor-only attach with `sessions attach --id ... --json`
-- safe detach with `sessions detach --id ... --json`; this resolves the session and releases only the CLI gateway handle, leaving the underlying Relay session/process running
+- safe detach with `sessions detach --id ... --json`; this resolves the
+  terminal and releases only the CLI gateway handle, leaving the process
+  running
+
+Fail-closed current contract:
+
+- `type: "agent"` is rejected;
+- `mode: "web"` is rejected;
+- an agent/provider/role payload cannot turn a terminal create into an agent
+  runtime;
+- local and routed node paths enforce the same terminal-only boundary.
+
+The earlier `agent-driven` / `co-driven` modes and `sessions.handBack` command
+are superseded. They are not compatibility paths for creating or steering an
+agent outside a channel.
 
 ## Ticket and branch workflow session commands
 
-`tickets start-work` and `branches open-session` are stable v1 workflow commands for adapters that want a single backend contract for “resolve this ticket or branch into a worktree and open a Relay session.” They intentionally sit above raw `sessions create`: the CLI resolves the local git branch/worktree policy first, then creates a normal `/sessions` backend session with `repoPath`, `worktreePath`, `branchName`, session options, and optional initial prompt/control handoff metadata. The local `/sessions` path derives `cwd` from the resolved repo/worktree and workflow delegation does not send an explicit `cwd` field.
+`tickets start-work` and `branches open-session` are stable v1 workflow
+commands for adapters that want a single backend contract for “resolve this
+ticket or branch into a worktree and open a Relay terminal.” They intentionally
+sit above raw `sessions create`: the CLI resolves the local git
+branch/worktree policy first, then creates a terminal with `repoPath`,
+`worktreePath`, and `branchName`. Agent work uses the resulting context as a
+channel routing anchor; it does not create an agent participant.
 
 Supported now:
 
@@ -653,8 +619,11 @@ Supported now:
 - worktree policy `reuse-existing` (default), `create-if-missing`, or `reject-if-missing`
 - optional `worktree.worktreePath` for an explicit existing or newly-created worktree path
 - optional dirty/conflict overrides with `worktree.allowDirty` and `worktree.allowConflicted`
-- `session` options forwarded through the existing session-create validator (`type`, `mode`, `agent`, `terminalBackend`, dimensions, continuation policy, `workContextId`, `controlMode`)
-- `prompt.mode="initial-prompt"` to deliver prompt text through the stable `sessions.create.initialPrompt` path; raw PTY prompt injection is deliberately not a gateway contract
+- terminal `session` options forwarded through the existing session-create
+  validator (`type: "terminal"`, `mode: "pty"`, `terminalBackend`,
+  dimensions, `workContextId`, and `controlMode: "human-driven"`)
+- agent/provider options fail the terminal-only session validator; use a
+  channel message for the agent instruction
 
 Minimal examples:
 
@@ -671,8 +640,7 @@ Minimal examples:
     "base": "origin/nightly"
   },
   "worktree": { "mode": "create-if-missing" },
-  "session": { "type": "agent", "agent": "claude" },
-  "prompt": { "mode": "initial-prompt", "prompt": "Work issue #871." }
+  "session": { "type": "terminal", "terminalBackend": "relay-pty" }
 }
 ```
 
@@ -696,7 +664,11 @@ Fail-closed behavior:
 
 ### Typed environment IDs (#626)
 
-`sessions.create` accepts a typed `environment` object (epic #615) so agent tasks reference where work runs by **typed IDs**, not free-form host/path strings. The shape mirrors `EnvironmentOption` in `shared/environment-option.ts` and uses scoped IDs from `shared/identity.ts` plus the canonical `RepoIdentity` from `shared/repo-identity.ts`.
+`sessions.create` accepts a typed `environment` object (epic #615) so terminal
+tasks reference where work runs by **typed IDs**, not free-form host/path
+strings. The shape mirrors `EnvironmentOption` in
+`shared/environment-option.ts` and uses scoped IDs from `shared/identity.ts`
+plus the canonical `RepoIdentity` from `shared/repo-identity.ts`.
 
 ```json
 {
@@ -707,9 +679,8 @@ Fail-closed behavior:
     "benchId": "node-a:%2FUsers%2Fme%2Fcode%2Frelay-ide%2F.worktrees%2F626",
     "cwd": "/Users/me/code/relay-ide/.worktrees/626"
   },
-  "type": "agent",
-  "mode": "pty",
-  "agent": "claude"
+  "type": "terminal",
+  "mode": "pty"
 }
 ```
 
@@ -745,11 +716,12 @@ Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.
 
 Fail-closed examples:
 
-- local create without `repoPath`, `cwd`, or `workspaceTopicId` returns `INVALID_ARGUMENT`
+- local create without `repoPath` or `cwd` returns `INVALID_ARGUMENT`
 - unknown `sessions create` input fields return `INVALID_ARGUMENT` before any backend forwarding
 - local scoped/lifecycle/peer fields (`sessionEnvelope`, `ttlSeconds`, `expiresAt`, `confirmationToken`) return `UNSUPPORTED` until implemented locally
-- `sessionEnvelope.peerIdentity.kind: "agent"` returns `UNSUPPORTED` until hub-owned agent peer identity is implemented
-- local `controlMode=agent-driven` returns `UNSUPPORTED` until local create has the same policy gate as routed creation
+- `type: "agent"` and `mode: "web"` return `INVALID_ARGUMENT` or the
+  corresponding typed unsupported-session error before process creation
+- `controlMode: "agent-driven"` is rejected for new public terminals
 - malformed JSON returns `INVALID_JSON`
 - unknown flags/commands return `INVALID_ARGUMENT`
 
@@ -802,7 +774,11 @@ Exactly one predicate is allowed: `--output-text <text>`, `--idle-ms <ms>`, or `
 
 `sessions.input --wait-for` is a raw PTY-output substring wait. It is not a rendered-screen wait and must not be treated as proof of visible viewport/cursor/title state. A future Boo-style screen wait must be added as a separate stable gateway command/schema before adapters depend on terminal-model semantics.
 
-To steer an interactive agent/TUI — type a prompt and submit it — prefer the typed [`supervisor submit`](#supervisor-typed-actions-and-rmux-mapping-704) primitive over raw `sessions.input` scripts. `supervisor submit --text ...` hides newline/carriage-return weirdness (it appends the submit carriage return itself, so you never send a second `\r`), handles paste-ish/long bodies, optionally clears the current input, and returns structured submission evidence. Raw `sessions.input` is for narrow smoke/debug and emergency fallback.
+To submit text to an interactive program running in a public terminal, prefer
+the typed [`supervisor submit`](#supervisor-typed-actions-704) primitive over
+raw `sessions.input` scripts. This controls terminal bytes only; it does not
+message, resume, or impersonate a channel agent. Agent instructions belong in
+channel messages.
 
 Example:
 
@@ -812,15 +788,21 @@ relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' 
 
 `stream`, `wait`, and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or selected terminal-backend process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
 
-## Provider-native state commands
+## Provider-native state boundary
 
-Provider-native session state adapters are intentionally internal in this slice. `shared/cli-gateway-contract.ts` does not expose stable v1 `providers.*` or `native-sessions.*` commands yet. External adapters must continue to treat missing provider-state verbs as unsupported rather than calling private REST routes or reading provider stores themselves.
+Provider-native state belongs to private channel runtimes and is not a public
+session resource. `shared/cli-gateway-contract.ts` exposes no stable v1
+`providers.*` or `native-sessions.*` commands. External adapters must treat
+those verbs as unsupported rather than calling private REST routes, reading
+provider stores, or reconstructing a standalone agent conversation.
 
-When promoted to v1, the surface must preserve the same boundary as `AgentHarnessStateAdapter`: detection/list/import/read-state are read-only, snapshots are redacted and bounded, and open/resume returns copyable argv data without executing the provider CLI.
+## Supervisor typed actions (#704)
 
-## Supervisor typed actions and rmux mapping (#704)
-
-The stable supervisor surface is Relay-owned command API, not raw PTY, tmux, or rmux API. The implementation source of truth is `shared/cli-gateway-contract.ts`, with shared response types in `shared/supervisor-actions.ts` and server execution in `server/supervisor-actions.ts`.
+The stable supervisor surface is Relay-owned command API, not a raw terminal
+backend API. The implementation source of truth is
+`shared/cli-gateway-contract.ts`, with shared response types in
+`shared/supervisor-actions.ts` and server execution in
+`server/supervisor-actions.ts`.
 
 Commands:
 
@@ -839,15 +821,15 @@ Commands:
 Inputs:
 
 - `supervisor.sessions` takes no input and returns `{ command: "supervisor.sessions", sessions, count }`. Each session includes `sessionId`, optional `globalSessionId`/`nodeId`, `mode`, `status`, optional `controlMode`/`controlFreshness`, and `actions.sendText` / `actions.sendKey` / `actions.submit` eligibility. Ineligible actions carry a `reasonCode` such as `SESSION_DISCONNECTED`, `SESSION_MODE_UNSUPPORTED`, `CONTROL_STATE_STALE`, or `CONTROL_STATE_UNKNOWN`.
-- `supervisor.snapshot` requires `id`. Optional `--expected-control-mode <agent-driven|human-driven|co-driven>` and `--latest-seen-intervention-event-id <event-id>` are preflight guards. Stale or mismatched control state returns `CONTROL_STATE_STALE`; an unacknowledged newer intervention returns `INTERVENTION_ACK_REQUIRED`. The snapshot path is read-only: it never writes to the session, accepts prompts, or stores raw prompt/transcript/PTY/provider state.
+- `supervisor.snapshot` requires `id`. Optional `--expected-control-mode human-driven` and `--latest-seen-intervention-event-id <event-id>` are preflight guards. Stale or mismatched terminal state returns `CONTROL_STATE_STALE`; an unacknowledged newer intervention returns `INTERVENTION_ACK_REQUIRED`. The snapshot path is read-only: it never writes to the session, accepts prompts, or stores raw prompt/transcript/PTY/provider state.
 - `supervisor.sendText` requires `text` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, or comma-separated `--target-ids`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Text must be non-empty literal text, at most 1000 characters, with no CR/LF, ESC, DEL, or control characters except tab. Use `supervisor.submit` for Enter instead of embedding a newline.
 - `supervisor.sendKey` requires `key` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, comma-separated `--target-ids`, and `--key`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Keys are a closed enum only: `escape`, `tab`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `ctrl-c`, `ctrl-d`, `home`, `end`, `page-up`, and `page-down`. Aliases, function keys, raw escape/control strings, newlines, and arbitrary byte payloads are rejected; Relay maps the canonical name to substrate bytes behind the capability/control/audit boundary.
-- `supervisor.submit` is the typed submit primitive for agent/TUI steering (#958). It requires `id` or `targetIds` and accepts optional `actor` metadata. It owns the submission: it always ends with a single carriage return (Enter, `\r`) — the carriage return the browser Enter key sends — so callers never need to send a second raw `\r`. (The pre-#958 behavior wrote a bare line feed `\n`, which is exactly what left text sitting unsubmitted in carriage-return-driven TUIs.) Optional fields:
+- `supervisor.submit` is the typed submit primitive for interactive terminal/TUI input (#958). It requires `id` or `targetIds` and accepts optional `actor` metadata. It owns the submission: it always ends with a single carriage return (Enter, `\r`) — the carriage return the browser Enter key sends — so callers never need to send a second raw `\r`. (The pre-#958 behavior wrote a bare line feed `\n`, which is exactly what left text sitting unsubmitted in carriage-return-driven TUIs.) Optional fields:
   - `text` (CLI `--text`, also accepted via `--input-json`): a message body to type before submitting. Unlike `send-text`, it may contain newlines (multi-line prompts) and tabs, up to 100,000 characters; embedded `\r\n` / lone `\r` are normalized to `\n` and trailing newlines are stripped before the owned carriage return is appended. ESC/DEL and other control bytes are still rejected (`TEXT_MUST_BE_LITERAL`) so this stays a typed text primitive, not a raw byte-injection API. Supplying `text` additionally requires the `tab:intervention:send-text` capability.
   - `clearInput` (CLI `--clear-input`): clears the current input buffer first (best-effort Ctrl-U), so a partially-typed prompt is replaced rather than appended to.
   - `paste` (CLI `--paste`): wraps the body in DEC 2004 bracketed-paste markers so long/multi-line content is inserted as one paste; recommended for paste-ish bodies.
   - `dryRun` (CLI `--dry-run`): previews the planned submission — eligibility, ordered `steps`, and `charsAccepted`/`plannedBytes` — without writing to the PTY or emitting an audit intervention.
-  - Each `data.results[]` entry carries submission evidence: `charsAccepted`, `bytesAccepted`, `submitPerformed`, `submitKey` (`enter`), `clearInputPerformed`, `pasteBracketed`, `steps` (`clear-input` → `type-text` → `submit`), `bytesWritten` / `plannedBytes`, and a best-effort `postSubmit` observation (`{ available, agentState, idle }`) derived from the session snapshot when the backend exposes a classified state.
+  - Each `data.results[]` entry carries submission evidence: `charsAccepted`, `bytesAccepted`, `submitPerformed`, `submitKey` (`enter`), `clearInputPerformed`, `pasteBracketed`, `steps` (`clear-input` → `type-text` → `submit`), `bytesWritten` / `plannedBytes`, and a best-effort `postSubmit` observation (`{ available, activityState, idle }`) derived from the terminal snapshot when the backend exposes a classified state.
 
 Successful action envelope shape:
 
@@ -869,8 +851,8 @@ Successful action envelope shape:
         "action": "sendText",
         "bytesWritten": 5,
         "interventionEventId": "evt-sess-1",
-        "controlModeBefore": "agent-driven",
-        "controlModeAfter": "co-driven"
+        "controlModeBefore": "human-driven",
+        "controlModeAfter": "human-driven"
       }
     ],
     "counts": {
@@ -916,9 +898,16 @@ Action failure semantics:
 
 This is deliberately distinct from raw PTY input and terminal substrates:
 
-- `sessions input` (and the underlying `POST /sessions/:id/input`) remains the raw PTY input path for narrow smoke/debug use. It writes bytes through the temporary attach path, can wait for output markers, and is useful for adapter handshake tests, but it is **not** the blessed typed agent-to-agent command API. To steer a running agent/TUI — type a prompt and have it submit — use `supervisor submit --text ...` (#958), which owns the carriage return and returns structured submission evidence; the old raw-input pattern of "POST text with a newline, then POST a second `\r` to make it submit" is an emergency fallback only.
+- `sessions input` (and the underlying `POST /sessions/:id/input`) remains the
+  raw PTY input path for narrow terminal smoke/debug use. `supervisor submit`
+  is a safer typed terminal intervention, but neither path is agent-to-agent
+  messaging. To steer a channel agent, post to its channel or DM.
 - Existing browser/human PTY input remains a different event/API path from supervisor automation interventions.
-- Historical rmux/tmux prototypes may appear in design notes, but adapters must not call rmux actions, rmux broadcast, tmux send-keys, or shell commands as stable Relay API. Add or extend a Relay-owned `relay-ide v1 supervisor ... --json` command first, then map that typed command to the supported substrate behind Relay capability, control-state, and hashes-only audit checks.
+- Adapters must not call backend-private actions or shell commands as stable
+  Relay API. Add or extend a Relay-owned
+  `relay-ide v1 supervisor ... --json` command first, then map that typed
+  command to the supported `relay-pty` substrate behind Relay capability,
+  control-state, and hashes-only audit checks.
 
 ## Read-only file RPC commands
 
@@ -1016,21 +1005,36 @@ Read example:
 
 File commands must surface unavailable node, missing path, denied capability, stale/expired session envelope, and confirmation-required states as typed error envelopes. They must not fall back to local filesystem reads or writes when the scoped file RPC route rejects a request.
 
-## Intervention and hand-back boundaries
+## Human terminal intervention boundary
 
 `sessions interventions` is a bounded metadata read. The v1 contract explicitly marks raw payload and transcript export unavailable. Do not expose human intervention keylogs or full terminal transcripts through this gateway.
 
-`sessions hand-back` requires the latest intervention event id observed by the caller before restoring agent-driven control. Stale, unknown, disconnected, or unacknowledged intervention state returns typed errors instead of resuming blindly.
+The former `sessions hand-back` command is superseded and unsupported. Public
+terminals remain human-driven; there is no agent ownership state to restore.
+Private channel-runtime lifecycle is managed by the channel agent binder, not
+the session gateway.
 
 ## First generated adapter smokes
 
-The first #430 proof intentionally stops at one generated Claude-style tool/function bundle in `shared/cli-gateway-claude-tools.ts`. It reads `shared/cli-gateway-contract.ts` / `relay-ide v1 schema --json` shape and emits Anthropic-compatible tool definitions (`name`, `description`, `input_schema`) for only the hello-world path: `nodes.list`, `sessions.create`, `files.read`, and `sessions.detach`.
+The first #430 proof intentionally stops at one generated Claude-style
+tool/function bundle in `shared/cli-gateway-claude-tools.ts`. It reads
+`shared/cli-gateway-contract.ts` / `relay-ide v1 schema --json` and emits
+Anthropic-compatible tool definitions (`name`, `description`, `input_schema`).
+Its `sessions.create` definition creates a public terminal only.
 
 The Hermes-facing smoke in `shared/cli-gateway-hermes-tools.ts` uses the same contract manifest to emit Hermes tool descriptors (`name`, `description`, `parameters`), MCP descriptors (`name`, `description`, `inputSchema`), and OpenAI-style function descriptors (`type: "function"`, `function.parameters`). Its smoke path adds the now-stable PTY exchange commands: `nodes.list`, `sessions.create`, `files.read`, `sessions.stream`, `sessions.wait`, `sessions.input`, and `sessions.detach`.
 
 The Codex-facing smoke in `shared/cli-gateway-codex-tools.ts` derives the same command subset from the v1 manifest and emits Codex/OpenAI-compatible function descriptors in both common shapes: Chat Completions-style nested tools (`type: "function"`, `function.parameters`) and Responses-style flat function tools (`type: "function"`, `name`, `parameters`). Its fake hub/node example runs only public `relay-ide v1 ... --json` commands: `nodes.list`, scoped `sessions.create`, read-only `files.read`, bounded `sessions.stream`, bounded `sessions.wait`, `sessions.input`, and descriptor-only `sessions.detach`.
 
-These smoke runners are deliberately thin: generated definitions select stable v1 CLI commands, Relay's existing CLI gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, Codex runtime packaging, event subscriptions beyond PTY output, multi-session orchestration, File RPC write/delete/tail, arbitrary exec, stdin-backed adapter streaming, and private node-link shortcuts remain deferred.
+These smoke runners are deliberately thin test/proof helpers for generated CLI
+tool definitions; they are not channel-agent adapters and do not create agent
+conversations. Generated definitions select stable v1 commands, Relay's CLI
+gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains
+descriptor-only so it does not kill the underlying terminal. Packaging these
+generated bundles as standalone integrations, event subscriptions beyond PTY
+output, multi-terminal orchestration, File RPC write/delete/tail, arbitrary
+exec, stdin-backed adapter streaming, and private node-link shortcuts remain
+outside this proof.
 
 ## Events subscription
 
@@ -1043,7 +1047,9 @@ Topics:
 - `audit` — redacted summaries of `tab.mode-changed` and `tab.intervention` envelopes (hash-chained at storage time per #470/#499). Raw intervention payloads, raw keylogs, and full terminal transcripts are never streamed through this gateway.
 - `context` — metadata for context packet create/pin/unpin activity, scoped by WorkContext/session/global session where available.
 - `inbox` — metadata for `inbox.sent` and `inbox.state-changed` frames, including state transitions and redacted target/source summaries.
-- `attention` — metadata for local agent session backend-state transitions (`attention.state-changed`), including derived `needsAttention`/`reasons[]` and repo/session scope hints.
+- `attention` — compatibility metadata for public execution-record state
+  transitions. Channel-agent status comes from channel/roster events, not
+  private runtime ids on this topic.
 - `work-context-artifacts` — metadata for WorkContext artifact publication/pin/export lifecycle events; never raw payload bytes.
 - `handoff-artifacts` — metadata for pipeline handoff artifact attach/list-visible lifecycle events, using the same safe artifact store envelope.
 - `workflow-runs` — metadata for workflow run publication/update events and bounded run state changes.

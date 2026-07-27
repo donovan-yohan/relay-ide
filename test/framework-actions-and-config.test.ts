@@ -15,14 +15,14 @@ const CLAUDE_FRAMEWORK: FrameworkInfo = {
 };
 
 describe('createFrameworkAction', () => {
-  it('builds command palette metadata for a framework session action', async () => {
+  it('builds command palette metadata for a framework chat action', async () => {
     const { createFrameworkAction } =
       await import('../frontend/src/lib/actions/definitions/frameworks.js');
 
     const action = createFrameworkAction(CLAUDE_FRAMEWORK);
 
     expect(action.id).toBe('session.new-claude');
-    expect(action.label).toBe('new claude session');
+    expect(action.label).toBe('open claude chat');
     expect(action.category).toBe('session');
     expect(action.icon).toBe('+');
     expect(action.when?.({ view: 'workspace', workspacePath: '/repo' })).toBe(

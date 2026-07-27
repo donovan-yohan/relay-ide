@@ -81,7 +81,7 @@ function main(): void {
       const created = store.beginStream({
         channelId,
         sender,
-        source: { sessionId: 'seed-session' },
+        source: { runtimeId: 'seed-runtime' },
         text,
         ...(parentMessageId ? { parentMessageId } : {}),
       });
@@ -94,7 +94,7 @@ function main(): void {
       const started = store.beginStream({
         channelId,
         sender,
-        source: { sessionId: 'seed-session' },
+        source: { runtimeId: 'seed-runtime' },
         text: '',
         ...(parentMessageId ? { parentMessageId } : {}),
       });

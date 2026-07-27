@@ -34,8 +34,6 @@ import type {
 } from './work-context.js';
 import type { WorkbenchBlockEnvironmentRef } from './workbench-block-environment.js';
 import type { FileResourceRef } from './file-resource-ref.js';
-import type { PromptFanoutFixtureKey } from './prompt-fanout-fixtures.js';
-import type { PromptFanoutRun } from './prompt-fanout-run.js';
 
 // ---------------------------------------------------------------------------
 // Re-exported re-used types for convenience
@@ -69,23 +67,11 @@ export function isFileResourceRef(
 // Placeholder ref types (not yet defined elsewhere in shared/)
 // ---------------------------------------------------------------------------
 
-/**
- * ActorRef — opaque reference to a WorkContextActor.
- * TODO(slice-2+): promote to shared/work-context.ts once the actor
- * persistence layer is wired. For now, an id scoped to the owning WorkContext.
- */
+/** Opaque actor identity used by audited workbench proposal contracts. */
 export interface ActorRef {
   kind: 'actor';
   id: string;
-  /** Optional human-readable label for debugging / UI display. */
   displayName?: string;
-  /**
-   * The live session backing this actor, if one exists.
-   * AgentBlock uses sessionRef.sessionId (and sessionRef.globalSessionId when
-   * available) to connect ChatView to the correct WebSocket endpoint.
-   * Optional because not every actor has an attached live session at all times.
-   */
-  sessionRef?: SessionRef;
 }
 
 /**
@@ -129,8 +115,6 @@ export type JsonValue =
  */
 export type WorkbenchBlockKind =
   | 'terminal'
-  | 'agent'
-  | 'prompt-fanout'
   | 'work-context'
   | 'file'
   | 'artifact'
@@ -184,34 +168,6 @@ export interface TerminalBlockDescriptor extends WorkbenchBlockDescriptorBase {
      * tabKind + cwd, etc.).
      */
     sessionRef: SessionRef;
-  };
-}
-
-/** Renders an agent session (Claude Code, Codex, OpenCode, Hermes, custom). */
-export interface AgentBlockDescriptor extends WorkbenchBlockDescriptorBase {
-  kind: 'agent';
-  meta: {
-    /**
-     * Reference to the actor driving this agent session.
-     * Uses the local `ActorRef` placeholder — see note above.
-     */
-    actorRef: ActorRef;
-  };
-}
-
-/** Renders a mock PromptFanoutRun comparison across selected targets. */
-export interface PromptFanoutBlockDescriptor
-  extends WorkbenchBlockDescriptorBase {
-  kind: 'prompt-fanout';
-  meta: {
-    /** Inline run payload for mock/API-backed shells. */
-    run?: PromptFanoutRun;
-    /** Fixture key used when no inline run is supplied. */
-    fixture?: PromptFanoutFixtureKey;
-    /** Force the renderer's loading state for testable shell coverage. */
-    loading?: boolean;
-    /** Explicitly marks this block as dry-run only; no terminal send path. */
-    dryRunOnly?: boolean;
   };
 }
 
@@ -305,8 +261,6 @@ export interface CustomBlockDescriptor extends WorkbenchBlockDescriptorBase {
  */
 export type WorkbenchBlockDescriptor =
   | TerminalBlockDescriptor
-  | AgentBlockDescriptor
-  | PromptFanoutBlockDescriptor
   | WorkContextBlockDescriptor
   | FileBlockDescriptor
   | ArtifactBlockDescriptor

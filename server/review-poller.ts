@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { loadConfig, saveConfig } from './config.js';
 import { extractOwnerRepo } from './git.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
-import type { Config, WorkspaceSettings } from './types.js';
+import type { Config } from './types.js';
 import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -18,13 +18,6 @@ const logger = createLogger('review-poller');
 export interface ReviewPollerDeps {
   configPath: string;
   getWorkspacePaths: () => string[];
-  getRepoSettings: (repoPath: string) => WorkspaceSettings | undefined;
-  createSession: (opts: {
-    repoPath: string;
-    worktreePath: string;
-    branchName: string;
-    initialPrompt?: string;
-  }) => Promise<void>;
   broadcastEvent: (event: string, data?: Record<string, unknown>) => void;
   execAsync?: typeof execFileAsync;
 }
@@ -180,11 +173,10 @@ async function fetchReviewNotifications(
   }
 }
 
-/** Processes a single PR notification: fetches branch, creates worktree, optionally starts session. */
+/** Processes a single PR notification: fetches its branch and creates a worktree. */
 async function processNotification(
   notification: GhNotification,
   deps: ReviewPollerDeps,
-  config: Config,
   exec: typeof execFileAsync
 ): Promise<void> {
   if (notification.subject.type !== 'PullRequest') return;
@@ -236,20 +228,6 @@ async function processNotification(
 
   if (result.existing) {
     return;
-  }
-
-  const settings = deps.getRepoSettings(repoPath);
-  if (config.automations?.autoReviewOnCheckout && settings?.promptCodeReview) {
-    try {
-      await deps.createSession({
-        repoPath,
-        worktreePath: result.worktreePath,
-        branchName: localBranch,
-        initialPrompt: settings.promptCodeReview,
-      });
-    } catch (err) {
-      logger.warn(`Failed to create review session for PR #${prNumber}:`, err);
-    }
   }
 
   deps.broadcastEvent('review-checkout', {
@@ -310,7 +288,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
     );
 
     for (const notification of newNotifications) {
-      await processNotification(notification, deps, config, exec);
+      await processNotification(notification, deps, exec);
     }
 
     savePollTimestamp(deps.configPath, pollStartTimestamp);

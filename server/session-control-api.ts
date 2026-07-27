@@ -1,15 +1,12 @@
 import type { Request } from 'express';
 import type {
   ControlActor,
-  ControlFreshness,
-  ControlMode,
   InterventionRecord,
 } from '../shared/control-state.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 export const CONTROL_READ_CAPABILITY = 'session:read' as const;
 export const INTERVENTION_READ_CAPABILITY = 'tab:intervention:read' as const;
-export const CONTROL_WRITE_CAPABILITY = 'tab:mode:set-agent' as const;
 export const CONTROL_SESSION_CAPABILITY = 'session:attach' as const;
 export const CONTROL_KILL_CAPABILITY = 'session:control:kill' as const;
 export const CONTROL_RENAME_CAPABILITY = 'session:control:rename' as const;
@@ -31,26 +28,11 @@ export interface SessionControlError {
     | 'SESSION_NOT_FOUND'
     | 'SESSION_DISCONNECTED'
     | 'CONTROL_STATE_STALE'
-    | 'CONTROL_STATE_UNKNOWN'
-    | 'HAND_BACK_ACK_REQUIRED'
-    | 'STALE_INTERVENTION_ACK'
-    | 'NO_UNACKED_HUMAN_INTERVENTION';
+    | 'CONTROL_STATE_UNKNOWN';
   message: string;
   retryable: boolean;
   details?: Record<string, unknown>;
 }
-
-export interface HandBackSessionSnapshot {
-  id: string;
-  status?: 'active' | 'disconnected';
-  controlMode?: ControlMode;
-  controlFreshness?: ControlFreshness;
-  lastInterventionEventId?: string | null;
-}
-
-export type HandBackValidationResult =
-  | { ok: true }
-  | { ok: false; error: SessionControlError };
 
 export interface InterventionReadResponse {
   interventions: InterventionRecord[];
@@ -117,7 +99,10 @@ export function capabilitiesDecisionFromRequest(
     if (decision.decision !== 'allow') return decision;
     firstAllow ??= decision;
   }
-  return firstAllow ?? evaluateControlCapabilityPlaceholder(header, CONTROL_READ_CAPABILITY);
+  return (
+    firstAllow ??
+    evaluateControlCapabilityPlaceholder(header, CONTROL_READ_CAPABILITY)
+  );
 }
 
 export function errorStatus(error: SessionControlError): number {
@@ -126,8 +111,6 @@ export function errorStatus(error: SessionControlError): number {
       return 403;
     case 'SESSION_NOT_FOUND':
       return 404;
-    case 'HAND_BACK_ACK_REQUIRED':
-      return 400;
     default:
       return 409;
   }
@@ -139,7 +122,8 @@ export function capabilityError(
   return {
     code: 'FORBIDDEN',
     reasonCode: 'CAPABILITY_REQUIRED',
-    message: decision.message ?? `missing required capability: ${decision.capability}`,
+    message:
+      decision.message ?? `missing required capability: ${decision.capability}`,
     retryable: false,
     details: {
       capability: decision.capability,
@@ -179,149 +163,15 @@ export function toInterventionReadResponse(input: {
   };
 }
 
-function sessionControlError(
-  reasonCode: SessionControlError['reasonCode'],
-  message: string,
-  details?: Record<string, unknown>
-): SessionControlError {
-  const code: SessionControlError['code'] =
-    reasonCode === 'SESSION_NOT_FOUND'
-      ? 'NOT_FOUND'
-      : reasonCode === 'HAND_BACK_ACK_REQUIRED'
-        ? 'INVALID_REQUEST'
-        : 'SESSION_CONFLICT';
-  return {
-    code,
-    reasonCode,
-    message,
-    retryable: false,
-    ...(details ? { details } : {}),
-  };
-}
-
-export function validateAgentHandBackAck(input: {
-  session: HandBackSessionSnapshot | undefined;
-  latestSeenInterventionEventId?: string;
-  unackedHumanInterventions: InterventionRecord[];
-}): HandBackValidationResult {
-  if (!input.session) {
-    return {
-      ok: false,
-      error: sessionControlError('SESSION_NOT_FOUND', 'session was not found'),
-    };
-  }
-
-  if (input.session.status === 'disconnected') {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'SESSION_DISCONNECTED',
-        'cannot hand back control for a disconnected session',
-        { sessionId: input.session.id }
-      ),
-    };
-  }
-
-  if (input.session.controlFreshness === 'stale') {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'CONTROL_STATE_STALE',
-        'cannot hand back control from stale control state',
-        { sessionId: input.session.id }
-      ),
-    };
-  }
-
-  if (input.session.controlFreshness !== 'fresh') {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'CONTROL_STATE_UNKNOWN',
-        'cannot hand back control from unknown control state',
-        { sessionId: input.session.id }
-      ),
-    };
-  }
-
-  const latest = input.session.lastInterventionEventId;
-  if (!input.latestSeenInterventionEventId) {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'HAND_BACK_ACK_REQUIRED',
-        'latestSeenInterventionEventId is required to hand back agent control',
-        { sessionId: input.session.id, latestInterventionEventId: latest ?? null }
-      ),
-    };
-  }
-
-  if (!latest || input.latestSeenInterventionEventId !== latest) {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'STALE_INTERVENTION_ACK',
-        'latestSeenInterventionEventId does not match the latest intervention event',
-        {
-          sessionId: input.session.id,
-          latestInterventionEventId: latest ?? null,
-          latestSeenInterventionEventId: input.latestSeenInterventionEventId,
-        }
-      ),
-    };
-  }
-
-  if (input.unackedHumanInterventions.length === 0) {
-    return {
-      ok: false,
-      error: sessionControlError(
-        'NO_UNACKED_HUMAN_INTERVENTION',
-        'no unacked human intervention is pending for hand-back',
-        { sessionId: input.session.id, latestInterventionEventId: latest }
-      ),
-    };
-  }
-
-  return { ok: true };
-}
-
-export function createAgentDrivenInitialControlState(input: {
-  workerId: string;
-  displayName?: string;
-}): {
-  controlMode: 'agent-driven';
-  activeActors: ControlActor[];
-  activeWorker: ControlActor;
-  lastInterventionAt: null;
-  lastInterventionBy: null;
-  lastInterventionEventId: null;
-  controlFreshness: 'fresh';
-  controlReason: string;
-} {
-  const activeWorker: ControlActor = {
-    kind: 'agent',
-    id: input.workerId,
-    ...(input.displayName ? { displayName: input.displayName } : {}),
-  };
-  return {
-    controlMode: 'agent-driven',
-    activeActors: [activeWorker],
-    activeWorker,
-    lastInterventionAt: null,
-    lastInterventionBy: null,
-    lastInterventionEventId: null,
-    controlFreshness: 'fresh',
-    controlReason: 'requested-initial-agent-driven',
-  };
-}
-
-export function createHumanDrivenInitialControlState(input: {
-  actorId?: string;
-  displayName?: string;
-  nodeId?: string;
-  sessionId?: string;
-  reason?: string;
-} = {}): {
+export function createHumanDrivenInitialControlState(
+  input: {
+    actorId?: string;
+    displayName?: string;
+    nodeId?: string;
+    sessionId?: string;
+    reason?: string;
+  } = {}
+): {
   controlMode: 'human-driven';
   activeActors: ControlActor[];
   lastInterventionAt: null;
@@ -362,8 +212,10 @@ export function actorFromRequestBody(value: unknown): ControlActor | undefined {
   }
   const actor: ControlActor = { kind: record['kind'] };
   if (typeof record['id'] === 'string') actor.id = record['id'];
-  if (typeof record['displayName'] === 'string') actor.displayName = record['displayName'];
+  if (typeof record['displayName'] === 'string')
+    actor.displayName = record['displayName'];
   if (typeof record['nodeId'] === 'string') actor.nodeId = record['nodeId'];
-  if (typeof record['sessionId'] === 'string') actor.sessionId = record['sessionId'];
+  if (typeof record['sessionId'] === 'string')
+    actor.sessionId = record['sessionId'];
   return actor;
 }

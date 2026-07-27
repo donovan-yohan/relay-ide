@@ -1,29 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { InterventionRecord } from '../shared/control-state.js';
-import type { SessionSummary } from '../frontend/src/lib/types.js';
 import {
-  canHandBackToAgent,
-  controlBadgeView,
+  interventionLabel,
+  interventionTitle,
   mergeInterventions,
 } from '../frontend/src/lib/control-display.js';
 
-const session = (overrides: Partial<SessionSummary>): SessionSummary => ({
-  id: 's1',
-  type: 'agent',
-  agent: 'codex',
-  repoName: 'relay-ide',
-  repoPath: '/repo/relay-ide',
-  worktreePath: null,
-  cwd: '/repo/relay-ide',
-  branchName: 'nightly',
-  displayName: 'agent tab',
-  createdAt: '2026-05-16T00:00:00.000Z',
-  lastActivity: '2026-05-16T00:00:00.000Z',
-  idle: false,
-  ...overrides,
-});
-
-const intervention = (overrides: Partial<InterventionRecord>): InterventionRecord => ({
+const intervention = (
+  overrides: Partial<InterventionRecord>
+): InterventionRecord => ({
   id: 'event-1',
   sessionId: 's1',
   tabId: 's1',
@@ -39,105 +24,27 @@ const intervention = (overrides: Partial<InterventionRecord>): InterventionRecor
     hashSha256: 'abc',
     classes: ['input'],
   },
-  modeBefore: 'agent-driven',
-  modeAfter: 'co-driven',
+  modeBefore: 'human-driven',
   ...overrides,
 });
 
-describe('control badge view', () => {
-  it('maps fresh control modes to compact badge labels', () => {
-    expect(
-      controlBadgeView(
-        session({
-          controlMode: 'agent-driven',
-          controlFreshness: 'fresh',
-          activeActors: [{ kind: 'agent', displayName: 'codex' }],
-        })
-      ).label
-    ).toBe('agent');
-    expect(
-      controlBadgeView(
-        session({
-          controlMode: 'human-driven',
-          controlFreshness: 'fresh',
-          activeActors: [{ kind: 'human', displayName: 'Kyle' }],
-        })
-      ).label
-    ).toBe('human');
-    expect(
-      controlBadgeView(
-        session({
-          controlMode: 'co-driven',
-          controlFreshness: 'fresh',
-          activeActors: [
-            { kind: 'agent', displayName: 'codex' },
-            { kind: 'human', displayName: 'Kyle' },
-          ],
-        })
-      ).label
-    ).toBe('co');
-  });
-
-  it('renders stale and unknown as control-state caution, not repo failures', () => {
-    expect(
-      controlBadgeView(
-        session({
-          controlMode: 'agent-driven',
-          controlFreshness: 'stale',
-          activeActors: [{ kind: 'agent', displayName: 'codex' }],
-        })
-      ).mode
-    ).toBe('stale');
-    expect(controlBadgeView(session({})).mode).toBe('unknown');
-  });
-
-  it('keeps remote/free tab details independent of repo binding', () => {
-    const view = controlBadgeView(
-      session({
-        nodeId: 'remote-a',
-        repoPath: undefined,
-        worktreePath: undefined,
-        cwd: '/tmp/free-shell',
-        controlMode: 'co-driven',
-        controlFreshness: 'fresh',
-        activeActors: [{ kind: 'human', displayName: 'browser user' }],
-      }),
-      { label: 'remote box', status: 'online' }
+describe('intervention display helpers', () => {
+  it('labels terminal intervention kinds without ownership-mode copy', () => {
+    expect(interventionLabel(intervention({ kind: 'human-input' }))).toBe(
+      'input'
     );
-    expect(view.nodeSummary).toBe('remote box (online)');
-    expect(view.title).not.toContain('/repo/relay-ide');
-  });
-});
-
-describe('intervention control helpers', () => {
-  it('only enables hand-back when recent human control is acknowledged on fresh local state', () => {
     expect(
-      canHandBackToAgent(
-        session({
-          controlMode: 'co-driven',
-          controlFreshness: 'fresh',
-          lastInterventionEventId: 'event-1',
+      interventionLabel(
+        intervention({
+          source: 'supervisor-action',
+          kind: 'supervisor-send-text',
         })
       )
-    ).toBe(true);
-    expect(
-      canHandBackToAgent(
-        session({
-          controlMode: 'co-driven',
-          controlFreshness: 'stale',
-          lastInterventionEventId: 'event-1',
-        })
-      )
-    ).toBe(false);
-    expect(
-      canHandBackToAgent(
-        session({
-          controlMode: 'agent-driven',
-          controlFreshness: 'fresh',
-          lastInterventionEventId: 'event-1',
-        })
-      )
-    ).toBe(false);
+    ).toBe('sent text');
+    const title = interventionTitle(intervention({ payloadPreview: 'yes' }));
+    expect(title).toContain('input by Kyle');
+    expect(title).toContain('payload redacted');
+    expect(title).not.toContain('driven');
   });
 
   it('dedupes and sorts interventions newest first', () => {

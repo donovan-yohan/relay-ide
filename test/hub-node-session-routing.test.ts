@@ -212,7 +212,6 @@ function remoteSession(nodeId: string): SessionSummary {
   return {
     id: 'remote-session-1',
     type: 'terminal',
-    agent: 'claude',
     mode: 'pty',
     repoPath: '/srv/relay-ide',
     worktreePath: null,
@@ -231,7 +230,7 @@ function remoteSession(nodeId: string): SessionSummary {
     tmuxSessionName: 'relay-ide-remote-session-1',
     status: 'active',
     needsBranchRename: false,
-    agentState: 'idle',
+    activityState: 'idle',
   };
 }
 
@@ -256,20 +255,22 @@ function grantNodeCapabilitiesForTest(
   nodeId: string,
   capabilities: RelayCapabilityBit[]
 ): void {
-  const state = (registry as unknown as {
-    state: {
-      nodes: Array<{
-        nodeId: string;
-        acl?: {
-          grants: {
-            allowed: RelayCapabilityBit[];
-            requiresConfirmation: RelayCapabilityBit[];
+  const state = (
+    registry as unknown as {
+      state: {
+        nodes: Array<{
+          nodeId: string;
+          acl?: {
+            grants: {
+              allowed: RelayCapabilityBit[];
+              requiresConfirmation: RelayCapabilityBit[];
+            };
+            lifecycle: { updatedAt: string };
           };
-          lifecycle: { updatedAt: string };
-        };
-      }>;
-    };
-  }).state;
+        }>;
+      };
+    }
+  ).state;
   const node = state.nodes.find((candidate) => candidate.nodeId === nodeId);
   expect(node?.acl).toBeDefined();
   for (const capability of capabilities) {
@@ -344,7 +345,9 @@ describe('hub-routed node session create and attach', () => {
             next();
             return;
           }
-          res.status(401).json({ error: 'actor command route binding required' });
+          res
+            .status(401)
+            .json({ error: 'actor command route binding required' });
           return;
         }
         cliGatewayAuth(req, res, next);
@@ -460,11 +463,14 @@ describe('hub-routed node session create and attach', () => {
     );
     const before = sessionEnvelopes.read(`${nodeId}:remote-session-1`);
 
-    const res = await fetch(`${base}/hub/scoped-sessions/remote-session-1/renew`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
-    });
+    const res = await fetch(
+      `${base}/hub/scoped-sessions/remote-session-1/renew`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
+      }
+    );
 
     expect(res.status).toBe(200);
     const payload = (await res.json()) as { session: { expiresAt: string } };
@@ -513,17 +519,23 @@ describe('hub-routed node session create and attach', () => {
       })
     );
 
-    const res = await fetch(`${base}/hub/scoped-sessions/policy-renew-route/renew`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
-    });
+    const res = await fetch(
+      `${base}/hub/scoped-sessions/policy-renew-route/renew`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
+      }
+    );
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
       error: {
         code: 'NOT_FOUND',
-        details: { reasonCode: 'POLICY_NODE_NOT_PAIRED', requiredBits: ['session:attach'] },
+        details: {
+          reasonCode: 'POLICY_NODE_NOT_PAIRED',
+          requiredBits: ['session:attach'],
+        },
       },
     });
     expect(sessionEnvelopes.read('policy-renew-route', nodeId)?.expiresAt).toBe(
@@ -547,11 +559,14 @@ describe('hub-routed node session create and attach', () => {
       );
     }
 
-    const res = await fetch(`${base}/hub/scoped-sessions/duplicate-renew-route/renew`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ ttlSeconds: 300 }),
-    });
+    const res = await fetch(
+      `${base}/hub/scoped-sessions/duplicate-renew-route/renew`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ ttlSeconds: 300 }),
+      }
+    );
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -577,11 +592,14 @@ describe('hub-routed node session create and attach', () => {
       })
     );
 
-    const res = await fetch(`${base}/hub/scoped-sessions/overflow-renew-route/renew`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ nodeId, ttlSeconds: Number.MAX_SAFE_INTEGER }),
-    });
+    const res = await fetch(
+      `${base}/hub/scoped-sessions/overflow-renew-route/renew`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ nodeId, ttlSeconds: Number.MAX_SAFE_INTEGER }),
+      }
+    );
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -615,22 +633,32 @@ describe('hub-routed node session create and attach', () => {
         })
       );
     }
-    sessionEnvelopes.revoke('revoked-renew-route', { nodeId, reason: 'test-revoked' });
+    sessionEnvelopes.revoke('revoked-renew-route', {
+      nodeId,
+      reason: 'test-revoked',
+    });
 
     async function renew(sessionId: string, body: Record<string, unknown>) {
-      const res = await fetch(`${base}/hub/scoped-sessions/${sessionId}/renew`, {
-        method: 'POST',
-        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const res = await fetch(
+        `${base}/hub/scoped-sessions/${sessionId}/renew`,
+        {
+          method: 'POST',
+          headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      );
       return { status: res.status, payload: await res.json() };
     }
 
-    await expect(renew('expired-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+    await expect(
+      renew('expired-renew-route', { nodeId, ttlSeconds: 300 })
+    ).resolves.toMatchObject({
       status: 403,
       payload: { error: { code: 'SESSION_EXPIRED' } },
     });
-    await expect(renew('revoked-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+    await expect(
+      renew('revoked-renew-route', { nodeId, ttlSeconds: 300 })
+    ).resolves.toMatchObject({
       status: 403,
       payload: { error: { code: 'SESSION_REVOKED' } },
     });
@@ -640,23 +668,44 @@ describe('hub-routed node session create and attach', () => {
       status: 403,
       payload: { error: { code: 'SESSION_MISMATCH' } },
     });
-    await expect(renew('nonrenew-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+    await expect(
+      renew('nonrenew-renew-route', { nodeId, ttlSeconds: 300 })
+    ).resolves.toMatchObject({
       status: 403,
       payload: { error: { code: 'SESSION_NON_RENEWABLE' } },
     });
     await expect(
-      renew('authority-renew-route', { nodeId, ttlSeconds: 300, scope: { kind: 'node-cwd' } })
+      renew('authority-renew-route', {
+        nodeId,
+        ttlSeconds: 300,
+        scope: { kind: 'node-cwd' },
+      })
     ).resolves.toMatchObject({
       status: 403,
       payload: { error: { code: 'SESSION_MISMATCH' } },
     });
     expect(auditEntries).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ eventType: 'expiry', reasonCode: 'SESSION_EXPIRED' }),
-        expect.objectContaining({ eventType: 'revocation', reasonCode: 'SESSION_REVOKED' }),
-        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_NODE_MISMATCH' }),
-        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_NON_RENEWABLE' }),
-        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_RENEW_AUTHORITY_IMMUTABLE' }),
+        expect.objectContaining({
+          eventType: 'expiry',
+          reasonCode: 'SESSION_EXPIRED',
+        }),
+        expect.objectContaining({
+          eventType: 'revocation',
+          reasonCode: 'SESSION_REVOKED',
+        }),
+        expect.objectContaining({
+          eventType: 'denial',
+          reasonCode: 'SESSION_NODE_MISMATCH',
+        }),
+        expect.objectContaining({
+          eventType: 'denial',
+          reasonCode: 'SESSION_NON_RENEWABLE',
+        }),
+        expect.objectContaining({
+          eventType: 'denial',
+          reasonCode: 'SESSION_RENEW_AUTHORITY_IMMUTABLE',
+        }),
       ])
     );
   });
@@ -691,7 +740,7 @@ describe('hub-routed node session create and attach', () => {
     });
   });
 
-  it('defaults routed v1 creates to agent and forwards only sanitized fields', async () => {
+  it('defaults routed v1 creates to terminal and forwards only sanitized fields', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
@@ -718,9 +767,11 @@ describe('hub-routed node session create and attach', () => {
       nodeId,
       channel: 'rpc',
       type: 'sessions.create',
-      payload: { repoPath: '/srv/relay-ide', type: 'agent' },
+      payload: { repoPath: '/srv/relay-ide', type: 'terminal' },
     });
-    expect(request.payload as Record<string, unknown>).not.toHaveProperty('nodeId');
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'nodeId'
+    );
     nodeWs.send(
       JSON.stringify({
         protocol: request.protocol,
@@ -733,8 +784,8 @@ describe('hub-routed node session create and attach', () => {
         payload: {
           session: {
             ...remoteSession(nodeId),
-            type: 'agent',
-            displayName: 'relay-ide agent',
+            type: 'terminal',
+            displayName: 'relay-ide terminal',
           },
         },
       })
@@ -742,7 +793,7 @@ describe('hub-routed node session create and attach', () => {
 
     const res = await createPromise;
     expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject({ type: 'agent', nodeId });
+    expect(await res.json()).toMatchObject({ type: 'terminal', nodeId });
   });
 
   it('rejects routed v1 create bodies with a conflicting nodeId', async () => {
@@ -1098,13 +1149,10 @@ describe('hub-routed node session create and attach', () => {
     });
     const { nodeId } = await pairNode(base);
 
-    const res = await fetch(
-      `${base}/nodes/${encodeURIComponent(nodeId)}`,
-      {
-        method: 'DELETE',
-        headers: { 'x-test-auth': 'yes' },
-      }
-    );
+    const res = await fetch(`${base}/nodes/${encodeURIComponent(nodeId)}`, {
+      method: 'DELETE',
+      headers: { 'x-test-auth': 'yes' },
+    });
 
     expect(res.status).toBe(200);
     expect(releaseRoutedPtyControlSessionsForNode).toHaveBeenCalledOnce();
@@ -1214,7 +1262,6 @@ describe('hub-routed node session create and attach', () => {
           session: {
             id: 'non-repo-session-1',
             type: 'terminal',
-            agent: 'claude',
             mode: 'pty',
             // No repoPath / worktreePath / branchName — non-repo session.
             cwd: '/home/user',
@@ -1228,7 +1275,7 @@ describe('hub-routed node session create and attach', () => {
             tmuxSessionName: 'relay-non-repo-1',
             status: 'active',
             needsBranchRename: false,
-            agentState: 'idle',
+            activityState: 'idle',
           },
         },
       })
@@ -1527,7 +1574,11 @@ describe('hub-routed node session create and attach', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-        body: JSON.stringify({ path: 'README.md', maxBytes: 999_999, maxLines: 1 }),
+        body: JSON.stringify({
+          path: 'README.md',
+          maxBytes: 999_999,
+          maxLines: 1,
+        }),
       }
     );
 
@@ -1572,7 +1623,10 @@ describe('hub-routed node session create and attach', () => {
 
     const res = await readPromise;
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ operation: 'read', content: '# Relay' });
+    expect(await res.json()).toMatchObject({
+      operation: 'read',
+      content: '# Relay',
+    });
   });
 
   it('routes read-only File RPC tail requests with scoped root and follow bounds', async () => {
@@ -1590,7 +1644,11 @@ describe('hub-routed node session create and attach', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-        body: JSON.stringify({ path: 'logs/app.log', maxBytes: 999_999, maxLines: 1 }),
+        body: JSON.stringify({
+          path: 'logs/app.log',
+          maxBytes: 999_999,
+          maxLines: 1,
+        }),
       }
     );
 
@@ -1642,7 +1700,10 @@ describe('hub-routed node session create and attach', () => {
 
     const res = await tailPromise;
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ operation: 'tail', content: 'last line\n' });
+    expect(await res.json()).toMatchObject({
+      operation: 'tail',
+      content: 'last line\n',
+    });
   });
 
   it('returns typed JSON errors for initial File RPC tail follow denials before opening text stream', async () => {
@@ -1685,7 +1746,10 @@ describe('hub-routed node session create and attach', () => {
           code: 'INVALID_REQUEST',
           message: 'path is not a regular file',
           retryable: false,
-          details: { reasonCode: 'FILE_RPC_NOT_FILE', path: '/srv/relay-ide/logs' },
+          details: {
+            reasonCode: 'FILE_RPC_NOT_FILE',
+            path: '/srv/relay-ide/logs',
+          },
         },
       })
     );
@@ -1694,7 +1758,10 @@ describe('hub-routed node session create and attach', () => {
     expect(res.status).toBe(400);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(await res.json()).toMatchObject({
-      error: { code: 'INVALID_REQUEST', details: { reasonCode: 'FILE_RPC_NOT_FILE' } },
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'FILE_RPC_NOT_FILE' },
+      },
     });
   });
 
@@ -1719,7 +1786,10 @@ describe('hub-routed node session create and attach', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
-      error: { code: 'INVALID_REQUEST', details: { reasonCode: 'FILE_RPC_ROOT_ESCAPE' } },
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'FILE_RPC_ROOT_ESCAPE' },
+      },
     });
     expect(nodeWs.readyState).toBe(WebSocket.OPEN);
   });
@@ -1744,7 +1814,10 @@ describe('hub-routed node session create and attach', () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
-      error: { code: 'NOT_FOUND', details: { reasonCode: 'SESSION_ENVELOPE_NOT_FOUND' } },
+      error: {
+        code: 'NOT_FOUND',
+        details: { reasonCode: 'SESSION_ENVELOPE_NOT_FOUND' },
+      },
     });
   });
 
