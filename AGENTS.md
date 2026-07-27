@@ -43,6 +43,7 @@ need Vite HMR or a fresh build before package-mode verification.
 | Terminal backend  | `docs/TERMINAL_BACKENDS.md`            |
 | Provider adapters | `docs/provider-guide.md`               |
 | Self-hosting      | `docs/SELF_HOSTING.md`                 |
+| Federated dev     | `docs/FEDERATED_DEV.md`                |
 | Deployment        | `docs/references/deployment.md`        |
 | Devbox hub        | `docs/references/devbox-hub-deploy.md` |
 | ADRs              | `docs/adrs/`                           |
