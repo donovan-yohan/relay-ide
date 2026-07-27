@@ -2638,11 +2638,17 @@ export async function checkVersion(): Promise<{
 export async function triggerUpdate(): Promise<{
   ok: boolean;
   restarting?: boolean;
+  version?: string | null;
   error?: string;
 }> {
-  return json<{ ok: boolean; restarting?: boolean; error?: string }>(
-    await fetch('/update', { method: 'POST' })
-  );
+  // json() throws an HttpError carrying the server's `error` string, so the
+  // caller can show why the update failed instead of a generic message.
+  return json<{
+    ok: boolean;
+    restarting?: boolean;
+    version?: string | null;
+    error?: string;
+  }>(await fetch('/update', { method: 'POST' }));
 }
 
 export async function fetchUpdateChannel(): Promise<'stable' | 'nightly'> {

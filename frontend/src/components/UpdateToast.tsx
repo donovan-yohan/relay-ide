@@ -1,7 +1,10 @@
 import React from 'react';
 import * as api from '../lib/api.js';
 import { TuiButton } from './TuiButton';
-import { addNotification, removeNotification } from '../lib/stores/notifications.js';
+import {
+  addNotification,
+  removeNotification,
+} from '../lib/stores/notifications.js';
 
 const UPDATE_NOTIFICATION_ID = 'update-toast';
 
@@ -65,18 +68,24 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
 
     try {
       const result = await api.triggerUpdate();
+      const updated = result.version
+        ? `Updated to v${result.version}!`
+        : 'Updated!';
       if (result.restarting) {
-        setText('Updated! Restarting server…');
+        setText(`${updated} Restarting server…`);
         setShowActions(false);
         reloadTimerRef.current = window.setTimeout(() => {
           window.location.reload();
         }, 5000);
       } else {
-        setText('Updated! Please restart the server manually.');
+        setText(`${updated} Please restart the server manually.`);
         setShowActions(false);
       }
-    } catch {
-      setText('Update failed. Please try again.');
+    } catch (err) {
+      const detail = err instanceof Error ? err.message.trim() : '';
+      setText(
+        detail ? `Update failed: ${detail}` : 'Update failed. Please try again.'
+      );
       setButtonDisabled(false);
       setButtonText('Retry');
       setShowActions(true);
@@ -100,7 +109,11 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
           >
             {buttonText}
           </TuiButton>
-          <button className="notification-card__dismiss" onClick={dismiss} aria-label="Dismiss">
+          <button
+            className="notification-card__dismiss"
+            onClick={dismiss}
+            aria-label="Dismiss"
+          >
             ×
           </button>
         </div>

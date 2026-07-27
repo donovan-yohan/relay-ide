@@ -64,6 +64,12 @@ import {
 } from './worktree-cleanup.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import {
+  buildUpdateCommand,
+  detectInstallKind,
+  readInstalledVersion,
+  type InstallDetection,
+} from './self-update.js';
+import {
   ingressSessionImage,
   parseSessionImagePayload,
   SessionImageIngressError,
@@ -488,6 +494,17 @@ function getCurrentVersion(): string {
     version: string;
   };
   return pkg.version;
+}
+
+function detectRunningInstall(): InstallDetection {
+  // argv[1] is the (usually symlinked) global bin entry; __filename is the
+  // fallback when the process was started some other way.
+  for (const candidate of [process.argv[1], __filename]) {
+    if (!candidate) continue;
+    const detection = detectInstallKind(candidate);
+    if (detection.kind !== 'unknown') return detection;
+  }
+  return { kind: 'unknown', installRoot: null };
 }
 
 async function getLatestVersion(
@@ -5866,9 +5883,41 @@ async function main(): Promise<void> {
     try {
       const channel = startupConfig.updateChannel ?? 'stable';
       const tag = channel === 'nightly' ? 'nightly' : 'latest';
-      await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`], {
+      const install = detectRunningInstall();
+      const [updateCommand, updateArgs] = buildUpdateCommand(install.kind, tag);
+      const versionBefore = install.installRoot
+        ? readInstalledVersion(install.installRoot)
+        : null;
+      await execFileAsync(updateCommand, updateArgs, {
         env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
       });
+
+      // A package manager can report success while installing into a different
+      // global prefix than the one this process runs from (#1284). Only claim
+      // success once the running install root actually changed.
+      let installedVersion: string | null = null;
+      if (install.installRoot) {
+        installedVersion = readInstalledVersion(install.installRoot);
+        const latest = await getLatestVersion(channel);
+        // An unreadable version on either side means we cannot prove anything;
+        // fall through to the legacy behavior rather than fail a real update.
+        if (
+          installedVersion !== null &&
+          installedVersion === versionBefore &&
+          latest !== null &&
+          installedVersion !== latest
+        ) {
+          updateInFlight = false;
+          res.status(500).json({
+            ok: false,
+            error:
+              `\`${updateCommand} ${updateArgs.join(' ')}\` reported success but the running install at ${install.installRoot} is still v${installedVersion} (expected v${latest}). ` +
+              'The update landed in a different global prefix — update that install root directly.',
+          });
+          return;
+        }
+      }
+
       const restarting = serviceIsInstalled();
       if (restarting) {
         stopEventBatching();
@@ -5894,7 +5943,7 @@ async function main(): Promise<void> {
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
-      res.json({ ok: true, restarting });
+      res.json({ ok: true, restarting, version: installedVersion });
       if (restarting) {
         // Brief delay to let the broadcast reach clients
         setTimeout(() => {
