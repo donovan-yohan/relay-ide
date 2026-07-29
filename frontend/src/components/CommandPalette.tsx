@@ -5,7 +5,7 @@ import React, {
   useCallback,
   useMemo,
 } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   Repo,
   SessionSummary,
@@ -35,12 +35,10 @@ import {
   type ArtifactPaletteResult,
 } from '../lib/command-palette-artifact-results.js';
 import type { PipelineHandoffArtifactEnvelope } from '../lib/pipeline-handoff-timeline.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicListResponse,
-} from '../../../shared/workspace-topics.js';
+import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import {
   executeCommandCenterAssistantCommand,
+  fetchWorkspaceTopics,
   resolveCommandCenterAssistantIntent,
 } from '../lib/api.js';
 import {
@@ -68,6 +66,9 @@ const TABS = [
   'settings',
 ] as const;
 type Tab = (typeof TABS)[number];
+
+/** Stable identity so the topic-derived memos/effects do not refire per render. */
+const EMPTY_TOPICS: WorkspaceTopic[] = [];
 
 const SEC_GENERAL = 'section-general';
 const SEC_INTEGRATIONS = 'section-integrations';
@@ -328,12 +329,19 @@ function useCachedData(open: boolean) {
       [],
     [queryClient, open]
   );
-  const cachedTopics = useMemo<WorkspaceTopic[]>(
-    () =>
-      queryClient.getQueryData<WorkspaceTopicListResponse>(['workspace-topics'])
-        ?.topics ?? [],
-    [queryClient, open]
-  );
+  // #1287: the sidebar shell is the only other producer of this cache entry and
+  // it never mounts while the sidebar is collapsed, so a collapsed-sidebar user
+  // would otherwise have no topics in the palette at all. Observe the canonical
+  // key itself (shared with the sidebar) rather than snapshotting it: staying an
+  // active observer while open is what lets topic create/restore invalidations,
+  // which default to `refetchType: 'active'`, refresh a palette-only corpus.
+  const topicsQuery = useQuery({
+    queryKey: ['workspace-topics'],
+    queryFn: () => fetchWorkspaceTopics(),
+    enabled: open,
+    staleTime: 30_000,
+  });
+  const cachedTopics = topicsQuery.data?.topics ?? EMPTY_TOPICS;
   const cachedActiveWork = useMemo<WorkContextActiveGroup[]>(
     () =>
       queryClient.getQueryData<WorkContextActiveGroup[]>(['active-work']) ?? [],

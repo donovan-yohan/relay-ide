@@ -49,6 +49,10 @@ import {
 } from '../lib/stores/channel-activity.js';
 import { AgentBadge } from './AgentBadge.js';
 import { openTopicTaskRoom } from '../lib/topic-task-room.js';
+import {
+  applyTopicActiveContext,
+  openTopicSelection,
+} from '../lib/topic-selection.js';
 import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -2119,14 +2123,6 @@ function GroupedTopicTree({
   );
 }
 
-function applyTopicActiveContext(topic: WorkspaceTopic | undefined): void {
-  if (!topic) return;
-  const context = resolveTopicActiveContext(topic);
-  const ui = useUiStore.getState();
-  ui.setActiveWorkspaceId(context.workspaceId);
-  if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
-}
-
 function TopicShellHeader({
   derived,
   onCreateTaskRoom,
@@ -2303,13 +2299,7 @@ export function TopicSidebarView({
     (id: string) => {
       setSelectedId(id);
       setMobileControlTopicId(null);
-      const topic = topicsById.get(id);
-      applyTopicActiveContext(topic);
-      if (topic?.source === 'persisted') {
-        const ui = useUiStore.getState();
-        ui.setActiveChannelId(id);
-        ui.setTopicComposerOpen(false);
-      }
+      openTopicSelection(topicsById.get(id));
     },
     [topicsById]
   );
