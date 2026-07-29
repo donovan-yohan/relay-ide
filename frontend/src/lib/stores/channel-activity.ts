@@ -1,8 +1,15 @@
 // Coarse per-channel activity cache (#1166). Fed by the `/ws/events`
 // `channel-activity` broadcast, which carries only `{ channelId, latestSeq }` —
-// no per-user unread count, no sender info. The sidebar renders a presence-only
-// dot (not a count badge) when a channel has activity newer than the client's
-// local last-read marker and isn't the currently-open channel.
+// no per-user unread count, no sender info — and seeded on sidebar mount from
+// the channel list (#1287) because the broadcast only covers channels that move
+// while the socket is open. The sidebar renders a presence-only dot (not a count
+// badge) when a channel has activity newer than the client's local last-read
+// marker and isn't the currently-open channel.
+//
+// The read marker is client-local, so a channel with messages and no marker in
+// THIS browser reads as fully unread — a new device lights up every channel that
+// holds messages rather than only ones with new traffic. That is the accepted
+// cost of a client-only marker until server-side read state arrives.
 import { create } from 'zustand';
 
 interface ChannelActivityState {
@@ -15,7 +22,26 @@ interface ChannelActivityState {
    * keep showing a stale dot until unrelated activity arrived.
    */
   lastReadByChannel: Record<string, number>;
+  /**
+   * Wall-clock ms of the most recent applied clamp per channel. A channel-list
+   * payload fetched before that instant still carries the pre-clamp head seq, so
+   * `seedChannelActivity` refuses it (#1287).
+   */
+  clampedAtByChannel: Record<string, number>;
   recordActivity: (channelId: string, latestSeq: number) => void;
+  /**
+   * Seed head seqs from a channel-list payload fetched at `fetchedAt` (#1287).
+   * `latestSeqByChannel` is in-memory only and the `channel-activity` broadcast
+   * reports just the channels that move while the socket is open, so without this
+   * bootstrap every reload renders the whole rail as read and the missed range is
+   * unrecoverable. Rows are applied monotonic-up, so a list response that loses
+   * the race with a live broadcast can never move a channel backwards, and rows
+   * older than a clamp are skipped so a cached payload cannot undo one.
+   */
+  seedChannelActivity: (
+    rows: { id: string; latestSeq: number }[],
+    fetchedAt: number
+  ) => void;
   /** Mark a channel read up to `seq` (monotonic up). Reactive + persistent. */
   markChannelRead: (channelId: string, seq: number) => void;
   /**
@@ -44,6 +70,7 @@ function persistLastRead(channelId: string, seq: number): void {
 export const useChannelActivityStore = create<ChannelActivityState>((set) => ({
   latestSeqByChannel: {},
   lastReadByChannel: {},
+  clampedAtByChannel: {},
   recordActivity: (channelId, latestSeq) =>
     set((state) => {
       const current = state.latestSeqByChannel[channelId];
@@ -53,6 +80,28 @@ export const useChannelActivityStore = create<ChannelActivityState>((set) => ({
           ...state.latestSeqByChannel,
           [channelId]: latestSeq,
         },
+      };
+    }),
+  seedChannelActivity: (rows, fetchedAt) =>
+    set((state) => {
+      const seeded: Record<string, number> = {};
+      for (const row of rows) {
+        // The list view reports `latestSeq: 0` for channels with no messages;
+        // those have nothing to be unread.
+        if (!(row.latestSeq > 0)) continue;
+        // The rail remounts whenever the sidebar collapses and the cached list
+        // outlives that, so a payload fetched before a clamp would replay the
+        // pre-clamp head and pin the unread dot on forever (seeding is
+        // monotonic-up, so nothing would lower it again).
+        const clampedAt = state.clampedAtByChannel[row.id];
+        if (clampedAt !== undefined && clampedAt >= fetchedAt) continue;
+        const current = state.latestSeqByChannel[row.id];
+        if (current !== undefined && current >= row.latestSeq) continue;
+        seeded[row.id] = row.latestSeq;
+      }
+      if (Object.keys(seeded).length === 0) return state;
+      return {
+        latestSeqByChannel: { ...state.latestSeqByChannel, ...seeded },
       };
     }),
   markChannelRead: (channelId, seq) =>
@@ -88,7 +137,14 @@ export const useChannelActivityStore = create<ChannelActivityState>((set) => ({
           [channelId]: headSeq,
         };
       }
-      return Object.keys(next).length > 0 ? next : state;
+      if (Object.keys(next).length === 0) return state;
+      // Fence stale channel-list payloads (#1287): every list response already in
+      // flight or cached still reports the pre-clamp head for this channel.
+      next.clampedAtByChannel = {
+        ...state.clampedAtByChannel,
+        [channelId]: Date.now(),
+      };
+      return next;
     }),
 }));
 
@@ -102,28 +158,18 @@ function readPersistedLastRead(channelId: string): number {
 }
 
 /**
- * Client-local last-read seq for a channel. Prefers the reactive store value
- * (freshly written on read) and falls back to the persisted localStorage marker
- * for channels the store has not hydrated yet (e.g. first render after reload).
- */
-function readLastReadSeq(channelId: string): number {
-  const stored =
-    useChannelActivityStore.getState().lastReadByChannel[channelId];
-  if (stored !== undefined) return stored;
-  return readPersistedLastRead(channelId);
-}
-
-/**
  * True when the channel has activity newer than the client's last-read marker
  * AND isn't the currently-open channel. Presence-only signal for the sidebar.
+ * Takes the caller's already-subscribed seq pair so a rail projection recomputes
+ * whenever either seq moves, and falls back to the persisted localStorage marker
+ * for channels the store has no read marker for yet (e.g. after a reload).
  */
 export function hasUnseenActivity(
   channelId: string,
-  activeChannelId: string | null
+  activeChannelId: string | null,
+  seqs: { latestSeq: number | undefined; lastRead: number | undefined }
 ): boolean {
   if (channelId === activeChannelId) return false;
-  const latestSeq =
-    useChannelActivityStore.getState().latestSeqByChannel[channelId];
-  if (latestSeq === undefined) return false;
-  return latestSeq > readLastReadSeq(channelId);
+  if (seqs.latestSeq === undefined) return false;
+  return seqs.latestSeq > (seqs.lastRead ?? readPersistedLastRead(channelId));
 }

@@ -19,6 +19,7 @@ import {
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
   channelLastReadKey,
+  hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
@@ -114,6 +115,7 @@ describe('TopicSidebarView', () => {
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
+      clampedAtByChannel: {},
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -136,6 +138,7 @@ describe('TopicSidebarView', () => {
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
+      clampedAtByChannel: {},
     });
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
@@ -286,6 +289,166 @@ describe('TopicSidebarView', () => {
       )
     ).toBeNull();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
+  });
+
+  it('reports unseen activity for a fresh store seeded from a channel list payload (#1287)', () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+
+    // Fresh store == every reload: `latestSeqByChannel` starts empty, so the rail
+    // has no head seq until the channel list seeds it.
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: undefined,
+        lastRead: undefined,
+      })
+    ).toBe(false);
+
+    act(() => {
+      useChannelActivityStore.getState().seedChannelActivity(
+        [
+          { id: 'topic:alpha', latestSeq: 9 },
+          { id: 'topic:empty', latestSeq: 0 },
+        ],
+        Date.now()
+      );
+    });
+
+    const seeded = useChannelActivityStore.getState();
+    expect(seeded.latestSeqByChannel['topic:alpha']).toBe(9);
+    expect(seeded.latestSeqByChannel['topic:empty']).toBeUndefined();
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: seeded.latestSeqByChannel['topic:alpha'],
+        lastRead: seeded.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(true);
+
+    // Seeding is monotonic up: a list response that lands after a live
+    // `channel-activity` broadcast must not rewind the head seq.
+    act(() => {
+      useChannelActivityStore.getState().recordActivity('topic:alpha', 12);
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity([{ id: 'topic:alpha', latestSeq: 9 }], Date.now());
+    });
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(12);
+  });
+
+  it('refuses a channel list payload fetched before a clamp (#1287)', () => {
+    // Stale-ahead state a recreated DM leaves behind (#1178), plus the list
+    // payload the rail already cached while the head was still high.
+    act(() => {
+      useChannelActivityStore.getState().recordActivity('topic:alpha', 50);
+      useChannelActivityStore.getState().markChannelRead('topic:alpha', 40);
+    });
+    const cachedFetchedAt = Date.now() - 1;
+
+    act(() => {
+      useChannelActivityStore.getState().clampChannelStores('topic:alpha', 5);
+    });
+    const clamped = useChannelActivityStore.getState();
+    expect(clamped.latestSeqByChannel['topic:alpha']).toBe(5);
+    expect(clamped.lastReadByChannel['topic:alpha']).toBe(5);
+
+    // The rail remounts (sidebar collapse) and React Query replays the cached
+    // pre-clamp payload; re-seeding head 50 against the clamped read marker 5
+    // would pin the unread dot on for the channel's whole new lifetime.
+    act(() => {
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity(
+          [{ id: 'topic:alpha', latestSeq: 50 }],
+          cachedFetchedAt
+        );
+    });
+    const afterStaleSeed = useChannelActivityStore.getState();
+    expect(afterStaleSeed.latestSeqByChannel['topic:alpha']).toBe(5);
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: afterStaleSeed.latestSeqByChannel['topic:alpha'],
+        lastRead: afterStaleSeed.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(false);
+
+    // A payload fetched after the clamp is authoritative again.
+    act(() => {
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity(
+          [{ id: 'topic:alpha', latestSeq: 7 }],
+          Date.now() + 1_000
+        );
+    });
+    const afterFreshSeed = useChannelActivityStore.getState();
+    expect(afterFreshSeed.latestSeqByChannel['topic:alpha']).toBe(7);
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: afterFreshSeed.latestSeqByChannel['topic:alpha'],
+        lastRead: afterFreshSeed.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(true);
+  });
+
+  it('seeds unread head seqs from the channel list on shell mount (#1287)', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body =
+        url === '/channels'
+          ? { channels: [{ id: 'topic:alpha', latestSeq: 9 }] }
+          : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    // Drain the fetch → query-cache → seed-effect → re-render chain.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (
+        useChannelActivityStore.getState().latestSeqByChannel['topic:alpha'] !==
+        undefined
+      )
+        break;
+      await act(async () => {
+        await flushQueryEffects();
+      });
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith('/channels', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(9);
+    expect(
+      container.querySelector(
+        '[data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    queryClient.clear();
   });
 
   it('does not commit the sidebar for unrelated channel activity', async () => {
