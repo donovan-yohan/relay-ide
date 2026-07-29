@@ -108,7 +108,7 @@ import {
 } from '../lib/actions/definitions/navigation.js';
 import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
-import { useUiStore } from '../lib/stores/ui.js';
+import { useUiStore, type OrgDashboardTab } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import {
@@ -166,6 +166,24 @@ function openSettingsNodes(): void {
   useUiStore
     .getState()
     .setActiveModal({ modal: 'settings', scrollToId: SECTION_NODES });
+}
+
+/**
+ * #1058/#1287: escape hatch out of the chat spine into the legacy WorkContext
+ * cockpit. Every chat-shell surface that outranks `forceOrgCockpit` in
+ * `resolveAppViewMode` must be cleared here — an open channel or composer wins
+ * over the flag, so leaving one set makes the action a silent no-op that later
+ * fires as a surprise navigation when the operator closes the channel.
+ */
+function enterWorkCockpit(tab?: OrgDashboardTab): void {
+  const ui = useUiStore.getState();
+  ui.setAnalyticsView(null);
+  ui.setActiveChannelId(null);
+  ui.setTopicComposerOpen(false);
+  useSessionsStore.getState().setActiveSessionId(null);
+  ui.setActiveRepoPath(null);
+  if (tab) ui.setOrgDashboardTab(tab);
+  ui.setForceOrgCockpit(true);
 }
 
 async function copyText(text: string): Promise<void> {
@@ -678,18 +696,9 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         // #1058: the chat/topic spine is the default no-session/no-repo
         // landing; this is the escape hatch back to the legacy WorkContext
-        // cockpit. Clears the active session/repo/analytics view so
-        // resolveAppViewMode's no-session/no-repo branch is reached, then
-        // sets forceOrgCockpit so it resolves to 'org' instead of 'chat'.
+        // cockpit (see enterWorkCockpit).
         ...navOpenWorkCockpit,
-        handler: () => {
-          const sessions = useSessionsStore.getState();
-          const ui = useUiStore.getState();
-          ui.setAnalyticsView(null);
-          sessions.setActiveSessionId(null);
-          ui.setActiveRepoPath(null);
-          ui.setForceOrgCockpit(true);
-        },
+        handler: () => enterWorkCockpit(),
       },
       {
         // #1058: one-off escape hatch — opens the work cockpit's nodes tab
@@ -697,29 +706,13 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         // strip stays hidden on the next visit unless the user opts in via
         // Settings.
         ...navOpenNodesDashboard,
-        handler: () => {
-          const sessions = useSessionsStore.getState();
-          const ui = useUiStore.getState();
-          ui.setAnalyticsView(null);
-          sessions.setActiveSessionId(null);
-          ui.setActiveRepoPath(null);
-          ui.setOrgDashboardTab('nodes');
-          ui.setForceOrgCockpit(true);
-        },
+        handler: () => enterWorkCockpit('nodes'),
       },
       {
         // #1058: one-off escape hatch — opens the work cockpit's active-work
         // tab without flipping the persistent advancedMode flag.
         ...navOpenActiveWork,
-        handler: () => {
-          const sessions = useSessionsStore.getState();
-          const ui = useUiStore.getState();
-          ui.setAnalyticsView(null);
-          sessions.setActiveSessionId(null);
-          ui.setActiveRepoPath(null);
-          ui.setOrgDashboardTab('active-work');
-          ui.setForceOrgCockpit(true);
-        },
+        handler: () => enterWorkCockpit('active-work'),
       },
       {
         // #1058: one-off escape hatch — opens the analytics dashboard

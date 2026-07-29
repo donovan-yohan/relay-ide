@@ -90,6 +90,43 @@ describe('resolveAppViewMode', () => {
     ).toBe('dashboard');
   });
 
+  it('keeps an open channel ahead of forceOrgCockpit, so cockpit escape hatches must clear the channel (#1287)', () => {
+    // The flag alone cannot escape a channel — any surface that latches
+    // forceOrgCockpit without clearing activeChannelId is a silent no-op that
+    // fires later as a surprise navigation when the channel is closed.
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: false,
+        activeRepoPath: null,
+        hasActiveChannel: true,
+        forceOrgCockpit: true,
+      })
+    ).toBe('chat');
+
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: '/repo/relay-ide',
+        activeSessionMode: 'pty',
+        hasActiveChannel: true,
+        forceOrgCockpit: true,
+      })
+    ).toBe('chat');
+
+    // Clearing the channel (what the escape hatches now do) reaches the cockpit.
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: false,
+        activeRepoPath: null,
+        hasActiveChannel: false,
+        forceOrgCockpit: true,
+      })
+    ).toBe('org');
+  });
+
   it('routes an active PTY agent/terminal session to the terminal view (#1058)', () => {
     // A live PTY session (Claude/Codex/Hermes TUI) must surface its terminal.
     expect(

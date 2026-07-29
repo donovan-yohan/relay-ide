@@ -9,6 +9,7 @@ describe('channel thread transient UI state', () => {
     useUiStore.setState({
       activeChannelId: null,
       activeThreadRootId: null,
+      forceOrgCockpit: false,
     });
   });
 
@@ -20,5 +21,23 @@ describe('channel thread transient UI state', () => {
     useUiStore.getState().setActiveChannelId('topic:next');
     expect(useUiStore.getState().activeChannelId).toBe('topic:next');
     expect(useUiStore.getState().activeThreadRootId).toBeNull();
+  });
+
+  // #1287: forceOrgCockpit is a one-off escape hatch an open channel outranks,
+  // so opening a channel must drop it — a latched flag would otherwise fire as
+  // a surprise cockpit navigation the moment the channel is closed again.
+  it('drops a latched cockpit escape hatch when a channel is opened', () => {
+    useUiStore.getState().setForceOrgCockpit(true);
+
+    useUiStore.getState().setActiveChannelId('topic:next');
+    expect(useUiStore.getState().forceOrgCockpit).toBe(false);
+  });
+
+  it('keeps the cockpit escape hatch when a channel is closed', () => {
+    useUiStore.getState().setActiveChannelId('topic:next');
+    useUiStore.getState().setForceOrgCockpit(true);
+
+    useUiStore.getState().setActiveChannelId(null);
+    expect(useUiStore.getState().forceOrgCockpit).toBe(true);
   });
 });
