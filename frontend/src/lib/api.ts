@@ -1733,6 +1733,12 @@ export async function fetchChannel(
  * `latestSeq`. This is the only client-side source of head seqs on a cold load:
  * the `/ws/events` `channel-activity` broadcast reports just the channels that
  * move while that socket is open.
+ *
+ * The route lists topics unfiltered, so the payload is the newest 200 by
+ * `updated_at` INCLUDING archived ones. The rail's own topic query takes a
+ * separate 200-row window whose `includeArchived` follows the archive toggle, so
+ * with enough recently-updated archived topics a rendered active row can fall
+ * outside this window and get no seed until it moves.
  */
 export async function fetchChannels(): Promise<ChannelSummaryView[]> {
   const data = await json<{ channels?: ChannelSummaryView[] }>(

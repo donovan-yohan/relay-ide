@@ -104,6 +104,7 @@ describe('TopicSidebarView', () => {
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
+      clampedAtByChannel: {},
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -126,6 +127,7 @@ describe('TopicSidebarView', () => {
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
+      clampedAtByChannel: {},
     });
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
@@ -291,10 +293,13 @@ describe('TopicSidebarView', () => {
     ).toBe(false);
 
     act(() => {
-      useChannelActivityStore.getState().seedChannelActivity([
-        { id: 'topic:alpha', latestSeq: 9 },
-        { id: 'topic:empty', latestSeq: 0 },
-      ]);
+      useChannelActivityStore.getState().seedChannelActivity(
+        [
+          { id: 'topic:alpha', latestSeq: 9 },
+          { id: 'topic:empty', latestSeq: 0 },
+        ],
+        Date.now()
+      );
     });
 
     const seeded = useChannelActivityStore.getState();
@@ -313,11 +318,66 @@ describe('TopicSidebarView', () => {
       useChannelActivityStore.getState().recordActivity('topic:alpha', 12);
       useChannelActivityStore
         .getState()
-        .seedChannelActivity([{ id: 'topic:alpha', latestSeq: 9 }]);
+        .seedChannelActivity([{ id: 'topic:alpha', latestSeq: 9 }], Date.now());
     });
     expect(
       useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
     ).toBe(12);
+  });
+
+  it('refuses a channel list payload fetched before a clamp (#1287)', () => {
+    // Stale-ahead state a recreated DM leaves behind (#1178), plus the list
+    // payload the rail already cached while the head was still high.
+    act(() => {
+      useChannelActivityStore.getState().recordActivity('topic:alpha', 50);
+      useChannelActivityStore.getState().markChannelRead('topic:alpha', 40);
+    });
+    const cachedFetchedAt = Date.now() - 1;
+
+    act(() => {
+      useChannelActivityStore.getState().clampChannelStores('topic:alpha', 5);
+    });
+    const clamped = useChannelActivityStore.getState();
+    expect(clamped.latestSeqByChannel['topic:alpha']).toBe(5);
+    expect(clamped.lastReadByChannel['topic:alpha']).toBe(5);
+
+    // The rail remounts (sidebar collapse) and React Query replays the cached
+    // pre-clamp payload; re-seeding head 50 against the clamped read marker 5
+    // would pin the unread dot on for the channel's whole new lifetime.
+    act(() => {
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity(
+          [{ id: 'topic:alpha', latestSeq: 50 }],
+          cachedFetchedAt
+        );
+    });
+    const afterStaleSeed = useChannelActivityStore.getState();
+    expect(afterStaleSeed.latestSeqByChannel['topic:alpha']).toBe(5);
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: afterStaleSeed.latestSeqByChannel['topic:alpha'],
+        lastRead: afterStaleSeed.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(false);
+
+    // A payload fetched after the clamp is authoritative again.
+    act(() => {
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity(
+          [{ id: 'topic:alpha', latestSeq: 7 }],
+          Date.now() + 1_000
+        );
+    });
+    const afterFreshSeed = useChannelActivityStore.getState();
+    expect(afterFreshSeed.latestSeqByChannel['topic:alpha']).toBe(7);
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: afterFreshSeed.latestSeqByChannel['topic:alpha'],
+        lastRead: afterFreshSeed.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(true);
   });
 
   it('seeds unread head seqs from the channel list on shell mount (#1287)', async () => {

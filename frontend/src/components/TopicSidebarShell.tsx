@@ -2700,17 +2700,24 @@ export function TopicSidebarShell({
   });
   // Unread head seqs only arrive over `/ws/events` for channels that move while
   // the socket is open, so a reload would render every row as read. Seed them
-  // from the channel list once the rail mounts (#1287).
+  // from the channel list once the rail mounts (#1287). This is a cold-load
+  // bootstrap only — the live broadcast keeps head seqs current while the socket
+  // is up — so keep it lazy: the payload is a full summary (members + last
+  // message) per channel, and the rail remounts on every sidebar collapse.
   const channelsQuery = useQuery({
     queryKey: ['channels'],
     queryFn: fetchChannels,
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
   const channelRows = channelsQuery.data;
+  const channelRowsFetchedAt = channelsQuery.dataUpdatedAt;
   useEffect(() => {
     if (!channelRows) return;
-    useChannelActivityStore.getState().seedChannelActivity(channelRows);
-  }, [channelRows]);
+    useChannelActivityStore
+      .getState()
+      .seedChannelActivity(channelRows, channelRowsFetchedAt);
+  }, [channelRows, channelRowsFetchedAt]);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = useMemo(

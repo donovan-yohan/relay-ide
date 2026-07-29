@@ -150,6 +150,7 @@ describe('useChannelChatSocket liveness + recovery (#1178)', () => {
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
+      clampedAtByChannel: {},
     });
     try {
       localStorage.clear();
