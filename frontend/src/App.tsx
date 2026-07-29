@@ -32,9 +32,9 @@ import {
   resubscribeIfNeeded,
 } from './lib/notifications.js';
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
-import { resolveTopicActiveContext } from '../../shared/workspace-topics.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
 import { openTopicTaskRoom } from './lib/topic-task-room.js';
+import { openTopicSelectionFromPalette } from './lib/topic-selection.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
 import {
   resolveSessionByKey,
@@ -1442,13 +1442,7 @@ export default function App() {
           closeSidebar();
         }}
         onSelectSession={(id) => handleSelectSession(id)}
-        onSelectTopic={(topic) => {
-          const context = resolveTopicActiveContext(topic);
-          const ui = useUiStore.getState();
-          ui.setActiveWorkspaceId(context.workspaceId);
-          if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
-          closeSidebar();
-        }}
+        onSelectTopic={openTopicSelectionFromPalette}
         onSelectPr={handlePaletteSelectPr}
         onOpenSettings={(sectionId) => {
           setSpotlightOpen(false);

@@ -20,6 +20,7 @@ import type {
   ActionContext,
 } from '../frontend/src/lib/actions/types.js';
 import type { CommandCenterExecutionResult } from '../shared/command-center-execution.js';
+import type { WorkspaceTopicListResponse } from '../shared/workspace-topics.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -136,6 +137,37 @@ function executionSuccess(): CommandCenterExecutionResult {
   };
 }
 
+/**
+ * The palette observes ['workspace-topics'] the whole time it is open (#1287), so
+ * this shell test has to answer that request itself — unstubbed, happy-dom would
+ * resolve the relative URL against its default origin and open a real socket.
+ * Anything else is a hard failure so a future always-on query cannot silently add
+ * network I/O here.
+ */
+function stubPaletteFetch(): void {
+  const topics: WorkspaceTopicListResponse = {
+    topics: [],
+    truncated: false,
+    derived: false,
+  };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (!url.includes('/workspace-topics')) {
+      throw new Error(`unstubbed fetch in unit test: ${url}`);
+    }
+    return new Response(JSON.stringify(topics), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+}
+
 function setInputValue(input: HTMLInputElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
@@ -210,16 +242,20 @@ describe('<CommandPalette /> assistant shell', () => {
 
   beforeEach(() => {
     _resetForTesting();
+    stubPaletteFetch();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    queryClient = new QueryClient();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
   });
 
   afterEach(() => {
     act(() => root.unmount());
     queryClient.clear();
     container.remove();
+    vi.unstubAllGlobals();
     _resetForTesting();
   });
 
