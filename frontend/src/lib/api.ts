@@ -2677,11 +2677,35 @@ export async function checkVersion(): Promise<{
 export async function triggerUpdate(): Promise<{
   ok: boolean;
   restarting?: boolean;
+  /** Absent unless the server ran but could not confirm a version change. */
+  verified?: boolean;
+  version?: string | null;
   error?: string;
 }> {
-  return json<{ ok: boolean; restarting?: boolean; error?: string }>(
-    await fetch('/update', { method: 'POST' })
-  );
+  // json() throws an HttpError carrying the server's `error` string, so the
+  // caller can show why the update failed instead of a generic message.
+  return json<{
+    ok: boolean;
+    restarting?: boolean;
+    version?: string | null;
+    error?: string;
+    verified?: boolean;
+  }>(await fetch('/update', { method: 'POST' }));
+}
+
+/** Neutral copy for an install that ran without changing the install root. */
+export const UPDATE_NO_CHANGE_TEXT = 'No version change detected.';
+
+/**
+ * Failure text for an update attempt. Only an HttpError carries the server's
+ * explanation; a transport failure can also mean the server exited mid-request
+ * after a successful install, so those stay generic.
+ */
+export function updateFailureText(err: unknown): string {
+  const detail = err instanceof HttpError ? err.message.trim() : '';
+  return detail
+    ? `Update failed: ${detail}`
+    : 'Update failed. Please try again.';
 }
 
 export async function fetchUpdateChannel(): Promise<'stable' | 'nightly'> {

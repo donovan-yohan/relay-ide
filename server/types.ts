@@ -882,6 +882,12 @@ export interface InstallOpts {
   configPath?: string | undefined;
   port?: string | undefined;
   host?: string | undefined;
+  /**
+   * Known-good global script path (`<installRoot>/dist/bin/relay-ide.js`) for
+   * installs that npm prefix probing cannot find, e.g. a `bun add -g` install.
+   * Must come from a detected global install root, never a bare checkout.
+   */
+  scriptPath?: string | undefined;
 }
 
 // Changed file status from git status/diff

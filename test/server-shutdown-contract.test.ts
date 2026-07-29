@@ -41,7 +41,7 @@ describe('server shutdown store closing contract', () => {
   it('keeps the existing update-restart artifact store close path', () => {
     const updateRestartStart = serverSource.indexOf('if (restarting) {');
     const updateResponseStart = serverSource.indexOf(
-      'res.json({ ok: true, restarting });'
+      'res.json({ ok: true, restarting, version: installedVersion });'
     );
     const updateRestartSource = serverSource.slice(
       updateRestartStart,

@@ -58,6 +58,13 @@ import {
 } from './worktree-cleanup.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import {
+  buildRemedyCommand,
+  buildUpdateCommand,
+  detectRunningInstall,
+  readInstalledVersion,
+  verifyUpdateLanded,
+} from './self-update.js';
+import {
   ingressSessionImage,
   parseSessionImagePayload,
   SessionImageIngressError,
@@ -417,6 +424,16 @@ function getCurrentVersion(): string {
     version: string;
   };
   return pkg.version;
+}
+
+const UPDATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
+const UPDATE_COMMAND_MAX_BUFFER = 8 * 1024 * 1024;
+
+/** execFile kills the child on timeout, surfacing as `killed` on the error. */
+function isKilledByTimeout(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { killed?: boolean; code?: unknown; signal?: unknown };
+  return e.killed === true || e.code === 'ETIMEDOUT';
 }
 
 async function getLatestVersion(
@@ -5205,9 +5222,78 @@ async function main(): Promise<void> {
     try {
       const channel = startupConfig.updateChannel ?? 'stable';
       const tag = channel === 'nightly' ? 'nightly' : 'latest';
-      await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`], {
-        env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
-      });
+      // argv[1] is the (usually symlinked) global bin entry; __filename is the
+      // fallback when the process was started some other way.
+      const install = detectRunningInstall([process.argv[1], __filename]);
+      const [updateCommand, updateArgs] = buildUpdateCommand(
+        install.kind,
+        tag,
+        install.installRoot
+      );
+      const versionBefore = install.installRoot
+        ? readInstalledVersion(install.installRoot)
+        : null;
+      try {
+        await execFileAsync(updateCommand, updateArgs, {
+          env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
+          timeout: UPDATE_COMMAND_TIMEOUT_MS,
+          maxBuffer: UPDATE_COMMAND_MAX_BUFFER,
+        });
+      } catch (err) {
+        if (isKilledByTimeout(err)) {
+          throw new Error(
+            `Update command timed out after ${UPDATE_COMMAND_TIMEOUT_MS / 60_000}m.`,
+            { cause: err }
+          );
+        }
+        throw err;
+      }
+
+      // A package manager can report success while installing into a different
+      // global prefix than the one this process runs from (#1284). Only claim
+      // success once the running install root actually changed.
+      let installedVersion: string | null = null;
+      if (install.installRoot) {
+        installedVersion = readInstalledVersion(install.installRoot);
+        const latest = await getLatestVersion(channel);
+        const verification = verifyUpdateLanded({
+          versionBefore,
+          versionAfter: installedVersion,
+          latest,
+        });
+        if (
+          verification === 'unchanged-stale' ||
+          verification === 'no-change-detected'
+        ) {
+          updateInFlight = false;
+          const remedy = buildRemedyCommand(
+            install.kind,
+            install.installRoot,
+            tag
+          );
+          logger.warn(
+            `[update] ${verification}: ran \`${updateCommand} ${updateArgs.join(' ')}\` (kind=${install.kind}) but ${install.installRoot} stayed at ${versionBefore ?? 'unknown'} (after=${installedVersion ?? 'unknown'}, latest=${latest ?? 'unknown'}). Remedy: ${remedy}`
+          );
+          if (verification === 'no-change-detected') {
+            // Latest is unknown (offline host, private registry), so a no-op
+            // install is most likely already-current: advisory, not a failure.
+            // Nothing changed on disk, so there is nothing to restart into.
+            res.json({
+              ok: true,
+              verified: false,
+              restarting: false,
+              version: installedVersion,
+            });
+            return;
+          }
+          res.status(500).json({
+            ok: false,
+            error: `Update installed elsewhere — this server still runs v${installedVersion} from ${install.installRoot}. Run: ${remedy}`,
+          });
+          return;
+        }
+      }
+
       const restarting = serviceIsInstalled();
       if (restarting) {
         stopEventBatching();
@@ -5233,7 +5319,7 @@ async function main(): Promise<void> {
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
-      res.json({ ok: true, restarting });
+      res.json({ ok: true, restarting, version: installedVersion });
       if (restarting) {
         // Brief delay to let the broadcast reach clients
         setTimeout(() => {
