@@ -548,3 +548,13 @@ current are:
   and terminal bytes stay on the source system.
 
 ---
+
+## July 2026 — channel-workspace navigation spine (epic #1287 audit)
+
+Consolidated from the 2026-07-29 46-agent architecture audit (5 mappers, 3 hunters, per-finding adversarial verification: 37 raw findings, 27 confirmed, 10 refuted) and the Slice 1 PRs #1288–#1291. Full verified ladder lives in epic #1287.
+
+- L-20260729-disjoint-workspace-stores: `+ add project` (`POST /workspaces/bulk`) writes `config.repos` only, the duplicate check reads `config.repos`, and the sidebar renders `workspace_topics` + `ia_workspaces` — so "already exists" and "not in the sidebar" can both be permanently true. Before wiring any add/create surface, trace which store the reading surface renders and write that store. A one-shot boot migration is not a create path.
+- L-20260729-workspace-sentinel-ids: channels minted with the literal `workspace:local` / `ws:derived` sentinels can never match real IA workspace ids (`ws:<localId>`), so 100% of channels land in the orphan lane and empty workspace groups are dropped from the tree. Validate cross-store reference id grammar at the create boundary; a sentinel that parses as "some id" poisons grouping silently downstream.
+- L-20260729-topic-id-title-slug: topic/channel id is `slug(workspaceId + '-' + title)`. Never recompute the id on rename — `channel_messages.channel_id` keys the history and boot `sweepOrphans(listAllTopicIds())` would permanently delete the re-keyed channel's messages. Decoupling identity from title requires opaque ids plus a migration plan (epic #1287 Slice 4), not a rename-time re-slug.
+- L-20260729-client-derived-unread: unread state is client-derived: persisted `lastRead` (localStorage) vs live `latestSeq` (in-memory). Any in-memory half must be seeded from a list payload on mount or every page reload renders fully read. Seeding races with mark-as-read: guard stale refetch payloads with a per-channel clamp-epoch fence compared against the query's `dataUpdatedAt` (PR #1290).
+- L-20260729-audit-refuter-pass: of 37 plausible audit findings with file:line evidence, 10 (~27%) were refuted by independent adversarial verification. Never file audit findings as issues without a refuter pass; record the refuted ones as no-defect notes so the next audit does not rediscover them.

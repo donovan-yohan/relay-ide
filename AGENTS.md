@@ -63,6 +63,11 @@ need Vite HMR or a fresh build before package-mode verification.
   Custom frameworks and profiles must use the same channel contract.
 - The hub owns channel persistence, mention routing, auth, policy, and
   federation. Nodes own local execution and paths.
+- Sidebar/navigation surfaces read the channel-workspace model
+  (`workspace_topics` + `ia_workspaces` + channel summaries), never
+  `config.repos`. Any add/create surface must write the store its reading
+  surface renders. Verified findings ladder: epic #1287; traps in
+  `docs/LEARNINGS.md` § navigation spine.
 - Interactive terminals use `relay-pty`/libghostty-vt only. xterm.js is the
   browser renderer. Relay server restart is cold resume, not child-process
   supervision.
