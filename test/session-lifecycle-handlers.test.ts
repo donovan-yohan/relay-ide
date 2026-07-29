@@ -156,6 +156,7 @@ describe('session lifecycle handlers', () => {
       analyticsView: null,
       forceOrgCockpit: false,
       topicComposerOpen: false,
+      activeChannelId: null,
       sidebarOpen: false,
     });
     window.history.replaceState(null, '', '/');
@@ -188,6 +189,7 @@ describe('session lifecycle handlers', () => {
       analyticsView: null,
       forceOrgCockpit: false,
       topicComposerOpen: false,
+      activeChannelId: null,
       sidebarOpen: false,
     });
     vi.unstubAllGlobals();
@@ -649,6 +651,70 @@ describe('session lifecycle handlers', () => {
         activeSessionMode: 'web',
       })
     ).toBe('chat');
+  });
+
+  // #1287: an open channel outranks forceOrgCockpit in resolveAppViewMode, so
+  // every cockpit escape hatch has to clear activeChannelId — otherwise the
+  // action looks inert and its latched flag fires later as a surprise
+  // navigation when the operator closes the channel.
+  async function invokeCockpitEscapeHatch(actionId: string): Promise<void> {
+    useSessionsStore.setState({ activeSessionId: 'channel-session-1' });
+    useUiStore.setState({
+      activeRepoPath: '/repo/relay-ide',
+      analyticsView: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: true,
+      activeChannelId: 'channel-1',
+      orgDashboardTab: 'prs',
+    });
+
+    await act(async () => {
+      root!.render(React.createElement(ActionRegistryHarness));
+    });
+    await flushPromises();
+
+    const action = getAction(actionId);
+    expect(action).toBeDefined();
+    await act(async () => {
+      await action!.handler({ view: 'session' });
+    });
+    await flushPromises();
+  }
+
+  function expectCockpitReached(): void {
+    const ui = useUiStore.getState();
+    expect(ui.activeChannelId).toBe(null);
+    expect(ui.topicComposerOpen).toBe(false);
+    expect(ui.forceOrgCockpit).toBe(true);
+    expect(ui.activeRepoPath).toBe(null);
+    expect(useSessionsStore.getState().activeSessionId).toBe(null);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: false,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+        hasActiveChannel: ui.activeChannelId !== null,
+      })
+    ).toBe('org');
+  }
+
+  it('clears an open channel when opening the work cockpit (#1287)', async () => {
+    await invokeCockpitEscapeHatch('navigation.open-work-cockpit');
+    expectCockpitReached();
+  });
+
+  it('clears an open channel when opening the nodes dashboard (#1287)', async () => {
+    await invokeCockpitEscapeHatch('navigation.open-nodes-dashboard');
+    expectCockpitReached();
+    expect(useUiStore.getState().orgDashboardTab).toBe('nodes');
+  });
+
+  it('clears an open channel when opening active work detail (#1287)', async () => {
+    await invokeCockpitEscapeHatch('navigation.open-active-work');
+    expectCockpitReached();
+    expect(useUiStore.getState().orgDashboardTab).toBe('active-work');
   });
 
   it('routes command-palette kill for remote sessions through the owning node', async () => {
