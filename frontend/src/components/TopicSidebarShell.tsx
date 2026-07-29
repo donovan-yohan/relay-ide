@@ -2675,11 +2675,13 @@ export function TopicSidebarShell({
       'search',
       normalizedSearchQuery,
       scopedWorkspaceId ?? 'all',
+      showArchived ? 'with-archived' : 'active-only',
     ],
     queryFn: () =>
       searchWorkspaceTopics({
         q: normalizedSearchQuery,
         limit: 20,
+        includeArchived: showArchived,
         ...(scopedWorkspaceId ? { workspaceId: scopedWorkspaceId } : {}),
       }),
     enabled: normalizedSearchQuery.length > 0,
