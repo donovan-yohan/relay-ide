@@ -1,8 +1,10 @@
 // Coarse per-channel activity cache (#1166). Fed by the `/ws/events`
 // `channel-activity` broadcast, which carries only `{ channelId, latestSeq }` —
-// no per-user unread count, no sender info. The sidebar renders a presence-only
-// dot (not a count badge) when a channel has activity newer than the client's
-// local last-read marker and isn't the currently-open channel.
+// no per-user unread count, no sender info — and seeded on sidebar mount from
+// the channel list (#1287) because the broadcast only covers channels that move
+// while the socket is open. The sidebar renders a presence-only dot (not a count
+// badge) when a channel has activity newer than the client's local last-read
+// marker and isn't the currently-open channel.
 import { create } from 'zustand';
 
 interface ChannelActivityState {
@@ -16,6 +18,15 @@ interface ChannelActivityState {
    */
   lastReadByChannel: Record<string, number>;
   recordActivity: (channelId: string, latestSeq: number) => void;
+  /**
+   * Seed head seqs from a channel-list payload (#1287). `latestSeqByChannel` is
+   * in-memory only and the `channel-activity` broadcast reports just the channels
+   * that move while the socket is open, so without this bootstrap every reload
+   * renders the whole rail as read and the missed range is unrecoverable. Rows
+   * are applied monotonic-up, so a list response that loses the race with a live
+   * broadcast can never move a channel backwards.
+   */
+  seedChannelActivity: (rows: { id: string; latestSeq: number }[]) => void;
   /** Mark a channel read up to `seq` (monotonic up). Reactive + persistent. */
   markChannelRead: (channelId: string, seq: number) => void;
   /**
@@ -53,6 +64,22 @@ export const useChannelActivityStore = create<ChannelActivityState>((set) => ({
           ...state.latestSeqByChannel,
           [channelId]: latestSeq,
         },
+      };
+    }),
+  seedChannelActivity: (rows) =>
+    set((state) => {
+      const seeded: Record<string, number> = {};
+      for (const row of rows) {
+        // The list view reports `latestSeq: 0` for channels with no messages;
+        // those have nothing to be unread.
+        if (!(row.latestSeq > 0)) continue;
+        const current = state.latestSeqByChannel[row.id];
+        if (current !== undefined && current >= row.latestSeq) continue;
+        seeded[row.id] = row.latestSeq;
+      }
+      if (Object.keys(seeded).length === 0) return state;
+      return {
+        latestSeqByChannel: { ...state.latestSeqByChannel, ...seeded },
       };
     }),
   markChannelRead: (channelId, seq) =>
@@ -102,28 +129,18 @@ function readPersistedLastRead(channelId: string): number {
 }
 
 /**
- * Client-local last-read seq for a channel. Prefers the reactive store value
- * (freshly written on read) and falls back to the persisted localStorage marker
- * for channels the store has not hydrated yet (e.g. first render after reload).
- */
-function readLastReadSeq(channelId: string): number {
-  const stored =
-    useChannelActivityStore.getState().lastReadByChannel[channelId];
-  if (stored !== undefined) return stored;
-  return readPersistedLastRead(channelId);
-}
-
-/**
  * True when the channel has activity newer than the client's last-read marker
  * AND isn't the currently-open channel. Presence-only signal for the sidebar.
+ * Takes the caller's already-subscribed seq pair so a rail projection recomputes
+ * whenever either seq moves, and falls back to the persisted localStorage marker
+ * for channels the store has no read marker for yet (e.g. after a reload).
  */
 export function hasUnseenActivity(
   channelId: string,
-  activeChannelId: string | null
+  activeChannelId: string | null,
+  seqs: { latestSeq: number | undefined; lastRead: number | undefined }
 ): boolean {
   if (channelId === activeChannelId) return false;
-  const latestSeq =
-    useChannelActivityStore.getState().latestSeqByChannel[channelId];
-  if (latestSeq === undefined) return false;
-  return latestSeq > readLastReadSeq(channelId);
+  if (seqs.latestSeq === undefined) return false;
+  return seqs.latestSeq > (seqs.lastRead ?? readPersistedLastRead(channelId));
 }

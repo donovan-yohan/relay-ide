@@ -19,6 +19,7 @@ import {
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
   channelLastReadKey,
+  hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
@@ -275,6 +276,108 @@ describe('TopicSidebarView', () => {
       )
     ).toBeNull();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
+  });
+
+  it('reports unseen activity for a fresh store seeded from a channel list payload (#1287)', () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+
+    // Fresh store == every reload: `latestSeqByChannel` starts empty, so the rail
+    // has no head seq until the channel list seeds it.
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: undefined,
+        lastRead: undefined,
+      })
+    ).toBe(false);
+
+    act(() => {
+      useChannelActivityStore.getState().seedChannelActivity([
+        { id: 'topic:alpha', latestSeq: 9 },
+        { id: 'topic:empty', latestSeq: 0 },
+      ]);
+    });
+
+    const seeded = useChannelActivityStore.getState();
+    expect(seeded.latestSeqByChannel['topic:alpha']).toBe(9);
+    expect(seeded.latestSeqByChannel['topic:empty']).toBeUndefined();
+    expect(
+      hasUnseenActivity('topic:alpha', null, {
+        latestSeq: seeded.latestSeqByChannel['topic:alpha'],
+        lastRead: seeded.lastReadByChannel['topic:alpha'],
+      })
+    ).toBe(true);
+
+    // Seeding is monotonic up: a list response that lands after a live
+    // `channel-activity` broadcast must not rewind the head seq.
+    act(() => {
+      useChannelActivityStore.getState().recordActivity('topic:alpha', 12);
+      useChannelActivityStore
+        .getState()
+        .seedChannelActivity([{ id: 'topic:alpha', latestSeq: 9 }]);
+    });
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(12);
+  });
+
+  it('seeds unread head seqs from the channel list on shell mount (#1287)', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body =
+        url === '/channels'
+          ? { channels: [{ id: 'topic:alpha', latestSeq: 9 }] }
+          : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    // Drain the fetch → query-cache → seed-effect → re-render chain.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (
+        useChannelActivityStore.getState().latestSeqByChannel['topic:alpha'] !==
+        undefined
+      )
+        break;
+      await act(async () => {
+        await flushQueryEffects();
+      });
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith('/channels', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(9);
+    expect(
+      container.querySelector(
+        '[data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    queryClient.clear();
   });
 
   it('does not commit the sidebar for unrelated channel activity', async () => {

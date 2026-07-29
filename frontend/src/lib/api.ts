@@ -1728,6 +1728,21 @@ export async function fetchChannel(
   return data.channel;
 }
 
+/**
+ * All channels (archived ones only when they hold messages) with per-channel
+ * `latestSeq`. This is the only client-side source of head seqs on a cold load:
+ * the `/ws/events` `channel-activity` broadcast reports just the channels that
+ * move while that socket is open.
+ */
+export async function fetchChannels(): Promise<ChannelSummaryView[]> {
+  const data = await json<{ channels?: ChannelSummaryView[] }>(
+    await fetch('/channels', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return Array.isArray(data.channels) ? data.channels : [];
+}
+
 export interface ChannelHistoryPage {
   messages: ChannelMessage[];
   hasMore: boolean;

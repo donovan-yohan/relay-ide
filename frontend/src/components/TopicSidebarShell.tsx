@@ -37,6 +37,7 @@ import {
   fetchHubNodes,
   fetchChannelRoster,
   fetchChannelHistory,
+  fetchChannels,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
   interruptChannelAgent,
@@ -2180,8 +2181,10 @@ export function TopicSidebarView({
       Object.fromEntries(
         model.items.map((item, index) => [
           item.id,
-          relevantActivity[index * 2] !== undefined &&
-            hasUnseenActivity(item.id, activeChannelId),
+          hasUnseenActivity(item.id, activeChannelId, {
+            latestSeq: relevantActivity[index * 2],
+            lastRead: relevantActivity[index * 2 + 1],
+          }),
         ])
       ),
     [activeChannelId, model.items, relevantActivity]
@@ -2695,6 +2698,19 @@ export function TopicSidebarShell({
     queryFn: fetchHubNodes,
     staleTime: 60_000,
   });
+  // Unread head seqs only arrive over `/ws/events` for channels that move while
+  // the socket is open, so a reload would render every row as read. Seed them
+  // from the channel list once the rail mounts (#1287).
+  const channelsQuery = useQuery({
+    queryKey: ['channels'],
+    queryFn: fetchChannels,
+    staleTime: 30_000,
+  });
+  const channelRows = channelsQuery.data;
+  useEffect(() => {
+    if (!channelRows) return;
+    useChannelActivityStore.getState().seedChannelActivity(channelRows);
+  }, [channelRows]);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = useMemo(
