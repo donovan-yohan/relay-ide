@@ -931,6 +931,40 @@ describe('workspace topics foundation', () => {
     expect(secret.body.results).toHaveLength(0);
   });
 
+  it('includes archived topics in search only when the caller asks for them', async () => {
+    const store = topicStore();
+    store.create({
+      id: 'topic:active-lane',
+      workspaceId: 'ws-search',
+      title: 'Apollo active lane',
+    });
+    store.create({
+      id: 'topic:archived-lane',
+      workspaceId: 'ws-search',
+      title: 'Apollo archived lane',
+    });
+    store.archive('topic:archived-lane');
+    const { port } = await listen({ store });
+
+    const active = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=apollo&workspaceId=ws-search'
+    );
+    expect(active.status).toBe(200);
+    expect(active.body.results.map((result) => result.topic.id)).toEqual([
+      'topic:active-lane',
+    ]);
+
+    const withArchived = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=apollo&workspaceId=ws-search&includeArchived=1'
+    );
+    expect(withArchived.status).toBe(200);
+    expect(
+      withArchived.body.results.map((result) => result.topic.id).sort()
+    ).toEqual(['topic:active-lane', 'topic:archived-lane']);
+  });
+
   it('bounds search results and scopes actor reads by requested WorkContext', async () => {
     const store = topicStore();
     for (let i = 0; i < 3; i += 1) {

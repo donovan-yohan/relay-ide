@@ -70,6 +70,17 @@ function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
   };
 }
 
+/** Bypass React's instance-level value tracker so `input` events are not
+ *  deduped as no-ops when the test writes the value directly. */
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  if (setter) setter.call(input, value);
+  else input.value = value;
+}
+
 function makeSurface(
   overrides: Partial<WorkspaceSurface> = {}
 ): WorkspaceSurface {
@@ -2273,5 +2284,106 @@ describe('TopicSidebarView', () => {
       '.topic-search-result__action'
     ) as HTMLButtonElement;
     expect(action.disabled).toBe(true);
+  });
+
+  it('threads the show-older-chats toggle into chat search requests', async () => {
+    // #1287: the archived toggle used to drive only the non-search list query,
+    // so searching an archived chat title reported no matches.
+    const archivedTopic = makeTopic({
+      id: 'topic:old',
+      status: 'archived',
+      display: { title: 'Archived lane' },
+      linkedRefs: {},
+    });
+    // Parsed rather than raw URLs so param order in searchWorkspaceTopics()
+    // is free to change without breaking this regression.
+    const searchQueries: Record<string, string>[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/workspace-topics/search')) {
+        const params = new URL(url, 'http://relay.test').searchParams;
+        searchQueries.push(Object.fromEntries(params));
+        const includeArchived = params.get('includeArchived') === '1';
+        return Response.json({
+          query: 'archived',
+          results: includeArchived
+            ? [
+                {
+                  topic: archivedTopic,
+                  score: 10,
+                  freshness: 'fresh',
+                  matches: [],
+                  action: { kind: 'open-topic', topicId: archivedTopic.id },
+                },
+              ]
+            : [],
+          truncated: false,
+          derived: false,
+        });
+      }
+      return Response.json({
+        topics: [],
+        surfaces: [],
+        nodes: [],
+        workspaces: [],
+        truncated: false,
+        derived: false,
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+    });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+
+    const searchInput = container.querySelector(
+      '.topic-search__input'
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(searchInput, 'archived');
+      searchInput.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'archived',
+          inputType: 'insertText',
+        })
+      );
+    });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+
+    expect(searchQueries).toEqual([{ q: 'archived', limit: '20' }]);
+    expect(container.textContent).toContain('no chat matches for');
+    expect(container.textContent).not.toContain('Archived lane');
+
+    const archivedToggle = container.querySelector(
+      '.topic-archived-toggle__btn'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      archivedToggle.click();
+      await flushQueryEffects();
+    });
+
+    expect(searchQueries).toContainEqual({
+      q: 'archived',
+      includeArchived: '1',
+      limit: '20',
+    });
+    expect(container.textContent).toContain('Archived lane');
+    expect(container.textContent).not.toContain('no chat matches for');
+    queryClient.clear();
   });
 });
