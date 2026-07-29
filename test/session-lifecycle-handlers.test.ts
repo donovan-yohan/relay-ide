@@ -157,6 +157,7 @@ describe('session lifecycle handlers', () => {
       forceOrgCockpit: false,
       topicComposerOpen: false,
       activeChannelId: null,
+      orgDashboardTab: 'active-work',
       sidebarOpen: false,
     });
     window.history.replaceState(null, '', '/');
@@ -190,6 +191,7 @@ describe('session lifecycle handlers', () => {
       forceOrgCockpit: false,
       topicComposerOpen: false,
       activeChannelId: null,
+      orgDashboardTab: 'active-work',
       sidebarOpen: false,
     });
     vi.unstubAllGlobals();

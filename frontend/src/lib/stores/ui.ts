@@ -1114,7 +1114,15 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
   setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
   setActiveChannelId: (v) =>
-    set({ activeChannelId: v, activeThreadRootId: null }),
+    set({
+      activeChannelId: v,
+      activeThreadRootId: null,
+      // #1287: an open channel outranks `forceOrgCockpit` in resolveAppViewMode,
+      // so a channel activation must also drop the one-off cockpit escape hatch
+      // (as sessions.setActiveSessionId does) — otherwise a latched flag fires
+      // as a surprise cockpit navigation when the channel is later closed.
+      ...(v !== null ? { forceOrgCockpit: false } : {}),
+    }),
   setActiveThreadRootId: (v) => set({ activeThreadRootId: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
