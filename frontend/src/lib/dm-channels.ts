@@ -32,6 +32,26 @@ const DM_LOCAL_WORKSPACE_SEGMENT = 'workspace-local';
 // mint `topic:...-dm-claude`, the exact old DM id).
 const DM_ID_MARKER = 'dm~';
 
+/**
+ * Length budget for one `~`-separated segment of a DM id.
+ *
+ * TRUNCATION IS LOSSY, SO THE INPUTS MUST BE BOUNDED. Two workspace ids that
+ * share the first `DM_SEGMENT_MAX` slug characters derive the SAME DM id, and
+ * `getOrCreateDmChannel` fetches by that id before creating — so a collision
+ * silently reuses another workspace's DM row and files the conversation in the
+ * wrong lane. The id cannot simply be re-derived to fix that later: it IS the
+ * `workspace_topics` id and `channel_messages.channel_id` keys transcript
+ * history off it (`docs/LEARNINGS.md` L-20260729-topic-id-title-slug).
+ *
+ * Every id-minting helper therefore keeps its output inside this budget:
+ * `local` (frozen segment below), `createWorkspaceId(randomUUID())` (39 slug
+ * chars), and `projectWorkspaceId` (29 — it digests the path precisely so it
+ * fits; see `server/project-workspace.ts`). The one legacy shape that exceeds
+ * it, `ws:migrated%3A<uuid>` at 50, still retains 34 characters of a v4 UUID
+ * after truncation and so cannot collide either.
+ */
+const DM_SEGMENT_MAX = 48;
+
 /** Slug a provider/workspace segment to the title-id charset (no `~`, no `%`). */
 function slugifyDmSegment(part: string): string {
   return part
@@ -39,7 +59,7 @@ function slugifyDmSegment(part: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
+    .slice(0, DM_SEGMENT_MAX);
 }
 
 /**

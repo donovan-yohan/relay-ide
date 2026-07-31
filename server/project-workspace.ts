@@ -16,14 +16,18 @@
 //    recolored, pinned, reordered, or archived their project lane keeps every
 //    edit. The single exception is MEMBERSHIP, which is additive only — a
 //    missing ProjectId is appended, none are ever removed.
-// 3. PATH-KEYED, NOT REMOTE-KEYED. `localId` is `project:<resolvedPath>` rather
-//    than the ProjectId, because a ProjectId for a git repo is keyed on the git
-//    REMOTE: adding a remote later would change it and mint a second lane for
-//    the same directory. The path never changes under us.
-// 4. WRITES ONLY `ia.db`. No config writes, no session/PTY work, and — per
+// 3. PATH-KEYED, NOT REMOTE-KEYED. `localId` is derived from the resolved path
+//    rather than from the ProjectId, because a ProjectId for a git repo is
+//    keyed on the git REMOTE: adding a remote later would change it and mint a
+//    second lane for the same directory. The path never changes under us.
+// 4. BOUNDED LENGTH. The path is DIGESTED, not embedded — see
+//    `projectWorkspaceId`. A workspace id is a key other ids are derived from,
+//    and those derivations truncate.
+// 5. WRITES ONLY `ia.db`. No config writes, no session/PTY work, and — per
 //    `docs/LEARNINGS.md` L-20260729-topic-id-title-slug — no topic-id mutation
 //    of any kind.
 
+import crypto from 'node:crypto';
 import path from 'node:path';
 
 import { createLogger } from './logger.js';
@@ -42,10 +46,41 @@ const logger = createLogger('project-workspace');
  *  (`migrated:<legacyId>`) or a user-created random UUID. */
 const PROJECT_LOCAL_ID_PREFIX = 'project:';
 
-/** Deterministic IA WorkspaceId for an added project directory. STABLE for the
- *  lifetime of the path: `ws:project%3A%2Fhome%2Fme%2Frepo`. */
+/** Hex characters of the path digest kept in the local id. 16 hex = 64 bits:
+ *  no realistic set of project directories collides, and it keeps the whole
+ *  workspace id short enough for every id derived FROM it (below). */
+const PROJECT_PATH_DIGEST_CHARS = 16;
+
+/**
+ * Deterministic IA WorkspaceId for an added project directory. STABLE for the
+ * lifetime of the path: `ws:project%3A<sha256(path) prefix>`.
+ *
+ * The path is DIGESTED rather than embedded, because a workspace id is a key
+ * that other ids are derived from — and those derivations TRUNCATE:
+ *
+ *   - `dmChannelTopicId` (frontend/src/lib/dm-channels.ts) slugs the workspace
+ *     id into a 48-char DM-id segment. Percent-encoding a path costs ~3 slug
+ *     chars per separator, so `ws:project%3A%2Fhome%2F…` blows the budget after
+ *     roughly 35 characters of path: every project under a common ~35-char
+ *     prefix would derive the SAME DM topic id, and `getOrCreateDmChannel`
+ *     fetches by that id first — so DM-ing an agent in project B would silently
+ *     open (and keep writing to) project A's DM row, filed under project A's
+ *     lane.
+ *   - `createWorkspaceTopicId(localId, workspaceId)` slugs the workspace id as
+ *     an id NAMESPACE and truncates the result at 96 chars, which a long path
+ *     eats entirely.
+ *
+ * The digest keeps the id at a fixed 29 characters, so every consumer stays
+ * inside its budget with room to spare and no consumer needs a special case.
+ * `defaultRepoPath` on the row still carries the human-readable path.
+ */
 export function projectWorkspaceId(resolvedPath: string): WorkspaceId {
-  return createWorkspaceId(`${PROJECT_LOCAL_ID_PREFIX}${resolvedPath}`);
+  const digest = crypto
+    .createHash('sha256')
+    .update(resolvedPath)
+    .digest('hex')
+    .slice(0, PROJECT_PATH_DIGEST_CHARS);
+  return createWorkspaceId(`${PROJECT_LOCAL_ID_PREFIX}${digest}`);
 }
 
 /** The subset of an added repo this module needs to derive a ProjectId. */
