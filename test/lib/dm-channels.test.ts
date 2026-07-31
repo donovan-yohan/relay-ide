@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DM_DEFAULT_WORKSPACE_ID,
   dmChannelCreateInput,
   dmChannelTopicId,
   isDmChannel,
 } from '../../frontend/src/lib/dm-channels.js';
 import { createWorkspaceTopicId } from '../../shared/workspace-topics.js';
+import { LOCAL_WORKSPACE_ID } from '../../shared/workspace.js';
 import type { WorkspaceTopic } from '../../shared/workspace-topics.js';
 
 function topic(overrides: Partial<WorkspaceTopic>): WorkspaceTopic {
@@ -58,10 +58,14 @@ describe('dmChannelTopicId', () => {
     expect(createWorkspaceTopicId('dm claude', workspaceId)).not.toContain('~');
   });
 
-  it('defaults a null workspace to the local sentinel', () => {
-    expect(dmChannelTopicId('hermes', null)).toBe(
-      dmChannelTopicId('hermes', DM_DEFAULT_WORKSPACE_ID)
-    );
+  it('collapses every local workspace reference onto one id (#1287)', () => {
+    // null, the retired `workspace:local`/`ws:derived` sentinels, and the
+    // seeded `ws:local` must all derive the SAME id, or migrating the column
+    // would strand an existing DM's history behind a new channel.
+    const expected = dmChannelTopicId('hermes', null);
+    for (const ref of ['workspace:local', 'ws:derived', LOCAL_WORKSPACE_ID]) {
+      expect(dmChannelTopicId('hermes', ref)).toBe(expected);
+    }
   });
 
   it('produces distinct ids per provider and per workspace', () => {
@@ -125,12 +129,55 @@ describe('dmChannelCreateInput', () => {
     expect(isDmChannel(topic({ ...input, id: input.id! }))).toBe('codex');
   });
 
-  it('defaults workspace to the local sentinel', () => {
+  it('defaults workspace to the seeded local IA workspace, not a sentinel (#1287)', () => {
     const input = dmChannelCreateInput({
       providerId: 'hermes',
       providerDisplayName: 'Hermes',
       workspaceId: null,
     });
-    expect(input.workspaceId).toBe(DM_DEFAULT_WORKSPACE_ID);
+    expect(input.workspaceId).toBe(LOCAL_WORKSPACE_ID);
+    expect(input.workspaceId).not.toBe('workspace:local');
+  });
+
+  it('keeps the DM id STABLE while the workspace pointer moves (#1287)', () => {
+    // The DM id IS the workspace_topics id and channel_messages.channel_id keys
+    // history off it. Retiring the `workspace:local` sentinel must therefore
+    // move the COLUMN only — every local reference still derives the exact id
+    // that existing DM rows already carry.
+    const legacy = dmChannelCreateInput({
+      providerId: 'claude',
+      providerDisplayName: 'Claude',
+      workspaceId: 'workspace:local',
+    });
+    const seeded = dmChannelCreateInput({
+      providerId: 'claude',
+      providerDisplayName: 'Claude',
+      workspaceId: LOCAL_WORKSPACE_ID,
+    });
+    expect(legacy.id).toBe('topic:dm~claude~workspace-local');
+    expect(seeded.id).toBe(legacy.id);
+    expect(seeded.workspaceId).toBe(LOCAL_WORKSPACE_ID);
+    // …and a migrated row (id unchanged, column now ws:local) still reads as a
+    // DM, so the sidebar does not re-classify it as an ordinary channel.
+    expect(
+      isDmChannel(
+        topic({
+          id: legacy.id!,
+          workspaceId: LOCAL_WORKSPACE_ID,
+          routingDefaults: { providerId: 'claude' },
+        })
+      )
+    ).toBe('claude');
+  });
+
+  it('leaves named-workspace DM ids byte-identical (#1287)', () => {
+    expect(dmChannelTopicId('codex', 'ws:acme')).toBe('topic:dm~codex~ws-acme');
+    expect(
+      dmChannelCreateInput({
+        providerId: 'codex',
+        providerDisplayName: 'Codex',
+        workspaceId: 'ws:acme',
+      }).workspaceId
+    ).toBe('ws:acme');
   });
 });

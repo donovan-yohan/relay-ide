@@ -7,9 +7,21 @@
 // See channel-ui-spec §0.2/§0.3 and §3.1.
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import type { WorkspaceTopicCreateInput } from '../../../shared/workspace-topics.js';
+import {
+  isLocalWorkspaceRef,
+  normalizeWorkspaceId,
+} from '../../../shared/workspace.js';
 
-/** Local-workspace sentinel already used by TopicComposer when no IA workspace is active. */
-export const DM_DEFAULT_WORKSPACE_ID = 'workspace:local';
+/**
+ * Slug segment a DM id uses for the local workspace. This is the LEGACY
+ * `workspace:local` sentinel slug, deliberately frozen (#1287 slice 2): the DM
+ * id is the `workspace_topics` id, and `channel_messages.channel_id` keys
+ * transcript history off it. Re-deriving local DM ids to `ws-local` would mint
+ * new channels and strand every existing DM's history behind the boot
+ * `sweepOrphans` pass. The row's `workspaceId` COLUMN moves to the real seeded
+ * workspace; the id does not.
+ */
+const DM_LOCAL_WORKSPACE_SEGMENT = 'workspace-local';
 
 // A DM id is namespaced with `~` separators. `createWorkspaceTopicId` (the same
 // function the server uses to mint a topic id from its user-chosen title) slugs
@@ -30,14 +42,23 @@ function slugifyDmSegment(part: string): string {
     .slice(0, 48);
 }
 
-/** Deterministic per-(workspace, framework) DM channel id. Pure, no I/O. */
+/**
+ * Deterministic per-(workspace, framework) DM channel id. Pure, no I/O.
+ *
+ * Every reference to the local workspace — `null`, the retired
+ * `workspace:local`/`ws:derived` sentinels, and the new `ws:local` — collapses
+ * onto ONE segment, so an existing local DM keeps its exact id (and therefore
+ * its history) after the workspace-id migration. Named workspaces slug their
+ * own id exactly as before.
+ */
 export function dmChannelTopicId(
   providerId: string,
   workspaceId: string | null
 ): string {
   const provider = slugifyDmSegment(providerId) || 'agent';
-  const workspace =
-    slugifyDmSegment(workspaceId ?? DM_DEFAULT_WORKSPACE_ID) || 'workspace';
+  const workspace = isLocalWorkspaceRef(workspaceId)
+    ? DM_LOCAL_WORKSPACE_SEGMENT
+    : slugifyDmSegment(workspaceId ?? '') || DM_LOCAL_WORKSPACE_SEGMENT;
   return `topic:${DM_ID_MARKER}${provider}~${workspace}`;
 }
 
@@ -62,10 +83,11 @@ export function dmChannelCreateInput(input: {
   providerDisplayName: string;
   workspaceId: string | null;
 }): WorkspaceTopicCreateInput {
-  const workspaceId = input.workspaceId ?? DM_DEFAULT_WORKSPACE_ID;
+  // The id keeps the caller's raw reference (stable across the sentinel
+  // retirement); the persisted pointer is the real workspace id.
   return {
-    id: dmChannelTopicId(input.providerId, workspaceId),
-    workspaceId,
+    id: dmChannelTopicId(input.providerId, input.workspaceId),
+    workspaceId: normalizeWorkspaceId(input.workspaceId),
     title: input.providerDisplayName,
     visibility: 'default',
     routingDefaults: { providerId: input.providerId },
