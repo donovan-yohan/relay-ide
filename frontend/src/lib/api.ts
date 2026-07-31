@@ -1444,6 +1444,18 @@ export interface BulkAddResult {
     defaultBranch: string | null;
   }>;
   errors: Array<{ path: string; error: string }>;
+  /**
+   * #1287 slice 2: the `ia_workspaces` lane each path resolved to — for freshly
+   * added paths AND for duplicate re-adds (`created: false`), so a re-add
+   * reveals the existing lane instead of only reporting "Already exists".
+   * Optional because an older hub (or a degraded IA store) omits it.
+   */
+  workspaces?: Array<{
+    path: string;
+    workspaceId: string;
+    name: string;
+    created: boolean;
+  }>;
 }
 
 export interface NodeFsListArgs {

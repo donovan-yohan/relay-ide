@@ -58,6 +58,13 @@ import {
   parseGitRemoteVerbose,
   resolveCanonicalRepoIdentity,
 } from '../shared/repo-identity.js';
+import {
+  ensureProjectWorkspaceBestEffort,
+  projectIdForRepo,
+} from './project-workspace.js';
+import type { IaStore } from './ia-store.js';
+import type { ProjectId } from '../shared/project.js';
+import type { WorkspaceId } from '../shared/workspace.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
@@ -394,6 +401,24 @@ export interface WorkspaceDeps {
   onWorkspacesChanged?: () => void;
   /** Called after a worktree is created so all connected clients refresh */
   onWorktreeCreated?: () => void;
+  /**
+   * The #737 IA persistence handle. `POST /workspaces/bulk` files each added
+   * project under a real `ia_workspaces` lane through it (#1287 slice 2).
+   * Optional/nullable so a degraded store (or a test that does not care about
+   * lanes) simply skips lane creation — the add itself still succeeds.
+   */
+  iaStore?: IaStore | null;
+}
+
+/** One `ia_workspaces` lane resolved by a bulk add. Reported for freshly added
+ *  paths AND for duplicate re-adds, so the client can reveal an existing lane
+ *  instead of only rendering "Already exists". */
+export interface BulkAddedWorkspace {
+  path: string;
+  workspaceId: WorkspaceId;
+  name: string;
+  /** False when an existing lane was reused (re-add / duplicate add). */
+  created: boolean;
 }
 
 // Exported helpers
@@ -1022,6 +1047,28 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const existing = new Set(config.repos ?? []);
     const added: Repo[] = [];
     const errors: Array<{ path: string; error: string }> = [];
+    // #1287 slice 2: every path that ends up with a real `ia_workspaces` lane —
+    // freshly added AND duplicate re-adds — so the client can reveal the lane
+    // instead of dead-ending on "Already exists".
+    const workspaces: BulkAddedWorkspace[] = [];
+
+    function recordWorkspaceLane(
+      resolved: string,
+      projectId: ProjectId | undefined
+    ): void {
+      const ensured = ensureProjectWorkspaceBestEffort({
+        iaStore: deps.iaStore ?? null,
+        resolvedPath: resolved,
+        ...(projectId ? { projectId } : {}),
+      });
+      if (!ensured) return;
+      workspaces.push({
+        path: resolved,
+        workspaceId: ensured.workspace.id,
+        name: ensured.workspace.name,
+        created: ensured.created,
+      });
+    }
 
     for (const rawPath of rawPaths) {
       if (typeof rawPath !== 'string' || !rawPath) {
@@ -1042,6 +1089,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
       if (existing.has(resolved)) {
         errors.push({ path: rawPath, error: 'Already exists' });
+        // Still surface the lane. On installs whose repos predate #1287 the row
+        // is missing entirely, so this doubles as the backfill for them; the
+        // ProjectId is omitted rather than paying git calls for a no-op add.
+        recordWorkspaceLane(resolved, undefined);
         continue;
       }
 
@@ -1067,6 +1118,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         ...getRepoWebhookFields(config, resolved),
       });
 
+      // The sidebar renders `ia_workspaces`, not `config.repos`, so registering
+      // the path alone left the project with no lane (#1287). File it under a
+      // real workspace row keyed on the resolved path.
+      recordWorkspaceLane(
+        resolved,
+        projectIdForRepo({
+          localPath: identityFields.localPath ?? resolved,
+          nodeId: identityFields.nodeId ?? DEFAULT_LOCAL_NODE_ID,
+          isGitRepo,
+          repoIdentity: identityFields.repoIdentity ?? null,
+        })
+      );
+
       // Store detected default branch in per-repo settings
       if (isGitRepo && defaultBranch) {
         if (!config.repoSettings) config.repoSettings = {};
@@ -1087,7 +1151,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       }
     }
 
-    res.status(201).json({ added, errors });
+    res.status(201).json({ added, errors, workspaces });
   });
 
   // GET /workspaces/dashboard — aggregated PR + activity data for a workspace

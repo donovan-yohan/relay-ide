@@ -149,7 +149,17 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           }
           const result = await addWorkspacesBulk(selectedPaths);
 
-          if (result.errors.length > 0 && result.added.length === 0) {
+          // #1287 slice 2: a path that was ALREADY registered still resolves to
+          // a real `ia_workspaces` lane, so re-adding a repo should reveal that
+          // lane rather than dead-end on "Already exists". The hub reports every
+          // resolved lane in `workspaces` (added + duplicates); fall back to
+          // `added` when talking to a hub that predates the field.
+          const laneReadyPaths =
+            result.workspaces && result.workspaces.length > 0
+              ? result.workspaces.map((w) => w.path)
+              : result.added.map((a) => a.path);
+
+          if (laneReadyPaths.length === 0 && result.errors.length > 0) {
             setError(
               result.errors.map((e) => `${e.path}: ${e.error}`).join('; ')
             );
@@ -157,17 +167,16 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             return;
           }
 
-          if (result.errors.length > 0 && result.added.length > 0) {
-            // partial success — notify about added paths but keep dialog open
-            // so the user can see and dismiss the failures
-            onWorkspacesAdded(result.added.map((a) => a.path));
+          if (laneReadyPaths.length > 0) {
+            onWorkspacesAdded(laneReadyPaths);
+          }
+
+          if (result.errors.length > 0) {
+            // partial success — the resolved lanes are already surfaced, but
+            // keep the dialog open so the user can see and dismiss the failures
             setPartialErrors(result.errors);
             setSubmitting(false);
             return;
-          }
-
-          if (result.added.length > 0) {
-            onWorkspacesAdded(result.added.map((a) => a.path));
           }
 
           shellRef.current?.close();

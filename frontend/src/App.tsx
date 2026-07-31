@@ -50,6 +50,7 @@ import { deriveUtilityRailContext } from './lib/utility-rail-context.js';
 import { resolveAppViewMode } from './lib/state/app-view-mode.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
 import { startShikiGc } from './lib/stores/shiki-gc.js';
+import { IA_WORKSPACES_QUERY_KEY } from './lib/hooks/use-ia-workspaces.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
 import { useVisibilityRefresh } from './hooks/useVisibilityRefresh.js';
@@ -1125,6 +1126,12 @@ export default function App() {
 
   const handleWorkspacesAdded = useCallback(async (paths: string[]) => {
     await useSessionsStore.getState().refreshAll();
+    // #1287 slice 2: the sidebar lane comes from `ia_workspaces` (+ the topics
+    // filed under it), not from the session store, and both queries hold a
+    // 30s staleTime. Without these invalidations the row the bulk add just
+    // created stays invisible until a reload.
+    void queryClient.invalidateQueries({ queryKey: IA_WORKSPACES_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
     // Auto-select the first newly added workspace
     if (paths.length > 0) {
       useUiStore.getState().setActiveRepoPath(paths[0]!);

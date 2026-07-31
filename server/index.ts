@@ -3110,6 +3110,9 @@ async function main(): Promise<void> {
   // Mount workspace router — rebuild watchers when workspaces are added or removed
   const workspaceRouter = createWorkspaceRouter({
     configPath: CONFIG_PATH,
+    // #1287 slice 2: bulk add-project files each repo under a real
+    // `ia_workspaces` lane, which is what the sidebar actually renders.
+    iaStore,
     onWorktreeCreated: () => broadcastEvent('worktrees-changed'),
     onWorkspacesChanged: () => {
       setImmediate(() => {
