@@ -1139,6 +1139,25 @@
     cursor: default;
   }
 
+  /* #1287: empty-lane affordance at touch scale. Same `new chat` control as
+     the rail header, sized to the 44px mobile row rhythm. */
+  .topic-mobile-group__empty {
+    display: block;
+    width: calc(100% - 20px);
+    min-height: 44px;
+    margin: 4px 10px 8px;
+    padding: 0 8px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .topic-mobile-group__empty:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
   .topic-mobile-group__toggle {
     margin-left: auto;
     color: var(--text-muted);
@@ -1353,6 +1372,42 @@
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   text-transform: lowercase;
+}
+
+/* #1287: the lane header selects its workspace, so it is a button — kept
+   visually identical to the static header (no border, no fill, same muted
+   caption treatment); only the hover/focus accent marks it as interactive. */
+.topic-workspace-group__header--select {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-workspace-group__header--select:hover,
+.topic-workspace-group__header--select:focus-visible {
+  color: var(--accent);
+}
+
+/* #1287: a workspace lane with zero channels still renders. Its affordance is
+   the rail header's `new chat` control at row scale — same button treatment,
+   no new visual language. */
+.topic-workspace-group__empty {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 3px 10px 6px;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-workspace-group__empty:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .topic-workspace-group__icon {

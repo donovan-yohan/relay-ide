@@ -1682,6 +1682,8 @@ function TopicMobileCockpit({
   onCreateTaskRoom,
   onResumeLast,
   onSelectSession,
+  onSelectWorkspace,
+  onStartChatInWorkspace,
 }: {
   tree: ChannelRailTree;
   sessions: SessionSummary[];
@@ -1700,6 +1702,8 @@ function TopicMobileCockpit({
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
     () => new Set()
@@ -1780,7 +1784,12 @@ function TopicMobileCockpit({
                 type="button"
                 className="topic-mobile-group__header"
                 aria-expanded={expanded}
-                onClick={() => toggleGroup(group.id)}
+                onClick={() => {
+                  // Tapping a lane both selects it (the create target) and
+                  // folds it — one lane-scale gesture, same as desktop select.
+                  onSelectWorkspace(group.id);
+                  toggleGroup(group.id);
+                }}
               >
                 {group.icon ? (
                   <span className="topic-mobile-group__icon" aria-hidden="true">
@@ -1799,7 +1808,14 @@ function TopicMobileCockpit({
                   {expanded ? '−' : '+'}
                 </span>
               </button>
-              {expanded ? (
+              {!expanded ? null : group.empty ? (
+                <WorkspaceLaneStartChat
+                  workspaceId={group.id}
+                  workspaceTitle={group.title}
+                  className="topic-mobile-group__empty"
+                  onStartChat={onStartChatInWorkspace}
+                />
+              ) : (
                 <MobileRailSection
                   section={group}
                   statusByChannelAgent={statusByChannelAgent}
@@ -1808,7 +1824,7 @@ function TopicMobileCockpit({
                   selectedId={selectedId}
                   onSelect={onSelect}
                 />
-              ) : null}
+              )}
             </section>
           );
         })}
@@ -1998,12 +2014,52 @@ function ChannelsAndDmsLists({
   );
 }
 
+/**
+ * Start-a-chat affordance for a workspace lane that holds no channels yet
+ * (#1287). Deliberately the SAME control as the rail header's `new chat`
+ * button — same label, same button treatment — so an empty lane introduces no
+ * second visual language. Clicking stamps this lane's real workspace id so the
+ * chat the operator then creates is filed under THIS workspace.
+ */
+function WorkspaceLaneStartChat({
+  workspaceId,
+  workspaceTitle,
+  className,
+  onStartChat,
+}: {
+  workspaceId: string;
+  workspaceTitle: string;
+  className: string;
+  onStartChat?: ((workspaceId: string) => void) | undefined;
+}) {
+  return (
+    <button
+      type="button"
+      className={`topic-shell__create ${className}`}
+      data-workspace-start-chat={workspaceId}
+      disabled={!onStartChat}
+      title={
+        onStartChat
+          ? `start a chat in ${workspaceTitle}`
+          : 'chat creation unavailable'
+      }
+      onClick={onStartChat ? () => onStartChat(workspaceId) : undefined}
+    >
+      new chat
+    </button>
+  );
+}
+
 function GroupedTopicTree({
   tree,
   renderRow,
+  onSelectWorkspace,
+  onStartChatInWorkspace,
 }: {
   tree: ChannelRailTree;
   renderRow: (node: ChannelRailNode) => ReactNode;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
   return (
     <div className="topic-tree" aria-label="workspace chats">
@@ -2014,15 +2070,29 @@ function GroupedTopicTree({
           aria-label={group.title}
           data-workspace-id={group.id}
         >
-          <div className="topic-workspace-group__header">
+          <button
+            type="button"
+            className="topic-workspace-group__header topic-workspace-group__header--select"
+            title={`select ${group.title}`}
+            onClick={() => onSelectWorkspace(group.id)}
+          >
             {group.icon ? (
               <span className="topic-workspace-group__icon" aria-hidden="true">
                 {group.icon}
               </span>
             ) : null}
             <span className="topic-workspace-group__name">{group.title}</span>
-          </div>
-          <ChannelsAndDmsLists section={group} renderRow={renderRow} />
+          </button>
+          {group.empty ? (
+            <WorkspaceLaneStartChat
+              workspaceId={group.id}
+              workspaceTitle={group.title}
+              className="topic-workspace-group__empty"
+              onStartChat={onStartChatInWorkspace}
+            />
+          ) : (
+            <ChannelsAndDmsLists section={group} renderRow={renderRow} />
+          )}
         </section>
       ))}
       {tree.orphans.channels.length > 0 ||
@@ -2495,6 +2565,24 @@ export function TopicSidebarView({
     );
     onCreateTaskRoom?.();
   }, [onCreateTaskRoom, selectedId, topicsById]);
+  // #1287: a workspace lane is selectable in its own right, so a workspace
+  // that holds no channels yet can still become the active one. Selecting a
+  // channel inside a lane already does this through the topic's context; this
+  // is the only path for an empty lane.
+  const selectWorkspaceLane = useCallback((workspaceId: string) => {
+    useUiStore.getState().setActiveWorkspaceId(workspaceId);
+  }, []);
+  // Start a chat in a specific lane: stamp the lane's real workspace id first,
+  // because every create path (composer + DM) resolves its workspace from
+  // `activeWorkspaceId`. Without this the chat would land in whatever lane was
+  // selected last, and the empty lane could never fill.
+  const startChatInWorkspace = useCallback(
+    (workspaceId: string) => {
+      selectWorkspaceLane(workspaceId);
+      onCreateTaskRoom?.();
+    },
+    [onCreateTaskRoom, selectWorkspaceLane]
+  );
   const renderTopicRow = (node: ChannelRailNode): ReactNode => {
     const item = node.item;
     return (
@@ -2572,6 +2660,10 @@ export function TopicSidebarView({
         onNudge={postMobileNudge}
         onInterrupt={interruptMobileAgent}
         onSelectSession={onSelectSession}
+        onSelectWorkspace={selectWorkspaceLane}
+        {...(onCreateTaskRoom
+          ? { onStartChatInWorkspace: startChatInWorkspace }
+          : {})}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
@@ -2594,7 +2686,14 @@ export function TopicSidebarView({
         canScope={activeWorkspaceId != null}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
-      <GroupedTopicTree tree={railTree} renderRow={renderTopicRow} />
+      <GroupedTopicTree
+        tree={railTree}
+        renderRow={renderTopicRow}
+        onSelectWorkspace={selectWorkspaceLane}
+        {...(onCreateTaskRoom
+          ? { onStartChatInWorkspace: startChatInWorkspace }
+          : {})}
+      />
       <TopicAdvancedDetailGate
         item={selectedItem}
         sessions={sessions}
