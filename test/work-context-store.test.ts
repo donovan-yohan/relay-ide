@@ -13,6 +13,11 @@ import {
   initWorkContextStoreBestEffort,
   type WorkContextStore,
 } from '../server/work-contexts.js';
+import { deriveWorkspaceTopicsFromWorkContexts } from '../server/workspace-topics.js';
+import {
+  LEGACY_WORKSPACE_ID_SENTINELS,
+  LOCAL_WORKSPACE_ID,
+} from '../shared/workspace.js';
 import type { SessionSummary } from '../server/types.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import {
@@ -259,6 +264,78 @@ describe('WorkContext store', () => {
       expect(
         store.list({ workspaceId: 'ws:derived', limit: 1 }).map((ctx) => ctx.id)
       ).toEqual(['wc:derived-default']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('scopes unanchored + sentinel contexts to the seeded local workspace (#1287)', () => {
+    const store = makeStore();
+    try {
+      // `deriveWorkspaceTopicsFromWorkContexts` stamps all three of these with
+      // `normalizeWorkspaceId(...)` = LOCAL_WORKSPACE_ID, so the unscoped list
+      // groups them under the Local lane. A scoped list must agree, or
+      // `GET /workspace-topics?workspaceId=ws:local` returns nothing while the
+      // unscoped view shows the same rows.
+      store.create({
+        context: fullContext({
+          id: 'wc:unanchored',
+          updatedAt: '2026-05-17T08:00:00.000Z',
+          anchors: {},
+        }),
+      });
+      store.create({
+        context: fullContext({
+          id: 'wc:legacy-sentinel',
+          updatedAt: '2026-05-17T08:01:00.000Z',
+          anchors: { project: { workspaceId: 'workspace:local' } },
+        }),
+      });
+      store.create({
+        context: fullContext({
+          id: 'wc:seeded',
+          updatedAt: '2026-05-17T08:02:00.000Z',
+          anchors: { project: { workspaceId: LOCAL_WORKSPACE_ID } },
+        }),
+      });
+      store.create({
+        context: fullContext({
+          id: 'wc:elsewhere',
+          updatedAt: '2026-05-17T08:03:00.000Z',
+          anchors: { project: { workspaceId: 'ws:acme' } },
+        }),
+      });
+
+      const localIds = store
+        .list({ workspaceId: LOCAL_WORKSPACE_ID })
+        .map((ctx) => ctx.id)
+        .sort();
+      expect(localIds).toEqual([
+        'wc:legacy-sentinel',
+        'wc:seeded',
+        'wc:unanchored',
+      ]);
+
+      // The derived read model groups exactly those rows under Local…
+      const derivedLocal = deriveWorkspaceTopicsFromWorkContexts(store.list())
+        .filter((topic) => topic.workspaceId === LOCAL_WORKSPACE_ID)
+        .map((topic) => topic.linkedRefs.workContextIds?.[0])
+        .sort();
+      expect(derivedLocal).toEqual(localIds);
+
+      // …and every retired sentinel still reaches them from the query side.
+      for (const sentinel of LEGACY_WORKSPACE_ID_SENTINELS) {
+        expect(
+          store
+            .list({ workspaceId: sentinel })
+            .map((ctx) => ctx.id)
+            .sort()
+        ).toEqual(localIds);
+      }
+
+      expect(
+        store.list({ workspaceId: 'ws:acme' }).map((ctx) => ctx.id)
+      ).toEqual(['wc:elsewhere']);
     } finally {
       store.close();
     }
