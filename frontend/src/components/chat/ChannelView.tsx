@@ -43,6 +43,22 @@ const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
 const AUTO_BACKFILL_RETRY_BASE_MS = 200;
 const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
 
+/**
+ * #1287 item 8: a bare 409 from the post path is NOT proof the channel is
+ * archived. The message store answers 409 for `channel_message_seq_conflict`,
+ * `parent_channel_mismatch` and `thread_root_channel_mismatch` too
+ * (server/channel-message-store.ts), so status-only inference replaced a live
+ * channel's composer with an "archived — restore" bar that had nothing to
+ * restore. Read the reason code the server already sends.
+ */
+function isArchivedPostError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 409 &&
+    error.details?.['reasonCode'] === 'CHANNEL_ARCHIVED'
+  );
+}
+
 interface ChannelViewProps {
   channelId: string;
 }
@@ -136,9 +152,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     };
   }, [channelId]);
 
-  const archived =
-    channel?.archived === true ||
-    (postError instanceof HttpError && postError.status === 409);
+  const archived = channel?.archived === true || isArchivedPostError(postError);
   const storeDown = postError instanceof HttpError && postError.status === 503;
 
   // Shared with every other restore affordance (#1287) so one restore refreshes

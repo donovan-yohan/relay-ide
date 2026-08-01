@@ -635,6 +635,111 @@ export function assertWorkspaceTopicId(
   return value;
 }
 
+/**
+ * Reason code for a create blocked by an existing row on the SAME id (#1287).
+ *
+ * Since slice 4 mints opaque ids, the free-titled composer path cannot collide
+ * at all. What remains is the deliberate-id residue: DM ids
+ * (`dmChannelTopicId`), WorkContext-derived rows, and any explicit `id` posted
+ * through the gateway or a raw `POST /workspace-topics`.
+ */
+export const WORKSPACE_TOPIC_ALREADY_EXISTS_REASON =
+  'WORKSPACE_TOPIC_ALREADY_EXISTS';
+
+/** `open` when the blocking channel is active, `restore` when it is archived. */
+export type WorkspaceTopicConflictRemedy = 'open' | 'restore';
+
+/**
+ * Self-explaining 409 body for that conflict.
+ *
+ * The blocker is frequently INVISIBLE to the caller: archived rows are filtered
+ * out of the default list, and `list()` caps at
+ * `WORKSPACE_TOPICS_MAX_LIST_ENTRIES` (200) while the store keeps 500 — so an
+ * active row ranked 201+ by `updated_at` is missing from the list too. Naming
+ * the row and its remedy is therefore the whole point: without it the caller
+ * gets "already exists" about a channel it cannot find, and no way forward.
+ *
+ * A `type` alias, not an `interface`: this is carried as the `details` bag of a
+ * gateway error (`Record<string, unknown>`), and only type aliases get the
+ * implicit index signature that assignment needs.
+ */
+export type WorkspaceTopicConflictDetails = {
+  reasonCode: typeof WORKSPACE_TOPIC_ALREADY_EXISTS_REASON;
+  /** The requested id. Identical to `blockingTopicId` — this is a PK conflict. */
+  id: WorkspaceTopicId;
+  blockingTopicId: WorkspaceTopicId;
+  blockingTopicStatus: WorkspaceTopicStatus;
+  blockingTopicTitle: string;
+  blockingWorkspaceId: WorkspaceId;
+  remedy: WorkspaceTopicConflictRemedy;
+};
+
+/**
+ * Build the conflict body from whatever the store could recover about the
+ * blocker. `title` is optional on purpose: a row whose `record_json` failed to
+ * parse still has id/workspace/status columns, and a conflict that names the id
+ * beats one that names nothing.
+ */
+export function buildWorkspaceTopicConflictDetails(blocker: {
+  id: WorkspaceTopicId;
+  workspaceId: WorkspaceId;
+  status: WorkspaceTopicStatus;
+  title?: string | undefined;
+}): WorkspaceTopicConflictDetails {
+  return {
+    reasonCode: WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
+    id: blocker.id,
+    blockingTopicId: blocker.id,
+    blockingTopicStatus: blocker.status,
+    blockingTopicTitle: blocker.title?.trim() || blocker.id,
+    blockingWorkspaceId: blocker.workspaceId,
+    remedy: blocker.status === 'archived' ? 'restore' : 'open',
+  };
+}
+
+/** Operator-facing message for a conflict body. Names the blocker AND the way out. */
+export function workspaceTopicConflictMessage(
+  details: WorkspaceTopicConflictDetails
+): string {
+  const blocker = `channel id ${details.blockingTopicId} is already taken by the ${details.blockingTopicStatus} channel "${details.blockingTopicTitle}"`;
+  return details.remedy === 'restore'
+    ? `${blocker} — restore that channel instead of creating a new one`
+    : `${blocker} — open that channel instead of creating a new one`;
+}
+
+/**
+ * Read a conflict body back off the wire. Returns null for any other error
+ * shape, so callers can branch on "this id is taken" without string-matching
+ * messages.
+ */
+export function parseWorkspaceTopicConflictDetails(
+  value: unknown
+): WorkspaceTopicConflictDetails | null {
+  const record = asRecord(value);
+  if (record['reasonCode'] !== WORKSPACE_TOPIC_ALREADY_EXISTS_REASON)
+    return null;
+  const blockingTopicId = record['blockingTopicId'];
+  const status = record['blockingTopicStatus'];
+  const remedy = record['remedy'];
+  if (!isWorkspaceTopicId(blockingTopicId)) return null;
+  if (status !== 'active' && status !== 'archived') return null;
+  if (remedy !== 'open' && remedy !== 'restore') return null;
+  const title = record['blockingTopicTitle'];
+  const workspaceId = record['blockingWorkspaceId'];
+  return {
+    reasonCode: WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
+    id: isWorkspaceTopicId(record['id']) ? record['id'] : blockingTopicId,
+    blockingTopicId,
+    blockingTopicStatus: status,
+    blockingTopicTitle:
+      typeof title === 'string' && title.trim() ? title : blockingTopicId,
+    blockingWorkspaceId: normalizeWorkspaceId(
+      typeof workspaceId === 'string' ? workspaceId : null
+    ),
+    remedy,
+  };
+}
+
 function assertNoSecretBearingDefaults(
   value: unknown,
   path = 'defaults'

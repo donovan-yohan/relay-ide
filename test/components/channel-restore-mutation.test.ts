@@ -35,6 +35,12 @@ vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
 
 const CHANNEL_ID = 'topic:archived-lane';
 
+/** Socket surface under test: the channel's own archived flag, and post errors. */
+const socket = vi.hoisted(() => ({
+  archived: true,
+  postError: null as unknown,
+}));
+
 // Archived channel: the composer renders its restore bar instead of the input.
 vi.mock('../../frontend/src/hooks/useChannelChatSocket.js', () => ({
   useChannelChatSocket: () => ({
@@ -42,7 +48,7 @@ vi.mock('../../frontend/src/hooks/useChannelChatSocket.js', () => ({
       id: CHANNEL_ID,
       title: 'archived lane',
       visibility: 'default',
-      archived: true,
+      archived: socket.archived,
       latestSeq: 0,
       messageCount: 0,
       lastMessage: null,
@@ -65,7 +71,7 @@ vi.mock('../../frontend/src/hooks/useChannelChatSocket.js', () => ({
     fullSnapshotRevision: 0,
     post: vi.fn(),
     postPending: false,
-    postError: null,
+    postError: socket.postError,
     resync: vi.fn(),
   }),
 }));
@@ -86,6 +92,7 @@ const { restoreTopicQueryKeys, useRestoreTopicMutation } = await import(
 const { useToastStore } = await import(
   '../../frontend/src/lib/stores/toasts.js'
 );
+const { HttpError } = await import('../../frontend/src/lib/api.js');
 
 function topicFixture(status: 'active' | 'archived' = 'archived') {
   return {
@@ -123,6 +130,8 @@ function seedTopicCaches(): void {
 }
 
 beforeEach(() => {
+  socket.archived = true;
+  socket.postError = null;
   mocks.fetchWorkspaceTopic.mockReset();
   mocks.fetchChannelRoster.mockReset();
   mocks.restoreWorkspaceTopic.mockReset();
@@ -305,5 +314,61 @@ describe('ChannelView restore bar call site (#1287)', () => {
     );
     // Retryable: the bar comes back out of its pending state.
     expect(restore?.disabled).toBe(false);
+  });
+});
+
+// #1287 item 8: ChannelView used to infer archived-ness from the bare 409
+// status of a failed post. The message store answers 409 for
+// `channel_message_seq_conflict`, `parent_channel_mismatch` and
+// `thread_root_channel_mismatch` too (server/channel-message-store.ts), so a
+// retried send on a perfectly live channel swapped the composer for an
+// "archived — restore" bar with nothing to restore. The reason code decides.
+describe('ChannelView archived inference from a post 409 (#1287)', () => {
+  async function renderLiveChannel(postError: unknown): Promise<void> {
+    socket.archived = false;
+    socket.postError = postError;
+    mocks.fetchWorkspaceTopic.mockResolvedValue(topicFixture('active'));
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(ChannelView, { channelId: CHANNEL_ID })
+        )
+      );
+    });
+    await flush();
+  }
+
+  it('shows the restore bar when the 409 says CHANNEL_ARCHIVED', async () => {
+    await renderLiveChannel(
+      new HttpError(409, 'channel is archived', 'SESSION_CONFLICT', false, {
+        channelId: CHANNEL_ID,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      })
+    );
+
+    expect(container.querySelector('.ch-composer__restore')).not.toBeNull();
+  });
+
+  it('keeps the composer live for a 409 that is a message-store conflict', async () => {
+    await renderLiveChannel(
+      new HttpError(
+        409,
+        'channel message seq/uniqueness conflict',
+        'SESSION_CONFLICT',
+        false,
+        { reasonCode: 'CHANNEL_MESSAGE_SEQ_CONFLICT' }
+      )
+    );
+
+    expect(container.querySelector('.ch-composer__restore')).toBeNull();
+    expect(container.querySelector('.ch-composer textarea')).not.toBeNull();
+  });
+
+  it('keeps the composer live for a 409 with no reason code at all', async () => {
+    await renderLiveChannel(new HttpError(409, 'conflict'));
+
+    expect(container.querySelector('.ch-composer__restore')).toBeNull();
   });
 });

@@ -67,14 +67,20 @@ function asConfig(repos: string[] = []): Config {
   return { repos, workspaces: [] } as unknown as Config;
 }
 
-function topicStore(): WorkspaceTopicStore {
+function topicStore(now?: () => string): WorkspaceTopicStore {
   const dir = tmpRoot('relay-workspace-topics-db-');
   const store = createWorkspaceTopicStore({
     dbPath: path.join(dir, 'topics.db'),
-    now: () => '2026-06-26T00:00:00.000Z',
+    now: now ?? (() => '2026-06-26T00:00:00.000Z'),
   });
   cleanup.push(() => store.close());
   return store;
+}
+
+/** Strictly increasing clock, so `updated_at DESC` ordering is deterministic. */
+function tickingClock(): () => string {
+  let tick = 0;
+  return () => new Date(Date.UTC(2026, 5, 26, 0, 0, tick++)).toISOString();
 }
 
 function surfaceStore(): WorkspaceSurfaceStore {
@@ -507,7 +513,7 @@ describe('workspace topics foundation', () => {
             workspaceId: 'ws:alpha',
           })
         )
-      ).toThrow(/already exists/);
+      ).toThrow(/already taken/);
       // A rename leaves the deterministic id (and its DM-ness) intact.
       const renamed = store.update(dmId, { title: 'claude' });
       expect(renamed?.id).toBe(dmId);
@@ -580,6 +586,131 @@ describe('workspace topics foundation', () => {
       ).toBe(true);
       // A DM id can never be minted by accident: the alphabet excludes `~`.
       for (const id of ids) expect(id).not.toContain('~');
+    });
+  });
+
+  // #1287 item 8: opaque ids removed title collisions, but explicit ids (DMs,
+  // derived rows, gateway/raw posts) can still land on a taken id. The blocker
+  // is routinely INVISIBLE — archived rows are filtered out of the default
+  // list, and `list()` caps at 200 of the 500 stored — so the conflict has to
+  // name the row and the way out, or the caller is stuck.
+  describe('duplicate-id conflicts self-explain', () => {
+    function conflictOf(fn: () => unknown): {
+      message: string;
+      reasonCode: unknown;
+      details: Record<string, unknown>;
+    } {
+      try {
+        fn();
+      } catch (error) {
+        const err = error as Error & {
+          reasonCode?: string;
+          details?: Record<string, unknown>;
+        };
+        return {
+          message: err.message,
+          reasonCode: err.reasonCode,
+          details: err.details ?? {},
+        };
+      }
+      throw new Error('expected create to throw a conflict');
+    }
+
+    it('names an active blocker and tells the caller to open it', () => {
+      const store = topicStore();
+      store.create({
+        id: 'topic:build-lane',
+        workspaceId: 'ws:alpha',
+        title: 'Build lane',
+      });
+
+      const conflict = conflictOf(() =>
+        store.create({
+          id: 'topic:build-lane',
+          workspaceId: 'ws:alpha',
+          title: 'Some other title entirely',
+        })
+      );
+
+      expect(conflict.reasonCode).toBe('WORKSPACE_TOPIC_ALREADY_EXISTS');
+      expect(conflict.details).toMatchObject({
+        id: 'topic:build-lane',
+        blockingTopicId: 'topic:build-lane',
+        blockingTopicStatus: 'active',
+        blockingTopicTitle: 'Build lane',
+        blockingWorkspaceId: 'ws:alpha',
+        remedy: 'open',
+      });
+      expect(conflict.message).toContain('topic:build-lane');
+      expect(conflict.message).toContain('Build lane');
+      expect(conflict.message).toContain('open that channel');
+    });
+
+    it('names an archived blocker, invisible to list, with the restore remedy', () => {
+      const store = topicStore();
+      const created = store.create({
+        id: 'topic:build-lane',
+        workspaceId: 'ws:alpha',
+        title: 'Build lane',
+      });
+      store.archive(created.id);
+      // The blocker cannot be found by listing: this is exactly the state that
+      // made the old bare "already exists" a dead end.
+      expect(store.list({ workspaceId: 'ws:alpha' })).toHaveLength(0);
+
+      const conflict = conflictOf(() =>
+        store.create({
+          id: 'topic:build-lane',
+          workspaceId: 'ws:alpha',
+          title: 'Build lane',
+        })
+      );
+
+      expect(conflict.details).toMatchObject({
+        blockingTopicId: created.id,
+        blockingTopicStatus: 'archived',
+        blockingTopicTitle: 'Build lane',
+        remedy: 'restore',
+      });
+      expect(conflict.message).toContain('archived channel "Build lane"');
+      expect(conflict.message).toContain('restore that channel');
+      // And the named remedy actually works.
+      expect(store.restore(created.id)?.status).toBe('active');
+      expect(store.list({ workspaceId: 'ws:alpha' }).map((t) => t.id)).toEqual([
+        created.id,
+      ]);
+    });
+
+    it('names a blocker ranked past the list cap', () => {
+      const store = topicStore(tickingClock());
+      const blocker = store.create({
+        id: 'topic:build-lane',
+        workspaceId: 'ws:alpha',
+        title: 'Build lane',
+      });
+      // The blocker is now the oldest row by `updated_at`, so a full page of
+      // newer chats pushes it off the end of the 200-row list read.
+      for (let index = 0; index < WORKSPACE_TOPICS_MAX_LIST_ENTRIES; index++) {
+        store.create({ workspaceId: 'ws:alpha', title: `chat ${index}` });
+      }
+      const listed = store.list({ workspaceId: 'ws:alpha' });
+      expect(listed).toHaveLength(WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
+      expect(listed.map((topic) => topic.id)).not.toContain(blocker.id);
+
+      const conflict = conflictOf(() =>
+        store.create({
+          id: 'topic:build-lane',
+          workspaceId: 'ws:alpha',
+          title: 'Build lane',
+        })
+      );
+
+      expect(conflict.details).toMatchObject({
+        blockingTopicId: blocker.id,
+        blockingTopicStatus: 'active',
+        blockingTopicTitle: 'Build lane',
+        remedy: 'open',
+      });
     });
   });
 
@@ -671,8 +802,14 @@ describe('workspace topics foundation', () => {
       requiresConfirmation: false,
     });
 
+    // #1287 item 8: a taken id is a CONFLICT (409), not a malformed request
+    // (400), and the body names the blocker plus the way out of it.
     const duplicate = await writeJson<{
-      error: { code: string; details?: Record<string, unknown> };
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      };
     }>({
       port,
       method: 'POST',
@@ -683,12 +820,18 @@ describe('workspace topics foundation', () => {
         title: 'Build lane',
       },
     });
-    expect(duplicate.status).toBe(400);
+    expect(duplicate.status).toBe(409);
     expect(duplicate.body.error.code).toBe('SESSION_CONFLICT');
     expect(duplicate.body.error.details).toMatchObject({
       reasonCode: 'WORKSPACE_TOPIC_ALREADY_EXISTS',
       id: 'topic:build-lane',
+      blockingTopicId: 'topic:build-lane',
+      blockingTopicStatus: 'active',
+      blockingTopicTitle: 'Build lane',
+      blockingWorkspaceId: 'ws-1',
+      remedy: 'open',
     });
+    expect(duplicate.body.error.message).toContain('open that channel');
 
     const list = await getJson<WorkspaceTopicListResponse>(
       port,
@@ -767,6 +910,38 @@ describe('workspace topics foundation', () => {
       'archived',
     ]);
 
+    // #1287 item 8: the archived row still owns the id, and it is absent from
+    // the default list — so the 409 has to name it and point at restore.
+    const blockedByArchived = await writeJson<{
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      };
+    }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics',
+      body: {
+        id: 'topic:build-lane',
+        workspaceId: 'ws-1',
+        title: 'Build lane',
+      },
+    });
+    expect(blockedByArchived.status).toBe(409);
+    expect(blockedByArchived.body.error.code).toBe('SESSION_CONFLICT');
+    expect(blockedByArchived.body.error.details).toMatchObject({
+      reasonCode: 'WORKSPACE_TOPIC_ALREADY_EXISTS',
+      blockingTopicId: 'topic:build-lane',
+      blockingTopicStatus: 'archived',
+      blockingTopicTitle: 'Build lane renamed',
+      remedy: 'restore',
+    });
+    expect(blockedByArchived.body.error.message).toContain(
+      'restore that channel'
+    );
+
+    // The remedy the body named, over the route it points at.
     const restore = await writeJson<{
       topic: WorkspaceTopic;
       mutationPolicy: unknown;
