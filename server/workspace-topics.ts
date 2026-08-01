@@ -1343,6 +1343,14 @@ export function createWorkspaceTopicsRouter(
             limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
           })
         : [];
+      // All-or-nothing on purpose (#1287 audit item 23): the derived lane is a
+      // cold-start scaffold for a hub with no channels yet, so one persisted
+      // row hides EVERY derived row rather than unioning them — a union would
+      // resurrect archived/deleted channels as ghosts the operator cannot
+      // dismiss. Scope filtering survives both branches: `fallbackTopics` takes
+      // the same `workspaceId`. The search path (`collectSearchTopics`)
+      // deliberately does union, so search can still reach a masked
+      // WorkContext. See docs/LEARNINGS.md L-20260801-derived-topics-are-all-or-nothing.
       const derived = persisted.length === 0;
       const allTopics = derived
         ? fallbackTopics({

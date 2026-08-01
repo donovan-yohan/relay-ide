@@ -655,6 +655,13 @@ Helpers `createFileResourceRef`, `parseFileResourceRef`, `fileResourceRefEquals`
 
 ### FileBlock renderer (#616 slice 2)
 
+> **Historical.** `frontend/src/workbench/` — the pre-channel block canvas and
+> every renderer in it, `FileBlock` included — was deleted in epic #1287
+> slice 0; nothing in the channel-era UI imported it. The node-side file RPC
+> surface, the `FileResourceRef` contract, and the `shared/workbench-*` types
+> below are unchanged and still live. Read the next two sections as the record
+> of what that renderer consumed, not as a description of shipping UI.
+
 The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes `FileResourceRef` and fetches file contents through the hub-routed file RPC surface. When a `FileBlockDescriptor` carries a `FileResourceRef` in `meta.fileRef` (distinguished from the legacy `FileRef` via the `isFileResourceRef` type guard in `shared/workbench-block-types.ts`), the renderer:
 
 1. Calls `GET /hub/nodes/:nodeId/sessions/:sessionId/files/stat` (via `fetchNodeFsStat`) with `staleTime: 30 000 ms` and `refetchOnWindowFocus: true` — no polling interval.
