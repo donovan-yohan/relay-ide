@@ -16,10 +16,7 @@ import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
-import {
-  createWorkspaceId,
-  LOCAL_WORKSPACE_ID,
-} from '../shared/workspace.js';
+import { createWorkspaceId, LOCAL_WORKSPACE_ID } from '../shared/workspace.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
   buildTopicRoomCreateInput,
@@ -30,6 +27,7 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
+import type { ChannelRailSummary } from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -74,6 +72,25 @@ function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
     },
     createdAt: NOW,
     updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+/** A `GET /channels` row as the rail consumes it (#1287). */
+function makeChannelSummary(
+  overrides: Partial<ChannelRailSummary> & { id: string }
+): ChannelRailSummary {
+  return {
+    latestSeq: 3,
+    messageCount: 3,
+    members: [{ kind: 'agent', id: 'agent:claude', joinedAt: NOW }],
+    lastMessage: {
+      seq: 3,
+      preview: 'latest channel message',
+      senderId: 'agent:claude',
+      senderKind: 'agent',
+      createdAt: NOW,
+    },
     ...overrides,
   };
 }
@@ -456,6 +473,177 @@ describe('TopicSidebarView', () => {
         '[data-topic-id="topic:alpha"][data-unread="true"]'
       )
     ).not.toBeNull();
+    queryClient.clear();
+  });
+
+  // #1287 item 6: the rail listed bare topic records while GET /channels already
+  // returned the per-row payload the Slack-style UX needs. Rows now join that
+  // summary by id.
+  it('hydrates rail rows with the channel summary last message and stamp (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          lastMessage: {
+            seq: 7,
+            preview: 'pushed the row payload join',
+            senderId: 'agent:claude',
+            senderKind: 'agent',
+            createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          },
+        }),
+      ],
+    });
+
+    const preview = container.querySelector('.topic-row__preview');
+    expect(preview?.textContent).toBe('claude: pushed the row payload join');
+    expect(container.querySelector('.topic-row__time')?.textContent).toBe('5m');
+    // Title still renders alongside the snippet — hydration is additive.
+    expect(container.querySelector('.topic-row__title')?.textContent).toContain(
+      'Build UI shell'
+    );
+  });
+
+  it('renders rows with no channel summary (derived/fallback topics) unchanged (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic({ source: 'derived' })],
+      derived: true,
+      channelSummaries: [],
+    });
+
+    expect(container.querySelector('.topic-row')).not.toBeNull();
+    expect(container.querySelector('.topic-row__title')?.textContent).toContain(
+      'Build UI shell'
+    );
+    expect(container.querySelector('.topic-row__preview')).toBeNull();
+    expect(container.querySelector('.topic-row__time')).toBeNull();
+  });
+
+  it('labels the operator as the snippet sender and skips message-less channels (#1287)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } }),
+        makeTopic({
+          id: 'topic:quiet',
+          display: { title: 'quiet' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          lastMessage: {
+            seq: 2,
+            preview: 'ack',
+            senderId: 'human:operator',
+            senderKind: 'human',
+            createdAt: NOW,
+          },
+        }),
+        makeChannelSummary({
+          id: 'topic:quiet',
+          latestSeq: 0,
+          messageCount: 0,
+          lastMessage: null,
+        }),
+      ],
+    });
+
+    const previews = [...container.querySelectorAll('.topic-row__preview')].map(
+      (node) => node.textContent
+    );
+    expect(previews).toEqual(['you: ack']);
+  });
+
+  // #1287 item 6: the mobile cockpit used to fan out a limit-1 `channel-history`
+  // request per unread channel just to learn whether the newest message
+  // mentioned the operator. The channel list already carries that row, so the
+  // per-channel history calls must be gone.
+  it('drops the per-unread-channel history fan-out in the mobile cockpit (#1287)', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+    useUiStore.setState({ sidebarOpen: true });
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(max-width: 600px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const requested: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const body =
+        url === '/channels'
+          ? {
+              channels: [
+                makeChannelSummary({
+                  id: 'topic:alpha',
+                  latestSeq: 9,
+                  lastMessage: {
+                    seq: 9,
+                    preview: '@operator please review',
+                    senderId: 'agent:claude',
+                    senderKind: 'agent',
+                    createdAt: NOW,
+                  },
+                }),
+              ],
+            }
+          : url.endsWith('/roster')
+            ? { roster: [] }
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        requested.some((url) => url.endsWith('/roster')) &&
+        useChannelActivityStore.getState().latestSeqByChannel['topic:alpha'] !==
+          undefined
+      ) {
+        break;
+      }
+      await act(async () => {
+        await flushQueryEffects();
+      });
+    }
+
+    // The cockpit reconcile path really ran (roster is per-channel and stays)...
+    expect(requested).toContain('/channels/topic%3Aalpha/roster');
+    // ...and the row is unread, which is exactly what used to trigger the
+    // limit-1 history fetch.
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(9);
+    // One list call, and no per-channel message reads at all.
+    expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
+    expect(requested.filter((url) => url.includes('/messages'))).toEqual([]);
     queryClient.clear();
   });
 

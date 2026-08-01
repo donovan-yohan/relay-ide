@@ -23,10 +23,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
-import {
-  parseMentions,
-  type ChannelMessage,
-} from '../../../shared/channel-chat-protocol.js';
+import { parseMentions } from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -36,7 +33,6 @@ import {
 import {
   fetchHubNodes,
   fetchChannelRoster,
-  fetchChannelHistory,
   fetchChannels,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
@@ -76,9 +72,11 @@ import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
+  indexChannelSummaries,
   selectChannelRailTree,
   type ChannelRailNode,
   type ChannelRailSection,
+  type ChannelRailSummary,
   type ChannelRailTree,
   type TopicNavItem,
   type TopicNavModel,
@@ -128,6 +126,8 @@ const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
 const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
+/** Trailing-edge window for the channel-list refresh a live activity burst triggers. */
+const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 2_000;
 const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
 const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 
@@ -148,17 +148,64 @@ function useMobileCockpitViewport(): boolean {
   return matches;
 }
 
-function messageMentionsCurrentOperator(message: ChannelMessage): boolean {
-  if (message.sender.id === CURRENT_OPERATOR_SENDER_ID) return false;
+/**
+ * Mention signal read off the channel-list summary (#1287). Replaces a limit-1
+ * `channel-history` fetch per unread channel: the list payload already carries
+ * the newest prose row's sender + preview, so one call covers the whole rail.
+ * The summary preview is the newest row that carries prose (detail cards persist
+ * an empty body), which is exactly the row an operator would read as "the last
+ * message".
+ */
+function summaryMentionsCurrentOperator(
+  summary: ChannelRailSummary | null
+): boolean {
+  const last = summary?.lastMessage;
+  if (!last) return false;
+  if (last.senderId === CURRENT_OPERATOR_SENDER_ID) return false;
   // Browser-authored channel posts are canonically `human:operator` with the
-  // display name `Operator` (channel-chat-router deriveSender). Persisted
-  // mentions come from this same parser; parse older rows when metadata is
-  // absent rather than introducing a cockpit-only regex/tokenizer.
-  const mentions = message.mentions ?? parseMentions(message.body.text);
-  return mentions.some(
+  // display name `Operator` (channel-chat-router deriveSender). The summary
+  // carries preview text only, so parse it with the shared parser rather than
+  // introducing a cockpit-only regex/tokenizer.
+  return parseMentions(last.preview).some(
     (mention) =>
       mention.raw.slice(1).toLowerCase() === CURRENT_OPERATOR_MENTION_NAME
   );
+}
+
+/**
+ * Slack-style row snippet: `sender: text` for the newest message, bounded to the
+ * same length cap the status line uses. Null when the row has no summary yet or
+ * the channel holds no messages — callers fall back to the topic status line.
+ */
+function channelRowPreview(summary: ChannelRailSummary | null): string | null {
+  const last = summary?.lastMessage;
+  if (!last) return null;
+  const text = last.preview.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const sender = channelRowSenderLabel(last.senderId);
+  return boundedTopicLatestStatus(sender ? `${sender}: ${text}` : text);
+}
+
+/**
+ * Short sender label for a row snippet. Sender ids are `<kind>:<name>` refs
+ * (`human:operator`, `agent:claude`); render the name half only, never the raw
+ * routing id shape.
+ */
+function channelRowSenderLabel(senderId: string): string {
+  const name = senderId.includes(':')
+    ? (senderId.split(':').pop() ?? senderId)
+    : senderId;
+  return name === 'operator' ? 'you' : name;
+}
+
+/** Compact last-activity stamp for a hydrated row; null without a summary. */
+function channelRowTimestamp(
+  summary: ChannelRailSummary | null
+): string | null {
+  const createdAt = summary?.lastMessage?.createdAt;
+  if (!createdAt) return null;
+  const label = formatRelativeTimeCompact(createdAt);
+  return label || null;
 }
 
 function boundedTopicLatestStatus(value: string): string {
@@ -983,9 +1030,13 @@ function TopicMobileAttentionRow({
   selected: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { item, unread } = node;
+  const { item, unread, summary } = node;
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
+  // Same hydrated row payload as the desktop rail (#1287); the live session
+  // status line remains the fallback for rows the channel list does not cover.
+  const preview = channelRowPreview(summary);
+  const timestamp = channelRowTimestamp(summary);
   const resumeDisabledReason = sessionAttachDisabledReason(session);
   const resumesDerivedSession = Boolean(
     item.source === 'derived' &&
@@ -1020,7 +1071,7 @@ function TopicMobileAttentionRow({
         <span className="topic-mobile-row__main">
           <span className="topic-mobile-row__title">{item.title}</span>
           <span className="topic-mobile-row__status">
-            {topicLatestStatus(item)}
+            {preview ?? topicLatestStatus(item)}
           </span>
         </span>
         <span className="topic-mobile-row__cta">
@@ -1031,6 +1082,9 @@ function TopicMobileAttentionRow({
               : action.label}
         </span>
         <span className="topic-mobile-row__trail">
+          {timestamp ? (
+            <span className="topic-mobile-row__time">{timestamp}</span>
+          ) : null}
           {unread ? (
             <span
               className="topic-row__activity-dot"
@@ -1388,10 +1442,15 @@ function TopicRow({
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const { item, unread, children } = node;
+  const { item, unread, summary, children } = node;
   const hasNested = children.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
+  // Slack-browser row payload (#1287): last message + stamp, hydrated from the
+  // channel list the rail already fetches. Rows the list does not cover (derived
+  // topics) keep the bare title.
+  const preview = channelRowPreview(summary);
+  const timestamp = channelRowTimestamp(summary);
 
   const activate = () => {
     onSelect(item.id);
@@ -1436,11 +1495,21 @@ function TopicRow({
           }}
         >
           <TopicBadge item={item} />
-          <span className="topic-row__title">
-            <MarqueeText>{item.title}</MarqueeText>
+          <span className="topic-row__lines">
+            <span className="topic-row__title">
+              <MarqueeText>{item.title}</MarqueeText>
+            </span>
+            {preview ? (
+              <span className="topic-row__preview" title={preview}>
+                {preview}
+              </span>
+            ) : null}
           </span>
         </button>
         <span className="topic-row__trail" aria-label={item.statusLabel}>
+          {timestamp ? (
+            <span className="topic-row__time">{timestamp}</span>
+          ) : null}
           {unread ? (
             <span
               className="topic-row__activity-dot"
@@ -1960,6 +2029,7 @@ const EMPTY_TOPICS: WorkspaceTopic[] = [];
 const EMPTY_SURFACES: WorkspaceSurface[] = [];
 const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
 const EMPTY_WORKSPACES: TopicNavWorkspace[] = [];
+const EMPTY_CHANNEL_SUMMARIES: ChannelRailSummary[] = [];
 
 /** Show/hide older chats toggle; renders nothing without a handler. */
 function ArchivedToggle({
@@ -2164,6 +2234,7 @@ export function TopicSidebarView({
   onCreateTaskRoom,
   workspaces = EMPTY_WORKSPACES,
   nodes,
+  channelSummaries = EMPTY_CHANNEL_SUMMARIES,
   activeWorkspaceId = null,
   searchScope = 'all',
   onToggleSearchScope,
@@ -2179,6 +2250,12 @@ export function TopicSidebarView({
   workspaces?: TopicNavWorkspace[];
   /** Known node roster; resolves raw routing node ids to friendly names. */
   nodes?: TopicNavNode[];
+  /**
+   * `GET /channels` rows (#1287). Joined onto topic rows by id to hydrate the
+   * last-message snippet, stamp, and mention signal. Optional: the rail renders
+   * from topics alone until it lands, and derived topics never appear here.
+   */
+  channelSummaries?: ChannelRailSummary[];
   activeWorkspaceId?: string | null;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
@@ -2255,15 +2332,12 @@ export function TopicSidebarView({
       ),
     [activeChannelId, model.items, relevantActivity]
   );
-  const latestSeqByChannel = useMemo(
-    () =>
-      Object.fromEntries(
-        activityIds.flatMap((id, index) => {
-          const latestSeq = relevantActivity[index * 2];
-          return typeof latestSeq === 'number' ? [[id, latestSeq]] : [];
-        })
-      ),
-    [activityIds, relevantActivity]
+  // One channel-list payload hydrates every row (#1287): last message, stamp,
+  // members, and the mention signal the cockpit used to fan out limit-1 history
+  // fetches for. Unread stays owned by the clamp-fenced activity store above.
+  const summaryByChannel = useMemo(
+    () => indexChannelSummaries(channelSummaries),
+    [channelSummaries]
   );
   // The channel roster endpoint is per-channel, so reconcile only while the
   // mobile cockpit is actually open. High-signal rows lead rolling batches;
@@ -2332,47 +2406,6 @@ export function TopicSidebarView({
     rosterQueries
       .slice(currentRosterBatchStart, activeRosterBatchEnd)
       .every((query) => !query.isPending && !query.isFetching);
-  const latestUnreadTargets = useMemo(
-    () =>
-      rosterChannelIds.flatMap((channelId, index) => {
-        const rosterQuery = rosterQueries[index];
-        const latestSeq = latestSeqByChannel[channelId];
-        return unreadByChannel[channelId] &&
-          typeof latestSeq === 'number' &&
-          rosterQuery &&
-          !rosterQuery.isPending &&
-          !rosterQuery.isFetching
-          ? [{ channelId, latestSeq }]
-          : [];
-      }),
-    [latestSeqByChannel, rosterChannelIds, rosterQueries, unreadByChannel]
-  );
-  const latestUnreadQueries = useQueries({
-    queries: latestUnreadTargets.map(({ channelId, latestSeq }) => ({
-      queryKey: ['channel-history', channelId, 'latest-unread', latestSeq],
-      queryFn: () => fetchChannelHistory(channelId, { limit: 1 }),
-      staleTime: Number.POSITIVE_INFINITY,
-      gcTime: 60_000,
-      retry: false,
-    })),
-  });
-  const currentRosterBatchIds = rosterChannelIds.slice(
-    currentRosterBatchStart,
-    activeRosterBatchEnd
-  );
-  const latestUnreadQueryByChannel = new Map(
-    latestUnreadTargets.map((target, index) => [
-      target.channelId,
-      latestUnreadQueries[index],
-    ])
-  );
-  const currentMentionBatchSettled = currentRosterBatchIds.every(
-    (channelId) => {
-      if (!unreadByChannel[channelId]) return true;
-      const query = latestUnreadQueryByChannel.get(channelId);
-      return Boolean(query && !query.isPending && !query.isFetching);
-    }
-  );
   useEffect(() => {
     if (rosterBatch.scope !== rosterBatchScope) {
       setRosterBatch({
@@ -2383,7 +2416,6 @@ export function TopicSidebarView({
     }
     if (
       currentRosterBatchSettled &&
-      currentMentionBatchSettled &&
       rosterBatch.end < allRosterChannelIds.length
     ) {
       setRosterBatch((current) => ({
@@ -2396,26 +2428,23 @@ export function TopicSidebarView({
     }
   }, [
     allRosterChannelIds.length,
-    currentMentionBatchSettled,
     currentRosterBatchSettled,
     rosterBatch.end,
     rosterBatch.scope,
     rosterBatchScope,
   ]);
+  // #1287: derived from the one channel-list payload the rail already holds.
+  // This replaced a limit-1 `channel-history` fetch per unread channel — the
+  // list summary carries the same newest-prose sender + text. Still gated on
+  // unread so a read channel never keeps its mention bonus in the lane.
   const mentionsMeByChannel = useMemo(() => {
     const mentioned: Record<string, boolean> = {};
-    latestUnreadTargets.forEach((target, index) => {
-      const message = latestUnreadQueries[index]?.data?.messages.at(-1);
-      if (
-        message &&
-        message.seq === target.latestSeq &&
-        messageMentionsCurrentOperator(message)
-      ) {
-        mentioned[target.channelId] = true;
-      }
-    });
+    for (const [channelId, summary] of Object.entries(summaryByChannel)) {
+      if (!unreadByChannel[channelId]) continue;
+      if (summaryMentionsCurrentOperator(summary)) mentioned[channelId] = true;
+    }
     return mentioned;
-  }, [latestUnreadQueries, latestUnreadTargets]);
+  }, [summaryByChannel, unreadByChannel]);
   const effectiveStatusByChannelAgent = useMemo(() => {
     const effective: Record<string, ChannelAgentStatus> = {
       ...statusByChannelAgent,
@@ -2456,8 +2485,12 @@ export function TopicSidebarView({
   const rosterAttentionBySessionKey: Record<string, CockpitRosterAttention> =
     {};
   const railTree = useMemo(
-    () => selectChannelRailTree(model, workspaces, { unreadByChannel }),
-    [model, unreadByChannel, workspaces]
+    () =>
+      selectChannelRailTree(model, workspaces, {
+        unreadByChannel,
+        summaryByChannel,
+      }),
+    [model, summaryByChannel, unreadByChannel, workspaces]
   );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
@@ -2791,10 +2824,10 @@ export function TopicSidebarShell({
   });
   // Unread head seqs only arrive over `/ws/events` for channels that move while
   // the socket is open, so a reload would render every row as read. Seed them
-  // from the channel list once the rail mounts (#1287). This is a cold-load
-  // bootstrap only — the live broadcast keeps head seqs current while the socket
-  // is up — so keep it lazy: the payload is a full summary (members + last
-  // message) per channel, and the rail remounts on every sidebar collapse.
+  // from the channel list once the rail mounts (#1287). The same payload is a
+  // full summary (members + last message) per channel, so it also hydrates every
+  // sidebar row — one list call in place of the per-channel fan-out the mobile
+  // cockpit used to run.
   const channelsQuery = useQuery({
     queryKey: ['channels'],
     queryFn: fetchChannels,
@@ -2809,6 +2842,26 @@ export function TopicSidebarShell({
       .getState()
       .seedChannelActivity(channelRows, channelRowsFetchedAt);
   }, [channelRows, channelRowsFetchedAt]);
+  // Row snippets/stamps would otherwise freeze at the mount payload, so refresh
+  // the list when channels move. Subscribed imperatively (never as a selector)
+  // because the rail must not re-render on unrelated channel activity, and
+  // trailing-edge throttled so a busy agent turn costs one refetch per window
+  // instead of the removed per-channel history fetches.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = useChannelActivityStore.subscribe((state, previous) => {
+      if (state.latestSeqByChannel === previous.latestSeqByChannel) return;
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void queryClient.invalidateQueries({ queryKey: ['channels'] });
+      }, CHANNEL_SUMMARY_REFRESH_THROTTLE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [queryClient]);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = useMemo(
@@ -2843,6 +2896,7 @@ export function TopicSidebarShell({
       surfaces={viewSurfaces}
       workspaces={viewWorkspaces}
       nodes={viewNodes}
+      channelSummaries={channelRows ?? EMPTY_CHANNEL_SUMMARIES}
       activeWorkspaceId={activeWorkspaceId}
       searchScope={searchScope}
       onToggleSearchScope={() =>

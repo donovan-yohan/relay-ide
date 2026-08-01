@@ -136,9 +136,35 @@ export interface TopicNavNode {
   displayName: string | null | undefined;
 }
 
+/**
+ * Per-row channel payload hydrated from `GET /channels` (#1287). Structural
+ * subset of the route's `channelSummaryView` — last message, member roster, and
+ * counts — so `ChannelSummaryView` from the API client assigns directly without
+ * the rail projection depending on the fetch layer.
+ */
+export interface ChannelRailSummary {
+  id: string;
+  latestSeq: number;
+  messageCount: number;
+  members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+  lastMessage: {
+    seq: number;
+    preview: string;
+    senderId: string;
+    senderKind: 'human' | 'agent' | 'system';
+    createdAt: string;
+  } | null;
+}
+
 export interface ChannelRailNode {
   item: TopicNavItem;
   unread: boolean;
+  /**
+   * Channel summary joined by id, or null for a row the channel list does not
+   * cover (derived/fallback topics, and persisted rows outside the list's own
+   * 200-row window). Renderers must degrade to the topic record alone.
+   */
+  summary: ChannelRailSummary | null;
   children: ChannelRailNode[];
 }
 
@@ -170,6 +196,21 @@ export interface ChannelRailTree {
 
 export interface ChannelRailActivitySnapshot {
   unreadByChannel: Readonly<Record<string, boolean>>;
+  /**
+   * Channel summaries keyed by channel id (#1287). Optional: the rail renders
+   * from the topic list alone before the summaries land, and derived topics
+   * never get one.
+   */
+  summaryByChannel?: Readonly<Record<string, ChannelRailSummary>>;
+}
+
+/** Key a `GET /channels` payload by channel id for the rail join (#1287). */
+export function indexChannelSummaries(
+  rows: readonly ChannelRailSummary[]
+): Record<string, ChannelRailSummary> {
+  const byId: Record<string, ChannelRailSummary> = {};
+  for (const row of rows) byId[row.id] = row;
+  return byId;
 }
 
 /**
@@ -178,7 +219,8 @@ export interface ChannelRailActivitySnapshot {
  * topic model's order and split into regular-channel and direct-message
  * sections. Descendants stay nested under their canonical root instead of being
  * flattened into workspace peers. Unread is computed once from the same
- * activity snapshot for both consumers.
+ * activity snapshot for both consumers, and each row carries the channel
+ * summary joined by id (#1287) so neither renderer needs a per-channel fetch.
  *
  * EVERY known workspace becomes a lane, including one holding zero channels
  * (#1287). Dropping an empty bucket made a freshly added workspace invisible
@@ -199,6 +241,7 @@ export function selectChannelRailTree(
     return {
       item,
       unread: activity.unreadByChannel[item.id] ?? false,
+      summary: activity.summaryByChannel?.[item.id] ?? null,
       children,
     };
   };

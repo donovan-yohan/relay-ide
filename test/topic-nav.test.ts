@@ -4,7 +4,9 @@ import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
+  indexChannelSummaries,
   selectChannelRailTree,
+  type ChannelRailSummary,
   type TopicNavWorkspace,
 } from '../frontend/src/lib/state/topic-nav.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
@@ -733,6 +735,58 @@ describe('selectChannelRailTree', () => {
       dmA,
       dmOrphan,
     ]);
+  });
+
+  // #1287 item 6: the rail joins GET /channels summaries onto topic rows so a
+  // row's last message/members come from the one list call, not a per-channel
+  // fan-out. Topics the list does not cover must still project.
+  it('joins channel summaries onto rows by id and leaves uncovered rows null', () => {
+    const summary = (
+      overrides: Partial<ChannelRailSummary> & { id: string }
+    ): ChannelRailSummary => ({
+      latestSeq: 4,
+      messageCount: 12,
+      members: [{ kind: 'agent', id: 'agent:claude', joinedAt: NOW }],
+      lastMessage: {
+        seq: 4,
+        preview: 'shipped the rail join',
+        senderId: 'agent:claude',
+        senderKind: 'agent',
+        createdAt: NOW,
+      },
+      ...overrides,
+    });
+    const tree = selectChannelRailTree(
+      model(),
+      [makeWorkspace({ id: 'ws:a' })],
+      {
+        unreadByChannel: {},
+        summaryByChannel: indexChannelSummaries([
+          summary({ id: 'topic:a1' }),
+          summary({ id: 'topic:a-child', messageCount: 0, lastMessage: null }),
+        ]),
+      }
+    );
+    const groupA = tree.groups.find((group) => group.id === 'ws:a');
+    expect(groupA?.channels[0]?.summary?.messageCount).toBe(12);
+    expect(groupA?.channels[0]?.summary?.lastMessage?.preview).toBe(
+      'shipped the rail join'
+    );
+    expect(groupA?.channels[0]?.summary?.members).toHaveLength(1);
+    // Covered but empty: a summary with no messages still hydrates the row.
+    expect(groupA?.channels[0]?.children[0]?.summary?.lastMessage).toBeNull();
+    // Uncovered (derived/fallback) rows carry no summary at all.
+    expect(groupA?.directMessages[0]?.summary).toBeNull();
+    expect(tree.orphans.channels[0]?.summary).toBeNull();
+  });
+
+  it('projects rows with no summary snapshot at all', () => {
+    const tree = selectChannelRailTree(
+      model(),
+      [makeWorkspace({ id: 'ws:a' })],
+      { unreadByChannel: {} }
+    );
+    expect(tree.groups[0]?.channels[0]?.summary).toBeNull();
   });
 
   it('orders an empty lane among populated ones and flags only the empty one', () => {
