@@ -107,6 +107,22 @@ WantedBy=default.target
 
 - `NODE_OPTIONS=--max-old-space-size=4096` is the #1196 heap-leak mitigation; keep it.
 - `Restart=on-failure` restarts after a crash but not after a clean `stop`.
+- In-app updates (`POST /update`) restart under this unit even though it is not
+  the stock `relay-ide.service` (#1285). The hub resolves its owning unit from
+  `/proc/self/cgroup`, reads `systemctl show --value -p Restart <unit>`, and
+  only exits when that policy is `on-failure` or `always` — the two values
+  systemd restarts a **nonzero** exit on. It then exits **nonzero** on purpose,
+  so a `status=1/FAILURE` line in the journal right after an update is the
+  restart working, not a crash. The same applies to the stock Linux unit, which
+  is also `Restart=on-failure`; only the macOS plist (`KeepAlive=true`) exits 0.
+- Units with any other policy — including systemd's default `Restart=no`, and
+  `on-abnormal`/`on-abort`/`on-watchdog`, which react to signals, timeouts and
+  watchdog misses rather than to exit status — are left running the old bytes
+  with a "restart manually" message instead of being exited into nothing. Same
+  for an unreadable policy. Set `RELAY_UPDATE_RESTART=systemd` in the unit's
+  `Environment=` to force the restart anyway (locked-down containers,
+  `systemctl` off PATH), or `RELAY_UPDATE_RESTART=never` to always restart by
+  hand. `POST /update` echoes the decision as `supervision`.
 - Enable linger once so the service runs without an active login session and comes back after reboot:
 
 ```bash

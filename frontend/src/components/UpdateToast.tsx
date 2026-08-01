@@ -5,12 +5,12 @@ import {
   addNotification,
   removeNotification,
 } from '../lib/stores/notifications.js';
+import { reloadWhenServerReturns } from '../lib/server-restart.js';
 
 const UPDATE_NOTIFICATION_ID = 'update-toast';
 
 export const UpdateToast: React.FC = () => {
   const didInitRef = React.useRef(false);
-  const reloadTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     if (didInitRef.current) return;
@@ -27,7 +27,6 @@ export const UpdateToast: React.FC = () => {
             content: (
               <UpdateToastContent
                 initialText={`Update available: v${data.current} → v${data.latest}`}
-                reloadTimerRef={reloadTimerRef}
               />
             ),
             onDismiss: () => removeNotification(UPDATE_NOTIFICATION_ID),
@@ -37,12 +36,6 @@ export const UpdateToast: React.FC = () => {
         // expected: no update available or network error
       }
     })();
-
-    return () => {
-      if (reloadTimerRef.current !== null) {
-        window.clearTimeout(reloadTimerRef.current);
-      }
-    };
   }, []);
 
   return null;
@@ -50,17 +43,21 @@ export const UpdateToast: React.FC = () => {
 
 interface UpdateToastContentProps {
   initialText: string;
-  reloadTimerRef: React.RefObject<number | null>;
 }
 
 const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
   initialText,
-  reloadTimerRef,
 }) => {
   const [text, setText] = React.useState(initialText);
   const [buttonText, setButtonText] = React.useState('Update Now');
   const [buttonDisabled, setButtonDisabled] = React.useState(false);
   const [showActions, setShowActions] = React.useState(true);
+  const [timedOut, setTimedOut] = React.useState(false);
+  // The restart wait outlives a click by up to 90s. Dismissing the toast or
+  // unmounting must stop it, or it reloads the page out from under whatever
+  // the user did next and writes state into a dead tree.
+  const waitAbortRef = React.useRef<AbortController | null>(null);
+  React.useEffect(() => () => waitAbortRef.current?.abort(), []);
 
   const triggerUpdate = React.useCallback(async () => {
     setButtonDisabled(true);
@@ -79,9 +76,22 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
       if (result.restarting) {
         setText(`${updated} Restarting server…`);
         setShowActions(false);
-        reloadTimerRef.current = window.setTimeout(() => {
-          window.location.reload();
-        }, 5000);
+        // Reload when the *new* server answers, not on a guessed timer —
+        // restart time varies with host and supervisor, and the outgoing
+        // process keeps answering for a moment after this response.
+        const controller = new AbortController();
+        waitAbortRef.current = controller;
+        await reloadWhenServerReturns(
+          (timeoutText) => {
+            setText(timeoutText);
+            // Dead copy with no affordance is a trap: give the reload back.
+            setTimedOut(true);
+            setButtonText('Reload');
+            setButtonDisabled(false);
+            setShowActions(true);
+          },
+          { previousBootId: result.bootId ?? null, signal: controller.signal }
+        );
       } else {
         setText(`${updated} Please restart the server manually.`);
         setShowActions(false);
@@ -92,9 +102,18 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
       setButtonText('Retry');
       setShowActions(true);
     }
-  }, [reloadTimerRef]);
+  }, []);
+
+  const onPrimaryClick = React.useCallback(() => {
+    if (timedOut) {
+      window.location.reload();
+      return;
+    }
+    void triggerUpdate();
+  }, [timedOut, triggerUpdate]);
 
   const dismiss = React.useCallback(() => {
+    waitAbortRef.current?.abort();
     removeNotification(UPDATE_NOTIFICATION_ID);
   }, []);
 
@@ -106,7 +125,7 @@ const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
           <TuiButton
             variant="primary"
             size="sm"
-            onClick={triggerUpdate}
+            onClick={onPrimaryClick}
             disabled={buttonDisabled}
           >
             {buttonText}
