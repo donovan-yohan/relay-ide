@@ -13,19 +13,16 @@
  *      - PUT validates schema, persists, returns layout
  *      - GET returns what was PUT
  *      - PUT rejects mismatched workspaceScope.id
- *   4. WorkbenchCanvas source structure assertions
+ *
+ * The `WorkbenchCanvas` source-structure assertions this file used to carry
+ * were dropped with `frontend/src/workbench/` in epic #1287 slice 0. The layout
+ * types, storage module, and REST surface below are unchanged.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
 
 // ---------------------------------------------------------------------------
 // 1. Shared types — serialize/deserialize round-trip
@@ -750,101 +747,5 @@ describe('validateLayoutBody', () => {
       ],
     };
     expect(validateLayoutBody(bad)).toMatch(/capabilityRequirements/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. WorkbenchCanvas source-level assertions
-// ---------------------------------------------------------------------------
-
-describe('WorkbenchCanvas source structure', () => {
-  const canvasPath = join(
-    projectRoot,
-    'frontend/src/workbench/WorkbenchCanvas.tsx'
-  );
-  const canvasCssPath = join(
-    projectRoot,
-    'frontend/src/workbench/workbench-canvas.css'
-  );
-
-  it('WorkbenchCanvas.tsx exists', () => {
-    expect(existsSync(canvasPath)).toBe(true);
-  });
-
-  it('workbench-canvas.css exists', () => {
-    expect(existsSync(canvasCssPath)).toBe(true);
-  });
-
-  it('exports WorkbenchCanvas component', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('export function WorkbenchCanvas');
-  });
-
-  it('exports createEmptyWorkbenchLayout helper', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('export function createEmptyWorkbenchLayout');
-  });
-
-  it('exports workbenchLayoutQueryKey', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('export const workbenchLayoutQueryKey');
-  });
-
-  it('uses @dnd-kit/core for drag', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('@dnd-kit/core');
-  });
-
-  it('uses TanStack Query for fetch and mutate', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('@tanstack/react-query');
-    expect(src).toContain('useQuery');
-    expect(src).toContain('useMutation');
-  });
-
-  it('does not import App.tsx or sidebar', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    // Check imports specifically — not JSDoc comments that may mention these names
-    const importLines = src
-      .split('\n')
-      .filter((line) => line.trimStart().startsWith('import'));
-    expect(importLines.some((l) => l.includes('App.tsx'))).toBe(false);
-    expect(importLines.some((l) => l.includes('Sidebar'))).toBe(false);
-  });
-
-  it('uses BlockHost from slice 2', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('BlockHost');
-  });
-
-  it('CSS has canvas-block class', () => {
-    const css = readFileSync(canvasCssPath, 'utf-8');
-    expect(css).toContain('.canvas-block');
-  });
-
-  it('CSS has workbench-canvas class', () => {
-    const css = readFileSync(canvasCssPath, 'utf-8');
-    expect(css).toContain('.workbench-canvas');
-  });
-
-  it('CSS has canvas-block__titlebar for drag handle', () => {
-    const css = readFileSync(canvasCssPath, 'utf-8');
-    expect(css).toContain('.canvas-block__titlebar');
-  });
-
-  it('CSS has canvas-block__resize-handle', () => {
-    const css = readFileSync(canvasCssPath, 'utf-8');
-    expect(css).toContain('.canvas-block__resize-handle');
-  });
-
-  it('minimize toggle is present in source', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('onMinimizeToggle');
-  });
-
-  it('position update fires the persist mutation', () => {
-    const src = readFileSync(canvasPath, 'utf-8');
-    expect(src).toContain('persistLayout');
-    expect(src).toContain('debouncedPersist');
   });
 });

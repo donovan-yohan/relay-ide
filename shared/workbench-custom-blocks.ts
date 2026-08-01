@@ -79,9 +79,12 @@ import type {
  *   - `link-list` — an ordered list of labelled links (title + url pairs).
  *     Suitable for artifact indexes, reference collections.
  *
- * Extensibility: new templates are added here and registered in
- * `frontend/src/workbench/blocks/custom-templates.tsx`. No agent-side changes
- * are needed — agents discover available templates at runtime.
+ * Extensibility: new templates are added here. The renderer that used to
+ * register them (`frontend/src/workbench/blocks/custom-templates.tsx`) was
+ * deleted with the pre-channel block canvas in epic #1287 slice 0, so this
+ * name set and the proposal REST surface currently have no UI consumer; a
+ * channel-era renderer would register against the same names. No agent-side
+ * changes are needed either way — agents discover templates at runtime.
  */
 export type KnownTemplateName = 'status-card' | 'kv-grid' | 'link-list';
 

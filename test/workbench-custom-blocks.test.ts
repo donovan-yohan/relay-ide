@@ -18,13 +18,12 @@
  *      - POST /proposals/:id/revoke: approved → revoked, audit emitted
  *      - 404 on unknown id, 409 on wrong state transition
  *   5. Audit envelopes emitted on each state transition
- *   6. Frontend source assertions (capability boundary defense-in-depth):
- *      - custom.tsx: no process.env / fetch / localStorage / raw transcripts
- *      - custom.tsx: exports CustomBlock as WorkbenchBlockRenderer<'custom'>
- *      - custom.tsx: renders revoked card on revoked proposals
- *      - custom-templates.tsx: has all three starter templates
- *      - CustomBlockProposalPreview.tsx: has capability disclosure + approve/reject
- *   7. Server index mounts the router
+ *   6. Server index mounts the router
+ *
+ * The frontend block-renderer source assertions this file used to carry were
+ * dropped with `frontend/src/workbench/` in epic #1287 slice 0. The pre-channel
+ * block canvas had no live importer left; the proposal REST surface it fed is
+ * still covered here.
  */
 
 import {
@@ -40,7 +39,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,7 +48,6 @@ import type { Express } from 'express';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
-const frontendWorkbench = join(projectRoot, 'frontend/src/workbench');
 
 // ---------------------------------------------------------------------------
 // HTTP test helper (matches workbench-layout.test.ts pattern)
@@ -881,200 +879,7 @@ describe('REST: lifecycle transitions', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Frontend source: custom.tsx capability boundary
-// ---------------------------------------------------------------------------
-
-describe('custom.tsx: capability boundary assertions', () => {
-  const customPath = join(frontendWorkbench, 'blocks/custom.tsx');
-
-  it('custom.tsx exists', () => {
-    expect(existsSync(customPath)).toBe(true);
-  });
-
-  it('imports from workbench-custom-blocks', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('workbench-custom-blocks');
-  });
-
-  it('uses useQuery (TanStack Query)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('useQuery');
-  });
-
-  it('does NOT access process.env directly (security boundary)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).not.toContain('process.env');
-  });
-
-  it('does NOT call raw fetch (uses api.ts abstraction) (security boundary)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    // Only allow "fetch" as part of function names like fetchCustomBlockProposals
-    const matches = src.match(/\bfetch\s*\(/g);
-    expect(matches).toBeNull();
-  });
-
-  it('does NOT access localStorage (security boundary)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).not.toContain('localStorage');
-    expect(src).not.toContain('sessionStorage');
-  });
-
-  it('does NOT access raw session transcripts (security boundary)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).not.toContain('.transcript');
-    expect(src).not.toContain('.rawBytes');
-    expect(src).not.toContain('.ptyOutput');
-  });
-
-  it('renders a revoked card with auditEventId when revoked', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('revoked');
-    expect(src).toContain('RevokedCard');
-    expect(src).toContain('auditEventId');
-  });
-
-  it('treats jsx-snippet as unsupported (no execution path)', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('jsx-snippet');
-    expect(src).toContain('unsupported');
-  });
-
-  it('exports CustomBlock as WorkbenchBlockRenderer<"custom">', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('export const CustomBlock');
-    expect(src).toContain(`WorkbenchBlockRenderer<'custom'>`);
-  });
-
-  it('does NOT contain the slice-2 scaffold notice', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).not.toContain('sandbox not yet implemented');
-  });
-
-  it('constructs a sandboxed api object passed to TemplateRenderer', () => {
-    const src = readFileSync(customPath, 'utf-8');
-    expect(src).toContain('sandboxApi');
-    expect(src).toContain('TemplateRenderer');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. Frontend source: custom-templates.tsx
-// ---------------------------------------------------------------------------
-
-describe('custom-templates.tsx: template renderer assertions', () => {
-  const templatesPath = join(frontendWorkbench, 'blocks/custom-templates.tsx');
-
-  it('custom-templates.tsx exists', () => {
-    expect(existsSync(templatesPath)).toBe(true);
-  });
-
-  it('exports TemplateRenderer', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).toContain('export function TemplateRenderer');
-  });
-
-  it('has all three starter templates', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).toContain('status-card');
-    expect(src).toContain('kv-grid');
-    expect(src).toContain('link-list');
-  });
-
-  it('imports TemplateRendererApi from shared/workbench-custom-blocks', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).toContain('TemplateRendererApi');
-    expect(src).toContain('workbench-custom-blocks');
-  });
-
-  it('does NOT access process.env (security boundary)', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).not.toContain('process.env');
-  });
-
-  it('does NOT call raw fetch (security boundary)', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    const matches = src.match(/\bfetch\s*\(/g);
-    expect(matches).toBeNull();
-  });
-
-  it('does NOT access localStorage (security boundary)', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).not.toContain('localStorage');
-    expect(src).not.toContain('sessionStorage');
-  });
-
-  it('validates URLs in link-list via isSafeUrl (https or relative paths only)', () => {
-    const src = readFileSync(templatesPath, 'utf-8');
-    expect(src).toContain('isSafeUrl');
-    // The regex checks for https scheme or relative paths — verify the function exists
-    expect(src).toContain('SAFE_URL_PATTERN');
-  });
-
-  it('css file exists', () => {
-    expect(
-      existsSync(join(frontendWorkbench, 'blocks/custom-templates.css'))
-    ).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 7. Frontend source: CustomBlockProposalPreview.tsx
-// ---------------------------------------------------------------------------
-
-describe('CustomBlockProposalPreview.tsx: proposal UI assertions', () => {
-  const previewPath = join(frontendWorkbench, 'CustomBlockProposalPreview.tsx');
-
-  it('CustomBlockProposalPreview.tsx exists', () => {
-    expect(existsSync(previewPath)).toBe(true);
-  });
-
-  it('uses useQuery for fetching pending proposals', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('useQuery');
-    expect(src).toContain("'pending'");
-  });
-
-  it('uses useMutation for approve/reject', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('useMutation');
-  });
-
-  it('calls approveCustomBlockProposal and rejectCustomBlockProposal', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('approveCustomBlockProposal');
-    expect(src).toContain('rejectCustomBlockProposal');
-  });
-
-  it('renders capability requirements disclosure', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('capabilityRequirements');
-    expect(src).toContain('capability requirements');
-  });
-
-  it('uses TemplateRenderer for the preview', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('TemplateRenderer');
-  });
-
-  it('invalidates the query on decision', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('invalidateQueries');
-  });
-
-  it('css file exists', () => {
-    expect(
-      existsSync(join(frontendWorkbench, 'CustomBlockProposalPreview.css'))
-    ).toBe(true);
-  });
-
-  it('exports CustomBlockProposalList', () => {
-    const src = readFileSync(previewPath, 'utf-8');
-    expect(src).toContain('export function CustomBlockProposalList');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 8. API client source assertions
+// 5. API client source assertions
 // ---------------------------------------------------------------------------
 
 describe('api.ts: custom block proposal API functions', () => {
@@ -1112,7 +917,7 @@ describe('api.ts: custom block proposal API functions', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. Server index mounts the router
+// 6. Server index mounts the router
 // ---------------------------------------------------------------------------
 
 describe('server/index.ts: router mount', () => {
@@ -1130,53 +935,7 @@ describe('server/index.ts: router mount', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. isSafeUrl unit tests (fix #3 — SAFE_URL_PATTERN allows //evil.com)
-// ---------------------------------------------------------------------------
-
-import { isSafeUrl } from '../frontend/src/workbench/blocks/custom-templates.js';
-
-describe('isSafeUrl: URL safety filter', () => {
-  it('allows absolute https URLs', () => {
-    expect(isSafeUrl('https://example.com')).toBe(true);
-    expect(isSafeUrl('https://example.com/path?q=1')).toBe(true);
-  });
-
-  it('allows root-relative paths', () => {
-    expect(isSafeUrl('/path/to/page')).toBe(true);
-    expect(isSafeUrl('/')).toBe(true);
-    expect(isSafeUrl('/path?q=1#anchor')).toBe(true);
-  });
-
-  it('rejects protocol-relative URLs (security: //evil.com bypass)', () => {
-    expect(isSafeUrl('//evil.com')).toBe(false);
-    expect(isSafeUrl('//evil.com/path')).toBe(false);
-  });
-
-  it('rejects http:// URLs', () => {
-    expect(isSafeUrl('http://example.com')).toBe(false);
-  });
-
-  it('rejects javascript: URLs', () => {
-    expect(isSafeUrl('javascript:alert(1)')).toBe(false);
-    expect(isSafeUrl('javascript:void(0)')).toBe(false);
-  });
-
-  it('rejects data: URLs', () => {
-    expect(isSafeUrl('data:text/html,<h1>hi</h1>')).toBe(false);
-  });
-
-  it('rejects bare relative paths (no leading slash)', () => {
-    expect(isSafeUrl('relative/path')).toBe(false);
-    expect(isSafeUrl('../up/one')).toBe(false);
-  });
-
-  it('rejects empty string', () => {
-    expect(isSafeUrl('')).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 11. rendererId sync on proposal create (fix #5)
+// 7. rendererId sync on proposal create (fix #5)
 // ---------------------------------------------------------------------------
 
 describe('REST: POST /proposals — rendererId synced to proposalId', () => {
@@ -1221,7 +980,7 @@ describe('REST: POST /proposals — rendererId synced to proposalId', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. Per-template prop validation 422 cases (fix #6)
+// 8. Per-template prop validation 422 cases (fix #6)
 // ---------------------------------------------------------------------------
 
 describe('validateProposalInput: per-template prop validation', () => {
@@ -1410,7 +1169,7 @@ describe('REST: per-template prop validation returns 422', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 13. GET /proposals/:id endpoint (fix #1)
+// 9. GET /proposals/:id endpoint (fix #1)
 // ---------------------------------------------------------------------------
 
 describe('REST: GET /proposals/:id', () => {
@@ -1507,7 +1266,7 @@ describe('REST: GET /proposals/:id', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 14. Audit peer mapping — agent vs user actor (fix #7)
+// 10. Audit peer mapping — agent vs user actor (fix #7)
 // ---------------------------------------------------------------------------
 
 import {
@@ -1605,7 +1364,7 @@ describe('REST: audit peer kind for agent vs user proposals', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 15. api.ts: fetchCustomBlockProposalById (fix #1)
+// 11. api.ts: fetchCustomBlockProposalById (fix #1)
 // ---------------------------------------------------------------------------
 
 describe('api.ts: fetchCustomBlockProposalById', () => {
