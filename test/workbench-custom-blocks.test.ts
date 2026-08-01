@@ -17,8 +17,14 @@
  *      - POST /proposals/:id/reject: pending → rejected, audit emitted
  *      - POST /proposals/:id/revoke: approved → revoked, audit emitted
  *      - 404 on unknown id, 409 on wrong state transition
- *   5. Audit envelopes emitted on each state transition
+ *      - Audit envelopes emitted on each state transition
+ *   5. API client source assertions (frontend/src/lib/api.ts)
  *   6. Server index mounts the router
+ *   7. rendererId sync on proposal create
+ *   8. Per-template prop validation 422 cases
+ *   9. GET /proposals/:id endpoint
+ *  10. Audit peer mapping — agent vs user actor
+ *  11. api.ts: fetchCustomBlockProposalById
  *
  * The frontend block-renderer source assertions this file used to carry were
  * dropped with `frontend/src/workbench/` in epic #1287 slice 0. The pre-channel

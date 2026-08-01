@@ -7,6 +7,22 @@
  *   - KNOWN_TEMPLATE_NAMES, isKnownTemplateName
  *   - CUSTOM_BLOCK_PROPOSAL_ERRORS
  *
+ * # Retained-without-a-consumer (epic #1287 slice 0)
+ *
+ * The whole proposal stack below the UI is INTENTIONALLY retained even though
+ * nothing renders it today. Slice 0 deleted only `frontend/src/workbench/`
+ * (the pre-channel block canvas); the server halves stay by design:
+ *   - `server/workbench-custom-blocks.ts` + `server/workbench-prompt-hooks.ts`
+ *     (routes `/workbench/custom-blocks` + `/workbench/propose-block`)
+ *   - the `frontend/src/lib/api.ts` client functions
+ *     (`fetchCustomBlockProposals`, `fetchCustomBlockProposalById`,
+ *     `approveCustomBlockProposal`, `rejectCustomBlockProposal`,
+ *     `revokeCustomBlockProposal`) — zero `.tsx` callers as of slice 0, pinned
+ *     in place by `test/workbench-custom-blocks.test.ts` section 5.
+ * A channel-era renderer is expected to bind against this same contract. Do
+ * not re-discover this as dead code in the next hygiene pass: it is a scope
+ * boundary, not an oversight.
+ *
  * # Proposal lifecycle
  *
  *   pending  →  approved  →  revoked
@@ -14,10 +30,13 @@
  *           rejected
  *
  * An agent submits a CustomBlockProposal via POST /workbench/custom-blocks/proposals.
- * The user reviews the proposed block in the CustomBlockProposalPreview UI, then
- * either approves or rejects it. An approved proposal becomes addressable as a
- * real custom block (its proposalId becomes the descriptor's rendererId). A
- * previously-approved proposal can be revoked (e.g. on capability concerns).
+ * The user then either approves or rejects it. An approved proposal becomes
+ * addressable as a real custom block (its proposalId becomes the descriptor's
+ * rendererId). A previously-approved proposal can be revoked (e.g. on
+ * capability concerns). The review UI that used to drive that decision
+ * (`CustomBlockProposalPreview`) was deleted with the pre-channel block canvas
+ * in epic #1287 slice 0; the lifecycle and its REST surface are unchanged and
+ * currently have no UI consumer (see "Extensibility" below).
  *
  * # Renderer source kinds
  *
@@ -242,7 +261,9 @@ export interface CustomBlockProposalInput {
  * Renderers are pure functions of (descriptor, context, api). They cannot
  * import modules, access global objects, or call unlisted APIs.
  *
- * The api object is constructed by the BlockHost and passed as a parameter.
+ * The api object is constructed by the block host and passed as a parameter.
+ * (The pre-channel `BlockHost` that used to construct it was deleted in epic
+ * #1287 slice 0; a channel-era host would build the same shape.)
  * Any attempt to access `process`, `fetch`, `localStorage`, etc. from inside
  * a renderer is blocked because renderers are typed functions that only
  * receive this typed object — they do not have import access.

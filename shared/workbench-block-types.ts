@@ -316,8 +316,10 @@ export interface WorkbenchBlockContext {
    * or an unhydrated context). Consumers should treat `undefined` as unknown,
    * NOT as unavailable — only explicit `false` means degraded.
    *
-   * Used by BlockHost to render a distinct "node-degraded" card for file/artifact
-   * blocks when the helper can't satisfy file-rpc requests (#654).
+   * Was used by `BlockHost` to render a distinct "node-degraded" card for
+   * file/artifact blocks when the helper can't satisfy file-rpc requests
+   * (#654). That host was deleted in epic #1287 slice 0; the flag stays on the
+   * context contract for a channel-era consumer.
    */
   nodeFileRpcAvailable?: boolean;
   /**

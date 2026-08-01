@@ -61,9 +61,10 @@ export interface WorkspaceScopeRef {
  * narrow normally; unknown kinds fall into the catch-all branch that preserves
  * the raw `kind` string and arbitrary `meta`.
  *
- * `BlockHost` (slice 2) already handles unknown kinds via `getBlockRenderer`
- * returning `undefined` → `UnknownKindCard`. This type widens the container to
- * match that runtime reality at the type level.
+ * `BlockHost` (#616 slice 2, deleted in epic #1287 slice 0) handled unknown
+ * kinds via `getBlockRenderer` returning `undefined` → `UnknownKindCard`. This
+ * type widens the container to match that runtime reality at the type level,
+ * and stays valid for any channel-era host that renders these placements.
  */
 export type WorkbenchBlockPlacementDescriptor =
   | WorkbenchBlockDescriptor
@@ -86,7 +87,8 @@ export type WorkbenchBlockPlacementDescriptor =
  * union that includes both the known `WorkbenchBlockDescriptor` variants and
  * an unknown-kind catch-all. When a future kind is added server-side, older
  * clients receive it in the catch-all branch; `getBlockRenderer` returns
- * `undefined` and `BlockHost` renders the UnknownKindCard safe fallback.
+ * `undefined` and the host renders an unknown-kind safe fallback (as the
+ * deleted `BlockHost` did with `UnknownKindCard`).
  *
  * The `_unknown` bag captures any extra JSON fields on the placement object
  * from the server that the current client does not recognise — they are
