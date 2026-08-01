@@ -35,6 +35,7 @@ import {
 } from '../shared/channel-chat-protocol.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
+import { isDmChannel } from '../shared/dm-channels.js';
 import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.js';
 
 // @-mention routing binder (#1167, slice 4). One module owns the whole loop:
@@ -1307,13 +1308,41 @@ export function createChannelAgentBinder(
 
   // ── routing ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Provider id of the single agent a DM channel belongs to, else null.
+   *
+   * A DM is not a distinct backend entity — it is a topic whose id equals the
+   * deterministic formula for its own `routingDefaults.providerId` (shared
+   * derivation, `shared/dm-channels.ts`). Without a topic store — or before the
+   * topic row exists — the binder cannot tell a DM from a group channel, so it
+   * fails closed to "not a DM" and keeps the multi-party silence rule.
+   */
+  function dmProviderIdFor(channelId: string): string | null {
+    const topic = topicStore?.get(channelId);
+    if (!topic) return null;
+    return isDmChannel(topic);
+  }
+
   function routeOne(trigger: ChannelMessage, profile: AgentProfile): void {
     void (async () => {
       try {
         const framework = profile.providerId;
         const target = await resolveTarget(framework);
         if (closed) return; // close() raced the availability probe
-        if (!target) return; // not a known framework — ignore silently
+        if (!target) {
+          // Not a known framework. In a multi-party channel an unroutable
+          // @name stays silent (§1). In a DM there is nobody ELSE to answer,
+          // so silence reads as the product being broken — say so instead.
+          if (dmProviderIdFor(trigger.channelId) !== null) {
+            postUnavailableRow(
+              trigger.channelId,
+              profile.id,
+              `nothing was routed — ${profile.displayName || framework} is unavailable.`,
+              parentForTrigger(trigger)
+            );
+          }
+          return;
+        }
         if (!target.available) {
           const senderDisplayName =
             profile.displayName || target.displayName || framework;
@@ -1515,9 +1544,41 @@ export function createChannelAgentBinder(
       return;
     }
     consecutiveAgentTurns.delete(message.channelId);
+    if (profiles.length === 0) {
+      routeImplicitDm(message);
+      return;
+    }
     for (const profile of profiles) {
       routeOne(message, profile);
     }
+  }
+
+  /**
+   * DM implicit routing. A DM is "a channel with one agent" (ADR-020,
+   * `docs/CHANNEL_CHAT.md`), so addressing it IS the mention — a human message
+   * in a DM must reach that agent with no literal `@name` typed.
+   *
+   * Only reached when the explicit-mention resolver produced ZERO routable
+   * profiles, so an explicit `@name` can never be double-routed, and only from
+   * the human branch of `handleMessagePosted`, so an agent's own DM post can
+   * never re-trigger itself (`eligibleProfiles`' self-filter does not cover a
+   * message with no mentions at all).
+   */
+  function routeImplicitDm(message: ChannelMessage): void {
+    const providerId = dmProviderIdFor(message.channelId);
+    if (providerId === null) {
+      // Legitimate in a multi-party channel: humans chat without addressing an
+      // agent. Logged, never announced — a system row here would spam #general.
+      logger.debug(
+        `message posted, 0 profiles routed, channel=${message.channelId} message=${message.id}`
+      );
+      return;
+    }
+    const profile = defaultProfileForProvider(providerId);
+    logger.debug(
+      `dm implicit route, channel=${message.channelId} provider=${providerId} profile=${profile.id}`
+    );
+    routeOne(message, profile);
   }
 
   function handleAssistantFinalized(message: ChannelMessage): void {

@@ -18,6 +18,10 @@ import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
+  dmChannelCreateInput,
+  dmChannelTopicId,
+} from '../shared/dm-channels.js';
+import {
   createAgentProfileStore,
   type AgentProfileStore,
 } from '../server/agent-profile-store.js';
@@ -3105,5 +3109,208 @@ describe('channel-agent-binder — topic participant links', () => {
     expect(topicStore.get(CH)?.linkedRefs.agentRuntimeIds).toEqual([
       sessions.firstSessionId(),
     ]);
+  });
+});
+
+// ── #1166 routing half: a DM is "a channel with one agent", so addressing the
+// channel IS the mention. Before this lane a DM message with no literal @name
+// resolved zero profiles and returned with zero rows and zero logs — the agent
+// never heard you and nothing said so.
+
+describe('channel-agent-binder — DM implicit routing', () => {
+  const DM_WORKSPACE = 'ws:local';
+  const DM_CH = dmChannelTopicId('hermes', DM_WORKSPACE);
+  const HERMES_TARGETS: MentionTarget[] = [
+    {
+      id: 'hermes',
+      displayName: 'Hermes',
+      kind: 'framework',
+      available: true,
+      reason: null,
+    },
+  ];
+  /** A bound hermes reply posting back into its own DM (self-trigger bait). */
+  const HERMES_AGENT_SENDER: ChannelSenderRef = {
+    kind: 'agent',
+    id: builtInAgentProfileId('hermes'),
+    providerId: 'hermes',
+    displayName: 'Hermes',
+  };
+
+  function makeTopics(): WorkspaceTopicStore {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    return topics;
+  }
+
+  function createDmTopic(topics: WorkspaceTopicStore): void {
+    topics.create(
+      dmChannelCreateInput({
+        providerId: 'hermes',
+        providerDisplayName: 'Hermes',
+        workspaceId: DM_WORKSPACE,
+      })
+    );
+  }
+
+  function postTo(
+    store: ChannelMessageStore,
+    binder: ChannelAgentBinder,
+    channelId: string,
+    text: string,
+    sender: ChannelSenderRef = OPERATOR
+  ): ChannelMessage {
+    const mentions = parseMentions(text, ['hermes']);
+    const message = store.appendComplete({
+      channelId,
+      sender,
+      text,
+      ...(mentions.length ? { mentions } : {}),
+    });
+    binder.handleMessagePosted(message, message.mentions ?? []);
+    return message;
+  }
+
+  function repliesIn(store: ChannelMessageStore, channelId: string) {
+    return store
+      .history(channelId, { limit: 200 })
+      .filter(
+        (m) =>
+          m.sender.kind === 'agent' && m.status === 'complete' && !m.agentDetail
+      );
+  }
+
+  function systemRowsIn(store: ChannelMessageStore, channelId: string) {
+    return store
+      .history(channelId, { limit: 200 })
+      .filter((m) => m.kind === 'system');
+  }
+
+  /** Let every queued microtask + availability probe drain before asserting a negative. */
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+
+  it('routes an unmentioned human DM message to the channel agent', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'on it',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'what is the state of the build?');
+
+    await waitFor(() => repliesIn(store, DM_CH).length === 1);
+    expect(repliesIn(store, DM_CH)[0]!.body.text).toBe('on it');
+    expect(adapter.sendCalls).toHaveLength(1);
+    // The DM's single agent is that provider's DEFAULT profile actor.
+    expect(sessions.lastCreateParams()).toMatchObject({
+      providerId: 'hermes',
+      profileActorId: builtInAgentProfileId('hermes'),
+    });
+  });
+
+  it('does not double-route an explicit @mention in a DM', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'ack',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, '@hermes ship it');
+
+    await waitFor(() => repliesIn(store, DM_CH).length === 1);
+    await settle();
+    // Exactly ONE turn: the explicit mention resolved, so the implicit DM path
+    // must not fire a second copy of the same message.
+    expect(adapter.sendCalls).toHaveLength(1);
+    expect(repliesIn(store, DM_CH)).toHaveLength(1);
+    expect(sessions.spawns()).toBe(1);
+  });
+
+  it('never self-routes an agent-authored DM post', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'loop',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    // An unmentioned post from the DM's OWN agent. `eligibleProfiles`' self
+    // filter cannot catch this — there are no mentions to filter — so the
+    // implicit path must be gated on sender kind instead.
+    postTo(store, binder, DM_CH, 'still working on it', HERMES_AGENT_SENDER);
+
+    await settle();
+    expect(adapter.sendCalls).toHaveLength(0);
+    expect(sessions.spawns()).toBe(0);
+    expect(systemRowsIn(store, DM_CH)).toHaveLength(0);
+  });
+
+  it('says so out loud when a DM agent is not routable', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'never',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: [], // hermes is not a known framework on this hub
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'are you there?');
+
+    await waitFor(() => systemRowsIn(store, DM_CH).length === 1);
+    expect(systemRowsIn(store, DM_CH)[0]!.body.text).toContain(
+      'nothing was routed'
+    );
+    expect(sessions.spawns()).toBe(0);
+    expect(adapter.sendCalls).toHaveLength(0);
+  });
+
+  it('stays silent in a multi-party channel with no mentions', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics); // the DM exists; this post just is not in it
+    topics.create({ id: CH, workspaceId: DM_WORKSPACE, title: 'general' });
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'never',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, CH, 'morning everyone');
+
+    await settle();
+    expect(adapter.sendCalls).toHaveLength(0);
+    expect(sessions.spawns()).toBe(0);
+    // Humans chat without addressing an agent — a system row here is spam.
+    expect(systemRowsIn(store, CH)).toHaveLength(0);
+    expect(repliesIn(store, CH)).toHaveLength(0);
   });
 });
