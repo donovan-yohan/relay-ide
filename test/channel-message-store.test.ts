@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   buildChannelThreadHistorySql,
+  buildChannelThreadSummarySql,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
@@ -1232,6 +1233,78 @@ describe('channel-message-store thread summaries', () => {
     ]);
     expect(s.listChannelThreadSummaries('topic:t', 5).threads).toHaveLength(5);
     expect(s.listChannelThreadSummaries('topic:t', 0).threads).toHaveLength(1);
+  });
+
+  it('counts only threads whose root still resolves in this channel', () => {
+    // `COUNT(*) OVER ()` used to be computed inside the aggregate, i.e. BEFORE
+    // the join that drops a group whose root row is gone — so the rail could
+    // render "2 threads" over one thread row. The frontend clamp only guards
+    // under-reporting, so nothing downstream caught it.
+    const file = dbPath();
+    const s = store(file);
+    const kept = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'kept root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'kept reply',
+      parentMessageId: kept.id,
+    });
+    const orphaned = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'doomed root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'orphan reply',
+      parentMessageId: orphaned.id,
+    });
+    expect(s.listChannelThreadSummaries('topic:t').threadCount).toBe(2);
+
+    const raw = new Database(file);
+    cleanup.push(() => raw.close());
+    raw.prepare(`DELETE FROM channel_messages WHERE id = ?`).run(orphaned.id);
+
+    const page = s.listChannelThreadSummaries('topic:t');
+    expect(page.threads.map((thread) => thread.rootMessageId)).toEqual([
+      kept.id,
+    ]);
+    expect(page.threadCount).toBe(page.threads.length);
+  });
+
+  it('plans the channel-list thread aggregate as a channel-scoped index walk', () => {
+    const p = dbPath();
+    const s = store(p);
+    const root = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'reply',
+      parentMessageId: root.id,
+    });
+
+    const raw = new Database(p, { readonly: true });
+    cleanup.push(() => raw.close());
+    // EXPLAIN the exact SQL `GET /channels` runs once per channel — the reason
+    // the builder is exported rather than inlined.
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelThreadSummarySql()}`)
+      .all({ channelId: 'topic:t', limit: 3 }) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join('\n');
+    expect(details).toContain('idx_chm_channel_seq');
+    // Never a full-table walk: both channel_messages references stay scoped to
+    // the one channel, so this costs the same order of work as the summary's
+    // own COUNT(*) no matter how many channels the hub holds.
+    expect(details).not.toMatch(/SCAN (?:channel_messages|root)\b/);
   });
 
   it('carries the server-resolved root sender label and vendor', () => {

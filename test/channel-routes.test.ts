@@ -819,6 +819,21 @@ describe('channel routes — threads', () => {
     ).toMatchObject({ threads: [], threadCount: 0 });
   });
 
+  it('reports no threads for a channel that holds no messages at all', async () => {
+    // The aggregate is skipped outright here — a channel with zero messages
+    // cannot hold a thread, and `GET /channels` pays this per channel on a list
+    // the rail refetches on every agent-turn window.
+    const h = await harness();
+    const list = await req<{ channels: Array<Record<string, unknown>> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+    });
+    expect(
+      list.body.channels.find((c) => c['id'] === h.channelId)
+    ).toMatchObject({ messageCount: 0, threads: [], threadCount: 0 });
+  });
+
   it('returns 404 for an unknown parent and 409 for a cross-channel parent', async () => {
     const h = await harness();
     const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;

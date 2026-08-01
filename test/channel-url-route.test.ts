@@ -343,6 +343,34 @@ describe('useUrlNav channel navigation', () => {
     expect(window.history.length).toBe(lengthBefore);
   });
 
+  it('corrects a dead session URL the store already matches, and still pushes the next open', async () => {
+    // The repo in the URL is ALREADY the active one — the normal case when an
+    // operator reloads a link to a session that has since died. `applyRoute`
+    // then writes every routed field back unchanged, so no store dep changes
+    // and the push effect never runs. A correction deferred to that effect
+    // never happened, and the suppression it armed was still armed when the
+    // operator next opened a channel — that open replaced the entry instead of
+    // pushing one, so Back left the app.
+    useUiStore.setState({ activeRepoPath: REPO_PATH });
+    await mount(`/${hashPath(REPO_PATH)}/gone`);
+    const lengthBefore = window.history.length;
+
+    await act(async () => {
+      nav.restoreFromUrl();
+    });
+
+    expect(useSessionsStore.getState().activeSessionId).toBeNull();
+    expect(window.location.pathname).toBe(`/${hashPath(REPO_PATH)}`);
+    expect(window.history.length).toBe(lengthBefore);
+
+    await act(async () => {
+      useUiStore.getState().setActiveChannelId(channelId);
+    });
+
+    expect(window.location.pathname).toBe(channelPath);
+    expect(window.history.length).toBe(lengthBefore + 1);
+  });
+
   it('closes the channel when back lands on a session route', async () => {
     await mount('/');
     await act(async () => {

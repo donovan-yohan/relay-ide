@@ -1495,6 +1495,12 @@ function TopicAdvancedDetailGate({
  * `DESIGN.md`; a working channel swaps the dot for the braille spinner so
  * liveness is text motion, not a shimmer. The count is suppressed for a single
  * agent (the common DM case) and stays in the accessible label.
+ *
+ * `role="img"` is load-bearing, not decoration: ARIA does not permit naming a
+ * generic element, so an `aria-label` on a bare `<span>` is discarded and the
+ * dot/spinner children are `aria-hidden` — presence would reach a mouse
+ * tooltip and nothing else. The role makes the indicator a single nameable
+ * graphic, which is the accessibility half of desktop presence parity.
  */
 function TopicRowPresence({
   channelId,
@@ -1519,6 +1525,7 @@ function TopicRowPresence({
     <span
       className={`topic-row__presence topic-row__presence--${presence.presence}`}
       style={style}
+      role="img"
       aria-label={presence.label}
       title={presence.label}
       data-presence={presence.presence}
@@ -1730,7 +1737,15 @@ function TopicRow({
             ) : null}
           </span>
         </button>
-        <span className="topic-row__trail" aria-label={item.statusLabel}>
+        {/* `role="group"` so the row's status name is actually exposed: a bare
+            span cannot be named, and unlike `role="img"` a group does not turn
+            the presence indicator and unread dot inside it into presentational
+            children that lose their own names. */}
+        <span
+          className="topic-row__trail"
+          role="group"
+          aria-label={item.statusLabel}
+        >
           <TopicRowPresence
             channelId={item.id}
             summary={summary}
@@ -1742,6 +1757,7 @@ function TopicRow({
           {unread ? (
             <span
               className="topic-row__activity-dot"
+              role="img"
               aria-label="unread activity"
               title="unread activity"
             />
@@ -1804,6 +1820,30 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
 }
 
 /**
+ * What a search row's action can actually reach (#1287 slice 5 item 20).
+ *
+ * A persisted hit IS a channel, so it opens one. But `collectSearchTopics`
+ * deliberately appends derived topics from the WorkContext store, and those are
+ * backed by a session rather than a channel — `openTopicSelection` returns
+ * early for them, so routing one through the channel path would render an
+ * enabled `open` button that opens nothing. Those resume their linked session,
+ * exactly as the rail row does for the same topic; only a derived hit with no
+ * reachable session is a dead row, and that row says so.
+ */
+function searchResultOpenTarget(
+  result: WorkspaceTopicSearchResult,
+  canOpenSession: boolean
+): { label: string; title: string } | null {
+  if (result.topic.source === 'persisted') {
+    return { label: 'open', title: 'open chat' };
+  }
+  if (canOpenSession && result.action.primarySessionId) {
+    return { label: 'resume', title: 'resume the linked session' };
+  }
+  return null;
+}
+
+/**
  * #1287 slice 5 item 20: a search hit is a chat, so its action opens the chat.
  *
  * The row used to attach `action.primarySessionId` and disable itself whenever
@@ -1812,15 +1852,21 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
  * `onOpenTopic` routes it through the same gate as a rail row (item 9 routing).
  * A stale `disabledReason` describes linked surfaces, not the channel, so it
  * renders as a caveat and never blocks opening the conversation.
+ *
+ * `canOpenSession` rather than the session handler itself: the derived fallback
+ * lives in `openSearchResult` beside the rail's own resume path, so this row
+ * only needs to know whether that fallback is reachable.
  */
 function TopicSearchResults({
   results,
   truncated,
   onOpenTopic,
+  canOpenSession,
 }: {
   results: WorkspaceTopicSearchResult[];
   truncated: boolean;
   onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
+  canOpenSession: boolean;
 }) {
   if (results.length === 0 && !truncated) return null;
   return (
@@ -1830,6 +1876,7 @@ function TopicSearchResults({
     >
       {results.map((result) => {
         const caveat = result.action.disabledReason;
+        const target = searchResultOpenTarget(result, canOpenSession);
         return (
           <div
             key={result.topic.id}
@@ -1849,10 +1896,11 @@ function TopicSearchResults({
             <button
               type="button"
               className="topic-action topic-search-result__action"
-              title="open chat"
+              disabled={!target}
+              title={target?.title ?? 'no chat or session to open for this hit'}
               onClick={() => onOpenTopic(result)}
             >
-              open
+              {target?.label ?? 'open'}
             </button>
             {caveat ? (
               <span className="topic-search-result__caveat">{caveat}</span>
@@ -2154,6 +2202,7 @@ function TopicSearchPanel({
   searchScope = 'all',
   onToggleSearchScope,
   canScope = false,
+  canOpenSession = false,
 }: {
   model: TopicNavModel;
   searchQuery: string;
@@ -2169,6 +2218,7 @@ function TopicSearchPanel({
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
   canScope?: boolean;
+  canOpenSession?: boolean;
 }) {
   const searchActive = searchQuery.trim().length > 0;
   return (
@@ -2235,6 +2285,7 @@ function TopicSearchPanel({
           results={searchResults}
           truncated={searchTruncated}
           onOpenTopic={onOpenTopic}
+          canOpenSession={canOpenSession}
         />
       ) : null}
     </>
@@ -2347,6 +2398,14 @@ function WorkspaceLaneStartChat({
  * component now owns the whole lane gesture, so the two surfaces cannot drift
  * apart again.
  *
+ * The gesture itself is per-breakpoint on purpose. Selecting a lane is how the
+ * rail picks the create target for `new chat`, so binding select and fold to
+ * one click would collapse the lane the operator just aimed at — two clicks to
+ * see the channels they were selecting. Mobile ships that coupling because a
+ * tap is the only lane-scale gesture a phone has; desktop has hover, focus and
+ * room for a dedicated glyph, so the name selects and the trailing `−`/`+`
+ * folds. `aria-expanded` rides whichever control owns the fold.
+ *
  * The affordance is text (`−`/`+`), not an icon: it is the same character pair
  * the mobile cockpit shipped with, and it needs no stroke geometry to stay
  * legible at caption size. Deliberately NO channel count — the audit calls the
@@ -2365,36 +2424,69 @@ function WorkspaceLaneHeader({
   onSelectWorkspace: (workspaceId: string) => void;
   onToggleCollapsed: (workspaceId: string) => void;
 }) {
-  return (
-    <button
-      type="button"
-      className={`${block}__header ${block}__header--select`}
-      aria-expanded={expanded}
-      title={`${expanded ? 'collapse' : 'expand'} ${group.title}`}
-      onClick={() => {
-        // Clicking a lane both selects it (it is the create target) and folds
-        // it — one lane-scale gesture on both breakpoints.
-        onSelectWorkspace(group.id);
-        onToggleCollapsed(group.id);
-      }}
-    >
-      {group.icon ? (
-        <span className={`${block}__icon`} aria-hidden="true">
-          {group.icon}
+  const foldLabel = `${expanded ? 'collapse' : 'expand'} ${group.title}`;
+  const icon = group.icon ? (
+    <span className={`${block}__icon`} aria-hidden="true">
+      {group.icon}
+    </span>
+  ) : null;
+  const unreadRollup =
+    !expanded && group.unread ? (
+      <span
+        className="topic-row__activity-dot"
+        role="img"
+        aria-label="unread activity"
+        title="unread activity"
+      />
+    ) : null;
+
+  if (block === 'topic-mobile-group') {
+    return (
+      <button
+        type="button"
+        className={`${block}__header ${block}__header--select`}
+        aria-expanded={expanded}
+        title={foldLabel}
+        onClick={() => {
+          // One tap is the only lane-scale gesture at this breakpoint, so it
+          // both selects the lane (it is the create target) and folds it.
+          onSelectWorkspace(group.id);
+          onToggleCollapsed(group.id);
+        }}
+      >
+        {icon}
+        <span className={`${block}__name`}>{group.title}</span>
+        {unreadRollup}
+        <span className={`${block}__toggle`} aria-hidden="true">
+          {expanded ? '−' : '+'}
         </span>
-      ) : null}
-      <span className={`${block}__name`}>{group.title}</span>
-      {!expanded && group.unread ? (
-        <span
-          className="topic-row__activity-dot"
-          aria-label="unread activity"
-          title="unread activity"
-        />
-      ) : null}
-      <span className={`${block}__toggle`} aria-hidden="true">
+      </button>
+    );
+  }
+
+  return (
+    <div className={`${block}__header ${block}__header--split`}>
+      <button
+        type="button"
+        className={`${block}__select`}
+        title={`select ${group.title}`}
+        onClick={() => onSelectWorkspace(group.id)}
+      >
+        {icon}
+        <span className={`${block}__name`}>{group.title}</span>
+      </button>
+      {unreadRollup}
+      <button
+        type="button"
+        className={`${block}__toggle`}
+        aria-expanded={expanded}
+        aria-label={foldLabel}
+        title={foldLabel}
+        onClick={() => onToggleCollapsed(group.id)}
+      >
         {expanded ? '−' : '+'}
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -2822,12 +2914,22 @@ export function TopicSidebarView({
   // one routing path, no attach-a-session shortcut that skipped it. The drawer
   // close mirrors the mobile row and the palette: on desktop `sidebarOpen` is
   // already false, so it is a no-op there.
+  //
+  // Chat search also returns DERIVED topics (the server appends `fallbackTopics`
+  // over the WorkContext store), and those have no channel — the gate returns
+  // early for them. They resume their linked session instead, the same
+  // disposition `selectMobile` gives the same topic on the rail, so the two
+  // entry points cannot disagree about what a session-backed chat does.
   const openSearchResult = useCallback(
     (result: WorkspaceTopicSearchResult) => {
       select(result.action.topicId, result.topic);
+      const sessionId = result.action.primarySessionId;
+      if (result.topic.source !== 'persisted' && sessionId) {
+        onSelectSession?.(sessionId);
+      }
       useUiStore.getState().closeSidebar();
     },
-    [select]
+    [onSelectSession, select]
   );
   const selectMobile = useCallback(
     (id: string) => {
@@ -3012,6 +3114,7 @@ export function TopicSidebarView({
         searchScope={searchScope}
         onToggleSearchScope={onToggleSearchScope}
         canScope={activeWorkspaceId != null}
+        canOpenSession={Boolean(onSelectSession)}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <TopicMobileCockpit

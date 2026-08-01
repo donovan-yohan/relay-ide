@@ -694,7 +694,20 @@ describe('TopicSidebarView', () => {
     // streaming agent's state.
     expect(presence?.dataset.agentCount).toBe('2');
     expect(presence?.dataset.presence).toBe('working');
-    expect(presence?.getAttribute('aria-label')).toBe('2 agents working');
+    // Queried by accessible name, not by class: ARIA does not permit naming a
+    // generic element, so an aria-label on a bare span is discarded and the
+    // dot/spinner children are aria-hidden — the state would reach a mouse
+    // tooltip and nothing else.
+    expect(
+      container.querySelector('[role="img"][aria-label="2 agents working"]')
+    ).toBe(presence);
+    // The row's own status name is exposed too; `role="group"` names the trail
+    // without turning the presence indicator inside it presentational.
+    expect(
+      container
+        .querySelector('.topic-tree [data-topic-id="topic:alpha"] .topic-row')
+        ?.querySelector('[role="group"]')
+    ).toBe(presence?.parentElement);
     expect(
       presence?.querySelector('.topic-row__presence-count')?.textContent
     ).toBe('2');
@@ -721,7 +734,9 @@ describe('TopicSidebarView', () => {
       '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
     );
     expect(presence?.dataset.presence).toBe('idle');
-    expect(presence?.getAttribute('aria-label')).toBe('1 agent idle');
+    expect(
+      container.querySelector('[role="img"][aria-label="1 agent idle"]')
+    ).toBe(presence);
     expect(presence?.querySelector('.topic-row__presence-dot')).not.toBeNull();
     expect(presence?.querySelector('.topic-row__presence-spinner')).toBeNull();
     // A single agent stays uncluttered — the count lives in the label only.
@@ -1548,7 +1563,7 @@ describe('TopicSidebarView', () => {
     expect(useUiStore.getState().activeWorkspaceId).toBeNull();
 
     const header = container.querySelector<HTMLButtonElement>(
-      `${emptyLaneSelector} .topic-workspace-group__header--select`
+      `${emptyLaneSelector} .topic-workspace-group__select`
     );
     expect(header).not.toBeNull();
     await act(async () => header?.click());
@@ -1765,14 +1780,31 @@ describe('TopicSidebarView', () => {
       root = createRoot(container);
     }
 
-    // #1287 slice 5 item 17: the desktop lane header. Same accessible
-    // collapsible button the mobile cockpit renders for the same lane.
-    function desktopLaneHeader(workspaceId = 'ws:a'): HTMLButtonElement {
+    // #1287 slice 5 item 17: the desktop lane header. Two controls, not one:
+    // the name selects the lane (the rail's create target) and the trailing
+    // −/+ folds it, so selecting a workspace never hides its channels.
+    function desktopLaneHeader(workspaceId = 'ws:a'): HTMLElement {
       const header = container.querySelector(
-        `.topic-workspace-group[data-workspace-id="${workspaceId}"] .topic-workspace-group__header--select`
+        `.topic-workspace-group[data-workspace-id="${workspaceId}"] .topic-workspace-group__header--split`
       );
       expect(header).not.toBeNull();
-      return header as HTMLButtonElement;
+      return header as HTMLElement;
+    }
+
+    function desktopLaneFold(workspaceId = 'ws:a'): HTMLButtonElement {
+      const toggle = desktopLaneHeader(workspaceId).querySelector(
+        '.topic-workspace-group__toggle'
+      );
+      expect(toggle).not.toBeNull();
+      return toggle as HTMLButtonElement;
+    }
+
+    function desktopLaneSelect(workspaceId = 'ws:a'): HTMLButtonElement {
+      const select = desktopLaneHeader(workspaceId).querySelector(
+        '.topic-workspace-group__select'
+      );
+      expect(select).not.toBeNull();
+      return select as HTMLButtonElement;
     }
 
     function desktopLaneRow(topicId: string, workspaceId = 'ws:a') {
@@ -1795,21 +1827,48 @@ describe('TopicSidebarView', () => {
       // breakpoint had no way to fold a workspace at all.
       await renderRailLane();
 
-      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('true');
-      expect(desktopLaneHeader().textContent).toContain('−');
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneFold().textContent).toContain('−');
+      expect(desktopLaneFold().getAttribute('aria-label')).toBe(
+        'collapse engineering'
+      );
       expect(desktopLaneRow('topic:alpha')).not.toBeNull();
 
-      await act(async () => desktopLaneHeader().click());
-      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('false');
-      expect(desktopLaneHeader().textContent).toContain('+');
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneFold().textContent).toContain('+');
       expect(desktopLaneRow('topic:alpha')).toBeNull();
-      // Folding must not cost the rail its create target: the lane gesture
-      // still selects the workspace, exactly as before item 17.
+
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+    });
+
+    it('keeps desktop lane select and fold as separate gestures', async () => {
+      // Selecting a lane is how the rail picks the create target for
+      // `new chat`. Binding select and fold to one click made the desktop
+      // operator collapse the very lane they had just aimed at — two clicks to
+      // select a lane and still see its channels. Mobile keeps the combined tap
+      // because a tap is the only lane-scale gesture a phone has.
+      await renderRailLane();
+
+      await act(async () => desktopLaneSelect().click());
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+
+      // Folding is still available, and it does not disturb the selection.
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
       expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
 
-      await act(async () => desktopLaneHeader().click());
-      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('true');
-      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+      // Mobile keeps one combined lane-scale tap.
+      const mobileHeader = container.querySelector(
+        '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+      ) as HTMLButtonElement;
+      await act(async () => mobileHeader.click());
+      expect(mobileHeader.getAttribute('aria-expanded')).toBe('true');
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
     });
 
     it('rolls unread up onto a collapsed desktop lane header only while folded', async () => {
@@ -1818,9 +1877,11 @@ describe('TopicSidebarView', () => {
       // one signal that a channel needs attention.
       await renderRailLane();
       const rollupDot = () =>
-        desktopLaneHeader().querySelector('[aria-label="unread activity"]');
+        desktopLaneHeader().querySelector(
+          '[role="img"][aria-label="unread activity"]'
+        );
 
-      await act(async () => desktopLaneHeader().click());
+      await act(async () => desktopLaneFold().click());
       expect(rollupDot()).toBeNull();
 
       await act(async () => {
@@ -1828,7 +1889,7 @@ describe('TopicSidebarView', () => {
       });
       expect(rollupDot()).not.toBeNull();
 
-      await act(async () => desktopLaneHeader().click());
+      await act(async () => desktopLaneFold().click());
       // Expanded, the unread lives on the row itself — never doubled onto the
       // header.
       expect(rollupDot()).toBeNull();
@@ -1844,7 +1905,7 @@ describe('TopicSidebarView', () => {
           '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
         ) as HTMLButtonElement;
 
-      await act(async () => desktopLaneHeader().click());
+      await act(async () => desktopLaneFold().click());
 
       // One operator decision per workspace, not one per breakpoint.
       expect(mobileHeader().getAttribute('aria-expanded')).toBe('false');
@@ -1855,7 +1916,7 @@ describe('TopicSidebarView', () => {
       await remount();
       await renderRailLane();
 
-      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('false');
       expect(desktopLaneRow('topic:alpha')).toBeNull();
     });
 
@@ -3672,6 +3733,97 @@ describe('TopicSidebarView', () => {
     expect(useUiStore.getState().topicComposerOpen).toBe(false);
     expect(useUiStore.getState().sidebarOpen).toBe(false);
     expect(onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('resumes the linked session from a derived search row instead of opening nothing', async () => {
+    // The server's chat search deliberately appends derived topics
+    // (`fallbackTopics` over the WorkContext store). `openTopicSelection`
+    // returns early for anything not `persisted`, so routing them through the
+    // channel path rendered an enabled `open` button that only shifted
+    // workspace context — while the rail resumed the very same topic's session.
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-hit',
+      source: 'derived',
+      workspaceId: 'workspace:beta',
+      display: { title: 'Derived session chat' },
+      linkedRefs: { sessionIds: ['s1'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 60,
+        freshness: 'fresh',
+        matches: [
+          {
+            kind: 'topic',
+            field: 'display.title',
+            label: 'chat title',
+            value: 'Derived session chat',
+          },
+        ],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-hit',
+          primarySessionId: 's1',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [makeSession({ id: 's1', displayName: 'Derived lane' })],
+      surfaces: [],
+      searchQuery: 'derived',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    expect(action.textContent).toBe('resume');
+    expect(action.title).toBe('resume the linked session');
+
+    await act(async () => action.click());
+
+    // Same disposition the rail gives this topic: the session, never a channel.
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:beta');
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+  });
+
+  it('disables a derived search row that reaches neither a channel nor a session', async () => {
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-orphan',
+      source: 'derived',
+      display: { title: 'Orphan derived chat' },
+      linkedRefs: {},
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 20,
+        freshness: 'stale',
+        matches: [],
+        action: { kind: 'open-topic', topicId: 'topic:derived-orphan' },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'orphan',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe('no chat or session to open for this hit');
   });
 
   it('threads the show-older-chats toggle into chat search requests', async () => {

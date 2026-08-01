@@ -94,18 +94,25 @@ function currentStateUrl(): string {
 }
 
 /**
- * Whether the store already round-trips to the URL it was just applied from.
+ * Correct the address in place when the store could not honour the URL it was
+ * just applied from — a session id that no longer resolves, say. Pushing would
+ * add an entry the operator never navigated to; leaving it stale would re-apply
+ * the dead route on the next reload.
  *
- * The push effect only runs when one of its deps changes, so a suppression flag
- * raised for a URL-driven update that turned out to be a no-op would never be
- * consumed — it would silently swallow the NEXT real navigation instead. Asking
- * this question right after applying a route keeps the flag one-shot in fact,
- * not just in intent.
+ * Done eagerly at apply time rather than by arming a flag for the push effect
+ * to consume. That effect only runs when one of its deps changes, and a route
+ * the store already matched field-for-field changes none of them: `applyRoute`
+ * writes the same primitives back through plain `set()` calls, so zustand
+ * re-renders nothing. Booting on `/<repo-hash>/gone` with that repo already
+ * active is exactly that case — the dead URL went uncorrected AND the flag
+ * survived into the operator's NEXT real navigation, turning that push into a
+ * replace so the surface they opened created no history entry and Back left the
+ * app (#1287).
  */
-function storeMatchesUrl(): boolean {
-  return (
-    currentStateUrl() === window.location.pathname + window.location.search
-  );
+function correctUrlToStore(): void {
+  const url = currentStateUrl();
+  if (url === window.location.pathname + window.location.search) return;
+  window.history.replaceState(null, '', url);
 }
 
 /**
@@ -123,9 +130,6 @@ export function useUrlNav() {
   const analyticsView = useUiStore((s) => s.analyticsView);
   const activeModal = useUiStore((s) => s.activeModal);
 
-  // When true, the next store-change effect corrects the URL in place instead
-  // of pushing — the change came FROM the URL and did not round-trip.
-  const suppressPush = useRef(false);
   // Whether initial restore has run (prevents pushing during boot)
   const restored = useRef(false);
 
@@ -150,7 +154,7 @@ export function useUrlNav() {
       // already resolved it to `home`.
       applyRoute(route);
       useUiStore.getState().setActiveModal(modal);
-      suppressPush.current = !storeMatchesUrl();
+      correctUrlToStore();
     }
 
     restored.current = true;
@@ -170,19 +174,9 @@ export function useUrlNav() {
     const query = buildQuery(activeModal);
     const url = path + query;
     const current = window.location.pathname + window.location.search;
-    if (current === url) {
-      suppressPush.current = false;
-      return;
-    }
-    if (suppressPush.current) {
-      // The URL asked for something the store could not honour (a session id
-      // that no longer resolves, say). Correct the address in place: pushing
-      // would add an entry the operator never navigated to, and leaving it
-      // stale would re-apply the dead route on the next reload.
-      suppressPush.current = false;
-      window.history.replaceState(null, '', url);
-      return;
-    }
+    // A URL-driven change has already been reconciled by `correctUrlToStore`,
+    // so anything reaching here is the operator navigating: always a push.
+    if (current === url) return;
     window.history.pushState(null, '', url);
   }, [
     activeRepoPath,
@@ -200,7 +194,7 @@ export function useUrlNav() {
       applyRoute(parseRoute(window.location.pathname, currentRepos));
       // Restore modal state from query params
       useUiStore.getState().setActiveModal(parseModal(window.location.search));
-      suppressPush.current = !storeMatchesUrl();
+      correctUrlToStore();
     };
 
     window.addEventListener('popstate', handler);

@@ -102,6 +102,47 @@ export function buildChannelThreadHistorySql(
            ORDER BY m.seq ${order} LIMIT @limit`;
 }
 
+/**
+ * Production query builder for the channel-list thread aggregate (#1287 slice 5
+ * item 18), exported for the same reason `buildChannelThreadHistorySql` is: this
+ * runs once per channel on every `GET /channels`, so a query-plan test EXPLAINs
+ * the exact SQL rather than a hand-copied approximation that can silently drift
+ * into a full-table walk.
+ *
+ * `COUNT(*) OVER ()` sits in the OUTER select, over the joined result. Inside
+ * the aggregate it counted GROUPS — including any whose root row the inner join
+ * then dropped (a deleted root, or a `thread_id` pointing outside this channel),
+ * so the rail could render "5 threads" for a channel that has four. Window
+ * functions are evaluated before `LIMIT`, so the outer count still spans every
+ * live thread and not just the capped page.
+ */
+export function buildChannelThreadSummarySql(): string {
+  return `SELECT root.id             AS root_id,
+                root.body_text      AS root_body,
+                root.sender_id      AS root_sender_id,
+                root.sender_kind    AS root_sender_kind,
+                root.sender_display AS root_sender_display,
+                root.meta_json      AS root_meta_json,
+                agg.reply_count     AS reply_count,
+                agg.last_reply_at   AS last_reply_at,
+                COUNT(*) OVER ()    AS thread_total
+           FROM (
+             SELECT thread_id,
+                    COUNT(*)        AS reply_count,
+                    MAX(created_at) AS last_reply_at,
+                    MAX(seq)        AS last_reply_seq
+               FROM channel_messages
+              WHERE channel_id = @channelId
+                AND thread_id IS NOT NULL
+                AND json_extract(meta_json, '$.agentDetail') IS NULL
+              GROUP BY thread_id
+           ) agg
+           JOIN channel_messages root
+             ON root.id = agg.thread_id AND root.channel_id = @channelId
+          ORDER BY agg.last_reply_seq DESC
+          LIMIT @limit`;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS channel_messages (
   id                TEXT PRIMARY KEY,
@@ -334,7 +375,12 @@ export interface ChannelThreadSummary {
 export interface ChannelThreadSummaryPage {
   /** Newest-active threads first, capped by the caller's limit. */
   threads: ChannelThreadSummary[];
-  /** Total live threads in the channel; `threads` is only the newest slice. */
+  /**
+   * Total live threads in the channel; `threads` is only the newest slice.
+   * Counted over the same joined result the page comes from, so a thread whose
+   * root row is gone is absent from BOTH — the rail can never render a count
+   * larger than the number of threads that actually exist.
+   */
   threadCount: number;
 }
 
@@ -1113,6 +1159,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   const listMembersStmt = db.prepare(
     'SELECT * FROM channel_members WHERE channel_id = ? ORDER BY joined_at ASC, member_id ASC'
   );
+  // Compiled once: `GET /channels` runs this per channel per list fetch.
+  const threadSummaryStmt = db.prepare(buildChannelThreadSummarySql());
 
   function memberRowToRef(row: MemberRow): ChannelMemberRef {
     return {
@@ -1570,38 +1618,13 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         1,
         Math.min(CHANNEL_THREAD_SUMMARY_MAX_LIMIT, Math.floor(limit))
       );
-      // The aggregate is channel-scoped (idx_chm_channel_seq), so this scans the
-      // same rows the summary's COUNT(*) already does rather than the whole
-      // thread index. `COUNT(*) OVER ()` counts GROUPS, giving the channel's
-      // total live thread count in the one pass the capped page comes from.
-      const rows = db
-        .prepare(
-          `SELECT root.id                AS root_id,
-                  root.body_text         AS root_body,
-                  root.sender_id         AS root_sender_id,
-                  root.sender_kind       AS root_sender_kind,
-                  root.sender_display    AS root_sender_display,
-                  root.meta_json         AS root_meta_json,
-                  agg.reply_count        AS reply_count,
-                  agg.last_reply_at      AS last_reply_at,
-                  agg.thread_total       AS thread_total
-             FROM (
-               SELECT thread_id,
-                      COUNT(*)        AS reply_count,
-                      MAX(created_at) AS last_reply_at,
-                      MAX(seq)        AS last_reply_seq,
-                      COUNT(*) OVER () AS thread_total
-                 FROM channel_messages
-                WHERE channel_id = @channelId
-                  AND thread_id IS NOT NULL
-                  AND json_extract(meta_json, '$.agentDetail') IS NULL
-                GROUP BY thread_id
-             ) agg
-             JOIN channel_messages root ON root.id = agg.thread_id
-            ORDER BY agg.last_reply_seq DESC
-            LIMIT @limit`
-        )
-        .all({ channelId, limit: capped }) as ThreadSummaryRow[];
+      // Channel-scoped through idx_chm_channel_seq (see the query-plan test), so
+      // this walks the same rows the summary's COUNT(*) already does rather than
+      // the whole thread index.
+      const rows = threadSummaryStmt.all({
+        channelId,
+        limit: capped,
+      }) as ThreadSummaryRow[];
       return {
         threads: rows.map((row) => {
           const meta = parseMeta(row.root_meta_json);
@@ -1622,7 +1645,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
             ...(providerId ? { providerId } : {}),
           };
         }),
-        // Every group shares the same window total; zero rows means zero groups.
+        // Every joined row shares the same window total; zero rows means zero
+        // threads with a resolvable root, which is what the page can show.
         threadCount: rows[0]?.thread_total ?? 0,
       };
     },

@@ -424,7 +424,15 @@ function channelSummaryView(
   // fetches. Threads were fully implemented server-side but reachable only from
   // the in-timeline "N replies" chip, so a live thread was invisible until the
   // channel was already open. Extension, not a new route (slice 3 pattern).
-  const threads = store.listChannelThreadSummaries(topic.id);
+  //
+  // A channel with no messages cannot hold a thread, so it skips the aggregate
+  // outright: the GROUP BY costs a temp b-tree and a `json_extract` per threaded
+  // row on top of the summary's plain COUNT(*), and `GET /channels` pays it per
+  // channel on a list the rail refetches on every agent-turn window.
+  const threads =
+    summary && summary.messageCount > 0
+      ? store.listChannelThreadSummaries(topic.id)
+      : { threads: [], threadCount: 0 };
   return {
     id: topic.id,
     title: topic.display.title,

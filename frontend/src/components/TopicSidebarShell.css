@@ -1418,21 +1418,35 @@
   text-transform: lowercase;
 }
 
-/* #1287: the lane header selects AND folds its workspace, so it is a button —
-   kept visually identical to the static header (no border, no fill, same muted
-   caption treatment); only the hover/focus accent and the trailing −/+ mark it
-   as interactive. */
-.topic-workspace-group__header--select {
+/* #1287: the desktop lane header carries two intents — the name selects the
+   workspace (the rail's create target) and the trailing −/+ folds it — so they
+   are two controls, not one click that does both. Both stay visually identical
+   to the static header (no border, no fill, no radius, same muted caption
+   treatment); only the hover/focus accent marks them as interactive. */
+.topic-workspace-group__header--split {
   width: 100%;
+}
+
+.topic-workspace-group__select {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.topic-workspace-group__header--select:hover,
-.topic-workspace-group__header--select:focus-visible {
+.topic-workspace-group__select:hover,
+.topic-workspace-group__select:focus-visible,
+.topic-workspace-group__toggle:hover,
+.topic-workspace-group__toggle:focus-visible {
   color: var(--accent);
 }
 
@@ -1471,6 +1485,13 @@
 .topic-workspace-group__toggle {
   flex-shrink: 0;
   margin-left: auto;
+  padding: 0 0 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .topic-tree__list {
