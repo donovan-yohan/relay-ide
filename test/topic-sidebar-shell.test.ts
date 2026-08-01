@@ -28,6 +28,7 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
+import { useChannelAgentStatusStore } from '../frontend/src/lib/stores/channel-agent-status.js';
 import type { ChannelRailSummary } from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
@@ -53,6 +54,16 @@ function resetRailFolds() {
     topicRailExpansion: {} as Record<string, boolean>,
     collapsedTopicGroups: new Set<string>(),
   };
+}
+
+// #1287 slice 5 item 19: desktop row presence reads this store, so a status left
+// behind by one case would color the next case's rows.
+function resetAgentStatusStore() {
+  useChannelAgentStatusStore.setState({
+    statusByChannelAgent: {},
+    runtimeByChannelAgent: {},
+    updatedAtByChannelAgent: {},
+  });
 }
 
 async function flushQueryEffects() {
@@ -189,6 +200,7 @@ describe('TopicSidebarView', () => {
       lastReadByChannel: {},
       clampedAtByChannel: {},
     });
+    resetAgentStatusStore();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -215,6 +227,7 @@ describe('TopicSidebarView', () => {
       lastReadByChannel: {},
       clampedAtByChannel: {},
     });
+    resetAgentStatusStore();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
 
@@ -641,6 +654,91 @@ describe('TopicSidebarView', () => {
     );
     expect(container.querySelector('.topic-row__preview')).toBeNull();
     expect(container.querySelector('.topic-row__time')).toBeNull();
+    // Nothing to join a presence indicator against either (#1287 slice 5).
+    expect(container.querySelector('.topic-row__presence')).toBeNull();
+  });
+
+  // #1287 slice 5 item 19: desktop rows used to carry no agent presence at all —
+  // the roster fan-out that produced presence chips is gated to the mobile
+  // cockpit. Presence now comes from the summary members the rail already holds.
+  it('shows desktop row presence from the summary members joined with live status (#1287)', async () => {
+    useChannelAgentStatusStore.setState({
+      statusByChannelAgent: { 'topic:alpha codex': 'streaming' },
+      runtimeByChannelAgent: {},
+      updatedAtByChannelAgent: {},
+    });
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [
+            { kind: 'agent', id: 'claude', joinedAt: NOW },
+            { kind: 'agent', id: 'codex', joinedAt: NOW },
+            { kind: 'human', id: 'human:operator', joinedAt: NOW },
+          ],
+        }),
+      ],
+    });
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence).not.toBeNull();
+    // Two agent members (the human is not presence), rolled up to the live
+    // streaming agent's state.
+    expect(presence?.dataset.agentCount).toBe('2');
+    expect(presence?.dataset.presence).toBe('working');
+    expect(presence?.getAttribute('aria-label')).toBe('2 agents working');
+    expect(
+      presence?.querySelector('.topic-row__presence-count')?.textContent
+    ).toBe('2');
+    // Working liveness is the braille spinner (DESIGN.md text motion); the 50%
+    // dot carries every other state.
+    expect(
+      presence?.querySelector('.topic-row__presence-spinner')
+    ).not.toBeNull();
+    expect(presence?.querySelector('.topic-row__presence-dot')).toBeNull();
+  });
+
+  it('rests a desktop presence indicator on the 50% status dot with no count for a lone agent (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [{ kind: 'agent', id: 'claude', joinedAt: NOW }],
+        }),
+      ],
+    });
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence?.dataset.presence).toBe('idle');
+    expect(presence?.getAttribute('aria-label')).toBe('1 agent idle');
+    expect(presence?.querySelector('.topic-row__presence-dot')).not.toBeNull();
+    expect(presence?.querySelector('.topic-row__presence-spinner')).toBeNull();
+    // A single agent stays uncluttered — the count lives in the label only.
+    expect(presence?.querySelector('.topic-row__presence-count')).toBeNull();
+  });
+
+  it('omits desktop presence for a human-only channel (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [{ kind: 'human', id: 'human:operator', joinedAt: NOW }],
+        }),
+      ],
+    });
+
+    expect(
+      container.querySelector(
+        '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+      )
+    ).toBeNull();
   });
 
   it('labels the operator as the snippet sender and skips message-less channels (#1287)', async () => {
@@ -897,6 +995,90 @@ describe('TopicSidebarView', () => {
     // One list call, and no per-channel message reads at all.
     expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
     expect(requested.filter((url) => url.includes('/messages'))).toEqual([]);
+    queryClient.clear();
+  });
+
+  // #1287 slice 5 item 19: desktop rows gained presence WITHOUT un-gating the
+  // per-channel roster fan-out — it costs one request per row, so presence is a
+  // join over the one channel-list payload the rail already fetches.
+  it('adds no per-row roster fetch for desktop presence (#1287)', async () => {
+    useUiStore.setState({ sidebarOpen: true });
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    useChannelAgentStatusStore.setState({
+      statusByChannelAgent: { 'topic:alpha codex': 'waiting' },
+      runtimeByChannelAgent: {},
+      updatedAtByChannelAgent: {},
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const requested: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const body =
+        url === '/channels'
+          ? {
+              channels: [
+                makeChannelSummary({
+                  id: 'topic:alpha',
+                  members: [
+                    { kind: 'agent', id: 'claude', joinedAt: NOW },
+                    { kind: 'agent', id: 'codex', joinedAt: NOW },
+                  ],
+                }),
+              ],
+            }
+          : url.endsWith('/roster')
+            ? { roster: [] }
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    // Poll the rendered join, not a tick count (#1293): the store-only presence
+    // paints first and the summary members arrive a render later.
+    await waitForRendered(
+      () =>
+        container.querySelector<HTMLElement>(
+          '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+        )?.dataset.agentCount === '2',
+      'desktop presence indicator hydrated from the channel list'
+    );
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence?.dataset.agentCount).toBe('2');
+    // Live 'waiting' from the status store outranks the quiet member.
+    expect(presence?.dataset.presence).toBe('blocked');
+    // The list is the ONLY channel read; no roster call was made on desktop.
+    expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
+    expect(requested.filter((url) => url.endsWith('/roster'))).toEqual([]);
     queryClient.clear();
   });
 

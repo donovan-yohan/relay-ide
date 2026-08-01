@@ -1511,6 +1511,52 @@
   flex: 0 0 6px;
 }
 
+/* #1287 slice 5: desktop agent presence on channel rows. Derived from the
+   channel summary members joined with the live status store — no per-row
+   fetch. Status dot is the only 50% radius the rail allows (DESIGN.md); a
+   working channel swaps it for the braille spinner (text motion, no shimmer). */
+.topic-row__presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 5px;
+  color: var(--cockpit-presence-color);
+  flex: 0 0 auto;
+}
+
+.topic-row__presence-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--cockpit-presence-color);
+  border-radius: 50%;
+  background: transparent;
+  flex: 0 0 6px;
+}
+
+.topic-row__presence--blocked .topic-row__presence-dot,
+.topic-row__presence--done .topic-row__presence-dot {
+  background: var(--cockpit-presence-color);
+}
+
+.topic-row__presence--idle .topic-row__presence-dot,
+.topic-row__presence--unknown .topic-row__presence-dot {
+  opacity: 0.7;
+}
+
+.topic-row__presence-spinner {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1;
+  color: var(--cockpit-presence-color);
+}
+
+.topic-row__presence-count {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* #1084: search scope toggle */
 .topic-search__scope {
   background: transparent;

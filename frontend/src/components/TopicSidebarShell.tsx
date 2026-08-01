@@ -84,7 +84,12 @@ import {
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
 } from '../lib/state/topic-nav.js';
+import {
+  PRESENCE_TOKENS,
+  selectRailRowPresence,
+} from '../lib/state/cockpit-presence.js';
 import { MarqueeText } from './MarqueeText.js';
+import { TuiProgress } from './TuiProgress.js';
 import {
   CockpitPresenceChip,
   MobileCockpitAttentionLane,
@@ -1449,11 +1454,68 @@ function TopicAdvancedDetailGate({
   );
 }
 
+/**
+ * Compact agent presence for a desktop rail row (#1287 slice 5).
+ *
+ * Mirrors what the mobile cockpit chip shows, but sourced from the channel
+ * summary the rail already holds joined with the live status store — never a
+ * per-row roster fetch. A 50% status dot carries the rolled-up state per
+ * `DESIGN.md`; a working channel swaps the dot for the braille spinner so
+ * liveness is text motion, not a shimmer. The count is suppressed for a single
+ * agent (the common DM case) and stays in the accessible label.
+ */
+function TopicRowPresence({
+  channelId,
+  summary,
+  statusByChannelAgent,
+}: {
+  channelId: string;
+  summary: ChannelRailSummary | null;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+}) {
+  const presence = selectRailRowPresence(
+    channelId,
+    summary,
+    statusByChannelAgent
+  );
+  if (!presence) return null;
+  const token = PRESENCE_TOKENS[presence.presence];
+  const style = {
+    '--cockpit-presence-color': token.colorVar,
+  } as CSSProperties;
+  return (
+    <span
+      className={`topic-row__presence topic-row__presence--${presence.presence}`}
+      style={style}
+      aria-label={presence.label}
+      title={presence.label}
+      data-presence={presence.presence}
+      data-agent-count={presence.count}
+    >
+      {token.glyph === 'spinner' ? (
+        <TuiProgress
+          variant="braille"
+          className="topic-row__presence-spinner"
+          aria-hidden
+        />
+      ) : (
+        <span className="topic-row__presence-dot" aria-hidden />
+      )}
+      {presence.count > 1 ? (
+        <span className="topic-row__presence-count" aria-hidden>
+          {presence.count}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function TopicRow({
   node,
   depth,
   expandedIds,
   selectedId,
+  statusByChannelAgent,
   onToggle,
   onSelect,
   onSelectSession,
@@ -1462,6 +1524,7 @@ function TopicRow({
   depth: number;
   expandedIds: Set<string>;
   selectedId: string | null;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
@@ -1531,6 +1594,11 @@ function TopicRow({
           </span>
         </button>
         <span className="topic-row__trail" aria-label={item.statusLabel}>
+          <TopicRowPresence
+            channelId={item.id}
+            summary={summary}
+            statusByChannelAgent={statusByChannelAgent}
+          />
           {timestamp ? (
             <span className="topic-row__time">{timestamp}</span>
           ) : null}
@@ -1566,6 +1634,7 @@ function TopicRow({
                   depth={depth + 1}
                   expandedIds={expandedIds}
                   selectedId={selectedId}
+                  statusByChannelAgent={statusByChannelAgent}
                   onToggle={onToggle}
                   onSelect={onSelect}
                   onSelectSession={onSelectSession}
@@ -2683,6 +2752,7 @@ export function TopicSidebarView({
         depth={0}
         expandedIds={expandedIds}
         selectedId={selectedId}
+        statusByChannelAgent={effectiveStatusByChannelAgent}
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
