@@ -167,6 +167,54 @@ function invalidateReconnectQueries(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: ['fileDiff'] });
 }
 
+/**
+ * Trailing-edge window for the nav-spine refetch triggered by activity on a
+ * channel the client holds no row for. Agent-created implementation channels
+ * (#1242) arrive in bursts as the orchestrator fans work out, and one refetch
+ * per burst is enough to materialize every new row.
+ */
+const UNKNOWN_CHANNEL_LIST_REFRESH_MS = 750;
+/**
+ * Trailing-edge window for per-channel roster refetches. An agent turn walks
+ * spawning → thinking → streaming → waiting → idle, so debouncing collapses a
+ * whole turn into the single refetch that matters: the one after it settles.
+ */
+const AGENT_STATUS_ROSTER_REFRESH_MS = 750;
+
+/** Topic-list caches the sidebar renders rows from (active + archived views). */
+const TOPIC_LIST_QUERY_KEYS: string[][] = [
+  ['workspace-topics'],
+  ['workspace-topics', 'with-archived'],
+];
+
+/**
+ * True when a rendered list already covers this channel. Reads the two caches
+ * the rail joins its rows from — the `/channels` summary list (#1287 Slice 1)
+ * and `/workspace-topics` — without fetching. When neither has loaded there is
+ * no rail to be missing a row, so the channel counts as known and no refetch is
+ * scheduled.
+ */
+function hasCachedChannelRow(
+  queryClient: QueryClient,
+  channelId: string
+): boolean {
+  let sawCachedList = false;
+  const channels = queryClient.getQueryData<{ id: string }[]>(['channels']);
+  if (Array.isArray(channels)) {
+    sawCachedList = true;
+    if (channels.some((row) => row.id === channelId)) return true;
+  }
+  for (const queryKey of TOPIC_LIST_QUERY_KEYS) {
+    const topics = queryClient.getQueryData<{ topics?: { id: string }[] }>(
+      queryKey
+    );
+    if (!Array.isArray(topics?.topics)) continue;
+    sawCachedList = true;
+    if (topics.topics.some((topic) => topic.id === channelId)) return true;
+  }
+  return !sawCachedList;
+}
+
 const HUB_NODE_REVERSE_LINK_ROUTE = 'reverse-link';
 
 function hubNodeConnectionSummary(
@@ -244,8 +292,11 @@ export function useEventSocket({
     if (!authAuthenticated) return;
 
     let pollInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
+    let channelListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let rosterInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
     let eventSocketOpened = false;
     const pendingWebhookRepos = new Set<string>();
+    const pendingRosterChannels = new Set<string>();
 
     function invalidateScopedPrData(
       repoPaths: string[],
@@ -276,6 +327,38 @@ export function useEventSocket({
         pendingWebhookRepos.clear();
         invalidateScopedPrData(repos, 'webhook');
       }, 500);
+    }
+
+    /**
+     * Refetch the lists the sidebar builds rows from. Deliberately an
+     * invalidation and not a store write: the refreshed `/channels` payload
+     * re-enters the activity store through the rail's `seedChannelActivity`
+     * effect, so the per-channel clamp-epoch fence (#1287 Slice 1) still gates
+     * every head seq. This lane never touches `latestSeqByChannel` itself.
+     */
+    function scheduleChannelListRefresh(): void {
+      if (channelListRefreshTimer) return;
+      channelListRefreshTimer = setTimeout(() => {
+        channelListRefreshTimer = null;
+        queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
+        queryClient.invalidateQueries({ queryKey: ['channels'] });
+      }, UNKNOWN_CHANNEL_LIST_REFRESH_MS);
+    }
+
+    /** Debounced per-channel roster refetch, batched across a status burst. */
+    function scheduleRosterRefresh(channelId: string): void {
+      pendingRosterChannels.add(channelId);
+      if (rosterInvalidateTimer) return;
+      rosterInvalidateTimer = setTimeout(() => {
+        rosterInvalidateTimer = null;
+        const channelIds = Array.from(pendingRosterChannels);
+        pendingRosterChannels.clear();
+        for (const pendingChannelId of channelIds) {
+          queryClient.invalidateQueries({
+            queryKey: ['channel-roster', pendingChannelId],
+          });
+        }
+      }, AGENT_STATUS_ROSTER_REFRESH_MS);
     }
 
     const handlers: {
@@ -414,11 +497,24 @@ export function useEventSocket({
         useChannelActivityStore
           .getState()
           .recordActivity(msg.channelId, msg.latestSeq);
+        // An agent- or orchestrator-created channel (#1242) has no row in any
+        // cached list, so the seq just recorded is inert: nothing renders it and
+        // the lists only refetch on blur/refocus — never on a tab left focused.
+        // Pull the new row in instead of waiting for a window event.
+        if (!hasCachedChannelRow(queryClient, msg.channelId)) {
+          scheduleChannelListRefresh();
+        }
       },
       'channel-agent-status': (msg) => {
         useChannelAgentStatusStore
           .getState()
           .recordStatus(msg.channelId, msg.agentId, msg.status, msg.runtimeId);
+        // The status store alone cannot carry a binding: a newly bound agent's
+        // chip is dropped the moment it goes idle (the header keeps a chip for
+        // an unbound agent only while it is busy), and a remotely-designated
+        // orchestrator leaves a stale "designate orchestrator" button. Both read
+        // the roster snapshot, so refetch it.
+        scheduleRosterRefresh(msg.channelId);
       },
       'browser-tab-opened': (msg) => {
         useUiStore.getState().openHtmlTab(msg.filePath, msg.token);
@@ -473,9 +569,18 @@ export function useEventSocket({
 
     return () => {
       pendingWebhookRepos.clear();
+      pendingRosterChannels.clear();
       if (pollInvalidateTimer) {
         clearTimeout(pollInvalidateTimer);
         pollInvalidateTimer = null;
+      }
+      if (channelListRefreshTimer) {
+        clearTimeout(channelListRefreshTimer);
+        channelListRefreshTimer = null;
+      }
+      if (rosterInvalidateTimer) {
+        clearTimeout(rosterInvalidateTimer);
+        rosterInvalidateTimer = null;
       }
     };
   }, [authAuthenticated]);
