@@ -115,10 +115,35 @@ conversation.
 
 1. subscribe to newly posted channel messages;
 2. resolve mentions against agent profiles;
-3. start or reuse one private runtime per `(channel, profileActorId)`;
-4. build a bounded context packet from durable channel history;
-5. queue and deliver the turn to the provider adapter;
-6. mirror the provider response into the originating channel or thread.
+3. fall back to implicit DM routing when a human message resolves none;
+4. start or reuse one private runtime per `(channel, profileActorId)`;
+5. build a bounded context packet from durable channel history;
+6. queue and deliver the turn to the provider adapter;
+7. mirror the provider response into the originating channel or thread.
+
+Implicit DM routing (step 3) is the routing half of "a DM is a channel with one
+agent". A message with zero resolved mentions is routed as follows:
+
+- DM channel, human sender → the default profile for the DM's provider, exactly
+  as if the provider had been mentioned. Threads included: a thread reply in a
+  DM routes implicitly too. Both DM composers therefore drop the `@ to mention`
+  hint.
+- DM channel, agent sender → nothing. An agent's own DM post cannot re-trigger
+  the DM's agent; the mention self-filter cannot see a message with no mentions.
+- Multi-party channel → nothing, silently (debug log only). Humans chat there
+  without addressing an agent, so a system row would be spam.
+
+A DM whose provider cannot be resolved at all posts one `nothing was routed`
+system row per five-minute dedupe window, because in a DM there is nobody else
+to answer and silence reads as the product being broken. That row is gated on
+the trigger's sender kind, so an agent's own unroutable `@mention` never stamps
+a failure under the human message that did route.
+
+DM-ness itself is derived, not stored: `shared/dm-channels.ts` recomputes the
+deterministic per-`(workspace, provider)` DM id and compares it to the topic's
+own id, so both halves — the UI's DM affordances and the binder's routing —
+read one pure derivation. A DM's agent is that provider's default profile,
+matching the DM-per-provider id formula.
 
 `server/channel-agent-runtime.ts` owns the private execution handle. A channel
 agent runtime is intentionally absent from public session lists, terminal

@@ -628,6 +628,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             key={activeThreadRootId}
             channelId={channelId}
             channelTitle={title}
+            isDm={isDm}
             rootId={activeThreadRootId}
             liveMessages={reducer.messages}
             onClose={() => setActiveThreadRootId(null)}

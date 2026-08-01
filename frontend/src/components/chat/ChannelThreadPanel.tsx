@@ -17,9 +17,23 @@ import { ChannelMessageRow } from './ChannelMessageRow.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
 import { useLiveReplyGrowth } from './useLiveReplyGrowth.js';
 
+/** Default thread copy: `@` is required to reach an agent in a group channel. */
+const THREAD_PLACEHOLDER =
+  'reply in thread…  ·  @ to mention · shift+enter for newline';
+/**
+ * DM thread copy. `handleMessagePosted` has no `threadId` gate, so an
+ * unmentioned reply inside a DM thread routes implicitly exactly like a
+ * top-level DM message — the composer must not ask for the `@` it does not
+ * need. Kept name-free (unlike the channel composer) because the thread header
+ * already says "thread" and the DM header already names the agent.
+ */
+const DM_THREAD_PLACEHOLDER = 'reply in thread…  ·  shift+enter for newline';
+
 interface ChannelThreadPanelProps {
   channelId: string;
   channelTitle: string;
+  /** True when the channel is a DM (one agent, implicit routing). */
+  isDm?: boolean;
   rootId: ChannelMessageId;
   liveMessages: ChannelMessage[];
   onClose: () => void;
@@ -39,6 +53,7 @@ interface ChannelThreadPanelProps {
 export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   channelId,
   channelTitle,
+  isDm = false,
   rootId,
   liveMessages,
   onClose,
@@ -217,7 +232,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
       <ChannelComposer
         channelId={channelId}
         channelTitle={channelTitle}
-        placeholder="reply in thread…  ·  @ to mention · shift+enter for newline"
+        placeholder={isDm ? DM_THREAD_PLACEHOLDER : THREAD_PLACEHOLDER}
         onSend={onSend}
         postPending={postPending}
         storeDown={storeDown}

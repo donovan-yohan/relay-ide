@@ -3158,9 +3158,10 @@ describe('channel-agent-binder — DM implicit routing', () => {
     binder: ChannelAgentBinder,
     channelId: string,
     text: string,
-    sender: ChannelSenderRef = OPERATOR
+    sender: ChannelSenderRef = OPERATOR,
+    providers: string[] = ['hermes']
   ): ChannelMessage {
-    const mentions = parseMentions(text, ['hermes']);
+    const mentions = parseMentions(text, providers);
     const message = store.appendComplete({
       channelId,
       sender,
@@ -3263,6 +3264,49 @@ describe('channel-agent-binder — DM implicit routing', () => {
     expect(adapter.sendCalls).toHaveLength(0);
     expect(sessions.spawns()).toBe(0);
     expect(systemRowsIn(store, DM_CH)).toHaveLength(0);
+  });
+
+  it('never blames the human for an AGENT-authored unroutable mention in a DM', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    // The DM agent's own reply mentions a provider that is MENTIONABLE
+    // (`knownProviderIds` = every built-in adapter) but not a configured
+    // routing target (`mentionTargets` = the configured frameworks).
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'looking now — @codex can you diff the branch?',
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS, // codex resolves, but is not a target
+      knownProviderIds: ['hermes', 'codex'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'what is the state of the build?');
+
+    await waitFor(() => repliesIn(store, DM_CH).length === 1);
+    await settle();
+    // The human's message routed and WAS answered. `routeOne` is shared with
+    // the agent lanes, so the DM "nothing was routed" row must be gated on the
+    // trigger's sender kind, not on DM-ness alone: otherwise the agent's own
+    // dead @mention stamps a failure row under the human's trigger claiming
+    // nothing was routed, while the human was in fact answered.
+    expect(systemRowsIn(store, DM_CH)).toHaveLength(0);
+    expect(sessions.spawns()).toBe(1);
+
+    // Same gate for the other agent lane: a gateway agent post in the DM.
+    postTo(
+      store,
+      binder,
+      DM_CH,
+      '@codex following up',
+      HERMES_AGENT_SENDER,
+      ['hermes', 'codex']
+    );
+    await settle();
+    expect(systemRowsIn(store, DM_CH)).toHaveLength(0);
+    expect(sessions.spawns()).toBe(1);
   });
 
   it('says so out loud when a DM agent is not routable', async () => {

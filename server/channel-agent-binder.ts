@@ -1331,9 +1331,21 @@ export function createChannelAgentBinder(
         if (closed) return; // close() raced the availability probe
         if (!target) {
           // Not a known framework. In a multi-party channel an unroutable
-          // @name stays silent (§1). In a DM there is nobody ELSE to answer,
-          // so silence reads as the product being broken — say so instead.
-          if (dmProviderIdFor(trigger.channelId) !== null) {
+          // @name stays silent (§1). In a DM there is nobody ELSE to answer the
+          // HUMAN, so silence reads as the product being broken — say so.
+          //
+          // Gated on the trigger's server-derived sender kind, not only on
+          // DM-ness: `routeOne` is shared with the agent lanes
+          // (handleAssistantFinalized → routeWithBrake, and gateway agent
+          // posts). `knownProviderIds` (every built-in adapter) is a superset of
+          // `mentionTargets` (the configured frameworks), so a DM agent's own
+          // reply text mentioning a known-but-de-configured provider would
+          // otherwise stamp "nothing was routed" under the human's message —
+          // while the human's message did route and was answered.
+          if (
+            trigger.sender.kind !== 'agent' &&
+            dmProviderIdFor(trigger.channelId) !== null
+          ) {
             postUnavailableRow(
               trigger.channelId,
               profile.id,
