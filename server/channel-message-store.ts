@@ -56,6 +56,13 @@ const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
  * list route never regex-scans 200 × 256KB of body text.
  */
 const CHANNEL_SUMMARY_MENTION_SCAN_MAX_CHARS = 8_000;
+/**
+ * Threads carried on a channel-list row by default (#1287 slice 5 item 18). The
+ * rail shows the newest-active few and a count for the rest — enough to make
+ * threads navigable without turning a 200-row list payload into a transcript.
+ */
+export const CHANNEL_THREAD_SUMMARY_LIMIT = 3;
+const CHANNEL_THREAD_SUMMARY_MAX_LIMIT = 20;
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
@@ -93,6 +100,56 @@ export function buildChannelThreadHistorySql(
                 AND thread_reply.channel_id = @channelId ${seqClause}
            ) m
            ORDER BY m.seq ${order} LIMIT @limit`;
+}
+
+/**
+ * Production query builder for the channel-list thread aggregate (#1287 slice 5
+ * item 18), exported for the same reason `buildChannelThreadHistorySql` is: this
+ * runs once per channel on every `GET /channels`, so a query-plan test EXPLAINs
+ * the exact SQL rather than a hand-copied approximation that can silently drift
+ * into a full-table walk.
+ *
+ * `COUNT(*) OVER ()` sits in the OUTER select, over the joined result. Inside
+ * the aggregate it counted GROUPS — including any whose root row the inner join
+ * then dropped (a deleted root, or a `thread_id` pointing outside this channel),
+ * so the rail could render "5 threads" for a channel that has four. Window
+ * functions are evaluated before `LIMIT`, so the outer count still spans every
+ * live thread and not just the capped page.
+ *
+ * `CROSS JOIN` is the join-order hint, not a cartesian product: SQLite never
+ * reorders across one. The `root.channel_id` predicate the correctness fix
+ * added is enough on its own to tempt the planner into driving from `root`
+ * (`SEARCH root USING INDEX idx_chm_channel_seq (channel_id=?)` plus an
+ * AUTOMATIC COVERING INDEX built over `agg` every execution), which walks every
+ * message in the channel instead of the handful of thread roots and makes this
+ * scale with messages-per-channel. Pinning the order keeps the `SCAN agg` ->
+ * primary-key probe of `root` shape the query-plan test locks in.
+ */
+export function buildChannelThreadSummarySql(): string {
+  return `SELECT root.id             AS root_id,
+                root.body_text      AS root_body,
+                root.sender_id      AS root_sender_id,
+                root.sender_kind    AS root_sender_kind,
+                root.sender_display AS root_sender_display,
+                root.meta_json      AS root_meta_json,
+                agg.reply_count     AS reply_count,
+                agg.last_reply_at   AS last_reply_at,
+                COUNT(*) OVER ()    AS thread_total
+           FROM (
+             SELECT thread_id,
+                    COUNT(*)        AS reply_count,
+                    MAX(created_at) AS last_reply_at,
+                    MAX(seq)        AS last_reply_seq
+               FROM channel_messages
+              WHERE channel_id = @channelId
+                AND thread_id IS NOT NULL
+                AND json_extract(meta_json, '$.agentDetail') IS NULL
+              GROUP BY thread_id
+           ) agg
+           CROSS JOIN channel_messages root
+             ON root.id = agg.thread_id AND root.channel_id = @channelId
+          ORDER BY agg.last_reply_seq DESC
+          LIMIT @limit`;
 }
 
 const SCHEMA_SQL = `
@@ -177,6 +234,19 @@ interface ChannelMessageRow {
   updated_at: string;
   completed_at: string | null;
   reply_count?: number;
+}
+
+/** Projection of the thread aggregate join (#1287 slice 5 item 18). */
+interface ThreadSummaryRow {
+  root_id: string;
+  root_body: string;
+  root_sender_id: string;
+  root_sender_kind: string;
+  root_sender_display: string | null;
+  root_meta_json: string | null;
+  reply_count: number;
+  last_reply_at: string;
+  thread_total: number;
 }
 
 interface MemberRow {
@@ -286,6 +356,43 @@ export interface ChannelSummary {
 
 type ChannelSenderKindLoose = ChannelSenderRef['kind'];
 
+/**
+ * One live thread inside a channel, as the rail renders it (#1287 slice 5 item
+ * 18). Deliberately root-shaped rather than reply-shaped: the rail's row is "the
+ * conversation this thread hangs off", and the reply signal is the count plus
+ * the newest reply's stamp.
+ */
+export interface ChannelThreadSummary {
+  rootMessageId: ChannelMessageId;
+  /**
+   * Conversational replies only — the same exclusion `replyCountSql` applies, so
+   * a rail row and the in-timeline "N replies" chip can never disagree.
+   */
+  replyCount: number;
+  /** `created_at` of the newest reply; the rail's thread stamp. */
+  lastReplyAt: string;
+  /** Bounded preview of the thread ROOT's body. */
+  preview: string;
+  rootSenderId: string;
+  rootSenderKind: ChannelSenderKindLoose;
+  /** Persisted `sender_display` — never derived by splitting `rootSenderId`. */
+  rootSenderDisplayName?: string;
+  /** Vendor framework id for an agent root; the authoritative label fallback. */
+  providerId?: string;
+}
+
+export interface ChannelThreadSummaryPage {
+  /** Newest-active threads first, capped by the caller's limit. */
+  threads: ChannelThreadSummary[];
+  /**
+   * Total live threads in the channel; `threads` is only the newest slice.
+   * Counted over the same joined result the page comes from, so a thread whose
+   * root row is gone is absent from BOTH — the rail can never render a count
+   * larger than the number of threads that actually exist.
+   */
+  threadCount: number;
+}
+
 export interface ChannelHistoryFilter {
   beforeSeq?: number;
   afterSeq?: number;
@@ -368,6 +475,16 @@ export interface ChannelMessageStore {
   latestSeq(channelId: string): number;
   listChannelSummaries(): ChannelSummary[];
   getChannelSummary(channelId: string): ChannelSummary | null;
+  /**
+   * Live threads in one channel, newest-active first (#1287 slice 5 item 18).
+   * One channel-scoped aggregate — the same order of work the summary's own
+   * `COUNT(*)` already does — so the channel list can carry thread rows without
+   * a second route or a per-thread fetch.
+   */
+  listChannelThreadSummaries(
+    channelId: string,
+    limit?: number
+  ): ChannelThreadSummaryPage;
   upsertMember(input: {
     channelId: string;
     kind: 'human' | 'agent';
@@ -1051,6 +1168,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   const listMembersStmt = db.prepare(
     'SELECT * FROM channel_members WHERE channel_id = ? ORDER BY joined_at ASC, member_id ASC'
   );
+  // Compiled once: `GET /channels` runs this per channel per list fetch.
+  const threadSummaryStmt = db.prepare(buildChannelThreadSummarySql());
 
   function memberRowToRef(row: MemberRow): ChannelMemberRef {
     return {
@@ -1498,6 +1617,47 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           )
           .get(channelId) as ChannelMessageRow | undefined) ?? last;
       return summaryFromLastRow(last.seq, previewRow, count);
+    },
+
+    listChannelThreadSummaries(
+      channelId,
+      limit = CHANNEL_THREAD_SUMMARY_LIMIT
+    ) {
+      const capped = Math.max(
+        1,
+        Math.min(CHANNEL_THREAD_SUMMARY_MAX_LIMIT, Math.floor(limit))
+      );
+      // Channel-scoped through idx_chm_channel_seq (see the query-plan test), so
+      // this walks the same rows the summary's COUNT(*) already does rather than
+      // the whole thread index.
+      const rows = threadSummaryStmt.all({
+        channelId,
+        limit: capped,
+      }) as ThreadSummaryRow[];
+      return {
+        threads: rows.map((row) => {
+          const meta = parseMeta(row.root_meta_json);
+          const providerId =
+            typeof meta?.['providerId'] === 'string'
+              ? (meta['providerId'] as string)
+              : undefined;
+          return {
+            rootMessageId: row.root_id as ChannelMessageId,
+            replyCount: row.reply_count,
+            lastReplyAt: row.last_reply_at,
+            preview: row.root_body.slice(0, CHANNEL_SUMMARY_PREVIEW_MAX_CHARS),
+            rootSenderId: row.root_sender_id,
+            rootSenderKind: row.root_sender_kind as ChannelSenderKindLoose,
+            ...(row.root_sender_display
+              ? { rootSenderDisplayName: row.root_sender_display }
+              : {}),
+            ...(providerId ? { providerId } : {}),
+          };
+        }),
+        // Every joined row shares the same window total; zero rows means zero
+        // threads with a resolvable root, which is what the page can show.
+        threadCount: rows[0]?.thread_total ?? 0,
+      };
     },
 
     upsertMember(input) {

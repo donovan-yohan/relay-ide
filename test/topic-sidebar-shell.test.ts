@@ -28,7 +28,11 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
-import type { ChannelRailSummary } from '../frontend/src/lib/state/topic-nav.js';
+import { useChannelAgentStatusStore } from '../frontend/src/lib/stores/channel-agent-status.js';
+import type {
+  ChannelRailSummary,
+  ChannelRailThreadSummary,
+} from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -45,10 +49,52 @@ class ResizeObserverStub {
 
 const NOW = '2026-06-26T00:00:00Z';
 
+// #1287 slice 5 fold storage (see frontend/src/lib/stores/ui.ts).
+const TOPIC_RAIL_EXPANSION_KEY = 'claude-remote-topic-rail-expansion';
+const COLLAPSED_TOPIC_GROUPS_KEY = 'claude-remote-collapsed-topic-groups';
+function resetRailFolds() {
+  return {
+    topicRailExpansion: {} as Record<string, boolean>,
+    collapsedTopicGroups: new Set<string>(),
+  };
+}
+
+// #1287 slice 5 item 19: desktop row presence reads this store, so a status left
+// behind by one case would color the next case's rows.
+function resetAgentStatusStore() {
+  useChannelAgentStatusStore.setState({
+    statusByChannelAgent: {},
+    runtimeByChannelAgent: {},
+    updatedAtByChannelAgent: {},
+  });
+}
+
 async function flushQueryEffects() {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
+}
+
+/**
+ * Wait for a rendered condition instead of guessing a tick count (#1293).
+ *
+ * Resolving a mocked query promise settles on a microtask, then TanStack Query
+ * flips `isSuccess` and schedules the re-render on a LATER tick — so a fixed
+ * `flushQueryEffects()` intermittently asserts against the pre-render DOM.
+ * Polling the DOM itself makes the wait a condition, mirroring the drain fix in
+ * 03aff413 without hard-coding how many ticks the chain happens to take.
+ */
+async function waitForRendered(
+  check: () => boolean,
+  description: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    if (check()) return;
+    await act(async () => {
+      await flushQueryEffects();
+    });
+  }
+  throw new Error(`timed out waiting for ${description}`);
 }
 
 function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
@@ -145,12 +191,20 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      pendingChannelThread: null,
+      // #1287 slice 5: rail/lane folds are persisted operator intent now, so
+      // they outlive a remount by design — reset them between cases or one
+      // test's collapse silently folds the next test's rows.
+      ...resetRailFolds(),
     });
+    localStorage.removeItem(TOPIC_RAIL_EXPANSION_KEY);
+    localStorage.removeItem(COLLAPSED_TOPIC_GROUPS_KEY);
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
       clampedAtByChannel: {},
     });
+    resetAgentStatusStore();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -166,7 +220,11 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      pendingChannelThread: null,
+      ...resetRailFolds(),
     });
+    localStorage.removeItem(TOPIC_RAIL_EXPANSION_KEY);
+    localStorage.removeItem(COLLAPSED_TOPIC_GROUPS_KEY);
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setActiveWorkspaceId(null);
     useChannelActivityStore.setState({
@@ -174,6 +232,7 @@ describe('TopicSidebarView', () => {
       lastReadByChannel: {},
       clampedAtByChannel: {},
     });
+    resetAgentStatusStore();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
 
@@ -600,6 +659,259 @@ describe('TopicSidebarView', () => {
     );
     expect(container.querySelector('.topic-row__preview')).toBeNull();
     expect(container.querySelector('.topic-row__time')).toBeNull();
+    // Nothing to join a presence indicator against either (#1287 slice 5).
+    expect(container.querySelector('.topic-row__presence')).toBeNull();
+  });
+
+  // #1287 slice 5 item 19: desktop rows used to carry no agent presence at all —
+  // the roster fan-out that produced presence chips is gated to the mobile
+  // cockpit. Presence now comes from the summary members the rail already holds.
+  it('shows desktop row presence from the summary members joined with live status (#1287)', async () => {
+    useChannelAgentStatusStore.setState({
+      statusByChannelAgent: { 'topic:alpha codex': 'streaming' },
+      runtimeByChannelAgent: {},
+      updatedAtByChannelAgent: {},
+    });
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [
+            { kind: 'agent', id: 'claude', joinedAt: NOW },
+            { kind: 'agent', id: 'codex', joinedAt: NOW },
+            { kind: 'human', id: 'human:operator', joinedAt: NOW },
+          ],
+        }),
+      ],
+    });
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence).not.toBeNull();
+    // Two agent members (the human is not presence), rolled up to the live
+    // streaming agent's state.
+    expect(presence?.dataset.agentCount).toBe('2');
+    expect(presence?.dataset.presence).toBe('working');
+    // Queried by accessible name, not by class: ARIA does not permit naming a
+    // generic element, so an aria-label on a bare span is discarded and the
+    // dot/spinner children are aria-hidden — the state would reach a mouse
+    // tooltip and nothing else.
+    expect(
+      container.querySelector('[role="img"][aria-label="2 agents working"]')
+    ).toBe(presence);
+    // The row's own status name is exposed too; `role="group"` names the trail
+    // without turning the presence indicator inside it presentational.
+    expect(
+      container
+        .querySelector('.topic-tree [data-topic-id="topic:alpha"] .topic-row')
+        ?.querySelector('[role="group"]')
+    ).toBe(presence?.parentElement);
+    expect(
+      presence?.querySelector('.topic-row__presence-count')?.textContent
+    ).toBe('2');
+    // Working liveness is the braille spinner (DESIGN.md text motion); the 50%
+    // dot carries every other state.
+    expect(
+      presence?.querySelector('.topic-row__presence-spinner')
+    ).not.toBeNull();
+    expect(presence?.querySelector('.topic-row__presence-dot')).toBeNull();
+  });
+
+  it('rests a desktop presence indicator on the 50% status dot with no count for a lone agent (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [{ kind: 'agent', id: 'claude', joinedAt: NOW }],
+        }),
+      ],
+    });
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence?.dataset.presence).toBe('idle');
+    expect(
+      container.querySelector('[role="img"][aria-label="1 agent idle"]')
+    ).toBe(presence);
+    expect(presence?.querySelector('.topic-row__presence-dot')).not.toBeNull();
+    expect(presence?.querySelector('.topic-row__presence-spinner')).toBeNull();
+    // A single agent stays uncluttered — the count lives in the label only.
+    expect(presence?.querySelector('.topic-row__presence-count')).toBeNull();
+  });
+
+  it('omits desktop presence for a human-only channel (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          members: [{ kind: 'human', id: 'human:operator', joinedAt: NOW }],
+        }),
+      ],
+    });
+
+    expect(
+      container.querySelector(
+        '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+      )
+    ).toBeNull();
+  });
+
+  // #1287 slice 5 item 18: threads existed server-side and in ChannelView, but
+  // the only entry point was the in-timeline "N replies" chip — so a live thread
+  // was unreachable until its channel was already open.
+  describe('rail thread rows (#1287 slice 5 item 18)', () => {
+    function makeThread(overrides: Partial<ChannelRailThreadSummary> = {}) {
+      return {
+        rootMessageId: 'chm:root-1',
+        replyCount: 2,
+        lastReplyAt: NOW,
+        preview: 'how should the binder key runtimes?',
+        rootSenderId: builtInAgentProfileId('claude'),
+        rootSenderKind: 'agent' as const,
+        providerId: 'claude',
+        ...overrides,
+      };
+    }
+
+    async function renderWithThreads(
+      threads: ChannelRailThreadSummary[],
+      threadCount = threads.length
+    ) {
+      await renderView({
+        topics: [makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } })],
+        sessions: [],
+        surfaces: [],
+        channelSummaries: [
+          makeChannelSummary({ id: 'topic:alpha', threads, threadCount }),
+        ],
+      });
+    }
+
+    function threadsBlock(): HTMLElement | null {
+      return container.querySelector<HTMLElement>(
+        '.topic-tree [data-topic-id="topic:alpha"] .topic-threads'
+      );
+    }
+
+    it('shows a collapsed thread count plus the latest thread line', async () => {
+      await renderWithThreads([makeThread()], 3);
+
+      const block = threadsBlock();
+      expect(block).not.toBeNull();
+      expect(block?.dataset.threadCount).toBe('3');
+      const toggle = block?.querySelector<HTMLButtonElement>(
+        '.topic-threads__toggle'
+      );
+      // Collapsed by default: the fold id is never a rail root, so nothing
+      // auto-opens it.
+      expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+      expect(block?.querySelector('.topic-threads__count')?.textContent).toBe(
+        '3 threads'
+      );
+      // The sender label comes from the server-resolved vendor, never by
+      // splitting the profile Actor id (#1234).
+      expect(block?.querySelector('.topic-threads__latest')?.textContent).toBe(
+        'claude: how should the binder key runtimes?'
+      );
+      expect(block?.querySelector('.topic-thread-row')).toBeNull();
+    });
+
+    it('leaves a channel with no threads exactly as it was', async () => {
+      await renderView({
+        topics: [makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } })],
+        sessions: [],
+        surfaces: [],
+        channelSummaries: [makeChannelSummary({ id: 'topic:alpha' })],
+      });
+
+      expect(threadsBlock()).toBeNull();
+      expect(container.querySelector('.topic-thread-row')).toBeNull();
+      // The row itself is untouched — title and hydrated snippet still render.
+      expect(container.textContent).toContain('alpha');
+      expect(container.textContent).toContain('latest channel message');
+    });
+
+    it('expands to one row per thread and opens the channel with that thread', async () => {
+      await renderWithThreads([
+        makeThread(),
+        makeThread({
+          rootMessageId: 'chm:root-2',
+          replyCount: 1,
+          preview: 'rollout plan',
+          rootSenderId: 'human:operator',
+          rootSenderKind: 'human',
+        }),
+      ]);
+
+      await act(async () => {
+        threadsBlock()
+          ?.querySelector<HTMLButtonElement>('.topic-threads__toggle')
+          ?.click();
+      });
+
+      const rows = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '.topic-tree [data-topic-id="topic:alpha"] .topic-thread-row'
+        )
+      );
+      expect(rows.map((row) => row.dataset.threadRootId)).toEqual([
+        'chm:root-1',
+        'chm:root-2',
+      ]);
+      expect(
+        rows[0]?.querySelector('.topic-thread-row__meta')?.textContent
+      ).toContain('2 replies');
+      // Singular/plural is the same copy the in-timeline chip and thread panel
+      // use, so the rail cannot drift from them.
+      expect(
+        rows[1]?.querySelector('.topic-thread-row__meta')?.textContent
+      ).toContain('1 reply');
+      expect(
+        rows[1]?.querySelector('.topic-thread-row__preview')?.textContent
+      ).toBe('you: rollout plan');
+
+      await act(async () => {
+        rows[1]
+          ?.querySelector<HTMLButtonElement>('.topic-thread-row__button')
+          ?.click();
+      });
+
+      // Opening the channel is what makes the thread reachable; the thread
+      // itself rides an intent, because `setActiveChannelId` clears
+      // `activeThreadRootId` and ChannelView clears it again on every switch.
+      expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+      expect(useUiStore.getState().pendingChannelThread).toEqual({
+        channelId: 'topic:alpha',
+        rootMessageId: 'chm:root-2',
+      });
+    });
+
+    it('keeps the thread fold independent of the channel row fold', async () => {
+      await renderWithThreads([makeThread()]);
+
+      await act(async () => {
+        threadsBlock()
+          ?.querySelector<HTMLButtonElement>('.topic-threads__toggle')
+          ?.click();
+      });
+      expect(container.querySelector('.topic-thread-row')).not.toBeNull();
+
+      // Collapsing the channel row must not take the thread list with it — the
+      // thread line IS the signal that this channel has side-conversations.
+      await act(async () => {
+        useUiStore.getState().setTopicRailExpanded('topic:alpha', false);
+      });
+      expect(container.querySelector('.topic-thread-row')).not.toBeNull();
+      // And the fold is persisted operator intent, like every other rail fold.
+      expect(
+        useUiStore.getState().topicRailExpansion['topic:alpha#threads']
+      ).toBe(true);
+    });
   });
 
   it('labels the operator as the snippet sender and skips message-less channels (#1287)', async () => {
@@ -856,6 +1168,90 @@ describe('TopicSidebarView', () => {
     // One list call, and no per-channel message reads at all.
     expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
     expect(requested.filter((url) => url.includes('/messages'))).toEqual([]);
+    queryClient.clear();
+  });
+
+  // #1287 slice 5 item 19: desktop rows gained presence WITHOUT un-gating the
+  // per-channel roster fan-out — it costs one request per row, so presence is a
+  // join over the one channel-list payload the rail already fetches.
+  it('adds no per-row roster fetch for desktop presence (#1287)', async () => {
+    useUiStore.setState({ sidebarOpen: true });
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    useChannelAgentStatusStore.setState({
+      statusByChannelAgent: { 'topic:alpha codex': 'waiting' },
+      runtimeByChannelAgent: {},
+      updatedAtByChannelAgent: {},
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const requested: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const body =
+        url === '/channels'
+          ? {
+              channels: [
+                makeChannelSummary({
+                  id: 'topic:alpha',
+                  members: [
+                    { kind: 'agent', id: 'claude', joinedAt: NOW },
+                    { kind: 'agent', id: 'codex', joinedAt: NOW },
+                  ],
+                }),
+              ],
+            }
+          : url.endsWith('/roster')
+            ? { roster: [] }
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    // Poll the rendered join, not a tick count (#1293): the store-only presence
+    // paints first and the summary members arrive a render later.
+    await waitForRendered(
+      () =>
+        container.querySelector<HTMLElement>(
+          '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+        )?.dataset.agentCount === '2',
+      'desktop presence indicator hydrated from the channel list'
+    );
+
+    const presence = container.querySelector<HTMLElement>(
+      '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
+    );
+    expect(presence?.dataset.agentCount).toBe('2');
+    // Live 'waiting' from the status store outranks the quiet member.
+    expect(presence?.dataset.presence).toBe('blocked');
+    // The list is the ONLY channel read; no roster call was made on desktop.
+    expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
+    expect(requested.filter((url) => url.endsWith('/roster'))).toEqual([]);
     queryClient.clear();
   });
 
@@ -1167,7 +1563,7 @@ describe('TopicSidebarView', () => {
     expect(useUiStore.getState().activeWorkspaceId).toBeNull();
 
     const header = container.querySelector<HTMLButtonElement>(
-      `${emptyLaneSelector} .topic-workspace-group__header--select`
+      `${emptyLaneSelector} .topic-workspace-group__select`
     );
     expect(header).not.toBeNull();
     await act(async () => header?.click());
@@ -1311,7 +1707,7 @@ describe('TopicSidebarView', () => {
     expect(useUiStore.getState().sidebarOpen).toBe(false);
   });
 
-  it('locally collapses and expands a mobile workspace group (#1205)', async () => {
+  it('collapses and expands a mobile workspace group (#1205)', async () => {
     await renderView({
       topics: [
         makeTopic({
@@ -1351,6 +1747,321 @@ describe('TopicSidebarView', () => {
     await act(async () => header.click());
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+  });
+
+  describe('rail fold persistence (#1287 slice 5)', () => {
+    const RAIL_TOPIC = makeTopic({
+      id: 'topic:alpha',
+      workspaceId: 'ws:a',
+      display: { title: 'Alpha channel' },
+      linkedRefs: { sessionIds: ['s1'] },
+    });
+    const RAIL_WORKSPACE = {
+      id: 'ws:a',
+      name: 'engineering',
+      order: 0,
+      pinned: false,
+      color: null,
+      icon: null,
+    };
+
+    function railRow(topicId: string): HTMLButtonElement {
+      // `.topic-node` is the desktop rail row; the mobile cockpit renders the
+      // same channel as `.topic-mobile-node`.
+      const button = container.querySelector(
+        `.topic-node[data-topic-id="${topicId}"] > .topic-row > .topic-row__main`
+      );
+      expect(button).not.toBeNull();
+      return button as HTMLButtonElement;
+    }
+
+    async function remount() {
+      await act(async () => root.unmount());
+      root = createRoot(container);
+    }
+
+    // #1287 slice 5 item 17: the desktop lane header. Two controls, not one:
+    // the name selects the lane (the rail's create target) and the trailing
+    // −/+ folds it, so selecting a workspace never hides its channels.
+    function desktopLaneHeader(workspaceId = 'ws:a'): HTMLElement {
+      const header = container.querySelector(
+        `.topic-workspace-group[data-workspace-id="${workspaceId}"] .topic-workspace-group__header--split`
+      );
+      expect(header).not.toBeNull();
+      return header as HTMLElement;
+    }
+
+    function desktopLaneFold(workspaceId = 'ws:a'): HTMLButtonElement {
+      const toggle = desktopLaneHeader(workspaceId).querySelector(
+        '.topic-workspace-group__toggle'
+      );
+      expect(toggle).not.toBeNull();
+      return toggle as HTMLButtonElement;
+    }
+
+    function desktopLaneSelect(workspaceId = 'ws:a'): HTMLButtonElement {
+      const select = desktopLaneHeader(workspaceId).querySelector(
+        '.topic-workspace-group__select'
+      );
+      expect(select).not.toBeNull();
+      return select as HTMLButtonElement;
+    }
+
+    function desktopLaneRow(topicId: string, workspaceId = 'ws:a') {
+      return container.querySelector(
+        `.topic-workspace-group[data-workspace-id="${workspaceId}"] [data-topic-id="${topicId}"]`
+      );
+    }
+
+    async function renderRailLane() {
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+    }
+
+    it('collapses and expands a desktop workspace lane from its header', async () => {
+      // Desktop rendered this lane as a select-only header, so the whole
+      // breakpoint had no way to fold a workspace at all.
+      await renderRailLane();
+
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneFold().textContent).toContain('−');
+      expect(desktopLaneFold().getAttribute('aria-label')).toBe(
+        'collapse engineering'
+      );
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneFold().textContent).toContain('+');
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
+
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+    });
+
+    it('keeps desktop lane select and fold as separate gestures', async () => {
+      // Selecting a lane is how the rail picks the create target for
+      // `new chat`. Binding select and fold to one click made the desktop
+      // operator collapse the very lane they had just aimed at — two clicks to
+      // select a lane and still see its channels. Mobile keeps the combined tap
+      // because a tap is the only lane-scale gesture a phone has.
+      await renderRailLane();
+
+      await act(async () => desktopLaneSelect().click());
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+
+      // Folding is still available, and it does not disturb the selection.
+      await act(async () => desktopLaneFold().click());
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+
+      // Mobile keeps one combined lane-scale tap.
+      const mobileHeader = container.querySelector(
+        '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+      ) as HTMLButtonElement;
+      await act(async () => mobileHeader.click());
+      expect(mobileHeader.getAttribute('aria-expanded')).toBe('true');
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+    });
+
+    it('rolls unread up onto a collapsed desktop lane header only while folded', async () => {
+      // `selectChannelRailTree` already computed `group.unread` for both
+      // breakpoints; desktop discarded it, so folding would have hidden the
+      // one signal that a channel needs attention.
+      await renderRailLane();
+      const rollupDot = () =>
+        desktopLaneHeader().querySelector(
+          '[role="img"][aria-label="unread activity"]'
+        );
+
+      await act(async () => desktopLaneFold().click());
+      expect(rollupDot()).toBeNull();
+
+      await act(async () => {
+        useChannelActivityStore.getState().recordActivity('topic:alpha', 2);
+      });
+      expect(rollupDot()).not.toBeNull();
+
+      await act(async () => desktopLaneFold().click());
+      // Expanded, the unread lives on the row itself — never doubled onto the
+      // header.
+      expect(rollupDot()).toBeNull();
+      expect(desktopLaneRow('topic:alpha')?.getAttribute('data-unread')).toBe(
+        'true'
+      );
+    });
+
+    it('folds a lane once for both breakpoints and persists the decision', async () => {
+      await renderRailLane();
+      const mobileHeader = () =>
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+        ) as HTMLButtonElement;
+
+      await act(async () => desktopLaneFold().click());
+
+      // One operator decision per workspace, not one per breakpoint.
+      expect(mobileHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
+      ).toEqual(['ws:a']);
+
+      await remount();
+      await renderRailLane();
+
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
+    });
+
+    it('keeps a collapsed root collapsed through nav-model identity churn', async () => {
+      // The removed effect re-added every `model.rootIds` entry to the local
+      // expanded set whenever the model changed identity, and the sessions
+      // store rebuilds its array via `.map()` on every activity/status/branch/
+      // rename WS event — so a collapsed root sprang open mid-session.
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('true');
+      await act(async () => railRow('topic:alpha').click());
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
+
+      for (let churn = 0; churn < 3; churn++) {
+        await renderView({
+          topics: [RAIL_TOPIC],
+          // Same content, brand-new array + object identities: exactly what a
+          // WS activity event hands the rail.
+          sessions: sessions.map((session) => ({ ...session })),
+          surfaces: [],
+          workspaces: [RAIL_WORKSPACE],
+        });
+        expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+          'false'
+        );
+      }
+      expect(
+        container.querySelector('.topic-node.expanded[data-topic-id]')
+      ).toBeNull();
+    });
+
+    // Boot-time rehydration from these keys is covered in
+    // test/stores/ui-store.test.ts (a reload is a fresh module graph).
+    it('survives a remount and writes the fold to localStorage', async () => {
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      await act(async () => railRow('topic:alpha').click());
+
+      expect(
+        JSON.parse(localStorage.getItem(TOPIC_RAIL_EXPANSION_KEY) ?? '{}')
+      ).toEqual({ 'topic:alpha': false });
+
+      await remount();
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
+    });
+
+    it('still auto-expands a root the operator has never folded', async () => {
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      await act(async () => railRow('topic:alpha').click());
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
+
+      const newcomer = makeTopic({
+        id: 'topic:beta',
+        workspaceId: 'ws:a',
+        display: { title: 'Beta channel' },
+        linkedRefs: { sessionIds: ['s2'] },
+      });
+      await renderView({
+        topics: [RAIL_TOPIC, newcomer],
+        sessions: [
+          ...sessions,
+          makeSession({ id: 's2', displayName: 'Beta lane' }),
+        ],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      // A root nobody has decided about opens on arrival; the folded one does
+      // not come back with it.
+      expect(railRow('topic:beta').getAttribute('aria-expanded')).toBe('true');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
+    });
+
+    it('persists a folded mobile workspace group across a remount', async () => {
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      const header = () =>
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+        ) as HTMLButtonElement;
+
+      await act(async () => header().click());
+      expect(header().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
+      ).toEqual(['ws:a']);
+
+      await remount();
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(header().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] [data-topic-id="topic:alpha"]'
+        )
+      ).toBeNull();
+    });
   });
 
   it('shows reactive unread state on a collapsed mobile workspace header (#1205)', async () => {
@@ -2229,7 +2940,108 @@ describe('TopicSidebarView', () => {
     expect(
       container.querySelector('.topic-mobile-cockpit__bar input')
     ).toBeNull();
-    expect(container.textContent).toContain('search chat history');
+    // #1287 slice 5 item 12: the search surface is named by the real control's
+    // accessible label, not by a static span in the cockpit bar that named a
+    // capability the bar did not provide.
+    expect(
+      container.querySelector('.topic-search')?.getAttribute('aria-label')
+    ).toBe('search chat history');
+  });
+
+  describe('mobile search placement (#1287 slice 5 item 12)', () => {
+    function precedes(first: Element | null, second: Element | null): boolean {
+      if (!first || !second) return false;
+      return Boolean(
+        first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING
+      );
+    }
+
+    it('renders search and older chats before the mobile chat list', async () => {
+      // The cockpit and the search field are siblings in one flex column, so
+      // DOM order IS the mobile reading order. Search used to trail the
+      // attention lane, the session tree, and every channel row.
+      await renderView({ onToggleArchived: vi.fn() });
+
+      const search = container.querySelector('.topic-search');
+      const archived = container.querySelector('.topic-archived-toggle');
+      const cockpit = container.querySelector('.topic-mobile-cockpit');
+      const mobileList = container.querySelector('.topic-mobile-list');
+
+      expect(search).not.toBeNull();
+      expect(archived).not.toBeNull();
+      expect(mobileList).not.toBeNull();
+      expect(precedes(search, cockpit)).toBe(true);
+      expect(precedes(search, mobileList)).toBe(true);
+      expect(precedes(archived, cockpit)).toBe(true);
+      expect(precedes(archived, mobileList)).toBe(true);
+      expect(precedes(search, archived)).toBe(true);
+      // The attention lane and the session tree are inside the cockpit, so
+      // clearing the cockpit clears everything the operator used to scroll past.
+      expect(
+        precedes(search, container.querySelector('.topic-cockpit__attention'))
+      ).toBe(true);
+    });
+
+    it('drops the dead search label from the mobile action bar', async () => {
+      await renderView();
+
+      const bar = container.querySelector('.topic-mobile-cockpit__bar');
+      expect(bar).not.toBeNull();
+      expect(container.querySelector('.topic-mobile-cockpit__hint')).toBeNull();
+      expect(bar?.textContent).not.toContain('search');
+      // Only the real actions remain in the bar.
+      expect(bar?.textContent).toContain('new');
+    });
+
+    it('keeps the desktop column order header, search, older chats, tree', async () => {
+      await renderView({
+        onCreateTaskRoom: vi.fn(),
+        onToggleArchived: vi.fn(),
+      });
+
+      const header = container.querySelector('.topic-shell__header');
+      const search = container.querySelector('.topic-search');
+      const archived = container.querySelector('.topic-archived-toggle');
+      const tree = container.querySelector('.topic-tree');
+
+      expect(header).not.toBeNull();
+      expect(tree).not.toBeNull();
+      expect(precedes(header, search)).toBe(true);
+      expect(precedes(search, archived)).toBe(true);
+      expect(precedes(archived, tree)).toBe(true);
+    });
+
+    it('keeps chat-search results directly under the search field', async () => {
+      const searchResults: WorkspaceTopicSearchResult[] = [
+        {
+          topic: makeTopic({
+            id: 'topic:hit',
+            display: { title: 'Search hit lane' },
+          }),
+          score: 90,
+          freshness: 'fresh',
+          matches: [
+            {
+              kind: 'topic',
+              field: 'display.title',
+              label: 'chat title',
+              value: 'Search hit lane',
+            },
+          ],
+          action: { kind: 'open-topic', topicId: 'topic:hit' },
+        },
+      ];
+
+      await renderView({ searchQuery: 'hit', searchResults });
+
+      const search = container.querySelector('.topic-search');
+      const results = container.querySelector('.topic-search-results');
+      const cockpit = container.querySelector('.topic-mobile-cockpit');
+
+      expect(results).not.toBeNull();
+      expect(precedes(search, results)).toBe(true);
+      expect(precedes(results, cockpit)).toBe(true);
+    });
   });
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
@@ -2812,7 +3624,7 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('devbox:remote-ika');
   });
 
-  it('renders search result explanation, freshness, disabled action, and truncation metadata', async () => {
+  it('renders search result explanation, freshness, stale caveat, and truncation metadata without blocking the open action', async () => {
     const staleTopic = makeTopic({
       id: 'topic:stale',
       display: {
@@ -2859,10 +3671,268 @@ describe('TopicSidebarView', () => {
       'some linked surfaces are stale or unreachable'
     );
     expect(container.textContent).toContain('results truncated');
+    // #1287 slice 5 item 20: a stale linked surface is a caveat about the
+    // topic's evidence, not about the chat — the channel still opens, and it
+    // opens the channel instead of attaching `primarySessionId`.
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    await act(async () => action.click());
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:stale');
+  });
+
+  it('opens the channel from a search row for a channel-native chat with no sessions', async () => {
+    // #1287 slice 5 item 20: the row used to attach `action.primarySessionId`
+    // and disable itself when the topic had none — which was every chat born in
+    // a channel. The action is `open-topic`, so it must route by `topicId`.
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    const channelTopic = makeTopic({
+      id: 'topic:channel-native',
+      workspaceId: 'workspace:beta',
+      display: { title: 'Channel native chat' },
+      linkedRefs: {},
+      routingDefaults: {},
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: channelTopic,
+        score: 80,
+        freshness: 'fresh',
+        matches: [
+          {
+            kind: 'topic',
+            field: 'display.title',
+            label: 'chat title',
+            value: 'Channel native chat',
+          },
+        ],
+        action: { kind: 'open-topic', topicId: 'topic:channel-native' },
+      },
+    ];
+
+    await renderView({
+      topics: [channelTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'channel',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    expect(action.title).toBe('open chat');
+
+    await act(async () => action.click());
+
+    expect(useUiStore.getState().activeChannelId).toBe('topic:channel-native');
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:beta');
+    expect(useUiStore.getState().topicComposerOpen).toBe(false);
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('resumes the linked session from a derived search row instead of opening nothing', async () => {
+    // The server's chat search deliberately appends derived topics
+    // (`fallbackTopics` over the WorkContext store). `openTopicSelection`
+    // returns early for anything not `persisted`, so routing them through the
+    // channel path rendered an enabled `open` button that only shifted
+    // workspace context — while the rail resumed the very same topic's session.
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-hit',
+      source: 'derived',
+      workspaceId: 'workspace:beta',
+      display: { title: 'Derived session chat' },
+      linkedRefs: { sessionIds: ['s1'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 60,
+        freshness: 'fresh',
+        matches: [
+          {
+            kind: 'topic',
+            field: 'display.title',
+            label: 'chat title',
+            value: 'Derived session chat',
+          },
+        ],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-hit',
+          primarySessionId: 's1',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [makeSession({ id: 's1', displayName: 'Derived lane' })],
+      surfaces: [],
+      searchQuery: 'derived',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    expect(action.textContent).toBe('resume');
+    expect(action.title).toBe('resume the linked session');
+
+    await act(async () => action.click());
+
+    // Same disposition the rail gives this topic: the session, never a channel.
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:beta');
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+  });
+
+  it('disables a derived search row that reaches neither a channel nor a session', async () => {
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-orphan',
+      source: 'derived',
+      display: { title: 'Orphan derived chat' },
+      linkedRefs: {},
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 20,
+        freshness: 'stale',
+        matches: [],
+        action: { kind: 'open-topic', topicId: 'topic:derived-orphan' },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'orphan',
+      searchResults,
+    });
+
     const action = container.querySelector(
       '.topic-search-result__action'
     ) as HTMLButtonElement;
     expect(action.disabled).toBe(true);
+    expect(action.title).toBe('no chat or session to open for this hit');
+  });
+
+  it('disables a derived search row whose linked session no longer resolves', async () => {
+    // `primarySessionId` is a string on a WorkContext record, not proof the
+    // session exists. Enabling `resume` on id presence alone let the operator
+    // click into `activeSessionId = <gone id>`, which App's channel/session
+    // mutual exclusion reads as "a session opened" and uses to clear
+    // `activeChannelId` — the row closed the chat they were reading and landed
+    // them on neither surface. The rail disables the same topic's resume, so
+    // this row must too.
+    useUiStore.setState({
+      sidebarOpen: true,
+      activeChannelId: 'topic:already-open',
+    });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-gone',
+      source: 'derived',
+      display: { title: 'Gone session chat' },
+      linkedRefs: { sessionIds: ['gone'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 40,
+        freshness: 'stale',
+        matches: [],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-gone',
+          primarySessionId: 'gone',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'gone',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe('linked session is no longer available');
+
+    await act(async () => action.click());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    // The channel the operator was reading survives the dead row.
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
+  });
+
+  it('disables a derived search row whose linked session cannot be attached', async () => {
+    // Parity with the rail: `selectMobile` gates resume on
+    // `sessionAttachDisabledReason`, so a disconnected session must read the
+    // same on both entry points, reason and all.
+    useUiStore.setState({
+      sidebarOpen: true,
+      activeChannelId: 'topic:already-open',
+    });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-dead',
+      source: 'derived',
+      display: { title: 'Disconnected session chat' },
+      linkedRefs: { sessionIds: ['s-dead'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 40,
+        freshness: 'stale',
+        matches: [],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-dead',
+          primarySessionId: 's-dead',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [
+        makeSession({
+          id: 's-dead',
+          displayName: 'Dead lane',
+          status: 'disconnected',
+        }),
+      ],
+      surfaces: [],
+      searchQuery: 'dead',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe(
+      'session offline/disconnected — controls unavailable until reconnect'
+    );
+
+    await act(async () => action.click());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
   });
 
   it('threads the show-older-chats toggle into chat search requests', async () => {
@@ -2940,12 +4010,14 @@ describe('TopicSidebarView', () => {
         })
       );
     });
-    await act(async () => {
-      await flushQueryEffects();
-    });
+    // #1293: wait for the empty-result row rather than a fixed flush — the
+    // search request resolves a tick before the panel re-renders.
+    await waitForRendered(
+      () => container.textContent?.includes('no chat matches for') === true,
+      'the empty chat-search result row'
+    );
 
     expect(searchQueries).toEqual([{ q: 'archived', limit: '20' }]);
-    expect(container.textContent).toContain('no chat matches for');
     expect(container.textContent).not.toContain('Archived lane');
 
     const archivedToggle = container.querySelector(
@@ -2953,15 +4025,17 @@ describe('TopicSidebarView', () => {
     ) as HTMLButtonElement;
     await act(async () => {
       archivedToggle.click();
-      await flushQueryEffects();
     });
+    await waitForRendered(
+      () => container.textContent?.includes('Archived lane') === true,
+      'the archived chat-search result row'
+    );
 
     expect(searchQueries).toContainEqual({
       q: 'archived',
       includeArchived: '1',
       limit: '20',
     });
-    expect(container.textContent).toContain('Archived lane');
     expect(container.textContent).not.toContain('no chat matches for');
     queryClient.clear();
   });

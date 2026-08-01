@@ -143,11 +143,32 @@ export interface TopicNavNode {
  * counts — so `ChannelSummaryView` from the API client assigns directly without
  * the rail projection depending on the fetch layer.
  */
+/**
+ * One live thread on a rail row (#1287 slice 5 item 18). Structural subset of
+ * the channel list's `threads` entries — root preview, reply count, and the
+ * newest reply stamp are everything the rail draws.
+ */
+export interface ChannelRailThreadSummary {
+  rootMessageId: string;
+  replyCount: number;
+  lastReplyAt: string;
+  preview: string;
+  rootSenderId: string;
+  rootSenderKind: 'human' | 'agent' | 'system';
+  /** Server-resolved label; `rootSenderId` is an Actor id, never a name (#1234). */
+  rootSenderDisplayName?: string;
+  providerId?: string;
+}
+
 export interface ChannelRailSummary {
   id: string;
   latestSeq: number;
   messageCount: number;
   members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+  /** Newest-active threads, capped server-side. Absent before the payload lands. */
+  threads?: ChannelRailThreadSummary[];
+  /** Total live threads; `threads` holds only the newest slice. */
+  threadCount?: number;
   lastMessage: {
     seq: number;
     preview: string;
@@ -215,6 +236,69 @@ export interface ChannelRailActivitySnapshot {
    * never get one.
    */
   summaryByChannel?: Readonly<Record<string, ChannelRailSummary>>;
+}
+
+/**
+ * Resolve which rail rows render expanded (#1287 slice 5).
+ *
+ * Fold state is DERIVED, never seeded into state by an effect. A root row is
+ * open unless the operator explicitly closed it; any other row is closed unless
+ * the operator explicitly opened it. `expansion` therefore only ever holds rows
+ * the operator actually touched, and it is the whole "have we seen this id
+ * before" record: an id missing from it has never been decided, so a brand new
+ * root still opens on its own, while an id recorded `false` stays closed for
+ * good.
+ *
+ * The predecessor was an effect that re-added every `model.rootIds` entry to a
+ * component-local set whenever the nav model changed identity. `useSessionsStore`
+ * rebuilds its `sessions` array via `.map()` on every activity/status/branch/
+ * rename WS event, so that effect re-fired — and re-expanded the rail — within
+ * seconds of any collapse during a live session.
+ */
+export function selectExpandedRailIds(
+  rootIds: readonly WorkspaceTopicId[],
+  expansion: Readonly<Record<string, boolean>>
+): Set<string> {
+  const expanded = new Set<string>();
+  for (const id of rootIds) {
+    if (expansion[id] !== false) expanded.add(id);
+  }
+  for (const [id, isExpanded] of Object.entries(expansion)) {
+    if (isExpanded) expanded.add(id);
+  }
+  return expanded;
+}
+
+/**
+ * Fold key for a channel row's thread list (#1287 slice 5 item 18).
+ *
+ * Namespaced off the channel id so thread folds share the persisted
+ * `topicRailExpansion` record — same operator-intent semantics as item 16 —
+ * WITHOUT ever being a `rootIds` entry. `selectExpandedRailIds` only
+ * auto-expands roots, so a thread list is closed until the operator opens it
+ * and then stays open across reloads. `#` cannot appear in a topic id, so the
+ * key can never collide with a real row.
+ */
+export function railThreadFoldId(channelId: string): string {
+  return `${channelId}#threads`;
+}
+
+/**
+ * Threads to render under a rail row, newest-active first (#1287 slice 5 item
+ * 18). Normalizes the optional payload: a summary the list has not hydrated, a
+ * hub from before the extension, and a channel with no threads are all "no
+ * thread rows", and `threadCount` never under-reports the rows actually shown.
+ */
+export function selectRailRowThreads(summary: ChannelRailSummary | null): {
+  threads: ChannelRailThreadSummary[];
+  threadCount: number;
+} {
+  const threads = summary?.threads ?? [];
+  const shown = threads.filter((thread) => thread.replyCount > 0);
+  return {
+    threads: shown,
+    threadCount: Math.max(summary?.threadCount ?? 0, shown.length),
+  };
 }
 
 /** Key a `GET /channels` payload by channel id for the rail join (#1287). */

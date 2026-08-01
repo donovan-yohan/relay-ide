@@ -9,6 +9,7 @@ describe('channel thread transient UI state', () => {
     useUiStore.setState({
       activeChannelId: null,
       activeThreadRootId: null,
+      pendingChannelThread: null,
       forceOrgCockpit: false,
     });
   });
@@ -31,6 +32,34 @@ describe('channel thread transient UI state', () => {
 
     useUiStore.getState().setActiveChannelId('topic:next');
     expect(useUiStore.getState().forceOrgCockpit).toBe(false);
+  });
+
+  // #1287 slice 5 item 18: the rail asks for "this channel, with this thread".
+  it('records a thread-open intent and only the target channel consumes it', () => {
+    const rootId = 'chm:root' as ChannelMessageId;
+    // The rail always opens the channel first, so the intent must survive being
+    // written immediately after `setActiveChannelId` cleared the field.
+    useUiStore.getState().setActiveChannelId('topic:alpha');
+    useUiStore.getState().requestChannelThread('topic:alpha', rootId);
+    expect(useUiStore.getState().pendingChannelThread).toEqual({
+      channelId: 'topic:alpha',
+      rootMessageId: rootId,
+    });
+
+    useUiStore.getState().consumeChannelThreadIntent('topic:beta');
+    expect(useUiStore.getState().pendingChannelThread).not.toBeNull();
+
+    useUiStore.getState().consumeChannelThreadIntent('topic:alpha');
+    expect(useUiStore.getState().pendingChannelThread).toBeNull();
+  });
+
+  it('cancels an un-consumed thread intent on a plain channel open', () => {
+    useUiStore
+      .getState()
+      .requestChannelThread('topic:alpha', 'chm:root' as ChannelMessageId);
+
+    useUiStore.getState().setActiveChannelId('topic:beta');
+    expect(useUiStore.getState().pendingChannelThread).toBeNull();
   });
 
   it('keeps the cockpit escape hatch when a channel is closed', () => {

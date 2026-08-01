@@ -1,19 +1,122 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
-import {
-  resolveSessionByKey,
-  scopedSessionKey,
-} from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import {
   parseRoute,
   buildPath,
   parseModal,
   buildQuery,
+  type RouteState,
 } from '../lib/url-nav.js';
 
 /**
- * Syncs browser URL ↔ active repo / session / analytics / modal state.
+ * Applies a parsed route to the stores. Shared by the boot restore and the
+ * back/forward handler so the two can never drift — a route variant handled in
+ * one and forgotten in the other is exactly how a surface ends up navigable
+ * forwards but not backwards.
+ *
+ * Every branch writes EVERY routed field, including the ones it clears. The
+ * channel is the case that makes this mandatory: it outranks the session and
+ * the composer in `resolveAppViewMode`, so a `home`/`repo`/`session` route that
+ * left `activeChannelId` alone would move the URL while the channel stayed on
+ * screen (#1287).
+ */
+function applyRoute(route: RouteState): void {
+  const ui = useUiStore.getState();
+  const sessions = useSessionsStore.getState();
+
+  switch (route.view) {
+    case 'channel':
+      ui.setActiveChannelId(route.channelId);
+      ui.setTopicComposerOpen(false);
+      ui.setAnalyticsView(null);
+      // The session selection is dropped rather than kept underneath: with it
+      // still set, closing the channel would drop the operator onto a terminal
+      // they never navigated to on this history entry.
+      sessions.setActiveSessionId(null);
+      break;
+
+    case 'repo':
+      ui.setActiveChannelId(null);
+      ui.setActiveRepoPath(route.repoPath);
+      sessions.setActiveSessionId(null);
+      ui.setAnalyticsView(null);
+      break;
+
+    case 'session': {
+      ui.setActiveChannelId(null);
+      ui.setActiveRepoPath(route.repoPath);
+      const session = resolveSessionByKey(sessions.sessions, route.sessionId);
+      if (session) {
+        sessions.setActiveSessionId(scopedSessionKey(session));
+      } else {
+        // Session no longer exists — fall back to repo view and fix URL
+        sessions.setActiveSessionId(null);
+      }
+      ui.setAnalyticsView(null);
+      break;
+    }
+
+    case 'analytics':
+      ui.setActiveChannelId(null);
+      ui.setAnalyticsView('dashboard');
+      break;
+
+    case 'analytics-detail':
+      ui.setActiveChannelId(null);
+      ui.setAnalyticsView({ sessionId: route.sessionId });
+      break;
+
+    case 'home':
+    default:
+      ui.setActiveChannelId(null);
+      ui.setActiveRepoPath(null);
+      sessions.setActiveSessionId(null);
+      ui.setAnalyticsView(null);
+      break;
+  }
+}
+
+/** The URL the current store state would produce. */
+function currentStateUrl(): string {
+  const ui = useUiStore.getState();
+  const sessions = useSessionsStore.getState();
+  return (
+    buildPath(
+      ui.activeRepoPath,
+      sessions.activeSessionId,
+      ui.analyticsView,
+      sessions.repos,
+      ui.activeChannelId
+    ) + buildQuery(ui.activeModal)
+  );
+}
+
+/**
+ * Correct the address in place when the store could not honour the URL it was
+ * just applied from — a session id that no longer resolves, say. Pushing would
+ * add an entry the operator never navigated to; leaving it stale would re-apply
+ * the dead route on the next reload.
+ *
+ * Done eagerly at apply time rather than by arming a flag for the push effect
+ * to consume. That effect only runs when one of its deps changes, and a route
+ * the store already matched field-for-field changes none of them: `applyRoute`
+ * writes the same primitives back through plain `set()` calls, so zustand
+ * re-renders nothing. Booting on `/<repo-hash>/gone` with that repo already
+ * active is exactly that case — the dead URL went uncorrected AND the flag
+ * survived into the operator's NEXT real navigation, turning that push into a
+ * replace so the surface they opened created no history entry and Back left the
+ * app (#1287).
+ */
+function correctUrlToStore(): void {
+  const url = currentStateUrl();
+  if (url === window.location.pathname + window.location.search) return;
+  window.history.replaceState(null, '', url);
+}
+
+/**
+ * Syncs browser URL ↔ active repo / session / channel / analytics / modal state.
  *
  * - User navigation pushes history entries automatically
  * - Browser back/forward updates the store without pushing
@@ -23,67 +126,36 @@ export function useUrlNav() {
   const repos = useSessionsStore((s) => s.repos);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const activeModal = useUiStore((s) => s.activeModal);
 
-  // When true, the next store-change effect skips pushing URL
-  const suppressPush = useRef(false);
   // Whether initial restore has run (prevents pushing during boot)
   const restored = useRef(false);
 
   // ── Restore state from URL (call after initial data fetch) ────────────────
   const restoreFromUrl = useCallback(() => {
     const currentRepos = useSessionsStore.getState().repos;
-    const currentSessions = useSessionsStore.getState().sessions;
     const route = parseRoute(window.location.pathname, currentRepos);
     const modal = parseModal(window.location.search);
 
-    suppressPush.current = true;
-
-    switch (route.view) {
-      case 'repo':
-        useUiStore.getState().setActiveRepoPath(route.repoPath);
-        useSessionsStore.getState().setActiveSessionId(null);
-        useUiStore.getState().setAnalyticsView(null);
-        break;
-
-      case 'session': {
-        useUiStore.getState().setActiveRepoPath(route.repoPath);
-        const session = resolveSessionByKey(currentSessions, route.sessionId);
-        if (session) {
-          useSessionsStore.getState().setActiveSessionId(scopedSessionKey(session));
-        } else {
-          // Session no longer exists — fall back to repo view and fix URL
-          useSessionsStore.getState().setActiveSessionId(null);
-        }
-        useUiStore.getState().setAnalyticsView(null);
-        break;
-      }
-
-      case 'analytics':
-        useUiStore.getState().setAnalyticsView('dashboard');
-        break;
-
-      case 'analytics-detail':
-        useUiStore.getState().setAnalyticsView({
-          sessionId: route.sessionId,
-        });
-        break;
-
-      case 'home':
-      default: {
-        // No route in URL — replace URL with current store state
-        const rp = useUiStore.getState().activeRepoPath;
-        const sid = useSessionsStore.getState().activeSessionId;
-        const av = useUiStore.getState().analyticsView;
-        const url = buildPath(rp, sid, av, currentRepos) + buildQuery(modal);
-        window.history.replaceState(null, '', url);
-        break;
-      }
+    if (route.view === 'home') {
+      // No route in URL — replace URL with current store state
+      useUiStore.getState().setActiveModal(modal);
+      window.history.replaceState(null, '', currentStateUrl());
+    } else {
+      // A deep-linked channel is restored on its id alone — the channel list is
+      // not loaded yet at boot, and waiting for it would leave the top-priority
+      // surface blank behind every other query. `ChannelView` owns the unknown/
+      // deleted case: it fetches the channel itself and renders the "this chat
+      // no longer exists" recovery, whose back action clears `activeChannelId`
+      // and lets the push effect below move the URL off the dead link. A
+      // segment that is not a legal topic id never gets that far — `parseRoute`
+      // already resolved it to `home`.
+      applyRoute(route);
+      useUiStore.getState().setActiveModal(modal);
+      correctUrlToStore();
     }
-
-    // Restore modal state from query params
-    useUiStore.getState().setActiveModal(modal);
 
     restored.current = true;
   }, []);
@@ -91,75 +163,38 @@ export function useUrlNav() {
   // ── Push URL whenever routed state changes ────────────────────────────────
   useEffect(() => {
     if (!restored.current) return;
-    if (suppressPush.current) {
-      suppressPush.current = false;
-      return;
-    }
 
     const path = buildPath(
       activeRepoPath,
       activeSessionId,
       analyticsView,
-      repos
+      repos,
+      activeChannelId
     );
     const query = buildQuery(activeModal);
     const url = path + query;
     const current = window.location.pathname + window.location.search;
-    if (current !== url) {
-      window.history.pushState(null, '', url);
-    }
-  }, [activeRepoPath, activeSessionId, analyticsView, repos, activeModal]);
+    // A URL-driven change has already been reconciled by `correctUrlToStore`,
+    // so anything reaching here is the operator navigating: always a push.
+    if (current === url) return;
+    window.history.pushState(null, '', url);
+  }, [
+    activeRepoPath,
+    activeSessionId,
+    activeChannelId,
+    analyticsView,
+    repos,
+    activeModal,
+  ]);
 
   // ── Handle browser back / forward ─────────────────────────────────────────
   useEffect(() => {
     const handler = () => {
-      suppressPush.current = true;
       const currentRepos = useSessionsStore.getState().repos;
-      const currentSessions = useSessionsStore.getState().sessions;
-      const route = parseRoute(window.location.pathname, currentRepos);
-      const modal = parseModal(window.location.search);
-
-      switch (route.view) {
-        case 'repo':
-          useUiStore.getState().setActiveRepoPath(route.repoPath);
-          useSessionsStore.getState().setActiveSessionId(null);
-          useUiStore.getState().setAnalyticsView(null);
-          break;
-
-        case 'session': {
-          useUiStore.getState().setActiveRepoPath(route.repoPath);
-          const session = resolveSessionByKey(currentSessions, route.sessionId);
-          if (session) {
-            useSessionsStore
-              .getState()
-              .setActiveSessionId(scopedSessionKey(session));
-          } else {
-            useSessionsStore.getState().setActiveSessionId(null);
-          }
-          useUiStore.getState().setAnalyticsView(null);
-          break;
-        }
-
-        case 'analytics':
-          useUiStore.getState().setAnalyticsView('dashboard');
-          break;
-
-        case 'analytics-detail':
-          useUiStore.getState().setAnalyticsView({
-            sessionId: route.sessionId,
-          });
-          break;
-
-        case 'home':
-        default:
-          useUiStore.getState().setActiveRepoPath(null);
-          useSessionsStore.getState().setActiveSessionId(null);
-          useUiStore.getState().setAnalyticsView(null);
-          break;
-      }
-
+      applyRoute(parseRoute(window.location.pathname, currentRepos));
       // Restore modal state from query params
-      useUiStore.getState().setActiveModal(modal);
+      useUiStore.getState().setActiveModal(parseModal(window.location.search));
+      correctUrlToStore();
     };
 
     window.addEventListener('popstate', handler);

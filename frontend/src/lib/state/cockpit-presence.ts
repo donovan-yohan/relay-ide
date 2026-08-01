@@ -1,5 +1,9 @@
 import type { ChannelAgentStatus } from '../api.js';
-import type { TopicNavItem, TopicNavSessionRef } from './topic-nav.js';
+import type {
+  ChannelRailSummary,
+  TopicNavItem,
+  TopicNavSessionRef,
+} from './topic-nav.js';
 
 export type CockpitPresence =
   | 'idle'
@@ -125,4 +129,61 @@ export function presenceStateForRow(
   let presence = rollUp(states);
   if (ctx.unread && presence === 'idle') presence = 'done';
   return presence;
+}
+
+/** Compact agent presence for one rail row (#1287 slice 5). */
+export interface RailRowPresence {
+  /** Agent participants on the row (summary members ∪ live status keys). */
+  count: number;
+  /** Rolled-up presence across those agents — drives the 50% status dot. */
+  presence: CockpitPresence;
+  /** Accessible/tooltip text, e.g. `2 agents working`. */
+  label: string;
+}
+
+/**
+ * Desktop rail presence for one channel row (#1287 slice 5 item 19).
+ *
+ * Joins the member list the channel summary ALREADY carries (slice 3 row
+ * hydration) with the live `channel-agent-status` store, so a desktop row can
+ * show who is in the channel and whether anyone is mid-turn WITHOUT the
+ * per-channel roster fan-out — that fan-out stays gated to the mobile cockpit
+ * because it costs one request per row.
+ *
+ * Membership alone is presence: an agent the status store has never spoken for
+ * is `idle` (joined and quiet), never `unknown`. A live status key the summary
+ * has not caught up on (agent joined after the list page was fetched) still
+ * counts, so a working agent can never fall off the row.
+ *
+ * Returns null when there is no agent presence to show at all — a derived topic
+ * the channel list does not cover, or a human-only channel — so those rows keep
+ * the bare title they render today.
+ */
+export function selectRailRowPresence(
+  channelId: string,
+  summary: Pick<ChannelRailSummary, 'members'> | null,
+  agentStatuses: Readonly<Record<string, ChannelAgentStatus>> = {}
+): RailRowPresence | null {
+  const prefix = `${channelId} `;
+  const agentIds = new Set<string>();
+  for (const member of summary?.members ?? []) {
+    if (member.kind === 'agent') agentIds.add(member.id);
+  }
+  for (const key of Object.keys(agentStatuses)) {
+    if (!key.startsWith(prefix)) continue;
+    const agentId = key.slice(prefix.length);
+    if (agentId) agentIds.add(agentId);
+  }
+  if (agentIds.size === 0) return null;
+  const states = [...agentIds].map((agentId) => {
+    const status = agentStatuses[`${channelId} ${agentId}`];
+    return status ? statusPresence(status) : 'idle';
+  });
+  const presence = rollUp(states);
+  const count = agentIds.size;
+  return {
+    count,
+    presence,
+    label: `${count} agent${count === 1 ? '' : 's'} ${presence}`,
+  };
 }

@@ -33,6 +33,7 @@ import {
   DEFAULT_UTILITY_RAIL_WIDTH,
   MIN_UTILITY_RAIL_WIDTH,
   MAX_UTILITY_RAIL_WIDTH,
+  MAX_TOPIC_RAIL_FOLDS,
   clearUtilityRailStateCacheForTesting,
 } from '../../frontend/src/lib/stores/ui.js';
 
@@ -66,6 +67,8 @@ function resetStore() {
     sendToTargetSessionId: null,
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
+    topicRailExpansion: {},
+    collapsedTopicGroups: new Set(),
     advancedMode: false,
     orgDashboardTab: 'prs',
   });
@@ -713,6 +716,100 @@ describe('ui Zustand store', () => {
       useUiStore.getState().toggleWorkspaceCollapse('/repo/x');
       const stored = JSON.parse(storage['claude-remote-collapsed-workspaces']!);
       expect(stored).toEqual(['/repo/x']);
+    });
+  });
+
+  describe('chat rail fold state (#1287 slice 5)', () => {
+    it('records only topics the operator actually toggled', () => {
+      useUiStore.getState().setTopicRailExpanded('topic:a', false);
+      useUiStore.getState().setTopicRailExpanded('topic:b', true);
+
+      expect(useUiStore.getState().topicRailExpansion).toEqual({
+        'topic:a': false,
+        'topic:b': true,
+      });
+      expect(
+        JSON.parse(storage['claude-remote-topic-rail-expansion']!)
+      ).toEqual({ 'topic:a': false, 'topic:b': true });
+    });
+
+    it('leaves state identity alone when the value is unchanged', () => {
+      useUiStore.getState().setTopicRailExpanded('topic:a', false);
+      const before = useUiStore.getState().topicRailExpansion;
+      useUiStore.getState().setTopicRailExpanded('topic:a', false);
+
+      // Re-writing the same fold must not churn the record: the rail derives a
+      // memoized Set from it, and a fresh object would re-render every row.
+      expect(useUiStore.getState().topicRailExpansion).toBe(before);
+    });
+
+    it('caps the remembered folds and evicts the least recently touched', () => {
+      for (let i = 0; i < MAX_TOPIC_RAIL_FOLDS + 5; i++) {
+        useUiStore.getState().setTopicRailExpanded(`topic:${i}`, false);
+      }
+      // Re-touch the oldest survivor so it is no longer the eviction candidate.
+      useUiStore.getState().setTopicRailExpanded('topic:5', true);
+      useUiStore.getState().setTopicRailExpanded('topic:overflow', false);
+
+      const expansion = useUiStore.getState().topicRailExpansion;
+      expect(Object.keys(expansion)).toHaveLength(MAX_TOPIC_RAIL_FOLDS);
+      expect(expansion['topic:0']).toBeUndefined();
+      expect(expansion['topic:5']).toBe(true);
+      expect(expansion['topic:overflow']).toBe(false);
+    });
+
+    it('persists mobile workspace-group collapse to localStorage', () => {
+      useUiStore.getState().toggleTopicGroupCollapsed('ws:a');
+      expect(useUiStore.getState().collapsedTopicGroups.has('ws:a')).toBe(true);
+      expect(
+        JSON.parse(storage['claude-remote-collapsed-topic-groups']!)
+      ).toEqual(['ws:a']);
+
+      useUiStore.getState().toggleTopicGroupCollapsed('ws:a');
+      expect(useUiStore.getState().collapsedTopicGroups.has('ws:a')).toBe(false);
+      expect(
+        JSON.parse(storage['claude-remote-collapsed-topic-groups']!)
+      ).toEqual([]);
+    });
+
+    it('rehydrates both folds from localStorage on a fresh load', async () => {
+      // A reload is a fresh module graph, so prove the boot read rather than
+      // the in-memory state a previous test left behind.
+      storage['claude-remote-topic-rail-expansion'] = JSON.stringify({
+        'topic:a': false,
+        'topic:b': true,
+        'topic:junk': 'yes',
+      });
+      storage['claude-remote-collapsed-topic-groups'] = JSON.stringify([
+        'ws:a',
+        7,
+      ]);
+      vi.resetModules();
+
+      const { useUiStore: reloaded } = await import(
+        '../../frontend/src/lib/stores/ui.js'
+      );
+
+      expect(reloaded.getState().topicRailExpansion).toEqual({
+        'topic:a': false,
+        'topic:b': true,
+      });
+      expect(Array.from(reloaded.getState().collapsedTopicGroups)).toEqual([
+        'ws:a',
+      ]);
+    });
+
+    it('survives corrupt persisted fold payloads', async () => {
+      storage['claude-remote-topic-rail-expansion'] = '["not","a","map"]';
+      storage['claude-remote-collapsed-topic-groups'] = '{oops';
+      vi.resetModules();
+
+      const { useUiStore: reloaded } = await import(
+        '../../frontend/src/lib/stores/ui.js'
+      );
+
+      expect(reloaded.getState().topicRailExpansion).toEqual({});
+      expect(reloaded.getState().collapsedTopicGroups.size).toBe(0);
     });
   });
 

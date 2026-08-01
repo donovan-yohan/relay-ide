@@ -68,10 +68,23 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
   const activeThreadRootId = useUiStore((s) => s.activeThreadRootId);
   const setActiveThreadRootId = useUiStore((s) => s.setActiveThreadRootId);
+  const pendingChannelThread = useUiStore((s) => s.pendingChannelThread);
 
   useEffect(() => {
     setActiveThreadRootId(null);
   }, [channelId, setActiveThreadRootId]);
+
+  // #1287 slice 5 item 18: adopt a thread the rail asked us to open. Kept
+  // separate from (and ordered after) the reset above so both a cold open —
+  // where the reset fires on mount — and a re-open of the channel already on
+  // screen land the panel. Watching the store value rather than reading it once
+  // is what makes the second case work: `channelId` never changes there, so an
+  // effect keyed on it alone would never re-run.
+  useEffect(() => {
+    if (pendingChannelThread?.channelId !== channelId) return;
+    setActiveThreadRootId(pendingChannelThread.rootMessageId);
+    useUiStore.getState().consumeChannelThreadIntent(channelId);
+  }, [channelId, pendingChannelThread, setActiveThreadRootId]);
 
   // Self-derive DM-ness: ChannelSummaryView does not expose routingDefaults, so
   // fetch the topic (cached) and run the pure id derivation. Cheaper than

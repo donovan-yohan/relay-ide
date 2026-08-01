@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   buildChannelThreadHistorySql,
+  buildChannelThreadSummarySql,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
@@ -1101,6 +1102,242 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(viaList?.latestSeq).toBe(begun.seq);
     expect(viaList?.messageCount).toBe(3);
     expect(viaList?.lastMessage?.preview).toBe('last prose message');
+  });
+});
+
+// #1287 slice 5 item 18: the rail surfaces threads, so the channel list needs a
+// thread projection that agrees with the in-timeline "N replies" chip.
+describe('channel-message-store thread summaries', () => {
+  it('reports live threads newest-active first with the chip reply count', () => {
+    const s = store();
+    const design = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'how should the binder key runtimes?',
+    });
+    const rollout = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'rollout plan',
+    });
+    // A top-level row with no replies is not a thread.
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'unrelated top-level chatter',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'by profile actor id',
+      parentMessageId: design.id,
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'agreed',
+      parentMessageId: design.id,
+    });
+    // Detail cards persist inside the thread for cold resume but are NOT
+    // conversational replies — `replyCountSql` excludes them and so must this.
+    const card = s.beginStream({
+      channelId: 'topic:t',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-t', turnId: 't-1', itemId: 'reason-1' },
+      parentMessageId: design.id,
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'inspect',
+        },
+      },
+    });
+    s.finalizeStream(card.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'completed',
+          content: 'inspect',
+        },
+      },
+    });
+    // Newest reply overall lands in the OTHER thread, which must therefore lead.
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'ship behind the fold',
+      parentMessageId: rollout.id,
+    });
+
+    const page = s.listChannelThreadSummaries('topic:t');
+    expect(page.threadCount).toBe(2);
+    expect(page.threads.map((thread) => thread.rootMessageId)).toEqual([
+      rollout.id,
+      design.id,
+    ]);
+    // The design thread has three rows under it; only two are replies.
+    expect(page.threads[1]).toMatchObject({
+      replyCount: 2,
+      preview: 'how should the binder key runtimes?',
+      rootSenderId: HUMAN.id,
+      rootSenderKind: 'human',
+    });
+    expect(page.threads[0]?.replyCount).toBe(1);
+    // Agreement with the in-timeline chip, which reads the derived reply count
+    // history hands back for the same root.
+    expect(
+      s.threadHistory('topic:t', design.id).find((m) => m.id === design.id)
+        ?.replyCount
+    ).toBe(2);
+    // Threads live in exactly one channel.
+    expect(s.listChannelThreadSummaries('topic:other')).toEqual({
+      threads: [],
+      threadCount: 0,
+    });
+  });
+
+  it('caps the page while still counting every live thread', () => {
+    const s = store();
+    const roots = Array.from({ length: 5 }, (_, index) =>
+      s.appendComplete({
+        channelId: 'topic:t',
+        sender: HUMAN,
+        text: `root ${index}`,
+      })
+    );
+    for (const root of roots) {
+      s.appendComplete({
+        channelId: 'topic:t',
+        sender: AGENT,
+        text: 'reply',
+        parentMessageId: root.id,
+      });
+    }
+
+    const defaulted = s.listChannelThreadSummaries('topic:t');
+    expect(defaulted.threads).toHaveLength(3);
+    // A capped page must not under-report how many threads the channel holds —
+    // the rail's "N threads" line reads this, not `threads.length`.
+    expect(defaulted.threadCount).toBe(5);
+    expect(defaulted.threads.map((thread) => thread.rootMessageId)).toEqual([
+      roots[4]?.id,
+      roots[3]?.id,
+      roots[2]?.id,
+    ]);
+    expect(s.listChannelThreadSummaries('topic:t', 5).threads).toHaveLength(5);
+    expect(s.listChannelThreadSummaries('topic:t', 0).threads).toHaveLength(1);
+  });
+
+  it('counts only threads whose root still resolves in this channel', () => {
+    // `COUNT(*) OVER ()` used to be computed inside the aggregate, i.e. BEFORE
+    // the join that drops a group whose root row is gone — so the rail could
+    // render "2 threads" over one thread row. The frontend clamp only guards
+    // under-reporting, so nothing downstream caught it.
+    const file = dbPath();
+    const s = store(file);
+    const kept = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'kept root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'kept reply',
+      parentMessageId: kept.id,
+    });
+    const orphaned = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'doomed root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'orphan reply',
+      parentMessageId: orphaned.id,
+    });
+    expect(s.listChannelThreadSummaries('topic:t').threadCount).toBe(2);
+
+    const raw = new Database(file);
+    cleanup.push(() => raw.close());
+    raw.prepare(`DELETE FROM channel_messages WHERE id = ?`).run(orphaned.id);
+
+    const page = s.listChannelThreadSummaries('topic:t');
+    expect(page.threads.map((thread) => thread.rootMessageId)).toEqual([
+      kept.id,
+    ]);
+    expect(page.threadCount).toBe(page.threads.length);
+  });
+
+  it('plans the channel-list thread aggregate as a channel-scoped index walk', () => {
+    const p = dbPath();
+    const s = store(p);
+    const root = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'root',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'reply',
+      parentMessageId: root.id,
+    });
+
+    const raw = new Database(p, { readonly: true });
+    cleanup.push(() => raw.close());
+    // EXPLAIN the exact SQL `GET /channels` runs once per channel — the reason
+    // the builder is exported rather than inlined.
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelThreadSummarySql()}`)
+      .all({ channelId: 'topic:t', limit: 3 }) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join('\n');
+    expect(details).toContain('idx_chm_channel_seq');
+    // Never a full-table walk: both channel_messages references stay scoped to
+    // the one channel, so this costs the same order of work as the summary's
+    // own COUNT(*) no matter how many channels the hub holds.
+    expect(details).not.toMatch(/SCAN (?:channel_messages|root)\b/);
+    // Absence of the word SCAN is not enough. Drop the CROSS JOIN hint and
+    // SQLite drives from `root` instead, reported as
+    // `SEARCH root USING INDEX idx_chm_channel_seq (channel_id=?)` — a SEARCH
+    // bound on the channel alone is a range walk of EVERY message in the
+    // channel, and it pays for a transient index over `agg` on each execution.
+    // That plan is ~1.5x slower at 5k messages and diverges as transcripts
+    // grow, so assert the join shape: the page must be driven by the thread
+    // groups, with `root` reached by primary key.
+    expect(details).toMatch(
+      /SEARCH root USING (?:COVERING )?INDEX sqlite_autoindex_channel_messages_1 \(id=\?\)/
+    );
+    expect(details).not.toContain('AUTOMATIC COVERING INDEX');
+  });
+
+  it('carries the server-resolved root sender label and vendor', () => {
+    const s = store();
+    const root = s.appendComplete({
+      channelId: 'topic:t',
+      sender: { ...AGENT, displayName: 'Claude Bot' },
+      text: 'status update',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'noted',
+      parentMessageId: root.id,
+    });
+
+    expect(s.listChannelThreadSummaries('topic:t').threads[0]).toMatchObject({
+      rootSenderDisplayName: 'Claude Bot',
+      providerId: 'claude',
+      rootSenderKind: 'agent',
+    });
   });
 });
 

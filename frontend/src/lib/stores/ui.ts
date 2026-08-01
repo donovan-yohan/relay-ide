@@ -18,6 +18,13 @@ const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
+// #1287 slice 5: operator-owned fold state for the chat rail. The desktop rail
+// records per-topic expansion, the mobile cockpit records per-workspace-group
+// collapse. Both used to be component-local `useState`, so every rebuild of the
+// nav model (one per activity/status/branch/rename WS event) re-expanded the
+// rail and a reload forgot the fold entirely.
+const TOPIC_RAIL_EXPANSION_KEY = 'claude-remote-topic-rail-expansion';
+const COLLAPSED_TOPIC_GROUPS_KEY = 'claude-remote-collapsed-topic-groups';
 // #1058: persistent "advanced mode" toggle (Settings). Hides mechanics-heavy
 // substrate surfaces (nodes/active-work tabs, analytics icon) from primary
 // chrome by default; each surface stays reachable one-off via a palette action.
@@ -37,6 +44,14 @@ export const DEFAULT_UTILITY_RAIL_WIDTH = 320;
 export const MIN_UTILITY_RAIL_WIDTH = 220;
 export const MAX_UTILITY_RAIL_WIDTH = 640;
 export const UTILITY_ICON_RAIL_WIDTH = 48;
+/**
+ * Cap on remembered chat-rail folds (#1287 slice 5). The record only grows when
+ * the operator folds a row, and nothing prunes it when a channel is deleted, so
+ * bound it and drop the least recently touched ids. Eviction is safe by
+ * construction: a dropped id falls back to its structural default (roots open)
+ * rather than to a stale fold.
+ */
+export const MAX_TOPIC_RAIL_FOLDS = 500;
 
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 export type FileTabType = 'diff' | 'code' | 'html';
@@ -256,14 +271,49 @@ function loadTerminalFontSize(): number {
   return DEFAULT_TERMINAL_FONT_SIZE;
 }
 
-function loadCollapsedWorkspaces(): Set<string> {
+function loadStringSet(key: string): Set<string> {
   try {
-    const stored = ls(COLLAPSED_WORKSPACES_KEY);
-    if (stored) return new Set(JSON.parse(stored) as string[]);
+    const stored = ls(key);
+    if (stored) {
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        return new Set(
+          parsed.filter((v): v is string => typeof v === 'string')
+        );
+      }
+    }
   } catch {
     /* unavailable */
   }
   return new Set();
+}
+
+/**
+ * #1287 slice 5: the rail's fold record. PRESENCE of an id is the "the operator
+ * has decided about this row" mark and the VALUE is the decision, so an
+ * untouched row keeps its structural default (roots open, nested rows closed)
+ * while a touched row keeps exactly what the operator left. That single map
+ * removes the need for a separate "seeded roots" ledger: a collapsed root is
+ * `false` here forever, so no amount of nav-model churn can re-expand it.
+ */
+function loadTopicRailExpansion(): Record<string, boolean> {
+  try {
+    const stored = ls(TOPIC_RAIL_EXPANSION_KEY);
+    if (stored) {
+      const parsed: unknown = JSON.parse(stored);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const entries = Object.entries(parsed as Record<string, unknown>)
+          .filter((entry): entry is [string, boolean] => {
+            return typeof entry[1] === 'boolean';
+          })
+          .slice(-MAX_TOPIC_RAIL_FOLDS);
+        return Object.fromEntries(entries);
+      }
+    }
+  } catch {
+    /* unavailable */
+  }
+  return {};
 }
 
 const UTILITY_RAIL_TABS: UtilityRailTab[] = [
@@ -643,8 +693,32 @@ export interface UiState {
   activeChannelId: string | null;
   /** #1170: currently open channel thread. Session-transient; never persisted. */
   activeThreadRootId: ChannelMessageId | null;
+  /**
+   * #1287 slice 5 item 18: a rail click asking a channel to open WITH one of its
+   * threads already showing. It cannot be expressed as `activeThreadRootId`
+   * directly — `setActiveChannelId` clears that field, and `ChannelView` clears
+   * it again on every channel switch, so a value written alongside the channel
+   * open is always destroyed before the panel mounts. This is the intent
+   * `ChannelView` consumes once it is the channel in question, mirroring
+   * `repoDashboardTabIntent`. Session-transient; never persisted.
+   */
+  pendingChannelThread: {
+    channelId: string;
+    rootMessageId: ChannelMessageId;
+  } | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
+  /**
+   * #1287 slice 5: per-topic fold state for the desktop chat rail, backed by
+   * localStorage. Only ids the operator has actually toggled are recorded;
+   * `selectExpandedRailIds()` supplies the structural default for the rest.
+   */
+  topicRailExpansion: Record<string, boolean>;
+  /**
+   * #1287 slice 5: workspace-group ids the operator folded in the mobile
+   * cockpit, backed by localStorage. Groups default to expanded.
+   */
+  collapsedTopicGroups: Set<string>;
   /**
    * #1058: hides mechanics-heavy substrate surfaces (nodes/active-work tabs
    * in the work cockpit, sidebar analytics icon) from primary chrome.
@@ -694,9 +768,18 @@ export interface UiState {
   setTopicComposerOpen: (v: boolean) => void;
   setActiveChannelId: (v: string | null) => void;
   setActiveThreadRootId: (v: ChannelMessageId | null) => void;
+  /** #1287 item 18: ask `channelId` to open with `rootMessageId`'s thread shown. */
+  requestChannelThread: (
+    channelId: string,
+    rootMessageId: ChannelMessageId
+  ) => void;
+  /** Drop the pending intent once the target channel has consumed it. */
+  consumeChannelThreadIntent: (channelId: string) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
+  setTopicRailExpanded: (topicId: string, expanded: boolean) => void;
+  toggleTopicGroupCollapsed: (workspaceId: string) => void;
   setAdvancedMode: (enabled: boolean) => void;
   toggleAdvancedMode: () => void;
 }
@@ -735,9 +818,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
   topicComposerOpen: false,
   activeChannelId: null,
   activeThreadRootId: null,
+  pendingChannelThread: null,
   activeModal: null,
   lastChangedFiles: [],
-  collapsedWorkspaces: loadCollapsedWorkspaces(),
+  collapsedWorkspaces: loadStringSet(COLLAPSED_WORKSPACES_KEY),
+  topicRailExpansion: loadTopicRailExpansion(),
+  collapsedTopicGroups: loadStringSet(COLLAPSED_TOPIC_GROUPS_KEY),
   advancedMode: loadAdvancedMode(),
 
   openSidebar: () => set({ sidebarOpen: true }),
@@ -1169,6 +1255,11 @@ export const useUiStore = create<UiState>()((set, get) => ({
     set({
       activeChannelId: v,
       activeThreadRootId: null,
+      // A plain channel open cancels any un-consumed thread intent, so a
+      // never-mounted target (deleted channel, cancelled navigation) can't fire
+      // as a surprise thread panel later. `requestChannelThread` is always
+      // called AFTER the channel open, so the rail's own path is unaffected.
+      pendingChannelThread: null,
       // #1287: an open channel outranks `forceOrgCockpit` in resolveAppViewMode,
       // so a channel activation must also drop the one-off cockpit escape hatch
       // (as sessions.setActiveSessionId does) — otherwise a latched flag fires
@@ -1176,6 +1267,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
       ...(v !== null ? { forceOrgCockpit: false } : {}),
     }),
   setActiveThreadRootId: (v) => set({ activeThreadRootId: v }),
+  requestChannelThread: (channelId, rootMessageId) =>
+    set({ pendingChannelThread: { channelId, rootMessageId } }),
+  consumeChannelThreadIntent: (channelId) => {
+    if (get().pendingChannelThread?.channelId !== channelId) return;
+    set({ pendingChannelThread: null });
+  },
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>
@@ -1361,6 +1458,34 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   isWorkspaceCollapsed: (path) => get().collapsedWorkspaces.has(path),
+
+  setTopicRailExpanded: (topicId, expanded) => {
+    const current = get().topicRailExpansion;
+    // Identity must not churn on a no-op write: the rail derives a memoized Set
+    // from this record and would re-render every row.
+    if (current[topicId] === expanded) return;
+    const next = { ...current };
+    // Re-insert last so key order doubles as recency for the cap below.
+    delete next[topicId];
+    next[topicId] = expanded;
+    const ids = Object.keys(next);
+    for (const stale of ids.slice(
+      0,
+      Math.max(0, ids.length - MAX_TOPIC_RAIL_FOLDS)
+    )) {
+      delete next[stale];
+    }
+    lsSave(TOPIC_RAIL_EXPANSION_KEY, JSON.stringify(next));
+    set({ topicRailExpansion: next });
+  },
+
+  toggleTopicGroupCollapsed: (workspaceId) => {
+    const next = new Set(get().collapsedTopicGroups);
+    if (next.has(workspaceId)) next.delete(workspaceId);
+    else next.add(workspaceId);
+    lsSave(COLLAPSED_TOPIC_GROUPS_KEY, JSON.stringify(Array.from(next)));
+    set({ collapsedTopicGroups: next });
+  },
 
   setAdvancedMode: (enabled) => {
     if (enabled) lsSave(ADVANCED_MODE_KEY, '1');

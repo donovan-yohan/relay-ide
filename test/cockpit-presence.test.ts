@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChannelAgentStatus } from '../frontend/src/lib/api.js';
 import type {
+  ChannelRailSummary,
   TopicNavItem,
   TopicNavSessionRef,
 } from '../frontend/src/lib/state/topic-nav.js';
@@ -8,6 +9,7 @@ import type { DisplayState } from '../frontend/src/lib/state/display-state.js';
 import {
   PRESENCE_TOKENS,
   presenceStateForRow,
+  selectRailRowPresence,
   type CockpitPresence,
 } from '../frontend/src/lib/state/cockpit-presence.js';
 
@@ -202,6 +204,75 @@ describe('presenceStateForRow', () => {
       )
     ).toBe('blocked');
     expect(presenceStateForRow(makeItem())).toBe('unknown');
+  });
+});
+
+// #1287 slice 5 item 19: desktop rail presence is a JOIN of the channel-summary
+// members the rail already holds with the live status store — never a per-row
+// roster fetch (that fan-out stays gated to the mobile cockpit).
+describe('selectRailRowPresence', () => {
+  const NOW = '2026-07-27T00:00:00Z';
+  function members(...ids: string[]): Pick<ChannelRailSummary, 'members'> {
+    return {
+      members: ids.map((id) => ({ kind: 'agent' as const, id, joinedAt: NOW })),
+    };
+  }
+
+  it('counts summary agent members and rolls their live statuses up', () => {
+    expect(
+      selectRailRowPresence('topic:alpha', members('claude', 'codex'), {
+        'topic:alpha claude': 'idle',
+        'topic:alpha codex': 'streaming',
+      })
+    ).toEqual({ count: 2, presence: 'working', label: '2 agents working' });
+  });
+
+  it('treats a member with no live status as present-and-idle, not unknown', () => {
+    expect(selectRailRowPresence('topic:alpha', members('claude'), {})).toEqual(
+      { count: 1, presence: 'idle', label: '1 agent idle' }
+    );
+  });
+
+  it('keeps a live agent the summary page has not caught up on', () => {
+    expect(
+      selectRailRowPresence('topic:alpha', members('claude'), {
+        'topic:alpha hermes': 'waiting',
+      })
+    ).toEqual({ count: 2, presence: 'blocked', label: '2 agents blocked' });
+  });
+
+  it('never bleeds another channel’s agents into the row', () => {
+    expect(
+      selectRailRowPresence('topic:alpha', members('claude'), {
+        'topic:other codex': 'streaming',
+      })
+    ).toEqual({ count: 1, presence: 'idle', label: '1 agent idle' });
+  });
+
+  it('returns null for rows with no agent presence to show', () => {
+    // Derived/fallback topic: the channel list does not cover it.
+    expect(selectRailRowPresence('topic:derived', null, {})).toBeNull();
+    // Human-only channel.
+    expect(
+      selectRailRowPresence(
+        'topic:humans',
+        { members: [{ kind: 'human', id: 'human:operator', joinedAt: NOW }] },
+        {}
+      )
+    ).toBeNull();
+  });
+
+  it('agrees with the mobile chip on the rolled-up state for the same signals', () => {
+    const statuses: Record<string, ChannelAgentStatus> = {
+      'topic:presence claude': 'idle',
+      'topic:presence codex': 'streaming',
+    };
+    const rail = selectRailRowPresence(
+      'topic:presence',
+      members('claude', 'codex'),
+      statuses
+    );
+    expect(rail?.presence).toBe(presenceStateForRow(makeItem(), statuses));
   });
 });
 

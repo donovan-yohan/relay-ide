@@ -21,7 +21,10 @@ import {
   builtInAgentProfileId,
   parseAgentProfileProviderId,
 } from '../../../shared/agent-profile.js';
-import { parseMentions } from '../../../shared/channel-chat-protocol.js';
+import {
+  parseMentions,
+  type ChannelMessageId,
+} from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -43,7 +46,7 @@ import {
 import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
-import { scopedSessionKey } from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import {
   hasUnseenActivity,
   useChannelActivityStore,
@@ -69,11 +72,16 @@ import {
   buildTopicNavModel,
   formatTaskRefLabel,
   indexChannelSummaries,
+  railThreadFoldId,
   selectChannelRailTree,
+  selectExpandedRailIds,
+  selectRailRowThreads,
   type ChannelRailNode,
   type ChannelRailSection,
   type ChannelRailSummary,
+  type ChannelRailThreadSummary,
   type ChannelRailTree,
+  type ChannelRailWorkspaceGroup,
   type TopicNavItem,
   type TopicNavModel,
   type TopicNavNode,
@@ -82,7 +90,12 @@ import {
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
 } from '../lib/state/topic-nav.js';
+import {
+  PRESENCE_TOKENS,
+  selectRailRowPresence,
+} from '../lib/state/cockpit-presence.js';
 import { MarqueeText } from './MarqueeText.js';
+import { TuiProgress } from './TuiProgress.js';
 import {
   CockpitPresenceChip,
   MobileCockpitAttentionLane,
@@ -236,6 +249,32 @@ function senderLabelFromId(senderId: string): string {
     : withoutAgentPrefix.slice(separator + 1);
 }
 
+/**
+ * Rail snippet for one thread (#1287 slice 5 item 18): the ROOT's prose labelled
+ * by its sender, exactly like a channel row's snippet — a thread is named by the
+ * message it hangs off, not by its newest reply.
+ */
+function threadRowPreview(thread: ChannelRailThreadSummary): string {
+  const text = thread.preview.replace(/\s+/g, ' ').trim();
+  const sender = channelRowSenderLabel({
+    seq: 0,
+    preview: thread.preview,
+    senderId: thread.rootSenderId,
+    senderKind: thread.rootSenderKind,
+    createdAt: thread.lastReplyAt,
+    ...(thread.rootSenderDisplayName
+      ? { senderDisplayName: thread.rootSenderDisplayName }
+      : {}),
+    ...(thread.providerId ? { providerId: thread.providerId } : {}),
+  });
+  if (!text) return boundedTopicLatestStatus(`${sender}: thread`);
+  return boundedTopicLatestStatus(`${sender}: ${text}`);
+}
+
+function replyCountLabel(replyCount: number): string {
+  return `${replyCount} repl${replyCount === 1 ? 'y' : 'ies'}`;
+}
+
 /** Compact last-activity stamp for a hydrated row; null without a summary. */
 function channelRowTimestamp(
   summary: ChannelRailSummary | null
@@ -274,8 +313,19 @@ function topicPrimarySession(
   })[0];
 }
 
+/**
+ * Structural, not `TopicNavSessionRef`: the rail asks about a nav ref, chat
+ * search asks about the raw `SessionSummary` it resolved an id against, and
+ * both must get the same verdict or the two entry points disagree about
+ * whether a session is attachable (#1287 slice 5 item 20).
+ */
 function sessionAttachDisabledReason(
-  session: TopicNavSessionRef | undefined
+  session:
+    | {
+        status?: SessionSummary['status'] | null;
+        durability?: SessionSummary['durability'] | null;
+      }
+    | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
   if (session.status === 'disconnected') {
@@ -1447,22 +1497,192 @@ function TopicAdvancedDetailGate({
   );
 }
 
+/**
+ * Compact agent presence for a desktop rail row (#1287 slice 5).
+ *
+ * Mirrors what the mobile cockpit chip shows, but sourced from the channel
+ * summary the rail already holds joined with the live status store — never a
+ * per-row roster fetch. A 50% status dot carries the rolled-up state per
+ * `DESIGN.md`; a working channel swaps the dot for the braille spinner so
+ * liveness is text motion, not a shimmer. The count is suppressed for a single
+ * agent (the common DM case) and stays in the accessible label.
+ *
+ * `role="img"` is load-bearing, not decoration: ARIA does not permit naming a
+ * generic element, so an `aria-label` on a bare `<span>` is discarded and the
+ * dot/spinner children are `aria-hidden` — presence would reach a mouse
+ * tooltip and nothing else. The role makes the indicator a single nameable
+ * graphic, which is the accessibility half of desktop presence parity.
+ */
+function TopicRowPresence({
+  channelId,
+  summary,
+  statusByChannelAgent,
+}: {
+  channelId: string;
+  summary: ChannelRailSummary | null;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+}) {
+  const presence = selectRailRowPresence(
+    channelId,
+    summary,
+    statusByChannelAgent
+  );
+  if (!presence) return null;
+  const token = PRESENCE_TOKENS[presence.presence];
+  const style = {
+    '--cockpit-presence-color': token.colorVar,
+  } as CSSProperties;
+  return (
+    <span
+      className={`topic-row__presence topic-row__presence--${presence.presence}`}
+      style={style}
+      role="img"
+      aria-label={presence.label}
+      title={presence.label}
+      data-presence={presence.presence}
+      data-agent-count={presence.count}
+    >
+      {token.glyph === 'spinner' ? (
+        <TuiProgress
+          variant="braille"
+          className="topic-row__presence-spinner"
+          aria-hidden
+        />
+      ) : (
+        <span className="topic-row__presence-dot" aria-hidden />
+      )}
+      {presence.count > 1 ? (
+        <span className="topic-row__presence-count" aria-hidden>
+          {presence.count}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * Threads on a rail row (#1287 slice 5 item 18).
+ *
+ * Threads were fully implemented server-side and in `ChannelView`, but the only
+ * product entry point was the in-timeline "N replies" chip — so a thread was
+ * unreachable, and its reply growth invisible, until its channel was already
+ * open. This is the missing navigation half: a compact "N threads · latest" line
+ * on the row, opening to one clickable row per live thread.
+ *
+ * Folded through the SAME persisted expansion record as item 16, under a
+ * `#threads`-namespaced id. That id is never a `rootIds` entry, so the structural
+ * default is CLOSED (roots are the only rows that auto-open) while an operator
+ * who opens it keeps it open across reloads.
+ */
+function TopicRowThreads({
+  channelId,
+  channelTitle,
+  summary,
+  expandedIds,
+  onToggle,
+  onOpenThread,
+}: {
+  channelId: string;
+  channelTitle: string;
+  summary: ChannelRailSummary | null;
+  expandedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
+}) {
+  const { threads, threadCount } = selectRailRowThreads(summary);
+  if (threads.length === 0) return null;
+  const foldId = railThreadFoldId(channelId);
+  const expanded = expandedIds.has(foldId);
+  const latest = threads[0];
+  const countLabel = `${threadCount} thread${threadCount === 1 ? '' : 's'}`;
+  return (
+    <div className="topic-threads" data-thread-count={threadCount}>
+      <button
+        type="button"
+        className="topic-threads__toggle"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'collapse' : 'expand'} ${countLabel} in ${channelTitle}`}
+        onClick={() => onToggle(foldId)}
+      >
+        <span className="topic-threads__glyph" aria-hidden>
+          {expanded ? '−' : '+'}
+        </span>
+        <span className="topic-threads__count">{countLabel}</span>
+        {!expanded && latest ? (
+          <span
+            className="topic-threads__latest"
+            title={threadRowPreview(latest)}
+          >
+            {threadRowPreview(latest)}
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <ul
+          className="topic-child-list topic-child-list--threads"
+          aria-label={`threads in ${channelTitle}`}
+        >
+          {threads.map((thread) => {
+            const preview = threadRowPreview(thread);
+            const stamp = formatRelativeTimeCompact(thread.lastReplyAt);
+            return (
+              <li
+                key={thread.rootMessageId}
+                className="topic-child-row topic-thread-row"
+                data-thread-root-id={thread.rootMessageId}
+              >
+                <button
+                  type="button"
+                  className="topic-child-row__button topic-thread-row__button"
+                  aria-label={`open thread — ${preview} · ${replyCountLabel(thread.replyCount)}`}
+                  disabled={!onOpenThread}
+                  onClick={() =>
+                    onOpenThread?.(channelId, thread.rootMessageId)
+                  }
+                >
+                  <span className="topic-thread-row__lines">
+                    <span className="topic-thread-row__preview" title={preview}>
+                      {preview}
+                    </span>
+                    <span className="topic-thread-row__meta">
+                      {replyCountLabel(thread.replyCount)}
+                      {stamp ? ` · ${stamp}` : ''}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function TopicRow({
   node,
   depth,
   expandedIds,
   selectedId,
+  statusByChannelAgent,
   onToggle,
   onSelect,
   onSelectSession,
+  onOpenThread,
 }: {
   node: ChannelRailNode;
   depth: number;
   expandedIds: Set<string>;
   selectedId: string | null;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
 }) {
   const { item, unread, summary, children } = node;
   const hasNested = children.length > 0 || item.participants.length > 0;
@@ -1528,13 +1748,27 @@ function TopicRow({
             ) : null}
           </span>
         </button>
-        <span className="topic-row__trail" aria-label={item.statusLabel}>
+        {/* `role="group"` so the row's status name is actually exposed: a bare
+            span cannot be named, and unlike `role="img"` a group does not turn
+            the presence indicator and unread dot inside it into presentational
+            children that lose their own names. */}
+        <span
+          className="topic-row__trail"
+          role="group"
+          aria-label={item.statusLabel}
+        >
+          <TopicRowPresence
+            channelId={item.id}
+            summary={summary}
+            statusByChannelAgent={statusByChannelAgent}
+          />
           {timestamp ? (
             <span className="topic-row__time">{timestamp}</span>
           ) : null}
           {unread ? (
             <span
               className="topic-row__activity-dot"
+              role="img"
               aria-label="unread activity"
               title="unread activity"
             />
@@ -1542,6 +1776,17 @@ function TopicRow({
           <StatusGlyph tone={item.tone} />
         </span>
       </div>
+      {/* Outside the row's own fold: the thread line IS the signal that this
+          channel has live side-conversations, so folding the row's participants
+          must not hide it. It carries its own collapsed-by-default fold. */}
+      <TopicRowThreads
+        channelId={item.id}
+        channelTitle={item.title}
+        summary={summary}
+        expandedIds={expandedIds}
+        onToggle={onToggle}
+        onOpenThread={onOpenThread}
+      />
       {expanded ? (
         <>
           {item.participants.length > 0 ? (
@@ -1564,9 +1809,11 @@ function TopicRow({
                   depth={depth + 1}
                   expandedIds={expandedIds}
                   selectedId={selectedId}
+                  statusByChannelAgent={statusByChannelAgent}
                   onToggle={onToggle}
                   onSelect={onSelect}
                   onSelectSession={onSelectSession}
+                  onOpenThread={onOpenThread}
                 />
               ))}
             </ul>
@@ -1583,14 +1830,98 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
   return `${primary.label}: ${primary.value}`;
 }
 
+/**
+ * Whether a derived search hit's linked session is actually attachable, and
+ * under which key (#1287 slice 5 item 20).
+ *
+ * `action.primarySessionId` is a STRING carried on a WorkContext record, not
+ * proof the session still exists: derived hits come from `fallbackTopics` over
+ * the WorkContext store, whose `linkedRefs.sessionIds[0]` routinely names a
+ * session the client no longer holds. Enabling `resume` on id presence alone
+ * let the operator click into `activeSessionId = <gone id>`, which App's
+ * channel/session mutual exclusion reads as "a session opened" and clears the
+ * channel they were reading — closing their chat and landing on neither
+ * surface. So resolve the id and run the same attach gate the rail's
+ * `selectMobile` runs, and hand back the scoped select key the rail passes
+ * (`sessionSelectKey`), never the raw id.
+ */
+interface SearchResumeTarget {
+  selectKey: string | null;
+  disabledReason: string | null;
+}
+
+function searchResultResumeTarget(
+  result: WorkspaceTopicSearchResult,
+  sessions: SessionSummary[],
+  canOpenSession: boolean
+): SearchResumeTarget {
+  const linkedId = result.action.primarySessionId;
+  if (!linkedId || !canOpenSession) {
+    // Nothing was ever linked, or there is no session surface to open it in —
+    // the row's generic dead-hit copy is the honest label, not a claim that a
+    // session went away.
+    return { selectKey: null, disabledReason: null };
+  }
+  const session = resolveSessionByKey(sessions, linkedId);
+  if (!session) {
+    return {
+      selectKey: null,
+      disabledReason: 'linked session is no longer available',
+    };
+  }
+  const reason = sessionAttachDisabledReason(session);
+  if (reason) return { selectKey: null, disabledReason: reason };
+  return { selectKey: scopedSessionKey(session), disabledReason: null };
+}
+
+/**
+ * What a search row's action can actually reach (#1287 slice 5 item 20).
+ *
+ * A persisted hit IS a channel, so it opens one. But `collectSearchTopics`
+ * deliberately appends derived topics from the WorkContext store, and those are
+ * backed by a session rather than a channel — `openTopicSelection` returns
+ * early for them, so routing one through the channel path would render an
+ * enabled `open` button that opens nothing. Those resume their linked session,
+ * exactly as the rail row does for the same topic; a derived hit whose session
+ * is gone or unattachable is a dead row, and that row says so.
+ */
+function searchResultOpenTarget(
+  result: WorkspaceTopicSearchResult,
+  resume: SearchResumeTarget
+): { label: string; title: string } | null {
+  if (result.topic.source === 'persisted') {
+    return { label: 'open', title: 'open chat' };
+  }
+  if (resume.selectKey) {
+    return { label: 'resume', title: 'resume the linked session' };
+  }
+  return null;
+}
+
+/**
+ * #1287 slice 5 item 20: a search hit is a chat, so its action opens the chat.
+ *
+ * The row used to attach `action.primarySessionId` and disable itself whenever
+ * that id was missing — which was every channel-native chat, i.e. the entire
+ * product. `action.topicId` is the identity the server actually hands back, and
+ * `onOpenTopic` routes it through the same gate as a rail row (item 9 routing).
+ * A stale `disabledReason` describes linked surfaces, not the channel, so it
+ * renders as a caveat and never blocks opening the conversation.
+ *
+ * `resumeTargetFor` rather than the session handler itself: the derived fallback
+ * lives in `openSearchResult` beside the rail's own resume path, so this row
+ * only needs the verdict that path will reach.
+ */
 function TopicSearchResults({
   results,
   truncated,
-  onSelectSession,
+  onOpenTopic,
+  resumeTargetFor,
 }: {
   results: WorkspaceTopicSearchResult[];
   truncated: boolean;
-  onSelectSession?: ((id: string) => void) | undefined;
+  onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
+  resumeTargetFor: (result: WorkspaceTopicSearchResult) => SearchResumeTarget;
 }) {
   if (results.length === 0 && !truncated) return null;
   return (
@@ -1599,11 +1930,9 @@ function TopicSearchResults({
       aria-label="chat search result details"
     >
       {results.map((result) => {
-        const disabledReason = result.action.disabledReason;
-        const primarySessionId = result.action.primarySessionId;
-        const actionDisabled = Boolean(disabledReason) || !primarySessionId;
-        const actionTitle =
-          disabledReason ?? (primarySessionId ? 'open chat' : 'no linked chat');
+        const caveat = result.action.disabledReason;
+        const resume = resumeTargetFor(result);
+        const target = searchResultOpenTarget(result, resume);
         return (
           <div
             key={result.topic.id}
@@ -1623,20 +1952,18 @@ function TopicSearchResults({
             <button
               type="button"
               className="topic-action topic-search-result__action"
-              disabled={actionDisabled}
-              title={actionTitle}
-              onClick={() => {
-                if (primarySessionId && !actionDisabled) {
-                  onSelectSession?.(primarySessionId);
-                }
-              }}
+              disabled={!target}
+              title={
+                target?.title ??
+                resume.disabledReason ??
+                'no chat or session to open for this hit'
+              }
+              onClick={() => onOpenTopic(result)}
             >
-              open
+              {target?.label ?? 'open'}
             </button>
-            {disabledReason ? (
-              <span className="topic-search-result__disabled">
-                {disabledReason}
-              </span>
+            {caveat ? (
+              <span className="topic-search-result__caveat">{caveat}</span>
             ) : null}
           </div>
         );
@@ -1796,17 +2123,10 @@ function TopicMobileCockpit({
   onSelectWorkspace: (workspaceId: string) => void;
   onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
-  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  const toggleGroup = useCallback((id: string) => {
-    setCollapsedGroupIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // #1287 slice 5: lane folds are persisted operator intent, not per-mount
+  // `useState` that a reload (or any remount of the cockpit) silently discards.
+  const collapsedGroupIds = useUiStore((s) => s.collapsedTopicGroups);
+  const toggleGroup = useUiStore((s) => s.toggleTopicGroupCollapsed);
   const hasOrphans =
     tree.orphans.channels.length > 0 || tree.orphans.directMessages.length > 0;
   return (
@@ -1815,7 +2135,10 @@ function TopicMobileCockpit({
         className="topic-mobile-cockpit__bar"
         aria-label="mobile chat actions"
       >
-        <span className="topic-mobile-cockpit__hint">search chat history</span>
+        {/* #1287 slice 5 item 12: this bar used to lead with a static
+            `search chat history` label that had no handler and no input — it
+            named a capability the bar did not provide. The real search field
+            now sits above this cockpit, so the bar carries actions only. */}
         <div className="topic-mobile-cockpit__actions">
           <button
             type="button"
@@ -1871,34 +2194,13 @@ function TopicMobileCockpit({
               aria-label={group.title}
               data-workspace-id={group.id}
             >
-              <button
-                type="button"
-                className="topic-mobile-group__header"
-                aria-expanded={expanded}
-                onClick={() => {
-                  // Tapping a lane both selects it (the create target) and
-                  // folds it — one lane-scale gesture, same as desktop select.
-                  onSelectWorkspace(group.id);
-                  toggleGroup(group.id);
-                }}
-              >
-                {group.icon ? (
-                  <span className="topic-mobile-group__icon" aria-hidden="true">
-                    {group.icon}
-                  </span>
-                ) : null}
-                <span className="topic-mobile-group__name">{group.title}</span>
-                {!expanded && group.unread ? (
-                  <span
-                    className="topic-row__activity-dot"
-                    aria-label="unread activity"
-                    title="unread activity"
-                  />
-                ) : null}
-                <span className="topic-mobile-group__toggle" aria-hidden="true">
-                  {expanded ? '−' : '+'}
-                </span>
-              </button>
+              <WorkspaceLaneHeader
+                block="topic-mobile-group"
+                group={group}
+                expanded={expanded}
+                onSelectWorkspace={onSelectWorkspace}
+                onToggleCollapsed={toggleGroup}
+              />
               {!expanded ? null : group.empty ? (
                 <WorkspaceLaneStartChat
                   workspaceId={group.id}
@@ -1956,10 +2258,11 @@ function TopicSearchPanel({
   onSearchQueryChange,
   onSearchRetry,
   onSearchClear,
-  onSelectSession,
+  onOpenTopic,
   searchScope = 'all',
   onToggleSearchScope,
   canScope = false,
+  resumeTargetFor,
 }: {
   model: TopicNavModel;
   searchQuery: string;
@@ -1971,10 +2274,11 @@ function TopicSearchPanel({
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
-  onSelectSession?: ((id: string) => void) | undefined;
+  onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
   canScope?: boolean;
+  resumeTargetFor: (result: WorkspaceTopicSearchResult) => SearchResumeTarget;
 }) {
   const searchActive = searchQuery.trim().length > 0;
   return (
@@ -2040,7 +2344,8 @@ function TopicSearchPanel({
         <TopicSearchResults
           results={searchResults}
           truncated={searchTruncated}
-          onSelectSession={onSelectSession}
+          onOpenTopic={onOpenTopic}
+          resumeTargetFor={resumeTargetFor}
         />
       ) : null}
     </>
@@ -2142,6 +2447,109 @@ function WorkspaceLaneStartChat({
   );
 }
 
+/**
+ * The workspace lane header, shared by the desktop rail and the mobile cockpit
+ * (#1287 slice 5 item 17).
+ *
+ * Desktop used to render a select-only header while mobile rendered the very
+ * same lane as a collapsible button — so a desktop operator could neither fold
+ * a lane nor see the `group.unread` rollup `selectChannelRailTree()` had
+ * already computed for both breakpoints, and desktop simply discarded it. One
+ * component now owns the whole lane gesture, so the two surfaces cannot drift
+ * apart again.
+ *
+ * The gesture itself is per-breakpoint on purpose. Selecting a lane is how the
+ * rail picks the create target for `new chat`, so binding select and fold to
+ * one click would collapse the lane the operator just aimed at — two clicks to
+ * see the channels they were selecting. Mobile ships that coupling because a
+ * tap is the only lane-scale gesture a phone has; desktop has hover, focus and
+ * room for a dedicated glyph, so the name selects and the trailing `−`/`+`
+ * folds. `aria-expanded` rides whichever control owns the fold.
+ *
+ * The affordance is text (`−`/`+`), not an icon: it is the same character pair
+ * the mobile cockpit shipped with, and it needs no stroke geometry to stay
+ * legible at caption size. Deliberately NO channel count — the audit calls the
+ * absence intentional.
+ */
+function WorkspaceLaneHeader({
+  block,
+  group,
+  expanded,
+  onSelectWorkspace,
+  onToggleCollapsed,
+}: {
+  block: 'topic-workspace-group' | 'topic-mobile-group';
+  group: ChannelRailWorkspaceGroup;
+  expanded: boolean;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onToggleCollapsed: (workspaceId: string) => void;
+}) {
+  const foldLabel = `${expanded ? 'collapse' : 'expand'} ${group.title}`;
+  const icon = group.icon ? (
+    <span className={`${block}__icon`} aria-hidden="true">
+      {group.icon}
+    </span>
+  ) : null;
+  const unreadRollup =
+    !expanded && group.unread ? (
+      <span
+        className="topic-row__activity-dot"
+        role="img"
+        aria-label="unread activity"
+        title="unread activity"
+      />
+    ) : null;
+
+  if (block === 'topic-mobile-group') {
+    return (
+      <button
+        type="button"
+        className={`${block}__header ${block}__header--select`}
+        aria-expanded={expanded}
+        title={foldLabel}
+        onClick={() => {
+          // One tap is the only lane-scale gesture at this breakpoint, so it
+          // both selects the lane (it is the create target) and folds it.
+          onSelectWorkspace(group.id);
+          onToggleCollapsed(group.id);
+        }}
+      >
+        {icon}
+        <span className={`${block}__name`}>{group.title}</span>
+        {unreadRollup}
+        <span className={`${block}__toggle`} aria-hidden="true">
+          {expanded ? '−' : '+'}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <div className={`${block}__header ${block}__header--split`}>
+      <button
+        type="button"
+        className={`${block}__select`}
+        title={`select ${group.title}`}
+        onClick={() => onSelectWorkspace(group.id)}
+      >
+        {icon}
+        <span className={`${block}__name`}>{group.title}</span>
+      </button>
+      {unreadRollup}
+      <button
+        type="button"
+        className={`${block}__toggle`}
+        aria-expanded={expanded}
+        aria-label={foldLabel}
+        title={foldLabel}
+        onClick={() => onToggleCollapsed(group.id)}
+      >
+        {expanded ? '−' : '+'}
+      </button>
+    </div>
+  );
+}
+
 function GroupedTopicTree({
   tree,
   renderRow,
@@ -2153,40 +2561,42 @@ function GroupedTopicTree({
   onSelectWorkspace: (workspaceId: string) => void;
   onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
+  // #1287 slice 5: the same persisted lane folds the mobile cockpit reads, so
+  // folding a lane is one operator decision per workspace rather than one per
+  // breakpoint.
+  const collapsedGroupIds = useUiStore((s) => s.collapsedTopicGroups);
+  const toggleGroup = useUiStore((s) => s.toggleTopicGroupCollapsed);
   return (
     <div className="topic-tree" aria-label="workspace chats">
-      {tree.groups.map((group) => (
-        <section
-          key={group.id}
-          className="topic-workspace-group"
-          aria-label={group.title}
-          data-workspace-id={group.id}
-        >
-          <button
-            type="button"
-            className="topic-workspace-group__header topic-workspace-group__header--select"
-            title={`select ${group.title}`}
-            onClick={() => onSelectWorkspace(group.id)}
+      {tree.groups.map((group) => {
+        const expanded = !collapsedGroupIds.has(group.id);
+        return (
+          <section
+            key={group.id}
+            className="topic-workspace-group"
+            aria-label={group.title}
+            data-workspace-id={group.id}
           >
-            {group.icon ? (
-              <span className="topic-workspace-group__icon" aria-hidden="true">
-                {group.icon}
-              </span>
-            ) : null}
-            <span className="topic-workspace-group__name">{group.title}</span>
-          </button>
-          {group.empty ? (
-            <WorkspaceLaneStartChat
-              workspaceId={group.id}
-              workspaceTitle={group.title}
-              className="topic-workspace-group__empty"
-              onStartChat={onStartChatInWorkspace}
+            <WorkspaceLaneHeader
+              block="topic-workspace-group"
+              group={group}
+              expanded={expanded}
+              onSelectWorkspace={onSelectWorkspace}
+              onToggleCollapsed={toggleGroup}
             />
-          ) : (
-            <ChannelsAndDmsLists section={group} renderRow={renderRow} />
-          )}
-        </section>
-      ))}
+            {!expanded ? null : group.empty ? (
+              <WorkspaceLaneStartChat
+                workspaceId={group.id}
+                workspaceTitle={group.title}
+                className="topic-workspace-group__empty"
+                onStartChat={onStartChatInWorkspace}
+              />
+            ) : (
+              <ChannelsAndDmsLists section={group} renderRow={renderRow} />
+            )}
+          </section>
+        );
+      })}
       {tree.orphans.channels.length > 0 ||
       tree.orphans.directMessages.length > 0 ? (
         <section
@@ -2515,29 +2925,31 @@ export function TopicSidebarView({
   const [mobileControlTopicId, setMobileControlTopicId] = useState<
     string | null
   >(null);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    () => new Set(model.rootIds)
+  // #1287 slice 5: rail fold state is persisted operator intent, derived on
+  // every render instead of being seeded into component state by an effect.
+  // The old effect re-added every root to a local `expandedIds` set whenever
+  // the nav model changed identity, and the sessions store hands out a fresh
+  // `sessions` array on every activity/status/branch/rename WS event — so a
+  // collapsed root sprang back open within seconds of any live agent turn.
+  const topicRailExpansion = useUiStore((s) => s.topicRailExpansion);
+  const setTopicRailExpanded = useUiStore((s) => s.setTopicRailExpanded);
+  const expandedIds = useMemo(
+    () => selectExpandedRailIds(model.rootIds, topicRailExpansion),
+    [model.rootIds, topicRailExpansion]
   );
 
   useEffect(() => {
     setSelectedId((current) =>
       current && model.byId.has(current) ? current : firstId
     );
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      for (const id of model.rootIds) next.add(id);
-      return next;
-    });
-  }, [firstId, model.byId, model.rootIds]);
+  }, [firstId, model.byId]);
 
-  const toggle = useCallback((id: string) => {
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggle = useCallback(
+    (id: string) => {
+      setTopicRailExpanded(id, !expandedIds.has(id));
+    },
+    [expandedIds, setTopicRailExpanded]
+  );
 
   // Selecting a topic establishes its node + cwd context so terminals, agents,
   // and the workspace pane operate in the topic's node/repo. Only fires on an
@@ -2547,13 +2959,47 @@ export function TopicSidebarView({
   // the row also opens it in the main pane (activeChannelId) and closes the
   // composer — "selected in sidebar" and "open in main pane" become one state
   // for channels. Derived (non-persisted) topics never route to a channel.
+  // `fallbackTopic` covers callers that hold their own copy of the topic (chat
+  // search), so a selection still routes while the rail list is a beat behind.
   const select = useCallback(
-    (id: string) => {
+    (id: string, fallbackTopic?: WorkspaceTopic) => {
       setSelectedId(id);
       setMobileControlTopicId(null);
-      openTopicSelection(topicsById.get(id));
+      openTopicSelection(topicsById.get(id) ?? fallbackTopic);
     },
     [topicsById]
+  );
+  // #1287 slice 5 item 20: opening a search hit is opening a chat, so it lands
+  // on the channel through the same `openTopicSelection` gate a rail row uses —
+  // one routing path, no attach-a-session shortcut that skipped it. The drawer
+  // close mirrors the mobile row and the palette: on desktop `sidebarOpen` is
+  // already false, so it is a no-op there.
+  //
+  // Chat search also returns DERIVED topics (the server appends `fallbackTopics`
+  // over the WorkContext store), and those have no channel — the gate returns
+  // early for them. They resume their linked session instead, the same
+  // disposition `selectMobile` gives the same topic on the rail, so the two
+  // entry points cannot disagree about what a session-backed chat does.
+  const searchResumeTargetFor = useCallback(
+    (result: WorkspaceTopicSearchResult) =>
+      searchResultResumeTarget(result, sessions, Boolean(onSelectSession)),
+    [onSelectSession, sessions]
+  );
+  const openSearchResult = useCallback(
+    (result: WorkspaceTopicSearchResult) => {
+      const resume = searchResumeTargetFor(result);
+      // Only a resolved, attachable session is worth switching to. A dead id
+      // would still flip `activeSessionId`, which App reads as "a session
+      // opened" and uses to clear `activeChannelId` — the row would close the
+      // chat the operator was reading and open nothing.
+      if (result.topic.source !== 'persisted' && !resume.selectKey) return;
+      select(result.action.topicId, result.topic);
+      if (result.topic.source !== 'persisted' && resume.selectKey) {
+        onSelectSession?.(resume.selectKey);
+      }
+      useUiStore.getState().closeSidebar();
+    },
+    [onSelectSession, searchResumeTargetFor, select]
   );
   const selectMobile = useCallback(
     (id: string) => {
@@ -2634,6 +3080,20 @@ export function TopicSidebarView({
     },
     [onCreateTaskRoom, selectWorkspaceLane]
   );
+  // #1287 slice 5 item 18: open the channel AND its thread panel. The intent is
+  // recorded after `select()` on purpose — opening a channel clears any pending
+  // thread — and `ChannelView` adopts it once it is the channel on screen. No
+  // URL segment: `activeThreadRootId` is session-transient by design (#1170), so
+  // this rides item 9's `/channel/<id>` route without extending it.
+  const openThread = useCallback(
+    (channelId: string, rootMessageId: string) => {
+      select(channelId);
+      useUiStore
+        .getState()
+        .requestChannelThread(channelId, rootMessageId as ChannelMessageId);
+    },
+    [select]
+  );
   const renderTopicRow = (node: ChannelRailNode): ReactNode => {
     const item = node.item;
     return (
@@ -2643,9 +3103,11 @@ export function TopicSidebarView({
         depth={0}
         expandedIds={expandedIds}
         selectedId={selectedId}
+        statusByChannelAgent={effectiveStatusByChannelAgent}
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
+        onOpenThread={openThread}
       />
     );
   };
@@ -2699,6 +3161,32 @@ export function TopicSidebarView({
         searchQuery={searchQuery}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
       />
+      {/* #1287 slice 5 item 12: search and the older-chats toggle are DOM
+          siblings of both breakpoints' lists, so their position in this column
+          IS the mobile reading order. They render before the cockpit: on a
+          phone the search field and its results are the first thing under the
+          header instead of being buried past the attention lane, the session
+          tree, and every channel row. Desktop is unchanged — the cockpit is
+          `display: none` above 600px, so the visible desktop order stays
+          header → search → older chats → tree. */}
+      <TopicSearchPanel
+        model={model}
+        searchQuery={searchQuery}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        searchResults={searchResults}
+        searchTruncated={searchTruncated}
+        searchUnavailableReason={searchUnavailableReason}
+        onSearchQueryChange={onSearchQueryChange}
+        onSearchRetry={onSearchRetry}
+        onSearchClear={onSearchClear}
+        onOpenTopic={openSearchResult}
+        searchScope={searchScope}
+        onToggleSearchScope={onToggleSearchScope}
+        canScope={activeWorkspaceId != null}
+        resumeTargetFor={searchResumeTargetFor}
+      />
+      <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <TopicMobileCockpit
         tree={railTree}
         sessions={sessions}
@@ -2720,23 +3208,6 @@ export function TopicSidebarView({
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
           : {})}
       />
-      <TopicSearchPanel
-        model={model}
-        searchQuery={searchQuery}
-        searchLoading={searchLoading}
-        searchError={searchError}
-        searchResults={searchResults}
-        searchTruncated={searchTruncated}
-        searchUnavailableReason={searchUnavailableReason}
-        onSearchQueryChange={onSearchQueryChange}
-        onSearchRetry={onSearchRetry}
-        onSearchClear={onSearchClear}
-        onSelectSession={onSelectSession}
-        searchScope={searchScope}
-        onToggleSearchScope={onToggleSearchScope}
-        canScope={activeWorkspaceId != null}
-      />
-      <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <GroupedTopicTree
         tree={railTree}
         renderRow={renderTopicRow}

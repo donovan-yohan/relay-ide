@@ -101,7 +101,7 @@
 }
 
 .topic-search-result--stale .topic-search-result__freshness,
-.topic-search-result__disabled {
+.topic-search-result__caveat {
   color: var(--status-warning);
 }
 
@@ -120,19 +120,15 @@
 
 .topic-search-result__meta,
 .topic-search-result__truncated,
-.topic-search-result__disabled {
+.topic-search-result__caveat {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.topic-search-result__disabled,
+.topic-search-result__caveat,
 .topic-search-result__truncated {
   grid-column: 1 / -1;
-}
-
-.topic-search-result__action:disabled {
-  opacity: 0.58;
 }
 
 .topic-tree,
@@ -1055,27 +1051,37 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* #1287 slice 5 item 12: the bar is actions only now that the dead
+     `search chat history` label is gone and the real search field sits above
+     the cockpit, so it right-aligns instead of reserving a text column. */
   .topic-mobile-cockpit__bar {
     position: sticky;
     top: 0;
     z-index: 2;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     padding: 8px;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
   }
 
-  .topic-mobile-cockpit__hint {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: var(--font-size-xs);
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  /* #1287 slice 5 item 12: search + older chats lead the mobile column, sized
+     to the same 44px touch rhythm as the rows below them. */
+  .topic-search {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: var(--font-size-sm);
+  }
+
+  .topic-archived-toggle {
+    padding: 8px 10px;
+  }
+
+  .topic-archived-toggle__btn {
+    min-height: 44px;
+    padding: 0 10px;
   }
 
   .topic-mobile-control input {
@@ -1144,6 +1150,9 @@
     flex-direction: column;
   }
 
+  /* #1287 slice 5: one shared lane header renders both breakpoints, so it also
+     stamps a `--select` modifier here; at touch scale the base header already
+     carries the full button treatment and needs no separate rule. */
   .topic-mobile-group__header {
     display: flex;
     align-items: center;
@@ -1409,20 +1418,35 @@
   text-transform: lowercase;
 }
 
-/* #1287: the lane header selects its workspace, so it is a button — kept
-   visually identical to the static header (no border, no fill, same muted
-   caption treatment); only the hover/focus accent marks it as interactive. */
-.topic-workspace-group__header--select {
+/* #1287: the desktop lane header carries two intents — the name selects the
+   workspace (the rail's create target) and the trailing −/+ folds it — so they
+   are two controls, not one click that does both. Both stay visually identical
+   to the static header (no border, no fill, no radius, same muted caption
+   treatment); only the hover/focus accent marks them as interactive. */
+.topic-workspace-group__header--split {
   width: 100%;
+}
+
+.topic-workspace-group__select {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.topic-workspace-group__header--select:hover,
-.topic-workspace-group__header--select:focus-visible {
+.topic-workspace-group__select:hover,
+.topic-workspace-group__select:focus-visible,
+.topic-workspace-group__toggle:hover,
+.topic-workspace-group__toggle:focus-visible {
   color: var(--accent);
 }
 
@@ -1453,6 +1477,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* #1287 slice 5: lane fold affordance, pinned hard right exactly as the mobile
+   cockpit's. Color is inherited rather than re-declared so it follows the
+   header's hover/focus accent instead of staying muted under the cursor. */
+.topic-workspace-group__toggle {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 0 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .topic-tree__list {
@@ -1497,6 +1536,135 @@
   border-radius: 50%;
   background: var(--status-info);
   flex: 0 0 6px;
+}
+
+/* #1287 slice 5 item 18: threads on a rail row. Compact count + latest-thread
+   line when folded; one row per live thread when opened. Flat, mono, zero
+   radius — the disclosure glyph matches the workspace lane toggle. */
+.topic-threads {
+  position: relative;
+  padding-left: var(--topic-row-indent);
+}
+
+.topic-threads__toggle {
+  display: grid;
+  grid-template-columns: 10px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 22px;
+  padding: 1px 8px 1px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.62rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-threads__toggle:hover,
+.topic-threads__toggle:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-threads__glyph {
+  font-family: var(--font-mono);
+  line-height: 1;
+  text-align: center;
+}
+
+.topic-threads__count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.topic-threads__latest {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  opacity: 0.82;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-child-list--threads {
+  padding-bottom: 2px;
+}
+
+.topic-thread-row__button {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 26px;
+}
+
+.topic-thread-row__lines {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.topic-thread-row__preview {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-thread-row__meta {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* #1287 slice 5: desktop agent presence on channel rows. Derived from the
+   channel summary members joined with the live status store — no per-row
+   fetch. Status dot is the only 50% radius the rail allows (DESIGN.md); a
+   working channel swaps it for the braille spinner (text motion, no shimmer). */
+.topic-row__presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 5px;
+  color: var(--cockpit-presence-color);
+  flex: 0 0 auto;
+}
+
+.topic-row__presence-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--cockpit-presence-color);
+  border-radius: 50%;
+  background: transparent;
+  flex: 0 0 6px;
+}
+
+.topic-row__presence--blocked .topic-row__presence-dot,
+.topic-row__presence--done .topic-row__presence-dot {
+  background: var(--cockpit-presence-color);
+}
+
+.topic-row__presence--idle .topic-row__presence-dot,
+.topic-row__presence--unknown .topic-row__presence-dot {
+  opacity: 0.7;
+}
+
+.topic-row__presence-spinner {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1;
+  color: var(--cockpit-presence-color);
+}
+
+.topic-row__presence-count {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* #1084: search scope toggle */
