@@ -36,6 +36,7 @@ import {
   createWorkspaceTopicId,
   isWorkspaceTopicId,
   mintWorkspaceTopicId,
+  parseWorkspaceTopicConflictDetails,
   parseWorkspaceTopicCreateInput,
   resolveWorkspaceTopicRoutingDefaults,
   workspaceTopicAgentRuntimeLinkPatch,
@@ -45,6 +46,7 @@ import {
   type WorkspaceTopicListResponse,
   type WorkspaceTopicSearchResponse,
 } from '../shared/workspace-topics.js';
+import { LOCAL_WORKSPACE_ID } from '../shared/workspace.js';
 import {
   dmChannelCreateInput,
   dmChannelTopicId,
@@ -711,6 +713,96 @@ describe('workspace topics foundation', () => {
         blockingTopicTitle: 'Build lane',
         remedy: 'open',
       });
+    });
+
+    // The field is normalized on the way OUT because it is normalized on the
+    // way back IN. Emitting a retired sentinel raw would make it round-trip to a
+    // different value than the server holds, so a caller that navigates or
+    // groups by `blockingWorkspaceId` would silently land in the wrong lane.
+    it('emits the blocking workspace id in the form the parser returns', () => {
+      const store = topicStore();
+      // A row persisted before the sentinel retirement: the store-open migration
+      // has already run, so this column keeps its legacy value.
+      store.create({
+        id: 'topic:legacy-lane',
+        workspaceId: 'workspace:local',
+        title: 'Legacy lane',
+      });
+
+      const conflict = conflictOf(() =>
+        store.create({
+          id: 'topic:legacy-lane',
+          workspaceId: LOCAL_WORKSPACE_ID,
+          title: 'Legacy lane',
+        })
+      );
+
+      expect(conflict.details['blockingWorkspaceId']).toBe(LOCAL_WORKSPACE_ID);
+      expect(
+        parseWorkspaceTopicConflictDetails(conflict.details)
+          ?.blockingWorkspaceId
+      ).toBe(conflict.details['blockingWorkspaceId']);
+    });
+  });
+
+  // #1287: `SESSION_CONFLICT` became 409 so a taken id is branchable on the
+  // wire — but the create route mapped EVERY store error to it, so hitting the
+  // row cap answered "this id is taken" too. For a gateway/agent client that
+  // reads as "pick another id and retry", the one action that cannot work.
+  it('separates a full store from a taken id on the wire', async () => {
+    const store = topicStore(tickingClock());
+    const { port } = await listen({ store });
+
+    const taken = await writeJson<{
+      error: { code: string; retryable: boolean; details?: unknown };
+    }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics',
+      body: { id: 'topic:taken', workspaceId: 'ws:alpha', title: 'Taken' },
+    });
+    expect(taken.status).toBe(201);
+    const conflict = await writeJson<{
+      error: { code: string; retryable: boolean; details?: unknown };
+    }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics',
+      body: { id: 'topic:taken', workspaceId: 'ws:alpha', title: 'Taken' },
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toMatchObject({
+      code: 'SESSION_CONFLICT',
+      retryable: false,
+    });
+
+    // Fill the store to the cap with ACTIVE rows, so the archived-trim escape
+    // hatch has nothing to reclaim and the next create hits the wall.
+    while (store.listAllTopicIds().length < WORKSPACE_TOPICS_MAX_STORED_ENTRIES)
+      store.create({ workspaceId: 'ws:alpha', title: 'filler' });
+
+    const full = await writeJson<{
+      error: {
+        code: string;
+        retryable: boolean;
+        details?: Record<string, unknown>;
+      };
+    }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics',
+      body: { workspaceId: 'ws:alpha', title: 'one too many' },
+    });
+
+    // Capacity is not a conflict: a different code, and a retryable one, so the
+    // client backs off instead of re-minting ids that can never fit.
+    expect(full.status).toBe(503);
+    expect(full.body.error).toMatchObject({
+      code: 'SERVER_UNAVAILABLE',
+      retryable: true,
+    });
+    expect(full.body.error.details).toMatchObject({
+      reasonCode: 'WORKSPACE_TOPIC_STORE_FULL',
     });
   });
 

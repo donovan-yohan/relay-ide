@@ -35,11 +35,12 @@ import type {
   WorkspaceSurface,
   WorkspaceSurfaceListResponse,
 } from '../../../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicCreateInput,
-  WorkspaceTopicListResponse,
-  WorkspaceTopicSearchResponse,
+import {
+  parseWorkspaceTopicConflictDetails,
+  type WorkspaceTopic,
+  type WorkspaceTopicCreateInput,
+  type WorkspaceTopicListResponse,
+  type WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
 import type {
   ChannelImagePart,
@@ -2204,6 +2205,27 @@ export async function createWorkspaceTopicRoom(
     if (!data.topic) throw new Error('workspace topic response missing topic');
     return { topic: data.topic, workContext };
   } catch (err) {
+    // #1287 slice 4: the composer owns the channel id and reuses it across
+    // retries, so a 409 here means THIS attempt already committed — a create
+    // that timed out after the write, or a double submit. Adopt the row we
+    // ourselves made instead of forking a second channel (the reason the id is
+    // client-owned at all). An ARCHIVED blocker is not adoptable: the operator
+    // archived it deliberately, and the conflict message already names restore
+    // as the remedy, so that one still surfaces.
+    const conflict =
+      err instanceof HttpError && err.status === 409
+        ? parseWorkspaceTopicConflictDetails(err.details)
+        : null;
+    if (conflict?.remedy === 'open') {
+      try {
+        return {
+          topic: await fetchWorkspaceTopic(conflict.blockingTopicId),
+          workContext,
+        };
+      } catch {
+        throw launchFailure('topic', err);
+      }
+    }
     throw launchFailure('topic', err);
   }
 }

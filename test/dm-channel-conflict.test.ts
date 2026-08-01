@@ -9,8 +9,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getOrCreateDmChannel } from '../frontend/src/lib/agent-channels.js';
+import {
+  ARCHIVED_CHANNEL_PROMPT_NOTICE,
+  getOrCreateDmChannel,
+  openAgentChannel,
+} from '../frontend/src/lib/agent-channels.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
+import { useToastStore } from '../frontend/src/lib/stores/toasts.js';
+import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import {
   buildWorkspaceTopicConflictDetails,
   workspaceTopicConflictMessage,
@@ -87,6 +93,8 @@ function stubFetch(handler: (method: string, url: string) => Response): void {
 
 beforeEach(() => {
   calls.length = 0;
+  useUiStore.setState({ activeChannelId: null, activeWorkspaceId: null });
+  useToastStore.setState({ toasts: [] });
 });
 
 afterEach(() => {
@@ -177,5 +185,92 @@ describe('getOrCreateDmChannel conflict handling (#1287)', () => {
 
     await expect(getOrCreateDmChannel(DM_INPUT)).rejects.toThrow(/unavailable/);
     expect(calls.map((call) => call.method)).toEqual(['GET', 'POST']);
+  });
+});
+
+// Adopting an archived blocker inside `getOrCreateDmChannel` only pays off if
+// the CALLER actually opens what it adopted. It used to post the first message
+// before navigating, and `POST /channels/:id/messages` answers 409
+// CHANNEL_ARCHIVED — so the await threw, `setActiveChannelId` never ran, and the
+// operator got a failure toast about a channel the sidebar filters out of its
+// default list. The archived channel is now opened first, whatever the post does.
+describe('openAgentChannel lands on an archived DM (#1287)', () => {
+  const OPEN_INPUT = {
+    providerId: 'claude',
+    workspaceId: 'ws:alpha',
+    prompt: 'triage the reconnect flake',
+  };
+
+  /** Archived DM already on disk (no race): the plain read returns it. */
+  function stubArchivedDm(): void {
+    stubFetch((method, url) => {
+      if (url.includes('/channels/')) {
+        return jsonResponse(409, {
+          error: {
+            code: 'SESSION_CONFLICT',
+            message: 'channel is archived',
+            retryable: false,
+            details: { channelId: DM_ID, reasonCode: 'CHANNEL_ARCHIVED' },
+          },
+        });
+      }
+      if (method === 'GET') {
+        return jsonResponse(200, { topic: dmTopic('archived') });
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    });
+  }
+
+  it('opens the channel and names the remedy instead of dead-ending', async () => {
+    stubArchivedDm();
+
+    const topic = await openAgentChannel(OPEN_INPUT);
+
+    expect(topic.status).toBe('archived');
+    // The whole point: ChannelView is mounted on the archived row, so its
+    // shared restore bar is on screen.
+    expect(useUiStore.getState().activeChannelId).toBe(DM_ID);
+    expect(
+      useToastStore.getState().toasts.map((toast) => toast.message)
+    ).toEqual([ARCHIVED_CHANNEL_PROMPT_NOTICE]);
+  });
+
+  it('posts the prompt and opens the channel on the healthy path', async () => {
+    stubFetch((method, url) => {
+      if (url.includes('/channels/')) {
+        return jsonResponse(201, { message: { seq: 1 } });
+      }
+      if (method === 'GET') return jsonResponse(200, { topic: dmTopic() });
+      throw new Error(`unexpected ${method} ${url}`);
+    });
+
+    await openAgentChannel(OPEN_INPUT);
+
+    expect(useUiStore.getState().activeChannelId).toBe(DM_ID);
+    expect(useToastStore.getState().toasts).toEqual([]);
+    expect(calls.some((call) => call.url.includes('/messages'))).toBe(true);
+  });
+
+  it('still throws for a post failure that is not the archived channel', async () => {
+    stubFetch((method, url) => {
+      if (url.includes('/channels/')) {
+        return jsonResponse(409, {
+          error: {
+            code: 'SESSION_CONFLICT',
+            message: 'thread root belongs to another channel',
+            retryable: false,
+            details: { reasonCode: 'thread_root_channel_mismatch' },
+          },
+        });
+      }
+      if (method === 'GET') return jsonResponse(200, { topic: dmTopic() });
+      throw new Error(`unexpected ${method} ${url}`);
+    });
+
+    await expect(openAgentChannel(OPEN_INPUT)).rejects.toThrow(/thread root/);
+    // Opening first is not swallowing: the caller still reports the failure,
+    // and the channel it navigated to is a live one.
+    expect(useUiStore.getState().activeChannelId).toBe(DM_ID);
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 });

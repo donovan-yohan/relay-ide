@@ -679,6 +679,13 @@ export type WorkspaceTopicConflictDetails = {
  * blocker. `title` is optional on purpose: a row whose `record_json` failed to
  * parse still has id/workspace/status columns, and a conflict that names the id
  * beats one that names nothing.
+ *
+ * `blockingWorkspaceId` is normalized HERE, at the single point every producer
+ * goes through, because `parseWorkspaceTopicConflictDetails` normalizes on the
+ * way back in. Emitting the raw column instead would make the field round-trip
+ * to a DIFFERENT value than the server holds for any row still carrying a
+ * retired sentinel (`workspace:local` in → `ws:local` out), silently pointing a
+ * caller that navigates or groups by it at the wrong lane.
  */
 export function buildWorkspaceTopicConflictDetails(blocker: {
   id: WorkspaceTopicId;
@@ -692,7 +699,7 @@ export function buildWorkspaceTopicConflictDetails(blocker: {
     blockingTopicId: blocker.id,
     blockingTopicStatus: blocker.status,
     blockingTopicTitle: blocker.title?.trim() || blocker.id,
-    blockingWorkspaceId: blocker.workspaceId,
+    blockingWorkspaceId: normalizeWorkspaceId(blocker.workspaceId),
     remedy: blocker.status === 'archived' ? 'restore' : 'open',
   };
 }

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
+  createTopicIdReservation,
   deriveTopicProviderOptions,
   deriveTopicTitleFromPrompt,
   effectiveDraftTitle,
@@ -106,6 +107,43 @@ describe('topic title derivation', () => {
     expect(
       effectiveDraftTitle({ title: ' custom ', prompt: 'hello world' })
     ).toBe('custom');
+  });
+});
+
+// #1287 slice 4: opaque ids removed the accidental idempotence the title-derived
+// id used to give `POST /workspace-topics`. Nothing else replaced it, so every
+// retry minted a fresh row + WorkContext — and the store answers its 500-row cap
+// by DELETING the oldest archived topics, whose transcripts the boot orphan
+// sweep then erases. The client owns the id per ATTEMPT to close that.
+describe('client-owned create identity', () => {
+  it('reuses one id for every retry of the same attempt', () => {
+    const reservation = createTopicIdReservation();
+    const first = reservation.reserve();
+
+    expect(reservation.reserve()).toBe(first);
+    expect(reservation.reserve()).toBe(first);
+    // Opaque and inside the topic grammar — nothing may parse it.
+    expect(first).toMatch(/^topic:[0-9a-hjkmnp-tv-z]{26}$/);
+  });
+
+  it('mints a new id once the attempt is released', () => {
+    const reservation = createTopicIdReservation();
+    const first = reservation.reserve();
+    reservation.release();
+    const second = reservation.reserve();
+
+    expect(second).not.toBe(first);
+    expect(reservation.reserve()).toBe(second);
+  });
+
+  it('does not mint until an id is actually needed', () => {
+    const mint = vi.fn(() => 'topic:stub');
+    const reservation = createTopicIdReservation(mint);
+
+    expect(mint).not.toHaveBeenCalled();
+    reservation.reserve();
+    reservation.reserve();
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -466,6 +504,114 @@ describe('TopicComposer', () => {
     const call = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
       .calls[0]?.[0] as { launch?: unknown };
     expect(call.launch).toBeUndefined();
+  });
+
+  // #1287 slice 4: the composer sends an id it owns, so a retry after a failed
+  // create collides with its own row (self-explaining 409, adopted) instead of
+  // forking a second channel + WorkContext every time the operator presses
+  // retry — the loop that evicts archived transcripts at the store cap.
+  it('retries a failed create on the SAME client-owned channel id', async () => {
+    const roomIds = (): Array<string | undefined> =>
+      vi
+        .mocked(createWorkspaceTopicRoomAndMaybeLaunch)
+        .mock.calls.map(
+          (call) =>
+            (call[0] as { room: { topic: { id?: string } } }).room.topic.id
+        );
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch)
+      .mockRejectedValueOnce({
+        stage: 'topic',
+        message: 'network went away after the write',
+        retryable: true,
+      })
+      .mockResolvedValue({
+        status: 'created',
+        topic: { id: 'topic:adopted' },
+        workContext: { id: 'wc:adopted' },
+      } as never);
+    renderComposer();
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
+    act(() => {
+      setNativeValue(ta, 'capture the note');
+      toggle.click();
+    });
+    const templateSelect = Array.from(
+      container.querySelectorAll('select')
+    ).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'note')
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(templateSelect, 'note'));
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    const [first, second] = roomIds();
+    expect(first).toMatch(/^topic:[0-9a-hjkmnp-tv-z]{26}$/);
+    expect(second).toBe(first);
+  });
+
+  it('gives the next chat its own id once a create commits', async () => {
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+      status: 'created',
+      topic: { id: 'topic:committed' },
+      workContext: { id: 'wc:committed' },
+    } as never);
+    renderComposer();
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
+    act(() => {
+      setNativeValue(ta, 'first note');
+      toggle.click();
+    });
+    const templateSelect = Array.from(
+      container.querySelectorAll('select')
+    ).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'note')
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(templateSelect, 'note'));
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+    // A committed create clears the draft, so the next chat is typed fresh.
+    act(() => {
+      setNativeValue(ta, 'second note');
+      setSelectValue(
+        Array.from(container.querySelectorAll('select')).find((select) =>
+          Array.from(select.options).some((option) => option.value === 'note')
+        ) as HTMLSelectElement,
+        'note'
+      );
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    const calls = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock.calls;
+    const ids = calls.map(
+      (call) => (call[0] as { room: { topic: { id?: string } } }).room.topic.id
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).not.toBe(ids[0]);
   });
 
   it('keeps the metadata fields behind the advanced disclosure', () => {

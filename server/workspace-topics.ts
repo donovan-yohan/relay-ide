@@ -159,6 +159,25 @@ class WorkspaceTopicStoreError extends Error {
   }
 }
 
+/**
+ * Wire shape for a store failure. NOT every store error is a conflict (#1287):
+ * `WORKSPACE_TOPIC_ALREADY_EXISTS` means "this exact id is taken", where 409 +
+ * the self-explaining body tells the caller to open/restore the blocker or pick
+ * another id. `WORKSPACE_TOPIC_STORE_FULL` is a capacity wall — the id is fine
+ * and re-posting the SAME body after back-off (or after the operator frees
+ * rows) is the only thing that can ever work — so answering it in the conflict
+ * family told a gateway/agent client to do the one thing guaranteed to fail,
+ * with `retryable: false` suppressing the back-off that would actually help.
+ */
+function storeErrorWire(reasonCode: string): {
+  code: RelayCliGatewayErrorCode;
+  retryable: boolean;
+} {
+  return reasonCode === WORKSPACE_TOPIC_ALREADY_EXISTS_REASON
+    ? { code: 'SESSION_CONFLICT', retryable: false }
+    : { code: 'SERVER_UNAVAILABLE', retryable: true };
+}
+
 export interface WorkspaceTopicListFilter {
   workspaceId?: string;
   includeArchived?: boolean;
@@ -1467,7 +1486,8 @@ export function createWorkspaceTopicsRouter(
           return;
         }
         if (error instanceof WorkspaceTopicStoreError) {
-          sendGatewayError(res, 'SESSION_CONFLICT', error.message, false, {
+          const wire = storeErrorWire(error.reasonCode);
+          sendGatewayError(res, wire.code, error.message, wire.retryable, {
             reasonCode: error.reasonCode,
             ...error.details,
           });
