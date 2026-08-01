@@ -24,10 +24,13 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
+const TEST_BOOT_ID = 'boot-id-under-test';
+
 async function serveHealthz(lagMs: number): Promise<string> {
   const monitor = createHealthMonitor({
     getLagMs: () => lagMs,
     lagThresholdMs: 100,
+    bootId: TEST_BOOT_ID,
     memoryLogIntervalMs: 60_000,
     memoryUsage: () => ({
       rss: 123_456,
@@ -55,6 +58,7 @@ describe('/healthz', () => {
     const monitor = createHealthMonitor({
       lagThresholdMs: 50,
       probeIntervalMs: 100,
+      bootId: TEST_BOOT_ID,
       memoryLogIntervalMs: 60_000,
       monotonicNow: () => monotonicMs,
       memoryUsage: () => ({
@@ -82,6 +86,7 @@ describe('/healthz', () => {
       status: 'degraded',
       lagMs: 75,
       rss: 123_456,
+      bootId: TEST_BOOT_ID,
     });
   });
 
@@ -124,6 +129,9 @@ describe('/healthz', () => {
       status: 'ok',
       lagMs: 12,
       rss: 123_456,
+      // Per-process identity: a client waiting out a restart uses it to tell
+      // the new server from the one still shutting down (#1285).
+      bootId: TEST_BOOT_ID,
     });
   });
 
@@ -136,12 +144,14 @@ describe('/healthz', () => {
       status: 'degraded',
       lagMs: 101,
       rss: 123_456,
+      bootId: TEST_BOOT_ID,
     });
   });
 
   it('returns 503 and disabled stores when persistence is explicitly degraded', () => {
     const monitor = createHealthMonitor({
       getLagMs: () => 12,
+      bootId: TEST_BOOT_ID,
       disabledStores: ['channel-messages', 'analytics'],
       memoryLogIntervalMs: 60_000,
       memoryUsage: () => ({
@@ -166,6 +176,7 @@ describe('/healthz', () => {
       status: 'degraded',
       lagMs: 12,
       rss: 123_456,
+      bootId: TEST_BOOT_ID,
       disabledStores: ['channel-messages', 'analytics'],
     });
   });

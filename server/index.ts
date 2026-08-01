@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { createHealthMonitor } from './health.js';
+import { createHealthMonitor, PROCESS_BOOT_ID } from './health.js';
 import { restoreSessionsAfterListen } from './startup-restore.js';
 
 import {
@@ -56,7 +56,11 @@ import {
   removeWorktreeFromDisk,
   validateWorktreeForDelete,
 } from './worktree-cleanup.js';
-import { isInstalled as serviceIsInstalled } from './service.js';
+import {
+  getPlatform as getServicePlatform,
+  isInstalled as serviceIsInstalled,
+  SERVICE_LABEL,
+} from './service.js';
 import {
   buildRemedyCommand,
   buildUpdateCommand,
@@ -5305,12 +5309,20 @@ async function main(): Promise<void> {
         }
       }
 
-      // Anything that would restart this process on exit earns the automatic
-      // restart, not just the stock unit (#1285). The verified-update path
-      // above already proved new bytes are on disk, so the only question left
-      // is who starts the server again.
-      const supervision = detectSupervision({ serviceIsInstalled });
+      // Anything that would provably restart this process on exit earns the
+      // automatic restart, not just the stock unit (#1285). The verified-update
+      // path above already proved new bytes are on disk, so the only question
+      // left is who starts the server again — and `detectSupervision` answers
+      // it from the supervisor's real policy, never from "a unit exists".
+      const supervision = detectSupervision({
+        serviceIsInstalled,
+        platform: getServicePlatform,
+        serviceLabel: SERVICE_LABEL,
+      });
       const restarting = supervision.supervised;
+      if (!restarting) {
+        logger.info(`[update] no automatic restart: ${supervision.reason}`);
+      }
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
@@ -5335,14 +5347,24 @@ async function main(): Promise<void> {
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
-      res.json({ ok: true, restarting, version: installedVersion });
+      // `bootId` lets the client tell the incoming process from this one: the
+      // outgoing server keeps listening for up to ~3.5s below, and every
+      // version it can report comes from the install root the update just
+      // overwrote, so liveness and version both lie during that window.
+      res.json({
+        ok: true,
+        restarting,
+        version: installedVersion,
+        supervision: supervision.kind,
+        bootId: PROCESS_BOOT_ID,
+      });
       if (restarting) {
-        // Stock service: exit 0, unchanged. Foreign systemd unit: exit nonzero,
-        // because the usual hand-written policy is `Restart=on-failure`, which
-        // restarts unclean exits only — a clean exit would leave the hub down.
+        // launchd (KeepAlive) restarts any exit, so exit 0 keeps the log
+        // honest. systemd restarts a nonzero exit only — `on-failure`, which
+        // the stock Linux unit uses too, treats exit 0 as a successful stop.
         const exitCode = restartExitCode(supervision.kind);
         logger.info(
-          `[update] restarting under ${supervision.kind} supervision (exit ${exitCode}) into v${installedVersion ?? 'unknown'}`
+          `[update] restarting under ${supervision.kind} supervision (${supervision.reason}, exit ${exitCode}) into v${installedVersion ?? 'unknown'}`
         );
         // Brief delay to let the broadcast reach clients
         setTimeout(() => {

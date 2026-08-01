@@ -1,6 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { RequestHandler } from 'express';
 import { createLogger, type Logger } from './logger.js';
+
+/**
+ * Identity of *this* process, minted once at module load.
+ *
+ * `/healthz` answers liveness, which is not enough for a client waiting out a
+ * restart: the outgoing process keeps listening for up to ~3.5s after it
+ * answers `POST /update`, and every version field it can report is read from
+ * the install root that the update just overwrote. A boot id changes only when
+ * the process does, so a client that captured the pre-update id can tell the
+ * new server from the old one instead of guessing with a timer.
+ */
+export const PROCESS_BOOT_ID = randomUUID();
 
 export const DEFAULT_EVENT_LOOP_LAG_THRESHOLD_MS = 2_000;
 export const DEFAULT_EVENT_LOOP_PROBE_INTERVAL_MS = 1_000;
@@ -41,6 +54,8 @@ export interface HealthMonitorOptions {
   logger?: Logger;
   /** Optional post-listen session-resume progress owned by server startup. */
   getResumeReadiness?: () => ResumeReadiness;
+  /** Overrides the per-process boot id reported by `/healthz` (tests). */
+  bootId?: string;
 }
 
 const healthLogger = createLogger('health');
@@ -101,6 +116,8 @@ export function createHealthMonitor(
     Math.max(0, options.getLagMs?.() ?? measuredLagMs);
   const disabledStores = options.disabledStores ?? [];
 
+  const bootId = options.bootId ?? PROCESS_BOOT_ID;
+
   const handler: RequestHandler = (_req, res) => {
     const lagMs = Math.round(getLagMs());
     const { rss } = readHealthMemorySnapshot(memoryUsage);
@@ -110,6 +127,7 @@ export function createHealthMonitor(
       status: healthy ? 'ok' : 'degraded',
       lagMs,
       rss,
+      bootId,
       ...(disabledStores.length > 0 ? { disabledStores } : {}),
       ...(resume ? { ready: resume.complete, resume } : {}),
     });

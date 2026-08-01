@@ -233,6 +233,10 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
   function SettingsDialog({ onClose }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
     const contentElRef = useRef<HTMLDivElement | null>(null);
+    // The post-update restart wait can run for up to 90s; closing the dialog
+    // must stop it rather than let it reload the page or set state later.
+    const restartWaitRef = useRef<AbortController | null>(null);
+    useEffect(() => () => restartWaitRef.current?.abort(), []);
     const [contentEl, setContentEl] = useState<HTMLDivElement | undefined>(
       undefined
     );
@@ -368,13 +372,18 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
             available: false,
           }));
           // Same shared wait-then-reload path as the update toast.
-          await reloadWhenServerReturns((timeoutText) => {
-            setVersionInfo((v) => ({
-              ...v,
-              status: timeoutText,
-              updating: false,
-            }));
-          });
+          const controller = new AbortController();
+          restartWaitRef.current = controller;
+          await reloadWhenServerReturns(
+            (timeoutText) => {
+              setVersionInfo((v) => ({
+                ...v,
+                status: timeoutText,
+                updating: false,
+              }));
+            },
+            { previousBootId: result.bootId ?? null, signal: controller.signal }
+          );
         } else
           setVersionInfo((v) => ({
             ...v,

@@ -2767,6 +2767,10 @@ export async function triggerUpdate(): Promise<{
   /** Absent unless the server ran but could not confirm a version change. */
   verified?: boolean;
   version?: string | null;
+  /** Which supervisor the server bet on restarting it (`none` when it stays up). */
+  supervision?: string;
+  /** Boot id of the process answering this request — the one going away. */
+  bootId?: string;
   error?: string;
 }> {
   // json() throws an HttpError carrying the server's `error` string, so the
@@ -2775,6 +2779,8 @@ export async function triggerUpdate(): Promise<{
     ok: boolean;
     restarting?: boolean;
     version?: string | null;
+    supervision?: string;
+    bootId?: string;
     error?: string;
     verified?: boolean;
   }>(await fetch('/update', { method: 'POST' }));

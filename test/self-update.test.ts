@@ -1,10 +1,11 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import {
   buildRemedyCommand,
   buildUpdateCommand,
   detectInstallKind,
   detectRunningInstall,
   detectSupervision,
+  parseSystemdUnitFromCgroup,
   readInstalledVersion,
   resolveBunBinary,
   resolveDetectedScriptPath,
@@ -351,43 +352,119 @@ test('verifyUpdateLanded is unverifiable when either version is unreadable', () 
   ).toBe('unverifiable');
 });
 
-test('detectSupervision reports the stock service before anything else', () => {
-  // Stock unit wins even when the env also looks like systemd: its restart
-  // semantics (and its exit code) are the proven ones.
+const LINUX = () => 'linux' as const;
+const MACOS = () => 'macos' as const;
+
+/** Owning-unit probe stub: what `systemctl show -p Restart` would report. */
+function unitWith(restart: string, unit = 'relay-daily-hub.service') {
+  return () => ({ unit, restart });
+}
+
+test('detectSupervision restarts under a unit whose policy acts on a nonzero exit', () => {
+  for (const policy of ['on-failure', 'always']) {
+    expect(
+      detectSupervision({
+        serviceIsInstalled: () => false,
+        platform: LINUX,
+        env: { INVOCATION_ID: 'b8f0a4c1' },
+        stdoutIsTty: () => false,
+        systemdUnit: unitWith(policy),
+      })
+    ).toMatchObject({ supervised: true, kind: 'systemd' });
+  }
+});
+
+test('detectSupervision keeps the stock Linux unit on the systemd (exit 1) path', () => {
+  // The stock unit Relay writes is `Restart=on-failure`, so it needs the same
+  // nonzero exit as any hand-written unit — "stock" is not its own policy.
+  const detection = detectSupervision({
+    serviceIsInstalled: () => true,
+    platform: LINUX,
+    env: { INVOCATION_ID: 'b8f0a4c1' },
+    stdoutIsTty: () => false,
+    systemdUnit: unitWith('on-failure', 'relay-ide.service'),
+  });
+  expect(detection).toMatchObject({ supervised: true, kind: 'systemd' });
+  expect(restartExitCode(detection.kind)).toBe(1);
+});
+
+test('detectSupervision stays up under policies that would not restart it', () => {
+  // `no` is systemd's default, and `on-abnormal`/`on-abort`/`on-watchdog` react
+  // to signals and timeouts, never to a nonzero exit status. Exiting under any
+  // of them is a permanent outage.
+  for (const policy of [
+    'no',
+    'on-success',
+    'on-abnormal',
+    'on-abort',
+    'on-watchdog',
+  ]) {
+    expect(
+      detectSupervision({
+        serviceIsInstalled: () => true,
+        platform: LINUX,
+        env: { INVOCATION_ID: 'b8f0a4c1' },
+        stdoutIsTty: () => false,
+        systemdUnit: unitWith(policy),
+      })
+    ).toMatchObject({ supervised: false, kind: 'none' });
+  }
+});
+
+test('detectSupervision stays up when the restart policy cannot be read', () => {
+  // Fail closed: an unreadable policy is not evidence of a supervisor.
   expect(
     detectSupervision({
       serviceIsInstalled: () => true,
+      platform: LINUX,
       env: { INVOCATION_ID: 'b8f0a4c1' },
       stdoutIsTty: () => false,
+      systemdUnit: unitWith(''),
     })
-  ).toEqual({ supervised: true, kind: 'stock-service' });
-});
-
-test('detectSupervision treats INVOCATION_ID as a custom systemd unit', () => {
+  ).toMatchObject({ supervised: false, kind: 'none' });
   expect(
     detectSupervision({
-      serviceIsInstalled: () => false,
+      serviceIsInstalled: () => true,
+      platform: LINUX,
       env: { INVOCATION_ID: 'b8f0a4c1' },
       stdoutIsTty: () => false,
+      systemdUnit: () => null,
     })
-  ).toEqual({ supervised: true, kind: 'systemd' });
+  ).toMatchObject({ supervised: false, kind: 'none' });
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => true,
+      platform: LINUX,
+      env: { INVOCATION_ID: 'b8f0a4c1' },
+      stdoutIsTty: () => false,
+      systemdUnit: () => {
+        throw new Error('EACCES');
+      },
+    })
+  ).toMatchObject({ supervised: false, kind: 'none' });
 });
 
 test('detectSupervision reports none without INVOCATION_ID', () => {
+  const unit = vi.fn(unitWith('always'));
   expect(
     detectSupervision({
-      serviceIsInstalled: () => false,
+      serviceIsInstalled: () => true,
+      platform: LINUX,
       env: {},
       stdoutIsTty: () => false,
+      systemdUnit: unit,
     })
-  ).toEqual({ supervised: false, kind: 'none' });
+  ).toMatchObject({ supervised: false, kind: 'none' });
   expect(
     detectSupervision({
-      serviceIsInstalled: () => false,
+      serviceIsInstalled: () => true,
+      platform: LINUX,
       env: { INVOCATION_ID: '   ' },
       stdoutIsTty: () => false,
+      systemdUnit: unit,
     })
-  ).toEqual({ supervised: false, kind: 'none' });
+  ).toMatchObject({ supervised: false, kind: 'none' });
+  expect(unit).not.toHaveBeenCalled();
 });
 
 test('detectSupervision ignores an INVOCATION_ID inherited by an interactive shell', () => {
@@ -396,11 +473,47 @@ test('detectSupervision ignores an INVOCATION_ID inherited by an interactive she
   // TTY on stdout, so a TTY rules the unit out.
   expect(
     detectSupervision({
-      serviceIsInstalled: () => false,
+      serviceIsInstalled: () => true,
+      platform: LINUX,
       env: { INVOCATION_ID: 'b8f0a4c1' },
       stdoutIsTty: () => true,
+      systemdUnit: unitWith('always'),
     })
-  ).toEqual({ supervised: false, kind: 'none' });
+  ).toMatchObject({ supervised: false, kind: 'none' });
+});
+
+test('detectSupervision claims launchd only for the stock plist that started it', () => {
+  const base = {
+    serviceIsInstalled: () => true,
+    platform: MACOS,
+    serviceLabel: 'com.relay-ide',
+    stdoutIsTty: () => false,
+  };
+  expect(
+    detectSupervision({ ...base, env: { XPC_SERVICE_NAME: 'com.relay-ide' } })
+  ).toMatchObject({ supervised: true, kind: 'launchd' });
+  // `0` is what launchd exports for processes it did not start, and a hub run
+  // by hand on a Mac that merely has the plist installed is not that job.
+  expect(
+    detectSupervision({ ...base, env: { XPC_SERVICE_NAME: '0' } })
+  ).toMatchObject({ supervised: false, kind: 'none' });
+  expect(detectSupervision({ ...base, env: {} })).toMatchObject({
+    supervised: false,
+    kind: 'none',
+  });
+  expect(
+    detectSupervision({
+      ...base,
+      env: { XPC_SERVICE_NAME: 'com.other.job' },
+    })
+  ).toMatchObject({ supervised: false, kind: 'none' });
+  expect(
+    detectSupervision({
+      ...base,
+      serviceIsInstalled: () => false,
+      env: { XPC_SERVICE_NAME: 'com.relay-ide' },
+    })
+  ).toMatchObject({ supervised: false, kind: 'none' });
 });
 
 test('detectSupervision survives a throwing stock service probe', () => {
@@ -409,16 +522,92 @@ test('detectSupervision survives a throwing stock service probe', () => {
       serviceIsInstalled: () => {
         throw new Error('EACCES');
       },
-      env: { INVOCATION_ID: 'b8f0a4c1' },
+      platform: MACOS,
+      serviceLabel: 'com.relay-ide',
+      env: { XPC_SERVICE_NAME: 'com.relay-ide' },
       stdoutIsTty: () => false,
     })
-  ).toEqual({ supervised: true, kind: 'systemd' });
+  ).toMatchObject({ supervised: false, kind: 'none' });
 });
 
-test('restartExitCode exits clean for the stock service and unclean under systemd', () => {
-  // Restart=on-failure only restarts unclean exits, so a foreign unit needs a
-  // nonzero code to come back.
-  expect(restartExitCode('stock-service')).toBe(0);
+test('detectSupervision honours the RELAY_UPDATE_RESTART override both ways', () => {
+  const supervisedDeps = {
+    serviceIsInstalled: () => false,
+    platform: LINUX,
+    stdoutIsTty: () => false,
+    systemdUnit: unitWith('always'),
+  };
+  expect(
+    detectSupervision({
+      ...supervisedDeps,
+      env: { INVOCATION_ID: 'b8f0a4c1', RELAY_UPDATE_RESTART: 'never' },
+    })
+  ).toMatchObject({ supervised: false, kind: 'none' });
+  // Escape hatch for hosts where the policy is unreadable (locked-down
+  // containers, systemctl off PATH) but the operator knows it restarts.
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => false,
+      platform: LINUX,
+      stdoutIsTty: () => true,
+      systemdUnit: () => null,
+      env: { RELAY_UPDATE_RESTART: 'systemd' },
+    })
+  ).toMatchObject({ supervised: true, kind: 'systemd' });
+});
+
+test('detectSupervision stays up on platforms with no supervisor model', () => {
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => true,
+      platform: () => {
+        throw new Error('Unsupported platform: win32');
+      },
+      env: {},
+      stdoutIsTty: () => false,
+    })
+  ).toMatchObject({ supervised: false, kind: 'none' });
+});
+
+test('parseSystemdUnitFromCgroup finds the owning unit and its manager', () => {
+  expect(
+    parseSystemdUnitFromCgroup(
+      '0::/user.slice/user-1000.slice/user@1000.service/app.slice/relay-daily-hub.service\n'
+    )
+  ).toEqual({ unit: 'relay-daily-hub.service', user: true });
+  expect(
+    parseSystemdUnitFromCgroup('0::/system.slice/relay-ide.service\n')
+  ).toEqual({ unit: 'relay-ide.service', user: false });
+  // cgroup v1 writes one line per controller.
+  expect(
+    parseSystemdUnitFromCgroup(
+      '3:cpu,cpuacct:/system.slice/relay-ide.service\n1:name=systemd:/system.slice/relay-ide.service\n'
+    )
+  ).toEqual({ unit: 'relay-ide.service', user: false });
+});
+
+test('parseSystemdUnitFromCgroup rejects scopes and bare manager cgroups', () => {
+  // A login session or `systemd-run --scope` is not a restartable unit, even
+  // though it sits under the user manager's `.service` cgroup.
+  expect(
+    parseSystemdUnitFromCgroup(
+      '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tmux.scope\n'
+    )
+  ).toBeNull();
+  expect(
+    parseSystemdUnitFromCgroup(
+      '0::/user.slice/user-1000.slice/user@1000.service\n'
+    )
+  ).toBeNull();
+  expect(parseSystemdUnitFromCgroup('0::/\n')).toBeNull();
+  expect(parseSystemdUnitFromCgroup('')).toBeNull();
+});
+
+test('restartExitCode matches each supervisor\'s real restart semantics', () => {
+  // launchd `KeepAlive=true` restarts any exit, so exit 0 keeps the log honest.
+  expect(restartExitCode('launchd')).toBe(0);
+  // systemd restarts a nonzero exit under `always`/`on-failure` only — exit 0
+  // is a successful stop and leaves the unit inactive.
   expect(restartExitCode('systemd')).toBe(1);
   expect(restartExitCode('none')).toBe(0);
 });
