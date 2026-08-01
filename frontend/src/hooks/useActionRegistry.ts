@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import type React from 'react';
 import { registerGlobal } from '../lib/actions/registry.js';
-import { openTopicTaskRoom } from '../lib/topic-task-room.js';
+import { leaveChatSurface, openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
   registerContextual,
   unregisterContextual,
@@ -176,11 +176,10 @@ function openSettingsNodes(): void {
  * over the flag, so leaving one set makes the action a silent no-op that later
  * fires as a surprise navigation when the operator closes the channel.
  */
-function enterWorkCockpit(tab?: OrgDashboardTab): void {
+export function enterWorkCockpit(tab?: OrgDashboardTab): void {
   const ui = useUiStore.getState();
   ui.setAnalyticsView(null);
-  ui.setActiveChannelId(null);
-  ui.setTopicComposerOpen(false);
+  leaveChatSurface();
   useSessionsStore.getState().setActiveSessionId(null);
   ui.setActiveRepoPath(null);
   if (tab) ui.setOrgDashboardTab(tab);

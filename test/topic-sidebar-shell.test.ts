@@ -192,6 +192,12 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      // #1287: the composer flag and the lane pointer are written by the
+      // new-chat cases below and are NOT transient — leaving either set leaks
+      // one case's navigation into the next, which is how an order-dependent
+      // green suite hides a real regression.
+      topicComposerOpen: false,
+      activeWorkspaceId: null,
       pendingChannelThread: null,
       // #1287 slice 5: rail/lane folds are persisted operator intent now, so
       // they outlive a remount by design — reset them between cases or one
@@ -221,6 +227,7 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      topicComposerOpen: false,
       pendingChannelThread: null,
       ...resetRailFolds(),
     });
@@ -1484,6 +1491,11 @@ describe('TopicSidebarView', () => {
   // one add-project mints (item 2).
   const emptyLaneId = createWorkspaceId('project:/repo/fresh');
   const emptyLaneSelector = `.topic-workspace-group[data-workspace-id="${emptyLaneId}"]`;
+  // Both lanes carry the repo anchor `ensureProjectWorkspace` stamps on every
+  // add-project workspace, so a create can be checked for lane/repo AGREEMENT
+  // rather than lane alone (#1287).
+  const OLD_LANE_REPO = '/repo/old';
+  const FRESH_LANE_REPO = '/repo/fresh';
 
   async function renderWithEmptyLane(
     extra: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
@@ -1507,6 +1519,7 @@ describe('TopicSidebarView', () => {
           pinned: false,
           color: null,
           icon: null,
+          defaultRepoPath: OLD_LANE_REPO,
         },
         {
           id: emptyLaneId,
@@ -1515,6 +1528,7 @@ describe('TopicSidebarView', () => {
           pinned: false,
           color: null,
           icon: null,
+          defaultRepoPath: FRESH_LANE_REPO,
         },
       ],
       ...extra,
@@ -1622,32 +1636,77 @@ describe('TopicSidebarView', () => {
     }
   });
 
-  it('keeps a new chat in the freshly selected lane, not the selected row’s (#1287)', async () => {
-    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
-    // `selectedId` defaults to the first channel, which lives in `ws:a` — the
-    // operator's OLD workspace. They then pick the freshly added, empty lane.
-    const laneHeader = container.querySelector<HTMLButtonElement>(
-      `${emptyLaneSelector} .topic-workspace-group__select`
-    );
-    await act(async () => laneHeader?.click());
-    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+  // #1287: `activeWorkspaceId` and `activeRepoPath` are two halves of ONE
+  // routing decision — the first files the channel, the second becomes its
+  // `routingDefaults.repoPath`/`cwd`. Moving only the lane pointer files the
+  // chat in the NEW project while still routing it at the ABANDONED project's
+  // repo, a split across two projects that is strictly worse than the
+  // consistent-but-stale state it replaced. Both new-chat entry points are
+  // driven here because they now share one body.
+  it('routes a new chat at the freshly selected lane AND that lane’s repo (#1287)', async () => {
+    for (const entry of [
+      {
+        label: 'rail header',
+        selectLane: true,
+        selector: '.topic-shell__create',
+      },
+      {
+        label: 'empty-lane button',
+        selectLane: false,
+        selector: `${emptyLaneSelector} [data-workspace-start-chat="${emptyLaneId}"]`,
+      },
+    ]) {
+      // The operator's state mid-#1287: `selectedId` defaults to the first
+      // channel, which lives in `ws:a` — the OLD workspace — and that
+      // project's repo is the active one.
+      useUiStore.setState({
+        activeWorkspaceId: null,
+        activeRepoPath: OLD_LANE_REPO,
+      });
+      await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
 
-    // Pressing the rail HEADER button re-applied the stale selected row's
-    // context, re-stamping `activeWorkspaceId` back to the old lane, so the
-    // chat was filed in the wrong project.
-    const createButton = container.querySelector<HTMLButtonElement>(
-      '.topic-shell__create'
-    );
-    await act(async () => createButton?.click());
+      if (entry.selectLane) {
+        const laneHeader = container.querySelector<HTMLButtonElement>(
+          `${emptyLaneSelector} .topic-workspace-group__select`
+        );
+        await act(async () => laneHeader?.click());
+        expect(useUiStore.getState().activeWorkspaceId, entry.label).toBe(
+          emptyLaneId
+        );
+        // A bare lane click must NOT move the repo pointer: `activeRepoPath`
+        // sits directly above the chat landing in `resolveAppViewMode`, so
+        // stamping it outside a create would turn selecting a lane into a
+        // navigation onto RepoDashboard.
+        expect(useUiStore.getState().activeRepoPath, entry.label).toBe(
+          OLD_LANE_REPO
+        );
+      }
 
-    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
-    const created = buildTopicRoomCreateInput({
-      draft: { ...TOPIC_ROOM_DRAFT_EMPTY, title: 'first chat' },
-      workspaceId: useUiStore.getState().activeWorkspaceId,
-      defaultProviderId: 'claude',
-      taskRef: undefined,
-    });
-    expect(created.workspaceId).toBe(emptyLaneId);
+      const button = container.querySelector<HTMLButtonElement>(entry.selector);
+      expect(button, entry.label).not.toBeNull();
+      await act(async () => button?.click());
+
+      const ui = useUiStore.getState();
+      expect(ui.activeWorkspaceId, entry.label).toBe(emptyLaneId);
+      expect(ui.activeRepoPath, entry.label).toBe(FRESH_LANE_REPO);
+
+      const created = buildTopicRoomCreateInput({
+        draft: { ...TOPIC_ROOM_DRAFT_EMPTY, title: 'first chat' },
+        workspaceId: ui.activeWorkspaceId,
+        defaultProviderId: 'claude',
+        // Exactly how `useTopicRoomCreate` derives it with no active session:
+        // `activeSession?.repoPath ?? activeRepoPath ?? repos[0]?.path`.
+        defaultRepoPath: ui.activeRepoPath ?? undefined,
+        taskRef: undefined,
+      });
+      expect(created.workspaceId, entry.label).toBe(emptyLaneId);
+      expect(created.routingDefaults?.repoPath, entry.label).toBe(
+        FRESH_LANE_REPO
+      );
+      expect(created.routingDefaults?.repoPath, entry.label).not.toBe(
+        OLD_LANE_REPO
+      );
+    }
   });
 
   it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {

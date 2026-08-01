@@ -306,6 +306,10 @@ describe('TopicComposer', () => {
       forceOrgCockpit: false,
       topicComposerOpen: false,
       activeChannelId: null,
+      // #1287: `useTopicRoomCreate` reads the lane pointer into EVERY create
+      // payload, so a case that selects a lane would otherwise file every
+      // later case's chat in it.
+      activeWorkspaceId: null,
     });
     container = document.createElement('div');
     document.body.appendChild(container);

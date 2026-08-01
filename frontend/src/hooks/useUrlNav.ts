@@ -9,6 +9,7 @@ import {
   buildQuery,
   type RouteState,
 } from '../lib/url-nav.js';
+import { leaveChatSurface } from '../lib/topic-task-room.js';
 
 /**
  * Applies a parsed route to the stores. Shared by the boot restore and the
@@ -17,10 +18,13 @@ import {
  * forwards but not backwards.
  *
  * Every branch writes EVERY routed field, including the ones it clears. The
- * channel is the case that makes this mandatory: it outranks the session and
- * the composer in `resolveAppViewMode`, so a `home`/`repo`/`session` route that
- * left `activeChannelId` alone would move the URL while the channel stayed on
- * screen (#1287).
+ * chat-shell surfaces are the case that makes this mandatory: an open channel
+ * outranks the session and the composer in `resolveAppViewMode`, and the
+ * composer in turn outranks the session and the repo — so a `home`/`repo`/
+ * `session` route that left either latched would move the URL while the old
+ * surface stayed on screen (#1287). Non-channel branches therefore go through
+ * the shared `leaveChatSurface()` rather than clearing the channel by hand;
+ * clearing only half is what made the composer survive a route restore.
  */
 function applyRoute(route: RouteState): void {
   const ui = useUiStore.getState();
@@ -38,14 +42,14 @@ function applyRoute(route: RouteState): void {
       break;
 
     case 'repo':
-      ui.setActiveChannelId(null);
+      leaveChatSurface();
       ui.setActiveRepoPath(route.repoPath);
       sessions.setActiveSessionId(null);
       ui.setAnalyticsView(null);
       break;
 
     case 'session': {
-      ui.setActiveChannelId(null);
+      leaveChatSurface();
       ui.setActiveRepoPath(route.repoPath);
       const session = resolveSessionByKey(sessions.sessions, route.sessionId);
       if (session) {
@@ -59,18 +63,18 @@ function applyRoute(route: RouteState): void {
     }
 
     case 'analytics':
-      ui.setActiveChannelId(null);
+      leaveChatSurface();
       ui.setAnalyticsView('dashboard');
       break;
 
     case 'analytics-detail':
-      ui.setActiveChannelId(null);
+      leaveChatSurface();
       ui.setAnalyticsView({ sessionId: route.sessionId });
       break;
 
     case 'home':
     default:
-      ui.setActiveChannelId(null);
+      leaveChatSurface();
       ui.setActiveRepoPath(null);
       sessions.setActiveSessionId(null);
       ui.setAnalyticsView(null);
