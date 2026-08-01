@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createChannelMessageStore } from '../server/channel-message-store.js';
 import { createWorkspaceTopicStore } from '../server/workspace-topics.js';
-import { WORKSPACE_TOPICS_MAX_LIST_ENTRIES } from '../shared/workspace-topics.js';
+import {
+  WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+  createWorkspaceTopicId,
+  mintWorkspaceTopicId,
+} from '../shared/workspace-topics.js';
 import type { ChannelSenderRef } from '../shared/channel-chat-protocol.js';
 
 const cleanup: Array<() => void> = [];
@@ -53,11 +57,62 @@ describe('channel orphan sweep vs. capped topic list', () => {
     const cappedIds = new Set(capped.map((t) => t.id));
     const evicted = ids[0]!;
     expect(cappedIds.has(evicted)).toBe(false); // the buggy path would sweep it
-    store.appendComplete({ channelId: evicted, sender: HUMAN, text: 'keep me' });
+    store.appendComplete({
+      channelId: evicted,
+      sender: HUMAN,
+      text: 'keep me',
+    });
 
     // The FIXED boot sweep enumerates all ids uncapped, so the message survives.
     const result = store.sweepOrphans(new Set(topicStore.listAllTopicIds()));
     expect(result.channelsDeleted).not.toContain(evicted);
     expect(store.history(evicted)).toHaveLength(1);
+  });
+
+  // #1287 slice 4: existing title-slugged rows are grandfathered untouched.
+  // Both id shapes are just opaque strings to the channel store.
+  it('sweeps and keys transcripts identically for legacy slug ids and minted ids', () => {
+    const dir = tmpDir();
+    let tick = 0;
+    const topicStore = createWorkspaceTopicStore({
+      dbPath: path.join(dir, 'workspace-topics.db'),
+      now: () => new Date(1_700_000_000_000 + tick++ * 1000).toISOString(),
+    });
+    cleanup.push(() => topicStore.close());
+    const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+    cleanup.push(() => store.close());
+
+    // A row minted before this slice: id === slug(workspaceId + '-' + title).
+    const legacyId = createWorkspaceTopicId('Fix bug #12', 'ws:alpha');
+    expect(legacyId).toBe('topic:ws-alpha-fix-bug-12');
+    const legacy = topicStore.create({
+      id: legacyId,
+      workspaceId: 'ws:alpha',
+      title: 'Fix bug #12',
+    });
+    // A row minted after: same workspace, same title, opaque id.
+    const minted = topicStore.create({
+      workspaceId: 'ws:alpha',
+      title: 'Fix bug #12',
+    });
+    const gone = mintWorkspaceTopicId();
+
+    for (const channelId of [legacy.id, minted.id, gone]) {
+      store.appendComplete({ channelId, sender: HUMAN, text: 'hello' });
+    }
+    // Transcripts key off the id, so the two same-titled channels stay separate.
+    expect(store.history(legacy.id)).toHaveLength(1);
+    expect(store.history(minted.id)).toHaveLength(1);
+
+    // A rename touches display only; the sweep still recognizes the id.
+    expect(topicStore.update(legacy.id, { title: 'Renamed' })?.id).toBe(
+      legacyId
+    );
+
+    const result = store.sweepOrphans(new Set(topicStore.listAllTopicIds()));
+    expect(result.channelsDeleted).toEqual([gone]);
+    expect(store.history(legacy.id)).toHaveLength(1);
+    expect(store.history(minted.id)).toHaveLength(1);
+    expect(store.history(gone)).toHaveLength(0);
   });
 });

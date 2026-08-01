@@ -23,13 +23,15 @@ import {
  */
 const DM_LOCAL_WORKSPACE_SEGMENT = 'workspace-local';
 
-// A DM id is namespaced with `~` separators. `createWorkspaceTopicId` (the same
-// function the server uses to mint a topic id from its user-chosen title) slugs
-// every id down to `[a-z0-9._-]` — it can NEVER emit a `~`, though `~` is legal
-// per the topic-id grammar (`/^topic:[A-Za-z0-9._~%-]+$/`). Building the DM id
-// directly with `~` therefore puts it in an id sub-namespace that no ordinary
-// title can collide with (a topic literally titled "dm claude" would otherwise
-// mint `topic:...-dm-claude`, the exact old DM id).
+// A DM id is namespaced with `~` separators. No other id-minting path can emit
+// a `~`, though `~` is legal per the topic-id grammar
+// (`/^topic:[A-Za-z0-9._~%-]+$/`): `createWorkspaceTopicId` (deterministic
+// derived rows, plus every grandfathered title-slugged row) slugs down to
+// `[a-z0-9._-]`, and `mintWorkspaceTopicId` (#1287 slice 4, every new free-
+// titled chat) emits lowercase Crockford base32 only. Building the DM id
+// directly with `~` therefore puts it in an id sub-namespace nothing else can
+// collide with (a legacy topic titled "dm claude" would otherwise have minted
+// `topic:...-dm-claude`, the exact old DM id).
 const DM_ID_MARKER = 'dm~';
 
 /**

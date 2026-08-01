@@ -523,6 +523,81 @@ function readStringList(value: unknown, field: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/**
+ * Crockford base32 (no `i`/`l`/`o`/`u`), lowercased. A minted topic id is one
+ * opaque token in this alphabet, well inside the `topic:` grammar.
+ */
+const TOPIC_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+/** 10 base32 chars hold a 48-bit millisecond timestamp (ULID layout). */
+const TOPIC_ID_TIME_CHARS = 10;
+/** 16 base32 chars = 80 bits of entropy per id (ULID layout). */
+const TOPIC_ID_RANDOM_CHARS = 16;
+
+type TopicIdRandomSource = { getRandomValues(array: Uint8Array): unknown };
+
+function topicIdSymbol(value: number): string {
+  return TOPIC_ID_ALPHABET[value % TOPIC_ID_ALPHABET.length] ?? '0';
+}
+
+function encodeTopicIdTime(nowMs: number): string {
+  let value = Number.isFinite(nowMs) && nowMs > 0 ? Math.floor(nowMs) : 0;
+  let out = '';
+  for (let index = 0; index < TOPIC_ID_TIME_CHARS; index += 1) {
+    out = `${topicIdSymbol(value)}${out}`;
+    value = Math.floor(value / TOPIC_ID_ALPHABET.length);
+  }
+  return out;
+}
+
+function encodeTopicIdRandom(): string {
+  const bytes = new Uint8Array(TOPIC_ID_RANDOM_CHARS);
+  // Structural lookup, not the ambient `Crypto` type: this module is bundled
+  // into the browser AND imported by the hub, and the two lib sets declare
+  // `globalThis.crypto` differently.
+  const source = (globalThis as { crypto?: Partial<TopicIdRandomSource> })
+    .crypto;
+  if (typeof source?.getRandomValues === 'function') {
+    source.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  // 256 % 32 === 0, so folding a byte onto the alphabet is bias-free.
+  return Array.from(bytes, (byte) => topicIdSymbol(byte)).join('');
+}
+
+/**
+ * Mint an OPAQUE topic/channel id (#1287 slice 4).
+ *
+ * Channel identity is independent of the free-text title: two chats titled
+ * "Fix bug #12" in one workspace are two channels, duplicate titles are legal,
+ * and a rename is display-only (`channel_messages.channel_id` keys the
+ * transcript — `docs/LEARNINGS.md` L-20260729-topic-id-title-slug).
+ *
+ * Shape is ULID-like — `topic:` + 10 chars of millisecond timestamp + 16 chars
+ * of CSPRNG entropy — so ids sort by creation for debugging. NOTHING may parse
+ * the suffix: workspace membership lives in the `workspace_id` column, never in
+ * the id. Deterministic channels (DMs, WorkContext-derived rows) pass their own
+ * id in explicitly and are unaffected.
+ */
+export function mintWorkspaceTopicId(
+  nowMs: number = Date.now()
+): WorkspaceTopicId {
+  return `topic:${encodeTopicIdTime(nowMs)}${encodeTopicIdRandom()}`;
+}
+
+/**
+ * Deterministic topic id derived from a STABLE key (never a free-text title).
+ *
+ * This is the id-minting path for channels that must resolve to the same row on
+ * every recomputation — today only `deriveWorkspaceTopicsFromWorkContexts`,
+ * which keys off the WorkContext id. Free-titled chats use
+ * `mintWorkspaceTopicId`; DMs build their own id in `dm-channels.ts`.
+ *
+ * The slug charset deliberately excludes `~`, which reserves the `~` sub-
+ * namespace for DM ids (see `frontend/src/lib/dm-channels.ts`).
+ */
 export function createWorkspaceTopicId(
   localId: string,
   namespace?: string
@@ -1317,9 +1392,10 @@ export function buildWorkspaceTopicRecord(input: {
   create: WorkspaceTopicCreateInput;
   now: string;
 }): WorkspaceTopic {
-  const id =
-    input.create.id ??
-    createWorkspaceTopicId(input.create.title, input.create.workspaceId);
+  // #1287 slice 4: identity is opaque, never `slug(workspaceId + '-' + title)`.
+  // An explicit id still wins verbatim, which is how DMs and other
+  // deterministic channels keep resolving to the same row.
+  const id = input.create.id ?? mintWorkspaceTopicId(Date.parse(input.now));
   return {
     schemaVersion: WORKSPACE_TOPIC_SCHEMA_VERSION,
     id,

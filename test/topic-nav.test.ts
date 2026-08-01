@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
-import type { WorkspaceTopic } from '../shared/workspace-topics.js';
+import {
+  createWorkspaceTopicId,
+  mintWorkspaceTopicId,
+  type WorkspaceTopic,
+} from '../shared/workspace-topics.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
@@ -902,5 +906,64 @@ describe('topic nav channel identity', () => {
       icon: null,
       color: null,
     });
+  });
+
+  // #1287 slice 4: nothing in the nav spine parses a topic id. Membership is
+  // the `workspace_id` column; the title is display only.
+  it('groups opaque-id channels by workspace and tolerates duplicate titles', () => {
+    const first = mintWorkspaceTopicId();
+    const second = mintWorkspaceTopicId();
+    const legacy = createWorkspaceTopicId('Fix bug #12', 'ws:a');
+    const dm = dmChannelTopicId('claude', 'ws:a');
+    expect(first).not.toBe(second);
+
+    const tree = selectChannelRailTree(
+      buildTopicNavModel({
+        topics: [
+          makeTopic({
+            id: first,
+            workspaceId: 'ws:a',
+            display: { title: 'Fix bug #12' },
+          }),
+          makeTopic({
+            id: second,
+            workspaceId: 'ws:a',
+            display: { title: 'Fix bug #12' },
+          }),
+          // Grandfathered slug id whose embedded workspace slug (`ws-a`) does
+          // NOT equal any workspace id: it must still group off the column.
+          makeTopic({
+            id: legacy,
+            workspaceId: 'ws:b',
+            display: { title: 'Fix bug #12' },
+          }),
+          makeTopic({
+            id: dm,
+            workspaceId: 'ws:a',
+            routingDefaults: { providerId: 'claude' },
+            display: { title: 'Claude Code' },
+          }),
+        ],
+        sessions: [],
+        surfaces: [],
+        derived: false,
+      }),
+      [
+        makeWorkspace({ id: 'ws:a', order: 0 }),
+        makeWorkspace({ id: 'ws:b', order: 1 }),
+      ],
+      { unreadByChannel: {} }
+    );
+
+    const groupA = tree.groups.find((group) => group.id === 'ws:a');
+    const groupB = tree.groups.find((group) => group.id === 'ws:b');
+    // Two same-titled chats are two distinct lanes, not one.
+    expect(groupA?.channels.map((node) => node.item.id)).toEqual([
+      first,
+      second,
+    ]);
+    expect(groupA?.directMessages.map((node) => node.item.id)).toEqual([dm]);
+    expect(groupB?.channels.map((node) => node.item.id)).toEqual([legacy]);
+    expect(tree.orphans.channels).toEqual([]);
   });
 });

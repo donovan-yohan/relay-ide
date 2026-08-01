@@ -33,6 +33,9 @@ import {
   buildWorkspaceTopicLaunchPreview,
   buildWorkspaceTopicSessionCreateBody,
   buildWorkspaceTopicRecord,
+  createWorkspaceTopicId,
+  isWorkspaceTopicId,
+  mintWorkspaceTopicId,
   parseWorkspaceTopicCreateInput,
   resolveWorkspaceTopicRoutingDefaults,
   workspaceTopicAgentRuntimeLinkPatch,
@@ -42,6 +45,11 @@ import {
   type WorkspaceTopicListResponse,
   type WorkspaceTopicSearchResponse,
 } from '../shared/workspace-topics.js';
+import {
+  dmChannelCreateInput,
+  dmChannelTopicId,
+  isDmChannel,
+} from '../frontend/src/lib/dm-channels.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -335,7 +343,10 @@ describe('workspace topics foundation', () => {
 
     // Idempotent: relinking the same runtime skips the store write entirely.
     expect(
-      workspaceTopicAgentRuntimeLinkPatch({ topic: linked, runtimeId: 'rt-one' })
+      workspaceTopicAgentRuntimeLinkPatch({
+        topic: linked,
+        runtimeId: 'rt-one',
+      })
     ).toBeUndefined();
     expect(
       workspaceTopicAgentRuntimeLinkPatch({ topic: linked, runtimeId: '  ' })
@@ -423,20 +434,153 @@ describe('workspace topics foundation', () => {
     });
   });
 
-  it('namespaces generated topic ids by workspace', () => {
+  // #1287 slice 4: channel identity is decoupled from the free-text title.
+  describe('opaque topic identity', () => {
     const now = '2026-06-26T00:00:00.000Z';
-    const first = buildWorkspaceTopicRecord({
-      create: { workspaceId: 'ws-alpha', title: 'Same lane' },
-      now,
-    });
-    const second = buildWorkspaceTopicRecord({
-      create: { workspaceId: 'ws-beta', title: 'Same lane' },
-      now,
+
+    it('mints a distinct opaque id for same-title chats in one workspace', () => {
+      const first = buildWorkspaceTopicRecord({
+        create: { workspaceId: 'ws:alpha', title: 'Fix bug #12' },
+        now,
+      });
+      const second = buildWorkspaceTopicRecord({
+        create: { workspaceId: 'ws:alpha', title: 'Fix bug #12' },
+        now,
+      });
+
+      expect(first.id).not.toBe(second.id);
+      expect(isWorkspaceTopicId(first.id)).toBe(true);
+      expect(isWorkspaceTopicId(second.id)).toBe(true);
+      // The id embeds neither the title nor the workspace: nothing downstream
+      // may recover membership by parsing it.
+      for (const topic of [first, second]) {
+        expect(topic.id).toMatch(/^topic:[0-9a-hjkmnp-tv-z]{26}$/);
+        expect(topic.id).not.toContain('alpha');
+        expect(topic.id.toLowerCase()).not.toContain('fix');
+      }
+      // Titles that used to slug onto ONE id are now three channels.
+      const variants = ['Fix bug #12', 'Fix bug 12', 'fix  bug  12'].map(
+        (title) =>
+          buildWorkspaceTopicRecord({
+            create: { workspaceId: 'ws:alpha', title },
+            now,
+          }).id
+      );
+      expect(new Set(variants).size).toBe(3);
     });
 
-    expect(first.id).toBe('topic:ws-alpha-same-lane');
-    expect(second.id).toBe('topic:ws-beta-same-lane');
-    expect(first.id).not.toBe(second.id);
+    it('keeps duplicate titles legal at the store boundary', () => {
+      const store = topicStore();
+      const create = { workspaceId: 'ws:alpha', title: 'Fix bug #12' };
+      const first = store.create(create);
+      const second = store.create(create);
+
+      expect(second.id).not.toBe(first.id);
+      expect(store.get(first.id)?.display.title).toBe('Fix bug #12');
+      expect(store.get(second.id)?.display.title).toBe('Fix bug #12');
+      expect(store.list({ workspaceId: 'ws:alpha' })).toHaveLength(2);
+      expect(new Set(store.listAllTopicIds())).toEqual(
+        new Set([first.id, second.id])
+      );
+    });
+
+    it('honors explicit ids so DM derivation stays deterministic', () => {
+      const store = topicStore();
+      const dmId = dmChannelTopicId('claude', 'ws:alpha');
+      const dm = store.create(
+        dmChannelCreateInput({
+          providerId: 'claude',
+          providerDisplayName: 'Claude Code',
+          workspaceId: 'ws:alpha',
+        })
+      );
+
+      expect(dm.id).toBe(dmId);
+      expect(isDmChannel(dm)).toBe('claude');
+      // Re-deriving resolves the SAME row instead of minting a second DM.
+      expect(store.get(dmChannelTopicId('claude', 'ws:alpha'))?.id).toBe(dmId);
+      expect(() =>
+        store.create(
+          dmChannelCreateInput({
+            providerId: 'claude',
+            providerDisplayName: 'Claude Code',
+            workspaceId: 'ws:alpha',
+          })
+        )
+      ).toThrow(/already exists/);
+      // A rename leaves the deterministic id (and its DM-ness) intact.
+      const renamed = store.update(dmId, { title: 'claude' });
+      expect(renamed?.id).toBe(dmId);
+      expect(isDmChannel(renamed!)).toBe('claude');
+    });
+
+    it('renames display-only and never re-keys the id', () => {
+      const store = topicStore();
+      const created = store.create({
+        workspaceId: 'ws:alpha',
+        title: 'Fix bug #12',
+      });
+      const renamed = store.update(created.id, { title: 'Something else' });
+
+      expect(renamed?.id).toBe(created.id);
+      expect(renamed?.display.title).toBe('Something else');
+      expect(store.listAllTopicIds()).toEqual([created.id]);
+      // The freed title is not a reservation: it can be used again.
+      const reused = store.create({
+        workspaceId: 'ws:alpha',
+        title: 'Fix bug #12',
+      });
+      expect(reused.id).not.toBe(created.id);
+    });
+
+    it('reads grandfathered slug ids and freshly minted ids identically', () => {
+      const store = topicStore();
+      // Exactly what the pre-#1287 title slug used to mint.
+      const legacyId = createWorkspaceTopicId('Same lane', 'ws:alpha');
+      expect(legacyId).toBe('topic:ws-alpha-same-lane');
+      const legacy = store.create({
+        id: legacyId,
+        workspaceId: 'ws:alpha',
+        title: 'Same lane',
+      });
+      const fresh = store.create({
+        workspaceId: 'ws:alpha',
+        title: 'Same lane',
+      });
+
+      expect(legacy.id).toBe(legacyId);
+      for (const id of [legacy.id, fresh.id]) {
+        expect(isWorkspaceTopicId(id)).toBe(true);
+        expect(store.get(id)?.workspaceId).toBe('ws:alpha');
+      }
+      // Both shapes group by the workspace_id COLUMN, and both appear in the
+      // uncapped id set the boot `sweepOrphans` pass keys transcripts off.
+      expect(
+        store
+          .list({ workspaceId: 'ws:alpha' })
+          .map((t) => t.id)
+          .sort()
+      ).toEqual([legacy.id, fresh.id].sort());
+      expect(store.listAllTopicIds().sort()).toEqual(
+        [legacy.id, fresh.id].sort()
+      );
+      expect(store.update(legacy.id, { title: 'Renamed' })?.id).toBe(legacyId);
+    });
+
+    it('mints unique ids at volume and sorts them by creation time', () => {
+      const ids = new Set(
+        Array.from({ length: 500 }, () =>
+          mintWorkspaceTopicId(1_781_000_000_000)
+        )
+      );
+      expect(ids.size).toBe(500);
+      expect(
+        mintWorkspaceTopicId(1_781_000_000_000) <
+          mintWorkspaceTopicId(1_781_000_000_001)
+      ).toBe(true);
+      // A DM id can never be minted by accident: the alphabet excludes `~`.
+      for (const id of ids) expect(id).not.toContain('~');
+    });
   });
 
   it('creates, lists, updates, and archives topics with scoped refs and policies', async () => {
