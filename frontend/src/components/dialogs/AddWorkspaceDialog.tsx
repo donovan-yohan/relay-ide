@@ -30,6 +30,10 @@ export interface AddWorkspaceDialogHandle {
 }
 
 interface Props {
+  /** Fired once the hub's project registry changed. `paths` are only the lanes
+   *  the sidebar can actually reveal, and it is legitimately EMPTY when a path
+   *  was registered but its lane is archived — the handler must still refresh
+   *  its read models and simply skip the auto-select. */
   onWorkspacesAdded: (paths: string[]) => void;
   onClose?: (() => void) | undefined;
 }
@@ -153,16 +157,22 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           // #1287 slice 2: a re-add resolves a real lane even though the hub
           // reports "Already exists", and an archived lane resolves but is
           // never rendered — see `resolveBulkAddLanes` for the full rules.
-          const { laneReadyPaths, blockers } = resolveBulkAddLanes(result);
+          const { laneReadyPaths, registeredPaths, blockers } =
+            resolveBulkAddLanes(result);
+
+          // Refresh and reveal are separate outcomes. Whenever the hub
+          // registered anything we must refresh the read models, even with
+          // nothing revealable (every resolved lane archived) — otherwise the
+          // repo is live on the hub and stale in this client until a reload.
+          // Revealing (auto-select) stays scoped to the lane-ready paths.
+          if (registeredPaths.length > 0 || laneReadyPaths.length > 0) {
+            onWorkspacesAdded(laneReadyPaths);
+          }
 
           if (laneReadyPaths.length === 0 && blockers.length > 0) {
             setError(blockers.map((e) => `${e.path}: ${e.error}`).join('; '));
             setSubmitting(false);
             return;
-          }
-
-          if (laneReadyPaths.length > 0) {
-            onWorkspacesAdded(laneReadyPaths);
           }
 
           if (blockers.length > 0) {

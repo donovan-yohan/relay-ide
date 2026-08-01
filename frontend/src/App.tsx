@@ -1132,7 +1132,9 @@ export default function App() {
     // created stays invisible until a reload.
     void queryClient.invalidateQueries({ queryKey: IA_WORKSPACES_QUERY_KEY });
     void queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
-    // Auto-select the first newly added workspace
+    // Auto-select the first newly added workspace. `paths` is empty when the
+    // hub registered the project but no lane is revealable (archived) — the
+    // refresh above still had to run, only the reveal is skipped.
     if (paths.length > 0) {
       useUiStore.getState().setActiveRepoPath(paths[0]!);
     }

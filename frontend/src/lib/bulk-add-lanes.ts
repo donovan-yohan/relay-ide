@@ -7,7 +7,9 @@
 //   - a DUPLICATE re-add is reported as an "Already exists" error but still
 //     resolves a real lane, so an error does not mean there is nothing to show;
 //   - an ARCHIVED lane resolves too, but `GET /hub/ia/workspaces` hides
-//     archived rows, so revealing it would promise a lane that never appears;
+//     archived rows, so revealing it would promise a lane that never appears —
+//     yet the hub still appended the path to `config.repos`, so "nothing to
+//     reveal" must not become "nothing to refresh" (see `registeredPaths`);
 //   - a hub predating the `workspaces` field reports nothing, and there the
 //     freshly added paths are the best available answer.
 
@@ -16,6 +18,12 @@ import type { BulkAddResult } from './api.js';
 export interface BulkAddLaneOutcome {
   /** Paths whose lane the sidebar will actually render. Safe to reveal. */
   laneReadyPaths: string[];
+  /** Paths the hub actually appended to its project registry (`config.repos`).
+   *  REGISTERED is not the same as REVEALABLE: a path whose only lane is
+   *  archived is registered on the hub yet renders nowhere, so the client must
+   *  still refresh its read models or the hub-side change stays invisible
+   *  until a full reload. */
+  registeredPaths: string[];
   /** Everything the user must be told: hub errors plus archived-lane notices.
    *  Same shape as the hub's `errors` so one list renders both. */
   blockers: Array<{ path: string; error: string }>;
@@ -35,6 +43,7 @@ export function resolveBulkAddLanes(
 
   return {
     laneReadyPaths,
+    registeredPaths: result.added.map((entry) => entry.path),
     blockers: [
       ...result.errors,
       ...archivedLanes.map((lane) => ({

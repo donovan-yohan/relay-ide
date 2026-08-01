@@ -36,7 +36,11 @@ describe('resolveBulkAddLanes', () => {
           },
         ],
       })
-    ).toEqual({ laneReadyPaths: [REPO], blockers: [] });
+    ).toEqual({
+      laneReadyPaths: [REPO],
+      registeredPaths: [REPO],
+      blockers: [],
+    });
   });
 
   it('reveals a duplicate re-add lane while still reporting "Already exists"', () => {
@@ -54,6 +58,8 @@ describe('resolveBulkAddLanes', () => {
       ],
     });
     expect(outcome.laneReadyPaths).toEqual([REPO]);
+    // Nothing was appended to `config.repos` — the hub rejected the duplicate.
+    expect(outcome.registeredPaths).toEqual([]);
     expect(outcome.blockers).toEqual([{ path: REPO, error: 'Already exists' }]);
   });
 
@@ -85,6 +91,43 @@ describe('resolveBulkAddLanes', () => {
     expect(outcome.blockers[0]!.path).toBe(REPO);
     expect(outcome.blockers[0]!.error).toContain('archived');
     expect(outcome.blockers[0]!.error).toContain('Retired lane');
+    // …and the hub DID append the path to `config.repos`, so the caller still
+    // owes a refresh. Reporting `[]` here would trade the silent success for a
+    // stale client: registered on the hub, absent from the UI until reload.
+    expect(outcome.registeredPaths).toEqual([REPO]);
+  });
+
+  it('reports every added path as needing a refresh when ALL lanes are archived (#1287)', () => {
+    // The regression this pins: `laneReadyPaths` is empty and `blockers` is
+    // non-empty, so the dialog takes its error early-return. It must still hand
+    // the caller a reason to refresh, or a repo the hub just registered stays
+    // invisible until a full page reload.
+    const outcome = resolveBulkAddLanes({
+      added: [
+        { path: REPO, name: 'relay-ide', isGitRepo: true, defaultBranch: null },
+        { path: OTHER, name: 'notes', isGitRepo: false, defaultBranch: null },
+      ],
+      errors: [],
+      workspaces: [
+        {
+          path: REPO,
+          workspaceId: 'ws:project%3Aaaaaaaaaaaaaaaaa',
+          name: 'relay-ide',
+          created: false,
+          archived: true,
+        },
+        {
+          path: OTHER,
+          workspaceId: 'ws:project%3Abbbbbbbbbbbbbbbb',
+          name: 'notes',
+          created: false,
+          archived: true,
+        },
+      ],
+    });
+    expect(outcome.laneReadyPaths).toEqual([]);
+    expect(outcome.registeredPaths).toEqual([REPO, OTHER]);
+    expect(outcome.blockers).toHaveLength(2);
   });
 
   it('still reveals the live lanes when a sibling path is archived', () => {
@@ -110,6 +153,7 @@ describe('resolveBulkAddLanes', () => {
     });
     expect(outcome.laneReadyPaths).toEqual([REPO]);
     expect(outcome.blockers.map((b) => b.path)).toEqual([OTHER]);
+    expect(outcome.registeredPaths).toEqual([]);
   });
 
   it('falls back to the added paths on a hub that reports no lanes', () => {
@@ -129,7 +173,11 @@ describe('resolveBulkAddLanes', () => {
           errors: [],
           ...(workspaces ? { workspaces } : {}),
         })
-      ).toEqual({ laneReadyPaths: [REPO], blockers: [] });
+      ).toEqual({
+        laneReadyPaths: [REPO],
+        registeredPaths: [REPO],
+        blockers: [],
+      });
     }
   });
 
