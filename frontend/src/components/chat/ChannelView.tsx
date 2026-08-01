@@ -107,6 +107,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       })
     : null;
 
+  // A DM addresses its one agent implicitly — the binder routes an unmentioned
+  // message to it — so the composer must not tell you to type `@` at the very
+  // agent the header already says you are talking to.
+  const dmPlaceholder =
+    isDm && dmIdentity
+      ? `message @${dmIdentity.label}…  ·  shift+enter for newline`
+      : null;
+
   const title = channel?.title ?? topicQuery.data?.display.title ?? channelId;
 
   // Unread line: captured once on mount (per channelId, since ChatHome keys this
@@ -604,6 +612,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           <ChannelComposer
             channelId={channelId}
             channelTitle={title}
+            {...(dmPlaceholder ? { placeholder: dmPlaceholder } : {})}
             {...(channel?.members ? { members: channel.members } : {})}
             onSend={handleSend}
             postPending={postPending}
@@ -619,6 +628,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             key={activeThreadRootId}
             channelId={channelId}
             channelTitle={title}
+            isDm={isDm}
             rootId={activeThreadRootId}
             liveMessages={reducer.messages}
             onClose={() => setActiveThreadRootId(null)}
