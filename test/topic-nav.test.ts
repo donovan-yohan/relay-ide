@@ -178,6 +178,73 @@ describe('buildTopicNavModel', () => {
     ]);
   });
 
+  it('stops path-matching once a channel links its bound agent runtime', () => {
+    // Same routing paths, same stray terminal: only the row that never linked
+    // anything is still allowed to guess (#1287).
+    const channel = makeTopic({
+      id: 'topic:channel',
+      display: { title: 'Channel' },
+      routingDefaults: { repoPath: '/repo/relay', cwd: '/repo/relay' },
+      linkedRefs: { agentRuntimeIds: ['a1b2c3d4e5f60718'] },
+    });
+    const legacy = makeTopic({
+      id: 'topic:legacy',
+      display: { title: 'Legacy' },
+      routingDefaults: { repoPath: '/repo/relay', cwd: '/repo/relay' },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [channel, legacy],
+      sessions: [
+        makeSession({
+          id: 'stray-terminal',
+          displayName: 'stray terminal',
+          repoPath: '/repo/relay',
+          worktreePath: '/repo/relay',
+          cwd: '/repo/relay',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:channel')?.sessions).toEqual([]);
+    expect(model.byId.get('topic:channel')?.participants).toEqual([]);
+    expect(model.byId.get('topic:legacy')?.sessions).toMatchObject([
+      { id: 'stray-terminal' },
+    ]);
+  });
+
+  it('never path-matches a same-path session from another node', () => {
+    const topic = makeTopic({
+      routingDefaults: { nodeId: 'devbox', cwd: '/repo/relay' },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [topic],
+      sessions: [
+        makeSession({
+          id: 'laptop-copy',
+          displayName: 'laptop copy',
+          cwd: '/repo/relay',
+          worktreePath: '/repo/relay',
+          nodeId: 'laptop',
+        }),
+        makeSession({
+          id: 'devbox-copy',
+          displayName: 'devbox copy',
+          cwd: '/repo/relay',
+          worktreePath: '/repo/relay',
+          nodeId: 'devbox',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:alpha')?.sessions).toMatchObject([
+      { id: 'devbox-copy' },
+    ]);
+  });
+
   it('links surfaces by workspace id without fabricating sessions', () => {
     const topic = makeTopic({ workspaceId: 'workspace:alpha' });
     const model = buildTopicNavModel({

@@ -1,8 +1,9 @@
 import type { WorkspaceSurface } from '../../../../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicChannelKind,
-  WorkspaceTopicId,
+import {
+  workspaceTopicHasExplicitParticipantLinks,
+  type WorkspaceTopic,
+  type WorkspaceTopicChannelKind,
+  type WorkspaceTopicId,
 } from '../../../../shared/workspace-topics.js';
 import type { SessionSummary } from '../types.js';
 import { isAttentionState, type DisplayState } from './display-state.js';
@@ -358,10 +359,25 @@ export function sessionMatchesTopic(
   ) {
     return true;
   }
-  if ((linked.sessionIds?.length ?? 0) > 0) return false;
-  if ((linked.workContextIds?.length ?? 0) > 0) return false;
+  // Explicitly linked topics answer for themselves. `agentRuntimeIds` counts
+  // even though a channel agent runtime never resolves to a session row: its
+  // presence proves the binder recorded this topic's participants, so an
+  // unmatched session here is genuinely NOT a participant (#1287).
+  if (workspaceTopicHasExplicitParticipantLinks(topic)) return false;
 
+  // DEPRECATED legacy lane (#1287): topics with NO explicit refs at all — rows
+  // written before the binder linked its runtimes, plus raw
+  // `POST /workspace-topics` and CLI-gateway `workspace-topics.create` callers
+  // that never pass `linkedRefs`. Path matching is a display-only guess that
+  // can adopt an unrelated terminal into a channel's participant list. Every
+  // writer that links explicitly skips this branch; delete it once none are
+  // left.
   const routing = topic.routingDefaults;
+  // Never guess across machines: the same path on another node is a different
+  // checkout, not this topic's work.
+  if (routing.nodeId && session.nodeId && session.nodeId !== routing.nodeId) {
+    return false;
+  }
   if (routing.worktreePath && session.worktreePath === routing.worktreePath)
     return true;
   if (routing.repoPath && session.repoPath === routing.repoPath) return true;
