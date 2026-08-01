@@ -35,6 +35,7 @@ import type {
 } from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
+import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 (
@@ -1593,6 +1594,60 @@ describe('TopicSidebarView', () => {
     });
     expect(created.workspaceId).toBe(emptyLaneId);
     expect(created.workspaceId).not.toBe(LOCAL_WORKSPACE_ID);
+  });
+
+  // #1287: these wire the REAL `openTopicTaskRoom` instead of a `vi.fn()` spy.
+  // The existing cases stub out the exact function that was broken, which is
+  // why CI stayed green while both new-chat buttons were dead in production.
+  it('clears an open channel so both new-chat buttons actually reach the composer (#1287)', async () => {
+    for (const selector of [
+      '.topic-shell__create',
+      `${emptyLaneSelector} [data-workspace-start-chat="${emptyLaneId}"]`,
+    ]) {
+      useUiStore.setState({
+        activeChannelId: 'topic:a',
+        topicComposerOpen: false,
+      });
+      await renderWithEmptyLane({ onCreateTaskRoom: openTopicTaskRoom });
+
+      const button = container.querySelector<HTMLButtonElement>(selector);
+      expect(button, selector).not.toBeNull();
+      await act(async () => button?.click());
+
+      // Without the clear the composer never mounts: an open channel outranks
+      // `topicComposerOpen` in `resolveAppViewMode` AND in `ChatHome`, so the
+      // click was a silent no-op that issued no request at all.
+      expect(useUiStore.getState().activeChannelId, selector).toBeNull();
+      expect(useUiStore.getState().topicComposerOpen, selector).toBe(true);
+    }
+  });
+
+  it('keeps a new chat in the freshly selected lane, not the selected row’s (#1287)', async () => {
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+    // `selectedId` defaults to the first channel, which lives in `ws:a` — the
+    // operator's OLD workspace. They then pick the freshly added, empty lane.
+    const laneHeader = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} .topic-workspace-group__select`
+    );
+    await act(async () => laneHeader?.click());
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+
+    // Pressing the rail HEADER button re-applied the stale selected row's
+    // context, re-stamping `activeWorkspaceId` back to the old lane, so the
+    // chat was filed in the wrong project.
+    const createButton = container.querySelector<HTMLButtonElement>(
+      '.topic-shell__create'
+    );
+    await act(async () => createButton?.click());
+
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+    const created = buildTopicRoomCreateInput({
+      draft: { ...TOPIC_ROOM_DRAFT_EMPTY, title: 'first chat' },
+      workspaceId: useUiStore.getState().activeWorkspaceId,
+      defaultProviderId: 'claude',
+      taskRef: undefined,
+    });
+    expect(created.workspaceId).toBe(emptyLaneId);
   });
 
   it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {

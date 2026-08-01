@@ -3057,9 +3057,21 @@ export function TopicSidebarView({
     }
   }, [mobileControlTopicId, model.byId, selectedId]);
   const openCreateTaskRoom = useCallback(() => {
-    applyTopicActiveContext(
-      selectedId ? topicsById.get(selectedId) : undefined
-    );
+    const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
+    // #1287: the still-highlighted row may belong to a lane the operator has
+    // since navigated away from (select a fresh, empty lane while a channel
+    // from the old workspace stays selected). `applyTopicActiveContext` stamps
+    // `activeWorkspaceId` from the topic, so re-applying it here would file the
+    // new chat back in the OLD lane. An explicit lane selection is the more
+    // recent intent and wins; when the row still lives in the active lane the
+    // context (including repo/worktree inheritance) is applied as before.
+    // Read the live pointer rather than the prop: `selectWorkspaceLane` writes
+    // it straight to the store, so the prop can lag the operator's newest
+    // lane choice within the same interaction.
+    const activeLaneId = useUiStore.getState().activeWorkspaceId;
+    const rowIsInActiveLane =
+      activeLaneId === null || selectedTopic?.workspaceId === activeLaneId;
+    if (rowIsInActiveLane) applyTopicActiveContext(selectedTopic);
     onCreateTaskRoom?.();
   }, [onCreateTaskRoom, selectedId, topicsById]);
   // #1287: a workspace lane is selectable in its own right, so a workspace

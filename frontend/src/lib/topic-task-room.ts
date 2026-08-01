@@ -14,9 +14,24 @@ export const TOPIC_COMPOSER_FOCUS_EVENT = 'relay:focus-topic-composer';
  * A focus event covers the already-on-the-landing case, where no remount
  * happens and textarea autoFocus never re-fires. On mobile the sidebar drawer
  * is closed so the main pane is actually visible.
+ *
+ * #1287: an open channel outranks the composer at BOTH decision points —
+ * `resolveAppViewMode` returns 'chat' on `hasActiveChannel` before it reads
+ * `topicComposerOpen`, and inside 'chat' mode `ChatHome` renders `ChannelView`
+ * whenever `activeChannelId` is set and only mounts `TopicComposer` in the else
+ * branch. Latching the flag without clearing the channel is therefore a silent
+ * no-op (the focus event fires at a composer that is not mounted, and no
+ * request ever leaves the browser) that later fires as a surprise composer when
+ * the operator closes the channel. Same pathology the cockpit escape hatches
+ * fixed in slice 1; this is the mirror-image entry point.
+ *
+ * `activeSessionId` is deliberately left alone: the composer inheriting the
+ * session/repo context is designed behaviour, and `topicComposerOpen` already
+ * outranks `hasActiveSession` in the resolver.
  */
 export function openTopicTaskRoom(): void {
   const ui = useUiStore.getState();
+  ui.setActiveChannelId(null);
   ui.setTopicComposerOpen(true);
   ui.setAnalyticsView(null);
   ui.setForceOrgCockpit(false);
