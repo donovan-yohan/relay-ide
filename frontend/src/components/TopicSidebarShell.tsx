@@ -1803,14 +1803,24 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
   return `${primary.label}: ${primary.value}`;
 }
 
+/**
+ * #1287 slice 5 item 20: a search hit is a chat, so its action opens the chat.
+ *
+ * The row used to attach `action.primarySessionId` and disable itself whenever
+ * that id was missing — which was every channel-native chat, i.e. the entire
+ * product. `action.topicId` is the identity the server actually hands back, and
+ * `onOpenTopic` routes it through the same gate as a rail row (item 9 routing).
+ * A stale `disabledReason` describes linked surfaces, not the channel, so it
+ * renders as a caveat and never blocks opening the conversation.
+ */
 function TopicSearchResults({
   results,
   truncated,
-  onSelectSession,
+  onOpenTopic,
 }: {
   results: WorkspaceTopicSearchResult[];
   truncated: boolean;
-  onSelectSession?: ((id: string) => void) | undefined;
+  onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
 }) {
   if (results.length === 0 && !truncated) return null;
   return (
@@ -1819,11 +1829,7 @@ function TopicSearchResults({
       aria-label="chat search result details"
     >
       {results.map((result) => {
-        const disabledReason = result.action.disabledReason;
-        const primarySessionId = result.action.primarySessionId;
-        const actionDisabled = Boolean(disabledReason) || !primarySessionId;
-        const actionTitle =
-          disabledReason ?? (primarySessionId ? 'open chat' : 'no linked chat');
+        const caveat = result.action.disabledReason;
         return (
           <div
             key={result.topic.id}
@@ -1843,20 +1849,13 @@ function TopicSearchResults({
             <button
               type="button"
               className="topic-action topic-search-result__action"
-              disabled={actionDisabled}
-              title={actionTitle}
-              onClick={() => {
-                if (primarySessionId && !actionDisabled) {
-                  onSelectSession?.(primarySessionId);
-                }
-              }}
+              title="open chat"
+              onClick={() => onOpenTopic(result)}
             >
               open
             </button>
-            {disabledReason ? (
-              <span className="topic-search-result__disabled">
-                {disabledReason}
-              </span>
+            {caveat ? (
+              <span className="topic-search-result__caveat">{caveat}</span>
             ) : null}
           </div>
         );
@@ -2148,7 +2147,7 @@ function TopicSearchPanel({
   onSearchQueryChange,
   onSearchRetry,
   onSearchClear,
-  onSelectSession,
+  onOpenTopic,
   searchScope = 'all',
   onToggleSearchScope,
   canScope = false,
@@ -2163,7 +2162,7 @@ function TopicSearchPanel({
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
-  onSelectSession?: ((id: string) => void) | undefined;
+  onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
   canScope?: boolean;
@@ -2232,7 +2231,7 @@ function TopicSearchPanel({
         <TopicSearchResults
           results={searchResults}
           truncated={searchTruncated}
-          onSelectSession={onSelectSession}
+          onOpenTopic={onOpenTopic}
         />
       ) : null}
     </>
@@ -2805,13 +2804,27 @@ export function TopicSidebarView({
   // the row also opens it in the main pane (activeChannelId) and closes the
   // composer — "selected in sidebar" and "open in main pane" become one state
   // for channels. Derived (non-persisted) topics never route to a channel.
+  // `fallbackTopic` covers callers that hold their own copy of the topic (chat
+  // search), so a selection still routes while the rail list is a beat behind.
   const select = useCallback(
-    (id: string) => {
+    (id: string, fallbackTopic?: WorkspaceTopic) => {
       setSelectedId(id);
       setMobileControlTopicId(null);
-      openTopicSelection(topicsById.get(id));
+      openTopicSelection(topicsById.get(id) ?? fallbackTopic);
     },
     [topicsById]
+  );
+  // #1287 slice 5 item 20: opening a search hit is opening a chat, so it lands
+  // on the channel through the same `openTopicSelection` gate a rail row uses —
+  // one routing path, no attach-a-session shortcut that skipped it. The drawer
+  // close mirrors the mobile row and the palette: on desktop `sidebarOpen` is
+  // already false, so it is a no-op there.
+  const openSearchResult = useCallback(
+    (result: WorkspaceTopicSearchResult) => {
+      select(result.action.topicId, result.topic);
+      useUiStore.getState().closeSidebar();
+    },
+    [select]
   );
   const selectMobile = useCallback(
     (id: string) => {
@@ -3005,7 +3018,7 @@ export function TopicSidebarView({
         onSearchQueryChange={onSearchQueryChange}
         onSearchRetry={onSearchRetry}
         onSearchClear={onSearchClear}
-        onSelectSession={onSelectSession}
+        onOpenTopic={openSearchResult}
         searchScope={searchScope}
         onToggleSearchScope={onToggleSearchScope}
         canScope={activeWorkspaceId != null}

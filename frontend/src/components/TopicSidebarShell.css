@@ -101,7 +101,7 @@
 }
 
 .topic-search-result--stale .topic-search-result__freshness,
-.topic-search-result__disabled {
+.topic-search-result__caveat {
   color: var(--status-warning);
 }
 
@@ -120,19 +120,15 @@
 
 .topic-search-result__meta,
 .topic-search-result__truncated,
-.topic-search-result__disabled {
+.topic-search-result__caveat {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.topic-search-result__disabled,
+.topic-search-result__caveat,
 .topic-search-result__truncated {
   grid-column: 1 / -1;
-}
-
-.topic-search-result__action:disabled {
-  opacity: 0.58;
 }
 
 .topic-tree,

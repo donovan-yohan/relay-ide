@@ -3462,7 +3462,7 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('devbox:remote-ika');
   });
 
-  it('renders search result explanation, freshness, disabled action, and truncation metadata', async () => {
+  it('renders search result explanation, freshness, stale caveat, and truncation metadata without blocking the open action', async () => {
     const staleTopic = makeTopic({
       id: 'topic:stale',
       display: {
@@ -3509,10 +3509,68 @@ describe('TopicSidebarView', () => {
       'some linked surfaces are stale or unreachable'
     );
     expect(container.textContent).toContain('results truncated');
+    // #1287 slice 5 item 20: a stale linked surface is a caveat about the
+    // topic's evidence, not about the chat — the channel still opens, and it
+    // opens the channel instead of attaching `primarySessionId`.
     const action = container.querySelector(
       '.topic-search-result__action'
     ) as HTMLButtonElement;
-    expect(action.disabled).toBe(true);
+    expect(action.disabled).toBe(false);
+    await act(async () => action.click());
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:stale');
+  });
+
+  it('opens the channel from a search row for a channel-native chat with no sessions', async () => {
+    // #1287 slice 5 item 20: the row used to attach `action.primarySessionId`
+    // and disable itself when the topic had none — which was every chat born in
+    // a channel. The action is `open-topic`, so it must route by `topicId`.
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    const channelTopic = makeTopic({
+      id: 'topic:channel-native',
+      workspaceId: 'workspace:beta',
+      display: { title: 'Channel native chat' },
+      linkedRefs: {},
+      routingDefaults: {},
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: channelTopic,
+        score: 80,
+        freshness: 'fresh',
+        matches: [
+          {
+            kind: 'topic',
+            field: 'display.title',
+            label: 'chat title',
+            value: 'Channel native chat',
+          },
+        ],
+        action: { kind: 'open-topic', topicId: 'topic:channel-native' },
+      },
+    ];
+
+    await renderView({
+      topics: [channelTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'channel',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    expect(action.title).toBe('open chat');
+
+    await act(async () => action.click());
+
+    expect(useUiStore.getState().activeChannelId).toBe('topic:channel-native');
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:beta');
+    expect(useUiStore.getState().topicComposerOpen).toBe(false);
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+    expect(onSelectSession).not.toHaveBeenCalled();
   });
 
   it('threads the show-older-chats toggle into chat search requests', async () => {
