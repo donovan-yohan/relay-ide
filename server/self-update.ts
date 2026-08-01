@@ -234,6 +234,82 @@ export function readInstalledVersion(
   }
 }
 
+/**
+ * How the running process is supervised, i.e. who would start it again if it
+ * exited right now.
+ *
+ * - `stock-service` — the unit/plist `relay-ide service install` writes. Its
+ *   restart semantics are proven, so it always wins.
+ * - `systemd` — some other systemd unit owns this process (a hand-written
+ *   `relay-stable-hub.service`, a distro package, a container unit).
+ * - `none` — nothing would bring the process back; the operator restarts it.
+ */
+export type SupervisionKind = 'stock-service' | 'systemd' | 'none';
+
+export interface SupervisionDetection {
+  supervised: boolean;
+  kind: SupervisionKind;
+}
+
+export interface SupervisionDeps {
+  /**
+   * The stock service check (`server/service.ts` `isInstalled`). Required —
+   * a default would silently downgrade the proven path to a guess.
+   */
+  serviceIsInstalled: () => boolean;
+  env?: NodeJS.ProcessEnv;
+  /** Defaults to `process.stdout.isTTY`; see the interactive-shell note below. */
+  stdoutIsTty?: () => boolean;
+}
+
+/**
+ * Decide whether an exit would be followed by a restart.
+ *
+ * The stock service check comes first: it identifies the exact unit Relay
+ * installs, whose restart policy is known. Everything else falls back to
+ * `INVOCATION_ID`, which systemd sets per service invocation (systemd >= 232,
+ * system and user managers alike) and no ordinary shell sets.
+ *
+ * `INVOCATION_ID` is inherited by children, so a hub launched by hand from a
+ * terminal that itself descends from a unit would look supervised. An
+ * interactive stdout (a TTY) rules that case out: systemd services get the
+ * journal, a file, or null — never a terminal — so a TTY means a human started
+ * this process and nothing will restart it.
+ */
+export function detectSupervision(deps: SupervisionDeps): SupervisionDetection {
+  let stockInstalled: boolean;
+  try {
+    stockInstalled = deps.serviceIsInstalled();
+  } catch (_) {
+    // A failed probe (permissions, exotic platform) is not evidence of a unit.
+    stockInstalled = false;
+  }
+  if (stockInstalled) return { supervised: true, kind: 'stock-service' };
+
+  const env = deps.env ?? process.env;
+  const invocationId = env.INVOCATION_ID;
+  if (typeof invocationId !== 'string' || invocationId.trim() === '') {
+    return { supervised: false, kind: 'none' };
+  }
+  const isTty = deps.stdoutIsTty ?? (() => process.stdout.isTTY === true);
+  if (isTty()) return { supervised: false, kind: 'none' };
+  return { supervised: true, kind: 'systemd' };
+}
+
+/**
+ * Exit code that makes a supervisor restart this process.
+ *
+ * The stock unit/plist restarts on any exit, and a clean exit keeps the
+ * journal honest. A foreign systemd unit is the opposite bet: the common
+ * hand-written policy is `Restart=on-failure`, which restarts *unclean* exits
+ * only — a `process.exit(0)` there would leave the hub down until an operator
+ * noticed. Exiting nonzero restarts under `on-failure`, `on-abnormal`, and
+ * `always` alike; only the rare `Restart=on-success` misses it.
+ */
+export function restartExitCode(kind: SupervisionKind): number {
+  return kind === 'systemd' ? 1 : 0;
+}
+
 export type UpdateVerification =
   | 'updated'
   | 'already-latest'

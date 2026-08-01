@@ -36,6 +36,7 @@ import {
   setRenamerTool,
   type RenamerTool,
 } from '../../lib/api.js';
+import { reloadWhenServerReturns } from '../../lib/server-restart.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
@@ -366,7 +367,14 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
             status: `${updated} Restarting\u2026`,
             available: false,
           }));
-          setTimeout(() => location.reload(), 5000);
+          // Same shared wait-then-reload path as the update toast.
+          await reloadWhenServerReturns((timeoutText) => {
+            setVersionInfo((v) => ({
+              ...v,
+              status: timeoutText,
+              updating: false,
+            }));
+          });
         } else
           setVersionInfo((v) => ({
             ...v,

@@ -4,9 +4,11 @@ import {
   buildUpdateCommand,
   detectInstallKind,
   detectRunningInstall,
+  detectSupervision,
   readInstalledVersion,
   resolveBunBinary,
   resolveDetectedScriptPath,
+  restartExitCode,
   verifyUpdateLanded,
 } from '../server/self-update.js';
 
@@ -347,4 +349,76 @@ test('verifyUpdateLanded is unverifiable when either version is unreadable', () 
       latest: null,
     })
   ).toBe('unverifiable');
+});
+
+test('detectSupervision reports the stock service before anything else', () => {
+  // Stock unit wins even when the env also looks like systemd: its restart
+  // semantics (and its exit code) are the proven ones.
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => true,
+      env: { INVOCATION_ID: 'b8f0a4c1' },
+      stdoutIsTty: () => false,
+    })
+  ).toEqual({ supervised: true, kind: 'stock-service' });
+});
+
+test('detectSupervision treats INVOCATION_ID as a custom systemd unit', () => {
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => false,
+      env: { INVOCATION_ID: 'b8f0a4c1' },
+      stdoutIsTty: () => false,
+    })
+  ).toEqual({ supervised: true, kind: 'systemd' });
+});
+
+test('detectSupervision reports none without INVOCATION_ID', () => {
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => false,
+      env: {},
+      stdoutIsTty: () => false,
+    })
+  ).toEqual({ supervised: false, kind: 'none' });
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => false,
+      env: { INVOCATION_ID: '   ' },
+      stdoutIsTty: () => false,
+    })
+  ).toEqual({ supervised: false, kind: 'none' });
+});
+
+test('detectSupervision ignores an INVOCATION_ID inherited by an interactive shell', () => {
+  // A hub started by hand from a terminal that descends from a unit inherits
+  // INVOCATION_ID, but nothing would restart it. Systemd services never get a
+  // TTY on stdout, so a TTY rules the unit out.
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => false,
+      env: { INVOCATION_ID: 'b8f0a4c1' },
+      stdoutIsTty: () => true,
+    })
+  ).toEqual({ supervised: false, kind: 'none' });
+});
+
+test('detectSupervision survives a throwing stock service probe', () => {
+  expect(
+    detectSupervision({
+      serviceIsInstalled: () => {
+        throw new Error('EACCES');
+      },
+      env: { INVOCATION_ID: 'b8f0a4c1' },
+      stdoutIsTty: () => false,
+    })
+  ).toEqual({ supervised: true, kind: 'systemd' });
+});
+
+test('restartExitCode exits clean for the stock service and unclean under systemd', () => {
+  // Restart=on-failure only restarts unclean exits, so a foreign unit needs a
+  // nonzero code to come back.
+  expect(restartExitCode('stock-service')).toBe(0);
+  expect(restartExitCode('systemd')).toBe(1);
+  expect(restartExitCode('none')).toBe(0);
 });

@@ -107,6 +107,11 @@ WantedBy=default.target
 
 - `NODE_OPTIONS=--max-old-space-size=4096` is the #1196 heap-leak mitigation; keep it.
 - `Restart=on-failure` restarts after a crash but not after a clean `stop`.
+- In-app updates (`POST /update`) restart under this unit even though it is not
+  the stock `relay-ide.service`: the hub detects systemd supervision from
+  `INVOCATION_ID` and exits **nonzero** on purpose, because `on-failure` only
+  restarts unclean exits (#1285). A `status=1/FAILURE` line in the journal
+  right after an update is the restart working, not a crash.
 - Enable linger once so the service runs without an active login session and comes back after reboot:
 
 ```bash

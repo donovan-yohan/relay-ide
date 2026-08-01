@@ -61,7 +61,9 @@ import {
   buildRemedyCommand,
   buildUpdateCommand,
   detectRunningInstall,
+  detectSupervision,
   readInstalledVersion,
+  restartExitCode,
   verifyUpdateLanded,
 } from './self-update.js';
 import {
@@ -5303,7 +5305,12 @@ async function main(): Promise<void> {
         }
       }
 
-      const restarting = serviceIsInstalled();
+      // Anything that would restart this process on exit earns the automatic
+      // restart, not just the stock unit (#1285). The verified-update path
+      // above already proved new bytes are on disk, so the only question left
+      // is who starts the server again.
+      const supervision = detectSupervision({ serviceIsInstalled });
+      const restarting = supervision.supervised;
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
@@ -5330,11 +5337,18 @@ async function main(): Promise<void> {
       }
       res.json({ ok: true, restarting, version: installedVersion });
       if (restarting) {
+        // Stock service: exit 0, unchanged. Foreign systemd unit: exit nonzero,
+        // because the usual hand-written policy is `Restart=on-failure`, which
+        // restarts unclean exits only — a clean exit would leave the hub down.
+        const exitCode = restartExitCode(supervision.kind);
+        logger.info(
+          `[update] restarting under ${supervision.kind} supervision (exit ${exitCode}) into v${installedVersion ?? 'unknown'}`
+        );
         // Brief delay to let the broadcast reach clients
         setTimeout(() => {
-          server.close(() => process.exit(0));
+          server.close(() => process.exit(exitCode));
           // Fallback if close hangs
-          setTimeout(() => process.exit(0), 3000);
+          setTimeout(() => process.exit(exitCode), 3000);
         }, 500);
       } else {
         updateInFlight = false;
