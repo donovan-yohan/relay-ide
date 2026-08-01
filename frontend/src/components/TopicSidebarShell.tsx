@@ -70,6 +70,7 @@ import {
   formatTaskRefLabel,
   indexChannelSummaries,
   selectChannelRailTree,
+  selectExpandedRailIds,
   type ChannelRailNode,
   type ChannelRailSection,
   type ChannelRailSummary,
@@ -1796,17 +1797,10 @@ function TopicMobileCockpit({
   onSelectWorkspace: (workspaceId: string) => void;
   onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
-  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  const toggleGroup = useCallback((id: string) => {
-    setCollapsedGroupIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // #1287 slice 5: lane folds are persisted operator intent, not per-mount
+  // `useState` that a reload (or any remount of the cockpit) silently discards.
+  const collapsedGroupIds = useUiStore((s) => s.collapsedTopicGroups);
+  const toggleGroup = useUiStore((s) => s.toggleTopicGroupCollapsed);
   const hasOrphans =
     tree.orphans.channels.length > 0 || tree.orphans.directMessages.length > 0;
   return (
@@ -2515,29 +2509,31 @@ export function TopicSidebarView({
   const [mobileControlTopicId, setMobileControlTopicId] = useState<
     string | null
   >(null);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    () => new Set(model.rootIds)
+  // #1287 slice 5: rail fold state is persisted operator intent, derived on
+  // every render instead of being seeded into component state by an effect.
+  // The old effect re-added every root to a local `expandedIds` set whenever
+  // the nav model changed identity, and the sessions store hands out a fresh
+  // `sessions` array on every activity/status/branch/rename WS event — so a
+  // collapsed root sprang back open within seconds of any live agent turn.
+  const topicRailExpansion = useUiStore((s) => s.topicRailExpansion);
+  const setTopicRailExpanded = useUiStore((s) => s.setTopicRailExpanded);
+  const expandedIds = useMemo(
+    () => selectExpandedRailIds(model.rootIds, topicRailExpansion),
+    [model.rootIds, topicRailExpansion]
   );
 
   useEffect(() => {
     setSelectedId((current) =>
       current && model.byId.has(current) ? current : firstId
     );
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      for (const id of model.rootIds) next.add(id);
-      return next;
-    });
-  }, [firstId, model.byId, model.rootIds]);
+  }, [firstId, model.byId]);
 
-  const toggle = useCallback((id: string) => {
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggle = useCallback(
+    (id: string) => {
+      setTopicRailExpanded(id, !expandedIds.has(id));
+    },
+    [expandedIds, setTopicRailExpanded]
+  );
 
   // Selecting a topic establishes its node + cwd context so terminals, agents,
   // and the workspace pane operate in the topic's node/repo. Only fires on an

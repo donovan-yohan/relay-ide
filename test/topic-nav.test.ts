@@ -10,6 +10,7 @@ import {
   formatTaskRefLabel,
   indexChannelSummaries,
   selectChannelRailTree,
+  selectExpandedRailIds,
   type ChannelRailSummary,
   type TopicNavWorkspace,
 } from '../frontend/src/lib/state/topic-nav.js';
@@ -965,5 +966,42 @@ describe('topic nav channel identity', () => {
     expect(groupA?.directMessages.map((node) => node.item.id)).toEqual([dm]);
     expect(groupB?.channels.map((node) => node.item.id)).toEqual([legacy]);
     expect(tree.orphans.channels).toEqual([]);
+  });
+});
+
+describe('selectExpandedRailIds (#1287 slice 5)', () => {
+  it('opens roots by default and leaves nested rows closed', () => {
+    expect(Array.from(selectExpandedRailIds(['a', 'b'], {}))).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('keeps a root the operator collapsed closed', () => {
+    const expansion = { a: false };
+    expect(Array.from(selectExpandedRailIds(['a', 'b'], expansion))).toEqual([
+      'b',
+    ]);
+    // Re-deriving from a fresh root array (what nav-model churn produces) must
+    // not resurrect the fold.
+    expect(Array.from(selectExpandedRailIds(['a', 'b'], expansion))).toEqual([
+      'b',
+    ]);
+  });
+
+  it('auto-opens a root that appears after a collapse without touching it', () => {
+    expect(Array.from(selectExpandedRailIds(['a', 'c'], { a: false }))).toEqual([
+      'c',
+    ]);
+  });
+
+  it('keeps a nested row the operator opened open', () => {
+    expect(
+      Array.from(selectExpandedRailIds(['a'], { 'a/child': true })).sort()
+    ).toEqual(['a', 'a/child']);
+  });
+
+  it('ignores recorded ids that are no longer in the model', () => {
+    expect(Array.from(selectExpandedRailIds([], { gone: false }))).toEqual([]);
   });
 });

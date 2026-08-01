@@ -45,10 +45,42 @@ class ResizeObserverStub {
 
 const NOW = '2026-06-26T00:00:00Z';
 
+// #1287 slice 5 fold storage (see frontend/src/lib/stores/ui.ts).
+const TOPIC_RAIL_EXPANSION_KEY = 'claude-remote-topic-rail-expansion';
+const COLLAPSED_TOPIC_GROUPS_KEY = 'claude-remote-collapsed-topic-groups';
+function resetRailFolds() {
+  return {
+    topicRailExpansion: {} as Record<string, boolean>,
+    collapsedTopicGroups: new Set<string>(),
+  };
+}
+
 async function flushQueryEffects() {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
+}
+
+/**
+ * Wait for a rendered condition instead of guessing a tick count (#1293).
+ *
+ * Resolving a mocked query promise settles on a microtask, then TanStack Query
+ * flips `isSuccess` and schedules the re-render on a LATER tick — so a fixed
+ * `flushQueryEffects()` intermittently asserts against the pre-render DOM.
+ * Polling the DOM itself makes the wait a condition, mirroring the drain fix in
+ * 03aff413 without hard-coding how many ticks the chain happens to take.
+ */
+async function waitForRendered(
+  check: () => boolean,
+  description: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    if (check()) return;
+    await act(async () => {
+      await flushQueryEffects();
+    });
+  }
+  throw new Error(`timed out waiting for ${description}`);
 }
 
 function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
@@ -145,7 +177,13 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      // #1287 slice 5: rail/lane folds are persisted operator intent now, so
+      // they outlive a remount by design — reset them between cases or one
+      // test's collapse silently folds the next test's rows.
+      ...resetRailFolds(),
     });
+    localStorage.removeItem(TOPIC_RAIL_EXPANSION_KEY);
+    localStorage.removeItem(COLLAPSED_TOPIC_GROUPS_KEY);
     useChannelActivityStore.setState({
       latestSeqByChannel: {},
       lastReadByChannel: {},
@@ -166,7 +204,10 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      ...resetRailFolds(),
     });
+    localStorage.removeItem(TOPIC_RAIL_EXPANSION_KEY);
+    localStorage.removeItem(COLLAPSED_TOPIC_GROUPS_KEY);
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setActiveWorkspaceId(null);
     useChannelActivityStore.setState({
@@ -1311,7 +1352,7 @@ describe('TopicSidebarView', () => {
     expect(useUiStore.getState().sidebarOpen).toBe(false);
   });
 
-  it('locally collapses and expands a mobile workspace group (#1205)', async () => {
+  it('collapses and expands a mobile workspace group (#1205)', async () => {
     await renderView({
       topics: [
         makeTopic({
@@ -1351,6 +1392,167 @@ describe('TopicSidebarView', () => {
     await act(async () => header.click());
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+  });
+
+  describe('rail fold persistence (#1287 slice 5)', () => {
+    const RAIL_TOPIC = makeTopic({
+      id: 'topic:alpha',
+      workspaceId: 'ws:a',
+      display: { title: 'Alpha channel' },
+      linkedRefs: { sessionIds: ['s1'] },
+    });
+    const RAIL_WORKSPACE = {
+      id: 'ws:a',
+      name: 'engineering',
+      order: 0,
+      pinned: false,
+      color: null,
+      icon: null,
+    };
+
+    function railRow(topicId: string): HTMLButtonElement {
+      // `.topic-node` is the desktop rail row; the mobile cockpit renders the
+      // same channel as `.topic-mobile-node`.
+      const button = container.querySelector(
+        `.topic-node[data-topic-id="${topicId}"] > .topic-row > .topic-row__main`
+      );
+      expect(button).not.toBeNull();
+      return button as HTMLButtonElement;
+    }
+
+    async function remount() {
+      await act(async () => root.unmount());
+      root = createRoot(container);
+    }
+
+    it('keeps a collapsed root collapsed through nav-model identity churn', async () => {
+      // The removed effect re-added every `model.rootIds` entry to the local
+      // expanded set whenever the model changed identity, and the sessions
+      // store rebuilds its array via `.map()` on every activity/status/branch/
+      // rename WS event — so a collapsed root sprang open mid-session.
+      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('true');
+      await act(async () => railRow('topic:alpha').click());
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+
+      for (let churn = 0; churn < 3; churn++) {
+        await renderView({
+          topics: [RAIL_TOPIC],
+          // Same content, brand-new array + object identities: exactly what a
+          // WS activity event hands the rail.
+          sessions: sessions.map((session) => ({ ...session })),
+          surfaces: [],
+          workspaces: [RAIL_WORKSPACE],
+        });
+        expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+          'false'
+        );
+      }
+      expect(
+        container.querySelector('.topic-node.expanded[data-topic-id]')
+      ).toBeNull();
+    });
+
+    // Boot-time rehydration from these keys is covered in
+    // test/stores/ui-store.test.ts (a reload is a fresh module graph).
+    it('survives a remount and writes the fold to localStorage', async () => {
+      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      await act(async () => railRow('topic:alpha').click());
+
+      expect(
+        JSON.parse(localStorage.getItem(TOPIC_RAIL_EXPANSION_KEY) ?? '{}')
+      ).toEqual({ 'topic:alpha': false });
+
+      await remount();
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('still auto-expands a root the operator has never folded', async () => {
+      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions,
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      await act(async () => railRow('topic:alpha').click());
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+
+      const newcomer = makeTopic({
+        id: 'topic:beta',
+        workspaceId: 'ws:a',
+        display: { title: 'Beta channel' },
+        linkedRefs: { sessionIds: ['s2'] },
+      });
+      await renderView({
+        topics: [RAIL_TOPIC, newcomer],
+        sessions: [
+          ...sessions,
+          makeSession({ id: 's2', displayName: 'Beta lane' }),
+        ],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      // A root nobody has decided about opens on arrival; the folded one does
+      // not come back with it.
+      expect(railRow('topic:beta').getAttribute('aria-expanded')).toBe('true');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('persists a folded mobile workspace group across a remount', async () => {
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+      const header = () =>
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+        ) as HTMLButtonElement;
+
+      await act(async () => header().click());
+      expect(header().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
+      ).toEqual(['ws:a']);
+
+      await remount();
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+
+      expect(header().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] [data-topic-id="topic:alpha"]'
+        )
+      ).toBeNull();
+    });
   });
 
   it('shows reactive unread state on a collapsed mobile workspace header (#1205)', async () => {
@@ -2940,12 +3142,14 @@ describe('TopicSidebarView', () => {
         })
       );
     });
-    await act(async () => {
-      await flushQueryEffects();
-    });
+    // #1293: wait for the empty-result row rather than a fixed flush — the
+    // search request resolves a tick before the panel re-renders.
+    await waitForRendered(
+      () => container.textContent?.includes('no chat matches for') === true,
+      'the empty chat-search result row'
+    );
 
     expect(searchQueries).toEqual([{ q: 'archived', limit: '20' }]);
-    expect(container.textContent).toContain('no chat matches for');
     expect(container.textContent).not.toContain('Archived lane');
 
     const archivedToggle = container.querySelector(
@@ -2953,15 +3157,17 @@ describe('TopicSidebarView', () => {
     ) as HTMLButtonElement;
     await act(async () => {
       archivedToggle.click();
-      await flushQueryEffects();
     });
+    await waitForRendered(
+      () => container.textContent?.includes('Archived lane') === true,
+      'the archived chat-search result row'
+    );
 
     expect(searchQueries).toContainEqual({
       q: 'archived',
       includeArchived: '1',
       limit: '20',
     });
-    expect(container.textContent).toContain('Archived lane');
     expect(container.textContent).not.toContain('no chat matches for');
     queryClient.clear();
   });

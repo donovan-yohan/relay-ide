@@ -217,6 +217,37 @@ export interface ChannelRailActivitySnapshot {
   summaryByChannel?: Readonly<Record<string, ChannelRailSummary>>;
 }
 
+/**
+ * Resolve which rail rows render expanded (#1287 slice 5).
+ *
+ * Fold state is DERIVED, never seeded into state by an effect. A root row is
+ * open unless the operator explicitly closed it; any other row is closed unless
+ * the operator explicitly opened it. `expansion` therefore only ever holds rows
+ * the operator actually touched, and it is the whole "have we seen this id
+ * before" record: an id missing from it has never been decided, so a brand new
+ * root still opens on its own, while an id recorded `false` stays closed for
+ * good.
+ *
+ * The predecessor was an effect that re-added every `model.rootIds` entry to a
+ * component-local set whenever the nav model changed identity. `useSessionsStore`
+ * rebuilds its `sessions` array via `.map()` on every activity/status/branch/
+ * rename WS event, so that effect re-fired — and re-expanded the rail — within
+ * seconds of any collapse during a live session.
+ */
+export function selectExpandedRailIds(
+  rootIds: readonly WorkspaceTopicId[],
+  expansion: Readonly<Record<string, boolean>>
+): Set<string> {
+  const expanded = new Set<string>();
+  for (const id of rootIds) {
+    if (expansion[id] !== false) expanded.add(id);
+  }
+  for (const [id, isExpanded] of Object.entries(expansion)) {
+    if (isExpanded) expanded.add(id);
+  }
+  return expanded;
+}
+
 /** Key a `GET /channels` payload by channel id for the rail join (#1287). */
 export function indexChannelSummaries(
   rows: readonly ChannelRailSummary[]
