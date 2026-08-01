@@ -125,6 +125,15 @@ export interface TopicNavWorkspace {
   pinned: boolean;
   color: string | null;
   icon: string | null;
+  /**
+   * The lane's own repo anchor (#1287). `ensureProjectWorkspace` stamps it on
+   * every add-project lane, so selecting a lane can move the repo pointer with
+   * the workspace pointer instead of leaving a chat filed in one project while
+   * routed at another. Optional because the rail renders lanes fine without it
+   * (hub-seeded and hand-created workspaces carry none) — a lane with no repo
+   * of its own leaves the existing pointer alone.
+   */
+  defaultRepoPath?: string | null;
 }
 
 /**

@@ -44,6 +44,8 @@ import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
 import TopicComposer from '../frontend/src/components/TopicComposer.js';
 import ChatHome from '../frontend/src/components/ChatHome.js';
+import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
+import { resolveAppViewMode } from '../frontend/src/lib/state/app-view-mode.js';
 import { scopedSessionKey } from '../frontend/src/lib/session-keys.js';
 
 (
@@ -304,6 +306,10 @@ describe('TopicComposer', () => {
       forceOrgCockpit: false,
       topicComposerOpen: false,
       activeChannelId: null,
+      // #1287: `useTopicRoomCreate` reads the lane pointer into EVERY create
+      // payload, so a case that selects a lane would otherwise file every
+      // later case's chat in it.
+      activeWorkspaceId: null,
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -980,6 +986,58 @@ describe('TopicComposer', () => {
     expect(
       container.querySelector('[aria-label="archived session"]')
     ).toBeNull();
+  });
+
+  // #1287: the exact operator scenario. Mid-session with a channel from the OLD
+  // workspace still on screen, the operator adds a project and selects its
+  // fresh (empty) lane — which holds no channel row to click, so the sidebar
+  // "new chat" button is the only route out. `openTopicTaskRoom` latched
+  // `topicComposerOpen` but never cleared `activeChannelId`, and an open
+  // channel outranks the composer in BOTH decision points (`resolveAppViewMode`
+  // checks `hasActiveChannel` first, and `ChatHome` only mounts `TopicComposer`
+  // when `activeChannelId` is null). Result: the screen never changed, the
+  // focus event fired at an unmounted composer, and no request ever left the
+  // browser — matching the clean server logs.
+  it('opens the composer over a channel left open in the previous workspace (#1287)', () => {
+    const freshLane = 'ws:fresh-project';
+    useSessionsStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      refreshAll: vi.fn(async () => {}),
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: false,
+      activeChannelId: 'topic:old-workspace-channel',
+      activeWorkspaceId: freshLane,
+    });
+
+    // The REAL shared entry point behind every new-chat affordance (sidebar
+    // header, empty-lane button, mobile header, command palette).
+    openTopicTaskRoom();
+
+    const ui = useUiStore.getState();
+    expect(ui.topicComposerOpen).toBe(true);
+    // The open channel must be dropped, or the composer is unreachable.
+    expect(ui.activeChannelId).toBeNull();
+    // The freshly selected lane survives, so the chat files into THIS project.
+    expect(ui.activeWorkspaceId).toBe(freshLane);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: false,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+        hasActiveChannel: ui.activeChannelId !== null,
+      })
+    ).toBe('chat');
+
+    // The assertion that would have caught the regression: inside the chat
+    // shell it is the composer, not a re-rendered ChannelView, that mounts.
+    renderChatHome(vi.fn());
+    expect(container.querySelector('.topic-composer__ta')).not.toBeNull();
   });
 
   it('keeps the created room when retrying a terminal launch failure', async () => {

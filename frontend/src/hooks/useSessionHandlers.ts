@@ -30,6 +30,7 @@ import {
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
 import { openAgentChannel } from '../lib/agent-channels.js';
+import { leaveChatSurface } from '../lib/topic-task-room.js';
 import {
   resolveSessionByKey,
   resolveSessionCloseTarget,
@@ -65,7 +66,14 @@ export function useSessionHandlers({
   workspaceSettingsDialogRef,
   setAnalyticsView,
 }: UseSessionHandlersParams) {
+  // #1287: `dashboard` sits BELOW an open channel and an open composer in
+  // `resolveAppViewMode`, so clearing the session alone left every caller a
+  // silent no-op while a channel was on screen — and the palette offers all of
+  // them there (`pr.*` and `session.start-on-ticket` gate on `workspacePath`
+  // only, which an open channel satisfies). Same latch-without-clear bug as the
+  // new-chat button; routed through the shared helper so it cannot drift again.
   const navigateToDashboard = useCallback(() => {
+    leaveChatSurface();
     useSessionsStore.getState().setActiveSessionId(null);
   }, []);
 
