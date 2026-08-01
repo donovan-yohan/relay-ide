@@ -29,11 +29,14 @@ import type {
 import type { WorkContext } from '../shared/work-context.js';
 import {
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+  WORKSPACE_TOPIC_MAX_AGENT_RUNTIME_REFS,
   buildWorkspaceTopicLaunchPreview,
   buildWorkspaceTopicSessionCreateBody,
   buildWorkspaceTopicRecord,
   parseWorkspaceTopicCreateInput,
   resolveWorkspaceTopicRoutingDefaults,
+  workspaceTopicAgentRuntimeLinkPatch,
+  workspaceTopicHasExplicitParticipantLinks,
   workspaceTopicSessionLinkPatch,
   type WorkspaceTopic,
   type WorkspaceTopicListResponse,
@@ -307,6 +310,55 @@ describe('workspace topics foundation', () => {
         sessionIds: ['session-topic'],
       },
     });
+  });
+
+  it('links channel agent runtimes without pretending they are sessions', () => {
+    const topic = buildWorkspaceTopicRecord({
+      create: { workspaceId: 'ws:local', title: 'general' },
+      now: '2026-06-26T00:00:00.000Z',
+    });
+    expect(workspaceTopicHasExplicitParticipantLinks(topic)).toBe(false);
+
+    const patch = workspaceTopicAgentRuntimeLinkPatch({
+      topic,
+      runtimeId: 'rt-one',
+    });
+    expect(patch).toEqual({ linkedRefs: { agentRuntimeIds: ['rt-one'] } });
+    const linked: WorkspaceTopic = {
+      ...topic,
+      linkedRefs: patch!.linkedRefs!,
+    };
+    // A runtime link proves the topic states its participants, but it is never
+    // a session ref — nothing may resolve it against the session list.
+    expect(workspaceTopicHasExplicitParticipantLinks(linked)).toBe(true);
+    expect(linked.linkedRefs.sessionIds).toBeUndefined();
+
+    // Idempotent: relinking the same runtime skips the store write entirely.
+    expect(
+      workspaceTopicAgentRuntimeLinkPatch({ topic: linked, runtimeId: 'rt-one' })
+    ).toBeUndefined();
+    expect(
+      workspaceTopicAgentRuntimeLinkPatch({ topic: linked, runtimeId: '  ' })
+    ).toBeUndefined();
+
+    // Bounded: cold starts rebind forever, so the tail trims FIFO instead of
+    // growing toward the shared per-list ref cap.
+    const saturated: WorkspaceTopic = {
+      ...topic,
+      linkedRefs: {
+        agentRuntimeIds: Array.from(
+          { length: WORKSPACE_TOPIC_MAX_AGENT_RUNTIME_REFS },
+          (_, index) => `rt-${index}`
+        ),
+      },
+    };
+    const trimmed = workspaceTopicAgentRuntimeLinkPatch({
+      topic: saturated,
+      runtimeId: 'rt-next',
+    })?.linkedRefs?.agentRuntimeIds;
+    expect(trimmed).toHaveLength(WORKSPACE_TOPIC_MAX_AGENT_RUNTIME_REFS);
+    expect(trimmed?.[0]).toBe('rt-1');
+    expect(trimmed?.at(-1)).toBe('rt-next');
   });
 
   it('previews create-only and create+launch side effects from topic defaults', () => {

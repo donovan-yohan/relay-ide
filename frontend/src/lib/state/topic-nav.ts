@@ -1,8 +1,9 @@
 import type { WorkspaceSurface } from '../../../../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicChannelKind,
-  WorkspaceTopicId,
+import {
+  workspaceTopicHasExplicitParticipantLinks,
+  type WorkspaceTopic,
+  type WorkspaceTopicChannelKind,
+  type WorkspaceTopicId,
 } from '../../../../shared/workspace-topics.js';
 import type { SessionSummary } from '../types.js';
 import { isAttentionState, type DisplayState } from './display-state.js';
@@ -136,9 +137,47 @@ export interface TopicNavNode {
   displayName: string | null | undefined;
 }
 
+/**
+ * Per-row channel payload hydrated from `GET /channels` (#1287). Structural
+ * subset of the route's `channelSummaryView` — last message, member roster, and
+ * counts — so `ChannelSummaryView` from the API client assigns directly without
+ * the rail projection depending on the fetch layer.
+ */
+export interface ChannelRailSummary {
+  id: string;
+  latestSeq: number;
+  messageCount: number;
+  members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+  lastMessage: {
+    seq: number;
+    preview: string;
+    senderId: string;
+    senderKind: 'human' | 'agent' | 'system';
+    /**
+     * Server-resolved label + vendor for the sender. The rail labels snippets
+     * from these; `senderId` is a profile Actor id and must never be split for
+     * a name (#1234).
+     */
+    senderDisplayName?: string;
+    providerId?: string;
+    /**
+     * Mention refs the server computed over the FULL body (not the truncated
+     * preview), so the cockpit's mention lane is not capped at 200 chars.
+     */
+    mentions?: { raw: string }[];
+    createdAt: string;
+  } | null;
+}
+
 export interface ChannelRailNode {
   item: TopicNavItem;
   unread: boolean;
+  /**
+   * Channel summary joined by id, or null for a row the channel list does not
+   * cover (derived/fallback topics, and persisted rows outside the list's own
+   * 200-row window). Renderers must degrade to the topic record alone.
+   */
+  summary: ChannelRailSummary | null;
   children: ChannelRailNode[];
 }
 
@@ -170,6 +209,21 @@ export interface ChannelRailTree {
 
 export interface ChannelRailActivitySnapshot {
   unreadByChannel: Readonly<Record<string, boolean>>;
+  /**
+   * Channel summaries keyed by channel id (#1287). Optional: the rail renders
+   * from the topic list alone before the summaries land, and derived topics
+   * never get one.
+   */
+  summaryByChannel?: Readonly<Record<string, ChannelRailSummary>>;
+}
+
+/** Key a `GET /channels` payload by channel id for the rail join (#1287). */
+export function indexChannelSummaries(
+  rows: readonly ChannelRailSummary[]
+): Record<string, ChannelRailSummary> {
+  const byId: Record<string, ChannelRailSummary> = {};
+  for (const row of rows) byId[row.id] = row;
+  return byId;
 }
 
 /**
@@ -178,7 +232,8 @@ export interface ChannelRailActivitySnapshot {
  * topic model's order and split into regular-channel and direct-message
  * sections. Descendants stay nested under their canonical root instead of being
  * flattened into workspace peers. Unread is computed once from the same
- * activity snapshot for both consumers.
+ * activity snapshot for both consumers, and each row carries the channel
+ * summary joined by id (#1287) so neither renderer needs a per-channel fetch.
  *
  * EVERY known workspace becomes a lane, including one holding zero channels
  * (#1287). Dropping an empty bucket made a freshly added workspace invisible
@@ -199,6 +254,7 @@ export function selectChannelRailTree(
     return {
       item,
       unread: activity.unreadByChannel[item.id] ?? false,
+      summary: activity.summaryByChannel?.[item.id] ?? null,
       children,
     };
   };
@@ -315,10 +371,25 @@ export function sessionMatchesTopic(
   ) {
     return true;
   }
-  if ((linked.sessionIds?.length ?? 0) > 0) return false;
-  if ((linked.workContextIds?.length ?? 0) > 0) return false;
+  // Explicitly linked topics answer for themselves. `agentRuntimeIds` counts
+  // even though a channel agent runtime never resolves to a session row: its
+  // presence proves the binder recorded this topic's participants, so an
+  // unmatched session here is genuinely NOT a participant (#1287).
+  if (workspaceTopicHasExplicitParticipantLinks(topic)) return false;
 
+  // DEPRECATED legacy lane (#1287): topics with NO explicit refs at all — rows
+  // written before the binder linked its runtimes, plus raw
+  // `POST /workspace-topics` and CLI-gateway `workspace-topics.create` callers
+  // that never pass `linkedRefs`. Path matching is a display-only guess that
+  // can adopt an unrelated terminal into a channel's participant list. Every
+  // writer that links explicitly skips this branch; delete it once none are
+  // left.
   const routing = topic.routingDefaults;
+  // Never guess across machines: the same path on another node is a different
+  // checkout, not this topic's work.
+  if (routing.nodeId && session.nodeId && session.nodeId !== routing.nodeId) {
+    return false;
+  }
   if (routing.worktreePath && session.worktreePath === routing.worktreePath)
     return true;
   if (routing.repoPath && session.repoPath === routing.repoPath) return true;

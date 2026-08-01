@@ -12,6 +12,7 @@ import {
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
   isChannelMessagePart,
   isChannelAgentDetail,
+  parseMentions,
   type ChannelAgentDetail,
   type ChannelBodyFormat,
   type ChannelMemberRef,
@@ -46,6 +47,15 @@ const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
 const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
+/**
+ * Body window scanned for the summary's mention signal when the row carries no
+ * persisted `meta.mentions` (bridge-authored agent rows never do — the binder
+ * parses mentions for fan-out without writing them back). Deliberately far
+ * beyond `CHANNEL_SUMMARY_PREVIEW_MAX_CHARS` so a long agent status update that
+ * ends in `@operator` still lights the mention lane, and still bounded so the
+ * list route never regex-scans 200 × 256KB of body text.
+ */
+const CHANNEL_SUMMARY_MENTION_SCAN_MAX_CHARS = 8_000;
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
@@ -254,6 +264,21 @@ export interface ChannelSummary {
     preview: string;
     senderId: string;
     senderKind: ChannelSenderKindLoose;
+    /**
+     * Persisted `sender_display`. Sidebar/rail snippets label the sender from
+     * this (falling back to `providerId`) — NEVER by stripping `senderId`, which
+     * is a profile Actor id (`agent-profile:<vendor>:default`), not a name.
+     */
+    senderDisplayName?: string;
+    /** Vendor framework id for agent rows; the authoritative label fallback. */
+    providerId?: string;
+    /**
+     * Mention refs for the previewed row. Persisted `meta.mentions` when the
+     * write path resolved them (#1236 contact-set resolution included);
+     * otherwise parsed server-side from a bounded window of the FULL body, so a
+     * mention past the 200-char preview cut-off is still visible to clients.
+     */
+    mentions?: ChannelMention[];
     status: ChannelMessageStatus;
     createdAt: string;
   } | null;
@@ -1658,6 +1683,12 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     previewRow: ChannelMessageRow,
     messageCount: number
   ): ChannelSummary {
+    const meta = parseMeta(previewRow.meta_json);
+    const providerId =
+      typeof meta?.['providerId'] === 'string'
+        ? (meta['providerId'] as string)
+        : undefined;
+    const mentions = summaryMentions(previewRow, meta);
     return {
       channelId: previewRow.channel_id,
       latestSeq,
@@ -1671,10 +1702,35 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         ),
         senderId: previewRow.sender_id,
         senderKind: previewRow.sender_kind as ChannelSenderRef['kind'],
+        ...(previewRow.sender_display
+          ? { senderDisplayName: previewRow.sender_display }
+          : {}),
+        ...(providerId ? { providerId } : {}),
+        ...(mentions.length > 0 ? { mentions } : {}),
         status: previewRow.status as ChannelMessageStatus,
         createdAt: previewRow.created_at,
       },
     };
+  }
+
+  /**
+   * Mention refs for a summary row. Persisted mentions win — they are the
+   * server-resolved set (contact-set resolution a plain re-parse cannot
+   * reproduce). Rows written without them (every bridge-authored agent row) get
+   * a bounded parse of the full body so a mention past the preview cut-off is
+   * not silently lost.
+   */
+  function summaryMentions(
+    previewRow: ChannelMessageRow,
+    meta: ChannelMessageMeta | undefined
+  ): ChannelMention[] {
+    if (Array.isArray(meta?.mentions) && meta.mentions.length > 0) {
+      return meta.mentions;
+    }
+    if (!previewRow.body_text.includes('@')) return [];
+    return parseMentions(
+      previewRow.body_text.slice(0, CHANNEL_SUMMARY_MENTION_SCAN_MAX_CHARS)
+    );
   }
 }
 

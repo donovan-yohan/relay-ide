@@ -107,6 +107,8 @@ vi.mock('../../frontend/src/lib/stores/ui.js', () => ({
 }));
 
 import { useEventSocket } from '../../frontend/src/hooks/useEventSocket.js';
+import { useChannelActivityStore } from '../../frontend/src/lib/stores/channel-activity.js';
+import { useChannelAgentStatusStore } from '../../frontend/src/lib/stores/channel-agent-status.js';
 
 describe('useEventSocket repo-scoped refresh', () => {
   beforeEach(() => {
@@ -123,13 +125,21 @@ describe('useEventSocket repo-scoped refresh', () => {
     apiMock.fetchHubNodes.mockResolvedValue([]);
   });
 
-  function makeQueryClient(cachedNodes?: unknown[]): any {
+  function makeQueryClient(
+    cachedNodes?: unknown[],
+    seedCache: Record<string, unknown> = {}
+  ): any {
     let nodes = cachedNodes;
     return {
       invalidateQueries: vi.fn(),
       setQueryData: vi.fn((_queryKey, updater) => {
         nodes = typeof updater === 'function' ? updater(nodes) : updater;
       }),
+      getQueryData: vi.fn((queryKey: unknown[]) =>
+        queryKey[0] === 'hub-nodes'
+          ? nodes
+          : seedCache[JSON.stringify(queryKey)]
+      ),
       get nodes() {
         return nodes;
       },
@@ -429,5 +439,322 @@ describe('useEventSocket repo-scoped refresh', () => {
     if (effectState.cleanup) effectState.cleanup();
 
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // #1287 Slice 3 item 15: channel-activity / channel-agent-status broadcasts
+  // carry no row payload, so an agent-created channel (#1242) and a newly bound
+  // agent were both invisible until an unrelated refetch happened to run.
+  describe('channel list + roster invalidation', () => {
+    const LISTED_CHANNEL = 'topic-listed';
+    const NEW_CHANNEL = 'topic-agent-created';
+
+    /** Caches shaped like a rail that has loaded both of its list queries. */
+    function seededLists(): Record<string, unknown> {
+      return {
+        '["channels"]': [{ id: LISTED_CHANNEL, latestSeq: 4 }],
+        '["workspace-topics"]': { topics: [{ id: LISTED_CHANNEL }] },
+      };
+    }
+
+    /** Lists plus a held roster per channel, as an open cockpit would have. */
+    function seededListsWithRosters(
+      ...channelIds: string[]
+    ): Record<string, unknown> {
+      const seeded = seededLists();
+      for (const channelId of channelIds) {
+        seeded[JSON.stringify(['channel-roster', channelId])] = [];
+      }
+      return seeded;
+    }
+
+    beforeEach(() => {
+      useChannelActivityStore.setState({
+        latestSeqByChannel: {},
+        lastReadByChannel: {},
+        clampedAtByChannel: {},
+      });
+      useChannelAgentStatusStore.setState({
+        statusByChannelAgent: {},
+        runtimeByChannelAgent: {},
+        updatedAtByChannelAgent: {},
+      });
+    });
+
+    it('refetches the topic and channel lists when activity names a channel no cached list holds', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+
+      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['workspace-topics'],
+      });
+      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['channels'],
+      });
+      expect(
+        useChannelActivityStore.getState().latestSeqByChannel[NEW_CHANNEL]
+      ).toBe(1);
+    });
+
+    it('leaves the lists alone when the channel already has a cached row', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: LISTED_CHANNEL,
+        latestSeq: 9,
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+      expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+        queryKey: ['channels'],
+      });
+    });
+
+    it('skips the refetch entirely when no list has loaded yet', () => {
+      const queryClient = makeQueryClient();
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('debounces an unknown-channel burst into a single list refetch', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      for (const latestSeq of [1, 2, 3]) {
+        wsMock.onMessage?.({
+          type: 'channel-activity',
+          channelId: NEW_CHANNEL,
+          latestSeq,
+        });
+      }
+      vi.advanceTimersByTime(750);
+
+      const channelListInvalidations =
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
+        );
+      expect(channelListInvalidations).toHaveLength(1);
+    });
+
+    // A channel outside the capped `/channels` + `/workspace-topics` windows can
+    // never be materialized by refetching, and posting to it does not bump its
+    // topic `updated_at`, so an unbounded lane would refetch two O(channels)
+    // endpoints once per badge for the whole turn and still render nothing.
+    it('stops refetching for an unknown channel a completed refresh never materialized', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      for (let burst = 0; burst < 8; burst += 1) {
+        wsMock.onMessage?.({
+          type: 'channel-activity',
+          channelId: NEW_CHANNEL,
+          latestSeq: burst + 1,
+        });
+        vi.advanceTimersByTime(750);
+      }
+
+      const listInvalidations = () =>
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
+        ).length;
+      expect(listInvalidations()).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // A second, still-unknown channel is unaffected by the first one's mark.
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: 'topic:another-new',
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+      expect(listInvalidations()).toBe(2);
+    });
+
+    it('retries an unknown channel once the back-off window has passed', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+      vi.advanceTimersByTime(60_000);
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 2,
+      });
+      vi.advanceTimersByTime(750);
+
+      expect(
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
+        )
+      ).toHaveLength(2);
+    });
+
+    it('routes new head seqs through the clamp-fenced seed path, never a direct store write', () => {
+      const seedSpy = vi.spyOn(
+        useChannelActivityStore.getState(),
+        'seedChannelActivity'
+      );
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+
+      expect(seedSpy).not.toHaveBeenCalled();
+      expect(useChannelActivityStore.getState().clampedAtByChannel).toEqual({});
+      seedSpy.mockRestore();
+    });
+
+    it('refreshes the roster of every channel an agent status event touched', () => {
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a', 'ch-b')
+      );
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-a',
+        agentId: 'agent:claude',
+        status: 'spawning',
+        runtimeId: 'rt-1',
+      });
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-a',
+        agentId: 'agent:claude',
+        status: 'idle',
+        runtimeId: 'rt-1',
+      });
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-b',
+        agentId: 'agent:codex',
+        status: 'thinking',
+        runtimeId: 'rt-2',
+      });
+      vi.advanceTimersByTime(750);
+
+      const rosterInvalidations =
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channel-roster'
+        );
+      expect(rosterInvalidations.map((call: any) => call[0].queryKey)).toEqual([
+        ['channel-roster', 'ch-a'],
+        ['channel-roster', 'ch-b'],
+      ]);
+    });
+
+    it('ignores agent status for a channel the client holds no roster for', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-unwatched',
+        agentId: 'agent:claude',
+        status: 'thinking',
+        runtimeId: 'rt-1',
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+      // The status store still records it — only the refetch is suppressed.
+      expect(
+        useChannelAgentStatusStore.getState().statusByChannelAgent[
+          'ch-unwatched agent:claude'
+        ]
+      ).toBe('thinking');
+    });
+
+    // A turn walks spawning → thinking → streaming → waiting → idle over minutes.
+    // The debounce must land AFTER the burst, not once per transition through it.
+    it('collapses a walking status burst into one roster refetch', () => {
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a')
+      );
+      mount(queryClient);
+
+      for (const status of [
+        'spawning',
+        'thinking',
+        'streaming',
+        'waiting',
+        'idle',
+      ] as const) {
+        wsMock.onMessage?.({
+          type: 'channel-agent-status',
+          channelId: 'ch-a',
+          agentId: 'agent:claude',
+          status,
+          runtimeId: 'rt-1',
+        });
+        // Each transition lands inside the debounce window.
+        vi.advanceTimersByTime(600);
+      }
+      vi.advanceTimersByTime(750);
+
+      expect(
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channel-roster'
+        )
+      ).toHaveLength(1);
+    });
+
+    it('cleanup cancels pending list and roster timers', () => {
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a')
+      );
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-a',
+        agentId: 'agent:claude',
+        status: 'thinking',
+        runtimeId: 'rt-1',
+      });
+      expect(vi.getTimerCount()).toBe(2);
+
+      if (effectState.cleanup) effectState.cleanup();
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });

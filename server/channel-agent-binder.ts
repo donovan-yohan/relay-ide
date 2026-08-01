@@ -35,6 +35,7 @@ import {
 } from '../shared/channel-chat-protocol.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
+import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.js';
 
 // @-mention routing binder (#1167, slice 4). One module owns the whole loop:
 // subscribe to hub.onMessagePosted → resolve mentions → ensure a (channel,
@@ -512,6 +513,29 @@ export function createChannelAgentBinder(
     };
   }
 
+  /**
+   * Record a binder-owned runtime on its channel topic (#1287). Navigation used
+   * to GUESS a channel's participants from `routingDefaults.cwd/repoPath`
+   * whenever `linkedRefs` was empty, which pulled unrelated same-path sessions
+   * into a channel's participant list. Linking here means every channel the
+   * binder ever bound states its participants explicitly instead.
+   *
+   * Best effort and idempotent: no topic store, no topic row, or a failed store
+   * write must never fail the mention turn that triggered the bind.
+   */
+  function linkRuntimeToTopic(channelId: string, runtimeId: string): void {
+    if (!topicStore) return;
+    try {
+      const topic = topicStore.get(channelId);
+      if (!topic) return;
+      const patch = workspaceTopicAgentRuntimeLinkPatch({ topic, runtimeId });
+      if (!patch) return;
+      topicStore.update(topic.id, patch);
+    } catch (err) {
+      logger.warn('channel binder topic runtime link failed:', errText(err));
+    }
+  }
+
   function attachRuntime(
     channelId: string,
     profileActorId: string,
@@ -565,6 +589,8 @@ export function createChannelAgentBinder(
       handleBindingPatch(binding, patch)
     );
     live.set(key, binding);
+    // Single funnel for both fresh spawns and restored-runtime rebinds.
+    linkRuntimeToTopic(channelId, runtime.id);
     return binding;
   }
 
@@ -624,6 +650,11 @@ export function createChannelAgentBinder(
             runtime.role ?? 'unknown'
           );
         }
+        // Reuse still links: a topic row created (or re-created) after this
+        // runtime was attached would otherwise never learn its participant.
+        // The patch helper returns undefined when already linked, so a hot
+        // rebind pays one indexed topic read and no write.
+        linkRuntimeToTopic(channelId, runtime.id);
         return existing;
       }
     }

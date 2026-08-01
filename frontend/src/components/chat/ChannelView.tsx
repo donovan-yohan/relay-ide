@@ -13,13 +13,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
 import {
   fetchWorkspaceTopic,
-  restoreWorkspaceTopic,
   fetchChannelRoster,
   designateChannelOrchestrator,
   interruptChannelAgent,
   HttpError,
   type ChannelAgentStatus,
 } from '../../lib/api.js';
+import { useRestoreTopicMutation } from '../../lib/hooks/use-restore-topic.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import {
@@ -141,21 +141,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     (postError instanceof HttpError && postError.status === 409);
   const storeDown = postError instanceof HttpError && postError.status === 503;
 
-  const [restorePending, setRestorePending] = useState(false);
-  const handleRestore = useCallback(async () => {
-    setRestorePending(true);
-    try {
-      await restoreWorkspaceTopic(channelId);
-      await queryClient.invalidateQueries({ queryKey: ['channel', channelId] });
-      await queryClient.invalidateQueries({
-        queryKey: ['workspace-topic', channelId],
-      });
-    } catch {
-      /* leave the archived bar in place; the user can retry */
-    } finally {
-      setRestorePending(false);
-    }
-  }, [channelId, queryClient]);
+  // Shared with every other restore affordance (#1287) so one restore refreshes
+  // the channel, its topic, and every topic list — and a failure toasts instead
+  // of leaving the archived bar sitting there with no explanation.
+  const { mutate: restoreChannel, isPending: restorePending } =
+    useRestoreTopicMutation();
+  const handleRestore = useCallback(() => {
+    restoreChannel(channelId);
+  }, [channelId, restoreChannel]);
 
   const [designatePending, setDesignatePending] = useState(false);
 

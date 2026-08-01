@@ -385,6 +385,7 @@ const workspaceTopicSchema: RelayJsonSchema = {
         },
         artifactIds: { type: 'array', items: stringSchema },
         workspaceSurfaceIds: { type: 'array', items: stringSchema },
+        agentRuntimeIds: { type: 'array', items: stringSchema },
       },
     },
     state: { type: 'object', additionalProperties: true },

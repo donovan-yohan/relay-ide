@@ -39,7 +39,10 @@ import type {
   ChannelAgentRuntime,
   CreateChannelAgentRuntimeParams,
 } from '../server/channel-agent-runtime.js';
-import type { WorkspaceTopicStore } from '../server/workspace-topics.js';
+import {
+  createWorkspaceTopicStore,
+  type WorkspaceTopicStore,
+} from '../server/workspace-topics.js';
 import {
   parseMentions,
   type ChannelImagePart,
@@ -3039,5 +3042,68 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');
     await waitFor(() => a.sendCalls.length === 2, 4000); // queued turn drained
     expect(a.sendCalls).toHaveLength(2);
+  });
+});
+
+// ── #1287: channels state their participants instead of being guessed ────────
+
+describe('channel-agent-binder — topic participant links', () => {
+  function makeTopicStore(): WorkspaceTopicStore {
+    const topicStore = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topicStore.close());
+    return topicStore;
+  }
+
+  it('links its spawned runtime into the topic and never relinks on reuse', async () => {
+    const topicStore = makeTopicStore();
+    topicStore.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'general',
+      routingDefaults: { repoPath: '/repo/relay', cwd: '/repo/relay' },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock hi', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const runtimeId = sessions.firstSessionId();
+    const linked = topicStore.get(CH)!;
+    expect(linked.linkedRefs.agentRuntimeIds).toEqual([runtimeId]);
+    // The runtime is NOT a Relay session and must never be filed as one.
+    expect(linked.linkedRefs.sessionIds).toBeUndefined();
+
+    // Reuse: same runtime, so the topic keeps one entry and takes no write.
+    post(store, binder, '@mock again', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    expect(sessions.spawns()).toBe(1);
+    expect(topicStore.get(CH)?.linkedRefs.agentRuntimeIds).toEqual([runtimeId]);
+    expect(topicStore.get(CH)?.updatedAt).toBe(linked.updatedAt);
+  });
+
+  it('links on reuse when the topic row only appears after the bind', async () => {
+    const topicStore = makeTopicStore();
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore,
+    });
+
+    post(store, binder, '@mock hi', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(topicStore.get(CH)).toBeNull();
+
+    topicStore.create({ id: CH, workspaceId: 'ws:local', title: 'general' });
+    post(store, binder, '@mock again', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    expect(sessions.spawns()).toBe(1);
+    expect(topicStore.get(CH)?.linkedRefs.agentRuntimeIds).toEqual([
+      sessions.firstSessionId(),
+    ]);
   });
 });

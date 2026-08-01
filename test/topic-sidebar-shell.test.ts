@@ -16,10 +16,8 @@ import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
-import {
-  createWorkspaceId,
-  LOCAL_WORKSPACE_ID,
-} from '../shared/workspace.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import { createWorkspaceId, LOCAL_WORKSPACE_ID } from '../shared/workspace.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
   buildTopicRoomCreateInput,
@@ -30,6 +28,7 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
+import type { ChannelRailSummary } from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -74,6 +73,33 @@ function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
     },
     createdAt: NOW,
     updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+/**
+ * A `GET /channels` row as the rail consumes it (#1287). Agent senders carry the
+ * REAL post-#1234 shape: the sender id is the profile Actor id and the vendor
+ * rides `providerId` — the legacy `agent:<vendor>` id is the one form whose
+ * trailing segment happens to read like a name, so fixtures must not use it.
+ */
+function makeChannelSummary(
+  overrides: Partial<ChannelRailSummary> & { id: string }
+): ChannelRailSummary {
+  return {
+    latestSeq: 3,
+    messageCount: 3,
+    members: [
+      { kind: 'agent', id: builtInAgentProfileId('claude'), joinedAt: NOW },
+    ],
+    lastMessage: {
+      seq: 3,
+      preview: 'latest channel message',
+      senderId: builtInAgentProfileId('claude'),
+      senderKind: 'agent',
+      providerId: 'claude',
+      createdAt: NOW,
+    },
     ...overrides,
   };
 }
@@ -456,6 +482,380 @@ describe('TopicSidebarView', () => {
         '[data-topic-id="topic:alpha"][data-unread="true"]'
       )
     ).not.toBeNull();
+    queryClient.clear();
+  });
+
+  // `GET /channels` is O(channels) on the hub, and a streaming turn emits a
+  // badge per message create / stream open / stream complete. The rail's refresh
+  // lane must therefore stay throttled AND silent while the tab is hidden,
+  // deferring one refresh to the moment the operator comes back.
+  it('defers the throttled channel-list refresh while the tab is hidden (#1287)', async () => {
+    vi.useFakeTimers();
+    try {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(['workspace-topics'], {
+        topics: [makeTopic()],
+        truncated: false,
+        derived: false,
+      } satisfies WorkspaceTopicListResponse);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify({ channels: [] }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            })
+        ) as unknown as typeof fetch
+      );
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+      const channelListRefreshes = () =>
+        invalidateSpy.mock.calls.filter(
+          (call) =>
+            Array.isArray(call[0]?.queryKey) &&
+            call[0].queryKey[0] === 'channels'
+        ).length;
+
+      act(() => {
+        root.render(
+          React.createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            React.createElement(TopicSidebarShell, { onSelectSession })
+          )
+        );
+      });
+
+      // Visible tab: one refresh per throttle window, not per activity event.
+      act(() => {
+        useChannelActivityStore.getState().recordActivity('topic:alpha', 5);
+        useChannelActivityStore.getState().recordActivity('topic:alpha', 6);
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(channelListRefreshes()).toBe(1);
+
+      // Hidden tab: the window elapses without touching the hub.
+      const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+      act(() => {
+        useChannelActivityStore.getState().recordActivity('topic:alpha', 7);
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(channelListRefreshes()).toBe(1);
+
+      // Coming back to the foreground settles the deferred refresh exactly once.
+      hidden.mockReturnValue(false);
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(channelListRefreshes()).toBe(2);
+      hidden.mockRestore();
+      queryClient.clear();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #1287 item 6: the rail listed bare topic records while GET /channels already
+  // returned the per-row payload the Slack-style UX needs. Rows now join that
+  // summary by id.
+  it('hydrates rail rows with the channel summary last message and stamp (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic()],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          lastMessage: {
+            seq: 7,
+            preview: 'pushed the row payload join',
+            senderId: builtInAgentProfileId('claude'),
+            senderKind: 'agent',
+            providerId: 'claude',
+            createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          },
+        }),
+      ],
+    });
+
+    const preview = container.querySelector('.topic-row__preview');
+    expect(preview?.textContent).toBe('claude: pushed the row payload join');
+    expect(container.querySelector('.topic-row__time')?.textContent).toBe('5m');
+    // Title still renders alongside the snippet — hydration is additive.
+    expect(container.querySelector('.topic-row__title')?.textContent).toContain(
+      'Build UI shell'
+    );
+  });
+
+  it('renders rows with no channel summary (derived/fallback topics) unchanged (#1287)', async () => {
+    await renderView({
+      topics: [makeTopic({ source: 'derived' })],
+      derived: true,
+      channelSummaries: [],
+    });
+
+    expect(container.querySelector('.topic-row')).not.toBeNull();
+    expect(container.querySelector('.topic-row__title')?.textContent).toContain(
+      'Build UI shell'
+    );
+    expect(container.querySelector('.topic-row__preview')).toBeNull();
+    expect(container.querySelector('.topic-row__time')).toBeNull();
+  });
+
+  it('labels the operator as the snippet sender and skips message-less channels (#1287)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } }),
+        makeTopic({
+          id: 'topic:quiet',
+          display: { title: 'quiet' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          lastMessage: {
+            seq: 2,
+            preview: 'ack',
+            senderId: 'human:operator',
+            senderKind: 'human',
+            createdAt: NOW,
+          },
+        }),
+        makeChannelSummary({
+          id: 'topic:quiet',
+          latestSeq: 0,
+          messageCount: 0,
+          lastMessage: null,
+        }),
+      ],
+    });
+
+    const previews = [...container.querySelectorAll('.topic-row__preview')].map(
+      (node) => node.textContent
+    );
+    expect(previews).toEqual(['you: ack']);
+  });
+
+  // Sender ids are profile Actor ids (#1234): `agent-profile:<vendor>:default`
+  // and `agent-profile:<vendor>:<uuid>`. Splitting one for a label renders
+  // "default:" / "<uuid>:", so the label must come from the server-resolved
+  // display name or providerId, with the VENDOR segment as the only fallback.
+  it('labels agent snippets from the resolved identity, never the profile id tail (#1234)', async () => {
+    const customProfileId = 'agent-profile:claude:9f3ac1de-42b7-4d1a-8f00-1e2b';
+    await renderView({
+      topics: [
+        makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } }),
+        makeTopic({ id: 'topic:beta', display: { title: 'beta' } }),
+        makeTopic({ id: 'topic:gamma', display: { title: 'gamma' } }),
+      ],
+      sessions: [],
+      surfaces: [],
+      channelSummaries: [
+        // Built-in default profile: no stored display name, vendor on providerId.
+        makeChannelSummary({
+          id: 'topic:alpha',
+          lastMessage: {
+            seq: 3,
+            preview: 'built-in default reply',
+            senderId: builtInAgentProfileId('codex'),
+            senderKind: 'agent',
+            providerId: 'codex',
+            createdAt: NOW,
+          },
+        }),
+        // Custom profile: the authored name wins over the vendor.
+        makeChannelSummary({
+          id: 'topic:beta',
+          lastMessage: {
+            seq: 3,
+            preview: 'custom profile reply',
+            senderId: customProfileId,
+            senderKind: 'agent',
+            senderDisplayName: 'Reviewer Claude',
+            providerId: 'claude',
+            createdAt: NOW,
+          },
+        }),
+        // Neither field resolved (older row): fall back to the VENDOR segment.
+        makeChannelSummary({
+          id: 'topic:gamma',
+          lastMessage: {
+            seq: 3,
+            preview: 'unresolved reply',
+            senderId: customProfileId,
+            senderKind: 'agent',
+            createdAt: NOW,
+          },
+        }),
+      ],
+    });
+
+    const previews = [...container.querySelectorAll('.topic-row__preview')].map(
+      (node) => node.textContent
+    );
+    expect(previews).toEqual([
+      'codex: built-in default reply',
+      'Reviewer Claude: custom profile reply',
+      'claude: unresolved reply',
+    ]);
+    expect(previews.some((text) => text?.startsWith('default:'))).toBe(false);
+  });
+
+  // The summary preview is truncated server-side, so re-deriving the mention
+  // signal from it drops any `@operator` past the cut-off — exactly the long
+  // agent status update the attention lane exists for. The payload carries
+  // server-computed mention refs over the FULL body instead.
+  it('keeps the mention bonus when the mention sits past the preview cut-off', async () => {
+    useChannelActivityStore.setState({
+      latestSeqByChannel: { 'topic:alpha': 9, 'topic:beta': 9 },
+      lastReadByChannel: { 'topic:alpha': 3, 'topic:beta': 3 },
+      clampedAtByChannel: {},
+    });
+    const longStatus = `${'status update. '.repeat(40)}@operator please confirm`;
+    const truncatedPreview = longStatus.slice(0, 200);
+    expect(truncatedPreview).not.toContain('@operator');
+
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:alpha',
+          display: { title: 'alpha' },
+          linkedRefs: {},
+        }),
+        makeTopic({
+          id: 'topic:beta',
+          display: { title: 'beta' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      channelSummaries: [
+        makeChannelSummary({
+          id: 'topic:alpha',
+          latestSeq: 9,
+          lastMessage: {
+            seq: 9,
+            preview: 'no mention here',
+            senderId: builtInAgentProfileId('claude'),
+            senderKind: 'agent',
+            providerId: 'claude',
+            createdAt: NOW,
+          },
+        }),
+        makeChannelSummary({
+          id: 'topic:beta',
+          latestSeq: 9,
+          lastMessage: {
+            seq: 9,
+            preview: truncatedPreview,
+            senderId: builtInAgentProfileId('claude'),
+            senderKind: 'agent',
+            providerId: 'claude',
+            mentions: [{ raw: '@operator' }],
+            createdAt: NOW,
+          },
+        }),
+      ],
+    });
+
+    const attentionTitles = [
+      ...container.querySelectorAll('.topic-cockpit__attention-title'),
+    ].map((node) => node.textContent);
+    // Without the mention bonus these tie and sort alphabetically.
+    expect(attentionTitles).toEqual(['#beta', '#alpha']);
+  });
+
+  // #1287 item 6: the mobile cockpit used to fan out a limit-1 `channel-history`
+  // request per unread channel just to learn whether the newest message
+  // mentioned the operator. The channel list already carries that row, so the
+  // per-channel history calls must be gone.
+  it('drops the per-unread-channel history fan-out in the mobile cockpit (#1287)', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '3');
+    useUiStore.setState({ sidebarOpen: true });
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(max-width: 600px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    const requested: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const body =
+        url === '/channels'
+          ? {
+              channels: [
+                makeChannelSummary({
+                  id: 'topic:alpha',
+                  latestSeq: 9,
+                  lastMessage: {
+                    seq: 9,
+                    preview: '@operator please review',
+                    senderId: 'agent:claude',
+                    senderKind: 'agent',
+                    createdAt: NOW,
+                  },
+                }),
+              ],
+            }
+          : url.endsWith('/roster')
+            ? { roster: [] }
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        requested.some((url) => url.endsWith('/roster')) &&
+        useChannelActivityStore.getState().latestSeqByChannel['topic:alpha'] !==
+          undefined
+      ) {
+        break;
+      }
+      await act(async () => {
+        await flushQueryEffects();
+      });
+    }
+
+    // The cockpit reconcile path really ran (roster is per-channel and stays)...
+    expect(requested).toContain('/channels/topic%3Aalpha/roster');
+    // ...and the row is unread, which is exactly what used to trigger the
+    // limit-1 history fetch.
+    expect(
+      useChannelActivityStore.getState().latestSeqByChannel['topic:alpha']
+    ).toBe(9);
+    // One list call, and no per-channel message reads at all.
+    expect(requested.filter((url) => url === '/channels')).toHaveLength(1);
+    expect(requested.filter((url) => url.includes('/messages'))).toEqual([]);
     queryClient.clear();
   });
 
@@ -1180,8 +1580,12 @@ describe('TopicSidebarView', () => {
     expect(onToggleArchived).toHaveBeenCalled();
   });
 
-  it('restores an archived topic from its detail panel', async () => {
-    const onRestoreTopic = vi.fn();
+  // #1287: the sidebar no longer owns a restore affordance. Its only one lived
+  // in the advanced-mode detail panel and invalidated a different key set than
+  // the in-channel bar, so archived rows went stale on whichever surface did not
+  // run the restore. Opening the archived row shows the ungated composer restore
+  // bar at every breakpoint, and that bar drives the one shared mutation.
+  it('renders an archived topic without a sidebar restore button', async () => {
     await renderView({
       showAdvancedDetail: true,
       topics: [
@@ -1195,42 +1599,15 @@ describe('TopicSidebarView', () => {
       ],
       sessions: [],
       surfaces: [],
-      onRestoreTopic,
     });
     expect(container.querySelector('.topic-row.archived')).not.toBeNull();
-    const restore = container.querySelector(
-      '.topic-detail__restore'
-    ) as HTMLButtonElement;
-    expect(restore).not.toBeNull();
-    await act(async () => restore.click());
-    expect(onRestoreTopic).toHaveBeenCalledWith('topic:old');
-  });
-
-  it('disables the restore button while its restore is in flight', async () => {
-    const onRestoreTopic = vi.fn();
-    await renderView({
-      showAdvancedDetail: true,
-      topics: [
-        makeTopic({
-          id: 'topic:old',
-          workspaceId: 'ws:a',
-          status: 'archived',
-          display: { title: 'Archived lane' },
-          linkedRefs: {},
-        }),
-      ],
-      sessions: [],
-      surfaces: [],
-      onRestoreTopic,
-      restoringTopicId: 'topic:old',
-    });
-    const restore = container.querySelector(
-      '.topic-detail__restore'
-    ) as HTMLButtonElement;
-    expect(restore.disabled).toBe(true);
-    expect(restore.textContent).toContain('restoring');
-    await act(async () => restore.click());
-    expect(onRestoreTopic).not.toHaveBeenCalled();
+    expect(container.querySelector('.topic-detail')).not.toBeNull();
+    expect(container.querySelector('.topic-detail__restore')).toBeNull();
+    expect(
+      [...container.querySelectorAll('button')].some((btn) =>
+        (btn.textContent ?? '').includes('restore')
+      )
+    ).toBe(false);
   });
 
   it('selects linked sessions using the existing sidebar callback', async () => {

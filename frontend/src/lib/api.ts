@@ -43,6 +43,7 @@ import type {
 } from '../../../shared/workspace-topics.js';
 import type {
   ChannelImagePart,
+  ChannelMention,
   ChannelMessage,
   ChannelMessageId,
   ChannelMessagePart,
@@ -1728,6 +1729,15 @@ export interface ChannelSummaryView {
     preview: string;
     senderId: string;
     senderKind: 'human' | 'agent' | 'system';
+    /**
+     * Server-resolved sender label + vendor. `senderId` is a profile Actor id
+     * (`agent-profile:<vendor>:default`), so these are the ONLY safe sources for
+     * a display label — never strip segments off the id (#1234).
+     */
+    senderDisplayName?: string;
+    providerId?: string;
+    /** Mention refs for this row, computed over the full body server-side. */
+    mentions?: ChannelMention[];
     status: string;
     createdAt: string;
   } | null;

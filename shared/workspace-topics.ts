@@ -118,6 +118,15 @@ export interface WorkspaceTopicLinkedRefs {
   artifactIds?: ArtifactId[];
   /** WorkspaceSurface ids from shared/workspace-surfaces.ts. No duplicated surface fields. */
   workspaceSurfaceIds?: string[];
+  /**
+   * Private channel agent runtimes the binder bound to this topic (#1287).
+   * These are deliberately NOT Relay sessions — `ChannelAgentRuntime` is absent
+   * from session lists — so they never resolve to a session row and MUST NOT be
+   * written into `sessionIds`. They exist so a channel that has ever bound an
+   * agent counts as explicitly linked and stops guessing its participants from
+   * `routingDefaults` paths.
+   */
+  agentRuntimeIds?: string[];
 }
 
 export interface WorkspaceTopicState {
@@ -828,6 +837,11 @@ function parseLinkedRefs(
     'linkedRefs.artifactIds'
   );
   if (artifactIds) out.artifactIds = artifactIds;
+  const agentRuntimeIds = readStringList(
+    record['agentRuntimeIds'],
+    'linkedRefs.agentRuntimeIds'
+  );
+  if (agentRuntimeIds) out.agentRuntimeIds = agentRuntimeIds;
   const workspaceSurfaceIds = readStringList(
     record['workspaceSurfaceIds'],
     'linkedRefs.workspaceSurfaceIds'
@@ -1249,6 +1263,54 @@ export function workspaceTopicSessionLinkPatch(input: {
     return undefined;
   }
   return { linkedRefs };
+}
+
+/**
+ * Newest binder runtime links retained per topic. A channel rebinds a fresh
+ * runtime on every cold start, so the list is trimmed FIFO — it is a "this
+ * topic links explicitly" marker plus a short recency tail, never an audit log,
+ * and it must never grow into `WORKSPACE_TOPIC_MAX_REFS` territory.
+ */
+export const WORKSPACE_TOPIC_MAX_AGENT_RUNTIME_REFS = 16;
+
+/**
+ * Patch that records a binder-owned channel agent runtime on its topic (#1287).
+ * Returns `undefined` when the runtime is already linked so callers skip a
+ * no-op store write (and the `updatedAt` churn it would cause).
+ */
+export function workspaceTopicAgentRuntimeLinkPatch(input: {
+  topic: WorkspaceTopic;
+  runtimeId: string;
+}): WorkspaceTopicUpdateInput | undefined {
+  const runtimeId = input.runtimeId.trim();
+  if (!runtimeId) return undefined;
+  const current = input.topic.linkedRefs.agentRuntimeIds ?? [];
+  if (current.includes(runtimeId)) return undefined;
+  return {
+    linkedRefs: {
+      ...input.topic.linkedRefs,
+      agentRuntimeIds: [...current, runtimeId].slice(
+        -WORKSPACE_TOPIC_MAX_AGENT_RUNTIME_REFS
+      ),
+    },
+  };
+}
+
+/**
+ * True when a topic states who its participants are instead of leaving them to
+ * be inferred. Any linked session, WorkContext, or channel agent runtime counts:
+ * navigation surfaces use this to decide whether the legacy cwd/repoPath
+ * fallback is allowed to run at all (#1287).
+ */
+export function workspaceTopicHasExplicitParticipantLinks(
+  topic: WorkspaceTopic
+): boolean {
+  const linked = topic.linkedRefs;
+  return (
+    (linked.sessionIds?.length ?? 0) > 0 ||
+    (linked.workContextIds?.length ?? 0) > 0 ||
+    (linked.agentRuntimeIds?.length ?? 0) > 0
+  );
 }
 
 export function buildWorkspaceTopicRecord(input: {
