@@ -136,7 +136,9 @@ describe('useEventSocket repo-scoped refresh', () => {
         nodes = typeof updater === 'function' ? updater(nodes) : updater;
       }),
       getQueryData: vi.fn((queryKey: unknown[]) =>
-        queryKey[0] === 'hub-nodes' ? nodes : seedCache[JSON.stringify(queryKey)]
+        queryKey[0] === 'hub-nodes'
+          ? nodes
+          : seedCache[JSON.stringify(queryKey)]
       ),
       get nodes() {
         return nodes;
@@ -454,6 +456,17 @@ describe('useEventSocket repo-scoped refresh', () => {
       };
     }
 
+    /** Lists plus a held roster per channel, as an open cockpit would have. */
+    function seededListsWithRosters(
+      ...channelIds: string[]
+    ): Record<string, unknown> {
+      const seeded = seededLists();
+      for (const channelId of channelIds) {
+        seeded[JSON.stringify(['channel-roster', channelId])] = [];
+      }
+      return seeded;
+    }
+
     beforeEach(() => {
       useChannelActivityStore.setState({
         latestSeqByChannel: {},
@@ -533,9 +546,71 @@ describe('useEventSocket repo-scoped refresh', () => {
 
       const channelListInvalidations =
         queryClient.invalidateQueries.mock.calls.filter(
-          (call: [{ queryKey: unknown[] }]) => call[0].queryKey[0] === 'channels'
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
         );
       expect(channelListInvalidations).toHaveLength(1);
+    });
+
+    // A channel outside the capped `/channels` + `/workspace-topics` windows can
+    // never be materialized by refetching, and posting to it does not bump its
+    // topic `updated_at`, so an unbounded lane would refetch two O(channels)
+    // endpoints once per badge for the whole turn and still render nothing.
+    it('stops refetching for an unknown channel a completed refresh never materialized', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      for (let burst = 0; burst < 8; burst += 1) {
+        wsMock.onMessage?.({
+          type: 'channel-activity',
+          channelId: NEW_CHANNEL,
+          latestSeq: burst + 1,
+        });
+        vi.advanceTimersByTime(750);
+      }
+
+      const listInvalidations = () =>
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
+        ).length;
+      expect(listInvalidations()).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // A second, still-unknown channel is unaffected by the first one's mark.
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: 'topic:another-new',
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+      expect(listInvalidations()).toBe(2);
+    });
+
+    it('retries an unknown channel once the back-off window has passed', () => {
+      const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 1,
+      });
+      vi.advanceTimersByTime(750);
+      vi.advanceTimersByTime(60_000);
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: NEW_CHANNEL,
+        latestSeq: 2,
+      });
+      vi.advanceTimersByTime(750);
+
+      expect(
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channels'
+        )
+      ).toHaveLength(2);
     });
 
     it('routes new head seqs through the clamp-fenced seed path, never a direct store write', () => {
@@ -559,7 +634,10 @@ describe('useEventSocket repo-scoped refresh', () => {
     });
 
     it('refreshes the roster of every channel an agent status event touched', () => {
-      const queryClient = makeQueryClient(undefined, seededLists());
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a', 'ch-b')
+      );
       mount(queryClient);
 
       wsMock.onMessage?.({
@@ -596,8 +674,68 @@ describe('useEventSocket repo-scoped refresh', () => {
       ]);
     });
 
-    it('cleanup cancels pending list and roster timers', () => {
+    it('ignores agent status for a channel the client holds no roster for', () => {
       const queryClient = makeQueryClient(undefined, seededLists());
+      mount(queryClient);
+
+      wsMock.onMessage?.({
+        type: 'channel-agent-status',
+        channelId: 'ch-unwatched',
+        agentId: 'agent:claude',
+        status: 'thinking',
+        runtimeId: 'rt-1',
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+      // The status store still records it — only the refetch is suppressed.
+      expect(
+        useChannelAgentStatusStore.getState().statusByChannelAgent[
+          'ch-unwatched agent:claude'
+        ]
+      ).toBe('thinking');
+    });
+
+    // A turn walks spawning → thinking → streaming → waiting → idle over minutes.
+    // The debounce must land AFTER the burst, not once per transition through it.
+    it('collapses a walking status burst into one roster refetch', () => {
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a')
+      );
+      mount(queryClient);
+
+      for (const status of [
+        'spawning',
+        'thinking',
+        'streaming',
+        'waiting',
+        'idle',
+      ] as const) {
+        wsMock.onMessage?.({
+          type: 'channel-agent-status',
+          channelId: 'ch-a',
+          agentId: 'agent:claude',
+          status,
+          runtimeId: 'rt-1',
+        });
+        // Each transition lands inside the debounce window.
+        vi.advanceTimersByTime(600);
+      }
+      vi.advanceTimersByTime(750);
+
+      expect(
+        queryClient.invalidateQueries.mock.calls.filter(
+          (call: [{ queryKey: unknown[] }]) =>
+            call[0].queryKey[0] === 'channel-roster'
+        )
+      ).toHaveLength(1);
+    });
+
+    it('cleanup cancels pending list and roster timers', () => {
+      const queryClient = makeQueryClient(
+        undefined,
+        seededListsWithRosters('ch-a')
+      );
       mount(queryClient);
 
       wsMock.onMessage?.({

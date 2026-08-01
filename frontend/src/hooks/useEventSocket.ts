@@ -175,11 +175,29 @@ function invalidateReconnectQueries(queryClient: QueryClient): void {
  */
 const UNKNOWN_CHANNEL_LIST_REFRESH_MS = 750;
 /**
+ * Back-off before a channel a completed refresh FAILED to materialize is allowed
+ * to schedule another one. `GET /channels` and `/workspace-topics` are both
+ * capped list windows, so a channel outside that window can never be pulled in
+ * by refetching — without this the lane would re-fire on every subsequent badge
+ * (one per message create / stream open / stream complete) for the whole turn,
+ * on every open client, and still never render the row.
+ */
+const UNKNOWN_CHANNEL_REFRESH_BACKOFF_MS = 60_000;
+/** Hard cap on remembered unresolved channels so the map cannot grow unbounded. */
+const UNKNOWN_CHANNEL_BACKOFF_MAX_ENTRIES = 256;
+/**
  * Trailing-edge window for per-channel roster refetches. An agent turn walks
  * spawning → thinking → streaming → waiting → idle, so debouncing collapses a
  * whole turn into the single refetch that matters: the one after it settles.
  */
 const AGENT_STATUS_ROSTER_REFRESH_MS = 750;
+/**
+ * Ceiling on how long a continuous status burst may keep pushing the roster
+ * debounce out. Without it a turn that emits a transition faster than the window
+ * would starve the refetch forever; with it the roster lands at least this often
+ * mid-burst and once more after it settles.
+ */
+const AGENT_STATUS_ROSTER_MAX_WAIT_MS = 5_000;
 
 /** Topic-list caches the sidebar renders rows from (active + archived views). */
 const TOPIC_LIST_QUERY_KEYS: string[][] = [
@@ -294,9 +312,14 @@ export function useEventSocket({
     let pollInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
     let channelListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     let rosterInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
+    let rosterBurstStartedAt = 0;
     let eventSocketOpened = false;
     const pendingWebhookRepos = new Set<string>();
     const pendingRosterChannels = new Set<string>();
+    /** Channels the pending refresh is expected to materialize. */
+    const pendingUnknownChannels = new Set<string>();
+    /** Channel id → timestamp of the last refresh that failed to produce its row. */
+    const unresolvedChannelAttempts = new Map<string, number>();
 
     function invalidateScopedPrData(
       repoPaths: string[],
@@ -336,19 +359,77 @@ export function useEventSocket({
      * effect, so the per-channel clamp-epoch fence (#1287 Slice 1) still gates
      * every head seq. This lane never touches `latestSeqByChannel` itself.
      */
-    function scheduleChannelListRefresh(): void {
+    function scheduleChannelListRefresh(channelId: string): void {
+      const now = Date.now();
+      // A previous refresh already ran for this channel and the row still is not
+      // cached — the channel sits outside the list windows, so retrying now
+      // would burn the same O(channels) query for the same empty result.
+      const lastAttempt = unresolvedChannelAttempts.get(channelId);
+      if (
+        lastAttempt !== undefined &&
+        now - lastAttempt < UNKNOWN_CHANNEL_REFRESH_BACKOFF_MS
+      ) {
+        return;
+      }
+      pendingUnknownChannels.add(channelId);
       if (channelListRefreshTimer) return;
       channelListRefreshTimer = setTimeout(() => {
         channelListRefreshTimer = null;
+        const attemptedAt = Date.now();
+        for (const attemptedChannelId of pendingUnknownChannels) {
+          unresolvedChannelAttempts.set(attemptedChannelId, attemptedAt);
+        }
+        pendingUnknownChannels.clear();
+        pruneUnresolvedChannelAttempts(attemptedAt);
         queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
         queryClient.invalidateQueries({ queryKey: ['channels'] });
       }, UNKNOWN_CHANNEL_LIST_REFRESH_MS);
     }
 
-    /** Debounced per-channel roster refetch, batched across a status burst. */
+    /**
+     * Drop expired back-off marks, then oldest-first down to the cap. A channel
+     * whose row DID materialize never reaches the map lookup again anyway
+     * (`hasCachedChannelRow` short-circuits), so eviction only costs one extra
+     * refresh in the worst case.
+     */
+    function pruneUnresolvedChannelAttempts(now: number): void {
+      for (const [channelId, attemptedAt] of unresolvedChannelAttempts) {
+        if (now - attemptedAt >= UNKNOWN_CHANNEL_REFRESH_BACKOFF_MS) {
+          unresolvedChannelAttempts.delete(channelId);
+        }
+      }
+      while (
+        unresolvedChannelAttempts.size > UNKNOWN_CHANNEL_BACKOFF_MAX_ENTRIES
+      ) {
+        const oldest = unresolvedChannelAttempts.keys().next();
+        if (oldest.done) break;
+        unresolvedChannelAttempts.delete(oldest.value);
+      }
+    }
+
+    /**
+     * Debounced per-channel roster refetch, batched across a status burst. Only
+     * channels the client already holds a roster for are scheduled: a status
+     * event for a channel no surface has queried has nothing to refresh. The
+     * debounce RESETS on each status so a walking turn lands one refetch after
+     * it settles, capped by `AGENT_STATUS_ROSTER_MAX_WAIT_MS` so a continuous
+     * burst cannot starve it.
+     */
     function scheduleRosterRefresh(channelId: string): void {
+      if (
+        queryClient.getQueryData(['channel-roster', channelId]) === undefined
+      ) {
+        return;
+      }
       pendingRosterChannels.add(channelId);
-      if (rosterInvalidateTimer) return;
+      const now = Date.now();
+      if (!rosterInvalidateTimer) rosterBurstStartedAt = now;
+      else if (now - rosterBurstStartedAt >= AGENT_STATUS_ROSTER_MAX_WAIT_MS) {
+        // Burst has run past the max wait — let the armed timer fire.
+        return;
+      } else {
+        clearTimeout(rosterInvalidateTimer);
+      }
       rosterInvalidateTimer = setTimeout(() => {
         rosterInvalidateTimer = null;
         const channelIds = Array.from(pendingRosterChannels);
@@ -502,7 +583,7 @@ export function useEventSocket({
         // the lists only refetch on blur/refocus — never on a tab left focused.
         // Pull the new row in instead of waiting for a window event.
         if (!hasCachedChannelRow(queryClient, msg.channelId)) {
-          scheduleChannelListRefresh();
+          scheduleChannelListRefresh(msg.channelId);
         }
       },
       'channel-agent-status': (msg) => {
@@ -570,6 +651,8 @@ export function useEventSocket({
     return () => {
       pendingWebhookRepos.clear();
       pendingRosterChannels.clear();
+      pendingUnknownChannels.clear();
+      unresolvedChannelAttempts.clear();
       if (pollInvalidateTimer) {
         clearTimeout(pollInvalidateTimer);
         pollInvalidateTimer = null;

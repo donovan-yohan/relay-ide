@@ -89,9 +89,30 @@ export type AgentProfileContact = Pick<
   'id' | 'providerId' | 'displayName' | 'isDefault' | 'isBuiltIn'
 >;
 
+/** Namespace prefix every profile Actor id carries. */
+export const AGENT_PROFILE_ID_PREFIX = 'agent-profile:';
+
 /** Stable id for the built-in default profile of a vendor. Distinct from `<vendor>`. */
 export function builtInAgentProfileId(providerId: string): string {
-  return `agent-profile:${providerId}:default`;
+  return `${AGENT_PROFILE_ID_PREFIX}${providerId}:default`;
+}
+
+/**
+ * Vendor framework id embedded in a profile Actor id
+ * (`agent-profile:<vendor>:default` | `agent-profile:<vendor>:<uuid>`), or
+ * `null` for anything else. LAST-RESORT display fallback only: the authoritative
+ * vendor is `ChannelSenderRef.providerId` / `AgentProfile.providerId`, and no
+ * render path may derive a NAME from a profile id — the trailing segment is
+ * `default` or a uuid, never a label (#1234).
+ */
+export function parseAgentProfileProviderId(
+  profileActorId: string
+): string | null {
+  if (!profileActorId.startsWith(AGENT_PROFILE_ID_PREFIX)) return null;
+  const vendor = profileActorId
+    .slice(AGENT_PROFILE_ID_PREFIX.length)
+    .split(':')[0];
+  return vendor ? vendor : null;
 }
 
 /**

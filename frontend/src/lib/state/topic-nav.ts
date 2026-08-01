@@ -153,6 +153,18 @@ export interface ChannelRailSummary {
     preview: string;
     senderId: string;
     senderKind: 'human' | 'agent' | 'system';
+    /**
+     * Server-resolved label + vendor for the sender. The rail labels snippets
+     * from these; `senderId` is a profile Actor id and must never be split for
+     * a name (#1234).
+     */
+    senderDisplayName?: string;
+    providerId?: string;
+    /**
+     * Mention refs the server computed over the FULL body (not the truncated
+     * preview), so the cockpit's mention lane is not capped at 200 chars.
+     */
+    mentions?: { raw: string }[];
     createdAt: string;
   } | null;
 }

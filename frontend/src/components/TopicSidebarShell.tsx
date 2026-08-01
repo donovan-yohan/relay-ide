@@ -17,7 +17,10 @@ import {
   MessageSquare,
   TriangleAlert,
 } from 'lucide-react';
-import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
+import {
+  builtInAgentProfileId,
+  parseAgentProfileProviderId,
+} from '../../../shared/agent-profile.js';
 import { parseMentions } from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
@@ -119,8 +122,17 @@ const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
 const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
-/** Trailing-edge window for the channel-list refresh a live activity burst triggers. */
-const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 2_000;
+/**
+ * Trailing-edge window for the channel-list refresh a live activity burst
+ * triggers. `GET /channels` costs a per-channel summary + member read on the
+ * hub, and a streaming agent turn emits a badge per message create / stream
+ * open / stream complete, so the window is sized for "the rail's snippets stay
+ * roughly current" rather than per-message freshness: unread state already
+ * arrives live over the socket, and the open channel renders from its own
+ * timeline. Paired with the hidden-tab gate below, an unwatched turn costs zero
+ * refetches.
+ */
+const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 10_000;
 const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
 const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 
@@ -144,10 +156,15 @@ function useMobileCockpitViewport(): boolean {
 /**
  * Mention signal read off the channel-list summary (#1287). Replaces a limit-1
  * `channel-history` fetch per unread channel: the list payload already carries
- * the newest prose row's sender + preview, so one call covers the whole rail.
- * The summary preview is the newest row that carries prose (detail cards persist
- * an empty body), which is exactly the row an operator would read as "the last
- * message".
+ * the newest prose row's sender + mention refs, so one call covers the whole
+ * rail. The summary preview is the newest row that carries prose (detail cards
+ * persist an empty body), which is exactly the row an operator would read as
+ * "the last message".
+ *
+ * `lastMessage.mentions` is authoritative: the server computes it over the FULL
+ * body (persisted mentions when the write path resolved them), so a mention past
+ * the 200-char preview cut-off still counts. The preview parse below is only the
+ * fallback for a payload predating that field.
  */
 function summaryMentionsCurrentOperator(
   summary: ChannelRailSummary | null
@@ -156,10 +173,13 @@ function summaryMentionsCurrentOperator(
   if (!last) return false;
   if (last.senderId === CURRENT_OPERATOR_SENDER_ID) return false;
   // Browser-authored channel posts are canonically `human:operator` with the
-  // display name `Operator` (channel-chat-router deriveSender). The summary
-  // carries preview text only, so parse it with the shared parser rather than
-  // introducing a cockpit-only regex/tokenizer.
-  return parseMentions(last.preview).some(
+  // display name `Operator` (channel-chat-router deriveSender).
+  const mentions =
+    last.mentions ??
+    // Legacy payload without the field: parse the truncated preview with the
+    // shared parser rather than introducing a cockpit-only tokenizer.
+    parseMentions(last.preview);
+  return mentions.some(
     (mention) =>
       mention.raw.slice(1).toLowerCase() === CURRENT_OPERATOR_MENTION_NAME
   );
@@ -175,20 +195,45 @@ function channelRowPreview(summary: ChannelRailSummary | null): string | null {
   if (!last) return null;
   const text = last.preview.replace(/\s+/g, ' ').trim();
   if (!text) return null;
-  const sender = channelRowSenderLabel(last.senderId);
+  const sender = channelRowSenderLabel(last);
   return boundedTopicLatestStatus(sender ? `${sender}: ${text}` : text);
 }
 
 /**
- * Short sender label for a row snippet. Sender ids are `<kind>:<name>` refs
- * (`human:operator`, `agent:claude`); render the name half only, never the raw
- * routing id shape.
+ * Short sender label for a row snippet. NEVER derived by splitting `senderId`:
+ * an agent's id is its profile Actor id (`agent-profile:<vendor>:default`, or
+ * `agent-profile:<vendor>:<uuid>` for a custom profile), so the trailing segment
+ * is `default`/a uuid, not a name (#1234, `shared/channel-chat-protocol.ts`).
+ * Read the server-resolved `senderDisplayName`, then `providerId`, and only then
+ * fall back to the vendor segment of a profile id / the name half of a
+ * `human:<actorId>` ref.
  */
-function channelRowSenderLabel(senderId: string): string {
-  const name = senderId.includes(':')
-    ? (senderId.split(':').pop() ?? senderId)
+function channelRowSenderLabel(
+  last: NonNullable<ChannelRailSummary['lastMessage']>
+): string {
+  if (last.senderId === CURRENT_OPERATOR_SENDER_ID) return 'you';
+  const label =
+    last.senderDisplayName?.trim() ||
+    last.providerId?.trim() ||
+    senderLabelFromId(last.senderId);
+  return label === 'operator' ? 'you' : label;
+}
+
+/** Last-resort label for a sender id with no server-resolved name/vendor. */
+function senderLabelFromId(senderId: string): string {
+  // CLI-gateway actor rows are `agent:<actorId>` where the actor id may itself
+  // be a profile id (`deriveSender`), so unwrap that prefix first.
+  const withoutAgentPrefix = senderId.startsWith('agent:')
+    ? senderId.slice('agent:'.length)
     : senderId;
-  return name === 'operator' ? 'you' : name;
+  // `agent-profile:<vendor>:<rest>` — the VENDOR segment names the sender; the
+  // trailing segment is `default` or a uuid.
+  const vendor = parseAgentProfileProviderId(withoutAgentPrefix);
+  if (vendor) return vendor;
+  const separator = withoutAgentPrefix.indexOf(':');
+  return separator === -1
+    ? withoutAgentPrefix
+    : withoutAgentPrefix.slice(separator + 1);
 }
 
 /** Compact last-activity stamp for a hydrated row; null without a summary. */
@@ -2805,18 +2850,47 @@ export function TopicSidebarShell({
   // because the rail must not re-render on unrelated channel activity, and
   // trailing-edge throttled so a busy agent turn costs one refetch per window
   // instead of the removed per-channel history fetches.
+  //
+  // `GET /channels` is O(channels) server-side, so this lane is deliberately
+  // BACKGROUND-SILENT: a hidden tab records the pending refresh and fires it
+  // once on the way back to visible, instead of holding the hub at a steady
+  // refetch cadence for the whole length of an agent turn nobody is watching.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribe = useChannelActivityStore.subscribe((state, previous) => {
-      if (state.latestSeqByChannel === previous.latestSeqByChannel) return;
+    let pendingWhileHidden = false;
+    const documentRef = typeof document === 'undefined' ? null : document;
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: ['channels'] });
+    };
+    const schedule = () => {
+      if (documentRef?.hidden) {
+        // Nothing is rendering these rows: remember the debt and arm no timer.
+        pendingWhileHidden = true;
+        return;
+      }
       if (timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
-        void queryClient.invalidateQueries({ queryKey: ['channels'] });
+        if (documentRef?.hidden) {
+          pendingWhileHidden = true;
+          return;
+        }
+        refresh();
       }, CHANNEL_SUMMARY_REFRESH_THROTTLE_MS);
+    };
+    const onVisibilityChange = () => {
+      if (documentRef?.hidden || !pendingWhileHidden) return;
+      pendingWhileHidden = false;
+      refresh();
+    };
+    documentRef?.addEventListener('visibilitychange', onVisibilityChange);
+    const unsubscribe = useChannelActivityStore.subscribe((state, previous) => {
+      if (state.latestSeqByChannel === previous.latestSeqByChannel) return;
+      schedule();
     });
     return () => {
       unsubscribe();
+      documentRef?.removeEventListener('visibilitychange', onVisibilityChange);
       if (timer !== undefined) clearTimeout(timer);
     };
   }, [queryClient]);

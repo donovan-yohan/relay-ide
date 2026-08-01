@@ -979,6 +979,69 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(c?.lastMessage?.preview).toBe('second');
   });
 
+  // A summary sender id is a profile Actor id, so clients cannot label a row
+  // from it (#1234) — and the 200-char preview cannot answer "was I mentioned?"
+  // for a long agent status update. Both signals ride the payload instead.
+  it('carries the resolved sender identity and full-body mentions on a summary', () => {
+    const s = store();
+    const longStatus = `${'status update. '.repeat(40)}@operator please confirm`;
+    s.appendComplete({
+      channelId: 'topic:e',
+      sender: {
+        kind: 'agent',
+        id: builtInAgentProfileId('claude'),
+        providerId: 'claude',
+        displayName: 'Reviewer Claude',
+      },
+      text: longStatus,
+    });
+
+    const summary = s.getChannelSummary('topic:e');
+    expect(summary?.lastMessage?.senderId).toBe(
+      builtInAgentProfileId('claude')
+    );
+    expect(summary?.lastMessage?.senderDisplayName).toBe('Reviewer Claude');
+    expect(summary?.lastMessage?.providerId).toBe('claude');
+    // The mention sits well past the truncated preview...
+    expect(summary?.lastMessage?.preview).not.toContain('@operator');
+    // ...but is still visible to the rail.
+    expect(summary?.lastMessage?.mentions?.map((m) => m.raw)).toEqual([
+      '@operator',
+    ]);
+    const viaList = s
+      .listChannelSummaries()
+      .find((x) => x.channelId === 'topic:e');
+    expect(viaList?.lastMessage?.mentions?.map((m) => m.raw)).toEqual([
+      '@operator',
+    ]);
+  });
+
+  it('prefers persisted mentions over a re-parse of the body', () => {
+    const s = store();
+    s.appendComplete({
+      channelId: 'topic:f',
+      sender: HUMAN,
+      text: '@Reviewer Claude take a look',
+      mentions: [
+        {
+          raw: '@Reviewer Claude',
+          providerId: 'claude',
+          profileId: 'agent-profile:claude:reviewer',
+        },
+      ],
+    });
+
+    // Server-resolved contact-set mentions (#1236) survive verbatim — a plain
+    // re-parse of the body could not reproduce the multi-word name or profileId.
+    expect(s.getChannelSummary('topic:f')?.lastMessage?.mentions).toEqual([
+      {
+        raw: '@Reviewer Claude',
+        providerId: 'claude',
+        profileId: 'agent-profile:claude:reviewer',
+      },
+    ]);
+  });
+
   it('previews the newest prose row when a turn ends on a detail card', () => {
     const s = store();
     s.appendComplete({
