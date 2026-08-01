@@ -187,6 +187,8 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
       status: 'ok',
       lagMs: expect.any(Number),
       rss: expect.any(Number),
+      // Per-process identity a restart-waiting client compares against (#1285).
+      bootId: expect.any(String),
       ready: expect.any(Boolean),
       resume: {
         inProgress: expect.any(Boolean),
