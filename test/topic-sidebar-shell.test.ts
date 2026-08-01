@@ -1368,8 +1368,12 @@ describe('TopicSidebarView', () => {
     expect(onToggleArchived).toHaveBeenCalled();
   });
 
-  it('restores an archived topic from its detail panel', async () => {
-    const onRestoreTopic = vi.fn();
+  // #1287: the sidebar no longer owns a restore affordance. Its only one lived
+  // in the advanced-mode detail panel and invalidated a different key set than
+  // the in-channel bar, so archived rows went stale on whichever surface did not
+  // run the restore. Opening the archived row shows the ungated composer restore
+  // bar at every breakpoint, and that bar drives the one shared mutation.
+  it('renders an archived topic without a sidebar restore button', async () => {
     await renderView({
       showAdvancedDetail: true,
       topics: [
@@ -1383,42 +1387,15 @@ describe('TopicSidebarView', () => {
       ],
       sessions: [],
       surfaces: [],
-      onRestoreTopic,
     });
     expect(container.querySelector('.topic-row.archived')).not.toBeNull();
-    const restore = container.querySelector(
-      '.topic-detail__restore'
-    ) as HTMLButtonElement;
-    expect(restore).not.toBeNull();
-    await act(async () => restore.click());
-    expect(onRestoreTopic).toHaveBeenCalledWith('topic:old');
-  });
-
-  it('disables the restore button while its restore is in flight', async () => {
-    const onRestoreTopic = vi.fn();
-    await renderView({
-      showAdvancedDetail: true,
-      topics: [
-        makeTopic({
-          id: 'topic:old',
-          workspaceId: 'ws:a',
-          status: 'archived',
-          display: { title: 'Archived lane' },
-          linkedRefs: {},
-        }),
-      ],
-      sessions: [],
-      surfaces: [],
-      onRestoreTopic,
-      restoringTopicId: 'topic:old',
-    });
-    const restore = container.querySelector(
-      '.topic-detail__restore'
-    ) as HTMLButtonElement;
-    expect(restore.disabled).toBe(true);
-    expect(restore.textContent).toContain('restoring');
-    await act(async () => restore.click());
-    expect(onRestoreTopic).not.toHaveBeenCalled();
+    expect(container.querySelector('.topic-detail')).not.toBeNull();
+    expect(container.querySelector('.topic-detail__restore')).toBeNull();
+    expect(
+      [...container.querySelectorAll('button')].some((btn) =>
+        (btn.textContent ?? '').includes('restore')
+      )
+    ).toBe(false);
   });
 
   it('selects linked sessions using the existing sidebar callback', async () => {

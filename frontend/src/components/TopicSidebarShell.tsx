@@ -7,12 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import {
-  useMutation,
-  useQueries,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import {
   CircleAlert,
@@ -38,7 +33,6 @@ import {
   fetchWorkspaceTopics,
   interruptChannelAgent,
   postChannelMessage,
-  restoreWorkspaceTopic,
   searchWorkspaceTopics,
   sendSessionInput,
   type ChannelAgentStatus,
@@ -61,7 +55,6 @@ import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
-import { useToastStore } from '../lib/stores/toasts.js';
 import {
   channelAgentStatusKey,
   resolveEffectiveAgentStatus,
@@ -837,8 +830,6 @@ function TopicDetail({
   surfacesError,
   surfacesLoading,
   onSelectSession,
-  onRestoreTopic,
-  restoringTopicId,
   onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem;
@@ -848,8 +839,6 @@ function TopicDetail({
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
-  onRestoreTopic?: ((topicId: string) => void) | undefined;
-  restoringTopicId?: string | undefined;
   onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
@@ -883,16 +872,10 @@ function TopicDetail({
         <span>{topicRoomFreshnessLabel(item)}</span>
         <span>{topicRoomAnchorLabel(item)}</span>
         <span>updated {item.updatedAt}</span>
-        {item.lifecycleLabel === 'archived' && onRestoreTopic ? (
-          <button
-            type="button"
-            className="topic-detail__restore"
-            disabled={restoringTopicId === item.id}
-            onClick={() => onRestoreTopic(item.id)}
-          >
-            {restoringTopicId === item.id ? 'restoring…' : 'restore'}
-          </button>
-        ) : null}
+        {/* #1287: no restore button here. This panel only exists under advanced
+            mode, while opening the archived row puts the ungated composer
+            restore bar in front of the operator at every breakpoint — one
+            affordance, one shared mutation (`useRestoreTopicMutation`). */}
       </div>
 
       <div className="topic-room__action-band">
@@ -1392,8 +1375,6 @@ function TopicAdvancedDetailGate({
   surfacesError,
   surfacesLoading,
   onSelectSession,
-  onRestoreTopic,
-  restoringTopicId,
   onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem | undefined;
@@ -1403,8 +1384,6 @@ function TopicAdvancedDetailGate({
   surfacesError: boolean;
   surfacesLoading: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
-  onRestoreTopic?: ((topicId: string) => void) | undefined;
-  restoringTopicId?: string | undefined;
   onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   if (!item || !show) return null;
@@ -1417,8 +1396,6 @@ function TopicAdvancedDetailGate({
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
         onSelectSession={onSelectSession}
-        onRestoreTopic={onRestoreTopic}
-        restoringTopicId={restoringTopicId}
         onOpenEvidenceDashboard={onOpenEvidenceDashboard}
       />
     </div>
@@ -2240,8 +2217,6 @@ export function TopicSidebarView({
   onToggleSearchScope,
   showArchived = false,
   onToggleArchived,
-  onRestoreTopic,
-  restoringTopicId,
   showAdvancedDetail = false,
 }: {
   topics: WorkspaceTopic[];
@@ -2261,8 +2236,6 @@ export function TopicSidebarView({
   onToggleSearchScope?: (() => void) | undefined;
   showArchived?: boolean;
   onToggleArchived?: (() => void) | undefined;
-  onRestoreTopic?: ((topicId: string) => void) | undefined;
-  restoringTopicId?: string | undefined;
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
@@ -2735,8 +2708,6 @@ export function TopicSidebarView({
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
         onSelectSession={onSelectSession}
-        onRestoreTopic={onRestoreTopic}
-        restoringTopicId={restoringTopicId}
         {...(selectedRepoPath
           ? { onOpenEvidenceDashboard: openEvidenceDashboard }
           : {})}
@@ -2775,19 +2746,6 @@ export function TopicSidebarShell({
       : ['workspace-topics'],
     queryFn: () => fetchWorkspaceTopics({ includeArchived: showArchived }),
     staleTime: 30_000,
-  });
-  const restoreTopicMutation = useMutation({
-    mutationFn: (topicId: string) => restoreWorkspaceTopic(topicId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
-    },
-    onError: (err: unknown) => {
-      useToastStore
-        .getState()
-        .showToast(
-          err instanceof Error ? err.message : 'failed to restore topic'
-        );
-    },
   });
   const workspacesQuery = useIaWorkspacesQuery();
   const viewWorkspaces = useMemo<TopicNavWorkspace[]>(
@@ -2904,12 +2862,6 @@ export function TopicSidebarShell({
       }
       showArchived={showArchived}
       onToggleArchived={() => setShowArchived((prev) => !prev)}
-      onRestoreTopic={(topicId) => restoreTopicMutation.mutate(topicId)}
-      restoringTopicId={
-        restoreTopicMutation.isPending
-          ? restoreTopicMutation.variables
-          : undefined
-      }
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}

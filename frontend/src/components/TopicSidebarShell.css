@@ -1539,18 +1539,3 @@
 .topic-row.archived {
   opacity: 0.55;
 }
-
-.topic-detail__restore {
-  background: transparent;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  padding: 1px 8px;
-  cursor: pointer;
-}
-
-.topic-detail__restore:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
