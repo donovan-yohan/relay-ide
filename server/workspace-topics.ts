@@ -15,17 +15,21 @@ import {
   WORKSPACE_TOPICS_SEARCH_DEFAULT_LIMIT,
   WORKSPACE_TOPICS_SEARCH_MAX_RESULTS,
   WORKSPACE_TOPICS_SEARCH_QUERY_MAX,
+  WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
   WORKSPACE_TOPIC_MUTATION_POLICIES,
   WorkspaceTopicValidationError,
   applyWorkspaceTopicUpdate,
   archiveWorkspaceTopicRecord,
   restoreWorkspaceTopicRecord,
   assertWorkspaceTopicId,
+  buildWorkspaceTopicConflictDetails,
   buildWorkspaceTopicRecord,
   createWorkspaceTopicId,
   parseWorkspaceTopicCreateInput,
   parseWorkspaceTopicUpdateInput,
+  workspaceTopicConflictMessage,
   type WorkspaceTopic,
+  type WorkspaceTopicConflictDetails,
   type WorkspaceTopicCreateInput,
   type WorkspaceTopicListResponse,
   type WorkspaceTopicMutationKind,
@@ -78,6 +82,14 @@ interface TopicRow {
 
 interface SentinelTopicRow {
   id: string;
+  record_json: string;
+}
+
+/** Columns needed to describe a create-blocking row, record blob or not. */
+interface ConflictTopicRow {
+  id: string;
+  workspace_id: string;
+  status: string;
   record_json: string;
 }
 
@@ -147,6 +159,25 @@ class WorkspaceTopicStoreError extends Error {
   }
 }
 
+/**
+ * Wire shape for a store failure. NOT every store error is a conflict (#1287):
+ * `WORKSPACE_TOPIC_ALREADY_EXISTS` means "this exact id is taken", where 409 +
+ * the self-explaining body tells the caller to open/restore the blocker or pick
+ * another id. `WORKSPACE_TOPIC_STORE_FULL` is a capacity wall — the id is fine
+ * and re-posting the SAME body after back-off (or after the operator frees
+ * rows) is the only thing that can ever work — so answering it in the conflict
+ * family told a gateway/agent client to do the one thing guaranteed to fail,
+ * with `retryable: false` suppressing the back-off that would actually help.
+ */
+function storeErrorWire(reasonCode: string): {
+  code: RelayCliGatewayErrorCode;
+  retryable: boolean;
+} {
+  return reasonCode === WORKSPACE_TOPIC_ALREADY_EXISTS_REASON
+    ? { code: 'SESSION_CONFLICT', retryable: false }
+    : { code: 'SERVER_UNAVAILABLE', retryable: true };
+}
+
 export interface WorkspaceTopicListFilter {
   workspaceId?: string;
   includeArchived?: boolean;
@@ -188,6 +219,9 @@ export function createWorkspaceTopicStore(input: {
   const getStmt = db.prepare(
     'SELECT record_json FROM workspace_topics WHERE id = ?'
   );
+  const conflictStmt = db.prepare(
+    'SELECT id, workspace_id, status, record_json FROM workspace_topics WHERE id = ?'
+  );
   const countStmt = db.prepare('SELECT COUNT(*) AS n FROM workspace_topics');
   const trimArchivedStmt = db.prepare(`
     DELETE FROM workspace_topics
@@ -222,6 +256,24 @@ export function createWorkspaceTopicStore(input: {
 
   function storedCount(): number {
     return (countStmt.get() as { n: number }).n;
+  }
+
+  /**
+   * Describe the row that owns an id. The `status` COLUMN is authoritative (it
+   * is what `list()` filters on), and the record blob only supplies the title —
+   * an unparseable blob still yields a conflict that names the id, its status
+   * and the remedy.
+   */
+  function describeConflict(
+    row: ConflictTopicRow
+  ): WorkspaceTopicConflictDetails {
+    const record = parseRow(row);
+    return buildWorkspaceTopicConflictDetails({
+      id: row.id,
+      workspaceId: record?.workspaceId ?? row.workspace_id,
+      status: row.status === 'archived' ? 'archived' : 'active',
+      title: record?.display?.title,
+    });
   }
 
   function trimArchivedOverCap(): number {
@@ -273,11 +325,20 @@ export function createWorkspaceTopicStore(input: {
         create: createInput,
         now: clock(),
       });
-      if (getStmt.get(topic.id)) {
+      // #1287 item 8: the blocker is usually invisible to the caller — archived
+      // rows are filtered out of the default list and `list()` caps at 200 of
+      // the 500 stored — so an unqualified "already exists" left the operator
+      // stuck against a channel they could not find. Name the row and the way
+      // out (open it / restore it) in the 409 body.
+      const blocker = conflictStmt.get(topic.id) as
+        | ConflictTopicRow
+        | undefined;
+      if (blocker) {
+        const details = describeConflict(blocker);
         throw new WorkspaceTopicStoreError(
-          'workspace topic already exists',
-          'WORKSPACE_TOPIC_ALREADY_EXISTS',
-          { id: topic.id }
+          workspaceTopicConflictMessage(details),
+          WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
+          details
         );
       }
       assertCapacityForNewTopic();
@@ -416,16 +477,22 @@ function sendGatewayError(
   retryable = false,
   details?: Record<string, unknown>
 ): void {
+  // #1287: SESSION_CONFLICT is 409 here as it is in every other router
+  // (`statusForCode`, server/channel-chat-router.ts). This router answered 400,
+  // so a duplicate-id create was indistinguishable on the wire from a malformed
+  // body and no client could branch on the conflict.
   const status =
     code === 'NOT_FOUND'
       ? 404
       : code === 'FORBIDDEN'
         ? 403
-        : code === 'SERVER_UNAVAILABLE'
-          ? 503
-          : code === 'INTERNAL'
-            ? 500
-            : 400;
+        : code === 'SESSION_CONFLICT'
+          ? 409
+          : code === 'SERVER_UNAVAILABLE'
+            ? 503
+            : code === 'INTERNAL'
+              ? 500
+              : 400;
   res.status(status).json({
     error: { code, message, retryable, ...(details ? { details } : {}) },
   });
@@ -1419,7 +1486,8 @@ export function createWorkspaceTopicsRouter(
           return;
         }
         if (error instanceof WorkspaceTopicStoreError) {
-          sendGatewayError(res, 'SESSION_CONFLICT', error.message, false, {
+          const wire = storeErrorWire(error.reasonCode);
+          sendGatewayError(res, wire.code, error.message, wire.retryable, {
             reasonCode: error.reasonCode,
             ...error.details,
           });

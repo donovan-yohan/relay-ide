@@ -19,6 +19,7 @@ import {
   HttpError,
   type ChannelAgentStatus,
 } from '../../lib/api.js';
+import { isArchivedChannelPostError } from '../../lib/agent-channels.js';
 import { useRestoreTopicMutation } from '../../lib/hooks/use-restore-topic.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
@@ -136,9 +137,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     };
   }, [channelId]);
 
+  // #1287 item 8: a bare 409 from the post path is NOT proof the channel is
+  // archived — `isArchivedChannelPostError` reads the reason code, and it is
+  // shared with the launch path so both surfaces agree on what "archived" is.
   const archived =
-    channel?.archived === true ||
-    (postError instanceof HttpError && postError.status === 409);
+    channel?.archived === true || isArchivedChannelPostError(postError);
   const storeDown = postError instanceof HttpError && postError.status === 503;
 
   // Shared with every other restore affordance (#1287) so one restore refreshes

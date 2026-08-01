@@ -523,6 +523,81 @@ function readStringList(value: unknown, field: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/**
+ * Crockford base32 (no `i`/`l`/`o`/`u`), lowercased. A minted topic id is one
+ * opaque token in this alphabet, well inside the `topic:` grammar.
+ */
+const TOPIC_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+/** 10 base32 chars hold a 48-bit millisecond timestamp (ULID layout). */
+const TOPIC_ID_TIME_CHARS = 10;
+/** 16 base32 chars = 80 bits of entropy per id (ULID layout). */
+const TOPIC_ID_RANDOM_CHARS = 16;
+
+type TopicIdRandomSource = { getRandomValues(array: Uint8Array): unknown };
+
+function topicIdSymbol(value: number): string {
+  return TOPIC_ID_ALPHABET[value % TOPIC_ID_ALPHABET.length] ?? '0';
+}
+
+function encodeTopicIdTime(nowMs: number): string {
+  let value = Number.isFinite(nowMs) && nowMs > 0 ? Math.floor(nowMs) : 0;
+  let out = '';
+  for (let index = 0; index < TOPIC_ID_TIME_CHARS; index += 1) {
+    out = `${topicIdSymbol(value)}${out}`;
+    value = Math.floor(value / TOPIC_ID_ALPHABET.length);
+  }
+  return out;
+}
+
+function encodeTopicIdRandom(): string {
+  const bytes = new Uint8Array(TOPIC_ID_RANDOM_CHARS);
+  // Structural lookup, not the ambient `Crypto` type: this module is bundled
+  // into the browser AND imported by the hub, and the two lib sets declare
+  // `globalThis.crypto` differently.
+  const source = (globalThis as { crypto?: Partial<TopicIdRandomSource> })
+    .crypto;
+  if (typeof source?.getRandomValues === 'function') {
+    source.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  // 256 % 32 === 0, so folding a byte onto the alphabet is bias-free.
+  return Array.from(bytes, (byte) => topicIdSymbol(byte)).join('');
+}
+
+/**
+ * Mint an OPAQUE topic/channel id (#1287 slice 4).
+ *
+ * Channel identity is independent of the free-text title: two chats titled
+ * "Fix bug #12" in one workspace are two channels, duplicate titles are legal,
+ * and a rename is display-only (`channel_messages.channel_id` keys the
+ * transcript — `docs/LEARNINGS.md` L-20260729-topic-id-title-slug).
+ *
+ * Shape is ULID-like — `topic:` + 10 chars of millisecond timestamp + 16 chars
+ * of CSPRNG entropy — so ids sort by creation for debugging. NOTHING may parse
+ * the suffix: workspace membership lives in the `workspace_id` column, never in
+ * the id. Deterministic channels (DMs, WorkContext-derived rows) pass their own
+ * id in explicitly and are unaffected.
+ */
+export function mintWorkspaceTopicId(
+  nowMs: number = Date.now()
+): WorkspaceTopicId {
+  return `topic:${encodeTopicIdTime(nowMs)}${encodeTopicIdRandom()}`;
+}
+
+/**
+ * Deterministic topic id derived from a STABLE key (never a free-text title).
+ *
+ * This is the id-minting path for channels that must resolve to the same row on
+ * every recomputation — today only `deriveWorkspaceTopicsFromWorkContexts`,
+ * which keys off the WorkContext id. Free-titled chats use
+ * `mintWorkspaceTopicId`; DMs build their own id in `dm-channels.ts`.
+ *
+ * The slug charset deliberately excludes `~`, which reserves the `~` sub-
+ * namespace for DM ids (see `frontend/src/lib/dm-channels.ts`).
+ */
 export function createWorkspaceTopicId(
   localId: string,
   namespace?: string
@@ -558,6 +633,118 @@ export function assertWorkspaceTopicId(
     );
   }
   return value;
+}
+
+/**
+ * Reason code for a create blocked by an existing row on the SAME id (#1287).
+ *
+ * Since slice 4 mints opaque ids, the free-titled composer path cannot collide
+ * at all. What remains is the deliberate-id residue: DM ids
+ * (`dmChannelTopicId`), WorkContext-derived rows, and any explicit `id` posted
+ * through the gateway or a raw `POST /workspace-topics`.
+ */
+export const WORKSPACE_TOPIC_ALREADY_EXISTS_REASON =
+  'WORKSPACE_TOPIC_ALREADY_EXISTS';
+
+/** `open` when the blocking channel is active, `restore` when it is archived. */
+export type WorkspaceTopicConflictRemedy = 'open' | 'restore';
+
+/**
+ * Self-explaining 409 body for that conflict.
+ *
+ * The blocker is frequently INVISIBLE to the caller: archived rows are filtered
+ * out of the default list, and `list()` caps at
+ * `WORKSPACE_TOPICS_MAX_LIST_ENTRIES` (200) while the store keeps 500 — so an
+ * active row ranked 201+ by `updated_at` is missing from the list too. Naming
+ * the row and its remedy is therefore the whole point: without it the caller
+ * gets "already exists" about a channel it cannot find, and no way forward.
+ *
+ * A `type` alias, not an `interface`: this is carried as the `details` bag of a
+ * gateway error (`Record<string, unknown>`), and only type aliases get the
+ * implicit index signature that assignment needs.
+ */
+export type WorkspaceTopicConflictDetails = {
+  reasonCode: typeof WORKSPACE_TOPIC_ALREADY_EXISTS_REASON;
+  /** The requested id. Identical to `blockingTopicId` — this is a PK conflict. */
+  id: WorkspaceTopicId;
+  blockingTopicId: WorkspaceTopicId;
+  blockingTopicStatus: WorkspaceTopicStatus;
+  blockingTopicTitle: string;
+  blockingWorkspaceId: WorkspaceId;
+  remedy: WorkspaceTopicConflictRemedy;
+};
+
+/**
+ * Build the conflict body from whatever the store could recover about the
+ * blocker. `title` is optional on purpose: a row whose `record_json` failed to
+ * parse still has id/workspace/status columns, and a conflict that names the id
+ * beats one that names nothing.
+ *
+ * `blockingWorkspaceId` is normalized HERE, at the single point every producer
+ * goes through, because `parseWorkspaceTopicConflictDetails` normalizes on the
+ * way back in. Emitting the raw column instead would make the field round-trip
+ * to a DIFFERENT value than the server holds for any row still carrying a
+ * retired sentinel (`workspace:local` in → `ws:local` out), silently pointing a
+ * caller that navigates or groups by it at the wrong lane.
+ */
+export function buildWorkspaceTopicConflictDetails(blocker: {
+  id: WorkspaceTopicId;
+  workspaceId: WorkspaceId;
+  status: WorkspaceTopicStatus;
+  title?: string | undefined;
+}): WorkspaceTopicConflictDetails {
+  return {
+    reasonCode: WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
+    id: blocker.id,
+    blockingTopicId: blocker.id,
+    blockingTopicStatus: blocker.status,
+    blockingTopicTitle: blocker.title?.trim() || blocker.id,
+    blockingWorkspaceId: normalizeWorkspaceId(blocker.workspaceId),
+    remedy: blocker.status === 'archived' ? 'restore' : 'open',
+  };
+}
+
+/** Operator-facing message for a conflict body. Names the blocker AND the way out. */
+export function workspaceTopicConflictMessage(
+  details: WorkspaceTopicConflictDetails
+): string {
+  const blocker = `channel id ${details.blockingTopicId} is already taken by the ${details.blockingTopicStatus} channel "${details.blockingTopicTitle}"`;
+  return details.remedy === 'restore'
+    ? `${blocker} — restore that channel instead of creating a new one`
+    : `${blocker} — open that channel instead of creating a new one`;
+}
+
+/**
+ * Read a conflict body back off the wire. Returns null for any other error
+ * shape, so callers can branch on "this id is taken" without string-matching
+ * messages.
+ */
+export function parseWorkspaceTopicConflictDetails(
+  value: unknown
+): WorkspaceTopicConflictDetails | null {
+  const record = asRecord(value);
+  if (record['reasonCode'] !== WORKSPACE_TOPIC_ALREADY_EXISTS_REASON)
+    return null;
+  const blockingTopicId = record['blockingTopicId'];
+  const status = record['blockingTopicStatus'];
+  const remedy = record['remedy'];
+  if (!isWorkspaceTopicId(blockingTopicId)) return null;
+  if (status !== 'active' && status !== 'archived') return null;
+  if (remedy !== 'open' && remedy !== 'restore') return null;
+  const title = record['blockingTopicTitle'];
+  const workspaceId = record['blockingWorkspaceId'];
+  return {
+    reasonCode: WORKSPACE_TOPIC_ALREADY_EXISTS_REASON,
+    id: isWorkspaceTopicId(record['id']) ? record['id'] : blockingTopicId,
+    blockingTopicId,
+    blockingTopicStatus: status,
+    blockingTopicTitle:
+      typeof title === 'string' && title.trim() ? title : blockingTopicId,
+    blockingWorkspaceId: normalizeWorkspaceId(
+      typeof workspaceId === 'string' ? workspaceId : null
+    ),
+    remedy,
+  };
 }
 
 function assertNoSecretBearingDefaults(
@@ -1317,9 +1504,10 @@ export function buildWorkspaceTopicRecord(input: {
   create: WorkspaceTopicCreateInput;
   now: string;
 }): WorkspaceTopic {
-  const id =
-    input.create.id ??
-    createWorkspaceTopicId(input.create.title, input.create.workspaceId);
+  // #1287 slice 4: identity is opaque, never `slug(workspaceId + '-' + title)`.
+  // An explicit id still wins verbatim, which is how DMs and other
+  // deterministic channels keep resolving to the same row.
+  const id = input.create.id ?? mintWorkspaceTopicId(Date.parse(input.now));
   return {
     schemaVersion: WORKSPACE_TOPIC_SCHEMA_VERSION,
     id,

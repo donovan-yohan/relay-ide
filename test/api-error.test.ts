@@ -17,6 +17,10 @@ import {
   createConfirmationRetryRegistry,
   getConfirmationRetry,
 } from '../frontend/src/lib/confirmation-retries.js';
+import {
+  buildWorkspaceTopicConflictDetails,
+  workspaceTopicConflictMessage,
+} from '../shared/workspace-topics.js';
 
 describe('frontend api errors', () => {
   afterEach(() => {
@@ -137,6 +141,109 @@ describe('frontend api errors', () => {
         }),
       })
     );
+  });
+
+  // #1287 slice 4: the composer sends an id it owns and reuses across retries,
+  // so a 409 on the topic POST means THIS attempt already committed — a create
+  // that lost its response, or a double submit. Adopt the row rather than let
+  // the retry fork a second channel (the whole reason the id is client-owned).
+  it('adopts the blocking row when a retried room create collides', async () => {
+    const conflict = buildWorkspaceTopicConflictDetails({
+      id: 'topic:owned',
+      workspaceId: 'ws-main',
+      status: 'active',
+      title: 'Task room',
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workContext: { id: 'wc-topic' } }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'SESSION_CONFLICT',
+              message: workspaceTopicConflictMessage(conflict),
+              retryable: false,
+              details: conflict,
+            },
+          }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ topic: { id: 'topic:owned', title: 'Task room' } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await createWorkspaceTopicRoomAndMaybeLaunch({
+      room: {
+        topic: { id: 'topic:owned', workspaceId: 'ws-main', title: 'T' },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'created',
+      topic: { id: 'topic:owned' },
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/workspace-topics/topic%3Aowned',
+      expect.anything()
+    );
+  });
+
+  it('surfaces an archived blocker instead of silently adopting it', async () => {
+    const conflict = buildWorkspaceTopicConflictDetails({
+      id: 'topic:owned',
+      workspaceId: 'ws-main',
+      status: 'archived',
+      title: 'Task room',
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workContext: { id: 'wc-topic' } }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'SESSION_CONFLICT',
+              message: workspaceTopicConflictMessage(conflict),
+              retryable: false,
+              details: conflict,
+            },
+          }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    // The operator archived that channel on purpose; the conflict message
+    // already names restore as the way forward.
+    await expect(
+      createWorkspaceTopicRoomAndMaybeLaunch({
+        room: {
+          topic: { id: 'topic:owned', workspaceId: 'ws-main', title: 'T' },
+        },
+      })
+    ).rejects.toMatchObject({
+      stage: 'topic',
+      status: 409,
+      message: expect.stringContaining('restore that channel'),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('launches terminals with WorkspaceTopic and WorkContext links', async () => {

@@ -1,7 +1,9 @@
-import type {
-  WorkspaceTopicCreateInput,
-  WorkspaceTopicLaunchIntent,
-  WorkspaceTopicTemplateKind,
+import {
+  mintWorkspaceTopicId,
+  type WorkspaceTopicCreateInput,
+  type WorkspaceTopicId,
+  type WorkspaceTopicLaunchIntent,
+  type WorkspaceTopicTemplateKind,
 } from '../../../shared/workspace-topics.js';
 import type { CreateSessionBody, WorkspaceTopicLaunchFailure } from './api.js';
 import { isFrameworkAvailable } from './framework-availability.js';
@@ -198,6 +200,41 @@ export function buildTopicRoomLaunchBody(
     ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
     ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
     ...(routing.cwd ? { cwd: routing.cwd } : {}),
+  };
+}
+
+/**
+ * A client-owned id reservation for ONE create attempt (#1287 slice 4).
+ *
+ * The title used to be the id, which made `POST /workspace-topics` accidentally
+ * idempotent: a retried or double-submitted create 409'd as a no-op. Opaque ids
+ * removed that guard, and nothing else replaced it — every retry would mint a
+ * fresh row AND a fresh WorkContext. That is not merely untidy: the topic store
+ * caps at `WORKSPACE_TOPICS_MAX_STORED_ENTRIES` rows and reacts to the cap by
+ * DELETING the oldest archived topics, whose `channel_messages` the boot orphan
+ * sweep then erases — so an unguarded retry loop shreds archived transcripts.
+ *
+ * So the client mints the id ONCE per attempt and reuses it for every retry of
+ * that attempt: the second POST lands on the self-explaining 409 and adopts the
+ * blocker instead of forking a second channel. `release()` ends the attempt —
+ * a committed create, a reset, or an edited draft (a genuinely new intent).
+ *
+ * Deliberately a closure rather than a mint inside `buildTopicRoomCreateInput`:
+ * that builder is memoized over the draft, so minting there would hand out a
+ * new id on every re-render and defeat the idempotence it is meant to provide.
+ */
+export function createTopicIdReservation(
+  mint: () => WorkspaceTopicId = mintWorkspaceTopicId
+): { reserve(): WorkspaceTopicId; release(): void } {
+  let reserved: WorkspaceTopicId | null = null;
+  return {
+    reserve() {
+      reserved ??= mint();
+      return reserved;
+    },
+    release() {
+      reserved = null;
+    },
   };
 }
 

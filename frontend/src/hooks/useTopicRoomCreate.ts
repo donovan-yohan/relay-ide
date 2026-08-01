@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   WorkspaceTopicCreateInput,
@@ -8,7 +8,6 @@ import {
   createWorkspaceTopicRoomAndMaybeLaunch,
   fetchHubNodes,
   launchWorkspaceTopicRoom,
-  postChannelMessage,
   HttpError,
   type WorkspaceTopicLaunchFailure,
   type WorkspaceTopicRoomCreateResult,
@@ -16,14 +15,17 @@ import {
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
+  createTopicIdReservation,
   deriveTopicProviderOptions,
   effectiveDraftTitle,
   uniqueStrings,
   TOPIC_ROOM_DRAFT_EMPTY,
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
-import { getOrCreateDmChannel } from '../lib/agent-channels.js';
-import { createBrowserId } from '../lib/browserId.js';
+import {
+  getOrCreateDmChannel,
+  postOpeningPrompt,
+} from '../lib/agent-channels.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -63,6 +65,12 @@ export function useTopicRoomCreate({
     useState<WorkspaceTopicLaunchFailure | null>(null);
   const [createdRoom, setCreatedRoom] =
     useState<WorkspaceTopicRoomCreateResult | null>(null);
+  // #1287 slice 4: the create body carries a client-owned id so a retried or
+  // double-submitted POST collides with itself (409, adopt) instead of minting
+  // a second channel + WorkContext. Held in a ref, not derived state: it must
+  // survive every re-render of one attempt and change only when the attempt
+  // does. See `createTopicIdReservation`.
+  const topicIdReservation = useRef(createTopicIdReservation());
   const nodesQuery = useQuery({
     queryKey: ['hub-nodes'],
     queryFn: fetchHubNodes,
@@ -164,12 +172,16 @@ export function useTopicRoomCreate({
     setDraft((current) => ({ ...current, ...patch }));
     setCreatedRoom(null);
     setLaunchFailure(null);
+    // An edited draft is a NEW intent, not a retry of the failed one — so it
+    // gets its own channel id rather than colliding with the abandoned attempt.
+    topicIdReservation.current.release();
   }, []);
 
   const reset = useCallback(() => {
     setDraft(TOPIC_ROOM_DRAFT_EMPTY);
     setCreatedRoom(null);
     setLaunchFailure(null);
+    topicIdReservation.current.release();
   }, []);
 
   const selectLaunchedSession = useCallback(
@@ -237,37 +249,50 @@ export function useTopicRoomCreate({
             providerDisplayName: framework?.displayName ?? selectedProviderId,
             workspaceId: activeWorkspaceId,
           });
-          const prompt = draft.prompt.trim();
-          if (prompt) {
-            await postChannelMessage(topic.id, {
-              text: prompt,
-              clientMessageId: createBrowserId('chm'),
-            });
-          }
-          await queryClient.invalidateQueries({
-            queryKey: ['workspace-topics'],
-          });
+          // #1287 item 8: open the channel BEFORE posting. An archived DM — the
+          // plain read hands one back, no race needed — rejects the post with
+          // 409 CHANNEL_ARCHIVED, and navigating after the post turned that into
+          // a launch-failure dead end against a row the default sidebar filters
+          // out. Landing first puts the channel's restore bar on screen whatever
+          // the post does; `postOpeningPrompt` toasts the remedy.
           const ui = useUiStore.getState();
           ui.setActiveChannelId(topic.id);
           ui.setTopicComposerOpen(false);
           ui.setForceOrgCockpit(false);
-          setDraft(TOPIC_ROOM_DRAFT_EMPTY);
           // #1178: open the channel via the channel path ONLY. Do NOT pass the
           // topic id to onLaunched — in the mounted app that resolves to
           // handleSelectSession → setActiveSessionId, and the channel↔session
           // mutual-exclusion effect would clear the activeChannelId we just set
           // (flash-and-close) and persist a bogus 'topic:...' session key.
           // setActiveChannelId above is sufficient to render ChannelView.
+          const prompt = draft.prompt.trim();
+          if (prompt) await postOpeningPrompt(topic.id, prompt);
+          await queryClient.invalidateQueries({
+            queryKey: ['workspace-topics'],
+          });
+          setDraft(TOPIC_ROOM_DRAFT_EMPTY);
         } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
           setLaunchFailure({
             stage: 'session',
-            message: error instanceof Error ? error.message : String(error),
+            message,
             retryable: true,
             ...(error instanceof HttpError && error.code
               ? { code: error.code }
               : {}),
             ...(error instanceof HttpError ? { status: error.status } : {}),
           });
+          // The landing above is deliberately ordered BEFORE the post, so by the
+          // time the opening post can fail the composer is unmounted and
+          // ChannelView owns the screen — `launchFailure` has no surface left to
+          // render on. Without this toast a failed opening post was silent: the
+          // operator saw an empty channel and no reason. The archived case never
+          // reaches here; `postOpeningPrompt` swallows it and names its own
+          // remedy.
+          useToastStore
+            .getState()
+            .showToast(`could not start the chat — ${message}`);
         } finally {
           setSubmittingIntent(null);
         }
@@ -302,7 +327,13 @@ export function useTopicRoomCreate({
         }
         const result = await createWorkspaceTopicRoomAndMaybeLaunch({
           room: {
-            topic: previewCreate,
+            // Client-owned identity (#1287 slice 4). `previewCreate` stays a
+            // pure memo over the draft; the id is reserved here so every retry
+            // of THIS attempt reuses it.
+            topic: {
+              ...previewCreate,
+              id: topicIdReservation.current.reserve(),
+            },
             ...(taskRef ? { taskRef } : {}),
           },
           ...(submitIntent === 'create-and-launch' && launch
@@ -311,6 +342,10 @@ export function useTopicRoomCreate({
               }
             : {}),
         });
+        // The row is committed (or the blocker adopted), so the reservation is
+        // spent — a later create is a new intent and gets a new id. A THROWN
+        // create deliberately keeps it: that is the retry the id exists for.
+        topicIdReservation.current.release();
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['workspace-topics'] }),
           queryClient.invalidateQueries({ queryKey: ['workspace-surfaces'] }),
