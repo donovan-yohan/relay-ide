@@ -41,6 +41,11 @@ import {
   type WorkspaceSurfaceStore,
 } from './workspace-surfaces.js';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
+import {
+  LEGACY_WORKSPACE_ID_SENTINELS,
+  LOCAL_WORKSPACE_ID,
+  normalizeWorkspaceId,
+} from '../shared/workspace.js';
 import type {
   CliGatewayActorReadCommand,
   CliGatewayActorWriteCommand,
@@ -69,6 +74,66 @@ CREATE INDEX IF NOT EXISTS idx_workspace_topics_updated
 
 interface TopicRow {
   record_json: string;
+}
+
+interface SentinelTopicRow {
+  id: string;
+  record_json: string;
+}
+
+/**
+ * #1287 slice 2: retire the legacy placeholder `workspace_id` values that no
+ * `ia_workspaces` row can ever equal, repointing them at the hub-seeded local
+ * workspace so the sidebar can group these channels instead of dumping them in
+ * the orphan lane.
+ *
+ * HARD RULE (docs/LEARNINGS.md L-20260729-topic-id-title-slug): this rewrites
+ * the `workspace_id` COLUMN and the `workspaceId` FIELD of `record_json` only.
+ * It must NEVER touch `workspace_topics.id` — `channel_messages.channel_id`
+ * keys transcript history off that id, and the boot `sweepOrphans` pass would
+ * delete every message under a re-keyed topic. `updated_at` is deliberately
+ * left alone so this backfill cannot reshuffle the sidebar's recency order.
+ *
+ * Idempotent: after one pass no row matches the sentinel predicate again.
+ * Exported for direct unit testing against fixture rows.
+ */
+export function migrateSentinelWorkspaceIds(db: Database.Database): number {
+  const placeholders = LEGACY_WORKSPACE_ID_SENTINELS.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `SELECT id, record_json FROM workspace_topics
+       WHERE workspace_id IN (${placeholders})`
+    )
+    .all(...LEGACY_WORKSPACE_ID_SENTINELS) as SentinelTopicRow[];
+  if (rows.length === 0) return 0;
+  const updateStmt = db.prepare(
+    `UPDATE workspace_topics
+     SET workspace_id = @workspaceId, record_json = @recordJson
+     WHERE id = @id`
+  );
+  const apply = db.transaction((pending: SentinelTopicRow[]) => {
+    for (const row of pending) {
+      let recordJson = row.record_json;
+      try {
+        const record = JSON.parse(row.record_json) as WorkspaceTopic;
+        // Re-serialize with the SAME id: only the workspace pointer moves.
+        recordJson = JSON.stringify({
+          ...record,
+          workspaceId: LOCAL_WORKSPACE_ID,
+        });
+      } catch {
+        // Unparseable payload: still repoint the column so the row groups, and
+        // leave the blob byte-identical rather than inventing a record.
+      }
+      updateStmt.run({
+        id: row.id,
+        workspaceId: LOCAL_WORKSPACE_ID,
+        recordJson,
+      });
+    }
+  });
+  apply(rows);
+  return rows.length;
 }
 
 class WorkspaceTopicStoreError extends Error {
@@ -117,6 +182,7 @@ export function createWorkspaceTopicStore(input: {
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
+  migrateSentinelWorkspaceIds(db);
   const clock = input.now ?? defaultClock;
 
   const getStmt = db.prepare(
@@ -297,7 +363,12 @@ export function deriveWorkspaceTopicsFromWorkContexts(
   return contexts
     .slice(0, WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT)
     .map((context, index) => {
-      const workspaceId = context.anchors.project?.workspaceId ?? 'ws:derived';
+      // #1287: derived rows carry a REAL workspace id too. An unanchored
+      // context resolves to the hub-seeded local workspace instead of the old
+      // `ws:derived` placeholder, which the workspace rail could never match.
+      const workspaceId = normalizeWorkspaceId(
+        context.anchors.project?.workspaceId
+      );
       const session = context.anchors.session;
       const repo = context.anchors.repo;
       const worktree = context.anchors.worktree;

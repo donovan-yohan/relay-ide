@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 import type { ChannelMessageId } from '../../../../shared/channel-chat-protocol.js';
+import {
+  LOCAL_WORKSPACE_ID,
+  isLegacyWorkspaceIdSentinel,
+  isWorkspaceIdGrammar,
+} from '../../../../shared/workspace.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
@@ -157,6 +162,54 @@ function lsRemove(key: string): void {
   } catch {
     /* unavailable */
   }
+}
+
+/**
+ * #1287 slice 2: coerce a persisted active-workspace selection onto the id
+ * space the workspace rail can actually resolve.
+ *
+ * `claude-remote-active-workspace-group` is the only localStorage slot that
+ * holds a workspace id, and it was never validated — so it accumulated TWO
+ * incompatible id spaces. Before the channel era the launch handler wrote
+ * `config.workspaces` GROUP UUIDs into it; the channel-era rail writes IA
+ * workspace ids (`ws:<localId>`, minted only by `createWorkspaceId`). The
+ * retired `workspace:local` / `ws:derived` sentinels could land here too.
+ *
+ * Anything outside the `ws:<localId>` grammar can never match an
+ * `ia_workspaces` row, and it is not inert: every channel-create path resolves
+ * its workspace from `activeWorkspaceId`, so a stale group UUID mints channels
+ * (including DMs, whose id is DERIVED from it) inside a workspace that does not
+ * exist. After item 1 of this slice a local workspace is always seeded, so
+ * `LOCAL_WORKSPACE_ID` is the only legal fallback.
+ *
+ * An absent/blank slot stays `null` — that means "no lane selected", which is a
+ * legal state the rail renders as the unscoped view.
+ */
+export function normalizePersistedWorkspaceId(
+  raw: string | null
+): string | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // `ws:derived` satisfies the `ws:<localId>` grammar by accident, so the
+  // sentinel check has to come first or it would survive as a real id.
+  if (isLegacyWorkspaceIdSentinel(trimmed)) return LOCAL_WORKSPACE_ID;
+  return isWorkspaceIdGrammar(trimmed) ? trimmed : LOCAL_WORKSPACE_ID;
+}
+
+/**
+ * Read + migrate the persisted active workspace. The coercion is written back
+ * so it is paid once rather than on every boot, and so nothing else can read a
+ * dead id out of the slot afterwards.
+ */
+export function loadPersistedActiveWorkspaceId(): string | null {
+  const raw = ls(ACTIVE_WORKSPACE_GROUP_KEY);
+  const normalized = normalizePersistedWorkspaceId(raw);
+  if (raw !== null && normalized !== raw) {
+    if (normalized === null) lsRemove(ACTIVE_WORKSPACE_GROUP_KEY);
+    else lsSave(ACTIVE_WORKSPACE_GROUP_KEY, normalized);
+  }
+  return normalized;
 }
 
 function loadSidebarWidth(): number {
@@ -654,7 +707,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   sidebarCollapsed: ls(SIDEBAR_COLLAPSED_KEY) === 'true',
   searchQuery: '',
   activeRepoPath: ls(ACTIVE_WORKSPACE_KEY),
-  activeWorkspaceId: ls(ACTIVE_WORKSPACE_GROUP_KEY),
+  activeWorkspaceId: loadPersistedActiveWorkspaceId(),
   terminalFontSize: loadTerminalFontSize(),
   hasHardwareKeyboard: false,
   keyboardOpen: false,

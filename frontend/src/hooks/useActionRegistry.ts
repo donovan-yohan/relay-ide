@@ -136,6 +136,7 @@ import type { CustomizeSessionDialogHandle } from '../components/dialogs/Customi
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
 import { activeWorkNextAttentionTarget } from '../lib/active-work-control.js';
+import { normalizeWorkspaceId } from '../../../shared/workspace.js';
 
 const logger = createLogger('ActionRegistry');
 
@@ -516,24 +517,24 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         },
       },
       {
-        // Resolve the active workspace-group id and open its agent channel.
+        // Resolve the active IA workspace id and open its agent channel.
         ...workspaceLaunch,
         handler: () => {
-          // `when`/`disabledReason` gate on ctx.workspacePath (an active repo
-          // path), but the launch handler keys on activeWorkspaceId (a
-          // workspace-group id). Those can diverge — a repo can be active before
-          // any workspace group has been launched. Fail closed VISIBLY rather
-          // than silently no-op so a click never appears to do nothing.
-          const workspaceId = useUiStore.getState().activeWorkspaceId;
-          if (!workspaceId) {
-            logger.error(
-              'workspace launch requested with no active workspace group'
-            );
-            alert(
-              'No active workspace group to launch. Open or launch a workspace first.'
-            );
-            return;
-          }
+          // #1287 slice 2 — id spaces. `activeWorkspaceId` is an IA workspace id
+          // (`ws:<localId>`), which is exactly what the channel path
+          // (`handleLaunchWorkspaceSession` -> `openAgentChannel`) consumes. The
+          // stable `workspaces.launch` gateway verb keys on the SEPARATE
+          // `config.workspaces` group-UUID space and is only ever invoked with an
+          // explicit id from the CLI/agent surface; browser active state must
+          // never be fed into it.
+          //
+          // `when`/`disabledReason` still gate on ctx.workspacePath (an active
+          // repo path), which can diverge from the active lane. That divergence
+          // is now benign: a local workspace is always seeded, so normalizing
+          // resolves a real id instead of dead-ending on an empty selection.
+          const workspaceId = normalizeWorkspaceId(
+            useUiStore.getState().activeWorkspaceId
+          );
           handleLaunchWorkspaceSession(workspaceId);
         },
       },

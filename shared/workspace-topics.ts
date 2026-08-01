@@ -1,5 +1,6 @@
 import type { NodeId } from './identity.js';
 import type { WorkspaceId } from './workspace.js';
+import { normalizeWorkspaceId } from './workspace.js';
 import type { ArtifactId, TaskRef, WorkContextId } from './work-context.js';
 
 // Workspace topics (#1022): typed backend/shared foundation for the
@@ -936,10 +937,19 @@ export function parseWorkspaceTopicCreateInput(
   options: WorkspaceTopicValidationOptions = {}
 ): WorkspaceTopicCreateInput {
   const record = asRecord(raw);
-  const workspaceId = readRequiredString(
-    record['workspaceId'],
-    'workspaceId',
-    WORKSPACE_TOPIC_REF_MAX
+  // #1287 slice 2: the create boundary can no longer persist a workspace
+  // pointer that `ia_workspaces` is structurally unable to match. The legacy
+  // placeholders (`workspace:local`, `ws:derived`) and blanks resolve to the
+  // hub-seeded local workspace; `ws:<localId>` ids and caller-chosen legacy
+  // refs pass through (see `normalizeWorkspaceId`). Only the POINTER moves — an
+  // explicit `id` in the body is still honored verbatim below, so a client
+  // re-deriving an existing channel id keeps hitting the same row.
+  const workspaceId = normalizeWorkspaceId(
+    readRequiredString(
+      record['workspaceId'],
+      'workspaceId',
+      WORKSPACE_TOPIC_REF_MAX
+    )
   );
   const title = readRequiredString(
     record['title'],

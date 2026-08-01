@@ -708,13 +708,22 @@ describe('selectChannelRailTree', () => {
     expect(tree.orphans.unread).toBe(true);
   });
 
-  it('drops empty groups and keeps every root in orphans without workspaces', () => {
+  // #1287: this used to assert `tree.groups` was `[]` for a workspace with no
+  // channels. That contract made a freshly added workspace invisible until a
+  // chat existed inside it — impossible, because the lane needed to target the
+  // create was the very thing being dropped. A known workspace is now always a
+  // lane; only its emptiness changes what the lane renders.
+  it('keeps a known workspace with zero channels as an empty lane', () => {
     const tree = selectChannelRailTree(
       model(),
       [makeWorkspace({ id: 'ws:empty' })],
       { unreadByChannel: {} }
     );
-    expect(tree.groups).toEqual([]);
+    expect(tree.groups.map((group) => group.id)).toEqual(['ws:empty']);
+    expect(tree.groups[0]!.empty).toBe(true);
+    expect(tree.groups[0]!.channels).toEqual([]);
+    expect(tree.groups[0]!.directMessages).toEqual([]);
+    expect(tree.groups[0]!.unread).toBe(false);
     expect(tree.orphans.channels.map((node) => node.item.id)).toEqual([
       'topic:a1',
       'topic:b1',
@@ -723,6 +732,28 @@ describe('selectChannelRailTree', () => {
     expect(tree.orphans.directMessages.map((node) => node.item.id)).toEqual([
       dmA,
       dmOrphan,
+    ]);
+  });
+
+  it('orders an empty lane among populated ones and flags only the empty one', () => {
+    const tree = selectChannelRailTree(
+      model(),
+      [
+        makeWorkspace({ id: 'ws:a', name: 'A', order: 2 }),
+        makeWorkspace({ id: 'ws:empty', name: 'Empty', order: 1 }),
+        makeWorkspace({ id: 'ws:b', name: 'B', order: 0 }),
+      ],
+      { unreadByChannel: {} }
+    );
+    expect(tree.groups.map((group) => group.id)).toEqual([
+      'ws:b',
+      'ws:empty',
+      'ws:a',
+    ]);
+    expect(tree.groups.map((group) => group.empty)).toEqual([
+      false,
+      true,
+      false,
     ]);
   });
 });

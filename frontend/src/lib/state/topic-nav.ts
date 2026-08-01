@@ -154,6 +154,12 @@ export interface ChannelRailWorkspaceGroup extends ChannelRailSection {
   color: string | null;
   icon: string | null;
   pinned: boolean;
+  /**
+   * True when this known workspace holds no root channels and no DMs yet. The
+   * lane still renders (#1287) — renderers show a start-a-chat affordance
+   * instead of the channel lists.
+   */
+  empty: boolean;
 }
 
 export interface ChannelRailTree {
@@ -173,6 +179,11 @@ export interface ChannelRailActivitySnapshot {
  * sections. Descendants stay nested under their canonical root instead of being
  * flattened into workspace peers. Unread is computed once from the same
  * activity snapshot for both consumers.
+ *
+ * EVERY known workspace becomes a lane, including one holding zero channels
+ * (#1287). Dropping an empty bucket made a freshly added workspace invisible
+ * until a chat existed inside it — impossible while the lane it needed was
+ * never rendered, and therefore never selectable as the create target.
  */
 export function selectChannelRailTree(
   model: TopicNavModel,
@@ -227,19 +238,18 @@ export function selectChannelRailTree(
       a.id.localeCompare(b.id)
   );
 
-  const groups: ChannelRailWorkspaceGroup[] = ordered.flatMap((workspace) => {
-    const ids = rootsByWorkspace.get(workspace.id) ?? [];
-    if (ids.length === 0) return [];
-    return [
-      {
-        id: workspace.id,
-        title: workspace.name,
-        color: workspace.color,
-        icon: workspace.icon,
-        pinned: workspace.pinned,
-        ...partition(ids),
-      },
-    ];
+  const groups: ChannelRailWorkspaceGroup[] = ordered.map((workspace) => {
+    const section = partition(rootsByWorkspace.get(workspace.id) ?? []);
+    return {
+      id: workspace.id,
+      title: workspace.name,
+      color: workspace.color,
+      icon: workspace.icon,
+      pinned: workspace.pinned,
+      ...section,
+      empty:
+        section.channels.length === 0 && section.directMessages.length === 0,
+    };
   });
 
   return {

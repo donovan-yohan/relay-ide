@@ -10,6 +10,7 @@ import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import FileBrowser, { type FileBrowserHandle } from '../FileBrowser.js';
 import { addWorkspacesBulk, fetchHubNodes } from '../../lib/api.js';
+import { resolveBulkAddLanes } from '../../lib/bulk-add-lanes.js';
 import { createTerminalSession } from '../../lib/session-utils.js';
 import {
   cleanCwd,
@@ -29,6 +30,10 @@ export interface AddWorkspaceDialogHandle {
 }
 
 interface Props {
+  /** Fired once the hub's project registry changed. `paths` are only the lanes
+   *  the sidebar can actually reveal, and it is legitimately EMPTY when a path
+   *  was registered but its lane is archived — the handler must still refresh
+   *  its read models and simply skip the auto-select. */
   onWorkspacesAdded: (paths: string[]) => void;
   onClose?: (() => void) | undefined;
 }
@@ -149,25 +154,33 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           }
           const result = await addWorkspacesBulk(selectedPaths);
 
-          if (result.errors.length > 0 && result.added.length === 0) {
-            setError(
-              result.errors.map((e) => `${e.path}: ${e.error}`).join('; ')
-            );
+          // #1287 slice 2: a re-add resolves a real lane even though the hub
+          // reports "Already exists", and an archived lane resolves but is
+          // never rendered — see `resolveBulkAddLanes` for the full rules.
+          const { laneReadyPaths, registeredPaths, blockers } =
+            resolveBulkAddLanes(result);
+
+          // Refresh and reveal are separate outcomes. Whenever the hub
+          // registered anything we must refresh the read models, even with
+          // nothing revealable (every resolved lane archived) — otherwise the
+          // repo is live on the hub and stale in this client until a reload.
+          // Revealing (auto-select) stays scoped to the lane-ready paths.
+          if (registeredPaths.length > 0 || laneReadyPaths.length > 0) {
+            onWorkspacesAdded(laneReadyPaths);
+          }
+
+          if (laneReadyPaths.length === 0 && blockers.length > 0) {
+            setError(blockers.map((e) => `${e.path}: ${e.error}`).join('; '));
             setSubmitting(false);
             return;
           }
 
-          if (result.errors.length > 0 && result.added.length > 0) {
-            // partial success — notify about added paths but keep dialog open
-            // so the user can see and dismiss the failures
-            onWorkspacesAdded(result.added.map((a) => a.path));
-            setPartialErrors(result.errors);
+          if (blockers.length > 0) {
+            // partial success — the resolved lanes are already surfaced, but
+            // keep the dialog open so the user can see and dismiss the failures
+            setPartialErrors(blockers);
             setSubmitting(false);
             return;
-          }
-
-          if (result.added.length > 0) {
-            onWorkspacesAdded(result.added.map((a) => a.path));
           }
 
           shellRef.current?.close();
@@ -326,7 +339,12 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
               </p>
               <ul className="add-workspace-partial-errors-list">
                 {partialErrors.map((e) => (
-                  <li key={e.path} className="add-workspace-error-msg">
+                  // One path can carry two notices (e.g. "Already exists" plus
+                  // an archived lane), so the key pairs both fields.
+                  <li
+                    key={`${e.path}::${e.error}`}
+                    className="add-workspace-error-msg"
+                  >
                     {e.path}: {e.error}
                   </li>
                 ))}

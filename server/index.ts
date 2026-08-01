@@ -95,6 +95,7 @@ import {
 } from './work-contexts.js';
 import { initIaStore, type IaStore } from './ia-store.js';
 import { runBootWorkspaceMigration } from './ia-workspace-migration.js';
+import { runBootLocalWorkspaceSeed } from './local-workspace-seed.js';
 import {
   initContextPacketStore,
   type ContextPacketStore,
@@ -1522,6 +1523,11 @@ async function main(): Promise<void> {
         configPath: CONFIG_PATH,
       }),
   });
+  // #1287 slice 2: every boot guarantees ONE real `ia_workspaces` row for local
+  // work, so channel-create paths have a genuine workspace id to fall back to
+  // instead of a placeholder the workspace rail can never match. Create-if-
+  // absent (no marker) — a lost marker must never leave the hub without it.
+  runBootLocalWorkspaceSeed({ iaStore });
   if (channelMessageStore) {
     try {
       channelMessageStore.sweepStaleStreaming();
@@ -3104,6 +3110,9 @@ async function main(): Promise<void> {
   // Mount workspace router — rebuild watchers when workspaces are added or removed
   const workspaceRouter = createWorkspaceRouter({
     configPath: CONFIG_PATH,
+    // #1287 slice 2: bulk add-project files each repo under a real
+    // `ia_workspaces` lane, which is what the sidebar actually renders.
+    iaStore,
     onWorktreeCreated: () => broadcastEvent('worktrees-changed'),
     onWorkspacesChanged: () => {
       setImmediate(() => {

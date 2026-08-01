@@ -7,6 +7,7 @@ import type { CreateSessionBody, WorkspaceTopicLaunchFailure } from './api.js';
 import { isFrameworkAvailable } from './framework-availability.js';
 import type { FrameworkInfo } from './types.js';
 import type { taskRefFromDraft } from './topic-task-ref.js';
+import { normalizeWorkspaceId } from '../../../shared/workspace.js';
 
 /**
  * #1058: pure draft/build helpers for codex-style topic creation, shared by
@@ -221,7 +222,11 @@ export function buildTopicRoomCreateInput(input: {
   const prompt = input.draft.prompt.trim();
 
   return {
-    workspaceId: input.workspaceId ?? 'workspace:local',
+    // #1287 slice 2: resolve the active IA workspace, falling back to the
+    // hub-seeded local workspace. Never the old `workspace:local` sentinel —
+    // that string can never equal an `ia_workspaces` id, so every channel it
+    // stamped landed in the sidebar's orphan lane.
+    workspaceId: normalizeWorkspaceId(input.workspaceId),
     title: input.draft.title.trim() || 'Untitled chat',
     ...(prompt ? { description: prompt.slice(0, 240) } : {}),
     promptDefaults: {

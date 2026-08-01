@@ -35,6 +35,11 @@ import {
   type WorkContextResumePacketOptions,
 } from './work-context-resume-packet.js';
 import type { WorkContextArtifactStore } from './work-context-artifacts.js';
+import {
+  LEGACY_WORKSPACE_ID_SENTINELS,
+  LOCAL_WORKSPACE_ID,
+  normalizeWorkspaceId,
+} from '../shared/workspace.js';
 
 const logger = createLogger('work-contexts');
 
@@ -72,6 +77,31 @@ const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set([
   'env',
   'secrets',
 ]);
+
+/**
+ * SQL mirror of `normalizeWorkspaceId` (#1287).
+ *
+ * `deriveWorkspaceTopicsFromWorkContexts` stamps an unanchored context with
+ * `normalizeWorkspaceId(undefined)` = `LOCAL_WORKSPACE_ID`, so the workspace
+ * filter has to resolve the same way or the two views disagree: a scoped
+ * `GET /workspace-topics?workspaceId=ws:local` would return zero derived topics
+ * while the unscoped list groups those exact rows under the Local lane. The old
+ * `'ws:derived'` COALESCE default matched a value nothing emits any more.
+ *
+ * The alias list is derived from the shared constants rather than re-typed, so
+ * retiring another sentinel changes one place. Every entry is a compile-time
+ * constant with no quote characters; the escape below is belt-and-braces.
+ */
+const LOCAL_WORKSPACE_SQL_ALIASES = ['', ...LEGACY_WORKSPACE_ID_SENTINELS]
+  .map((alias) => `'${alias.replace(/'/g, "''")}'`)
+  .join(', ');
+
+const NORMALIZED_WORKSPACE_ID_SQL = `CASE
+       WHEN NOT json_valid(context_json) THEN NULL
+       WHEN COALESCE(TRIM(json_extract(context_json, '$.anchors.project.workspaceId')), '')
+         IN (${LOCAL_WORKSPACE_SQL_ALIASES}) THEN @localWorkspaceId
+       ELSE TRIM(json_extract(context_json, '$.anchors.project.workspaceId'))
+     END`;
 
 const SESSION_TAB_KINDS = new Set<string>([
   'agent',
@@ -415,19 +445,13 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
   const selectWorkspaceContexts = db.prepare(
     `SELECT id, title, source, context_json, created_at, updated_at
      FROM work_contexts
-     WHERE CASE
-       WHEN json_valid(context_json) THEN COALESCE(json_extract(context_json, '$.anchors.project.workspaceId'), 'ws:derived')
-       ELSE NULL
-     END = @workspaceId
+     WHERE ${NORMALIZED_WORKSPACE_ID_SQL} = @workspaceId
      ORDER BY updated_at DESC, created_at DESC`
   );
   const selectLimitedWorkspaceContexts = db.prepare(
     `SELECT id, title, source, context_json, created_at, updated_at
      FROM work_contexts
-     WHERE CASE
-       WHEN json_valid(context_json) THEN COALESCE(json_extract(context_json, '$.anchors.project.workspaceId'), 'ws:derived')
-       ELSE NULL
-     END = @workspaceId
+     WHERE ${NORMALIZED_WORKSPACE_ID_SQL} = @workspaceId
      ORDER BY updated_at DESC, created_at DESC LIMIT @limit`
   );
   const upsertContext = db.prepare(
@@ -527,14 +551,23 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
         options.limit && options.limit > 0
           ? Math.floor(options.limit)
           : undefined;
-      const rows = options.workspaceId
+      // Both sides of the comparison go through `normalizeWorkspaceId` (#1287):
+      // the row side in SQL, the query side here. A caller asking for a retired
+      // sentinel therefore still reaches the rows that now resolve to the
+      // seeded local workspace, instead of silently matching nothing.
+      const workspaceId = options.workspaceId
+        ? normalizeWorkspaceId(options.workspaceId)
+        : undefined;
+      const rows = workspaceId
         ? limit
           ? (selectLimitedWorkspaceContexts.all({
-              workspaceId: options.workspaceId,
+              workspaceId,
+              localWorkspaceId: LOCAL_WORKSPACE_ID,
               limit,
             }) as WorkContextRow[])
           : (selectWorkspaceContexts.all({
-              workspaceId: options.workspaceId,
+              workspaceId,
+              localWorkspaceId: LOCAL_WORKSPACE_ID,
             }) as WorkContextRow[])
         : limit
           ? (selectLimitedContexts.all({ limit }) as WorkContextRow[])

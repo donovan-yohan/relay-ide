@@ -16,7 +16,15 @@ import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
+import {
+  createWorkspaceId,
+  LOCAL_WORKSPACE_ID,
+} from '../shared/workspace.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
+import {
+  buildTopicRoomCreateInput,
+  TOPIC_ROOM_DRAFT_EMPTY,
+} from '../frontend/src/lib/topic-create.js';
 import {
   channelLastReadKey,
   hasUnseenActivity,
@@ -670,6 +678,136 @@ describe('TopicSidebarView', () => {
     ).map((el) => el.textContent);
     expect(mobileHeaders).toContain('engineering');
     expect(mobileHeaders).toContain('research');
+  });
+
+  // #1287 item 3: a workspace holding no channels used to be dropped from the
+  // rail entirely, so a just-added project was invisible until a chat existed
+  // inside it — impossible, because the lane was also the only way to pick it
+  // as the create target. The id shape here is the deterministic, path-keyed
+  // one add-project mints (item 2).
+  const emptyLaneId = createWorkspaceId('project:/repo/fresh');
+  const emptyLaneSelector = `.topic-workspace-group[data-workspace-id="${emptyLaneId}"]`;
+
+  async function renderWithEmptyLane(
+    extra: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
+  ) {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+        {
+          id: emptyLaneId,
+          name: 'fresh',
+          order: 1,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+      ...extra,
+    });
+  }
+
+  it('renders a known workspace with zero channels as a lane with a start-a-chat affordance (#1287)', async () => {
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+
+    const lane = container.querySelector(emptyLaneSelector);
+    expect(lane).not.toBeNull();
+    expect(
+      lane?.querySelector('.topic-workspace-group__name')?.textContent
+    ).toBe('fresh');
+    // The populated lane still renders its channels; the empty one renders the
+    // affordance in place of the (empty) channel list.
+    expect(
+      container.querySelector(
+        '.topic-workspace-group[data-workspace-id="ws:a"] [data-rail-section="channels"]'
+      )
+    ).not.toBeNull();
+    expect(lane?.querySelector('[data-rail-section="channels"]')).toBeNull();
+    const start = lane?.querySelector<HTMLButtonElement>(
+      '.topic-workspace-group__empty'
+    );
+    // Same control as the rail header's `new chat`, no second visual language.
+    expect(start?.className).toContain('topic-shell__create');
+    expect(start?.textContent).toBe('new chat');
+    expect(start?.disabled).toBe(false);
+    // Desktop and mobile read the same projection, so the lane exists in both.
+    expect(
+      container.querySelector(
+        `.topic-mobile-group[data-workspace-id="${emptyLaneId}"] .topic-mobile-group__empty`
+      )
+    ).not.toBeNull();
+
+    await renderWithEmptyLane();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        `${emptyLaneSelector} .topic-workspace-group__empty`
+      )?.disabled
+    ).toBe(true);
+  });
+
+  it('makes an empty workspace lane selectable as the real ia_workspaces id (#1287)', async () => {
+    await renderWithEmptyLane();
+    expect(useUiStore.getState().activeWorkspaceId).toBeNull();
+
+    const header = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} .topic-workspace-group__header--select`
+    );
+    expect(header).not.toBeNull();
+    await act(async () => header?.click());
+
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+  });
+
+  it('stamps the empty lane workspace id on a chat created from that lane (#1287)', async () => {
+    const onCreateTaskRoom = vi.fn();
+    await renderWithEmptyLane({ onCreateTaskRoom });
+
+    const start = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} [data-workspace-start-chat="${emptyLaneId}"]`
+    );
+    await act(async () => start?.click());
+
+    expect(onCreateTaskRoom).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+    // Every create path resolves its workspace from the active pointer, so the
+    // chat the operator now writes lands in THIS lane instead of falling back
+    // to the hub-seeded local workspace (#1287 item 1).
+    const created = buildTopicRoomCreateInput({
+      draft: { ...TOPIC_ROOM_DRAFT_EMPTY, title: 'first chat' },
+      workspaceId: useUiStore.getState().activeWorkspaceId,
+      defaultProviderId: 'claude',
+      taskRef: undefined,
+    });
+    expect(created.workspaceId).toBe(emptyLaneId);
+    expect(created.workspaceId).not.toBe(LOCAL_WORKSPACE_ID);
+  });
+
+  it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+
+    const mobileHeader = container.querySelector<HTMLButtonElement>(
+      `.topic-mobile-group[data-workspace-id="${emptyLaneId}"] .topic-mobile-group__header`
+    );
+    await act(async () => mobileHeader?.click());
+
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
   });
 
   it('keeps mobile workspace headers natural-case without uppercase styling', () => {
