@@ -75,6 +75,7 @@ import {
   type ChannelRailSection,
   type ChannelRailSummary,
   type ChannelRailTree,
+  type ChannelRailWorkspaceGroup,
   type TopicNavItem,
   type TopicNavModel,
   type TopicNavNode,
@@ -1865,34 +1866,13 @@ function TopicMobileCockpit({
               aria-label={group.title}
               data-workspace-id={group.id}
             >
-              <button
-                type="button"
-                className="topic-mobile-group__header"
-                aria-expanded={expanded}
-                onClick={() => {
-                  // Tapping a lane both selects it (the create target) and
-                  // folds it — one lane-scale gesture, same as desktop select.
-                  onSelectWorkspace(group.id);
-                  toggleGroup(group.id);
-                }}
-              >
-                {group.icon ? (
-                  <span className="topic-mobile-group__icon" aria-hidden="true">
-                    {group.icon}
-                  </span>
-                ) : null}
-                <span className="topic-mobile-group__name">{group.title}</span>
-                {!expanded && group.unread ? (
-                  <span
-                    className="topic-row__activity-dot"
-                    aria-label="unread activity"
-                    title="unread activity"
-                  />
-                ) : null}
-                <span className="topic-mobile-group__toggle" aria-hidden="true">
-                  {expanded ? '−' : '+'}
-                </span>
-              </button>
+              <WorkspaceLaneHeader
+                block="topic-mobile-group"
+                group={group}
+                expanded={expanded}
+                onSelectWorkspace={onSelectWorkspace}
+                onToggleCollapsed={toggleGroup}
+              />
               {!expanded ? null : group.empty ? (
                 <WorkspaceLaneStartChat
                   workspaceId={group.id}
@@ -2136,6 +2116,68 @@ function WorkspaceLaneStartChat({
   );
 }
 
+/**
+ * The workspace lane header, shared by the desktop rail and the mobile cockpit
+ * (#1287 slice 5 item 17).
+ *
+ * Desktop used to render a select-only header while mobile rendered the very
+ * same lane as a collapsible button — so a desktop operator could neither fold
+ * a lane nor see the `group.unread` rollup `selectChannelRailTree()` had
+ * already computed for both breakpoints, and desktop simply discarded it. One
+ * component now owns the whole lane gesture, so the two surfaces cannot drift
+ * apart again.
+ *
+ * The affordance is text (`−`/`+`), not an icon: it is the same character pair
+ * the mobile cockpit shipped with, and it needs no stroke geometry to stay
+ * legible at caption size. Deliberately NO channel count — the audit calls the
+ * absence intentional.
+ */
+function WorkspaceLaneHeader({
+  block,
+  group,
+  expanded,
+  onSelectWorkspace,
+  onToggleCollapsed,
+}: {
+  block: 'topic-workspace-group' | 'topic-mobile-group';
+  group: ChannelRailWorkspaceGroup;
+  expanded: boolean;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onToggleCollapsed: (workspaceId: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${block}__header ${block}__header--select`}
+      aria-expanded={expanded}
+      title={`${expanded ? 'collapse' : 'expand'} ${group.title}`}
+      onClick={() => {
+        // Clicking a lane both selects it (it is the create target) and folds
+        // it — one lane-scale gesture on both breakpoints.
+        onSelectWorkspace(group.id);
+        onToggleCollapsed(group.id);
+      }}
+    >
+      {group.icon ? (
+        <span className={`${block}__icon`} aria-hidden="true">
+          {group.icon}
+        </span>
+      ) : null}
+      <span className={`${block}__name`}>{group.title}</span>
+      {!expanded && group.unread ? (
+        <span
+          className="topic-row__activity-dot"
+          aria-label="unread activity"
+          title="unread activity"
+        />
+      ) : null}
+      <span className={`${block}__toggle`} aria-hidden="true">
+        {expanded ? '−' : '+'}
+      </span>
+    </button>
+  );
+}
+
 function GroupedTopicTree({
   tree,
   renderRow,
@@ -2147,40 +2189,42 @@ function GroupedTopicTree({
   onSelectWorkspace: (workspaceId: string) => void;
   onStartChatInWorkspace?: ((workspaceId: string) => void) | undefined;
 }) {
+  // #1287 slice 5: the same persisted lane folds the mobile cockpit reads, so
+  // folding a lane is one operator decision per workspace rather than one per
+  // breakpoint.
+  const collapsedGroupIds = useUiStore((s) => s.collapsedTopicGroups);
+  const toggleGroup = useUiStore((s) => s.toggleTopicGroupCollapsed);
   return (
     <div className="topic-tree" aria-label="workspace chats">
-      {tree.groups.map((group) => (
-        <section
-          key={group.id}
-          className="topic-workspace-group"
-          aria-label={group.title}
-          data-workspace-id={group.id}
-        >
-          <button
-            type="button"
-            className="topic-workspace-group__header topic-workspace-group__header--select"
-            title={`select ${group.title}`}
-            onClick={() => onSelectWorkspace(group.id)}
+      {tree.groups.map((group) => {
+        const expanded = !collapsedGroupIds.has(group.id);
+        return (
+          <section
+            key={group.id}
+            className="topic-workspace-group"
+            aria-label={group.title}
+            data-workspace-id={group.id}
           >
-            {group.icon ? (
-              <span className="topic-workspace-group__icon" aria-hidden="true">
-                {group.icon}
-              </span>
-            ) : null}
-            <span className="topic-workspace-group__name">{group.title}</span>
-          </button>
-          {group.empty ? (
-            <WorkspaceLaneStartChat
-              workspaceId={group.id}
-              workspaceTitle={group.title}
-              className="topic-workspace-group__empty"
-              onStartChat={onStartChatInWorkspace}
+            <WorkspaceLaneHeader
+              block="topic-workspace-group"
+              group={group}
+              expanded={expanded}
+              onSelectWorkspace={onSelectWorkspace}
+              onToggleCollapsed={toggleGroup}
             />
-          ) : (
-            <ChannelsAndDmsLists section={group} renderRow={renderRow} />
-          )}
-        </section>
-      ))}
+            {!expanded ? null : group.empty ? (
+              <WorkspaceLaneStartChat
+                workspaceId={group.id}
+                workspaceTitle={group.title}
+                className="topic-workspace-group__empty"
+                onStartChat={onStartChatInWorkspace}
+              />
+            ) : (
+              <ChannelsAndDmsLists section={group} renderRow={renderRow} />
+            )}
+          </section>
+        );
+      })}
       {tree.orphans.channels.length > 0 ||
       tree.orphans.directMessages.length > 0 ? (
         <section

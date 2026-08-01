@@ -1144,6 +1144,9 @@
     flex-direction: column;
   }
 
+  /* #1287 slice 5: one shared lane header renders both breakpoints, so it also
+     stamps a `--select` modifier here; at touch scale the base header already
+     carries the full button treatment and needs no separate rule. */
   .topic-mobile-group__header {
     display: flex;
     align-items: center;
@@ -1409,9 +1412,10 @@
   text-transform: lowercase;
 }
 
-/* #1287: the lane header selects its workspace, so it is a button — kept
-   visually identical to the static header (no border, no fill, same muted
-   caption treatment); only the hover/focus accent marks it as interactive. */
+/* #1287: the lane header selects AND folds its workspace, so it is a button —
+   kept visually identical to the static header (no border, no fill, same muted
+   caption treatment); only the hover/focus accent and the trailing −/+ mark it
+   as interactive. */
 .topic-workspace-group__header--select {
   width: 100%;
   border: 0;
@@ -1453,6 +1457,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* #1287 slice 5: lane fold affordance, pinned hard right exactly as the mobile
+   cockpit's. Color is inherited rather than re-declared so it follows the
+   header's hover/focus accent instead of staying muted under the cursor. */
+.topic-workspace-group__toggle {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .topic-tree__list {

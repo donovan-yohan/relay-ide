@@ -1425,12 +1425,108 @@ describe('TopicSidebarView', () => {
       root = createRoot(container);
     }
 
+    // #1287 slice 5 item 17: the desktop lane header. Same accessible
+    // collapsible button the mobile cockpit renders for the same lane.
+    function desktopLaneHeader(workspaceId = 'ws:a'): HTMLButtonElement {
+      const header = container.querySelector(
+        `.topic-workspace-group[data-workspace-id="${workspaceId}"] .topic-workspace-group__header--select`
+      );
+      expect(header).not.toBeNull();
+      return header as HTMLButtonElement;
+    }
+
+    function desktopLaneRow(topicId: string, workspaceId = 'ws:a') {
+      return container.querySelector(
+        `.topic-workspace-group[data-workspace-id="${workspaceId}"] [data-topic-id="${topicId}"]`
+      );
+    }
+
+    async function renderRailLane() {
+      await renderView({
+        topics: [RAIL_TOPIC],
+        sessions: [],
+        surfaces: [],
+        workspaces: [RAIL_WORKSPACE],
+      });
+    }
+
+    it('collapses and expands a desktop workspace lane from its header', async () => {
+      // Desktop rendered this lane as a select-only header, so the whole
+      // breakpoint had no way to fold a workspace at all.
+      await renderRailLane();
+
+      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneHeader().textContent).toContain('−');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+
+      await act(async () => desktopLaneHeader().click());
+      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneHeader().textContent).toContain('+');
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
+      // Folding must not cost the rail its create target: the lane gesture
+      // still selects the workspace, exactly as before item 17.
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+
+      await act(async () => desktopLaneHeader().click());
+      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
+    });
+
+    it('rolls unread up onto a collapsed desktop lane header only while folded', async () => {
+      // `selectChannelRailTree` already computed `group.unread` for both
+      // breakpoints; desktop discarded it, so folding would have hidden the
+      // one signal that a channel needs attention.
+      await renderRailLane();
+      const rollupDot = () =>
+        desktopLaneHeader().querySelector('[aria-label="unread activity"]');
+
+      await act(async () => desktopLaneHeader().click());
+      expect(rollupDot()).toBeNull();
+
+      await act(async () => {
+        useChannelActivityStore.getState().recordActivity('topic:alpha', 2);
+      });
+      expect(rollupDot()).not.toBeNull();
+
+      await act(async () => desktopLaneHeader().click());
+      // Expanded, the unread lives on the row itself — never doubled onto the
+      // header.
+      expect(rollupDot()).toBeNull();
+      expect(desktopLaneRow('topic:alpha')?.getAttribute('data-unread')).toBe(
+        'true'
+      );
+    });
+
+    it('folds a lane once for both breakpoints and persists the decision', async () => {
+      await renderRailLane();
+      const mobileHeader = () =>
+        container.querySelector(
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+        ) as HTMLButtonElement;
+
+      await act(async () => desktopLaneHeader().click());
+
+      // One operator decision per workspace, not one per breakpoint.
+      expect(mobileHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(
+        JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
+      ).toEqual(['ws:a']);
+
+      await remount();
+      await renderRailLane();
+
+      expect(desktopLaneHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(desktopLaneRow('topic:alpha')).toBeNull();
+    });
+
     it('keeps a collapsed root collapsed through nav-model identity churn', async () => {
       // The removed effect re-added every `model.rootIds` entry to the local
       // expanded set whenever the model changed identity, and the sessions
       // store rebuilds its array via `.map()` on every activity/status/branch/
       // rename WS event — so a collapsed root sprang open mid-session.
-      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
       await renderView({
         topics: [RAIL_TOPIC],
         sessions,
@@ -1440,7 +1536,9 @@ describe('TopicSidebarView', () => {
 
       expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('true');
       await act(async () => railRow('topic:alpha').click());
-      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
 
       for (let churn = 0; churn < 3; churn++) {
         await renderView({
@@ -1463,7 +1561,9 @@ describe('TopicSidebarView', () => {
     // Boot-time rehydration from these keys is covered in
     // test/stores/ui-store.test.ts (a reload is a fresh module graph).
     it('survives a remount and writes the fold to localStorage', async () => {
-      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
       await renderView({
         topics: [RAIL_TOPIC],
         sessions,
@@ -1484,11 +1584,15 @@ describe('TopicSidebarView', () => {
         workspaces: [RAIL_WORKSPACE],
       });
 
-      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
     });
 
     it('still auto-expands a root the operator has never folded', async () => {
-      const sessions = [makeSession({ id: 's1', displayName: 'Frontend lane' })];
+      const sessions = [
+        makeSession({ id: 's1', displayName: 'Frontend lane' }),
+      ];
       await renderView({
         topics: [RAIL_TOPIC],
         sessions,
@@ -1496,7 +1600,9 @@ describe('TopicSidebarView', () => {
         workspaces: [RAIL_WORKSPACE],
       });
       await act(async () => railRow('topic:alpha').click());
-      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
 
       const newcomer = makeTopic({
         id: 'topic:beta',
@@ -1517,7 +1623,9 @@ describe('TopicSidebarView', () => {
       // A root nobody has decided about opens on arrival; the folded one does
       // not come back with it.
       expect(railRow('topic:beta').getAttribute('aria-expanded')).toBe('true');
-      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe('false');
+      expect(railRow('topic:alpha').getAttribute('aria-expanded')).toBe(
+        'false'
+      );
     });
 
     it('persists a folded mobile workspace group across a remount', async () => {
