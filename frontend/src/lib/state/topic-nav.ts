@@ -143,11 +143,32 @@ export interface TopicNavNode {
  * counts — so `ChannelSummaryView` from the API client assigns directly without
  * the rail projection depending on the fetch layer.
  */
+/**
+ * One live thread on a rail row (#1287 slice 5 item 18). Structural subset of
+ * the channel list's `threads` entries — root preview, reply count, and the
+ * newest reply stamp are everything the rail draws.
+ */
+export interface ChannelRailThreadSummary {
+  rootMessageId: string;
+  replyCount: number;
+  lastReplyAt: string;
+  preview: string;
+  rootSenderId: string;
+  rootSenderKind: 'human' | 'agent' | 'system';
+  /** Server-resolved label; `rootSenderId` is an Actor id, never a name (#1234). */
+  rootSenderDisplayName?: string;
+  providerId?: string;
+}
+
 export interface ChannelRailSummary {
   id: string;
   latestSeq: number;
   messageCount: number;
   members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+  /** Newest-active threads, capped server-side. Absent before the payload lands. */
+  threads?: ChannelRailThreadSummary[];
+  /** Total live threads; `threads` holds only the newest slice. */
+  threadCount?: number;
   lastMessage: {
     seq: number;
     preview: string;
@@ -246,6 +267,38 @@ export function selectExpandedRailIds(
     if (isExpanded) expanded.add(id);
   }
   return expanded;
+}
+
+/**
+ * Fold key for a channel row's thread list (#1287 slice 5 item 18).
+ *
+ * Namespaced off the channel id so thread folds share the persisted
+ * `topicRailExpansion` record — same operator-intent semantics as item 16 —
+ * WITHOUT ever being a `rootIds` entry. `selectExpandedRailIds` only
+ * auto-expands roots, so a thread list is closed until the operator opens it
+ * and then stays open across reloads. `#` cannot appear in a topic id, so the
+ * key can never collide with a real row.
+ */
+export function railThreadFoldId(channelId: string): string {
+  return `${channelId}#threads`;
+}
+
+/**
+ * Threads to render under a rail row, newest-active first (#1287 slice 5 item
+ * 18). Normalizes the optional payload: a summary the list has not hydrated, a
+ * hub from before the extension, and a channel with no threads are all "no
+ * thread rows", and `threadCount` never under-reports the rows actually shown.
+ */
+export function selectRailRowThreads(summary: ChannelRailSummary | null): {
+  threads: ChannelRailThreadSummary[];
+  threadCount: number;
+} {
+  const threads = summary?.threads ?? [];
+  const shown = threads.filter((thread) => thread.replyCount > 0);
+  return {
+    threads: shown,
+    threadCount: Math.max(summary?.threadCount ?? 0, shown.length),
+  };
 }
 
 /** Key a `GET /channels` payload by channel id for the rail join (#1287). */

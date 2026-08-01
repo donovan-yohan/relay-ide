@@ -29,7 +29,10 @@ import {
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
 import { useChannelAgentStatusStore } from '../frontend/src/lib/stores/channel-agent-status.js';
-import type { ChannelRailSummary } from '../frontend/src/lib/state/topic-nav.js';
+import type {
+  ChannelRailSummary,
+  ChannelRailThreadSummary,
+} from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -188,6 +191,7 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      pendingChannelThread: null,
       // #1287 slice 5: rail/lane folds are persisted operator intent now, so
       // they outlive a remount by design — reset them between cases or one
       // test's collapse silently folds the next test's rows.
@@ -216,6 +220,7 @@ describe('TopicSidebarView', () => {
       advancedMode: false,
       repoDashboardTabIntent: null,
       activeChannelId: null,
+      pendingChannelThread: null,
       ...resetRailFolds(),
     });
     localStorage.removeItem(TOPIC_RAIL_EXPANSION_KEY);
@@ -739,6 +744,159 @@ describe('TopicSidebarView', () => {
         '.topic-tree [data-topic-id="topic:alpha"] .topic-row__presence'
       )
     ).toBeNull();
+  });
+
+  // #1287 slice 5 item 18: threads existed server-side and in ChannelView, but
+  // the only entry point was the in-timeline "N replies" chip — so a live thread
+  // was unreachable until its channel was already open.
+  describe('rail thread rows (#1287 slice 5 item 18)', () => {
+    function makeThread(overrides: Partial<ChannelRailThreadSummary> = {}) {
+      return {
+        rootMessageId: 'chm:root-1',
+        replyCount: 2,
+        lastReplyAt: NOW,
+        preview: 'how should the binder key runtimes?',
+        rootSenderId: builtInAgentProfileId('claude'),
+        rootSenderKind: 'agent' as const,
+        providerId: 'claude',
+        ...overrides,
+      };
+    }
+
+    async function renderWithThreads(
+      threads: ChannelRailThreadSummary[],
+      threadCount = threads.length
+    ) {
+      await renderView({
+        topics: [makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } })],
+        sessions: [],
+        surfaces: [],
+        channelSummaries: [
+          makeChannelSummary({ id: 'topic:alpha', threads, threadCount }),
+        ],
+      });
+    }
+
+    function threadsBlock(): HTMLElement | null {
+      return container.querySelector<HTMLElement>(
+        '.topic-tree [data-topic-id="topic:alpha"] .topic-threads'
+      );
+    }
+
+    it('shows a collapsed thread count plus the latest thread line', async () => {
+      await renderWithThreads([makeThread()], 3);
+
+      const block = threadsBlock();
+      expect(block).not.toBeNull();
+      expect(block?.dataset.threadCount).toBe('3');
+      const toggle = block?.querySelector<HTMLButtonElement>(
+        '.topic-threads__toggle'
+      );
+      // Collapsed by default: the fold id is never a rail root, so nothing
+      // auto-opens it.
+      expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+      expect(block?.querySelector('.topic-threads__count')?.textContent).toBe(
+        '3 threads'
+      );
+      // The sender label comes from the server-resolved vendor, never by
+      // splitting the profile Actor id (#1234).
+      expect(block?.querySelector('.topic-threads__latest')?.textContent).toBe(
+        'claude: how should the binder key runtimes?'
+      );
+      expect(block?.querySelector('.topic-thread-row')).toBeNull();
+    });
+
+    it('leaves a channel with no threads exactly as it was', async () => {
+      await renderView({
+        topics: [makeTopic({ id: 'topic:alpha', display: { title: 'alpha' } })],
+        sessions: [],
+        surfaces: [],
+        channelSummaries: [makeChannelSummary({ id: 'topic:alpha' })],
+      });
+
+      expect(threadsBlock()).toBeNull();
+      expect(container.querySelector('.topic-thread-row')).toBeNull();
+      // The row itself is untouched — title and hydrated snippet still render.
+      expect(container.textContent).toContain('alpha');
+      expect(container.textContent).toContain('latest channel message');
+    });
+
+    it('expands to one row per thread and opens the channel with that thread', async () => {
+      await renderWithThreads([
+        makeThread(),
+        makeThread({
+          rootMessageId: 'chm:root-2',
+          replyCount: 1,
+          preview: 'rollout plan',
+          rootSenderId: 'human:operator',
+          rootSenderKind: 'human',
+        }),
+      ]);
+
+      await act(async () => {
+        threadsBlock()
+          ?.querySelector<HTMLButtonElement>('.topic-threads__toggle')
+          ?.click();
+      });
+
+      const rows = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '.topic-tree [data-topic-id="topic:alpha"] .topic-thread-row'
+        )
+      );
+      expect(rows.map((row) => row.dataset.threadRootId)).toEqual([
+        'chm:root-1',
+        'chm:root-2',
+      ]);
+      expect(
+        rows[0]?.querySelector('.topic-thread-row__meta')?.textContent
+      ).toContain('2 replies');
+      // Singular/plural is the same copy the in-timeline chip and thread panel
+      // use, so the rail cannot drift from them.
+      expect(
+        rows[1]?.querySelector('.topic-thread-row__meta')?.textContent
+      ).toContain('1 reply');
+      expect(
+        rows[1]?.querySelector('.topic-thread-row__preview')?.textContent
+      ).toBe('you: rollout plan');
+
+      await act(async () => {
+        rows[1]
+          ?.querySelector<HTMLButtonElement>('.topic-thread-row__button')
+          ?.click();
+      });
+
+      // Opening the channel is what makes the thread reachable; the thread
+      // itself rides an intent, because `setActiveChannelId` clears
+      // `activeThreadRootId` and ChannelView clears it again on every switch.
+      expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+      expect(useUiStore.getState().pendingChannelThread).toEqual({
+        channelId: 'topic:alpha',
+        rootMessageId: 'chm:root-2',
+      });
+    });
+
+    it('keeps the thread fold independent of the channel row fold', async () => {
+      await renderWithThreads([makeThread()]);
+
+      await act(async () => {
+        threadsBlock()
+          ?.querySelector<HTMLButtonElement>('.topic-threads__toggle')
+          ?.click();
+      });
+      expect(container.querySelector('.topic-thread-row')).not.toBeNull();
+
+      // Collapsing the channel row must not take the thread list with it — the
+      // thread line IS the signal that this channel has side-conversations.
+      await act(async () => {
+        useUiStore.getState().setTopicRailExpanded('topic:alpha', false);
+      });
+      expect(container.querySelector('.topic-thread-row')).not.toBeNull();
+      // And the fold is persisted operator intent, like every other rail fold.
+      expect(
+        useUiStore.getState().topicRailExpansion['topic:alpha#threads']
+      ).toBe(true);
+    });
   });
 
   it('labels the operator as the snippet sender and skips message-less channels (#1287)', async () => {

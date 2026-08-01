@@ -1511,6 +1511,89 @@
   flex: 0 0 6px;
 }
 
+/* #1287 slice 5 item 18: threads on a rail row. Compact count + latest-thread
+   line when folded; one row per live thread when opened. Flat, mono, zero
+   radius — the disclosure glyph matches the workspace lane toggle. */
+.topic-threads {
+  position: relative;
+  padding-left: var(--topic-row-indent);
+}
+
+.topic-threads__toggle {
+  display: grid;
+  grid-template-columns: 10px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 22px;
+  padding: 1px 8px 1px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.62rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-threads__toggle:hover,
+.topic-threads__toggle:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-threads__glyph {
+  font-family: var(--font-mono);
+  line-height: 1;
+  text-align: center;
+}
+
+.topic-threads__count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.topic-threads__latest {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  opacity: 0.82;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-child-list--threads {
+  padding-bottom: 2px;
+}
+
+.topic-thread-row__button {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 26px;
+}
+
+.topic-thread-row__lines {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.topic-thread-row__preview {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-thread-row__meta {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* #1287 slice 5: desktop agent presence on channel rows. Derived from the
    channel summary members joined with the live status store — no per-row
    fetch. Status dot is the only 50% radius the rail allows (DESIGN.md); a

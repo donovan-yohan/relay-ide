@@ -277,7 +277,9 @@ function loadStringSet(key: string): Set<string> {
     if (stored) {
       const parsed: unknown = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        return new Set(parsed.filter((v): v is string => typeof v === 'string'));
+        return new Set(
+          parsed.filter((v): v is string => typeof v === 'string')
+        );
       }
     }
   } catch {
@@ -691,6 +693,19 @@ export interface UiState {
   activeChannelId: string | null;
   /** #1170: currently open channel thread. Session-transient; never persisted. */
   activeThreadRootId: ChannelMessageId | null;
+  /**
+   * #1287 slice 5 item 18: a rail click asking a channel to open WITH one of its
+   * threads already showing. It cannot be expressed as `activeThreadRootId`
+   * directly — `setActiveChannelId` clears that field, and `ChannelView` clears
+   * it again on every channel switch, so a value written alongside the channel
+   * open is always destroyed before the panel mounts. This is the intent
+   * `ChannelView` consumes once it is the channel in question, mirroring
+   * `repoDashboardTabIntent`. Session-transient; never persisted.
+   */
+  pendingChannelThread: {
+    channelId: string;
+    rootMessageId: ChannelMessageId;
+  } | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /**
@@ -753,6 +768,13 @@ export interface UiState {
   setTopicComposerOpen: (v: boolean) => void;
   setActiveChannelId: (v: string | null) => void;
   setActiveThreadRootId: (v: ChannelMessageId | null) => void;
+  /** #1287 item 18: ask `channelId` to open with `rootMessageId`'s thread shown. */
+  requestChannelThread: (
+    channelId: string,
+    rootMessageId: ChannelMessageId
+  ) => void;
+  /** Drop the pending intent once the target channel has consumed it. */
+  consumeChannelThreadIntent: (channelId: string) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -796,6 +818,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   topicComposerOpen: false,
   activeChannelId: null,
   activeThreadRootId: null,
+  pendingChannelThread: null,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadStringSet(COLLAPSED_WORKSPACES_KEY),
@@ -1232,6 +1255,11 @@ export const useUiStore = create<UiState>()((set, get) => ({
     set({
       activeChannelId: v,
       activeThreadRootId: null,
+      // A plain channel open cancels any un-consumed thread intent, so a
+      // never-mounted target (deleted channel, cancelled navigation) can't fire
+      // as a surprise thread panel later. `requestChannelThread` is always
+      // called AFTER the channel open, so the rail's own path is unaffected.
+      pendingChannelThread: null,
       // #1287: an open channel outranks `forceOrgCockpit` in resolveAppViewMode,
       // so a channel activation must also drop the one-off cockpit escape hatch
       // (as sessions.setActiveSessionId does) — otherwise a latched flag fires
@@ -1239,6 +1267,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
       ...(v !== null ? { forceOrgCockpit: false } : {}),
     }),
   setActiveThreadRootId: (v) => set({ activeThreadRootId: v }),
+  requestChannelThread: (channelId, rootMessageId) =>
+    set({ pendingChannelThread: { channelId, rootMessageId } }),
+  consumeChannelThreadIntent: (channelId) => {
+    if (get().pendingChannelThread?.channelId !== channelId) return;
+    set({ pendingChannelThread: null });
+  },
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>

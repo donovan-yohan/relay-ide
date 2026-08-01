@@ -1104,6 +1104,158 @@ describe('channel-message-store posts, threads, idempotency', () => {
   });
 });
 
+// #1287 slice 5 item 18: the rail surfaces threads, so the channel list needs a
+// thread projection that agrees with the in-timeline "N replies" chip.
+describe('channel-message-store thread summaries', () => {
+  it('reports live threads newest-active first with the chip reply count', () => {
+    const s = store();
+    const design = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'how should the binder key runtimes?',
+    });
+    const rollout = s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'rollout plan',
+    });
+    // A top-level row with no replies is not a thread.
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'unrelated top-level chatter',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'by profile actor id',
+      parentMessageId: design.id,
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'agreed',
+      parentMessageId: design.id,
+    });
+    // Detail cards persist inside the thread for cold resume but are NOT
+    // conversational replies — `replyCountSql` excludes them and so must this.
+    const card = s.beginStream({
+      channelId: 'topic:t',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-t', turnId: 't-1', itemId: 'reason-1' },
+      parentMessageId: design.id,
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'running',
+          content: 'inspect',
+        },
+      },
+    });
+    s.finalizeStream(card.id, {
+      text: '',
+      status: 'complete',
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          title: 'thinking',
+          status: 'completed',
+          content: 'inspect',
+        },
+      },
+    });
+    // Newest reply overall lands in the OTHER thread, which must therefore lead.
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: AGENT,
+      text: 'ship behind the fold',
+      parentMessageId: rollout.id,
+    });
+
+    const page = s.listChannelThreadSummaries('topic:t');
+    expect(page.threadCount).toBe(2);
+    expect(page.threads.map((thread) => thread.rootMessageId)).toEqual([
+      rollout.id,
+      design.id,
+    ]);
+    // The design thread has three rows under it; only two are replies.
+    expect(page.threads[1]).toMatchObject({
+      replyCount: 2,
+      preview: 'how should the binder key runtimes?',
+      rootSenderId: HUMAN.id,
+      rootSenderKind: 'human',
+    });
+    expect(page.threads[0]?.replyCount).toBe(1);
+    // Agreement with the in-timeline chip, which reads the derived reply count
+    // history hands back for the same root.
+    expect(
+      s.threadHistory('topic:t', design.id).find((m) => m.id === design.id)
+        ?.replyCount
+    ).toBe(2);
+    // Threads live in exactly one channel.
+    expect(s.listChannelThreadSummaries('topic:other')).toEqual({
+      threads: [],
+      threadCount: 0,
+    });
+  });
+
+  it('caps the page while still counting every live thread', () => {
+    const s = store();
+    const roots = Array.from({ length: 5 }, (_, index) =>
+      s.appendComplete({
+        channelId: 'topic:t',
+        sender: HUMAN,
+        text: `root ${index}`,
+      })
+    );
+    for (const root of roots) {
+      s.appendComplete({
+        channelId: 'topic:t',
+        sender: AGENT,
+        text: 'reply',
+        parentMessageId: root.id,
+      });
+    }
+
+    const defaulted = s.listChannelThreadSummaries('topic:t');
+    expect(defaulted.threads).toHaveLength(3);
+    // A capped page must not under-report how many threads the channel holds —
+    // the rail's "N threads" line reads this, not `threads.length`.
+    expect(defaulted.threadCount).toBe(5);
+    expect(defaulted.threads.map((thread) => thread.rootMessageId)).toEqual([
+      roots[4]?.id,
+      roots[3]?.id,
+      roots[2]?.id,
+    ]);
+    expect(s.listChannelThreadSummaries('topic:t', 5).threads).toHaveLength(5);
+    expect(s.listChannelThreadSummaries('topic:t', 0).threads).toHaveLength(1);
+  });
+
+  it('carries the server-resolved root sender label and vendor', () => {
+    const s = store();
+    const root = s.appendComplete({
+      channelId: 'topic:t',
+      sender: { ...AGENT, displayName: 'Claude Bot' },
+      text: 'status update',
+    });
+    s.appendComplete({
+      channelId: 'topic:t',
+      sender: HUMAN,
+      text: 'noted',
+      parentMessageId: root.id,
+    });
+
+    expect(s.listChannelThreadSummaries('topic:t').threads[0]).toMatchObject({
+      rootSenderDisplayName: 'Claude Bot',
+      providerId: 'claude',
+      rootSenderKind: 'agent',
+    });
+  });
+});
+
 describe('channel-message-store members and bindings', () => {
   it('upserts and lists members and finds a DM channel', () => {
     const s = store();

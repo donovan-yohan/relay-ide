@@ -9,9 +9,12 @@ import {
   buildTopicNavModel,
   formatTaskRefLabel,
   indexChannelSummaries,
+  railThreadFoldId,
   selectChannelRailTree,
   selectExpandedRailIds,
+  selectRailRowThreads,
   type ChannelRailSummary,
+  type ChannelRailThreadSummary,
   type TopicNavWorkspace,
 } from '../frontend/src/lib/state/topic-nav.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
@@ -990,9 +993,9 @@ describe('selectExpandedRailIds (#1287 slice 5)', () => {
   });
 
   it('auto-opens a root that appears after a collapse without touching it', () => {
-    expect(Array.from(selectExpandedRailIds(['a', 'c'], { a: false }))).toEqual([
-      'c',
-    ]);
+    expect(Array.from(selectExpandedRailIds(['a', 'c'], { a: false }))).toEqual(
+      ['c']
+    );
   });
 
   it('keeps a nested row the operator opened open', () => {
@@ -1003,5 +1006,89 @@ describe('selectExpandedRailIds (#1287 slice 5)', () => {
 
   it('ignores recorded ids that are no longer in the model', () => {
     expect(Array.from(selectExpandedRailIds([], { gone: false }))).toEqual([]);
+  });
+});
+
+describe('rail thread rows (#1287 slice 5 item 18)', () => {
+  function thread(
+    overrides: Partial<ChannelRailThreadSummary> = {}
+  ): ChannelRailThreadSummary {
+    return {
+      rootMessageId: 'chm:root',
+      replyCount: 2,
+      lastReplyAt: '2026-07-27T00:00:00.000Z',
+      preview: 'how should the binder key runtimes?',
+      rootSenderId: 'human:operator',
+      rootSenderKind: 'human',
+      ...overrides,
+    };
+  }
+  function summary(
+    overrides: Partial<ChannelRailSummary> = {}
+  ): ChannelRailSummary {
+    return {
+      id: 'topic:alpha',
+      latestSeq: 4,
+      messageCount: 4,
+      members: [],
+      lastMessage: null,
+      ...overrides,
+    };
+  }
+
+  it('folds threads under a channel-scoped id that is never a root', () => {
+    const foldId = railThreadFoldId('topic:alpha');
+    expect(foldId).toBe('topic:alpha#threads');
+    // Structural default: closed. Only `rootIds` auto-open, and a fold id can
+    // never be one — so thread rows start collapsed on a fresh rail.
+    expect(selectExpandedRailIds(['topic:alpha'], {}).has(foldId)).toBe(false);
+    expect(selectExpandedRailIds(['topic:alpha'], {}).has('topic:alpha')).toBe(
+      true
+    );
+    // Opening it is persisted operator intent, exactly like item 16's folds.
+    expect(
+      selectExpandedRailIds(['topic:alpha'], { [foldId]: true }).has(foldId)
+    ).toBe(true);
+    // Collapsing the channel row itself must not collapse its thread list.
+    expect(
+      selectExpandedRailIds(['topic:alpha'], {
+        'topic:alpha': false,
+        [foldId]: true,
+      }).has(foldId)
+    ).toBe(true);
+  });
+
+  it('renders nothing for a row with no summary, no threads, or an old hub', () => {
+    expect(selectRailRowThreads(null)).toEqual({ threads: [], threadCount: 0 });
+    // A hub from before the extension simply omits the fields.
+    expect(selectRailRowThreads(summary())).toEqual({
+      threads: [],
+      threadCount: 0,
+    });
+    expect(
+      selectRailRowThreads(summary({ threads: [], threadCount: 0 }))
+    ).toEqual({ threads: [], threadCount: 0 });
+  });
+
+  it('drops a zero-reply root and never under-reports the total', () => {
+    const shown = thread({ rootMessageId: 'chm:live' });
+    const result = selectRailRowThreads(
+      summary({
+        threads: [shown, thread({ rootMessageId: 'chm:empty', replyCount: 0 })],
+        threadCount: 2,
+      })
+    );
+    expect(result.threads.map((t) => t.rootMessageId)).toEqual(['chm:live']);
+    expect(result.threadCount).toBe(2);
+  });
+
+  it('never claims fewer threads than the rows it is about to draw', () => {
+    // A truncated/absent count must not make the "N threads" line disagree with
+    // the rows underneath it.
+    expect(
+      selectRailRowThreads(
+        summary({ threads: [thread(), thread({ rootMessageId: 'chm:b' })] })
+      ).threadCount
+    ).toBe(2);
   });
 });

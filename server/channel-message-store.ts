@@ -56,6 +56,13 @@ const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
  * list route never regex-scans 200 × 256KB of body text.
  */
 const CHANNEL_SUMMARY_MENTION_SCAN_MAX_CHARS = 8_000;
+/**
+ * Threads carried on a channel-list row by default (#1287 slice 5 item 18). The
+ * rail shows the newest-active few and a count for the rest — enough to make
+ * threads navigable without turning a 200-row list payload into a transcript.
+ */
+export const CHANNEL_THREAD_SUMMARY_LIMIT = 3;
+const CHANNEL_THREAD_SUMMARY_MAX_LIMIT = 20;
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
@@ -179,6 +186,19 @@ interface ChannelMessageRow {
   reply_count?: number;
 }
 
+/** Projection of the thread aggregate join (#1287 slice 5 item 18). */
+interface ThreadSummaryRow {
+  root_id: string;
+  root_body: string;
+  root_sender_id: string;
+  root_sender_kind: string;
+  root_sender_display: string | null;
+  root_meta_json: string | null;
+  reply_count: number;
+  last_reply_at: string;
+  thread_total: number;
+}
+
 interface MemberRow {
   channel_id: string;
   member_kind: string;
@@ -286,6 +306,38 @@ export interface ChannelSummary {
 
 type ChannelSenderKindLoose = ChannelSenderRef['kind'];
 
+/**
+ * One live thread inside a channel, as the rail renders it (#1287 slice 5 item
+ * 18). Deliberately root-shaped rather than reply-shaped: the rail's row is "the
+ * conversation this thread hangs off", and the reply signal is the count plus
+ * the newest reply's stamp.
+ */
+export interface ChannelThreadSummary {
+  rootMessageId: ChannelMessageId;
+  /**
+   * Conversational replies only — the same exclusion `replyCountSql` applies, so
+   * a rail row and the in-timeline "N replies" chip can never disagree.
+   */
+  replyCount: number;
+  /** `created_at` of the newest reply; the rail's thread stamp. */
+  lastReplyAt: string;
+  /** Bounded preview of the thread ROOT's body. */
+  preview: string;
+  rootSenderId: string;
+  rootSenderKind: ChannelSenderKindLoose;
+  /** Persisted `sender_display` — never derived by splitting `rootSenderId`. */
+  rootSenderDisplayName?: string;
+  /** Vendor framework id for an agent root; the authoritative label fallback. */
+  providerId?: string;
+}
+
+export interface ChannelThreadSummaryPage {
+  /** Newest-active threads first, capped by the caller's limit. */
+  threads: ChannelThreadSummary[];
+  /** Total live threads in the channel; `threads` is only the newest slice. */
+  threadCount: number;
+}
+
 export interface ChannelHistoryFilter {
   beforeSeq?: number;
   afterSeq?: number;
@@ -368,6 +420,16 @@ export interface ChannelMessageStore {
   latestSeq(channelId: string): number;
   listChannelSummaries(): ChannelSummary[];
   getChannelSummary(channelId: string): ChannelSummary | null;
+  /**
+   * Live threads in one channel, newest-active first (#1287 slice 5 item 18).
+   * One channel-scoped aggregate — the same order of work the summary's own
+   * `COUNT(*)` already does — so the channel list can carry thread rows without
+   * a second route or a per-thread fetch.
+   */
+  listChannelThreadSummaries(
+    channelId: string,
+    limit?: number
+  ): ChannelThreadSummaryPage;
   upsertMember(input: {
     channelId: string;
     kind: 'human' | 'agent';
@@ -1498,6 +1560,71 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           )
           .get(channelId) as ChannelMessageRow | undefined) ?? last;
       return summaryFromLastRow(last.seq, previewRow, count);
+    },
+
+    listChannelThreadSummaries(
+      channelId,
+      limit = CHANNEL_THREAD_SUMMARY_LIMIT
+    ) {
+      const capped = Math.max(
+        1,
+        Math.min(CHANNEL_THREAD_SUMMARY_MAX_LIMIT, Math.floor(limit))
+      );
+      // The aggregate is channel-scoped (idx_chm_channel_seq), so this scans the
+      // same rows the summary's COUNT(*) already does rather than the whole
+      // thread index. `COUNT(*) OVER ()` counts GROUPS, giving the channel's
+      // total live thread count in the one pass the capped page comes from.
+      const rows = db
+        .prepare(
+          `SELECT root.id                AS root_id,
+                  root.body_text         AS root_body,
+                  root.sender_id         AS root_sender_id,
+                  root.sender_kind       AS root_sender_kind,
+                  root.sender_display    AS root_sender_display,
+                  root.meta_json         AS root_meta_json,
+                  agg.reply_count        AS reply_count,
+                  agg.last_reply_at      AS last_reply_at,
+                  agg.thread_total       AS thread_total
+             FROM (
+               SELECT thread_id,
+                      COUNT(*)        AS reply_count,
+                      MAX(created_at) AS last_reply_at,
+                      MAX(seq)        AS last_reply_seq,
+                      COUNT(*) OVER () AS thread_total
+                 FROM channel_messages
+                WHERE channel_id = @channelId
+                  AND thread_id IS NOT NULL
+                  AND json_extract(meta_json, '$.agentDetail') IS NULL
+                GROUP BY thread_id
+             ) agg
+             JOIN channel_messages root ON root.id = agg.thread_id
+            ORDER BY agg.last_reply_seq DESC
+            LIMIT @limit`
+        )
+        .all({ channelId, limit: capped }) as ThreadSummaryRow[];
+      return {
+        threads: rows.map((row) => {
+          const meta = parseMeta(row.root_meta_json);
+          const providerId =
+            typeof meta?.['providerId'] === 'string'
+              ? (meta['providerId'] as string)
+              : undefined;
+          return {
+            rootMessageId: row.root_id as ChannelMessageId,
+            replyCount: row.reply_count,
+            lastReplyAt: row.last_reply_at,
+            preview: row.root_body.slice(0, CHANNEL_SUMMARY_PREVIEW_MAX_CHARS),
+            rootSenderId: row.root_sender_id,
+            rootSenderKind: row.root_sender_kind as ChannelSenderKindLoose,
+            ...(row.root_sender_display
+              ? { rootSenderDisplayName: row.root_sender_display }
+              : {}),
+            ...(providerId ? { providerId } : {}),
+          };
+        }),
+        // Every group shares the same window total; zero rows means zero groups.
+        threadCount: rows[0]?.thread_total ?? 0,
+      };
     },
 
     upsertMember(input) {

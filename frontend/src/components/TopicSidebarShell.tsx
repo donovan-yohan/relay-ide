@@ -21,7 +21,10 @@ import {
   builtInAgentProfileId,
   parseAgentProfileProviderId,
 } from '../../../shared/agent-profile.js';
-import { parseMentions } from '../../../shared/channel-chat-protocol.js';
+import {
+  parseMentions,
+  type ChannelMessageId,
+} from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -69,11 +72,14 @@ import {
   buildTopicNavModel,
   formatTaskRefLabel,
   indexChannelSummaries,
+  railThreadFoldId,
   selectChannelRailTree,
   selectExpandedRailIds,
+  selectRailRowThreads,
   type ChannelRailNode,
   type ChannelRailSection,
   type ChannelRailSummary,
+  type ChannelRailThreadSummary,
   type ChannelRailTree,
   type ChannelRailWorkspaceGroup,
   type TopicNavItem,
@@ -241,6 +247,32 @@ function senderLabelFromId(senderId: string): string {
   return separator === -1
     ? withoutAgentPrefix
     : withoutAgentPrefix.slice(separator + 1);
+}
+
+/**
+ * Rail snippet for one thread (#1287 slice 5 item 18): the ROOT's prose labelled
+ * by its sender, exactly like a channel row's snippet — a thread is named by the
+ * message it hangs off, not by its newest reply.
+ */
+function threadRowPreview(thread: ChannelRailThreadSummary): string {
+  const text = thread.preview.replace(/\s+/g, ' ').trim();
+  const sender = channelRowSenderLabel({
+    seq: 0,
+    preview: thread.preview,
+    senderId: thread.rootSenderId,
+    senderKind: thread.rootSenderKind,
+    createdAt: thread.lastReplyAt,
+    ...(thread.rootSenderDisplayName
+      ? { senderDisplayName: thread.rootSenderDisplayName }
+      : {}),
+    ...(thread.providerId ? { providerId: thread.providerId } : {}),
+  });
+  if (!text) return boundedTopicLatestStatus(`${sender}: thread`);
+  return boundedTopicLatestStatus(`${sender}: ${text}`);
+}
+
+function replyCountLabel(replyCount: number): string {
+  return `${replyCount} repl${replyCount === 1 ? 'y' : 'ies'}`;
 }
 
 /** Compact last-activity stamp for a hydrated row; null without a summary. */
@@ -1510,6 +1542,107 @@ function TopicRowPresence({
   );
 }
 
+/**
+ * Threads on a rail row (#1287 slice 5 item 18).
+ *
+ * Threads were fully implemented server-side and in `ChannelView`, but the only
+ * product entry point was the in-timeline "N replies" chip — so a thread was
+ * unreachable, and its reply growth invisible, until its channel was already
+ * open. This is the missing navigation half: a compact "N threads · latest" line
+ * on the row, opening to one clickable row per live thread.
+ *
+ * Folded through the SAME persisted expansion record as item 16, under a
+ * `#threads`-namespaced id. That id is never a `rootIds` entry, so the structural
+ * default is CLOSED (roots are the only rows that auto-open) while an operator
+ * who opens it keeps it open across reloads.
+ */
+function TopicRowThreads({
+  channelId,
+  channelTitle,
+  summary,
+  expandedIds,
+  onToggle,
+  onOpenThread,
+}: {
+  channelId: string;
+  channelTitle: string;
+  summary: ChannelRailSummary | null;
+  expandedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
+}) {
+  const { threads, threadCount } = selectRailRowThreads(summary);
+  if (threads.length === 0) return null;
+  const foldId = railThreadFoldId(channelId);
+  const expanded = expandedIds.has(foldId);
+  const latest = threads[0];
+  const countLabel = `${threadCount} thread${threadCount === 1 ? '' : 's'}`;
+  return (
+    <div className="topic-threads" data-thread-count={threadCount}>
+      <button
+        type="button"
+        className="topic-threads__toggle"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'collapse' : 'expand'} ${countLabel} in ${channelTitle}`}
+        onClick={() => onToggle(foldId)}
+      >
+        <span className="topic-threads__glyph" aria-hidden>
+          {expanded ? '−' : '+'}
+        </span>
+        <span className="topic-threads__count">{countLabel}</span>
+        {!expanded && latest ? (
+          <span
+            className="topic-threads__latest"
+            title={threadRowPreview(latest)}
+          >
+            {threadRowPreview(latest)}
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <ul
+          className="topic-child-list topic-child-list--threads"
+          aria-label={`threads in ${channelTitle}`}
+        >
+          {threads.map((thread) => {
+            const preview = threadRowPreview(thread);
+            const stamp = formatRelativeTimeCompact(thread.lastReplyAt);
+            return (
+              <li
+                key={thread.rootMessageId}
+                className="topic-child-row topic-thread-row"
+                data-thread-root-id={thread.rootMessageId}
+              >
+                <button
+                  type="button"
+                  className="topic-child-row__button topic-thread-row__button"
+                  aria-label={`open thread — ${preview} · ${replyCountLabel(thread.replyCount)}`}
+                  disabled={!onOpenThread}
+                  onClick={() =>
+                    onOpenThread?.(channelId, thread.rootMessageId)
+                  }
+                >
+                  <span className="topic-thread-row__lines">
+                    <span className="topic-thread-row__preview" title={preview}>
+                      {preview}
+                    </span>
+                    <span className="topic-thread-row__meta">
+                      {replyCountLabel(thread.replyCount)}
+                      {stamp ? ` · ${stamp}` : ''}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function TopicRow({
   node,
   depth,
@@ -1519,6 +1652,7 @@ function TopicRow({
   onToggle,
   onSelect,
   onSelectSession,
+  onOpenThread,
 }: {
   node: ChannelRailNode;
   depth: number;
@@ -1528,6 +1662,9 @@ function TopicRow({
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
 }) {
   const { item, unread, summary, children } = node;
   const hasNested = children.length > 0 || item.participants.length > 0;
@@ -1612,6 +1749,17 @@ function TopicRow({
           <StatusGlyph tone={item.tone} />
         </span>
       </div>
+      {/* Outside the row's own fold: the thread line IS the signal that this
+          channel has live side-conversations, so folding the row's participants
+          must not hide it. It carries its own collapsed-by-default fold. */}
+      <TopicRowThreads
+        channelId={item.id}
+        channelTitle={item.title}
+        summary={summary}
+        expandedIds={expandedIds}
+        onToggle={onToggle}
+        onOpenThread={onOpenThread}
+      />
       {expanded ? (
         <>
           {item.participants.length > 0 ? (
@@ -1638,6 +1786,7 @@ function TopicRow({
                   onToggle={onToggle}
                   onSelect={onSelect}
                   onSelectSession={onSelectSession}
+                  onOpenThread={onOpenThread}
                 />
               ))}
             </ul>
@@ -2743,6 +2892,20 @@ export function TopicSidebarView({
     },
     [onCreateTaskRoom, selectWorkspaceLane]
   );
+  // #1287 slice 5 item 18: open the channel AND its thread panel. The intent is
+  // recorded after `select()` on purpose — opening a channel clears any pending
+  // thread — and `ChannelView` adopts it once it is the channel on screen. No
+  // URL segment: `activeThreadRootId` is session-transient by design (#1170), so
+  // this rides item 9's `/channel/<id>` route without extending it.
+  const openThread = useCallback(
+    (channelId: string, rootMessageId: string) => {
+      select(channelId);
+      useUiStore
+        .getState()
+        .requestChannelThread(channelId, rootMessageId as ChannelMessageId);
+    },
+    [select]
+  );
   const renderTopicRow = (node: ChannelRailNode): ReactNode => {
     const item = node.item;
     return (
@@ -2756,6 +2919,7 @@ export function TopicSidebarView({
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
+        onOpenThread={openThread}
       />
     );
   };

@@ -1743,6 +1743,23 @@ export interface ChannelSummaryView {
     createdAt: string;
   } | null;
   members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+  /**
+   * Newest-active threads in this channel, capped server-side (#1287 slice 5
+   * item 18). Optional so a client talking to a hub from before the extension
+   * simply renders no thread rows.
+   */
+  threads?: {
+    rootMessageId: string;
+    replyCount: number;
+    lastReplyAt: string;
+    preview: string;
+    rootSenderId: string;
+    rootSenderKind: 'human' | 'agent' | 'system';
+    rootSenderDisplayName?: string;
+    providerId?: string;
+  }[];
+  /** Total live threads; `threads` is only the newest slice. */
+  threadCount?: number;
 }
 
 export async function fetchChannel(

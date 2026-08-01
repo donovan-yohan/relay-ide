@@ -751,6 +751,74 @@ describe('channel routes — threads', () => {
     expect(terminal.body).not.toHaveProperty('nextCursor');
   });
 
+  // #1287 slice 5 item 18: the rail surfaces threads. That data rides the
+  // channel-list response the rail already fetches — a response-shape extension
+  // like slice 3's summaries, never a new route or a per-thread fetch.
+  it('carries thread summaries on the channel list and single-channel reads', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const post = async (body: Record<string, unknown>) =>
+      (
+        await req<{ message: { id: string } }>({
+          port: h.port,
+          method: 'POST',
+          url: messageUrl,
+          body,
+        })
+      ).body.message.id;
+
+    const rootId = await post({ text: 'how should the binder key runtimes?' });
+    const quiet = await post({ text: 'top-level with no replies' });
+    await post({ text: 'reply one', threadId: rootId });
+    await post({ text: 'reply two', threadId: rootId });
+
+    const list = await req<{ channels: Array<Record<string, unknown>> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+    });
+    const listed = list.body.channels.find((c) => c['id'] === h.channelId);
+    expect(listed).toMatchObject({ threadCount: 1 });
+    expect(listed?.['threads']).toMatchObject([
+      {
+        rootMessageId: rootId,
+        replyCount: 2,
+        preview: 'how should the binder key runtimes?',
+      },
+    ]);
+    // A top-level message nobody replied to is not a thread.
+    expect(
+      (listed?.['threads'] as Array<{ rootMessageId: string }>).some(
+        (thread) => thread.rootMessageId === quiet
+      )
+    ).toBe(false);
+
+    const single = await req<{ channel: Record<string, unknown> }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}`,
+    });
+    expect(single.body.channel).toMatchObject({ threadCount: 1 });
+  });
+
+  it('reports no threads for a channel that only holds top-level messages', async () => {
+    const h = await harness();
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'flat conversation' },
+    });
+    const list = await req<{ channels: Array<Record<string, unknown>> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+    });
+    expect(
+      list.body.channels.find((c) => c['id'] === h.channelId)
+    ).toMatchObject({ threads: [], threadCount: 0 });
+  });
+
   it('returns 404 for an unknown parent and 409 for a cross-channel parent', async () => {
     const h = await harness();
     const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;

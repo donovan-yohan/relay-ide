@@ -420,6 +420,11 @@ function channelSummaryView(
   topic: WorkspaceTopic
 ): Record<string, unknown> {
   const summary = store.getChannelSummary(topic.id);
+  // #1287 slice 5 item 18: thread rows ride the SAME response the rail already
+  // fetches. Threads were fully implemented server-side but reachable only from
+  // the in-timeline "N replies" chip, so a live thread was invisible until the
+  // channel was already open. Extension, not a new route (slice 3 pattern).
+  const threads = store.listChannelThreadSummaries(topic.id);
   return {
     id: topic.id,
     title: topic.display.title,
@@ -430,6 +435,8 @@ function channelSummaryView(
     messageCount: summary?.messageCount ?? 0,
     lastMessage: summary?.lastMessage ?? null,
     members: store.listMembers(topic.id),
+    threads: threads.threads,
+    threadCount: threads.threadCount,
   };
 }
 
