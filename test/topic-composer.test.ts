@@ -35,8 +35,10 @@ import {
   launchWorkspaceTopicRoom,
   postChannelMessage,
 } from '../frontend/src/lib/api.js';
+import { ARCHIVED_CHANNEL_PROMPT_NOTICE } from '../frontend/src/lib/agent-channels.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import { useConfigStore } from '../frontend/src/lib/stores/config.js';
+import { useToastStore } from '../frontend/src/lib/stores/toasts.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
@@ -774,6 +776,76 @@ describe('TopicComposer', () => {
     expect(useUiStore.getState().activeChannelId).toBe(dmId);
     expect(onSelectSession).not.toHaveBeenCalled();
     expect(useSessionsStore.getState().activeSessionId).toBeNull();
+  });
+
+  // The channel landing is opened BEFORE the opening post, so a failed post
+  // unmounts the composer (ChatHome swaps in ChannelView) and the
+  // `launchFailure` banner has nowhere to render. A toast is the only
+  // operator-visible signal left — without it the failure was silent.
+  describe('a failed opening post stays visible (#1287)', () => {
+    const dmId = dmChannelTopicId('claude', null);
+
+    function stubDm(): void {
+      vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
+        id: dmId,
+        workspaceId: 'workspace:local',
+        routingDefaults: { providerId: 'claude' },
+        display: { title: 'Claude Code' },
+      } as never);
+    }
+
+    async function submitOpeningPrompt(): Promise<void> {
+      useToastStore.setState({ toasts: [] });
+      renderChatHome(vi.fn());
+      const ta = container.querySelector(
+        '.topic-composer__ta'
+      ) as HTMLTextAreaElement;
+      act(() => setNativeValue(ta, 'triage the reconnect flake'));
+      const form = container.querySelector(
+        '.topic-composer__form'
+      ) as HTMLFormElement;
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true }));
+      });
+    }
+
+    it('toasts the reason when the opening post fails', async () => {
+      stubDm();
+      const { HttpError } = await import('../frontend/src/lib/api.js');
+      vi.mocked(postChannelMessage).mockRejectedValue(
+        new HttpError(503, 'hub unreachable')
+      );
+
+      await submitOpeningPrompt();
+
+      // Landed on the channel, so the composer (and its banner) is gone.
+      expect(useUiStore.getState().activeChannelId).toBe(dmId);
+      expect(container.querySelector('.topic-composer__failure')).toBeNull();
+      const messages = useToastStore
+        .getState()
+        .toasts.map((toast) => toast.message);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('could not start the chat');
+      expect(messages[0]).toContain('hub unreachable');
+    });
+
+    it('keeps the archived blocker on its own remedy, not the generic toast', async () => {
+      stubDm();
+      const { HttpError } = await import('../frontend/src/lib/api.js');
+      vi.mocked(postChannelMessage).mockRejectedValue(
+        new HttpError(409, 'channel is archived', 'SESSION_CONFLICT', false, {
+          channelId: dmId,
+          reasonCode: 'CHANNEL_ARCHIVED',
+        })
+      );
+
+      await submitOpeningPrompt();
+
+      expect(useUiStore.getState().activeChannelId).toBe(dmId);
+      expect(
+        useToastStore.getState().toasts.map((toast) => toast.message)
+      ).toEqual([ARCHIVED_CHANNEL_PROMPT_NOTICE]);
+    });
   });
 
   it('resumes the most recent explicit terminal session', async () => {

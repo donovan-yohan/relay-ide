@@ -272,15 +272,27 @@ export function useTopicRoomCreate({
           });
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
         } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
           setLaunchFailure({
             stage: 'session',
-            message: error instanceof Error ? error.message : String(error),
+            message,
             retryable: true,
             ...(error instanceof HttpError && error.code
               ? { code: error.code }
               : {}),
             ...(error instanceof HttpError ? { status: error.status } : {}),
           });
+          // The landing above is deliberately ordered BEFORE the post, so by the
+          // time the opening post can fail the composer is unmounted and
+          // ChannelView owns the screen — `launchFailure` has no surface left to
+          // render on. Without this toast a failed opening post was silent: the
+          // operator saw an empty channel and no reason. The archived case never
+          // reaches here; `postOpeningPrompt` swallows it and names its own
+          // remedy.
+          useToastStore
+            .getState()
+            .showToast(`could not start the chat — ${message}`);
         } finally {
           setSubmittingIntent(null);
         }
