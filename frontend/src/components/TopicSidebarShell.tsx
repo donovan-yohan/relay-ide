@@ -2027,7 +2027,10 @@ function TopicMobileCockpit({
         className="topic-mobile-cockpit__bar"
         aria-label="mobile chat actions"
       >
-        <span className="topic-mobile-cockpit__hint">search chat history</span>
+        {/* #1287 slice 5 item 12: this bar used to lead with a static
+            `search chat history` label that had no handler and no input — it
+            named a capability the bar did not provide. The real search field
+            now sits above this cockpit, so the bar carries actions only. */}
         <div className="topic-mobile-cockpit__actions">
           <button
             type="button"
@@ -2986,6 +2989,31 @@ export function TopicSidebarView({
         searchQuery={searchQuery}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
       />
+      {/* #1287 slice 5 item 12: search and the older-chats toggle are DOM
+          siblings of both breakpoints' lists, so their position in this column
+          IS the mobile reading order. They render before the cockpit: on a
+          phone the search field and its results are the first thing under the
+          header instead of being buried past the attention lane, the session
+          tree, and every channel row. Desktop is unchanged — the cockpit is
+          `display: none` above 600px, so the visible desktop order stays
+          header → search → older chats → tree. */}
+      <TopicSearchPanel
+        model={model}
+        searchQuery={searchQuery}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        searchResults={searchResults}
+        searchTruncated={searchTruncated}
+        searchUnavailableReason={searchUnavailableReason}
+        onSearchQueryChange={onSearchQueryChange}
+        onSearchRetry={onSearchRetry}
+        onSearchClear={onSearchClear}
+        onOpenTopic={openSearchResult}
+        searchScope={searchScope}
+        onToggleSearchScope={onToggleSearchScope}
+        canScope={activeWorkspaceId != null}
+      />
+      <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <TopicMobileCockpit
         tree={railTree}
         sessions={sessions}
@@ -3007,23 +3035,6 @@ export function TopicSidebarView({
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
           : {})}
       />
-      <TopicSearchPanel
-        model={model}
-        searchQuery={searchQuery}
-        searchLoading={searchLoading}
-        searchError={searchError}
-        searchResults={searchResults}
-        searchTruncated={searchTruncated}
-        searchUnavailableReason={searchUnavailableReason}
-        onSearchQueryChange={onSearchQueryChange}
-        onSearchRetry={onSearchRetry}
-        onSearchClear={onSearchClear}
-        onOpenTopic={openSearchResult}
-        searchScope={searchScope}
-        onToggleSearchScope={onToggleSearchScope}
-        canScope={activeWorkspaceId != null}
-      />
-      <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <GroupedTopicTree
         tree={railTree}
         renderRow={renderTopicRow}

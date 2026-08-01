@@ -2879,7 +2879,108 @@ describe('TopicSidebarView', () => {
     expect(
       container.querySelector('.topic-mobile-cockpit__bar input')
     ).toBeNull();
-    expect(container.textContent).toContain('search chat history');
+    // #1287 slice 5 item 12: the search surface is named by the real control's
+    // accessible label, not by a static span in the cockpit bar that named a
+    // capability the bar did not provide.
+    expect(
+      container.querySelector('.topic-search')?.getAttribute('aria-label')
+    ).toBe('search chat history');
+  });
+
+  describe('mobile search placement (#1287 slice 5 item 12)', () => {
+    function precedes(first: Element | null, second: Element | null): boolean {
+      if (!first || !second) return false;
+      return Boolean(
+        first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING
+      );
+    }
+
+    it('renders search and older chats before the mobile chat list', async () => {
+      // The cockpit and the search field are siblings in one flex column, so
+      // DOM order IS the mobile reading order. Search used to trail the
+      // attention lane, the session tree, and every channel row.
+      await renderView({ onToggleArchived: vi.fn() });
+
+      const search = container.querySelector('.topic-search');
+      const archived = container.querySelector('.topic-archived-toggle');
+      const cockpit = container.querySelector('.topic-mobile-cockpit');
+      const mobileList = container.querySelector('.topic-mobile-list');
+
+      expect(search).not.toBeNull();
+      expect(archived).not.toBeNull();
+      expect(mobileList).not.toBeNull();
+      expect(precedes(search, cockpit)).toBe(true);
+      expect(precedes(search, mobileList)).toBe(true);
+      expect(precedes(archived, cockpit)).toBe(true);
+      expect(precedes(archived, mobileList)).toBe(true);
+      expect(precedes(search, archived)).toBe(true);
+      // The attention lane and the session tree are inside the cockpit, so
+      // clearing the cockpit clears everything the operator used to scroll past.
+      expect(
+        precedes(search, container.querySelector('.topic-cockpit__attention'))
+      ).toBe(true);
+    });
+
+    it('drops the dead search label from the mobile action bar', async () => {
+      await renderView();
+
+      const bar = container.querySelector('.topic-mobile-cockpit__bar');
+      expect(bar).not.toBeNull();
+      expect(container.querySelector('.topic-mobile-cockpit__hint')).toBeNull();
+      expect(bar?.textContent).not.toContain('search');
+      // Only the real actions remain in the bar.
+      expect(bar?.textContent).toContain('new');
+    });
+
+    it('keeps the desktop column order header, search, older chats, tree', async () => {
+      await renderView({
+        onCreateTaskRoom: vi.fn(),
+        onToggleArchived: vi.fn(),
+      });
+
+      const header = container.querySelector('.topic-shell__header');
+      const search = container.querySelector('.topic-search');
+      const archived = container.querySelector('.topic-archived-toggle');
+      const tree = container.querySelector('.topic-tree');
+
+      expect(header).not.toBeNull();
+      expect(tree).not.toBeNull();
+      expect(precedes(header, search)).toBe(true);
+      expect(precedes(search, archived)).toBe(true);
+      expect(precedes(archived, tree)).toBe(true);
+    });
+
+    it('keeps chat-search results directly under the search field', async () => {
+      const searchResults: WorkspaceTopicSearchResult[] = [
+        {
+          topic: makeTopic({
+            id: 'topic:hit',
+            display: { title: 'Search hit lane' },
+          }),
+          score: 90,
+          freshness: 'fresh',
+          matches: [
+            {
+              kind: 'topic',
+              field: 'display.title',
+              label: 'chat title',
+              value: 'Search hit lane',
+            },
+          ],
+          action: { kind: 'open-topic', topicId: 'topic:hit' },
+        },
+      ];
+
+      await renderView({ searchQuery: 'hit', searchResults });
+
+      const search = container.querySelector('.topic-search');
+      const results = container.querySelector('.topic-search-results');
+      const cockpit = container.querySelector('.topic-mobile-cockpit');
+
+      expect(results).not.toBeNull();
+      expect(precedes(search, results)).toBe(true);
+      expect(precedes(results, cockpit)).toBe(true);
+    });
   });
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {

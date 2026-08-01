@@ -1051,27 +1051,37 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* #1287 slice 5 item 12: the bar is actions only now that the dead
+     `search chat history` label is gone and the real search field sits above
+     the cockpit, so it right-aligns instead of reserving a text column. */
   .topic-mobile-cockpit__bar {
     position: sticky;
     top: 0;
     z-index: 2;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     padding: 8px;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
   }
 
-  .topic-mobile-cockpit__hint {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: var(--font-size-xs);
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  /* #1287 slice 5 item 12: search + older chats lead the mobile column, sized
+     to the same 44px touch rhythm as the rows below them. */
+  .topic-search {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: var(--font-size-sm);
+  }
+
+  .topic-archived-toggle {
+    padding: 8px 10px;
+  }
+
+  .topic-archived-toggle__btn {
+    min-height: 44px;
+    padding: 0 10px;
   }
 
   .topic-mobile-control input {
