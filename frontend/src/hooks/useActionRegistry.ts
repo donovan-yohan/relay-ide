@@ -881,8 +881,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...workbenchAddFileBlock,
         handler: () => {
-          // TODO(slice-5+): open WorkbenchBlockCreateDialog pre-seeded with kind='file'.
-          // For now a noop — same reasoning as workspaceOpenFileBrowser above.
+          // Noop. The dialog this was meant to open lived in the pre-channel
+          // block canvas (`frontend/src/workbench/`), deleted in #1287 slice 0;
+          // a channel-era file surface has to claim this action before it does
+          // anything. Registered so palette gating stays exercisable meanwhile.
         },
       },
 

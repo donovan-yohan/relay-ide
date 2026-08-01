@@ -1,4 +1,6 @@
-node_modules/
+# No trailing slash: worktrees under .worktrees/ link node_modules as a symlink,
+# and `node_modules/` (dir-only) would leave that link reported as untracked.
+node_modules
 dist/
 bun.lockb
 

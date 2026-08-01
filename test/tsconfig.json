@@ -4,11 +4,6 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": [
-    "../shared/**/*.ts",
-    "./workbench-block-types.test.ts",
-    "./workbench-block-registry.test.ts",
-    "./workbench-block-renderers.test.ts"
-  ],
+  "include": ["../shared/**/*.ts", "./workbench-block-types.test.ts"],
   "exclude": ["../node_modules/", "../dist/", "../public/", "../frontend/"]
 }

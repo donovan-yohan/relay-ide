@@ -655,6 +655,19 @@ Helpers `createFileResourceRef`, `parseFileResourceRef`, `fileResourceRefEquals`
 
 ### FileBlock renderer (#616 slice 2)
 
+> **Historical — this section only.** `frontend/src/workbench/` — the
+> pre-channel block canvas and every renderer in it, `FileBlock` included — was
+> deleted in epic #1287 slice 0; nothing in the channel-era UI imported it.
+> Read this section as the record of what that renderer consumed, not as a
+> description of shipping UI. "### Edit mode (#616 slice 4)" below carries the
+> same marker. Everything else in this area is unchanged and still live: the
+> node-side file RPC surface, the `FileResourceRef` contract, the
+> `shared/workbench-*` types, and — explicitly — "### PromptAttachment shape
+> (#616 slice 3)", whose `shared/prompt-attachment.ts` is a live wire contract
+> imported by `server/protocol-adapter-v2.ts`,
+> `shared/agent-chat-protocol-v2.ts`, and `shared/context-packet.ts`, and
+> parsed at runtime by `server/ws.ts`.
+
 The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes `FileResourceRef` and fetches file contents through the hub-routed file RPC surface. When a `FileBlockDescriptor` carries a `FileResourceRef` in `meta.fileRef` (distinguished from the legacy `FileRef` via the `isFileResourceRef` type guard in `shared/workbench-block-types.ts`), the renderer:
 
 1. Calls `GET /hub/nodes/:nodeId/sessions/:sessionId/files/stat` (via `fetchNodeFsStat`) with `staleTime: 30 000 ms` and `refetchOnWindowFocus: true` — no polling interval.
@@ -683,6 +696,13 @@ The contract is **ref-only by default**. Attachments carry a `FileResourceRef` p
 `promptAttachmentToArtifactRef` bridges an attachment into a `WorkContext.ArtifactRef` with `privacy.rawPayloadStored = false` and `redaction.strategy = 'hash'` (when `ref.sha256` is set) or `'summary'`. Per-adapter consumption of `promptAttachments` (Claude/Codex/OpenCode/Hermes) and dispatch-site `WorkContext.artifacts` append land in follow-on #616 slices.
 
 ### Edit mode (#616 slice 4)
+
+> **Historical — this section only.** The edit branch described below lived in
+> `frontend/src/workbench/blocks/file.tsx`, deleted with the rest of the
+> pre-channel block canvas in epic #1287 slice 0. The server-side write route
+> and its `rpc:fs:write` policy enforcement are unchanged and still live; only
+> the frontend that drove them is gone. Present tense below is the historical
+> record of that renderer.
 
 `FileBlockDescriptor.meta.mode` now accepts `'edit'` in addition to `'read' | 'diff'`. The edit branch in `frontend/src/workbench/blocks/file.tsx` renders an editable `<textarea>` seeded with the file's current content (fetched via the slice-2 read path) and a two-step save flow:
 
