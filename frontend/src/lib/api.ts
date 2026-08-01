@@ -1455,6 +1455,11 @@ export interface BulkAddResult {
     workspaceId: string;
     name: string;
     created: boolean;
+    /** True when the lane exists but is ARCHIVED, and therefore is NOT returned
+     *  by `GET /hub/ia/workspaces` — reporting it as ready would promise the
+     *  user a lane that never appears. Optional: a hub predating the field
+     *  omits it, which reads as "not archived", exactly as before. */
+    archived?: boolean;
   }>;
 }
 

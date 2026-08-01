@@ -152,6 +152,15 @@ export interface EnsureProjectWorkspaceResult {
   workspace: Workspace;
   /** False when an existing row was reused (re-add / duplicate add). */
   created: boolean;
+  /**
+   * True when the reused row is ARCHIVED. Not clobbering the archive is the
+   * right call (safety contract 2), but the caller must not report it as a
+   * lane the user will see: `listWorkspaces()` — and therefore
+   * `GET /hub/ia/workspaces` — excludes archived rows by default, so a caller
+   * that treats this like a live lane tells the user something appeared when
+   * nothing did.
+   */
+  archived: boolean;
 }
 
 /**
@@ -170,10 +179,15 @@ export function ensureProjectWorkspace(
 
   if (existing) {
     // Non-clobber: reuse the row verbatim. The ONE additive exception is
-    // membership — a lane whose project is missing (row seeded by a duplicate
-    // add, which skips ProjectId derivation) gets it appended.
+    // membership — a lane whose project is missing gets it appended. This holds
+    // for archived lanes too: membership is what makes the lane useful once the
+    // user restores it, and appending it changes nothing they can see now.
     if (!projectId || existing.projectIds.includes(projectId)) {
-      return { workspace: existing, created: false };
+      return {
+        workspace: existing,
+        created: false,
+        archived: existing.status === 'archived',
+      };
     }
     const workspace = iaStore.upsertWorkspace({
       id,
@@ -188,7 +202,11 @@ export function ensureProjectWorkspace(
       defaultNodeId: existing.defaultNodeId,
       defaultProvider: existing.defaultProvider,
     });
-    return { workspace, created: false };
+    return {
+      workspace,
+      created: false,
+      archived: workspace.status === 'archived',
+    };
   }
 
   const workspace = iaStore.upsertWorkspace({
@@ -198,7 +216,7 @@ export function ensureProjectWorkspace(
     projectIds: projectId ? [projectId] : [],
     defaultRepoPath: resolvedPath,
   });
-  return { workspace, created: true };
+  return { workspace, created: true, archived: false };
 }
 
 /**

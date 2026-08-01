@@ -10,6 +10,7 @@ import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import FileBrowser, { type FileBrowserHandle } from '../FileBrowser.js';
 import { addWorkspacesBulk, fetchHubNodes } from '../../lib/api.js';
+import { resolveBulkAddLanes } from '../../lib/bulk-add-lanes.js';
 import { createTerminalSession } from '../../lib/session-utils.js';
 import {
   cleanCwd,
@@ -149,20 +150,13 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
           }
           const result = await addWorkspacesBulk(selectedPaths);
 
-          // #1287 slice 2: a path that was ALREADY registered still resolves to
-          // a real `ia_workspaces` lane, so re-adding a repo should reveal that
-          // lane rather than dead-end on "Already exists". The hub reports every
-          // resolved lane in `workspaces` (added + duplicates); fall back to
-          // `added` when talking to a hub that predates the field.
-          const laneReadyPaths =
-            result.workspaces && result.workspaces.length > 0
-              ? result.workspaces.map((w) => w.path)
-              : result.added.map((a) => a.path);
+          // #1287 slice 2: a re-add resolves a real lane even though the hub
+          // reports "Already exists", and an archived lane resolves but is
+          // never rendered — see `resolveBulkAddLanes` for the full rules.
+          const { laneReadyPaths, blockers } = resolveBulkAddLanes(result);
 
-          if (laneReadyPaths.length === 0 && result.errors.length > 0) {
-            setError(
-              result.errors.map((e) => `${e.path}: ${e.error}`).join('; ')
-            );
+          if (laneReadyPaths.length === 0 && blockers.length > 0) {
+            setError(blockers.map((e) => `${e.path}: ${e.error}`).join('; '));
             setSubmitting(false);
             return;
           }
@@ -171,10 +165,10 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             onWorkspacesAdded(laneReadyPaths);
           }
 
-          if (result.errors.length > 0) {
+          if (blockers.length > 0) {
             // partial success — the resolved lanes are already surfaced, but
             // keep the dialog open so the user can see and dismiss the failures
-            setPartialErrors(result.errors);
+            setPartialErrors(blockers);
             setSubmitting(false);
             return;
           }
@@ -335,7 +329,12 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
               </p>
               <ul className="add-workspace-partial-errors-list">
                 {partialErrors.map((e) => (
-                  <li key={e.path} className="add-workspace-error-msg">
+                  // One path can carry two notices (e.g. "Already exists" plus
+                  // an archived lane), so the key pairs both fields.
+                  <li
+                    key={`${e.path}::${e.error}`}
+                    className="add-workspace-error-msg"
+                  >
                     {e.path}: {e.error}
                   </li>
                 ))}

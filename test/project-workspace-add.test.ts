@@ -86,7 +86,8 @@ function makeExec(gitRepo: boolean) {
           stderr?: string;
         };
         err.code = 128;
-        err.stderr = 'fatal: not a git repository (or any of the parent directories): .git';
+        err.stderr =
+          'fatal: not a git repository (or any of the parent directories): .git';
         throw err;
       }
       return { stdout: '.git\n', stderr: '' };
@@ -121,6 +122,7 @@ interface BulkResponse {
     workspaceId: string;
     name: string;
     created: boolean;
+    archived: boolean;
   }>;
 }
 
@@ -219,7 +221,13 @@ describe('#1287 add-project writes the sidebar workspace lane', () => {
 
       // And the route reports the lane back so the client can reveal it.
       expect(result.workspaces).toEqual([
-        { path: h.repo, workspaceId: row.id, name: row.name, created: true },
+        {
+          path: h.repo,
+          workspaceId: row.id,
+          name: row.name,
+          created: true,
+          archived: false,
+        },
       ]);
     } finally {
       await h.close();
@@ -284,7 +292,13 @@ describe('#1287 add-project writes the sidebar workspace lane', () => {
       ]);
       // …but the EXISTING lane is surfaced rather than only the error.
       expect(second.workspaces).toEqual([
-        { path: h.repo, workspaceId: id, name: 'My Lane', created: false },
+        {
+          path: h.repo,
+          workspaceId: id,
+          name: 'My Lane',
+          created: false,
+          archived: false,
+        },
       ]);
 
       // Exactly one row, and the user's edits survived untouched.
@@ -318,9 +332,73 @@ describe('#1287 add-project writes the sidebar workspace lane', () => {
           workspaceId: projectWorkspaceId(h.repo),
           name: path.basename(h.repo),
           created: true,
+          archived: false,
         },
       ]);
-      expect(iaStore.listWorkspaces({ includeArchived: true })).toHaveLength(1);
+
+      // The backfilled lane MUST carry membership. The duplicate path used to
+      // pass `projectId: undefined`, and since every later duplicate add did
+      // the same, the `projectIds: []` it seeded could never be filled — the
+      // lane rendered in the sidebar forever while grouping nothing.
+      const rows = iaStore.listWorkspaces({ includeArchived: true });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.projectIds).toEqual([
+        repoInstanceProjectId({
+          repoInstanceId: `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(h.repo)}`,
+          nodeId: DEFAULT_LOCAL_NODE_ID,
+          localPath: h.repo,
+          name: path.basename(h.repo),
+          isGitRepo: true,
+          defaultBranch: 'nightly',
+          currentBranch: 'nightly',
+          repoIdentity: 'github.com/donovan-yohan/relay-ide',
+          selectedRemote: null,
+          remotes: [],
+          repoIdentityWarnings: [],
+          worktrees: [],
+          reportedAt: '',
+        }),
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('reports an archived lane as archived instead of claiming success', async () => {
+    const iaStore = makeStore();
+    const h = await makeHarness({ iaStore, seedConfigRepos: true });
+    try {
+      const id = projectWorkspaceId(h.repo);
+      iaStore.upsertWorkspace({
+        id,
+        name: 'Retired lane',
+        order: 3,
+        projectIds: [],
+        status: 'archived',
+      });
+
+      const result = await h.bulk([h.repo]);
+
+      // Non-clobber: the archive survives, and membership is still backfilled
+      // so the lane is useful the moment it is restored.
+      const row = iaStore.getWorkspace(id)!;
+      expect(row.status).toBe('archived');
+      expect(row.name).toBe('Retired lane');
+      expect(row.projectIds).toHaveLength(1);
+
+      // But the client is TOLD it is archived. `listWorkspaces()` hides
+      // archived rows, so reporting this as a ready lane would promise the user
+      // a lane that never appears.
+      expect(iaStore.listWorkspaces()).toEqual([]);
+      expect(result.workspaces).toEqual([
+        {
+          path: h.repo,
+          workspaceId: id,
+          name: 'Retired lane',
+          created: false,
+          archived: true,
+        },
+      ]);
     } finally {
       await h.close();
     }

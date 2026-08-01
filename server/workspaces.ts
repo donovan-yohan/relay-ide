@@ -419,6 +419,14 @@ export interface BulkAddedWorkspace {
   name: string;
   /** False when an existing lane was reused (re-add / duplicate add). */
   created: boolean;
+  /**
+   * True when the resolved lane is ARCHIVED. `GET /hub/ia/workspaces` hides
+   * archived rows, so the client must not count this as a lane the user will
+   * see — it reports the archive instead of silently claiming success. Carried
+   * on the lane rather than dropped from the array so the client can tell an
+   * archived lane apart from a hub that reports no lanes at all.
+   */
+  archived: boolean;
 }
 
 // Exported helpers
@@ -1067,7 +1075,45 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         workspaceId: ensured.workspace.id,
         name: ensured.workspace.name,
         created: ensured.created,
+        archived: ensured.archived,
       });
+    }
+
+    /**
+     * ProjectId for a path whose Repo record this request is not building — the
+     * duplicate/backfill lane. It costs the same two git calls the fresh-add
+     * branch already pays, and skipping it was not free: `ensureProjectWorkspace`
+     * would seed the row with `projectIds: []`, and because every later duplicate
+     * add also passed `undefined` the membership could NEVER be filled. The lane
+     * then rendered in the sidebar forever while grouping nothing.
+     *
+     * Best-effort: a git failure must not turn a duplicate add into a 500, so the
+     * lane is still surfaced (membership-less) exactly as before.
+     */
+    async function deriveProjectId(
+      resolved: string
+    ): Promise<ProjectId | undefined> {
+      try {
+        const { isGitRepo } = await detectGitRepo(resolved, exec);
+        const identityFields = await resolveRepoIdentityFields(
+          resolved,
+          isGitRepo,
+          exec
+        );
+        return projectIdForRepo({
+          localPath: identityFields.localPath ?? resolved,
+          nodeId: identityFields.nodeId ?? DEFAULT_LOCAL_NODE_ID,
+          isGitRepo,
+          repoIdentity: identityFields.repoIdentity ?? null,
+        });
+      } catch (err) {
+        logger.warn(
+          'Project membership not derived for %s (lane still surfaced): %s',
+          resolved,
+          err instanceof Error ? err.message : err
+        );
+        return undefined;
+      }
     }
 
     for (const rawPath of rawPaths) {
@@ -1090,9 +1136,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       if (existing.has(resolved)) {
         errors.push({ path: rawPath, error: 'Already exists' });
         // Still surface the lane. On installs whose repos predate #1287 the row
-        // is missing entirely, so this doubles as the backfill for them; the
-        // ProjectId is omitted rather than paying git calls for a no-op add.
-        recordWorkspaceLane(resolved, undefined);
+        // is missing entirely, so this doubles as the backfill for them — and
+        // the backfill has to carry membership, or the lane it seeds can never
+        // group the repo it was created for.
+        recordWorkspaceLane(resolved, await deriveProjectId(resolved));
         continue;
       }
 
