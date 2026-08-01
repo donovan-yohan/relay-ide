@@ -46,7 +46,7 @@ import {
 import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
-import { scopedSessionKey } from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import {
   hasUnseenActivity,
   useChannelActivityStore,
@@ -313,8 +313,19 @@ function topicPrimarySession(
   })[0];
 }
 
+/**
+ * Structural, not `TopicNavSessionRef`: the rail asks about a nav ref, chat
+ * search asks about the raw `SessionSummary` it resolved an id against, and
+ * both must get the same verdict or the two entry points disagree about
+ * whether a session is attachable (#1287 slice 5 item 20).
+ */
 function sessionAttachDisabledReason(
-  session: TopicNavSessionRef | undefined
+  session:
+    | {
+        status?: SessionSummary['status'] | null;
+        durability?: SessionSummary['durability'] | null;
+      }
+    | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
   if (session.status === 'disconnected') {
@@ -1820,6 +1831,50 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
 }
 
 /**
+ * Whether a derived search hit's linked session is actually attachable, and
+ * under which key (#1287 slice 5 item 20).
+ *
+ * `action.primarySessionId` is a STRING carried on a WorkContext record, not
+ * proof the session still exists: derived hits come from `fallbackTopics` over
+ * the WorkContext store, whose `linkedRefs.sessionIds[0]` routinely names a
+ * session the client no longer holds. Enabling `resume` on id presence alone
+ * let the operator click into `activeSessionId = <gone id>`, which App's
+ * channel/session mutual exclusion reads as "a session opened" and clears the
+ * channel they were reading — closing their chat and landing on neither
+ * surface. So resolve the id and run the same attach gate the rail's
+ * `selectMobile` runs, and hand back the scoped select key the rail passes
+ * (`sessionSelectKey`), never the raw id.
+ */
+interface SearchResumeTarget {
+  selectKey: string | null;
+  disabledReason: string | null;
+}
+
+function searchResultResumeTarget(
+  result: WorkspaceTopicSearchResult,
+  sessions: SessionSummary[],
+  canOpenSession: boolean
+): SearchResumeTarget {
+  const linkedId = result.action.primarySessionId;
+  if (!linkedId || !canOpenSession) {
+    // Nothing was ever linked, or there is no session surface to open it in —
+    // the row's generic dead-hit copy is the honest label, not a claim that a
+    // session went away.
+    return { selectKey: null, disabledReason: null };
+  }
+  const session = resolveSessionByKey(sessions, linkedId);
+  if (!session) {
+    return {
+      selectKey: null,
+      disabledReason: 'linked session is no longer available',
+    };
+  }
+  const reason = sessionAttachDisabledReason(session);
+  if (reason) return { selectKey: null, disabledReason: reason };
+  return { selectKey: scopedSessionKey(session), disabledReason: null };
+}
+
+/**
  * What a search row's action can actually reach (#1287 slice 5 item 20).
  *
  * A persisted hit IS a channel, so it opens one. But `collectSearchTopics`
@@ -1827,17 +1882,17 @@ function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
  * backed by a session rather than a channel — `openTopicSelection` returns
  * early for them, so routing one through the channel path would render an
  * enabled `open` button that opens nothing. Those resume their linked session,
- * exactly as the rail row does for the same topic; only a derived hit with no
- * reachable session is a dead row, and that row says so.
+ * exactly as the rail row does for the same topic; a derived hit whose session
+ * is gone or unattachable is a dead row, and that row says so.
  */
 function searchResultOpenTarget(
   result: WorkspaceTopicSearchResult,
-  canOpenSession: boolean
+  resume: SearchResumeTarget
 ): { label: string; title: string } | null {
   if (result.topic.source === 'persisted') {
     return { label: 'open', title: 'open chat' };
   }
-  if (canOpenSession && result.action.primarySessionId) {
+  if (resume.selectKey) {
     return { label: 'resume', title: 'resume the linked session' };
   }
   return null;
@@ -1853,20 +1908,20 @@ function searchResultOpenTarget(
  * A stale `disabledReason` describes linked surfaces, not the channel, so it
  * renders as a caveat and never blocks opening the conversation.
  *
- * `canOpenSession` rather than the session handler itself: the derived fallback
+ * `resumeTargetFor` rather than the session handler itself: the derived fallback
  * lives in `openSearchResult` beside the rail's own resume path, so this row
- * only needs to know whether that fallback is reachable.
+ * only needs the verdict that path will reach.
  */
 function TopicSearchResults({
   results,
   truncated,
   onOpenTopic,
-  canOpenSession,
+  resumeTargetFor,
 }: {
   results: WorkspaceTopicSearchResult[];
   truncated: boolean;
   onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
-  canOpenSession: boolean;
+  resumeTargetFor: (result: WorkspaceTopicSearchResult) => SearchResumeTarget;
 }) {
   if (results.length === 0 && !truncated) return null;
   return (
@@ -1876,7 +1931,8 @@ function TopicSearchResults({
     >
       {results.map((result) => {
         const caveat = result.action.disabledReason;
-        const target = searchResultOpenTarget(result, canOpenSession);
+        const resume = resumeTargetFor(result);
+        const target = searchResultOpenTarget(result, resume);
         return (
           <div
             key={result.topic.id}
@@ -1897,7 +1953,11 @@ function TopicSearchResults({
               type="button"
               className="topic-action topic-search-result__action"
               disabled={!target}
-              title={target?.title ?? 'no chat or session to open for this hit'}
+              title={
+                target?.title ??
+                resume.disabledReason ??
+                'no chat or session to open for this hit'
+              }
               onClick={() => onOpenTopic(result)}
             >
               {target?.label ?? 'open'}
@@ -2202,7 +2262,7 @@ function TopicSearchPanel({
   searchScope = 'all',
   onToggleSearchScope,
   canScope = false,
-  canOpenSession = false,
+  resumeTargetFor,
 }: {
   model: TopicNavModel;
   searchQuery: string;
@@ -2218,7 +2278,7 @@ function TopicSearchPanel({
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
   canScope?: boolean;
-  canOpenSession?: boolean;
+  resumeTargetFor: (result: WorkspaceTopicSearchResult) => SearchResumeTarget;
 }) {
   const searchActive = searchQuery.trim().length > 0;
   return (
@@ -2285,7 +2345,7 @@ function TopicSearchPanel({
           results={searchResults}
           truncated={searchTruncated}
           onOpenTopic={onOpenTopic}
-          canOpenSession={canOpenSession}
+          resumeTargetFor={resumeTargetFor}
         />
       ) : null}
     </>
@@ -2920,16 +2980,26 @@ export function TopicSidebarView({
   // early for them. They resume their linked session instead, the same
   // disposition `selectMobile` gives the same topic on the rail, so the two
   // entry points cannot disagree about what a session-backed chat does.
+  const searchResumeTargetFor = useCallback(
+    (result: WorkspaceTopicSearchResult) =>
+      searchResultResumeTarget(result, sessions, Boolean(onSelectSession)),
+    [onSelectSession, sessions]
+  );
   const openSearchResult = useCallback(
     (result: WorkspaceTopicSearchResult) => {
+      const resume = searchResumeTargetFor(result);
+      // Only a resolved, attachable session is worth switching to. A dead id
+      // would still flip `activeSessionId`, which App reads as "a session
+      // opened" and uses to clear `activeChannelId` — the row would close the
+      // chat the operator was reading and open nothing.
+      if (result.topic.source !== 'persisted' && !resume.selectKey) return;
       select(result.action.topicId, result.topic);
-      const sessionId = result.action.primarySessionId;
-      if (result.topic.source !== 'persisted' && sessionId) {
-        onSelectSession?.(sessionId);
+      if (result.topic.source !== 'persisted' && resume.selectKey) {
+        onSelectSession?.(resume.selectKey);
       }
       useUiStore.getState().closeSidebar();
     },
-    [onSelectSession, select]
+    [onSelectSession, searchResumeTargetFor, select]
   );
   const selectMobile = useCallback(
     (id: string) => {
@@ -3114,7 +3184,7 @@ export function TopicSidebarView({
         searchScope={searchScope}
         onToggleSearchScope={onToggleSearchScope}
         canScope={activeWorkspaceId != null}
-        canOpenSession={Boolean(onSelectSession)}
+        resumeTargetFor={searchResumeTargetFor}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <TopicMobileCockpit

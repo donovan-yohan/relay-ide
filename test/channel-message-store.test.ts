@@ -1305,6 +1305,18 @@ describe('channel-message-store thread summaries', () => {
     // the one channel, so this costs the same order of work as the summary's
     // own COUNT(*) no matter how many channels the hub holds.
     expect(details).not.toMatch(/SCAN (?:channel_messages|root)\b/);
+    // Absence of the word SCAN is not enough. Drop the CROSS JOIN hint and
+    // SQLite drives from `root` instead, reported as
+    // `SEARCH root USING INDEX idx_chm_channel_seq (channel_id=?)` — a SEARCH
+    // bound on the channel alone is a range walk of EVERY message in the
+    // channel, and it pays for a transient index over `agg` on each execution.
+    // That plan is ~1.5x slower at 5k messages and diverges as transcripts
+    // grow, so assert the join shape: the page must be driven by the thread
+    // groups, with `root` reached by primary key.
+    expect(details).toMatch(
+      /SEARCH root USING (?:COVERING )?INDEX sqlite_autoindex_channel_messages_1 \(id=\?\)/
+    );
+    expect(details).not.toContain('AUTOMATIC COVERING INDEX');
   });
 
   it('carries the server-resolved root sender label and vendor', () => {

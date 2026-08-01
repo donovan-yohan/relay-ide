@@ -3826,6 +3826,115 @@ describe('TopicSidebarView', () => {
     expect(action.title).toBe('no chat or session to open for this hit');
   });
 
+  it('disables a derived search row whose linked session no longer resolves', async () => {
+    // `primarySessionId` is a string on a WorkContext record, not proof the
+    // session exists. Enabling `resume` on id presence alone let the operator
+    // click into `activeSessionId = <gone id>`, which App's channel/session
+    // mutual exclusion reads as "a session opened" and uses to clear
+    // `activeChannelId` — the row closed the chat they were reading and landed
+    // them on neither surface. The rail disables the same topic's resume, so
+    // this row must too.
+    useUiStore.setState({
+      sidebarOpen: true,
+      activeChannelId: 'topic:already-open',
+    });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-gone',
+      source: 'derived',
+      display: { title: 'Gone session chat' },
+      linkedRefs: { sessionIds: ['gone'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 40,
+        freshness: 'stale',
+        matches: [],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-gone',
+          primarySessionId: 'gone',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'gone',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe('linked session is no longer available');
+
+    await act(async () => action.click());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    // The channel the operator was reading survives the dead row.
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
+  });
+
+  it('disables a derived search row whose linked session cannot be attached', async () => {
+    // Parity with the rail: `selectMobile` gates resume on
+    // `sessionAttachDisabledReason`, so a disconnected session must read the
+    // same on both entry points, reason and all.
+    useUiStore.setState({
+      sidebarOpen: true,
+      activeChannelId: 'topic:already-open',
+    });
+    const derivedTopic = makeTopic({
+      id: 'topic:derived-dead',
+      source: 'derived',
+      display: { title: 'Disconnected session chat' },
+      linkedRefs: { sessionIds: ['s-dead'] },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: derivedTopic,
+        score: 40,
+        freshness: 'stale',
+        matches: [],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:derived-dead',
+          primarySessionId: 's-dead',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [derivedTopic],
+      sessions: [
+        makeSession({
+          id: 's-dead',
+          displayName: 'Dead lane',
+          status: 'disconnected',
+        }),
+      ],
+      surfaces: [],
+      searchQuery: 'dead',
+      searchResults,
+    });
+
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe(
+      'session offline/disconnected — controls unavailable until reconnect'
+    );
+
+    await act(async () => action.click());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
+  });
+
   it('threads the show-older-chats toggle into chat search requests', async () => {
     // #1287: the archived toggle used to drive only the non-search list query,
     // so searching an archived chat title reported no matches.

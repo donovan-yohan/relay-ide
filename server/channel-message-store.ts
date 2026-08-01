@@ -115,6 +115,15 @@ export function buildChannelThreadHistorySql(
  * so the rail could render "5 threads" for a channel that has four. Window
  * functions are evaluated before `LIMIT`, so the outer count still spans every
  * live thread and not just the capped page.
+ *
+ * `CROSS JOIN` is the join-order hint, not a cartesian product: SQLite never
+ * reorders across one. The `root.channel_id` predicate the correctness fix
+ * added is enough on its own to tempt the planner into driving from `root`
+ * (`SEARCH root USING INDEX idx_chm_channel_seq (channel_id=?)` plus an
+ * AUTOMATIC COVERING INDEX built over `agg` every execution), which walks every
+ * message in the channel instead of the handful of thread roots and makes this
+ * scale with messages-per-channel. Pinning the order keeps the `SCAN agg` ->
+ * primary-key probe of `root` shape the query-plan test locks in.
  */
 export function buildChannelThreadSummarySql(): string {
   return `SELECT root.id             AS root_id,
@@ -137,7 +146,7 @@ export function buildChannelThreadSummarySql(): string {
                 AND json_extract(meta_json, '$.agentDetail') IS NULL
               GROUP BY thread_id
            ) agg
-           JOIN channel_messages root
+           CROSS JOIN channel_messages root
              ON root.id = agg.thread_id AND root.channel_id = @channelId
           ORDER BY agg.last_reply_seq DESC
           LIMIT @limit`;
