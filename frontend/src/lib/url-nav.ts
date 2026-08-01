@@ -1,3 +1,4 @@
+import { isWorkspaceTopicId } from '../../../shared/workspace-topics.js';
 import type { Repo } from './types.js';
 import type { AnalyticsView } from './stores/ui.js';
 
@@ -55,10 +56,52 @@ export function buildQuery(modal: ModalRoute): string {
   return '';
 }
 
+// ── Channel route segment ────────────────────────────────────────────────────
+
+/**
+ * Every channel id is a `WorkspaceTopic` id — the constant `topic:` prefix plus
+ * one token from `[A-Za-z0-9._~%-]`. The prefix carries no information, so the
+ * URL holds the suffix alone: `/channel/01k…` for a slice-4 minted id
+ * (lowercase Crockford base32) and `/channel/dm~claude~workspace-local` for a
+ * DM (`~` is an unreserved URL character and survives verbatim).
+ */
+const CHANNEL_ID_PREFIX = 'topic:';
+
+/** Path segment for a channel id. Inverse of {@link decodeChannelSegment}. */
+export function encodeChannelSegment(channelId: string): string {
+  const local = channelId.startsWith(CHANNEL_ID_PREFIX)
+    ? channelId.slice(CHANNEL_ID_PREFIX.length)
+    : channelId;
+  // `%` is the one character of the topic-id grammar a path segment cannot
+  // carry literally: a legacy title-slugged id was minted through
+  // `encodeURIComponent`, so a stored `%` already marks an escape and the
+  // browser would decode it a second time on read. Re-encoding is identity for
+  // every other character in the grammar, so this only ever touches those ids.
+  return encodeURIComponent(local);
+}
+
+/**
+ * Channel id for a path segment, or `null` when the segment is not a legal
+ * topic id (hand-edited URL, id from a future grammar, malformed `%` escape).
+ */
+export function decodeChannelSegment(segment: string): string | null {
+  let local: string;
+  try {
+    local = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  const channelId = local.startsWith(CHANNEL_ID_PREFIX)
+    ? local
+    : `${CHANNEL_ID_PREFIX}${local}`;
+  return isWorkspaceTopicId(channelId) ? channelId : null;
+}
+
 // ── Route state ──────────────────────────────────────────────────────────────
 
 export type RouteState =
   | { view: 'home' }
+  | { view: 'channel'; channelId: string }
   | { view: 'repo'; repoPath: string }
   | { view: 'session'; repoPath: string; sessionId: string }
   | { view: 'analytics' }
@@ -75,6 +118,13 @@ export function parseRoute(pathname: string, repos: Repo[]): RouteState {
     return { view: 'analytics' };
   }
 
+  // /channel/<topic id suffix>. Not ambiguous with a repo route: a repo segment
+  // is `hashPath()` output, always exactly 6 base36 characters.
+  if (parts[0] === 'channel') {
+    const channelId = parts[1] ? decodeChannelSegment(parts[1]) : null;
+    return channelId ? { view: 'channel', channelId } : { view: 'home' };
+  }
+
   // /<hash> or /<hash>/<sessionId>
   const lookup = new Map(repos.map((r) => [hashPath(r.path), r.path]));
   const repoPath = lookup.get(parts[0]!);
@@ -88,13 +138,21 @@ export function buildPath(
   repoPath: string | null,
   sessionId: string | null,
   analyticsView: AnalyticsView,
-  repos: Repo[]
+  repos: Repo[],
+  channelId: string | null
 ): string {
   // Analytics routes take priority
   if (analyticsView === 'dashboard') return '/analytics';
   if (analyticsView !== null && typeof analyticsView === 'object') {
     return `/analytics/${analyticsView.sessionId}`;
   }
+
+  // #1287: an open channel outranks the composer and any active session in
+  // `resolveAppViewMode`, so it must outrank the repo/session pair here too.
+  // Without this the path keeps describing the surface UNDERNEATH the channel
+  // — and when the channel open also drops the repo/session selection the path
+  // collapses to `/`, discarding the previous entry and corrupting history.
+  if (channelId) return `/channel/${encodeChannelSegment(channelId)}`;
 
   if (!repoPath) return '/';
   if (!repos.some((r) => r.path === repoPath)) return '/';

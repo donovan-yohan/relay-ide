@@ -1226,13 +1226,17 @@ export default function App() {
         restoreFromUrl();
       }
 
-      // Auto-select if exactly one session exists and none is selected
+      // Auto-select if exactly one session exists and none is selected.
+      // #1287: never over a channel restored from the URL — selecting a session
+      // trips the channel↔session mutual-exclusion effect below, which would
+      // close the deep-linked channel a fraction of a second after it opened.
       const currentSessions = useSessionsStore.getState().sessions;
       const currentActiveSessionId =
         useSessionsStore.getState().activeSessionId;
       if (
         !currentActiveSessionId &&
         !sessionParam &&
+        !useUiStore.getState().activeChannelId &&
         currentSessions.length === 1
       ) {
         handleSelectSession(scopedSessionKey(currentSessions[0]!));
