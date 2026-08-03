@@ -28,7 +28,9 @@ import {
   createChannelChatRouter,
 } from '../server/channel-chat-router.js';
 import {
+  ChannelAgentBusyError,
   ChannelAgentRoleConflictError,
+  ChannelMessageNotRetryableError,
   type ChannelAgentBinder,
 } from '../server/channel-agent-binder.js';
 import {
@@ -1373,5 +1375,143 @@ describe('channel routes — orchestrator designation (#1259)', () => {
       url: `/channels/${h.channelId}/orchestrator`,
     });
     expect(res.status).toBe(503);
+  });
+});
+
+describe('channel routes — message retry (#1308 slice 1 item 2)', () => {
+  it('re-routes through the binder and echoes what was re-run', async () => {
+    const calls: Array<{ channelId: string; messageId: string }> = [];
+    const h = await harness({
+      binder: {
+        retryMessage: async (channelId: string, messageId: string) => {
+          calls.push({ channelId, messageId });
+          return {
+            messageId,
+            triggerMessageId: 'chm:trigger',
+            profileActorId: 'agent-profile:claude:default',
+          };
+        },
+      },
+    });
+    const res = await req<{
+      ok: boolean;
+      retry: { triggerMessageId: string; profileActorId: string };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.retry).toEqual({
+      messageId: 'chm:failed',
+      triggerMessageId: 'chm:trigger',
+      profileActorId: 'agent-profile:claude:default',
+    });
+    expect(calls).toEqual([
+      { channelId: h.channelId, messageId: 'chm:failed' },
+    ]);
+  });
+
+  it('maps the busy storm brake to 409 CHANNEL_AGENT_BUSY', async () => {
+    const h = await harness({
+      binder: {
+        retryMessage: async () => {
+          throw new ChannelAgentBusyError(
+            'topic:x',
+            'agent-profile:claude:default',
+            'streaming'
+          );
+        },
+      },
+    });
+    const res = await req<{ error: { retryable: boolean; details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error.details?.['reasonCode']).toBe('CHANNEL_AGENT_BUSY');
+    // Retryable: the operator can press again once the agent goes idle.
+    expect(res.body.error.retryable).toBe(true);
+  });
+
+  it('separates a missing row (404) from an unretryable one (409)', async () => {
+    const h = await harness({
+      binder: {
+        retryMessage: async (_channelId: string, messageId: string) => {
+          throw messageId === 'chm:missing'
+            ? new ChannelMessageNotRetryableError(
+                'message not found in this channel',
+                'CHANNEL_MESSAGE_NOT_FOUND',
+                true
+              )
+            : new ChannelMessageNotRetryableError(
+                'not retryable',
+                'MESSAGE_NOT_RETRYABLE'
+              );
+        },
+      },
+    });
+    const missing = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Amissing/retry`,
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MESSAGE_NOT_FOUND'
+    );
+    const unretryable = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Acomplete/retry`,
+    });
+    expect(unretryable.status).toBe(409);
+    expect(unretryable.body.error.details?.['reasonCode']).toBe(
+      'MESSAGE_NOT_RETRYABLE'
+    );
+  });
+
+  it('404s an unknown channel and 503s with no binder configured', async () => {
+    const h = await harness({ binder: { retryMessage: async () => ({}) as never } });
+    const unknown = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/topic%3Anope/messages/chm%3Afailed/retry`,
+    });
+    expect(unknown.status).toBe(404);
+
+    const noBinder = await harness();
+    const res = await req<{ error: unknown }>({
+      port: noBinder.port,
+      method: 'POST',
+      url: `/channels/${noBinder.channelId}/messages/chm%3Afailed/retry`,
+    });
+    expect(res.status).toBe(503);
+  });
+});
+
+describe('channel routes — retry capability gate', () => {
+  it('rejects a caller without context:write before touching the binder', async () => {
+    let called = false;
+    const h = await harness({
+      binder: {
+        retryMessage: async () => {
+          called = true;
+          return {} as never;
+        },
+      },
+    });
+    const res = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
+      capabilities: 'context:read',
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(called).toBe(false);
   });
 });

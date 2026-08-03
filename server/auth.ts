@@ -129,6 +129,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '/inbox/*',
       '/events/*',
       '/handoffs/*',
+      '/channels/*',
       '/nodes',
       '/hub/audit/*',
       '/hub/nodes/:nodeId/logs',
@@ -137,7 +138,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     acceptedLanes: ['scoped-actor-credential', 'browser-session'],
     middleware: 'requireCliGatewayAuth',
     notes:
-      'CLI gateway calls prefer a scoped actor credential and retain browser-session compatibility for local/dev callers; this does not make browser cookies node credentials.',
+      'CLI gateway calls prefer a scoped actor credential and retain browser-session compatibility for local/dev callers; this does not make browser cookies node credentials. Channel routes sit here too: they mount with requireCliGatewayAuth and gate writes on a context:write capability check rather than on the lane alone.',
   },
   {
     surface: 'scoped session APIs',

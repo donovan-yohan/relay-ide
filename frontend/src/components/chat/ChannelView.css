@@ -603,6 +603,16 @@
   background: var(--surface-hover);
 }
 
+.ch-msg__action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ch-msg__action:disabled:hover {
+  color: var(--text-muted);
+  background: transparent;
+}
+
 /* jump emphasis after a deep link lands (#1308 item 1). DESIGN.md text-motion
    only: a flat background fade, no shimmer, no particles, and inside the 400ms
    motion budget. */
@@ -645,6 +655,43 @@
 
 .ch-msg__tag--truncated {
   color: var(--status-warning);
+}
+
+.ch-msg__tag--retried {
+  color: var(--text-muted);
+}
+
+/* Inline retry on a failed row (#1308 item 2). Outline-only, square, mono —
+   same control vocabulary as the thread chip, tinted to the failure it recovers
+   from. No motion: the pending state is a text swap (`retry` → `retrying…`),
+   which is the only motion DESIGN.md allows here. */
+.ch-msg__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  align-self: flex-start;
+  margin-top: var(--space-xs, 4px);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__retry:hover:not(:disabled),
+.ch-msg__retry:focus-visible:not(:disabled) {
+  border-color: var(--status-error);
+  background: var(--surface-hover);
+}
+
+.ch-msg__retry:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* Thread entry point: outline-only informational navigation, matching the

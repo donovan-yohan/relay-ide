@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type {
-  ChannelMessage,
-  ChannelMessageId,
+import {
+  channelRetryTarget,
+  type ChannelMessage,
+  type ChannelMessageId,
 } from '../../../../shared/channel-chat-protocol.js';
 import type { AgentDetailCardStatusV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
@@ -47,6 +48,19 @@ const COPY_ICON = (
     />
     <path
       d="M10.5 2.5h-8v8"
+      stroke="currentColor"
+      fill="none"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+    />
+  </svg>
+);
+
+/** Open circular arrow — DESIGN.md flat line art, no fill, square caps. */
+const RETRY_ICON = (
+  <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M13 8a5 5 0 11-1.6-3.7M13 2v3h-3"
       stroke="currentColor"
       fill="none"
       strokeWidth="1.5"
@@ -193,6 +207,154 @@ function useRowActionAffordance(
   };
 }
 
+/**
+ * System rows carry actionable payloads in `meta` (#1167). An approval request
+ * renders approve/deny controls that call the per-agent approvals endpoint;
+ * errors are swallowed (the row heals when the agent re-emits). Split out of
+ * `ChannelMessageRow` so the message row's own branching stays legible.
+ */
+const ChannelSystemMessageRow: React.FC<{
+  message: ChannelMessage;
+  channelId: string;
+  highlighted: boolean;
+}> = ({ message, channelId, highlighted }) => {
+  const approvalRequestId = message.meta?.approvalRequestId;
+  const hasApproval = typeof approvalRequestId === 'string';
+  return (
+    <div
+      className={`ch-system-msg${highlighted ? ' ch-msg--jump' : ''}`}
+      role="note"
+      data-channel-message-seq={message.seq}
+      data-channel-message-id={message.id}
+    >
+      <span className="ch-system-msg__label">{message.body.text}</span>
+      {hasApproval ? (
+        <span className="ch-system-msg__actions">
+          <button
+            type="button"
+            className="ch-system-msg__btn ch-system-msg__btn--approve"
+            onClick={() =>
+              void respondChannelApproval(
+                channelId,
+                String(message.meta?.agentId),
+                String(message.meta?.approvalRequestId),
+                { kind: 'accept', scope: 'once' }
+              ).catch(() => {})
+            }
+          >
+            approve
+          </button>
+          <button
+            type="button"
+            className="ch-system-msg__btn ch-system-msg__btn--deny"
+            onClick={() =>
+              void respondChannelApproval(
+                channelId,
+                String(message.meta?.agentId),
+                String(message.meta?.approvalRequestId),
+                { kind: 'decline' }
+              ).catch(() => {})
+            }
+          >
+            deny
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
+/**
+ * Everything the retry affordances need, or `null` when the row cannot be
+ * retried. Resolved once by `ChannelMessageRow` so the toolbar button and the
+ * inline button can never disagree about disabled/superseded state.
+ */
+interface RetryAffordance {
+  onRetry: () => void;
+  /** Request in flight from this row. */
+  pending: boolean;
+  /** Bound profile is non-idle in this channel. */
+  busy: boolean;
+  /** A later system row already superseded this one. */
+  retried: boolean;
+}
+
+function retryTitle(retry: RetryAffordance): string {
+  if (retry.retried) return 'already retried';
+  return retry.busy ? 'agent is busy' : 'retry';
+}
+
+/** Compact hover/focus/long-press toolbar (#1308 item 1, retry added in item 2). */
+const MessageActionToolbar: React.FC<{
+  isHuman: boolean;
+  onCopyLink: () => void;
+  onCopyText: () => void;
+  retry: RetryAffordance | null;
+}> = ({ isHuman, onCopyLink, onCopyText, retry }) => (
+  <div
+    className={`ch-msg__actions${isHuman ? ' ch-msg__actions--user' : ''}`}
+    role="group"
+    aria-label="message actions"
+  >
+    <button
+      type="button"
+      className="ch-msg__action"
+      title="copy link"
+      aria-label="copy link to message"
+      onClick={onCopyLink}
+    >
+      {LINK_ICON}
+    </button>
+    <button
+      type="button"
+      className="ch-msg__action"
+      title="copy text"
+      aria-label="copy message text"
+      onClick={onCopyText}
+    >
+      {COPY_ICON}
+    </button>
+    {retry ? (
+      <button
+        type="button"
+        className="ch-msg__action"
+        title={retryTitle(retry)}
+        aria-label="retry this reply"
+        disabled={retry.busy || retry.pending || retry.retried}
+        onClick={retry.onRetry}
+      >
+        {RETRY_ICON}
+      </button>
+    ) : null}
+  </div>
+);
+
+/**
+ * Always-visible recovery on a `failed` row (#1308 item 2). A failed turn is the
+ * one terminal state nothing about the operator's own action explains, so it
+ * must be reachable without hovering — touch has no hover at all.
+ * Interrupted/truncated keep retry in the toolbar, where it adds no permanent
+ * chrome to rows the operator already accounted for.
+ */
+const InlineRetryAffordance: React.FC<{ retry: RetryAffordance }> = ({
+  retry,
+}) =>
+  retry.retried ? (
+    <span className="ch-msg__tag ch-msg__tag--retried">retried</span>
+  ) : (
+    <button
+      type="button"
+      className="ch-msg__retry"
+      disabled={retry.busy || retry.pending}
+      onClick={retry.onRetry}
+      aria-label="retry this reply"
+      title={retryTitle(retry)}
+    >
+      {RETRY_ICON}
+      <span>{retry.pending ? 'retrying…' : 'retry'}</span>
+    </button>
+  );
+
 interface ChannelMessageRowProps {
   message: ChannelMessage;
   channelId: string;
@@ -202,6 +364,20 @@ interface ChannelMessageRowProps {
   onOpenThread?: (rootId: ChannelMessageId) => void;
   /** #1308 item 1: brief jump emphasis after a deep link lands on this row. */
   highlighted?: boolean;
+  /**
+   * #1308 item 2. Re-routes the row's ORIGINAL trigger message. Omitted where
+   * the surface has no retry lane (isolated fixtures), which also removes the
+   * affordance — the row never invents a retry path of its own.
+   */
+  onRetry?: (message: ChannelMessage) => Promise<unknown>;
+  /**
+   * The bound profile is non-idle in this channel. Retry stays visible but
+   * disabled so a busy agent cannot be stacked with a second turn (storm brake;
+   * the server refuses independently).
+   */
+  retryBusy?: boolean;
+  /** A later system row already superseded this one via `meta.retryOfMessageId`. */
+  retried?: boolean;
 }
 
 export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
@@ -212,11 +388,29 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   lastReplyHint,
   onOpenThread,
   highlighted = false,
+  onRetry,
+  retryBusy = false,
+  retried = false,
 }) => {
   const streaming = message.status === 'streaming';
   const blinking = useIdleBlink(message.body.text, streaming);
   const rowRef = useRef<HTMLDivElement>(null);
   const { actionsVisible, ...affordance } = useRowActionAffordance(rowRef);
+  const [retryPending, setRetryPending] = useState(false);
+
+  const handleRetry = useCallback(() => {
+    if (!onRetry || retryPending) return;
+    setRetryPending(true);
+    void onRetry(message).finally(() => setRetryPending(false));
+  }, [message, onRetry, retryPending]);
+
+  // Retry is offered only where the shared contract can name a trigger to
+  // re-route (`source.turnId` minted by the binder), so the button and the
+  // route agree by construction instead of by convention.
+  const retry: RetryAffordance | null =
+    onRetry !== undefined && channelRetryTarget(message) !== null
+      ? { onRetry: handleRetry, pending: retryPending, busy: retryBusy, retried }
+      : null;
 
   const handleCopyLink = useCallback(() => {
     const origin =
@@ -239,52 +433,12 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   }, [message.body.text]);
 
   if (variant === 'system' || message.kind === 'system') {
-    // System rows carry actionable payloads in `meta` (#1167). An approval
-    // request renders approve/deny controls that call the per-agent approvals
-    // endpoint; errors are swallowed (the row heals when the agent re-emits).
-    const approvalRequestId = message.meta?.approvalRequestId;
-    const hasApproval = typeof approvalRequestId === 'string';
     return (
-      <div
-        className={`ch-system-msg${highlighted ? ' ch-msg--jump' : ''}`}
-        role="note"
-        data-channel-message-seq={message.seq}
-        data-channel-message-id={message.id}
-      >
-        <span className="ch-system-msg__label">{message.body.text}</span>
-        {hasApproval ? (
-          <span className="ch-system-msg__actions">
-            <button
-              type="button"
-              className="ch-system-msg__btn ch-system-msg__btn--approve"
-              onClick={() =>
-                void respondChannelApproval(
-                  channelId,
-                  String(message.meta?.agentId),
-                  String(message.meta?.approvalRequestId),
-                  { kind: 'accept', scope: 'once' }
-                ).catch(() => {})
-              }
-            >
-              approve
-            </button>
-            <button
-              type="button"
-              className="ch-system-msg__btn ch-system-msg__btn--deny"
-              onClick={() =>
-                void respondChannelApproval(
-                  channelId,
-                  String(message.meta?.agentId),
-                  String(message.meta?.approvalRequestId),
-                  { kind: 'decline' }
-                ).catch(() => {})
-              }
-            >
-              deny
-            </button>
-          </span>
-        ) : null}
-      </div>
+      <ChannelSystemMessageRow
+        message={message}
+        channelId={channelId}
+        highlighted={highlighted}
+      />
     );
   }
 
@@ -336,30 +490,12 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       {...affordance}
     >
       {actionsVisible ? (
-        <div
-          className={`ch-msg__actions${isHuman ? ' ch-msg__actions--user' : ''}`}
-          role="group"
-          aria-label="message actions"
-        >
-          <button
-            type="button"
-            className="ch-msg__action"
-            title="copy link"
-            aria-label="copy link to message"
-            onClick={handleCopyLink}
-          >
-            {LINK_ICON}
-          </button>
-          <button
-            type="button"
-            className="ch-msg__action"
-            title="copy text"
-            aria-label="copy message text"
-            onClick={handleCopyText}
-          >
-            {COPY_ICON}
-          </button>
-        </div>
+        <MessageActionToolbar
+          isHuman={isHuman}
+          onCopyLink={handleCopyLink}
+          onCopyText={handleCopyText}
+          retry={retry}
+        />
       ) : null}
       {message.agentDetail ? (
         <AgentDetailCard
@@ -402,6 +538,9 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       ) : null}
       {message.status === 'failed' ? (
         <span className="ch-msg__tag ch-msg__tag--failed">failed</span>
+      ) : null}
+      {retry && message.status === 'failed' ? (
+        <InlineRetryAffordance retry={retry} />
       ) : null}
       {truncationLabel ? (
         <span className="ch-msg__tag ch-msg__tag--truncated">

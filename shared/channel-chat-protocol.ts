@@ -151,6 +151,105 @@ export interface ChannelInFlightRef {
   deltaIndex: number;
 }
 
+// ── retry contract (#1308 slice 1 item 2) ───────────────────────────────────
+
+/**
+ * Prefix of the binder-issued turn identity. A routed turn is named after the
+ * (trigger message, profile) pair it was raised for — that is what makes the
+ * turn deterministic across a redeliver — so the trigger id is recoverable from
+ * any durable row the turn produced. Retry is built on exactly that: it never
+ * re-posts the human message, it re-routes the original one.
+ */
+export const CHANNEL_TURN_ID_PREFIX = 'chturn-';
+
+/** Deterministic turn identity for one routed (trigger, profile) pair. */
+export function channelTurnId(
+  triggerMessageId: ChannelMessageId,
+  profileActorId: string
+): string {
+  return `${CHANNEL_TURN_ID_PREFIX}${triggerMessageId}-${profileActorId}`;
+}
+
+/**
+ * Inverse of `channelTurnId`. Parsed by anchoring on the known prefix AND the
+ * known profile suffix rather than by splitting on `-`: both message ids and
+ * profile actor ids embed UUIDs, so no separator is unambiguous. Returns null
+ * for any turn id the binder did not mint (providers are free to label their
+ * own items — Hermes emits `turn-0` — and those rows simply cannot be retried).
+ */
+export function triggerMessageIdFromTurnId(
+  turnId: string,
+  profileActorId: string
+): ChannelMessageId | null {
+  const suffix = `-${profileActorId}`;
+  if (!turnId.startsWith(CHANNEL_TURN_ID_PREFIX)) return null;
+  if (!turnId.endsWith(suffix) || turnId.length <= suffix.length) return null;
+  const id = turnId.slice(
+    CHANNEL_TURN_ID_PREFIX.length,
+    turnId.length - suffix.length
+  );
+  return id.startsWith('chm:') && id.length > 'chm:'.length
+    ? (id as ChannelMessageId)
+    : null;
+}
+
+/**
+ * Terminal statuses whose turn did NOT deliver a complete reply, so re-running
+ * it is a coherent operator request.
+ *
+ * All three are included deliberately. `failed` is a send/agent error;
+ * `interrupted` is produced both by the operator's ■ AND by a runtime dying
+ * mid-stream (`handleRuntimeEnd` → bridge finalize), which is a lost turn the
+ * operator never chose; `truncated` covers a missing terminal item or a hub
+ * restart as well as the 256KB cap. Retry stays a click — never automatic — so
+ * the operator, not the system, decides whether re-running is worth the tokens.
+ */
+export const CHANNEL_RETRYABLE_STATUSES: readonly ChannelMessageStatus[] = [
+  'failed',
+  'interrupted',
+  'truncated',
+];
+
+/** `meta` key on the system row that supersedes a retried agent row. */
+export const CHANNEL_RETRY_OF_META_KEY = 'retryOfMessageId';
+
+export interface ChannelRetryTarget {
+  /** The ORIGINAL human/agent message the failed turn was raised for. */
+  triggerMessageId: ChannelMessageId;
+  /** Profile actor id that owned the failed turn; the retry re-uses it. */
+  profileActorId: string;
+}
+
+/**
+ * Whether a row can be retried, and against what. Shared so the client's
+ * affordance and the server's route agree by construction: an unresolvable row
+ * never grows a retry button AND is rejected by the route.
+ */
+export function channelRetryTarget(
+  message: ChannelMessage
+): ChannelRetryTarget | null {
+  if (message.kind !== 'message') return null;
+  if (message.sender.kind !== 'agent') return null;
+  if (!CHANNEL_RETRYABLE_STATUSES.includes(message.status)) return null;
+  const turnId = message.source?.turnId;
+  if (!turnId) return null;
+  const profileActorId = message.sender.id;
+  const triggerMessageId = triggerMessageIdFromTurnId(turnId, profileActorId);
+  if (!triggerMessageId || triggerMessageId === message.id) return null;
+  return { triggerMessageId, profileActorId };
+}
+
+/** Agent row a system row supersedes, when it is a retry marker. */
+export function retriedMessageIdFromSystemRow(
+  message: ChannelMessage
+): ChannelMessageId | null {
+  if (message.kind !== 'system') return null;
+  const value = message.meta?.[CHANNEL_RETRY_OF_META_KEY];
+  return typeof value === 'string' && value.startsWith('chm:')
+    ? (value as ChannelMessageId)
+    : null;
+}
+
 interface ChannelEventBaseV1 {
   channelId: string;
   timestamp: string;

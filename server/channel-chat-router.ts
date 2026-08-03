@@ -25,9 +25,11 @@ import {
   type ChannelAttachmentStore,
 } from './channel-attachments.js';
 import {
+  ChannelAgentBusyError,
   ChannelAgentNoActiveTurnError,
   ChannelAgentNotFoundError,
   ChannelAgentRoleConflictError,
+  ChannelMessageNotRetryableError,
   type ChannelAgentBinder,
 } from './channel-agent-binder.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
@@ -1040,6 +1042,55 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         });
     }
   );
+
+  // #1308 slice 1 item 2: retry one failed/interrupted/truncated agent row by
+  // re-routing the ORIGINAL trigger message to the same profile.
+  //
+  // Auth shape: the shared `auth` lane (browser session or gateway credential)
+  // plus an explicit `context:write` capability check — NOT a new named actor
+  // command, because this slice adds no CLI gateway verb. The capability gate is
+  // load-bearing rather than decorative: `requireCliGatewayAuth` admits an actor
+  // token on its READ lane, and re-running a turn spends real agent tokens, so a
+  // read-scoped credential must not reach it.
+  router.post('/channels/:id/messages/:messageId/retry', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (!storeOr503(res, deps.store)) return;
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    const messageId = req.params['messageId'] ?? '';
+    binder
+      .retryMessage(topic.id, messageId)
+      .then((retry) => res.json({ ok: true, retry }))
+      .catch((error) => {
+        if (error instanceof ChannelMessageNotRetryableError) {
+          sendGatewayError(
+            res,
+            error.notFound ? 'NOT_FOUND' : 'SESSION_CONFLICT',
+            error.message,
+            false,
+            {
+              channelId: topic.id,
+              messageId,
+              reasonCode: error.reasonCode,
+            }
+          );
+          return;
+        }
+        if (error instanceof ChannelAgentBusyError) {
+          sendGatewayError(res, 'SESSION_CONFLICT', error.message, true, {
+            channelId: topic.id,
+            messageId,
+            agentId: error.profileActorId,
+            status: error.status,
+            reasonCode: 'CHANNEL_AGENT_BUSY',
+          });
+          return;
+        }
+        mapStoreError(res, error);
+      });
+  });
 
   // #1167 §7: respond to an in-channel approval request.
   router.post(

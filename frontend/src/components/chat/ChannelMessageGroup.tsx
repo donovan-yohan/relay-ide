@@ -33,6 +33,12 @@ interface ChannelMessageGroupProps {
   onOpenThread?: (rootId: ChannelMessageId) => void;
   /** #1308 item 1: message a deep link just landed on, if it is in this group. */
   highlightedMessageId?: ChannelMessageId | null;
+  /** #1308 item 2: re-route a failed row's original trigger. */
+  onRetryMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /** Profile actor ids currently non-idle in this channel (retry storm brake). */
+  busyAgentIds?: ReadonlySet<string>;
+  /** Rows a later `meta.retryOfMessageId` system row already superseded. */
+  retriedMessageIds?: ReadonlySet<ChannelMessageId>;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
@@ -43,6 +49,9 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   replyGrowth,
   onOpenThread,
   highlightedMessageId = null,
+  onRetryMessage,
+  busyAgentIds,
+  retriedMessageIds,
 }) => {
   const identity = resolveSenderIdentity(sender);
   const first = messages[0];
@@ -82,6 +91,9 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
               message={message}
               channelId={channelId}
               highlighted={highlightedMessageId === message.id}
+              retryBusy={busyAgentIds?.has(message.sender.id) ?? false}
+              retried={retriedMessageIds?.has(message.id) ?? false}
+              {...(onRetryMessage ? { onRetry: onRetryMessage } : {})}
               replyCount={displayedReplyCount(
                 message,
                 derived,

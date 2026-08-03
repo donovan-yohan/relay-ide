@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type {
-  ChannelMessage,
-  ChannelMessageId,
+import {
+  retriedMessageIdFromSystemRow,
+  type ChannelMessage,
+  type ChannelMessageId,
 } from '../../../../shared/channel-chat-protocol.js';
 import {
   buildTimelineNodes,
@@ -66,6 +67,13 @@ interface ChannelTimelineProps {
    * DOM scroll plus the brief jump emphasis.
    */
   jumpTarget?: TimelineJumpTarget | null;
+  /**
+   * #1308 item 2. Re-routes a failed row's original trigger; `ChannelView` owns
+   * the call so the timeline keeps no retry policy of its own.
+   */
+  onRetryMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /** Profile actor ids currently non-idle here — the retry storm brake. */
+  busyAgentIds?: ReadonlySet<string>;
 }
 
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
@@ -84,6 +92,8 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   onOpenThread,
   agentPresence = [],
   jumpTarget = null,
+  onRetryMessage,
+  busyAgentIds,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] =
@@ -94,6 +104,18 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   // cannot trigger a pill, move an anchor, or create an inline timeline row.
   const topLevelMessages = useMemo(() => selectTopLevel(messages), [messages]);
   const replyCounts = useMemo(() => deriveReplyCounts(messages), [messages]);
+
+  // #1308 item 2: rows a retry already superseded. Derived from the durable
+  // system row the binder writes (`meta.retryOfMessageId`), not from client
+  // state, so a reload or a second device sees the same supersede marks.
+  const retriedMessageIds = useMemo(() => {
+    const ids = new Set<ChannelMessageId>();
+    for (const message of messages) {
+      const retried = retriedMessageIdFromSystemRow(message);
+      if (retried) ids.add(retried);
+    }
+    return ids;
+  }, [messages]);
   const replyGrowth = useLiveReplyGrowth(messages, {
     scopeKey: channelId,
     fullSnapshotRevision,
@@ -260,6 +282,9 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 replyCounts={replyCounts}
                 replyGrowth={replyGrowth}
                 highlightedMessageId={highlightedMessageId}
+                retriedMessageIds={retriedMessageIds}
+                {...(busyAgentIds ? { busyAgentIds } : {})}
+                {...(onRetryMessage ? { onRetryMessage } : {})}
                 {...(onOpenThread ? { onOpenThread } : {})}
               />
             );

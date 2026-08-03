@@ -301,6 +301,7 @@ const expectedInventoryCoverage = [
       '/inbox/*',
       '/events/*',
       '/handoffs/*',
+      '/channels/*',
       '/nodes',
       '/hub/audit/*',
       '/hub/nodes/:nodeId/logs',

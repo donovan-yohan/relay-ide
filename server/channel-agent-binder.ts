@@ -29,7 +29,10 @@ import {
   type AgentProfile,
 } from '../shared/agent-profile.js';
 import {
+  channelRetryTarget,
+  channelTurnId,
   parseMentions,
+  CHANNEL_RETRY_OF_META_KEY,
   type ChannelMention,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
@@ -157,6 +160,13 @@ export interface ChannelAgentBinder {
     profileActorId?: string
   ): Promise<LiveBinding>;
   interrupt(channelId: string, agentId: string): Promise<void>;
+  /**
+   * Re-route the ORIGINAL trigger of a failed/interrupted/truncated agent row to
+   * the same profile (#1308 slice 1 item 2). The human message is never
+   * re-posted — the timeline gains one system row superseding the retried row
+   * plus whatever the new turn produces.
+   */
+  retryMessage(channelId: string, messageId: string): Promise<ChannelRetryResult>;
   respondToApproval(
     channelId: string,
     agentId: string,
@@ -227,6 +237,52 @@ export class ChannelAgentNoActiveTurnError extends Error {
     super(message);
     this.name = 'ChannelAgentNoActiveTurnError';
   }
+}
+
+/**
+ * The row cannot be re-routed: it is not a retryable agent row, its turn id was
+ * not binder-minted (a provider-labelled item), or the original trigger has
+ * since left the channel. `notFound` separates "no such row here" (404) from
+ * "this row is not retryable" (409).
+ */
+export class ChannelMessageNotRetryableError extends Error {
+  constructor(
+    message: string,
+    readonly reasonCode: string,
+    readonly notFound = false
+  ) {
+    super(message);
+    this.name = 'ChannelMessageNotRetryableError';
+  }
+}
+
+/**
+ * Retry-storm brake (#1308 item 2). A retry while the same profile is mid-turn
+ * in this channel would otherwise stack a second turn behind the live one, and
+ * a held-down button would fill the queue to `QUEUE_CAP` before the operator
+ * saw a single reply. Rejected outright — the client also disables the control
+ * from the same signal, this is the fail-closed backstop.
+ */
+export class ChannelAgentBusyError extends Error {
+  constructor(
+    readonly channelId: string,
+    readonly profileActorId: string,
+    readonly status: ChannelAgentStatus
+  ) {
+    super(
+      `agent ${profileActorId} is ${status} in channel ${channelId}; retry is only offered while idle`
+    );
+    this.name = 'ChannelAgentBusyError';
+  }
+}
+
+/** Outcome of a successful `retryMessage` dispatch. */
+export interface ChannelRetryResult {
+  /** The retried (failed/interrupted/truncated) agent row. */
+  messageId: string;
+  /** The ORIGINAL trigger that was re-routed — never a new timeline row. */
+  triggerMessageId: string;
+  profileActorId: string;
 }
 
 export class ChannelAgentRoleConflictError extends Error {
@@ -921,7 +977,7 @@ export function createChannelAgentBinder(
   function sendTurn(binding: LiveBinding, trigger: ChannelMessage): void {
     const adapter = binding.adapter;
     if (!adapter) return;
-    const turnId = `chturn-${trigger.id}-${binding.profileActorId}`;
+    const turnId = channelTurnId(trigger.id, binding.profileActorId);
     // Build the packet BEFORE mutating any binding state: buildPacket does
     // synchronous SQLite work (getBinding/history) that can throw. If it did so
     // AFTER activeTurnId was set (and before the watchdog armed), the binding
@@ -1655,6 +1711,99 @@ export function createChannelAgentBinder(
     await binding.adapter.interrupt({ turnId: binding.activeTurnId });
   }
 
+  /**
+   * #1308 slice 1 item 2. Retry is a re-route, never a re-post: the failed row's
+   * `source.turnId` names the (trigger, profile) pair the turn was raised for,
+   * so the original human message is fetched back out of the store and handed to
+   * the SAME `routeOne` lane a fresh mention would take. Nothing new is written
+   * to the human's lane, so the timeline cannot grow a duplicate of it.
+   *
+   * The retried row is superseded by a system row carrying
+   * `meta.retryOfMessageId`, following `handleSendFailure`'s system-row pattern
+   * rather than mutating a terminal row — the durable record of what failed
+   * stays intact and the supersede marker survives a reload for free.
+   *
+   * The re-run reuses the same deterministic turn identity (§ Amendment 3), so
+   * a provider that derives item ids from the turn rather than per message could
+   * in principle collide with the retried row's source triple and have its reply
+   * deduped. No built-in adapter does that — all four take item ids from the
+   * provider stream — and minting a fresh identity would fork the turn-parent,
+   * watchdog, and `retriedTurns` bookkeeping that keys off it.
+   */
+  async function retryMessage(
+    channelId: string,
+    messageId: string
+  ): Promise<ChannelRetryResult> {
+    if (closed) throw new BinderClosedError();
+    const failed = store.getMessage(messageId);
+    if (!failed || failed.channelId !== channelId) {
+      throw new ChannelMessageNotRetryableError(
+        'message not found in this channel',
+        'CHANNEL_MESSAGE_NOT_FOUND',
+        true
+      );
+    }
+    const target = channelRetryTarget(failed);
+    if (!target) {
+      throw new ChannelMessageNotRetryableError(
+        'only a failed, interrupted, or truncated agent row raised by a routed turn can be retried',
+        'MESSAGE_NOT_RETRYABLE'
+      );
+    }
+    const trigger = store.getMessage(target.triggerMessageId);
+    if (!trigger || trigger.channelId !== channelId) {
+      throw new ChannelMessageNotRetryableError(
+        'the message that triggered this turn is no longer in this channel',
+        'RETRY_TRIGGER_MISSING'
+      );
+    }
+    const profile =
+      deps.agentProfileStore?.get(target.profileActorId) ??
+      (failed.sender.providerId
+        ? defaultProfileForProvider(failed.sender.providerId)
+        : null);
+    if (!profile) {
+      throw new ChannelMessageNotRetryableError(
+        `agent profile ${target.profileActorId} no longer exists`,
+        'AGENT_PROFILE_MISSING'
+      );
+    }
+    // Storm brake: one in-flight or queued turn for this profile is enough to
+    // refuse. `activeTurnId`/`queue` are checked alongside `status` because a
+    // turn is enqueued before the first status transition is broadcast.
+    const binding = live.get(bindingKey(channelId, profile.id));
+    if (
+      binding &&
+      (binding.status !== 'idle' ||
+        binding.activeTurnId !== null ||
+        binding.queue.length > 0)
+    ) {
+      throw new ChannelAgentBusyError(channelId, profile.id, binding.status);
+    }
+    // Availability is checked HERE as well as inside `routeOne` so an
+    // unroutable retry fails as a rejected request instead of as a supersede
+    // mark over a turn that never ran — the mark disables the row's own retry
+    // affordance, so writing it for a no-op would strand the operator.
+    const mentionTarget = await resolveTarget(profile.providerId);
+    if (!mentionTarget?.available) {
+      throw new ChannelMessageNotRetryableError(
+        `@${profile.displayName || profile.providerId} is not available in channels — ${mentionTarget?.reason ?? 'framework unavailable'}`,
+        'AGENT_UNAVAILABLE'
+      );
+    }
+    const label = await rosterDisplayName(profile);
+    postSystemRow(channelId, `retrying @${label} — previous reply ${failed.status}`, {
+      meta: { [CHANNEL_RETRY_OF_META_KEY]: failed.id, agentId: profile.id },
+      parentMessageId: parentForTrigger(trigger),
+    });
+    routeOne(trigger, profile);
+    return {
+      messageId: failed.id,
+      triggerMessageId: trigger.id,
+      profileActorId: profile.id,
+    };
+  }
+
   async function respondToApproval(
     channelId: string,
     agentId: string,
@@ -1719,6 +1868,7 @@ export function createChannelAgentBinder(
     ensureBinding,
     ensureOrchestrator,
     interrupt,
+    retryMessage,
     respondToApproval,
     rosterForChannel,
     setStatusBroadcaster(broadcaster) {

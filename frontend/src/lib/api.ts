@@ -1999,6 +1999,41 @@ export async function interruptChannelAgent(
   );
 }
 
+/** What a retry actually re-ran (#1308 slice 1 item 2). */
+export interface ChannelMessageRetryResult {
+  messageId: string;
+  /** The ORIGINAL trigger that was re-routed; never a newly posted row. */
+  triggerMessageId: string;
+  profileActorId: string;
+}
+
+/**
+ * Re-route the original trigger of a failed/interrupted/truncated agent row to
+ * the same profile. `HttpError` propagates so callers can distinguish 409
+ * (`CHANNEL_AGENT_BUSY` — the storm brake) from a genuine failure.
+ */
+export async function retryChannelMessage(
+  channelId: string,
+  messageId: string
+): Promise<ChannelMessageRetryResult> {
+  const body = await json<{ ok: true; retry: ChannelMessageRetryResult }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}/retry`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+  );
+  return body.retry;
+}
+
 /** Persistent orchestrator binding created by the operator lane. */
 export interface ChannelOrchestratorDesignation {
   ok: true;

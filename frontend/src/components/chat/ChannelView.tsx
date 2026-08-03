@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react';
 import type {
+  ChannelMessage,
   ChannelMessageId,
   ChannelMessagePart,
 } from '../../../../shared/channel-chat-protocol.js';
@@ -19,6 +20,7 @@ import {
   fetchChannelRoster,
   designateChannelOrchestrator,
   interruptChannelAgent,
+  retryChannelMessage,
   HttpError,
   type ChannelAgentStatus,
 } from '../../lib/api.js';
@@ -521,6 +523,36 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     [agentChips, presenceSuppression]
   );
 
+  // #1308 item 2 storm brake, client half. Same `agentChips` signal the presence
+  // rows use, so the disabled state cannot disagree with what the header says
+  // the agent is doing. The server refuses independently — this only keeps the
+  // operator from firing a request that is already known to be rejected.
+  const busyAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const chip of agentChips) {
+      if (chip.status !== 'idle') ids.add(chip.agentId);
+    }
+    return ids;
+  }, [agentChips]);
+
+  const handleRetryMessage = useCallback(
+    async (message: ChannelMessage) => {
+      try {
+        await retryChannelMessage(channelId, message.id);
+      } catch (error) {
+        // 409 is the storm brake (agent busy) or an unretryable row; both are
+        // operator-legible states rather than faults, so they get the message
+        // the server sent instead of a generic failure.
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not retry — the agent is busy'
+            : 'could not retry this message'
+        );
+      }
+    },
+    [channelId]
+  );
+
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
@@ -728,6 +760,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               onOpenThread={setActiveThreadRootId}
               agentPresence={agentPresence}
               jumpTarget={jumpTarget}
+              onRetryMessage={handleRetryMessage}
+              busyAgentIds={busyAgentIds}
             />
           ) : (
             <div className="ch-empty">

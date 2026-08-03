@@ -33,6 +33,7 @@ import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
 import {
   CHANNEL_BINDING_YOLO_DEFAULT,
+  ChannelAgentBusyError,
   createChannelAgentBinder,
   MAX_CONSECUTIVE_AGENT_TURNS,
   type BinderRuntimes,
@@ -48,7 +49,9 @@ import {
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import {
+  channelTurnId,
   parseMentions,
+  CHANNEL_RETRY_OF_META_KEY,
   type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
@@ -3356,5 +3359,229 @@ describe('channel-agent-binder — DM implicit routing', () => {
     // Humans chat without addressing an agent — a system row here is spam.
     expect(systemRowsIn(store, CH)).toHaveLength(0);
     expect(repliesIn(store, CH)).toHaveLength(0);
+  });
+});
+
+// ── retry (#1308 slice 1 item 2) ─────────────────────────────────────────────
+
+describe('channel-agent-binder — retry', () => {
+  const MOCK_PROFILE = builtInAgentProfileId('mock');
+
+  /**
+   * Exactly what the bridge writes for a lost turn: a streaming row stamped with
+   * the binder-minted `source.turnId`, finalized to a terminal non-complete
+   * status. Built through the store (not by driving a provider into failing) so
+   * the retry contract is exercised deterministically and without timers.
+   */
+  function failedAgentRow(
+    store: ChannelMessageStore,
+    trigger: ChannelMessage,
+    status: 'failed' | 'interrupted' | 'truncated' = 'failed',
+    turnId = channelTurnId(trigger.id, MOCK_PROFILE)
+  ): ChannelMessage {
+    const stream = store.beginStream({
+      channelId: CH,
+      sender: {
+        kind: 'agent',
+        id: MOCK_PROFILE,
+        providerId: 'mock',
+        displayName: 'Mock',
+      },
+      source: { runtimeId: 'runtime:mock', turnId, itemId: 'assistant-0' },
+    });
+    return store.finalizeStream(stream.id, { text: 'half a re', status })!;
+  }
+
+  function humanRows(store: ChannelMessageStore): ChannelMessage[] {
+    return rows(store).filter((m) => m.sender.kind === 'human');
+  }
+
+  it('re-routes the original trigger exactly once and never duplicates the human message', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    const failed = failedAgentRow(store, trigger);
+
+    const result = await binder.retryMessage(CH, failed.id);
+    await waitFor(() => adapter.sendCalls.length > 0);
+
+    expect(result).toEqual({
+      messageId: failed.id,
+      triggerMessageId: trigger.id,
+      profileActorId: MOCK_PROFILE,
+    });
+    // Exactly one delivery, carrying the SAME deterministic turn identity the
+    // lost turn had — a retry re-runs a turn, it does not open a new one.
+    expect(adapter.sendCalls).toEqual([channelTurnId(trigger.id, MOCK_PROFILE)]);
+    // The load-bearing invariant: the operator's message is re-routed, never
+    // re-posted, so the timeline still holds exactly one copy of it.
+    expect(humanRows(store).map((m) => m.id)).toEqual([trigger.id]);
+    expect(adapter.sendInputs[0]?.content).toContain('ship the anchor');
+  });
+
+  it('supersedes the retried row with a system row carrying its id', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    const failed = failedAgentRow(store, trigger);
+
+    await binder.retryMessage(CH, failed.id);
+    await waitFor(() => adapter.sendCalls.length > 0);
+
+    const marker = systemRows(store).find(
+      (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] === failed.id
+    );
+    expect(marker).toBeDefined();
+    expect(marker?.body.text).toContain('retrying');
+    // The failed row itself is untouched: it stays the durable record of what
+    // went wrong, and the supersede mark lives on a separate durable row.
+    expect(store.getMessage(failed.id)?.status).toBe('failed');
+  });
+
+  it('refuses to retry while the same profile is mid-turn (storm brake)', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // Drive a real turn that never completes so the binding is genuinely busy.
+    const live = post(store, binder, '@mock keep going', ['mock']);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock the earlier one',
+    });
+    const failed = failedAgentRow(store, trigger);
+
+    await expect(binder.retryMessage(CH, failed.id)).rejects.toBeInstanceOf(
+      ChannelAgentBusyError
+    );
+    // Nothing was delivered and nothing was superseded by the refused retry.
+    expect(adapter.sendCalls).toEqual([
+      channelTurnId(live.id, MOCK_PROFILE),
+    ]);
+    expect(
+      systemRows(store).filter(
+        (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] !== undefined
+      )
+    ).toHaveLength(0);
+  });
+
+  it('rejects rows no routed turn can be recovered from', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+
+    await expect(binder.retryMessage(CH, 'chm:nope')).rejects.toMatchObject({
+      reasonCode: 'CHANNEL_MESSAGE_NOT_FOUND',
+      notFound: true,
+    });
+    // A human row is not an agent turn.
+    await expect(binder.retryMessage(CH, trigger.id)).rejects.toMatchObject({
+      reasonCode: 'MESSAGE_NOT_RETRYABLE',
+      notFound: false,
+    });
+    // A provider-labelled turn id (Hermes emits `turn-0`) names no trigger.
+    const orphan = failedAgentRow(store, trigger, 'failed', 'turn-0');
+    await expect(binder.retryMessage(CH, orphan.id)).rejects.toMatchObject({
+      reasonCode: 'MESSAGE_NOT_RETRYABLE',
+    });
+    expect(adapter.sendCalls).toHaveLength(0);
+  });
+
+  it('retries interrupted and truncated rows too — every lost turn, not just failed', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    const interrupted = failedAgentRow(store, trigger, 'interrupted');
+
+    await binder.retryMessage(CH, interrupted.id);
+    await waitFor(() => adapter.sendCalls.length > 0);
+    expect(adapter.sendCalls).toEqual([channelTurnId(trigger.id, MOCK_PROFILE)]);
+  });
+});
+
+describe('channel-agent-binder — retry availability', () => {
+  it('refuses (and does not supersede) when the framework is unavailable', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: [
+        {
+          id: 'mock',
+          displayName: 'Mock',
+          kind: 'framework',
+          available: false,
+          reason: 'cli not installed',
+        },
+      ],
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    const profileId = builtInAgentProfileId('mock');
+    const stream = store.beginStream({
+      channelId: CH,
+      sender: { kind: 'agent', id: profileId, providerId: 'mock' },
+      source: {
+        runtimeId: 'runtime:mock',
+        turnId: channelTurnId(trigger.id, profileId),
+        itemId: 'assistant-0',
+      },
+    });
+    const failed = store.finalizeStream(stream.id, {
+      text: '',
+      status: 'failed',
+    })!;
+
+    await expect(binder.retryMessage(CH, failed.id)).rejects.toMatchObject({
+      reasonCode: 'AGENT_UNAVAILABLE',
+    });
+    // No supersede mark: the row keeps its retry affordance for when the
+    // framework comes back, instead of being stranded by a turn that never ran.
+    expect(
+      systemRows(store).filter(
+        (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] !== undefined
+      )
+    ).toHaveLength(0);
+    expect(adapter.sendCalls).toHaveLength(0);
   });
 });
