@@ -48,6 +48,8 @@ import type {
   ChannelMessage,
   ChannelMessageId,
   ChannelMessagePart,
+  ChannelMessageSearchResponse,
+  ChannelMessageSearchResult,
 } from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
@@ -1792,6 +1794,53 @@ export async function fetchChannels(): Promise<ChannelSummaryView[]> {
     })
   );
   return Array.isArray(data.channels) ? data.channels : [];
+}
+
+/**
+ * Full-text message search (#1308 slice 2). Rides `channels.history` — the same
+ * durable log, the same capability — so no gateway verb is added.
+ *
+ * `includeArchived` mirrors `searchWorkspaceTopics` so ONE operator control (the
+ * show-older-chats toggle) governs both sidebar sections; the server resolves
+ * archive state from the topic store and scopes the index query by it.
+ *
+ * Every field is re-validated here rather than trusted: this response is fed
+ * straight into a click handler that navigates, so a malformed row must degrade
+ * to "no hits", never to a jump at `undefined`.
+ */
+export async function searchChannelMessages(args: {
+  q: string;
+  includeArchived?: boolean;
+  workspaceId?: string;
+  channelId?: string;
+  limit?: number;
+}): Promise<ChannelMessageSearchResponse> {
+  const params = new URLSearchParams();
+  params.set('q', args.q);
+  if (args.includeArchived) params.set('includeArchived', '1');
+  if (args.workspaceId) params.set('workspaceId', args.workspaceId);
+  if (args.channelId) params.set('channelId', args.channelId);
+  if (args.limit) params.set('limit', String(args.limit));
+  const data = await json<ChannelMessageSearchResponse>(
+    await fetch(`/channels/search?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  const results = Array.isArray(data.results)
+    ? data.results.filter(
+        (hit): hit is ChannelMessageSearchResult =>
+          typeof hit?.messageId === 'string' &&
+          typeof hit.channelId === 'string'
+      )
+    : [];
+  return {
+    query: typeof data.query === 'string' ? data.query : args.q,
+    results,
+    truncated: Boolean(data.truncated),
+    ...(data.unavailableReason
+      ? { unavailableReason: data.unavailableReason }
+      : {}),
+  };
 }
 
 export interface ChannelHistoryPage {
