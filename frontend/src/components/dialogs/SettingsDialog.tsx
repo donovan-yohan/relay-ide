@@ -39,6 +39,9 @@ import {
 import { reloadWhenServerReturns } from '../../lib/server-restart.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
+import SettingsNotificationsSection, {
+  NOTIFICATIONS_SECTION_KEYWORDS,
+} from './SettingsNotificationsSection.js';
 import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
 import {
   requestPermission,
@@ -66,6 +69,7 @@ const DEFAULT_CONFIG: ConfigState = {
 
 const TOC_SECTIONS = [
   { id: 'section-general', label: 'general' },
+  { id: 'section-notifications', label: 'notifications' },
   {
     id: 'section-agent-profiles',
     label: 'agents',
@@ -93,6 +97,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'branch name',
     'session name',
   ],
+  notifications: NOTIFICATIONS_SECTION_KEYWORDS,
   'agent-profiles': ['agents', 'profiles', 'claude', 'codex', 'opencode'],
   integrations: [
     'github',
@@ -262,6 +267,10 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
     const setAdvancedMode = useUiStore((s) => s.setAdvancedMode);
     const [searchQuery, setSearchQuery] = useState('');
     const [tocOpen, setTocOpen] = useState(false);
+    // This dialog is rendered unconditionally into a native `<dialog>` and never
+    // unmounts, so "opened" is not a mount. Sections whose state is read from
+    // outside React (the browser's notification permission) take this instead.
+    const [openNonce, setOpenNonce] = useState(0);
 
     const contentRefCallback = useCallback((el: HTMLDivElement | null) => {
       contentElRef.current = el;
@@ -322,6 +331,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
         }));
         setDevtoolsEnabled(localStorage.getItem('devtools-enabled') === 'true');
         setNotifPerm(getPermissionState());
+        setOpenNonce((n) => n + 1);
         void loadAllData();
         shellRef.current?.open();
         if (scrollToId)
@@ -448,6 +458,10 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               notifPerm={notifPerm}
               searchQuery={searchQuery}
               handlers={configHandlers}
+            />
+            <SettingsNotificationsSection
+              searchQuery={searchQuery}
+              openNonce={openNonce}
             />
             <SettingsAgentProfilesSection searchQuery={searchQuery} />
             <IntegrationsSection

@@ -9,7 +9,13 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useChannelActivityStore } from '../lib/stores/channel-activity.js';
-import { useChannelAgentStatusStore } from '../lib/stores/channel-agent-status.js';
+import {
+  channelAgentStatusKey,
+  useChannelAgentStatusStore,
+} from '../lib/stores/channel-agent-status.js';
+import { notifyFromAgentStatus } from '../lib/notify/producers.js';
+import { notifyChannelFromTopic } from '../lib/notify/signals.js';
+import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import type { AccountTelemetry, SessionTelemetry } from '../lib/types.js';
 import type { SessionEventScope } from '../../../shared/node-boundary.js';
 import type {
@@ -239,6 +245,28 @@ function hasCachedChannelRow(
     if (topics.topics.some((topic) => topic.id === channelId)) return true;
   }
   return !sawCachedList;
+}
+
+/**
+ * Channel descriptor for the notify lane (#1308 slice 5), resolved from the
+ * topic caches this module already reads for `hasCachedChannelRow`.
+ *
+ * Cache-only, never a fetch: a turn-complete signal for a channel no list has
+ * loaded has no title to name and no DM-ness to derive, and the honest answer is
+ * to raise no signal rather than notify about `topic:01j…`.
+ */
+function cachedNotifyChannel(
+  queryClient: QueryClient,
+  channelId: string
+): ReturnType<typeof notifyChannelFromTopic> | null {
+  for (const queryKey of TOPIC_LIST_QUERY_KEYS) {
+    const topics = queryClient.getQueryData<{ topics?: WorkspaceTopic[] }>(
+      queryKey
+    );
+    const topic = topics?.topics?.find((row) => row.id === channelId);
+    if (topic) return notifyChannelFromTopic(topic);
+  }
+  return null;
 }
 
 const HUB_NODE_REVERSE_LINK_ROUTE = 'reverse-link';
@@ -610,9 +638,27 @@ export function useEventSocket({
           );
       },
       'channel-agent-status': (msg) => {
+        // Read BEFORE the store records the new value: turn-complete is a
+        // busy→idle EDGE, and the previous status is gone the instant
+        // `recordStatus` lands.
+        const previous =
+          useChannelAgentStatusStore.getState().statusByChannelAgent[
+            channelAgentStatusKey(msg.channelId, msg.agentId)
+          ];
         useChannelAgentStatusStore
           .getState()
           .recordStatus(msg.channelId, msg.agentId, msg.status, msg.runtimeId);
+        // #1308 slice 5: the ONE trigger the socket carries end to end. Default
+        // OFF, so this is inert until the operator opts in from Settings.
+        const notifyChannel = cachedNotifyChannel(queryClient, msg.channelId);
+        if (notifyChannel) {
+          notifyFromAgentStatus({
+            channel: notifyChannel,
+            agentId: msg.agentId,
+            previous,
+            next: msg.status,
+          });
+        }
         // The status store alone cannot carry a binding: a newly bound agent's
         // chip is dropped the moment it goes idle (the header keeps a chip for
         // an unbound agent only while it is busy), and a remotely-designated
