@@ -17,13 +17,13 @@ import {
   MessageSquare,
   TriangleAlert,
 } from 'lucide-react';
+import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
-  builtInAgentProfileId,
-  parseAgentProfileProviderId,
-} from '../../../shared/agent-profile.js';
-import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  parseChannelSearchSnippet,
   parseMentions,
   type ChannelMessageId,
+  type ChannelMessageSearchResult,
 } from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
@@ -39,11 +39,16 @@ import {
   fetchWorkspaceTopics,
   interruptChannelAgent,
   postChannelMessage,
+  searchChannelMessages,
   searchWorkspaceTopics,
   sendSessionInput,
   type ChannelAgentStatus,
 } from '../lib/api.js';
 import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
+import {
+  CURRENT_OPERATOR_SENDER_ID,
+  senderShortLabel,
+} from '../lib/channel-sender-label.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
@@ -55,6 +60,7 @@ import { AgentAvatar } from './chat/AgentAvatar.js';
 import { leaveChatSurface, openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
   applyTopicActiveContext,
+  openChannelMessageSelection,
   openTopicSelection,
 } from '../lib/topic-selection.js';
 import type { SessionSummary } from '../lib/types.js';
@@ -146,7 +152,6 @@ const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
  * refetches.
  */
 const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 10_000;
-const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
 const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 
 function useMobileCockpitViewport(): boolean {
@@ -213,40 +218,15 @@ function channelRowPreview(summary: ChannelRailSummary | null): string | null {
 }
 
 /**
- * Short sender label for a row snippet. NEVER derived by splitting `senderId`:
- * an agent's id is its profile Actor id (`agent-profile:<vendor>:default`, or
- * `agent-profile:<vendor>:<uuid>` for a custom profile), so the trailing segment
- * is `default`/a uuid, not a name (#1234, `shared/channel-chat-protocol.ts`).
- * Read the server-resolved `senderDisplayName`, then `providerId`, and only then
- * fall back to the vendor segment of a profile id / the name half of a
- * `human:<actorId>` ref.
+ * Short sender label for a row snippet, over the shared precedence in
+ * `lib/channel-sender-label.ts` (#1308 slice 2 item 3 lifted it there so the
+ * command palette's message hits label senders identically). Kept as a named
+ * wrapper because a rail summary's `lastMessage` is the rail's own shape.
  */
 function channelRowSenderLabel(
   last: NonNullable<ChannelRailSummary['lastMessage']>
 ): string {
-  if (last.senderId === CURRENT_OPERATOR_SENDER_ID) return 'you';
-  const label =
-    last.senderDisplayName?.trim() ||
-    last.providerId?.trim() ||
-    senderLabelFromId(last.senderId);
-  return label === 'operator' ? 'you' : label;
-}
-
-/** Last-resort label for a sender id with no server-resolved name/vendor. */
-function senderLabelFromId(senderId: string): string {
-  // CLI-gateway actor rows are `agent:<actorId>` where the actor id may itself
-  // be a profile id (`deriveSender`), so unwrap that prefix first.
-  const withoutAgentPrefix = senderId.startsWith('agent:')
-    ? senderId.slice('agent:'.length)
-    : senderId;
-  // `agent-profile:<vendor>:<rest>` — the VENDOR segment names the sender; the
-  // trailing segment is `default` or a uuid.
-  const vendor = parseAgentProfileProviderId(withoutAgentPrefix);
-  if (vendor) return vendor;
-  const separator = withoutAgentPrefix.indexOf(':');
-  return separator === -1
-    ? withoutAgentPrefix
-    : withoutAgentPrefix.slice(separator + 1);
+  return senderShortLabel(last);
 }
 
 /**
@@ -1989,6 +1969,126 @@ function topicEmptyStateText(input: {
   return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
+/**
+ * Message-section empty state.
+ *
+ * `unavailableReason` is the server's (or, for a query the client refuses to
+ * send at all, the shell's) statement that the index was NEVER consulted. Each
+ * reason gets its own copy because "no matches" is a factual claim about the
+ * corpus: printing it for a query nothing ever looked up tells the operator
+ * their words are not in the transcript when the truth is that the search never
+ * ran.
+ */
+function messageEmptyStateText(input: {
+  unavailableReason?: string | undefined;
+  searchQuery: string;
+}): string {
+  if (input.unavailableReason === 'empty_query') {
+    return 'type to search messages';
+  }
+  if (input.unavailableReason === 'query_too_short') {
+    return `type ${CHANNEL_SEARCH_MIN_QUERY_CHARS} characters to search messages`;
+  }
+  if (input.unavailableReason === 'no_searchable_term') {
+    return 'no searchable term to look up';
+  }
+  return `no message matches for “${input.searchQuery.trim()}”`;
+}
+
+/**
+ * The matched runs of a hit's snippet (#1308 slice 2 item 2).
+ *
+ * The server delimits matches with two Private Use Area sentinels rather than
+ * markup precisely so this stays a TEXT render: every run becomes a text node
+ * and the emphasis is our own element, so an operator or agent message
+ * containing `<mark>` cannot forge a highlight. Emphasis is color
+ * (`var(--accent)`), never a background wash or a weight change — DESIGN.md
+ * keeps one accent and the row is already at caption size, where bolding a
+ * two-character run just makes it blurry.
+ */
+function MessageSnippet({ snippet }: { snippet: string }) {
+  const segments = parseChannelSearchSnippet(snippet);
+  return (
+    <span className="topic-message-result__snippet">
+      {segments.map((segment, index) =>
+        segment.highlight ? (
+          <mark
+            // Index keys: segments are a pure function of one immutable
+            // snippet string, so a given row's runs never reorder.
+            key={index}
+            className="topic-message-result__hit"
+          >
+            {segment.text}
+          </mark>
+        ) : (
+          <span key={index}>{segment.text}</span>
+        )
+      )}
+    </span>
+  );
+}
+
+/**
+ * The `messages` half of sidebar search (#1308 slice 2 item 2).
+ *
+ * A row is ONE button, not a row plus an `open` action: unlike a chat hit —
+ * which may reach a channel, resume a session, or be dead — every message hit
+ * has exactly one destination (that message, in that channel), so a separate
+ * action control would be a second control for the row's only gesture and a
+ * smaller tap target on a phone.
+ */
+function MessageSearchResults({
+  results,
+  truncated,
+  onOpenMessage,
+}: {
+  results: ChannelMessageSearchResult[];
+  truncated: boolean;
+  onOpenMessage: (hit: ChannelMessageSearchResult) => void;
+}) {
+  return (
+    <div
+      className="topic-message-results"
+      aria-label="message search result details"
+    >
+      {results.map((hit) => (
+        <button
+          key={hit.messageId}
+          type="button"
+          className="topic-message-result"
+          data-message-id={hit.messageId}
+          title={`open ${hit.channelTitle} at this message`}
+          onClick={() => onOpenMessage(hit)}
+        >
+          <span className="topic-message-result__head">
+            <span className="topic-message-result__channel">
+              {hit.channelTitle}
+            </span>
+            <span className="topic-message-result__sender">
+              {senderShortLabel(hit)}
+            </span>
+            {hit.threadId ? (
+              <span className="topic-message-result__thread">thread</span>
+            ) : null}
+            {hit.archived ? (
+              <span className="topic-message-result__archived">older</span>
+            ) : null}
+            <span className="topic-message-result__time">
+              {formatRelativeTimeCompact(hit.createdAt)}
+            </span>
+          </span>
+          <MessageSnippet snippet={hit.snippet} />
+        </button>
+      ))}
+      {truncated ? (
+        <div className="topic-message-result__truncated">
+          results truncated; refine search
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MobileRailRows({
   nodes,
   statusByChannelAgent,
@@ -2255,10 +2355,16 @@ function TopicSearchPanel({
   searchResults,
   searchTruncated,
   searchUnavailableReason,
+  messageResults,
+  messageLoading,
+  messageError,
+  messageTruncated,
+  messageUnavailableReason,
   onSearchQueryChange,
   onSearchRetry,
   onSearchClear,
   onOpenTopic,
+  onOpenMessage,
   searchScope = 'all',
   onToggleSearchScope,
   canScope = false,
@@ -2271,10 +2377,16 @@ function TopicSearchPanel({
   searchResults: WorkspaceTopicSearchResult[];
   searchTruncated: boolean;
   searchUnavailableReason?: string | undefined;
+  messageResults: ChannelMessageSearchResult[];
+  messageLoading: boolean;
+  messageError: boolean;
+  messageTruncated: boolean;
+  messageUnavailableReason?: string | undefined;
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
   onOpenTopic: (result: WorkspaceTopicSearchResult) => void;
+  onOpenMessage: (hit: ChannelMessageSearchResult) => void;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
   canScope?: boolean;
@@ -2331,7 +2443,10 @@ function TopicSearchPanel({
           searching chat history…
         </div>
       ) : null}
-      {model.items.length === 0 && !searchLoading && !searchError ? (
+      {!searchActive &&
+      model.items.length === 0 &&
+      !searchLoading &&
+      !searchError ? (
         <div className="topic-shell-state">
           {topicEmptyStateText({
             searchActive,
@@ -2340,13 +2455,61 @@ function TopicSearchPanel({
           })}
         </div>
       ) : null}
+      {/* #1308 slice 2 item 2: search answers two different questions — "which
+          chat was that?" and "where was that said?" — so the results are two
+          labelled sections rather than one ranked list. Merging them would put
+          a bm25 message score in the same order as a topic-title score, two
+          scales that share no unit, and the operator could not tell which kind
+          of answer they were looking at. */}
       {searchActive ? (
-        <TopicSearchResults
-          results={searchResults}
-          truncated={searchTruncated}
-          onOpenTopic={onOpenTopic}
-          resumeTargetFor={resumeTargetFor}
-        />
+        <div className="topic-search-sections" aria-label="search results">
+          <section
+            className="topic-search-section"
+            aria-label="chat search results"
+          >
+            <div className="topic-search-section__header">chats</div>
+            {searchResults.length > 0 || searchTruncated ? (
+              <TopicSearchResults
+                results={searchResults}
+                truncated={searchTruncated}
+                onOpenTopic={onOpenTopic}
+                resumeTargetFor={resumeTargetFor}
+              />
+            ) : searchLoading || searchError ? null : (
+              <div className="topic-search-section__empty">
+                {topicEmptyStateText({
+                  searchActive,
+                  searchUnavailableReason,
+                  searchQuery,
+                })}
+              </div>
+            )}
+          </section>
+          <section
+            className="topic-search-section"
+            aria-label="message search results"
+          >
+            <div className="topic-search-section__header">messages</div>
+            {messageResults.length > 0 ? (
+              <MessageSearchResults
+                results={messageResults}
+                truncated={messageTruncated}
+                onOpenMessage={onOpenMessage}
+              />
+            ) : messageError ? (
+              <div className="topic-search-section__empty error">
+                message search unavailable
+              </div>
+            ) : messageLoading ? null : (
+              <div className="topic-search-section__empty">
+                {messageEmptyStateText({
+                  unavailableReason: messageUnavailableReason,
+                  searchQuery,
+                })}
+              </div>
+            )}
+          </section>
+        </div>
       ) : null}
     </>
   );
@@ -2355,8 +2518,34 @@ function TopicSearchPanel({
 const EMPTY_TOPICS: WorkspaceTopic[] = [];
 const EMPTY_SURFACES: WorkspaceSurface[] = [];
 const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
+const EMPTY_MESSAGE_RESULTS: ChannelMessageSearchResult[] = [];
+
 const EMPTY_WORKSPACES: TopicNavWorkspace[] = [];
 const EMPTY_CHANNEL_SUMMARIES: ChannelRailSummary[] = [];
+
+/**
+ * Settle window for the sidebar search input (#1308 slice 2 item 2). Matches
+ * the command palette's 150ms so the two search affordances feel identical.
+ */
+const SEARCH_DEBOUNCE_MS = 150;
+
+/**
+ * `value`, held back until it has stopped changing for `delayMs`.
+ *
+ * Used for the search field: every keystroke used to mint a fresh TanStack key
+ * and a fresh request, and item 2 adds a SECOND query behind the same field —
+ * doubling that. The debounce lives above both queries rather than inside
+ * either, so one settled value drives both sections.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    if (Object.is(settled, value)) return;
+    const timer = setTimeout(() => setSettled(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [delayMs, settled, value]);
+  return settled;
+}
 
 /** Show/hide older chats toggle; renders nothing without a handler. */
 function ArchivedToggle({
@@ -2657,6 +2846,11 @@ export function TopicSidebarView({
   searchResults = [],
   searchTruncated = false,
   searchUnavailableReason,
+  messageResults = EMPTY_MESSAGE_RESULTS,
+  messageSearchLoading = false,
+  messageSearchError = false,
+  messageSearchTruncated = false,
+  messageSearchUnavailableReason,
   surfacesError = false,
   onSearchQueryChange,
   onSearchRetry,
@@ -2701,6 +2895,12 @@ export function TopicSidebarView({
   searchResults?: WorkspaceTopicSearchResult[];
   searchTruncated?: boolean;
   searchUnavailableReason?: string | undefined;
+  /** #1308 slice 2: full-text message hits for the search panel's second section. */
+  messageResults?: ChannelMessageSearchResult[];
+  messageSearchLoading?: boolean;
+  messageSearchError?: boolean;
+  messageSearchTruncated?: boolean;
+  messageSearchUnavailableReason?: string | undefined;
   surfacesError?: boolean;
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
@@ -3001,6 +3201,30 @@ export function TopicSidebarView({
     },
     [onSelectSession, searchResumeTargetFor, select]
   );
+  // #1308 slice 2: a message hit opens its channel AND asks that channel to land
+  // on the exact message. Both writes — and the order they must happen in — live
+  // in `openChannelMessageSelection`, shared with the command palette's
+  // `messages` category (item 3) so the two entry points cannot drift into
+  // opening the same hit differently. The rail-local state (selected row,
+  // mobile control sheet) is all that stays here.
+  //
+  // `topicsById` routinely does NOT hold a hit's channel: while searching, the
+  // rail renders the chat-search topics, and a message can match in a channel
+  // whose title does not. The shared gate opens the channel by id regardless and
+  // treats a resolved topic as workspace/repo context only, so an unknown id
+  // still lands the operator on the message instead of dropping the click.
+  const openMessageResult = useCallback(
+    (hit: ChannelMessageSearchResult) => {
+      setSelectedId(hit.channelId);
+      setMobileControlTopicId(null);
+      openChannelMessageSelection({
+        channelId: hit.channelId,
+        messageId: hit.messageId,
+        topic: topicsById.get(hit.channelId),
+      });
+    },
+    [topicsById]
+  );
   const selectMobile = useCallback(
     (id: string) => {
       select(id);
@@ -3220,10 +3444,16 @@ export function TopicSidebarView({
         searchResults={searchResults}
         searchTruncated={searchTruncated}
         searchUnavailableReason={searchUnavailableReason}
+        messageResults={messageResults}
+        messageLoading={messageSearchLoading}
+        messageError={messageSearchError}
+        messageTruncated={messageSearchTruncated}
+        messageUnavailableReason={messageSearchUnavailableReason}
         onSearchQueryChange={onSearchQueryChange}
         onSearchRetry={onSearchRetry}
         onSearchClear={onSearchClear}
         onOpenTopic={openSearchResult}
+        onOpenMessage={openMessageResult}
         searchScope={searchScope}
         onToggleSearchScope={onToggleSearchScope}
         canScope={activeWorkspaceId != null}
@@ -3295,7 +3525,19 @@ export function TopicSidebarShell({
   const [searchScope, setSearchScope] = useState<'all' | 'workspace'>('all');
   const scopedWorkspaceId =
     searchScope === 'workspace' ? activeWorkspaceId : null;
-  const normalizedSearchQuery = searchQuery.trim();
+  const typedSearchQuery = searchQuery.trim();
+  // ONE debounce for ONE input (#1308 slice 2 item 2). Both sections read this
+  // settled value, so a keystroke costs one topic query and one message query,
+  // and the two sections can never answer different prefixes of what the
+  // operator typed. Sharing it is also why the pending window below is a single
+  // flag: with a debounce per section, "searching…" would clear twice.
+  const normalizedSearchQuery = useDebouncedValue(
+    typedSearchQuery,
+    SEARCH_DEBOUNCE_MS
+  );
+  // Still-typing counts as loading. Without it the panel renders a confident
+  // "no matches" for the PREVIOUS settled query while a newer one is pending.
+  const searchDebouncePending = typedSearchQuery !== normalizedSearchQuery;
   const [showArchived, setShowArchived] = useState(false);
   const topicsQuery = useQuery({
     // Keep the canonical key for the default (active) view so shared cache and
@@ -3327,6 +3569,40 @@ export function TopicSidebarShell({
         ...(scopedWorkspaceId ? { workspaceId: scopedWorkspaceId } : {}),
       }),
     enabled: normalizedSearchQuery.length > 0,
+    staleTime: 10_000,
+  });
+  // #1308 slice 2: the `messages` section. `showArchived` rides the KEY, not
+  // just the request — the #1288 lesson: two archive states sharing one key
+  // serve the first answer to the second question, and the operator sees the
+  // toggle do nothing.
+  //
+  // Gated at CHANNEL_SEARCH_MIN_QUERY_CHARS, unlike the chats section above:
+  // chat-title search is a JS scan over a bounded topic list, but a message
+  // query is an FTS5 prefix read whose one-character form ranks essentially the
+  // whole corpus and — synchronous sqlite on the request path — freezes the hub
+  // event loop while it does. The server refuses the same shape; this gate just
+  // means the first keystroke costs no request at all.
+  const messageSearchEnabled =
+    normalizedSearchQuery.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
+  const messageSearchQuery = useQuery({
+    queryKey: [
+      'channel-message-search',
+      normalizedSearchQuery,
+      scopedWorkspaceId ?? 'all',
+      showArchived ? 'with-archived' : 'active-only',
+    ],
+    queryFn: () =>
+      searchChannelMessages({
+        q: normalizedSearchQuery,
+        // Same page size the chats section asks for: the sidebar is a jump
+        // affordance, and 50 message rows under a 240px rail is a transcript.
+        // The server's `truncated` flag then says "refine" rather than lying
+        // about having found everything.
+        limit: 20,
+        includeArchived: showArchived,
+        ...(scopedWorkspaceId ? { workspaceId: scopedWorkspaceId } : {}),
+      }),
+    enabled: messageSearchEnabled,
     staleTime: 10_000,
   });
   const surfacesQuery = useQuery<WorkspaceSurface[]>({
@@ -3408,11 +3684,28 @@ export function TopicSidebarShell({
       if (timer !== undefined) clearTimeout(timer);
     };
   }, [queryClient]);
-  const searchActive = normalizedSearchQuery.length > 0;
+  // The panel is "searching" from the first keystroke, so the sections mount
+  // against what the operator typed rather than against the settled value.
+  const searchActive = typedSearchQuery.length > 0;
+  const searchSettled = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = useMemo(
     () => searchData?.results ?? EMPTY_SEARCH_RESULTS,
     [searchData]
+  );
+  const messageSearchData = messageSearchQuery.data;
+  // Read against what is TYPED, not against the settled value: while the
+  // debounce is still running on a third character the section must keep
+  // showing the previous state rather than flashing "type 3 characters" for
+  // one frame on its way to results.
+  const messageSearchTooShort =
+    typedSearchQuery.length < CHANNEL_SEARCH_MIN_QUERY_CHARS;
+  const messageResults = useMemo(
+    () =>
+      messageSearchTooShort
+        ? EMPTY_MESSAGE_RESULTS
+        : (messageSearchData?.results ?? EMPTY_MESSAGE_RESULTS),
+    [messageSearchTooShort, messageSearchData]
   );
   // Keep the arrays passed to TopicSidebarView referentially stable so its
   // model/topicsById memoization is not invalidated on every render.
@@ -3460,13 +3753,41 @@ export function TopicSidebarShell({
           : (topicsQuery.data?.derived ?? false)
       }
       searchQuery={searchQuery}
-      searchLoading={topicSearchQuery.isFetching && searchActive}
-      searchError={topicSearchQuery.isError && searchActive}
+      searchLoading={
+        searchActive &&
+        (searchDebouncePending ||
+          (topicSearchQuery.isFetching && searchSettled))
+      }
+      searchError={topicSearchQuery.isError && searchSettled}
       searchResults={searchResults}
       searchTruncated={searchData?.truncated ?? false}
       searchUnavailableReason={searchData?.unavailableReason}
+      messageResults={messageResults}
+      messageSearchLoading={
+        searchActive &&
+        !messageSearchTooShort &&
+        (searchDebouncePending ||
+          (messageSearchQuery.isFetching && searchSettled))
+      }
+      messageSearchError={
+        !messageSearchTooShort && messageSearchQuery.isError && searchSettled
+      }
+      messageSearchTruncated={
+        messageSearchTooShort ? false : (messageSearchData?.truncated ?? false)
+      }
+      // A refused query never reaches the server, so the reason it would have
+      // sent is synthesized here — otherwise the section falls through to
+      // "no message matches", a claim about a search that never ran.
+      messageSearchUnavailableReason={
+        messageSearchTooShort
+          ? 'query_too_short'
+          : messageSearchData?.unavailableReason
+      }
       onSearchQueryChange={setSearchQuery}
-      onSearchRetry={() => void topicSearchQuery.refetch()}
+      onSearchRetry={() => {
+        void topicSearchQuery.refetch();
+        void messageSearchQuery.refetch();
+      }}
       onSearchClear={() => setSearchQuery('')}
       onSelectSession={onSelectSession}
       onCreateTaskRoom={openTopicTaskRoom}

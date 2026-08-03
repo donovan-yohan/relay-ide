@@ -42,7 +42,13 @@ import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
-import type { ChannelEventV1 } from '../shared/channel-chat-protocol.js';
+import {
+  CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+  CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  CHANNEL_SEARCH_MAX_RESULTS,
+  parseChannelSearchSnippet,
+  type ChannelEventV1,
+} from '../shared/channel-chat-protocol.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -72,12 +78,19 @@ async function harness(
     historyMaxBytes?: number;
     withAuth?: boolean;
     binder?: Partial<ChannelAgentBinder>;
+    /**
+     * Monotonic topic clock. The default is frozen, which is fine until a test
+     * cares about `updated_at DESC` rank — the rail read model's ordering — and
+     * needs "older than the 200 most recent" to be a fact rather than a
+     * tiebreak SQLite is free to resolve either way.
+     */
+    topicClock?: () => string;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
   const topicStore = createWorkspaceTopicStore({
     dbPath: path.join(dir, 'topics.db'),
-    now: () => '2026-07-18T00:00:00.000Z',
+    now: options.topicClock ?? (() => '2026-07-18T00:00:00.000Z'),
   });
   cleanup.push(() => topicStore.close());
   const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
@@ -1932,5 +1945,326 @@ describe('channel routes — message delete (#1308 slice 1 item 4)', () => {
       'CHANNEL_MESSAGE_NOT_EDITABLE'
     );
     expect(h.store.getMessage(posted.id)?.body.text).toBe('');
+  });
+});
+
+describe('channel routes — message search (#1308 slice 2 item 1)', () => {
+  interface SearchBody {
+    query: string;
+    results: Array<{
+      messageId: string;
+      channelId: string;
+      channelTitle: string;
+      archived: boolean;
+      seq: number;
+      threadId: string | null;
+      snippet: string;
+      senderKind: string;
+      senderId: string;
+      senderDisplayName?: string;
+      createdAt: string;
+      score: number;
+    }>;
+    truncated: boolean;
+    unavailableReason?: string;
+  }
+
+  async function post(
+    h: Harness,
+    channelId: string,
+    text: string,
+    extra: Record<string, unknown> = {}
+  ): Promise<{ id: string; seq: number }> {
+    const res = await req<{ message: { id: string; seq: number } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(channelId)}/messages`,
+      body: { text, ...extra },
+    });
+    expect(res.status).toBe(201);
+    return res.body.message;
+  }
+
+  function search(
+    h: Harness,
+    query: string
+  ): Promise<{
+    status: number;
+    body: SearchBody;
+  }> {
+    return req<SearchBody>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/search?${query}`,
+    });
+  }
+
+  it('returns ranked jump-shaped hits with channel identity', async () => {
+    const h = await harness();
+    const passing = await post(h, h.channelId, 'we mention relay once here');
+    const dense = await post(h, h.channelId, 'relay relay relay');
+    const reply = await post(h, h.channelId, 'relay follow-up in thread', {
+      parentMessageId: passing.id,
+    });
+
+    const res = await search(h, 'q=relay');
+    expect(res.status).toBe(200);
+    expect(res.body.query).toBe('relay');
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.results.map((hit) => hit.messageId)).toContain(dense.id);
+    expect(res.body.results[0]?.messageId).toBe(dense.id);
+    // Thread replies are searchable; the hit names its root so the #1308 slice 1
+    // deep link can open the thread panel.
+    const replyHit = res.body.results.find((hit) => hit.messageId === reply.id);
+    expect(replyHit).toMatchObject({
+      channelId: h.channelId,
+      channelTitle: 'General',
+      archived: false,
+      threadId: passing.id,
+      senderKind: 'human',
+    });
+    expect(replyHit?.snippet).toContain('relay');
+    expect(replyHit?.seq).toBe(reply.seq);
+    expect(replyHit?.createdAt).toEqual(expect.any(String));
+  });
+
+  it('wraps matched terms in the shared plain-text highlight sentinels', async () => {
+    const h = await harness();
+    await post(h, h.channelId, 'the migration playbook is ready');
+    const res = await search(h, 'q=playbook');
+    const snippet = res.body.results[0]?.snippet ?? '';
+    expect(snippet).toContain(
+      `${CHANNEL_SEARCH_HIGHLIGHT_OPEN}playbook${CHANNEL_SEARCH_HIGHLIGHT_CLOSE}`
+    );
+    // No markup crosses the wire — the client renders its own emphasis.
+    expect(snippet).not.toContain('<');
+    expect(
+      parseChannelSearchSnippet(snippet).filter((segment) => segment.highlight)
+    ).toEqual([{ text: 'playbook', highlight: true }]);
+  });
+
+  it('hides archived channels unless includeArchived is set', async () => {
+    const h = await harness();
+    const archivedTopic = h.topicStore.create({
+      workspaceId: 'ws',
+      title: 'Old Incident',
+    });
+    await post(h, h.channelId, 'quarantine notes live here');
+    const buried = await post(
+      h,
+      archivedTopic.id,
+      'quarantine notes archived here'
+    );
+    h.topicStore.archive(archivedTopic.id);
+
+    const hidden = await search(h, 'q=quarantine');
+    expect(hidden.body.results.map((hit) => hit.channelId)).toEqual([
+      h.channelId,
+    ]);
+
+    const shown = await search(h, 'q=quarantine&includeArchived=true');
+    const archivedHit = shown.body.results.find(
+      (hit) => hit.messageId === buried.id
+    );
+    expect(archivedHit).toMatchObject({
+      channelId: archivedTopic.id,
+      channelTitle: 'Old Incident',
+      archived: true,
+    });
+  });
+
+  it('excludes detail cards, system rows and tombstones; re-indexes an edit', async () => {
+    const h = await harness();
+    const prose = await post(h, h.channelId, 'rollback checklist step one');
+    const doomed = await post(h, h.channelId, 'rollback checklist step two');
+    h.store.appendComplete({
+      channelId: h.channelId,
+      kind: 'system',
+      sender: { kind: 'system', id: 'system' },
+      text: 'rollback checklist system notice',
+    });
+    const detail = h.store.beginStream({
+      channelId: h.channelId,
+      sender: { kind: 'agent', id: 'agent:claude', providerId: 'claude' },
+      source: { runtimeId: 'runtime-1', turnId: 'turn-1', itemId: 'item-1' },
+      agentDetail: {
+        itemId: 'item-1',
+        card: {
+          kind: 'thought',
+          title: 'rollback checklist card',
+          status: 'running',
+          content: 'rollback checklist payload',
+        },
+      },
+    });
+    h.store.finalizeStream(detail.id, { text: '', status: 'complete' });
+
+    expect(
+      (await search(h, 'q=rollback')).body.results.map((hit) => hit.messageId)
+    ).toEqual(expect.arrayContaining([prose.id, doomed.id]));
+    expect((await search(h, 'q=rollback')).body.results).toHaveLength(2);
+
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages/${encodeURIComponent(doomed.id)}`;
+    expect(
+      (await req({ port: h.port, method: 'DELETE', url: messageUrl })).status
+    ).toBe(200);
+    expect(
+      (await search(h, 'q=rollback')).body.results.map((hit) => hit.messageId)
+    ).toEqual([prose.id]);
+
+    expect(
+      (
+        await req({
+          port: h.port,
+          method: 'PATCH',
+          url: `/channels/${encodeURIComponent(h.channelId)}/messages/${encodeURIComponent(prose.id)}`,
+          body: { text: 'rollforward checklist step one' },
+        })
+      ).status
+    ).toBe(200);
+    expect((await search(h, 'q=rollback')).body.results).toHaveLength(0);
+    expect(
+      (await search(h, 'q=rollforward')).body.results.map(
+        (hit) => hit.messageId
+      )
+    ).toEqual([prose.id]);
+  });
+
+  it('scopes by channel, caps the page, and reports an empty query', async () => {
+    const h = await harness();
+    const other = h.topicStore.create({ workspaceId: 'ws', title: 'Other' });
+    await post(h, h.channelId, 'shared telemetry note');
+    const elsewhere = await post(h, other.id, 'shared telemetry note');
+
+    expect(
+      (
+        await search(h, `q=telemetry&channelId=${encodeURIComponent(other.id)}`)
+      ).body.results.map((hit) => hit.messageId)
+    ).toEqual([elsewhere.id]);
+
+    const capped = await search(h, 'q=telemetry&limit=1');
+    expect(capped.body.results).toHaveLength(1);
+    expect(capped.body.truncated).toBe(true);
+
+    const empty = await search(h, 'q=%20%20');
+    expect(empty.status).toBe(200);
+    expect(empty.body.results).toEqual([]);
+    expect(empty.body.unavailableReason).toBe('empty_query');
+  });
+
+  it('names a refused query instead of reporting it as a miss', async () => {
+    const h = await harness();
+    await post(h, h.channelId, 'a note the index would happily match');
+
+    // Text arrived, but nothing tokenizable: the index was never read, so the
+    // client must not print "no matches for ***".
+    const unsearchable = await search(h, 'q=***');
+    expect(unsearchable.status).toBe(200);
+    expect(unsearchable.body.results).toEqual([]);
+    expect(unsearchable.body.unavailableReason).toBe('no_searchable_term');
+
+    // Below the minimum searchable length the server refuses too — the UI gate
+    // is a courtesy, this route is reachable by any capability holder.
+    for (const short of ['q=a', 'q=ab']) {
+      const refused = await search(h, short);
+      expect(refused.body.results).toEqual([]);
+      expect(refused.body.unavailableReason).toBe('query_too_short');
+    }
+
+    // A dispatched query that genuinely misses carries NO reason, which is how
+    // the client tells "searched and found nothing" from "never searched".
+    const miss = await search(h, 'q=zzzznotpresent');
+    expect(miss.body.results).toEqual([]);
+    expect(miss.body.unavailableReason).toBeUndefined();
+  });
+
+  it('reaches channels the rail read model would have cut off', async () => {
+    // `topicStore.list()` caps at 200 rows by `updated_at DESC`; the store keeps
+    // up to 500. Building the search allowlist from that read model made every
+    // message in an older channel unreachable — indexed, matching, and never
+    // returned, with no truncation signal.
+    let tick = 0;
+    const h = await harness({
+      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+    });
+    const buried = await post(h, h.channelId, 'buried needle in an old chat');
+    for (let i = 0; i < 220; i += 1) {
+      h.topicStore.create({ workspaceId: 'ws', title: `Filler ${i}` });
+    }
+    expect(h.topicStore.list({ includeArchived: true })).toHaveLength(200);
+    expect(
+      h.topicStore
+        .list({ includeArchived: true })
+        .some((topic) => topic.id === h.channelId)
+    ).toBe(false);
+
+    const res = await search(h, 'q=needle');
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((hit) => hit.messageId)).toEqual([buried.id]);
+    expect(res.body.results[0]?.channelTitle).toBe('General');
+  });
+
+  it('lets workspace scoping narrow the answer, never the reach', async () => {
+    let tick = 0;
+    const h = await harness({
+      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+    });
+    const scoped = await post(h, h.channelId, 'scoped needle for one workspace');
+    // 220 newer channels in ANOTHER workspace. Scoping applied after a global
+    // 200-row window would leave nothing of `ws` to search at all.
+    for (let i = 0; i < 220; i += 1) {
+      h.topicStore.create({ workspaceId: 'ws-other', title: `Other ${i}` });
+    }
+    const res = await search(h, 'q=needle&workspaceId=ws');
+    expect(res.body.results.map((hit) => hit.messageId)).toEqual([scoped.id]);
+
+    // The scope still excludes: a hit in the other workspace stays out.
+    const elsewhere = h.topicStore.create({
+      workspaceId: 'ws-other',
+      title: 'Loud',
+    });
+    await post(h, elsewhere.id, 'needle somewhere else entirely');
+    expect(
+      (await search(h, 'q=needle&workspaceId=ws')).body.results.map(
+        (hit) => hit.messageId
+      )
+    ).toEqual([scoped.id]);
+    expect(
+      (await search(h, 'q=needle')).body.results.map((hit) => hit.messageId)
+    ).toHaveLength(2);
+  });
+
+  it('requires context:read and is reachable only past the auth gate', async () => {
+    const h = await harness({ withAuth: true });
+    const unauthenticated = await fetch(
+      `http://127.0.0.1:${h.port}/channels/search?q=anything`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const forbidden = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=anything',
+      capabilities: '',
+      headers: { Authorization: 'Bearer test' },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('still reports truncation on a full default page', async () => {
+    const h = await harness();
+    for (let i = 0; i < CHANNEL_SEARCH_MAX_RESULTS + 5; i += 1) {
+      h.store.appendComplete({
+        channelId: h.channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: `saturation row ${i}`,
+      });
+    }
+    const res = await search(h, 'q=saturation');
+    expect(res.body.results).toHaveLength(CHANNEL_SEARCH_MAX_RESULTS);
+    // A page that is exactly full must not silently claim it was the whole set.
+    expect(res.body.truncated).toBe(true);
   });
 });

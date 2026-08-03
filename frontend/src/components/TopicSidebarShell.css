@@ -131,6 +131,109 @@
   grid-column: 1 / -1;
 }
 
+/* #1308 slice 2 item 2: `chats` + `messages` sections under one search field. */
+.topic-search-sections {
+  display: grid;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topic-search-section__header {
+  padding: 4px 10px 2px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.topic-search-section__empty {
+  padding: 2px 10px 6px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.topic-search-section__empty.error {
+  color: var(--status-warning);
+}
+
+/* The chat section owns the bottom rule for the whole block instead. */
+.topic-search-sections .topic-search-results {
+  border-bottom: 0;
+  padding-top: 0;
+}
+
+.topic-message-results {
+  display: grid;
+  gap: 2px;
+  padding: 0 8px 6px;
+}
+
+.topic-message-result {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-message-result:hover,
+.topic-message-result:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-message-result__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.topic-message-result__channel {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-message-result__sender,
+.topic-message-result__thread,
+.topic-message-result__archived {
+  white-space: nowrap;
+}
+
+.topic-message-result__time {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Two lines of context, then clip: a hit is a jump affordance, not a reader. */
+.topic-message-result__snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.topic-message-result__hit {
+  background: transparent;
+  color: var(--accent);
+}
+
+.topic-message-result__truncated {
+  padding: 2px 4px;
+  color: var(--text-muted);
+}
+
 .topic-tree,
 .topic-child-list {
   list-style: none;
@@ -1077,6 +1180,19 @@
 
   .topic-archived-toggle {
     padding: 8px 10px;
+  }
+
+  /* #1308 slice 2 item 2: message hits are the panel's only full-row tap
+     target, so they carry the same 44px rhythm as the chat rows below. */
+  .topic-message-result {
+    min-height: 44px;
+    align-content: center;
+    padding: 4px 6px;
+    font-size: var(--font-size-xs);
+  }
+
+  .topic-search-section__empty {
+    font-size: var(--font-size-xs);
   }
 
   .topic-archived-toggle__btn {

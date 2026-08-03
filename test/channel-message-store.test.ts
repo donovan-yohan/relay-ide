@@ -6,13 +6,19 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  buildChannelMessageSearchSql,
+  buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
   buildChannelThreadSummarySql,
+  channelSearchUnavailableReason,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
-import type { ChannelSenderRef } from '../shared/channel-chat-protocol.js';
+import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  type ChannelSenderRef,
+} from '../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
 
 const cleanup: Array<() => void> = [];
@@ -325,7 +331,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(5);
+    ).toBe(6);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -977,7 +983,9 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(thread[0]?.body.text).toBe('');
     expect(s.getMessage(root.id)?.replyCount).toBe(1);
     expect(
-      s.listChannelThreadSummaries('topic:c').threads.map((t) => t.rootMessageId)
+      s
+        .listChannelThreadSummaries('topic:c')
+        .threads.map((t) => t.rootMessageId)
     ).toEqual([root.id]);
   });
 
@@ -1775,5 +1783,495 @@ describe('channel-message-store boot sweeps', () => {
     expect(s.history('topic:gone')).toHaveLength(0);
     expect(s.history('topic:live')).toHaveLength(1);
     expect(s.listMembers('topic:gone')).toHaveLength(0);
+  });
+});
+
+describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => {
+  function seq(s: ChannelMessageStore, channelId: string, text: string) {
+    return s.appendComplete({ channelId, sender: HUMAN, text });
+  }
+
+  it('indexes a durable row on insert and finds it by term', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'the deployment pipeline is wedged');
+    const hits = s.searchMessages({ query: 'wedged' });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      messageId: posted.id,
+      channelId: 'topic:alpha',
+      seq: posted.seq,
+      senderKind: 'human',
+      senderId: 'human:operator',
+      threadId: null,
+      createdAt: posted.createdAt,
+    });
+    expect(hits[0]?.snippet).toContain('wedged');
+    expect(hits[0]?.score).toBeLessThan(0);
+  });
+
+  it('re-indexes an edited body and stops matching the replaced text', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'original haystack sentence');
+    s.editMessage({
+      channelId: 'topic:alpha',
+      messageId: posted.id,
+      editorId: 'human:operator',
+      text: 'replacement needle sentence',
+    });
+    expect(s.searchMessages({ query: 'haystack' })).toHaveLength(0);
+    expect(
+      s.searchMessages({ query: 'needle' }).map((hit) => hit.messageId)
+    ).toEqual([posted.id]);
+  });
+
+  it('drops a tombstoned row out of the index', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'secret budget spreadsheet');
+    expect(s.searchMessages({ query: 'spreadsheet' })).toHaveLength(1);
+    s.deleteMessage({
+      channelId: 'topic:alpha',
+      messageId: posted.id,
+      deleterId: 'human:operator',
+    });
+    expect(s.searchMessages({ query: 'spreadsheet' })).toHaveLength(0);
+  });
+
+  it('indexes a streaming row only once it is finalized', () => {
+    const s = store();
+    const streaming = s.beginStream({
+      channelId: 'topic:alpha',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-1', turnId: 'turn-1', itemId: 'item-1' },
+      text: 'partial migrat',
+    });
+    s.updateStreamText(streaming.id, 'partial migration plan');
+    expect(s.searchMessages({ query: 'migration' })).toHaveLength(0);
+
+    s.finalizeStream(streaming.id, {
+      text: 'complete migration plan',
+      status: 'complete',
+    });
+    const hits = s.searchMessages({ query: 'migration' });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      messageId: streaming.id,
+      senderKind: 'agent',
+      providerId: 'claude',
+    });
+  });
+
+  it('excludes agent detail cards and system rows, and includes thread replies', () => {
+    const s = store();
+    const root = seq(s, 'topic:alpha', 'kubernetes rollout question');
+    const reply = s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'kubernetes rollout answer',
+      parentMessageId: root.id,
+    });
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      kind: 'system',
+      sender: { kind: 'system', id: 'system' },
+      text: 'kubernetes agent restarted',
+    });
+    const detail = s.beginStream({
+      channelId: 'topic:alpha',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-2', turnId: 'turn-2', itemId: 'detail-1' },
+      agentDetail: {
+        itemId: 'detail-1',
+        card: {
+          kind: 'thought',
+          title: 'kubernetes get pods',
+          status: 'running',
+          content: 'kubernetes tool payload',
+        },
+      },
+    });
+    s.finalizeStream(detail.id, { text: '', status: 'complete' });
+
+    const ids = s
+      .searchMessages({ query: 'kubernetes' })
+      .map((hit) => hit.messageId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids)).toEqual(new Set([root.id, reply.id]));
+    expect(
+      s
+        .searchMessages({ query: 'kubernetes' })
+        .find((h) => h.messageId === reply.id)?.threadId
+    ).toBe(root.id);
+  });
+
+  it('ranks the denser match first and caps results', () => {
+    const s = store();
+    seq(s, 'topic:alpha', 'a long note that mentions relay once in passing');
+    const dense = seq(s, 'topic:alpha', 'relay relay relay');
+    const ranked = s.searchMessages({ query: 'relay' });
+    expect(ranked[0]?.messageId).toBe(dense.id);
+    expect(ranked[0]!.score).toBeLessThan(ranked[1]!.score);
+
+    for (let i = 0; i < 60; i += 1) {
+      seq(s, 'topic:alpha', `bulk relay row ${i}`);
+    }
+    expect(s.searchMessages({ query: 'relay' })).toHaveLength(50);
+    expect(s.searchMessages({ query: 'relay', limit: 3 })).toHaveLength(3);
+  });
+
+  it('scopes results to the caller-supplied channel allowlist', () => {
+    const s = store();
+    const visible = seq(s, 'topic:visible', 'shared incident report');
+    seq(s, 'topic:hidden', 'shared incident report');
+    expect(
+      s
+        .searchMessages({ query: 'incident', channelIds: ['topic:visible'] })
+        .map((hit) => hit.messageId)
+    ).toEqual([visible.id]);
+    // An EMPTY allowlist means "nothing visible", never "no filter".
+    expect(s.searchMessages({ query: 'incident', channelIds: [] })).toEqual([]);
+    expect(s.searchMessages({ query: 'incident' })).toHaveLength(2);
+  });
+
+  it('treats operator text as literal terms, never as FTS5 operators', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'the NOT gate inverts a signal');
+    expect(buildChannelSearchMatchQuery('NOT gate')).toBe('"NOT" AND "gate" *');
+    expect(
+      s.searchMessages({ query: 'NOT gate' }).map((hit) => hit.messageId)
+    ).toEqual([posted.id]);
+    // A quote cannot terminate the generated phrase. `hi` is under the minimum
+    // prefix length, so it stays an EXACT phrase — the AND already bounds the
+    // match set, so a short trailing term needs no prefix expansion.
+    expect(buildChannelSearchMatchQuery('say "hi"')).toBe('"say" AND "hi"');
+    // Nothing tokenizable is not a query at all.
+    expect(buildChannelSearchMatchQuery('  ***  ')).toBeNull();
+    expect(s.searchMessages({ query: '***' })).toEqual([]);
+  });
+
+  it('never builds a prefix expression for a short trailing term', () => {
+    // The P0 guard: `*` on a one-character term expands to nearly the whole
+    // term dictionary, and bm25 must rank every match before LIMIT drops it —
+    // synchronously, on the hub's event loop. Asserted on the EXPRESSION, not
+    // on latency, so the guard cannot be lost to a faster machine.
+    expect(CHANNEL_SEARCH_MIN_QUERY_CHARS).toBe(3);
+    expect(buildChannelSearchMatchQuery('a')).toBeNull();
+    expect(buildChannelSearchMatchQuery('ab')).toBeNull();
+    expect(buildChannelSearchMatchQuery('  a  ')).toBeNull();
+    expect(buildChannelSearchMatchQuery('abc')).toBe('"abc" *');
+    // Astral characters count once: length is code points, not UTF-16 units.
+    expect(buildChannelSearchMatchQuery('𝟙𝟚')).toBeNull();
+    // A short term next to a real one keeps its exact-phrase filter.
+    expect(buildChannelSearchMatchQuery('deploy a')).toBe('"deploy" AND "a"');
+    expect(buildChannelSearchMatchQuery('a deploy')).toBe('"a" AND "deploy" *');
+  });
+
+  it('names why a refused query was never dispatched to the index', () => {
+    const s = store();
+    seq(s, 'topic:alpha', 'a note that would match almost any prefix');
+    expect(channelSearchUnavailableReason('   ')).toBe('empty_query');
+    expect(channelSearchUnavailableReason('***')).toBe('no_searchable_term');
+    expect(channelSearchUnavailableReason('a')).toBe('query_too_short');
+    expect(channelSearchUnavailableReason('ab')).toBe('query_too_short');
+    expect(channelSearchUnavailableReason('abc')).toBeNull();
+    expect(channelSearchUnavailableReason('a note')).toBeNull();
+    // The store agrees with the predicate: every refused shape returns no hits
+    // WITHOUT reading the index, so the caller must not read an empty array as
+    // "searched and found nothing".
+    for (const query of ['   ', '***', 'a', 'ab']) {
+      expect(s.searchMessages({ query })).toEqual([]);
+    }
+    expect(s.searchMessages({ query: 'note' })).toHaveLength(1);
+  });
+
+  it('backfills an existing db idempotently and rebuilds a dropped index', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'durable backfill subject',
+    });
+    const tombstoned = seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'backfill tombstone subject',
+    });
+    seeded.deleteMessage({
+      channelId: 'topic:alpha',
+      messageId: tombstoned.id,
+      deleterId: 'human:operator',
+    });
+    seeded.close();
+
+    // Rewind to a genuine pre-#1308 (v5) db: no index, no triggers, older
+    // schema_version — the exact shape an upgrading hub opens.
+    const raw = new Database(file);
+    raw.exec('DROP TRIGGER channel_messages_fts_ai');
+    raw.exec('DROP TRIGGER channel_messages_fts_au');
+    raw.exec('DROP TRIGGER channel_messages_fts_ad');
+    raw.exec('DROP TABLE channel_messages_fts');
+    raw.exec('UPDATE schema_version SET version = 5');
+    raw.close();
+
+    const reopened = store(file);
+    expect(
+      reopened.searchMessages({ query: 'backfill' }).map((h) => h.snippet)
+    ).toHaveLength(1);
+    expect(reopened.searchMessages({ query: 'tombstone' })).toHaveLength(0);
+    reopened.close();
+
+    // Reopening a healthy db must not duplicate index entries.
+    const again = store(file);
+    expect(again.searchMessages({ query: 'backfill' })).toHaveLength(1);
+    const counted = new Database(file);
+    const rows = counted
+      .prepare(
+        'SELECT COUNT(*) AS count FROM channel_messages_fts WHERE channel_messages_fts MATCH \'"backfill"\''
+      )
+      .get() as { count: number };
+    const version = counted
+      .prepare('SELECT version FROM schema_version')
+      .get() as { version: number };
+    counted.close();
+    expect(rows.count).toBe(1);
+    expect(version.version).toBe(6);
+  });
+
+  it('backfills across more than one batch without dropping or duplicating rows', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'batchword anchor row',
+    });
+    seeded.close();
+
+    // Raw inserts so the fixture crosses the 5k-row commit boundary quickly.
+    // The point is the rowid-range cursor: a batched backfill that mis-bounds a
+    // range silently skips or double-indexes whole 5k blocks, and a small
+    // fixture would never leave the first batch to notice.
+    const total = 5_200;
+    const raw = new Database(file);
+    const insert = raw.prepare(
+      `INSERT INTO channel_messages
+         (id, channel_id, seq, kind, sender_kind, sender_id, body_text, created_at, updated_at)
+       VALUES (?, 'topic:alpha', ?, ?, 'human', 'human:operator', ?, ?, ?)`
+    );
+    const now = new Date().toISOString();
+    raw.transaction(() => {
+      for (let i = 0; i < total; i += 1) {
+        // Every tenth row is hub bookkeeping: the predicate must be applied per
+        // batch, not only to the first one.
+        const systemRow = i % 10 === 0;
+        insert.run(
+          `chm:bulk-${i}`,
+          i + 2,
+          systemRow ? 'system' : 'message',
+          `batchword bulk row ${i}`,
+          now,
+          now
+        );
+      }
+    })();
+    raw.exec('DROP TRIGGER channel_messages_fts_ai');
+    raw.exec('DROP TRIGGER channel_messages_fts_au');
+    raw.exec('DROP TRIGGER channel_messages_fts_ad');
+    raw.exec('DROP TABLE channel_messages_fts');
+    raw.close();
+
+    const reopened = store(file);
+    const counted = new Database(file);
+    const indexed = counted
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"batchword"'`
+      )
+      .get() as { count: number };
+    counted.close();
+    // 1 anchor + every non-system bulk row, each exactly once.
+    expect(indexed.count).toBe(1 + total - total / 10);
+    expect(reopened.searchMessages({ query: 'batchword' })).toHaveLength(50);
+  });
+
+  it('finishes a crash-truncated backfill instead of trusting the DDL', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    for (let i = 0; i < 6; i += 1) {
+      seeded.appendComplete({
+        channelId: 'topic:alpha',
+        sender: HUMAN,
+        text: `needle${i} shared subject`,
+      });
+    }
+    seeded.close();
+
+    // Reproduce the exact on-disk state a kill mid-backfill leaves behind:
+    // table + all three triggers committed, the marker still claiming
+    // `building`, and index entries present only up to the cursor. Batches walk
+    // rowid ASCENDING, so what is missing is the NEWEST messages — the ones an
+    // operator is most likely to search for, and the shape that a
+    // presence-only integrity check reports as healthy forever.
+    const raw = new Database(file);
+    const cutoff = (
+      raw
+        .prepare(
+          'SELECT rowid AS id FROM channel_messages ORDER BY rowid LIMIT 1 OFFSET 2'
+        )
+        .get() as { id: number }
+    ).id;
+    raw
+      .prepare(
+        `INSERT INTO channel_messages_fts(channel_messages_fts, rowid, id, channel_id, body_text)
+         SELECT 'delete', m.rowid, m.id, m.channel_id, m.body_text
+           FROM channel_messages m WHERE m.rowid > ?`
+      )
+      .run(cutoff);
+    raw
+      .prepare(
+        `UPDATE channel_search_state
+            SET status = 'building',
+                indexed_through_rowid = ?,
+                snapshot_max_rowid =
+                  (SELECT MAX(rowid) FROM channel_messages)`
+      )
+      .run(cutoff);
+    const truncatedTail = (
+      raw
+        .prepare(
+          `SELECT COUNT(*) AS count FROM channel_messages_fts
+            WHERE channel_messages_fts MATCH '"needle5"'`
+        )
+        .get() as { count: number }
+    ).count;
+    raw.close();
+    // Pre-condition: the tail really is unsearchable in the crashed db.
+    expect(truncatedTail).toBe(0);
+
+    const reopened = store(file);
+    expect(reopened.searchMessages({ query: 'needle5' })).toHaveLength(1);
+    expect(reopened.searchMessages({ query: 'needle0' })).toHaveLength(1);
+    // Exactly once each: a resume that re-ran an already-committed range would
+    // double-index the head, and external-content FTS5 has no upsert to absorb
+    // it. This is also why the cursor advances inside the batch transaction.
+    expect(reopened.searchMessages({ query: 'shared' })).toHaveLength(6);
+    reopened.close();
+
+    const marked = new Database(file);
+    const state = marked
+      .prepare(
+        'SELECT status, indexed_through_rowid FROM channel_search_state WHERE id = 1'
+      )
+      .get() as { status: string; indexed_through_rowid: number };
+    const headEntries = marked
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"needle0"'`
+      )
+      .get() as { count: number };
+    marked.close();
+    expect(state.status).toBe('complete');
+    expect(state.indexed_through_rowid).toBeGreaterThanOrEqual(cutoff);
+    expect(headEntries.count).toBe(1);
+
+    // A second open must be a no-op: the marker, not the DDL, is what says so.
+    const again = store(file);
+    expect(again.searchMessages({ query: 'shared' })).toHaveLength(6);
+  });
+
+  it('rebuilds when the completeness marker is absent under an intact index', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'markerless subject',
+    });
+    seeded.close();
+
+    // A db written before the marker existed (or one an operator edited) has an
+    // index nothing can vouch for. It is not resumable — there is no cursor to
+    // resume from — so it must be rebuilt from scratch, exactly once.
+    const raw = new Database(file);
+    raw.exec('DELETE FROM channel_search_state');
+    raw.close();
+
+    const reopened = store(file);
+    expect(reopened.searchMessages({ query: 'markerless' })).toHaveLength(1);
+    reopened.close();
+
+    const counted = new Database(file);
+    const entries = counted
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"markerless"'`
+      )
+      .get() as { count: number };
+    const state = counted
+      .prepare('SELECT status FROM channel_search_state WHERE id = 1')
+      .get() as { status: string };
+    counted.close();
+    expect(entries.count).toBe(1);
+    expect(state.status).toBe('complete');
+  });
+
+  it('keeps the implicit-rowid contract the external-content index rides on', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'rowid contract subject',
+    });
+    const raw = new Database(file);
+    const ddl = (
+      raw
+        .prepare(
+          `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channel_messages'`
+        )
+        .get() as { sql: string }
+    ).sql;
+    raw.close();
+    // `id` is TEXT PRIMARY KEY, so the FTS join key is the table's IMPLICIT
+    // rowid. WITHOUT ROWID would remove that mapping outright and break every
+    // index entry; assert the declaration can never acquire it.
+    expect(ddl).not.toMatch(/WITHOUT\s+ROWID/i);
+    expect(ddl).toMatch(/id\s+TEXT PRIMARY KEY/);
+
+    // Implicit rowids are renumbered by VACUUM, which would silently repoint
+    // every index entry at a different message — search answering with another
+    // channel's body under a correct-looking snippet. No maintenance path in
+    // the store may issue one without rebuilding the index afterwards.
+    const source = fs.readFileSync(
+      new URL('../server/channel-message-store.ts', import.meta.url),
+      'utf8'
+    );
+    expect(source).not.toMatch(/^\s*[^*/\n]*\bVACUUM\b/im);
+  });
+
+  it('drives the search from the FTS index, probing messages by rowid', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'query plan subject',
+    });
+    const raw = new Database(file);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelMessageSearchSql(1)}`)
+      .all('', '', '…', '"plan"', 'topic:alpha', 10) as Array<{
+      detail: string;
+    }>;
+    raw.close();
+    const details = plan.map((row) => row.detail);
+    // The FTS index must DRIVE (first) and `channel_messages` must be probed by
+    // rowid — not the reverse, which walks every message in every allowed
+    // channel. A plain JOIN regresses to exactly that; see the CROSS JOIN note
+    // on `buildChannelMessageSearchSql`.
+    expect(details[0]).toMatch(
+      /channel_messages_fts VIRTUAL TABLE INDEX .*M\d/
+    );
+    expect(details[1]).toMatch(/SEARCH m USING INTEGER PRIMARY KEY/);
   });
 });

@@ -34,12 +34,23 @@ import {
   fetchArtifactPaletteResults,
   type ArtifactPaletteResult,
 } from '../lib/command-palette-artifact-results.js';
+import {
+  buildMessagePaletteResults,
+  MESSAGE_PALETTE_LIMIT,
+  type MessagePaletteResult,
+} from '../lib/command-palette-message-results.js';
 import type { PipelineHandoffArtifactEnvelope } from '../lib/pipeline-handoff-timeline.js';
+import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  type ChannelMessageSearchResult,
+} from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
+import { openChannelMessageSelection } from '../lib/topic-selection.js';
 import {
   executeCommandCenterAssistantCommand,
   fetchWorkspaceTopics,
   resolveCommandCenterAssistantIntent,
+  searchChannelMessages,
 } from '../lib/api.js';
 import {
   commandCenterAssistantCopy,
@@ -167,6 +178,13 @@ type PaletteResult =
       data: PipelineHandoffArtifactEnvelope;
     }
   | {
+      type: 'message';
+      id: string;
+      label: string;
+      sublabel?: string;
+      data: ChannelMessageSearchResult;
+    }
+  | {
       type: 'pr' | 'attention';
       id: string;
       label: string;
@@ -247,6 +265,8 @@ function categoryIcon(type: PaletteResult['type']): string {
       return '▸';
     case 'topic':
       return '◇';
+    case 'message':
+      return '"';
     case 'artifact':
       return '▤';
     case 'pr':
@@ -263,6 +283,13 @@ function categoryIcon(type: PaletteResult['type']): string {
   }
 }
 
+/**
+ * `message` (#1308 slice 2 item 3) deliberately claims no tab of its own, the
+ * same disposition `ticket` has: it shows in `all` and nowhere else. A `topics`
+ * tab that also listed message rows would stop being a filter for topics, and a
+ * ninth tab would cost every operator a longer Tab cycle to buy a filter for a
+ * category that is already capped at five rows.
+ */
 function matchesTab(type: PaletteResult['type'], activeTab: Tab): boolean {
   if (activeTab === 'all') return true;
   if (activeTab === 'sessions') return type === 'session' || type === 'command';
@@ -379,7 +406,9 @@ function buildResults(
   activeTab: Tab,
   actionContext: ActionContext,
   /** Hub-wide artifact search results (#1065) — already fetched+filtered server-side for `q`. */
-  artifactResults: ArtifactPaletteResult[]
+  artifactResults: ArtifactPaletteResult[],
+  /** Hub-wide message search hits (#1308 slice 2) — ranked and capped server-side for `q`. */
+  messageResults: MessagePaletteResult[]
 ): PaletteResult[] {
   const items: PaletteResult[] = [];
   if (!q) {
@@ -436,6 +465,14 @@ function buildResults(
   }
   for (const topic of buildTopicPaletteResults(q, cachedTopics, 5)) {
     items.push(topic);
+  }
+  // Directly after `topics`, the other half of the same question: `topics`
+  // answers "which chat was that?", `messages` answers "where was that said?".
+  // They are never merged into one ranked list — a bm25 body score and a
+  // substring title match share no unit (the sidebar's two sections, #1308
+  // slice 2 item 2, split for the same reason).
+  for (const result of messageResults) {
+    items.push(result);
   }
   for (const result of artifactResults) {
     items.push(result);
@@ -533,6 +570,7 @@ function useGroupedResults(
           { type: 'workspace', label: 'workspaces' },
           { type: 'session', label: 'sessions' },
           { type: 'topic', label: 'topics' },
+          { type: 'message', label: 'messages' },
           { type: 'artifact', label: 'artifacts' },
           { type: 'pr', label: 'pull requests' },
           { type: 'ticket', label: 'tickets' },
@@ -590,6 +628,54 @@ function useArtifactPaletteResults(
   }, [debouncedQuery, cachedTopics, open]);
 
   return results;
+}
+
+/**
+ * Hub-wide message search for the palette (#1308 slice 2 item 3).
+ *
+ * The palette runs its OWN query rather than reading the sidebar's message-search
+ * cache — the #1287/#1289 lesson that `useCachedData` already learned for
+ * topics: `TopicSidebarShell` is the only other producer of that cache entry and
+ * it never mounts while the sidebar is collapsed, so a cache-only palette would
+ * show an empty `messages` category forever for exactly the operators who reach
+ * for a palette instead of a rail.
+ *
+ * The key is namespaced `palette` instead of reusing the sidebar's
+ * `['channel-message-search', q, scope, archive]`. That key does not mention its
+ * own page size, so sharing it would let whichever surface asked first fix the
+ * other's row count — the palette's 5-row answer would become the sidebar's
+ * 20-row section, silently claiming it was not truncated.
+ *
+ * `enabled` carries `open` because the palette unmounts nothing when it closes
+ * (`usePaletteState` only resets `query` on the way back IN), so without it a
+ * closed palette would keep refetching the last query the operator typed. It
+ * also carries CHANNEL_SEARCH_MIN_QUERY_CHARS: the palette is a keystroke
+ * surface over the same FTS5 index as the sidebar, and a one-character prefix
+ * query ranks essentially the whole corpus inside a synchronous sqlite call on
+ * the hub's event loop. The server refuses that shape too; this keeps the
+ * palette from asking. Other categories keep answering from the first
+ * character — they are in-memory filters, not index reads.
+ */
+function useMessagePaletteResults(
+  debouncedQuery: string,
+  open: boolean
+): MessagePaletteResult[] {
+  const trimmed = debouncedQuery.trim();
+  const enabled = open && trimmed.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
+  const { data } = useQuery({
+    queryKey: ['channel-message-search', 'palette', trimmed],
+    queryFn: () =>
+      searchChannelMessages({ q: trimmed, limit: MESSAGE_PALETTE_LIMIT }),
+    enabled,
+    staleTime: 10_000,
+  });
+  return useMemo(
+    // Gate on `enabled`, not just on `data`: a disabled query keeps serving its
+    // last result, which would flash the previous query's hits over an empty
+    // input on the next open.
+    () => (enabled ? buildMessagePaletteResults(data?.results ?? []) : []),
+    [enabled, data]
+  );
 }
 
 // ── usePaletteState hook ───────────────────────────────────────────────────────
@@ -660,6 +746,8 @@ function usePaletteHandlers(
   onSelectTopic: ((topic: WorkspaceTopic) => void) | undefined,
   onSelectPr: (pr: PullRequest) => void,
   cachedActiveWork: WorkContextActiveGroup[],
+  /** Corpus a message hit's channel is resolved against for workspace/repo context. */
+  cachedTopics: WorkspaceTopic[],
   onOpenSettings?: (sectionId: string) => void
 ) {
   const scrollFocusedIntoView = useCallback(() => {
@@ -689,7 +777,23 @@ function usePaletteHandlers(
         onSelectSession(scopedSessionKey(item.data as SessionSummary));
       else if (item.type === 'topic')
         onSelectTopic?.(item.data as WorkspaceTopic);
-      else if (item.type === 'artifact') {
+      else if (item.type === 'message') {
+        // #1308 slice 2 item 3: identical disposition to the sidebar's message
+        // hit — open the channel, then hand `ChannelView` the anchor it already
+        // knows how to resolve (slice 1's bounded history walk, jump highlight,
+        // and reply → thread-panel mapping). Shared gate, not an `onSelect*`
+        // prop, because both entry points must open a hit the same way and a
+        // per-caller prop is exactly how that drifts.
+        const hit = item.data as ChannelMessageSearchResult;
+        openChannelMessageSelection({
+          channelId: hit.channelId,
+          messageId: hit.messageId,
+          // The hit's channel is often absent from the palette's topic corpus
+          // (a message can match in a chat whose title does not); the gate opens
+          // it by id anyway and uses a resolved topic for context only.
+          topic: cachedTopics.find((topic) => topic.id === hit.channelId),
+        });
+      } else if (item.type === 'artifact') {
         // #1065: no direct deep-link into the evidence artifacts tab exists
         // yet (see PR notes) — copy the artifact reference and navigate to
         // the owning workspace as the cheapest existing open path so the
@@ -717,6 +821,7 @@ function usePaletteHandlers(
       onSelectTopic,
       onSelectPr,
       cachedActiveWork,
+      cachedTopics,
       onOpenSettings,
     ]
   );
@@ -1020,6 +1125,7 @@ export function CommandPalette({
     cachedTopics,
     open
   );
+  const messageResults = useMessagePaletteResults(debouncedQuery, open);
 
   const results = useMemo(
     () =>
@@ -1036,7 +1142,8 @@ export function CommandPalette({
         needsAttention,
         activeTab,
         actionContext,
-        artifactResults
+        artifactResults,
+        messageResults
       ),
     [
       debouncedQuery,
@@ -1052,6 +1159,7 @@ export function CommandPalette({
       activeTab,
       actionContext,
       artifactResults,
+      messageResults,
     ]
   );
   const groupedResults = useGroupedResults(results, debouncedQuery);
@@ -1091,6 +1199,7 @@ export function CommandPalette({
     onSelectTopic,
     onSelectPr,
     cachedActiveWork,
+    cachedTopics,
     onOpenSettings
   );
 

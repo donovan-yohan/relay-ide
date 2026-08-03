@@ -17,6 +17,13 @@ import {
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import {
+  CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+  CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  type ChannelMessageId,
+  type ChannelMessageSearchResult,
+} from '../shared/channel-chat-protocol.js';
 import { createWorkspaceId, LOCAL_WORKSPACE_ID } from '../shared/workspace.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
@@ -84,18 +91,34 @@ async function flushQueryEffects() {
  * `flushQueryEffects()` intermittently asserts against the pre-render DOM.
  * Polling the DOM itself makes the wait a condition, mirroring the drain fix in
  * 03aff413 without hard-coding how many ticks the chain happens to take.
+ *
+ * The budget is WALL CLOCK rather than a tick count (#1308 slice 2): the search
+ * field debounces before it queries at all, so a tick-counted poll drains a
+ * few microtasks in well under the settle window and reports a timeout before
+ * the request the case is waiting for was ever sent. Still a condition poll —
+ * it returns the instant the DOM satisfies `check` — with a ceiling that
+ * outlasts a real debounce instead of one that outlasts only a microtask chain.
  */
+const WAIT_FOR_RENDERED_TIMEOUT_MS = 2_000;
+const WAIT_FOR_RENDERED_POLL_MS = 10;
+
 async function waitForRendered(
   check: () => boolean,
   description: string
 ): Promise<void> {
-  for (let attempt = 0; attempt < 25; attempt++) {
+  const deadline = Date.now() + WAIT_FOR_RENDERED_TIMEOUT_MS;
+  for (;;) {
     if (check()) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for ${description}`);
+    }
     await act(async () => {
       await flushQueryEffects();
+      await new Promise((resolve) =>
+        setTimeout(resolve, WAIT_FOR_RENDERED_POLL_MS)
+      );
     });
   }
-  throw new Error(`timed out waiting for ${description}`);
 }
 
 function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
@@ -160,6 +183,31 @@ function setInputValue(input: HTMLInputElement, value: string) {
   )?.set;
   if (setter) setter.call(input, value);
   else input.value = value;
+}
+
+/**
+ * One `/channels/search` hit (#1308 slice 2). The snippet carries the REAL
+ * Private Use Area sentinels, imported rather than retyped, so the renderer and
+ * the server contract cannot drift apart behind a hand-written literal.
+ */
+function makeMessageHit(
+  overrides: Partial<ChannelMessageSearchResult> = {}
+): ChannelMessageSearchResult {
+  return {
+    messageId: 'chm:hit-1' as ChannelMessageId,
+    channelId: 'topic:alpha',
+    threadId: null,
+    seq: 12,
+    snippet: `rebuilt the ${CHANNEL_SEARCH_HIGHLIGHT_OPEN}sqlite${CHANNEL_SEARCH_HIGHLIGHT_CLOSE} index`,
+    senderKind: 'agent',
+    senderId: builtInAgentProfileId('claude'),
+    providerId: 'claude',
+    createdAt: NOW,
+    score: -3.2,
+    channelTitle: 'Build UI shell',
+    archived: false,
+    ...overrides,
+  };
 }
 
 function makeSurface(
@@ -3156,6 +3204,30 @@ describe('TopicSidebarView', () => {
       expect(precedes(search, results)).toBe(true);
       expect(precedes(results, cockpit)).toBe(true);
     });
+
+    it('keeps the message section above the fold with the chats section (#1308 slice 2)', async () => {
+      // The mobile "search surface" is not a second component — it is this
+      // panel, ordered above the cockpit. So the new section is only above the
+      // fold on a phone if it renders INSIDE the panel; a message section
+      // appended after the tree would be legal on desktop and unreachable on a
+      // phone without scrolling past every channel row.
+      await renderView({
+        searchQuery: 'sqlite',
+        messageResults: [makeMessageHit()],
+      });
+
+      const search = container.querySelector('.topic-search');
+      const messages = container.querySelector(
+        '.topic-search-section[aria-label="message search results"]'
+      );
+      const cockpit = container.querySelector('.topic-mobile-cockpit');
+      const mobileList = container.querySelector('.topic-mobile-list');
+
+      expect(messages?.querySelector('.topic-message-result')).not.toBeNull();
+      expect(precedes(search, messages)).toBe(true);
+      expect(precedes(messages, cockpit)).toBe(true);
+      expect(precedes(messages, mobileList)).toBe(true);
+    });
   });
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
@@ -4152,5 +4224,375 @@ describe('TopicSidebarView', () => {
     });
     expect(container.textContent).not.toContain('no chat matches for');
     queryClient.clear();
+  });
+
+  // ── message search section (#1308 slice 2 item 2) ─────────────────────────
+  describe('message search section (#1308 slice 2)', () => {
+    it('renders chats and messages as two labelled sections with emphasized matches', async () => {
+      await renderView({
+        topics: [
+          makeTopic({ id: 'topic:hit', display: { title: 'Hit lane' } }),
+        ],
+        sessions: [],
+        surfaces: [],
+        searchQuery: 'sqlite',
+        searchResults: [
+          {
+            topic: makeTopic({
+              id: 'topic:hit',
+              display: { title: 'Hit lane' },
+            }),
+            score: 90,
+            freshness: 'fresh',
+            matches: [
+              {
+                kind: 'topic',
+                field: 'display.title',
+                label: 'chat title',
+                value: 'Hit lane',
+              },
+            ],
+            action: { kind: 'open-topic', topicId: 'topic:hit' },
+          },
+        ],
+        messageResults: [makeMessageHit()],
+      });
+
+      const sections = Array.from(
+        container.querySelectorAll('.topic-search-section')
+      );
+      expect(sections.map((s) => s.getAttribute('aria-label'))).toEqual([
+        'chat search results',
+        'message search results',
+      ]);
+      expect(
+        sections.map(
+          (s) => s.querySelector('.topic-search-section__header')?.textContent
+        )
+      ).toEqual(['chats', 'messages']);
+
+      // A chat hit still renders in the chats section, unchanged.
+      expect(sections[0]?.textContent).toContain('Hit lane');
+      expect(sections[0]?.querySelector('.topic-search-result')).not.toBeNull();
+
+      const row = sections[1]?.querySelector(
+        '.topic-message-result'
+      ) as HTMLButtonElement;
+      expect(row).not.toBeNull();
+      // Channel title, sender label, snippet, relative stamp.
+      expect(
+        row.querySelector('.topic-message-result__channel')?.textContent
+      ).toBe('Build UI shell');
+      expect(
+        row.querySelector('.topic-message-result__sender')?.textContent
+      ).toBe('claude');
+      expect(
+        row.querySelector('.topic-message-result__time')?.textContent
+      ).toBeTruthy();
+      // The PUA sentinels are consumed, never rendered, and the matched run is
+      // its own element rather than markup smuggled through the body.
+      const snippet = row.querySelector('.topic-message-result__snippet');
+      expect(snippet?.textContent).toBe('rebuilt the sqlite index');
+      expect(snippet?.textContent).not.toContain(CHANNEL_SEARCH_HIGHLIGHT_OPEN);
+      expect(row.querySelector('.topic-message-result__hit')?.textContent).toBe(
+        'sqlite'
+      );
+    });
+
+    it('shows a per-section empty state so a hit in one section is not read as both', async () => {
+      await renderView({
+        topics: [],
+        sessions: [],
+        surfaces: [],
+        searchQuery: 'apollo',
+        searchResults: [],
+        messageResults: [],
+      });
+
+      expect(container.textContent).toContain('no chat matches for “apollo”');
+      expect(container.textContent).toContain(
+        'no message matches for “apollo”'
+      );
+    });
+
+    it('opens the channel and asks it to jump when a message hit is clicked', async () => {
+      useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+      await renderView({
+        // Deliberately NOT in `topics`: chat-title search returns the chats it
+        // matched, and a message can match in a channel whose title did not.
+        topics: [],
+        sessions: [],
+        surfaces: [],
+        searchQuery: 'sqlite',
+        searchResults: [],
+        messageResults: [makeMessageHit()],
+      });
+
+      const row = container.querySelector(
+        '.topic-message-result'
+      ) as HTMLButtonElement;
+      await act(async () => row.click());
+
+      expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+      // The S1 anchor, written AFTER the channel open (which clears it).
+      expect(useUiStore.getState().pendingChannelMessage).toEqual({
+        channelId: 'topic:alpha',
+        messageId: 'chm:hit-1',
+      });
+      expect(useUiStore.getState().sidebarOpen).toBe(false);
+      expect(onSelectSession).not.toHaveBeenCalled();
+    });
+
+    it('anchors a thread hit on the reply itself so the S1 walk opens its panel', async () => {
+      // The sidebar deliberately does NOT resolve the root or open the panel:
+      // `ChannelView` maps a reply anchor to `activeThreadRootId` (proved in
+      // test/components/channel-message-jump.test.ts). Handing it the ROOT id
+      // here would land the jump on the main lane and never open the thread.
+      useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+      await renderView({
+        topics: [],
+        sessions: [],
+        surfaces: [],
+        searchQuery: 'sqlite',
+        searchResults: [],
+        messageResults: [
+          makeMessageHit({
+            messageId: 'chm:reply-9' as ChannelMessageId,
+            threadId: 'chm:root-1' as ChannelMessageId,
+          }),
+        ],
+      });
+
+      const row = container.querySelector(
+        '.topic-message-result'
+      ) as HTMLButtonElement;
+      expect(
+        row.querySelector('.topic-message-result__thread')?.textContent
+      ).toBe('thread');
+
+      await act(async () => row.click());
+
+      expect(useUiStore.getState().pendingChannelMessage).toEqual({
+        channelId: 'topic:alpha',
+        messageId: 'chm:reply-9',
+      });
+    });
+
+    it('threads the show-older-chats toggle into BOTH search requests', async () => {
+      // #1288 lesson, applied to the second section: the toggle has to reach
+      // the message query's KEY as well as its params, or TanStack serves the
+      // active-only answer to the include-archived question.
+      const topicQueries: Record<string, string>[] = [];
+      const messageQueries: Record<string, string>[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/workspace-topics/search')) {
+          const params = new URL(url, 'http://relay.test').searchParams;
+          topicQueries.push(Object.fromEntries(params));
+          return Response.json({
+            query: 'archived',
+            results: [],
+            truncated: false,
+            derived: false,
+          });
+        }
+        if (url.startsWith('/channels/search')) {
+          const params = new URL(url, 'http://relay.test').searchParams;
+          messageQueries.push(Object.fromEntries(params));
+          const includeArchived = params.get('includeArchived') === '1';
+          return Response.json({
+            query: 'archived',
+            results: includeArchived
+              ? [
+                  makeMessageHit({
+                    channelTitle: 'Archived lane',
+                    archived: true,
+                    snippet: 'said archived once',
+                  }),
+                ]
+              : [],
+            truncated: false,
+          });
+        }
+        return Response.json({
+          topics: [],
+          surfaces: [],
+          nodes: [],
+          workspaces: [],
+          truncated: false,
+          derived: false,
+        });
+      }) as unknown as typeof fetch;
+      vi.stubGlobal('fetch', fetchMock);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          React.createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            React.createElement(TopicSidebarShell, { onSelectSession })
+          )
+        );
+      });
+      await act(async () => {
+        await flushQueryEffects();
+      });
+
+      const searchInput = container.querySelector(
+        '.topic-search__input'
+      ) as HTMLInputElement;
+      await act(async () => {
+        setInputValue(searchInput, 'archived');
+        searchInput.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'archived',
+            inputType: 'insertText',
+          })
+        );
+      });
+      await waitForRendered(
+        () =>
+          container.textContent?.includes('no message matches for') === true,
+        'the empty message-search section'
+      );
+
+      // One shared debounce: one request per section for the whole word.
+      expect(topicQueries).toEqual([{ q: 'archived', limit: '20' }]);
+      expect(messageQueries).toEqual([{ q: 'archived', limit: '20' }]);
+      expect(container.textContent).not.toContain('Archived lane');
+
+      const archivedToggle = container.querySelector(
+        '.topic-archived-toggle__btn'
+      ) as HTMLButtonElement;
+      await act(async () => {
+        archivedToggle.click();
+      });
+      await waitForRendered(
+        () => container.textContent?.includes('Archived lane') === true,
+        'the archived message-search hit'
+      );
+
+      expect(topicQueries).toContainEqual({
+        q: 'archived',
+        includeArchived: '1',
+        limit: '20',
+      });
+      expect(messageQueries).toContainEqual({
+        q: 'archived',
+        includeArchived: '1',
+        limit: '20',
+      });
+      expect(container.textContent).not.toContain('no message matches for');
+      queryClient.clear();
+    });
+
+    it('refuses to search messages below the minimum query length', async () => {
+      // A one-character prefix ranks essentially the whole FTS corpus inside a
+      // synchronous sqlite call on the hub's event loop, so the rail must not
+      // send it at all. Chat-title search is an in-memory scan and keeps
+      // answering from the first keystroke.
+      expect(CHANNEL_SEARCH_MIN_QUERY_CHARS).toBe(3);
+      const topicQueries: string[] = [];
+      const messageQueries: string[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/workspace-topics/search')) {
+          topicQueries.push(url);
+          return Response.json({
+            query: 'sq',
+            results: [],
+            truncated: false,
+            derived: false,
+          });
+        }
+        if (url.startsWith('/channels/search')) {
+          messageQueries.push(url);
+          return Response.json({
+            query: 'sq',
+            results: [makeMessageHit()],
+            truncated: false,
+          });
+        }
+        return Response.json({
+          topics: [],
+          surfaces: [],
+          nodes: [],
+          workspaces: [],
+          truncated: false,
+          derived: false,
+        });
+      }) as unknown as typeof fetch;
+      vi.stubGlobal('fetch', fetchMock);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          React.createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            React.createElement(TopicSidebarShell, { onSelectSession })
+          )
+        );
+      });
+      await act(async () => {
+        await flushQueryEffects();
+      });
+
+      const searchInput = container.querySelector(
+        '.topic-search__input'
+      ) as HTMLInputElement;
+      await act(async () => {
+        setInputValue(searchInput, 'sq');
+        searchInput.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'sq',
+            inputType: 'insertText',
+          })
+        );
+      });
+      await waitForRendered(
+        () =>
+          container.textContent?.includes(
+            'type 3 characters to search messages'
+          ) === true,
+        'the too-short message-search state'
+      );
+
+      // The chats section is an in-memory scan, so it still answers two
+      // characters; only the index read is withheld.
+      await waitForRendered(
+        () => topicQueries.length === 1,
+        'the chat-title search for the same two characters'
+      );
+      expect(messageQueries).toEqual([]);
+      // The refusal is named, never dressed up as a miss over a corpus nothing
+      // consulted.
+      expect(container.textContent).not.toContain('no message matches for');
+
+      await act(async () => {
+        setInputValue(searchInput, 'sql');
+        searchInput.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'l',
+            inputType: 'insertText',
+          })
+        );
+      });
+      await waitForRendered(
+        () => container.textContent?.includes('Build UI shell') === true,
+        'the message hit once the query is long enough'
+      );
+      expect(messageQueries).toHaveLength(1);
+      expect(messageQueries[0]).toContain('q=sql');
+      queryClient.clear();
+    });
   });
 });

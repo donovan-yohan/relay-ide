@@ -14,6 +14,7 @@ import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
   ChannelMessageStoreError,
+  channelSearchUnavailableReason,
   type ChannelHistoryFilter,
   type ChannelMessageStore,
 } from './channel-message-store.js';
@@ -36,9 +37,13 @@ import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_QUERY_MAX_CHARS,
   parseMentions,
   type ChannelBodyFormat,
   type ChannelMessage,
+  type ChannelMessageSearchResponse,
+  type ChannelMessageSearchResult,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -417,6 +422,23 @@ function parseHistoryLimit(value: unknown): number {
   return Math.max(1, Math.min(CHANNEL_HISTORY_MAX_LIMIT, parsed));
 }
 
+function parseStringQuery(value: unknown): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
+/** Same truthiness the `/workspace-topics` search route uses for its flags. */
+function parseBooleanQuery(value: unknown): boolean {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw === 'true' || raw === '1';
+}
+
+function parseSearchLimit(value: unknown): number {
+  const parsed = parseSeqQuery(value);
+  if (parsed === undefined) return CHANNEL_SEARCH_MAX_RESULTS;
+  return Math.max(1, Math.min(CHANNEL_SEARCH_MAX_RESULTS, parsed));
+}
+
 function channelSummaryView(
   store: ChannelMessageStore,
   topic: WorkspaceTopic
@@ -505,6 +527,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const listAuth = deps.requireReadActorAuth?.('channels.list') ?? auth;
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
+  // Search is a filtered read of the same durable message log `channels.history`
+  // already grants, so it rides that verb rather than minting a new gateway
+  // command: a credential that may read a channel's transcript may search it,
+  // and one that may not, cannot.
+  const searchAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
   const threadHistoryAuth =
     deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
@@ -558,6 +585,107 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         )
         .map((topic) => channelSummaryView(store, topic));
       res.json({ channels });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  // MUST stay above `/channels/:id`: Express matches in registration order, and
+  // a literal segment registered after a parameter route is unreachable. (Topic
+  // ids are all `topic:`-prefixed, so `search` can never BE a channel id — the
+  // ordering is about routing, not about a namespace collision.)
+  router.get('/channels/search', searchAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topicStore = topicStoreOr503(res, deps.topicStore);
+    if (!topicStore) return;
+
+    const rawQuery =
+      parseStringQuery(req.query['q']) ?? parseStringQuery(req.query['query']);
+    const query = (rawQuery ?? '')
+      .slice(0, CHANNEL_SEARCH_QUERY_MAX_CHARS)
+      .trim();
+    // Asked BEFORE any work: the store owns the predicate for what it will and
+    // will not run (blank text, no letter/digit, one term under the minimum
+    // searchable length), and answering from it keeps "refused" distinguishable
+    // from "consulted and empty". Without the distinction the client prints
+    // "no matches" for a query the index never saw.
+    const unavailableReason = channelSearchUnavailableReason(query);
+    if (unavailableReason) {
+      const unavailable: ChannelMessageSearchResponse = {
+        query,
+        results: [],
+        truncated: false,
+        unavailableReason,
+      };
+      res.json(unavailable);
+      return;
+    }
+    const includeArchived = parseBooleanQuery(req.query['includeArchived']);
+    const limit = parseSearchLimit(req.query['limit']);
+    const scopeChannelId = parseStringQuery(req.query['channelId']);
+    const scopeWorkspaceId = parseStringQuery(req.query['workspaceId']);
+
+    try {
+      // Archive state and titles live in workspace_topics, a SEPARATE database
+      // from the message log, so the visible-channel set is resolved here and
+      // pushed INTO the index query as an allowlist. Filtering after the fact
+      // would let 50 archived hits crowd out live ones and return a short page.
+      //
+      // Enumerated through `listAllTopicIds()`, NOT `list()`. `list()` is the
+      // rail READ MODEL: it caps at WORKSPACE_TOPICS_MAX_LIST_ENTRIES (200) by
+      // `updated_at DESC` across all workspaces while the store retains up to
+      // WORKSPACE_TOPICS_MAX_STORED_ENTRIES (500), so building the allowlist
+      // from it made every message in the 201st-and-older channel silently
+      // unreachable — indexed, matching, and never returned, with no
+      // `truncated` signal to admit it. Worse, the scope filters ran AFTER that
+      // global window, so asking for one workspace narrowed the ANSWER instead
+      // of the search space. Reach must be the corpus; the rail's cap is a
+      // rendering budget. Cost is bounded by the 500-row retention: at most 500
+      // point reads on a debounced, minimum-length query.
+      const candidateIds = scopeChannelId
+        ? [scopeChannelId]
+        : topicStore.listAllTopicIds();
+      const visible = new Map<string, WorkspaceTopic>();
+      for (const candidateId of candidateIds) {
+        const topic = topicStore.get(candidateId);
+        if (!topic) continue;
+        if (topic.source !== 'persisted') continue;
+        if (scopeWorkspaceId && topic.workspaceId !== scopeWorkspaceId)
+          continue;
+        if (!includeArchived && topic.status === 'archived') continue;
+        visible.set(topic.id, topic);
+      }
+      if (visible.size === 0) {
+        const empty: ChannelMessageSearchResponse = {
+          query,
+          results: [],
+          truncated: false,
+        };
+        res.json(empty);
+        return;
+      }
+      // Overfetch by one so `truncated` reports "there were more" without a
+      // second COUNT over the index. The extra row is never returned.
+      const hits = store.searchMessages({
+        query,
+        channelIds: [...visible.keys()],
+        limit: limit + 1,
+      });
+      const truncated = hits.length > limit;
+      const results: ChannelMessageSearchResult[] = hits
+        .slice(0, limit)
+        .map((hit) => {
+          const topic = visible.get(hit.channelId);
+          return {
+            ...hit,
+            channelTitle: topic?.display.title ?? hit.channelId,
+            archived: topic?.status === 'archived',
+          };
+        });
+      const body: ChannelMessageSearchResponse = { query, results, truncated };
+      res.json(body);
     } catch (error) {
       mapStoreError(res, error);
     }

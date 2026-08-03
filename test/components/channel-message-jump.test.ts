@@ -281,6 +281,40 @@ describe('ChannelView deep-link message anchor', () => {
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 
+  // #1308 slice 2 item 2 reuses this exact path for a search hit, and a thread
+  // hit is the case where the anchor row is NOT a main-lane row. The sidebar
+  // hands over the reply's own id and resolves nothing itself, so this is the
+  // only place the reply → panel + root-emphasis mapping is proved.
+  it('opens the thread panel and emphasizes the root when the anchor is a reply', async () => {
+    const root1 = message(1);
+    const reply = message(2, {
+      id: 'chm:reply-2' as ChannelMessageId,
+      threadId: root1.id,
+      parentMessageId: root1.id,
+    });
+    mocks.messages = [root1, reply, message(3)];
+    await mount();
+
+    expect(useUiStore.getState().activeThreadRootId).toBeNull();
+
+    await act(async () => {
+      useUiStore
+        .getState()
+        .requestChannelMessage(CHANNEL_ID, 'chm:reply-2' as ChannelMessageId);
+    });
+    await act(async () => {});
+
+    expect(useUiStore.getState().activeThreadRootId).toBe(root1.id);
+    // The reply has no main-lane row, so the emphasis lands on its root — a
+    // jump at the reply id would scroll to nothing.
+    expect(
+      container
+        .querySelector('.ch-msg--jump')
+        ?.getAttribute('data-channel-message-id')
+    ).toBe(root1.id);
+    expect(useUiStore.getState().pendingChannelMessage).toBeNull();
+  });
+
   it('gives up immediately when there is no older history left to walk', async () => {
     mocks.messages = [message(1), message(2)];
     mocks.hasMoreOlder = false;

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyChannelEventV1,
+  CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+  CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  parseChannelSearchSnippet,
   initialChannelReducerState,
   isChannelEventV1,
   parseMentions,
@@ -659,7 +662,9 @@ describe('channel-message-deleted-v1', () => {
         )
       )
     ).toBe(false);
-    expect(isChannelEventV1(deleted(tombstone({ kind: 'system' })))).toBe(false);
+    expect(isChannelEventV1(deleted(tombstone({ kind: 'system' })))).toBe(
+      false
+    );
   });
 
   it('rejects a tombstone arriving on the edit lane', () => {
@@ -774,5 +779,44 @@ describe('parseMentions', () => {
     expect(parseMentions('@claude @claude @Claude', known)).toEqual([
       { raw: '@claude', providerId: 'claude' },
     ]);
+  });
+});
+
+describe('search snippet segmentation (#1308 slice 2 item 1)', () => {
+  const open = CHANNEL_SEARCH_HIGHLIGHT_OPEN;
+  const close = CHANNEL_SEARCH_HIGHLIGHT_CLOSE;
+
+  it('splits a snippet into plain and highlighted runs', () => {
+    expect(
+      parseChannelSearchSnippet(`…ship the ${open}relay${close} hub today`)
+    ).toEqual([
+      { text: '…ship the ', highlight: false },
+      { text: 'relay', highlight: true },
+      { text: ' hub today', highlight: false },
+    ]);
+  });
+
+  it('carries markup-looking body text through as PLAIN text', () => {
+    // The delimiters are Private Use Area code points precisely so a body that
+    // itself contains markup is never mistaken for our own highlight marker.
+    expect(parseChannelSearchSnippet(`<b>${open}bold${close}</b>`)).toEqual([
+      { text: '<b>', highlight: false },
+      { text: 'bold', highlight: true },
+      { text: '</b>', highlight: false },
+    ]);
+  });
+
+  it('degrades to one plain run when no marker pair is present', () => {
+    expect(parseChannelSearchSnippet('no markers here')).toEqual([
+      { text: 'no markers here', highlight: false },
+    ]);
+    // An unbalanced marker must not silently swallow the tail.
+    expect(parseChannelSearchSnippet(`trailing ${open}open`)).toEqual([
+      { text: `trailing ${open}open`, highlight: false },
+    ]);
+  });
+
+  it('returns nothing for an empty snippet', () => {
+    expect(parseChannelSearchSnippet('')).toEqual([]);
   });
 });
