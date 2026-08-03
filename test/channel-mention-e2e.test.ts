@@ -324,7 +324,7 @@ async function harness(
 
 async function req<T>(input: {
   port: number;
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PATCH';
   url: string;
   body?: unknown;
   headers?: Record<string, string>;
@@ -700,5 +700,76 @@ describe('mention routing — gateway command/capability mapping', () => {
     expect(
       cliGatewayActorCommandCapabilities('channels.respond-approval')
     ).toEqual(['context:write']);
+  });
+});
+
+describe('mention routing — edited context (#1308 slice 1 item 3)', () => {
+  it('delivers the EDITED body to the next turn and never re-runs the old one', async () => {
+    // The whole "agents see the edit" promise reduces to one question: does the
+    // packet the adapter receives carry the new text? The binder builds packets
+    // from store rows at send time, so this is a property of the real path
+    // rather than of the pure builder — assert it end-to-end.
+    const h = await harness(
+      (agentType) => new RecordingAdapter(agentType, 'ack')
+    );
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'the deploy is at 3pm' },
+    });
+    expect(posted.status).toBe(201);
+
+    const edited = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${url}/${encodeURIComponent(posted.body.message.id)}`,
+      body: { text: 'the deploy is at 5pm' },
+    });
+    expect(edited.status).toBe(200);
+
+    // Editing must not re-trigger a past turn: no adapter has been spawned and
+    // no agent row exists, even though the edited row is the only one there.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.adapters()).toHaveLength(0);
+    expect(agentReply(h.store, h.channelId)).toHaveLength(0);
+
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock when is the deploy?' },
+    });
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    const adapter = h.adapters()[0] as RecordingAdapter;
+    expect(adapter.contents).toHaveLength(1);
+    expect(adapter.contents[0]).toContain('the deploy is at 5pm');
+    expect(adapter.contents[0]).not.toContain('the deploy is at 3pm');
+  });
+
+  it('rejects an edit from a scoped actor credential without touching the row', async () => {
+    const h = await harness();
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'operator wrote this' },
+    });
+    const res = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${url}/${encodeURIComponent(posted.body.message.id)}`,
+      body: { text: 'an agent wrote this' },
+      headers: { 'x-test-actor-id': 'orchestrator' },
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_EDIT_HUMAN_ONLY'
+    );
+    expect(h.store.getMessage(posted.body.message.id)?.body.text).toBe(
+      'operator wrote this'
+    );
   });
 });

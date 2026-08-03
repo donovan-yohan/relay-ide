@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  channelMessageEditable,
+  channelMessageEditedAt,
   channelRetryTarget,
   type ChannelMessage,
   type ChannelMessageId,
@@ -9,6 +11,7 @@ import { AssistantMarkdown } from './AssistantMarkdown.js';
 import { AgentDetailCard } from './AgentDetailCard.js';
 import { ChannelImagePart } from './ChannelImagePart.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+import { createLineBreakSubmitGuard } from './composerInput.js';
 import { respondChannelApproval } from '../../lib/api.js';
 import { buildChannelMessageLink } from '../../lib/url-nav.js';
 import { showToast } from '../../lib/stores/toasts.js';
@@ -48,6 +51,19 @@ const COPY_ICON = (
     />
     <path
       d="M10.5 2.5h-8v8"
+      stroke="currentColor"
+      fill="none"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+    />
+  </svg>
+);
+
+/** Pencil over a rule — DESIGN.md flat line art, no fill, square caps. */
+const EDIT_ICON = (
+  <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M2.5 10.5l7-7 3 3-7 7H2.5v-3zM2.5 14.5h11"
       stroke="currentColor"
       fill="none"
       strokeWidth="1.5"
@@ -284,18 +300,190 @@ function retryTitle(retry: RetryAffordance): string {
   return retry.busy ? 'agent is busy' : 'retry';
 }
 
+/**
+ * Body region of a prose row: markdown or plain text, plus the streaming block
+ * cursor. Split out of `ChannelMessageRow` when the in-place editor landed
+ * (#1308 item 3) — the row now chooses between "render the body" and "render
+ * the editor", and keeping both shapes inline made one function own every
+ * branch of both.
+ */
+const MessageBody: React.FC<{
+  message: ChannelMessage;
+  isHuman: boolean;
+  streaming: boolean;
+}> = ({ message, isHuman, streaming }) => {
+  const blinking = useIdleBlink(message.body.text, streaming);
+  const hasText = message.body.text.length > 0;
+  const detailStatus = detailStatusForMessage(message.status);
+  const body = hasText ? (
+    message.body.format === 'markdown' ? (
+      <div className="ch-msg__body">
+        <AssistantMarkdown
+          text={message.body.text}
+          keyPrefix={message.id}
+          codeBlockPresentation={isHuman ? 'plain' : 'card'}
+          codeBlockStatus={detailStatus}
+        />
+      </div>
+    ) : (
+      <pre className="ch-msg__text ch-msg__body">{message.body.text}</pre>
+    )
+  ) : null;
+
+  if (
+    message.body.format !== 'markdown' ||
+    !(hasText || (streaming && !message.agentDetail))
+  ) {
+    return body;
+  }
+  return (
+    <div className="ch-msg__body-wrap">
+      {body}
+      {streaming ? (
+        <span
+          className={`ch-msg__cursor${blinking ? ' ch-msg__cursor--blinking' : ''}`}
+          aria-hidden="true"
+        >
+          █
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
+/**
+ * In-place editor for one of the operator's own rows (#1308 item 3).
+ *
+ * Replaces the body where it sits rather than opening a modal or hijacking the
+ * composer: the surrounding rows keep their position, so the edit reads as a
+ * correction to THIS message. Submission rules come from the shared composer
+ * primitive (`createLineBreakSubmitGuard`), so the on-screen send key works the
+ * same here as it does in the composer — the mobile IME path is the whole
+ * reason that primitive exists.
+ */
+const MessageEditForm: React.FC<{
+  initialText: string;
+  pending: boolean;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}> = ({ initialText, pending, onSave, onCancel }) => {
+  const [draft, setDraft] = useState(initialText);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const guardRef = useRef(createLineBreakSubmitGuard());
+
+  const submit = useCallback(() => {
+    const next = draft.trim();
+    // An empty edit is a delete, which this slice does not own; an unchanged one
+    // is a no-op the server should never be asked to persist.
+    if (next.length === 0) return;
+    if (next === initialText.trim()) {
+      onCancel();
+      return;
+    }
+    onSave(next);
+  }, [draft, initialText, onCancel, onSave]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    // Caret at the end, not a full selection: the operator is amending an
+    // existing sentence far more often than replacing the whole message.
+    el.selectionStart = el.value.length;
+    el.selectionEnd = el.value.length;
+  }, []);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const handler = (event: InputEvent): void => {
+      if (!guardRef.current.consumesAsSubmit(event)) return;
+      event.preventDefault();
+      submit();
+    };
+    el.addEventListener('beforeinput', handler);
+    return () => el.removeEventListener('beforeinput', handler);
+  }, [submit]);
+
+  return (
+    <div className="ch-msg__edit">
+      <textarea
+        ref={textareaRef}
+        className="ch-msg__edit-ta"
+        aria-label="edit message text"
+        rows={Math.min(8, draft.split('\n').length)}
+        value={draft}
+        disabled={pending}
+        enterKeyHint="done"
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          const native = event.nativeEvent as KeyboardEvent;
+          if (event.key === 'Enter' && native.isComposing) return;
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+            return;
+          }
+          if (event.key === 'Enter' && event.shiftKey) {
+            guardRef.current.deferNextLineBreak();
+            return;
+          }
+          guardRef.current.reset();
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="ch-msg__edit-bar">
+        <button
+          type="button"
+          className="ch-msg__edit-btn"
+          onClick={submit}
+          disabled={pending}
+        >
+          {pending ? 'saving…' : 'save'}
+        </button>
+        <button
+          type="button"
+          className="ch-msg__edit-btn"
+          onClick={onCancel}
+          disabled={pending}
+        >
+          cancel
+        </button>
+        <span className="ch-msg__edit-hint">
+          <kbd>↵</kbd>save <kbd>esc</kbd>cancel <kbd>⇧↵</kbd>newline
+        </span>
+      </div>
+    </div>
+  );
+};
+
 /** Compact hover/focus/long-press toolbar (#1308 item 1, retry added in item 2). */
 const MessageActionToolbar: React.FC<{
   isHuman: boolean;
   onCopyLink: () => void;
   onCopyText: () => void;
+  onEdit: (() => void) | null;
   retry: RetryAffordance | null;
-}> = ({ isHuman, onCopyLink, onCopyText, retry }) => (
+}> = ({ isHuman, onCopyLink, onCopyText, onEdit, retry }) => (
   <div
     className={`ch-msg__actions${isHuman ? ' ch-msg__actions--user' : ''}`}
     role="group"
     aria-label="message actions"
   >
+    {onEdit ? (
+      <button
+        type="button"
+        className="ch-msg__action"
+        title="edit"
+        aria-label="edit message"
+        onClick={onEdit}
+      >
+        {EDIT_ICON}
+      </button>
+    ) : null}
     <button
       type="button"
       className="ch-msg__action"
@@ -371,6 +559,12 @@ interface ChannelMessageRowProps {
    */
   onRetry?: (message: ChannelMessage) => Promise<unknown>;
   /**
+   * #1308 item 3. Rewrites this row's body. Omitted where the surface has no
+   * edit lane, which also removes the affordance; the row never invents one.
+   * Rejecting the promise keeps the editor open with the operator's draft.
+   */
+  onEdit?: (message: ChannelMessage, text: string) => Promise<unknown>;
+  /**
    * The bound profile is non-idle in this channel. Retry stays visible but
    * disabled so a busy agent cannot be stacked with a second turn (storm brake;
    * the server refuses independently).
@@ -389,14 +583,35 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   onOpenThread,
   highlighted = false,
   onRetry,
+  onEdit,
   retryBusy = false,
   retried = false,
 }) => {
   const streaming = message.status === 'streaming';
-  const blinking = useIdleBlink(message.body.text, streaming);
   const rowRef = useRef<HTMLDivElement>(null);
   const { actionsVisible, ...affordance } = useRowActionAffordance(rowRef);
   const [retryPending, setRetryPending] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editPending, setEditPending] = useState(false);
+
+  // Human-authored prose rows only, and only where the surface wired a lane.
+  // The predicate is the SHARED one the route enforces, so the button cannot
+  // appear on a row the server would refuse.
+  const editable = onEdit !== undefined && channelMessageEditable(message);
+
+  const handleSaveEdit = useCallback(
+    (text: string) => {
+      if (!onEdit || editPending) return;
+      setEditPending(true);
+      void onEdit(message, text)
+        .then(() => setEditing(false))
+        // Failure keeps the editor (and the draft) open: the operator's words
+        // are the one thing this component must never silently discard.
+        .catch(() => {})
+        .finally(() => setEditPending(false));
+    },
+    [editPending, message, onEdit]
+  );
 
   const handleRetry = useCallback(() => {
     if (!onRetry || retryPending) return;
@@ -409,7 +624,12 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   // route agree by construction instead of by convention.
   const retry: RetryAffordance | null =
     onRetry !== undefined && channelRetryTarget(message) !== null
-      ? { onRetry: handleRetry, pending: retryPending, busy: retryBusy, retried }
+      ? {
+          onRetry: handleRetry,
+          pending: retryPending,
+          busy: retryBusy,
+          retried,
+        }
       : null;
 
   const handleCopyLink = useCallback(() => {
@@ -443,6 +663,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   }
 
   const isHuman = message.sender.kind === 'human';
+  const editedAt = channelMessageEditedAt(message);
   const truncationLabel = truncationLabelForMessage(message);
   const rowClasses = [
     'ch-msg',
@@ -463,23 +684,6 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
         } as React.CSSProperties)
       : undefined;
 
-  const hasText = message.body.text.length > 0;
-  const detailStatus = detailStatusForMessage(message.status);
-  const body = hasText ? (
-    message.body.format === 'markdown' ? (
-      <div className="ch-msg__body">
-        <AssistantMarkdown
-          text={message.body.text}
-          keyPrefix={message.id}
-          codeBlockPresentation={isHuman ? 'plain' : 'card'}
-          codeBlockStatus={detailStatus}
-        />
-      </div>
-    ) : (
-      <pre className="ch-msg__text ch-msg__body">{message.body.text}</pre>
-    )
-  ) : null;
-
   return (
     <div
       ref={rowRef}
@@ -489,11 +693,12 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       data-channel-message-id={message.id}
       {...affordance}
     >
-      {actionsVisible ? (
+      {actionsVisible && !editing ? (
         <MessageActionToolbar
           isHuman={isHuman}
           onCopyLink={handleCopyLink}
           onCopyText={handleCopyText}
+          onEdit={editable ? () => setEditing(true) : null}
           retry={retry}
         />
       ) : null}
@@ -503,22 +708,25 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
           itemId={message.agentDetail.itemId}
         />
       ) : null}
-      {message.body.format === 'markdown' &&
-      (hasText || (streaming && !message.agentDetail)) ? (
-        <div className="ch-msg__body-wrap">
-          {body}
-          {streaming ? (
-            <span
-              className={`ch-msg__cursor${blinking ? ' ch-msg__cursor--blinking' : ''}`}
-              aria-hidden="true"
-            >
-              █
-            </span>
-          ) : null}
-        </div>
+      {editing ? (
+        <MessageEditForm
+          initialText={message.body.text}
+          pending={editPending}
+          onSave={handleSaveEdit}
+          onCancel={() => setEditing(false)}
+        />
       ) : (
-        body
+        <MessageBody
+          message={message}
+          isHuman={isHuman}
+          streaming={streaming}
+        />
       )}
+      {editedAt && !editing ? (
+        <span className="ch-msg__edited" title={`edited ${editedAt}`}>
+          (edited)
+        </span>
+      ) : null}
       {message.parts && message.parts.length > 0 ? (
         <div className="ch-msg__parts" aria-label="image attachments">
           {message.parts.map((part, index) => (

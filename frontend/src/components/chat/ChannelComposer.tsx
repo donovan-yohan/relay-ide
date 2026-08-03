@@ -21,10 +21,9 @@ import { createBrowserId } from '../../lib/browserId.js';
 import { fetchChannelRoster, uploadChannelImages } from '../../lib/api.js';
 import { buildMentionContacts } from '../../lib/chat/mention-contacts.js';
 import { detectTrigger } from './slashTrigger.js';
+import { createLineBreakSubmitGuard } from './composerInput.js';
 import { MentionPalette } from './MentionPalette.js';
 
-const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
-const LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS = 500;
 const ALLOWED_IMAGE_MIMES = new Set([
   'image/png',
   'image/jpeg',
@@ -78,7 +77,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   restorePending,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const skipNextLineBreakUntilRef = useRef(0);
+  const lineBreakGuardRef = useRef(createLineBreakSubmitGuard());
   // Idempotency (§6.3): one clientMessageId per draft attempt, reused on retry
   // until a send succeeds, so a flaky connection never double-posts.
   const clientIdRef = useRef<string | null>(null);
@@ -365,11 +364,10 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       }
 
       if (e.key === 'Enter' && e.shiftKey) {
-        skipNextLineBreakUntilRef.current =
-          performance.now() + LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS;
+        lineBreakGuardRef.current.deferNextLineBreak();
         return;
       }
-      skipNextLineBreakUntilRef.current = 0;
+      lineBreakGuardRef.current.reset();
       if (e.key === 'Enter') {
         e.preventDefault();
         submit();
@@ -383,16 +381,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   // open, a mention pick) before it mutates the controlled draft.
   const handleBeforeInput = useCallback(
     (inputEvent: InputEvent) => {
-      if (!LINE_BREAK_INPUT_TYPES.has(inputEvent.inputType)) return;
-      if (inputEvent.isComposing) return;
-      if (
-        skipNextLineBreakUntilRef.current > 0 &&
-        performance.now() <= skipNextLineBreakUntilRef.current
-      ) {
-        skipNextLineBreakUntilRef.current = 0;
-        return;
-      }
-      skipNextLineBreakUntilRef.current = 0;
+      if (!lineBreakGuardRef.current.consumesAsSubmit(inputEvent)) return;
       inputEvent.preventDefault();
       if (paletteVisible) {
         const entry = entries[activeIndex];

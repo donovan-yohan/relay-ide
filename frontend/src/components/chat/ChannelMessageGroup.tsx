@@ -35,6 +35,8 @@ interface ChannelMessageGroupProps {
   highlightedMessageId?: ChannelMessageId | null;
   /** #1308 item 2: re-route a failed row's original trigger. */
   onRetryMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /** #1308 item 3: rewrite the body of one of the operator's own rows. */
+  onEditMessage?: (message: ChannelMessage, text: string) => Promise<unknown>;
   /** Profile actor ids currently non-idle in this channel (retry storm brake). */
   busyAgentIds?: ReadonlySet<string>;
   /** Rows a later `meta.retryOfMessageId` system row already superseded. */
@@ -50,6 +52,7 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   onOpenThread,
   highlightedMessageId = null,
   onRetryMessage,
+  onEditMessage,
   busyAgentIds,
   retriedMessageIds,
 }) => {
@@ -94,6 +97,7 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
               retryBusy={busyAgentIds?.has(message.sender.id) ?? false}
               retried={retriedMessageIds?.has(message.id) ?? false}
               {...(onRetryMessage ? { onRetry: onRetryMessage } : {})}
+              {...(onEditMessage ? { onEdit: onEditMessage } : {})}
               replyCount={displayedReplyCount(
                 message,
                 derived,

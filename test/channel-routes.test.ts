@@ -148,7 +148,7 @@ async function harness(
 
 async function req<T>(input: {
   port: number;
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PATCH';
   url: string;
   body?: unknown;
   capabilities?: string;
@@ -1424,7 +1424,9 @@ describe('channel routes — message retry (#1308 slice 1 item 2)', () => {
         },
       },
     });
-    const res = await req<{ error: { retryable: boolean; details?: Record<string, unknown> } }>({
+    const res = await req<{
+      error: { retryable: boolean; details?: Record<string, unknown> };
+    }>({
       port: h.port,
       method: 'POST',
       url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
@@ -1452,11 +1454,13 @@ describe('channel routes — message retry (#1308 slice 1 item 2)', () => {
         },
       },
     });
-    const missing = await req<{ error: { details?: Record<string, unknown> } }>({
-      port: h.port,
-      method: 'POST',
-      url: `/channels/${h.channelId}/messages/chm%3Amissing/retry`,
-    });
+    const missing = await req<{ error: { details?: Record<string, unknown> } }>(
+      {
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${h.channelId}/messages/chm%3Amissing/retry`,
+      }
+    );
     expect(missing.status).toBe(404);
     expect(missing.body.error.details?.['reasonCode']).toBe(
       'CHANNEL_MESSAGE_NOT_FOUND'
@@ -1475,7 +1479,9 @@ describe('channel routes — message retry (#1308 slice 1 item 2)', () => {
   });
 
   it('404s an unknown channel and 503s with no binder configured', async () => {
-    const h = await harness({ binder: { retryMessage: async () => ({}) as never } });
+    const h = await harness({
+      binder: { retryMessage: async () => ({}) as never },
+    });
     const unknown = await req<{ error: unknown }>({
       port: h.port,
       method: 'POST',
@@ -1513,5 +1519,177 @@ describe('channel routes — retry capability gate', () => {
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FORBIDDEN');
     expect(called).toBe(false);
+  });
+});
+
+describe('channel routes — message edit (#1308 slice 1 item 3)', () => {
+  const messagesUrl = (channelId: string): string =>
+    `/channels/${encodeURIComponent(channelId)}/messages`;
+
+  async function postHuman(
+    h: Harness,
+    text: string
+  ): Promise<{ id: string; seq: number }> {
+    const res = await req<{ message: { id: string; seq: number } }>({
+      port: h.port,
+      method: 'POST',
+      url: messagesUrl(h.channelId),
+      body: { text },
+    });
+    expect(res.status).toBe(201);
+    return res.body.message;
+  }
+
+  it('rewrites the body in place, stamps editedAt, and broadcasts the edit', async () => {
+    const h = await harness();
+    const posted = await postHuman(h, 'deploy at 3pm @claude');
+    const sock = fakeSocket();
+    h.hub.handleConnection(sock, { channelId: h.channelId, sinceSeq: null });
+
+    const res = await req<{
+      message: {
+        id: string;
+        seq: number;
+        body: { text: string };
+        meta?: Record<string, unknown>;
+        mentions?: unknown[];
+      };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'deploy at 5pm' },
+    });
+    expect(res.status).toBe(200);
+    // Identity is preserved — a deep link, a thread parent and every seq cursor
+    // that already named this row stay valid.
+    expect(res.body.message.id).toBe(posted.id);
+    expect(res.body.message.seq).toBe(posted.seq);
+    expect(res.body.message.body.text).toBe('deploy at 5pm');
+    expect(typeof res.body.message.meta?.['editedAt']).toBe('string');
+    // Mentions are re-derived from the new text (routing is NOT re-run).
+    expect(res.body.message.mentions).toBeUndefined();
+
+    // Durable, not just echoed back.
+    expect(h.store.getMessage(posted.id)?.body.text).toBe('deploy at 5pm');
+    // No new row: an edit must never grow the timeline.
+    expect(h.store.history(h.channelId, { limit: 50 })).toHaveLength(1);
+
+    const edit = sock.sent.find(
+      (event) => event.type === 'channel-message-edited-v1'
+    );
+    expect(edit?.type).toBe('channel-message-edited-v1');
+    if (edit?.type === 'channel-message-edited-v1') {
+      expect(edit.message.id).toBe(posted.id);
+      expect(edit.message.body.text).toBe('deploy at 5pm');
+    }
+    // Editing is not posting: no created event may ride this lane.
+    expect(
+      sock.sent.some((event) => event.type === 'channel-message-created-v1')
+    ).toBe(false);
+  });
+
+  it('refuses agent rows, the agent lane, empty text, archived channels, and unknown ids', async () => {
+    const h = await harness();
+    const posted = await postHuman(h, 'operator says hi');
+    const agentPost = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messagesUrl(h.channelId),
+      body: { text: 'agent says hi' },
+      headers: { 'x-test-actor-id': 'claude' },
+    });
+    expect(agentPost.status).toBe(201);
+
+    // An agent row is a durable record of what a provider said.
+    const agentRow = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(agentPost.body.message.id)}`,
+      body: { text: 'rewritten' },
+    });
+    expect(agentRow.status).toBe(409);
+    expect(agentRow.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MESSAGE_NOT_EDITABLE'
+    );
+
+    // An actor credential must never be able to rewrite the operator's words —
+    // this lane admits scoped actors, so the human gate is load-bearing.
+    const agentLane = await req<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'rewritten by an agent' },
+      headers: { 'x-test-actor-id': 'claude' },
+    });
+    expect(agentLane.status).toBe(403);
+    expect(agentLane.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_EDIT_HUMAN_ONLY'
+    );
+    expect(h.store.getMessage(posted.id)?.body.text).toBe('operator says hi');
+
+    // Clearing a message is a different action with a different audit shape.
+    const empty = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: '   ' },
+    });
+    expect(empty.status).toBe(400);
+    expect(empty.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MESSAGE_BODY_EMPTY'
+    );
+
+    const missing = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/chm%3Anope`,
+      body: { text: 'rewritten' },
+    });
+    expect(missing.status).toBe(404);
+
+    h.topicStore.archive(h.channelId);
+    const archived = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'rewritten' },
+    });
+    expect(archived.status).toBe(409);
+    expect(archived.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_ARCHIVED'
+    );
+  });
+
+  it('rejects a caller without context:write and a body-supplied sender', async () => {
+    const h = await harness();
+    const posted = await postHuman(h, 'operator says hi');
+    const readOnly = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'rewritten' },
+      capabilities: 'context:read',
+    });
+    expect(readOnly.status).toBe(403);
+    expect(readOnly.body.error.code).toBe('FORBIDDEN');
+    expect(h.store.getMessage(posted.id)?.body.text).toBe('operator says hi');
+
+    const forged = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'PATCH',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`,
+      body: { text: 'rewritten', sender: { kind: 'human', id: 'human:other' } },
+    });
+    expect(forged.status).toBe(400);
+    expect(forged.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_SENDER_NOT_ALLOWED'
+    );
   });
 });

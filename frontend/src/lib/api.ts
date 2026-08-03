@@ -1999,6 +1999,37 @@ export async function interruptChannelAgent(
   );
 }
 
+/**
+ * Rewrite the body of one of the operator's own channel messages (#1308 slice 1
+ * item 3). The updated row arrives on every device through the socket
+ * (`channel-message-edited-v1`), so callers use the response only to know the
+ * write landed — there is no optimistic local apply, exactly as with posting.
+ * `HttpError` propagates: 403 (not the operator's lane), 409 (not an editable
+ * row / archived channel) and 404 are all operator-legible states.
+ */
+export async function editChannelMessage(
+  channelId: string,
+  messageId: string,
+  text: string
+): Promise<ChannelMessage> {
+  const body = await json<{ message: ChannelMessage }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ text }),
+      }
+    )
+  );
+  return body.message;
+}
+
 /** What a retry actually re-ran (#1308 slice 1 item 2). */
 export interface ChannelMessageRetryResult {
   messageId: string;

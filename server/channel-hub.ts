@@ -127,6 +127,8 @@ export interface ChannelHub {
   /** Debounced authoritative full-row refresh for streaming card state. */
   updateStreamBroadcast(message: ChannelMessage): void;
   completeStreamBroadcast(message: ChannelMessage): void;
+  /** Fan out an operator edit of an already-durable row (#1308 slice 1 item 3). */
+  broadcastEdited(message: ChannelMessage): void;
   onMessagePosted(handler: ChannelMessagePostedHandler): () => void;
   setBadgeBroadcaster(broadcaster: ChannelBadgeBroadcaster): void;
   channelExists(channelId: string): boolean;
@@ -282,8 +284,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     maxBytes = snapshotMaxBytes,
     keepFirstOverBudget = true
   ): { rows: ChannelMessage[]; truncated: boolean; bytes: number } {
-    if (candidate.length === 0)
-      return { rows: [], truncated: false, bytes: 0 };
+    if (candidate.length === 0) return { rows: [], truncated: false, bytes: 0 };
     const order = keepEnd === 'tail' ? [...candidate].reverse() : candidate;
     const kept: ChannelMessage[] = [];
     let bytes = 0;
@@ -379,7 +380,8 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       // Partial resync merely omits stale replacements and must not pull the
       // cursor back from an otherwise complete fresh catch-up.
       if (freshAssembled.truncated && freshAssembled.rows.length > 0) {
-        snapshotLatestSeq = freshAssembled.rows[freshAssembled.rows.length - 1]!.seq;
+        snapshotLatestSeq =
+          freshAssembled.rows[freshAssembled.rows.length - 1]!.seq;
       }
     }
 
@@ -613,6 +615,21 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         message,
       });
       emitBadge(message.channelId);
+    },
+
+    broadcastEdited(message) {
+      broadcast(message.channelId, {
+        type: 'channel-message-edited-v1',
+        channelId: message.channelId,
+        timestamp: nowIso(),
+        message,
+      });
+      // Deliberately no `emitBadge` and no `onMessagePosted` fan-out. The badge
+      // carries `latestSeq`, which an edit does not move, so it would be inert
+      // noise; and the posted handlers are the mention-routing lane — running
+      // them here would re-trigger a past turn, which this feature explicitly
+      // must not do. The sidebar preview of an edited newest row therefore
+      // heals on the next channel-list fetch rather than instantly.
     },
 
     onMessagePosted(handler) {

@@ -694,6 +694,91 @@
   cursor: default;
 }
 
+/* (edited) suffix (#1308 item 3). Dim, mono, and smaller than the body: it is a
+   provenance note, not a status the eye should stop on. No color token — a
+   tinted marker would read as a warning about a message that is simply correct
+   now. Follows the human bubble to the right edge. */
+.ch-msg__edited {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.ch-msg--user .ch-msg__edited {
+  align-self: flex-end;
+}
+
+/* In-place message editor (#1308 item 3). Reuses the composer textarea's
+   metrics — mono, zero radius, underline-only border — so editing a message
+   looks like writing one. Full row width even on a right-aligned human bubble:
+   the 75% bubble cap is a reading-comfort rule, and shrinking the edit surface
+   below the text it holds would be a worse trade. */
+.ch-msg__edit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 4px;
+}
+
+.ch-msg__edit-ta {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  padding: 8px 12px;
+  resize: none;
+  outline: none;
+}
+
+.ch-msg__edit-ta:disabled {
+  opacity: 0.85;
+}
+
+.ch-msg__edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-msg__edit-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__edit-btn:hover:not(:disabled),
+.ch-msg__edit-btn:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.ch-msg__edit-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ch-msg__edit-hint {
+  margin-left: auto;
+}
+
 /* Thread entry point: outline-only informational navigation, matching the
    compact agent-chip vocabulary and DESIGN.md's square control law. */
 .ch-msg__thread-chip {

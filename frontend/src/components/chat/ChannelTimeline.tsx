@@ -72,6 +72,11 @@ interface ChannelTimelineProps {
    * the call so the timeline keeps no retry policy of its own.
    */
   onRetryMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /**
+   * #1308 item 3. Rewrites one of the operator's own rows. `ChannelView` owns
+   * the mutation; the timeline only routes the callback to the rows.
+   */
+  onEditMessage?: (message: ChannelMessage, text: string) => Promise<unknown>;
   /** Profile actor ids currently non-idle here — the retry storm brake. */
   busyAgentIds?: ReadonlySet<string>;
 }
@@ -93,6 +98,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   agentPresence = [],
   jumpTarget = null,
   onRetryMessage,
+  onEditMessage,
   busyAgentIds,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
@@ -285,6 +291,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 retriedMessageIds={retriedMessageIds}
                 {...(busyAgentIds ? { busyAgentIds } : {})}
                 {...(onRetryMessage ? { onRetryMessage } : {})}
+                {...(onEditMessage ? { onEditMessage } : {})}
                 {...(onOpenThread ? { onOpenThread } : {})}
               />
             );

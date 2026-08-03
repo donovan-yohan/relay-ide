@@ -949,6 +949,116 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
+  // #1308 slice 1 item 3: the operator edits one of their OWN durable rows.
+  //
+  // PATCH, not POST: this replaces a field of an existing resource, and the row
+  // keeps its id/seq/createdAt — the store mutates in place so no seq cursor,
+  // thread link or catch-up window moves.
+  //
+  // Auth shape mirrors the retry lane (#1308 item 2): the shared `auth` lane
+  // plus an explicit `context:write` check, because this slice adds no CLI
+  // gateway verb. The additional human-lane gate below is the load-bearing one —
+  // `requireCliGatewayAuth` admits scoped ACTOR credentials, and an agent must
+  // never be able to rewrite the operator's words.
+  router.patch('/channels/:id/messages/:messageId', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const body = bodyRecord(req);
+    // Same [MF] rule as the post lane: attribution is server-derived, so a body
+    // that tries to name a sender is rejected outright rather than ignored.
+    if ('sender' in body || 'source' in body) {
+      const field = 'sender' in body ? 'sender' : 'source';
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} is server-derived and must not be supplied in the request body`,
+        false,
+        {
+          field,
+          reasonCode:
+            field === 'sender'
+              ? 'CHANNEL_SENDER_NOT_ALLOWED'
+              : 'CHANNEL_SOURCE_NOT_ALLOWED',
+        }
+      );
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can edit channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_EDIT_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
+    const text = body['text'];
+    if (typeof text !== 'string') {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'text must be a string',
+        false,
+        {
+          field: 'text',
+        }
+      );
+      return;
+    }
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      // Not a delete lane: clearing a message is its own action with its own
+      // audit shape, so an empty edit is rejected rather than silently emptying
+      // a durable row.
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'edited text must not be empty',
+        false,
+        { field: 'text', reasonCode: 'CHANNEL_MESSAGE_BODY_EMPTY' }
+      );
+      return;
+    }
+    const providerIds = [
+      ...knownProviderIds,
+      ...(topic.routingDefaults.providerId
+        ? [topic.routingDefaults.providerId]
+        : []),
+    ];
+    try {
+      const message = store.editMessage({
+        channelId: topic.id,
+        messageId: req.params['messageId'] ?? '',
+        editorId: sender.id,
+        text: trimmed,
+        mentions: parseMentions(trimmed, providerIds),
+      });
+      // Broadcast only — NEVER `postToChannel`/`broadcastCreated`. Editing must
+      // not re-run the turn the original text triggered (#1308 S1 non-goal);
+      // future packets pick the new body up because the binder reads rows from
+      // the store when it builds one.
+      deps.hub.broadcastEdited(message);
+      res.json({ message });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
   // #1167 §2: per-request agent roster (framework availability + live binding
   // status). Derived per request — no persistent handle registry.
   router.get('/channels/:id/roster', rosterAuth, (req, res) => {

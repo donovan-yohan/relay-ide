@@ -8,6 +8,7 @@ import { createLogger } from './logger.js';
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
   CHANNEL_AGENT_DETAIL_MAX_BYTES,
+  CHANNEL_EDITED_AT_META_KEY,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
   isChannelMessagePart,
@@ -38,9 +39,10 @@ import {
 //    survives future features.
 //  * Catch-up is ALWAYS DB-backed (the durable seq log is the replay buffer);
 //    there is no in-memory event ring.
-//  * Edits/deletes are out of scope for slice 2 and must NEVER be implemented as
-//    row deletion — that would break gap-free seq. Future mutation lands as new
-//    events over retained rows.
+//  * Edits/deletes must NEVER be implemented as row deletion — that would break
+//    gap-free seq. `editMessage` (#1308 slice 1 item 3) is the sanctioned shape:
+//    the SAME row keeps its id/seq/createdAt and only its body/meta change, so
+//    every seq cursor, catch-up window, and thread parent stays valid.
 
 const SCHEMA_VERSION = 5;
 const logger = createLogger('channel-message-store');
@@ -319,6 +321,22 @@ export interface FinalizeStreamInput {
   agentDetailTerminalAuthority?: 'provisional' | 'explicit';
 }
 
+export interface EditMessageInput {
+  /** Channel scope — an id from another channel is a 404, never a cross-edit. */
+  channelId: string;
+  messageId: string;
+  /**
+   * Server-derived editor identity (never body-supplied). Must equal the row's
+   * own `sender_id`: single-operator today, but ownership is enforced
+   * structurally so a future second identity cannot silently inherit edit rights.
+   */
+  editorId: string;
+  /** Replacement body. Empty text is rejected — deleting is a separate action. */
+  text: string;
+  /** Re-parsed from the new text by the caller; replaces the stored refs. */
+  mentions?: ChannelMention[];
+}
+
 export interface ResolveProvisionalAgentDetailTerminalResult {
   message: ChannelMessage | null;
   transitioned: boolean;
@@ -446,6 +464,15 @@ export interface ChannelMessageStore {
     }
   ): ResolveProvisionalAgentDetailTerminalResult;
   finalizeStream(id: string, input: FinalizeStreamInput): ChannelMessage | null;
+  /**
+   * Operator edit of their OWN human row (#1308 slice 1 item 3). In-place by
+   * design: id, seq, createdAt, thread links and client dedupe key all survive,
+   * so nothing that indexes the timeline by seq has to move. Throws
+   * `ChannelMessageStoreError` 404 (absent / other channel) or 409 (not an
+   * editable row, or not this editor's row) rather than returning null, so the
+   * route can map both without inventing its own vocabulary.
+   */
+  editMessage(input: EditMessageInput): ChannelMessage;
   getMessage(id: string): ChannelMessage | null;
   findByClientMessage(
     channelId: string,
@@ -460,12 +487,16 @@ export interface ChannelMessageStore {
     filter?: ChannelHistoryFilter
   ): ChannelMessage[];
   /**
-   * Rows a reconnecting client may still hold as stale `streaming` copies:
-   * agent-origin rows (source triple set) at or below the reconnect cursor, in
-   * their CURRENT state, nearest the cursor first. Only agent streams mutate in
-   * place (streaming → complete/truncated/interrupted/failed without a new seq), so this is
-   * the exact set catch-up must re-send to heal a stream that finalized while the
-   * client was disconnected. Bounded by `limit`.
+   * Rows a reconnecting client may still hold as a stale copy: rows at or below
+   * the reconnect cursor that mutate IN PLACE (no new seq), in their CURRENT
+   * state, nearest the cursor first. Two such classes exist —
+   *  - agent-origin rows (source triple set), whose stream finalizes
+   *    streaming → complete/truncated/interrupted/failed, and
+   *  - edited rows (#1308 slice 1 item 3), whose body changed under a seq the
+   *    client already consumed.
+   * `history({ afterSeq })` never re-sends either, so both must ride catch-up or
+   * a disconnected device keeps rendering pre-edit text / a stuck stream.
+   * Bounded by `limit`.
    */
   listResyncRows(
     channelId: string,
@@ -1411,6 +1442,84 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       return getMessageById(id);
     },
 
+    editMessage(input) {
+      const row = selectById.get(input.messageId) as
+        | ChannelMessageRow
+        | undefined;
+      // Channel mismatch is reported as absence, not as a conflict: the caller
+      // proved access to ONE channel, so it must not learn that an id it does
+      // not own exists somewhere else.
+      if (!row || row.channel_id !== input.channelId) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      if (
+        row.kind !== 'message' ||
+        row.sender_kind !== 'human' ||
+        row.status !== 'complete' ||
+        row.sender_id !== input.editorId
+      ) {
+        throw new ChannelMessageStoreError(
+          409,
+          'channel_message_not_editable',
+          'only the operator’s own completed messages can be edited',
+          {
+            channelId: input.channelId,
+            messageId: input.messageId,
+            kind: row.kind,
+            senderKind: row.sender_kind,
+            status: row.status,
+          }
+        );
+      }
+      if (input.text.length === 0) {
+        throw new ChannelMessageStoreError(
+          400,
+          'channel_message_body_empty',
+          'edited message text must not be empty'
+        );
+      }
+      assertMessagePayloadSize(
+        input.text,
+        parseMeta(row.meta_json)?.agentDetail
+      );
+      const now = nowIso();
+      const meta = parseMeta(row.meta_json) ?? {};
+      // Mentions are a projection of the body, so a stale set would outlive the
+      // text that justified it (a removed @claude would keep lighting the
+      // sidebar's mention lane). Re-parsed refs are stored; routing is NOT
+      // re-run — the edit path never reaches the binder.
+      if (input.mentions !== undefined) {
+        if (input.mentions.length > 0) meta.mentions = input.mentions;
+        else delete meta.mentions;
+      }
+      meta[CHANNEL_EDITED_AT_META_KEY] = now;
+      db.prepare(
+        `UPDATE channel_messages
+         SET body_text = @text, meta_json = @metaJson, updated_at = @now
+         WHERE id = @id`
+      ).run({
+        id: input.messageId,
+        text: input.text,
+        metaJson: JSON.stringify(meta),
+        now,
+      });
+      const updated = getMessageById(input.messageId);
+      if (!updated) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      return updated;
+    },
+
     getMessage(id) {
       return getMessageById(id);
     },
@@ -1525,7 +1634,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
                   ${replyCountSql('m')} AS reply_count
              FROM channel_messages m
             WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
-              AND m.source_runtime_id IS NOT NULL
+              AND (m.source_runtime_id IS NOT NULL
+                   OR json_extract(m.meta_json, '$.${CHANNEL_EDITED_AT_META_KEY}') IS NOT NULL)
             ORDER BY m.seq DESC LIMIT @limit`
         )
         .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];

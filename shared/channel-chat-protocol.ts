@@ -250,6 +250,39 @@ export function retriedMessageIdFromSystemRow(
     : null;
 }
 
+// ── edit contract (#1308 slice 1 item 3) ────────────────────────────────────
+
+/**
+ * `meta` key stamped when the operator edits their own row. Presence of the key
+ * IS the edited marker — there is no separate boolean, so a row can never claim
+ * to be edited without carrying when it happened.
+ */
+export const CHANNEL_EDITED_AT_META_KEY = 'editedAt';
+
+/** ISO stamp of the last edit, or null for a row that was never edited. */
+export function channelMessageEditedAt(message: ChannelMessage): string | null {
+  const value = message.meta?.[CHANNEL_EDITED_AT_META_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Whether the operator may edit this row. Human-authored prose rows only in this
+ * slice: an agent row is a durable record of what a provider actually said, and
+ * a system row is the hub's own bookkeeping — editing either would make the
+ * transcript lie. `complete` excludes an in-flight stream (a human row is never
+ * streaming today, so this is a structural guard, not a live case).
+ *
+ * Shared so the client's affordance and the server's route agree by
+ * construction: a row that grows no edit button is also rejected by the route.
+ */
+export function channelMessageEditable(message: ChannelMessage): boolean {
+  return (
+    message.kind === 'message' &&
+    message.sender.kind === 'human' &&
+    message.status === 'complete'
+  );
+}
+
 interface ChannelEventBaseV1 {
   channelId: string;
   timestamp: string;
@@ -294,6 +327,22 @@ export interface ChannelMessageCompletedEventV1 extends ChannelEventBaseV1 {
   message: ChannelMessage;
 }
 
+/**
+ * Operator edit of an already-durable row (#1308 slice 1 item 3).
+ *
+ * A separate variant rather than a reuse of `channel-message-updated-v1`: that
+ * event is contractually a STREAMING row refresh (its validator rejects any
+ * other status and its reducer ignores a non-streaming target), which is exactly
+ * the shape an edit is not. Widening it would have made every streaming-row
+ * guard in the reducer conditional; this stays additive and leaves the streaming
+ * lane untouched.
+ */
+export interface ChannelMessageEditedEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-message-edited-v1';
+  /** Authoritative full row; same id/seq, new body, `meta.editedAt` stamped. */
+  message: ChannelMessage;
+}
+
 export interface ChannelResyncRequiredEventV1 extends ChannelEventBaseV1 {
   type: 'channel-resync-required-v1';
   latestSeq: number;
@@ -305,6 +354,7 @@ export type ChannelEventV1 =
   | ChannelMessageDeltaEventV1
   | ChannelMessageUpdatedEventV1
   | ChannelMessageCompletedEventV1
+  | ChannelMessageEditedEventV1
   | ChannelResyncRequiredEventV1;
 
 // ── runtime validators ──────────────────────────────────────────────────────
@@ -527,6 +577,13 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       );
     case 'channel-message-completed-v1':
       return isChannelMessage(value.message);
+    case 'channel-message-edited-v1':
+      // Same predicate the route enforces: only an editable row can arrive as
+      // an edit, so a malformed or agent-authored payload is dropped at the
+      // wire rather than replacing a durable row in the reducer.
+      return (
+        isChannelMessage(value.message) && channelMessageEditable(value.message)
+      );
     case 'channel-resync-required-v1':
       return typeof value.latestSeq === 'number';
     default:
@@ -717,6 +774,31 @@ export function applyChannelEventV1(
         byId: { ...state.byId, [message.id]: message },
         inFlightDelta,
         quarantined,
+      };
+    }
+
+    case 'channel-message-edited-v1': {
+      const message = event.message;
+      const existing = state.byId[message.id];
+      // Deliberately NOT a catch-up trigger, unlike every other unknown-id case.
+      // An edit adds no seq and closes no gap: an id the client does not hold is
+      // simply a row outside its loaded window (the operator edited something
+      // older on another device). Re-syncing would show the out-of-sync banner
+      // for a timeline that is perfectly in sync, and the edited body arrives
+      // anyway the moment that page is scrolled back into view.
+      if (!existing) return state;
+      // Guards, not corrections: an edit must never resurrect, re-number, or
+      // overwrite a live stream. Any of these means the row on the wire is not
+      // the row this client holds, so the safe move is to keep what is durable.
+      if (existing.status === 'streaming') return state;
+      if (message.seq !== existing.seq) return { ...state, needsCatchup: true };
+      const messages = state.messages.map((row) =>
+        row.id === message.id ? message : row
+      );
+      return {
+        ...state,
+        messages,
+        byId: { ...state.byId, [message.id]: message },
       };
     }
 

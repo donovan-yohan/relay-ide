@@ -714,6 +714,114 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(s.listResyncRows('topic:c', 1, 500)).toHaveLength(0);
   });
 
+  it('listResyncRows also carries edited human rows so a reconnect heals them', () => {
+    // #1308 slice 1 item 3: an edit mutates a row in place under a seq the
+    // client already consumed, so `history({ afterSeq })` never re-sends it.
+    // Without this the device that was offline during the edit renders the old
+    // text until a full reload.
+    const s = store();
+    const human = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'deploy at 3pm',
+    });
+    s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'unedited' });
+    expect(s.listResyncRows('topic:c', 2, 500)).toHaveLength(0);
+
+    s.editMessage({
+      channelId: 'topic:c',
+      messageId: human.id,
+      editorId: HUMAN.id,
+      text: 'deploy at 5pm',
+    });
+    const resync = s.listResyncRows('topic:c', 2, 500);
+    expect(resync.map((m) => m.id)).toEqual([human.id]);
+    expect(resync[0]?.body.text).toBe('deploy at 5pm');
+  });
+
+  it('editMessage rewrites the body in place and refuses rows it does not own', () => {
+    const s = store();
+    const human = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'ship @claude the anchor',
+      mentions: [{ raw: '@claude', providerId: 'claude' }],
+    });
+    s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'after' });
+
+    const edited = s.editMessage({
+      channelId: 'topic:c',
+      messageId: human.id,
+      editorId: HUMAN.id,
+      text: 'ship the anchor tomorrow',
+      mentions: [],
+    });
+    // Identity survives: the whole point of an in-place edit is that nothing
+    // indexing the timeline by id/seq has to move.
+    expect(edited.id).toBe(human.id);
+    expect(edited.seq).toBe(human.seq);
+    expect(edited.createdAt).toBe(human.createdAt);
+    expect(edited.body.text).toBe('ship the anchor tomorrow');
+    expect(typeof edited.meta?.['editedAt']).toBe('string');
+    // Mentions are a projection of the body, so a removed @claude must not keep
+    // lighting the mention lane.
+    expect(edited.mentions).toBeUndefined();
+    expect(s.getMessage(human.id)?.body.text).toBe('ship the anchor tomorrow');
+    expect(s.latestSeq('topic:c')).toBe(2);
+
+    // Agent rows are a durable record of what a provider actually said.
+    const agent = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { runtimeId: 'r', turnId: 't', itemId: 'i' },
+    });
+    s.finalizeStream(agent.id, { text: 'agent said this', status: 'complete' });
+    expect(() =>
+      s.editMessage({
+        channelId: 'topic:c',
+        messageId: agent.id,
+        editorId: HUMAN.id,
+        text: 'agent said something else',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_editable' })
+    );
+    expect(s.getMessage(agent.id)?.body.text).toBe('agent said this');
+
+    // Another identity cannot edit the operator's row...
+    expect(() =>
+      s.editMessage({
+        channelId: 'topic:c',
+        messageId: human.id,
+        editorId: 'agent:claude',
+        text: 'rewritten by an agent',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_editable' })
+    );
+    // ...and a row in another channel reads as absent, never as a conflict.
+    expect(() =>
+      s.editMessage({
+        channelId: 'topic:other',
+        messageId: human.id,
+        editorId: HUMAN.id,
+        text: 'cross-channel',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_found' })
+    );
+    expect(() =>
+      s.editMessage({
+        channelId: 'topic:c',
+        messageId: human.id,
+        editorId: HUMAN.id,
+        text: '',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_body_empty' })
+    );
+  });
+
   it('keeps replyCount on point reads, finalization rows, and resync replacements', () => {
     const s = store();
     const root = s.beginStream({

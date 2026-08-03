@@ -70,6 +70,15 @@ function updated(m: ChannelMessage): ChannelEventV1 {
   };
 }
 
+function edited(m: ChannelMessage): ChannelEventV1 {
+  return {
+    type: 'channel-message-edited-v1',
+    channelId: CHANNEL,
+    timestamp: 't',
+    message: m,
+  };
+}
+
 function reduce(
   state: ChannelReducerState,
   events: ChannelEventV1[]
@@ -494,6 +503,116 @@ describe('applyChannelEventV1 reducer', () => {
     const b = reduce(initialChannelReducerState(CHANNEL), events);
     expect(a).toEqual(b);
     expect(a.byId['chm:1']?.body.text).toBe('foobar');
+  });
+});
+
+// #1308 slice 1 item 3 — operator message edits. The wire variant is separate
+// from `channel-message-updated-v1` (a streaming-only refresh), so both the
+// validator and the reducer need their own coverage.
+describe('channel-message-edited-v1', () => {
+  const EDITED_META = { editedAt: '2026-08-03T01:00:00.000Z' };
+
+  it('accepts an edited human row and rejects rows no one may edit', () => {
+    expect(isChannelEventV1(edited(message({ meta: EDITED_META })))).toBe(true);
+    // Agent rows are a durable record of what a provider said.
+    expect(
+      isChannelEventV1(
+        edited(
+          message({
+            sender: { kind: 'agent', id: 'agent-profile:mock:default' },
+          })
+        )
+      )
+    ).toBe(false);
+    // System rows are the hub's own bookkeeping.
+    expect(isChannelEventV1(edited(message({ kind: 'system' })))).toBe(false);
+    // A live stream is not an editable row.
+    expect(isChannelEventV1(edited(message({ status: 'streaming' })))).toBe(
+      false
+    );
+  });
+
+  it('replaces the body in place, preserving id and seq', () => {
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(message({ id: 'chm:1' as ChannelMessageId, seq: 1 })),
+      created(message({ id: 'chm:2' as ChannelMessageId, seq: 2 })),
+      edited(
+        message({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          body: { text: 'corrected', format: 'markdown' },
+          meta: EDITED_META,
+        })
+      ),
+    ]);
+    expect(state.messages.map((m) => m.id)).toEqual(['chm:1', 'chm:2']);
+    expect(state.byId['chm:1']?.body.text).toBe('corrected');
+    expect(state.byId['chm:1']?.seq).toBe(1);
+    expect(state.byId['chm:1']?.meta).toEqual(EDITED_META);
+    expect(state.lastSeq).toBe(2);
+    expect(state.needsCatchup).toBe(false);
+  });
+
+  it('ignores an edit for a row outside the loaded window WITHOUT a catch-up', () => {
+    // An edit adds no seq and closes no gap, so an unknown id means "not loaded
+    // here", not "the timeline is broken". Demanding a resync would show the
+    // out-of-sync banner for a perfectly healthy client.
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(message({ id: 'chm:1' as ChannelMessageId, seq: 1 })),
+      created(message({ id: 'chm:2' as ChannelMessageId, seq: 2 })),
+    ]);
+    expect(state.needsCatchup).toBe(false);
+    const after = applyChannelEventV1(
+      state,
+      edited(
+        message({
+          id: 'chm:older' as ChannelMessageId,
+          seq: 0,
+          body: { text: 'corrected', format: 'markdown' },
+        })
+      )
+    );
+    expect(after.needsCatchup).toBe(false);
+    expect(after.messages.map((m) => m.id)).toEqual(['chm:1', 'chm:2']);
+  });
+
+  it('never overwrites a live stream and catches up on a seq surprise', () => {
+    const streamingRow = message({
+      id: 'chm:1' as ChannelMessageId,
+      seq: 1,
+      status: 'streaming',
+      body: { text: 'partial', format: 'markdown' },
+    });
+    const streaming = reduce(initialChannelReducerState(CHANNEL), [
+      created(streamingRow),
+    ]);
+    const clobbered = applyChannelEventV1(
+      streaming,
+      edited(
+        message({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          body: { text: 'rewritten', format: 'markdown' },
+        })
+      )
+    );
+    expect(clobbered.byId['chm:1']?.body.text).toBe('partial');
+
+    const settled = reduce(initialChannelReducerState(CHANNEL), [
+      created(message({ id: 'chm:1' as ChannelMessageId, seq: 1 })),
+    ]);
+    const renumbered = applyChannelEventV1(
+      settled,
+      edited(
+        message({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 9,
+          body: { text: 'rewritten', format: 'markdown' },
+        })
+      )
+    );
+    expect(renumbered.needsCatchup).toBe(true);
+    expect(renumbered.byId['chm:1']?.body.text).toBe('hi');
   });
 });
 

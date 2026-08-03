@@ -19,6 +19,7 @@ import {
   fetchWorkspaceTopic,
   fetchChannelRoster,
   designateChannelOrchestrator,
+  editChannelMessage,
   interruptChannelAgent,
   retryChannelMessage,
   HttpError,
@@ -553,6 +554,29 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     [channelId]
   );
 
+  // #1308 item 3. Wired only while the channel is live — an archived channel is
+  // read-only (its composer is already a restore bar), so offering an edit the
+  // route would refuse with CHANNEL_ARCHIVED is a dead affordance. The edited row
+  // arrives back through the socket
+  // (`channel-message-edited-v1`), so nothing is applied optimistically here —
+  // same discipline as posting. Rethrown so the row keeps the operator's draft
+  // on screen instead of closing over a failed write.
+  const handleEditMessage = useCallback(
+    async (message: ChannelMessage, text: string) => {
+      try {
+        await editChannelMessage(channelId, message.id, text);
+      } catch (error) {
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not edit — this message is no longer editable'
+            : 'could not edit this message'
+        );
+        throw error;
+      }
+    },
+    [channelId]
+  );
+
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
@@ -761,6 +785,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               agentPresence={agentPresence}
               jumpTarget={jumpTarget}
               onRetryMessage={handleRetryMessage}
+              {...(archived ? {} : { onEditMessage: handleEditMessage })}
               busyAgentIds={busyAgentIds}
             />
           ) : (
