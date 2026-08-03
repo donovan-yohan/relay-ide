@@ -160,10 +160,21 @@ async function publishReadState(
       keepalive,
     });
     if (!readState) return;
-    if (readState.lastReadSeq < lastReadSeq) {
-      refusedReadStatePush.set(channelId, lastReadSeq);
-    } else {
-      refusedReadStatePush.delete(channelId);
+    // The refusal map is a SUPPRESSION lane, so it needs the clamp fence at
+    // least as badly as the merge below does. A #1178 clamp that landed while
+    // this PUT was open has already retracted the mark it carries, so the
+    // hub's lower answer is not a refusal of anything this device still holds —
+    // recording it would silence every mark the operator earns up to that seq
+    // in the channel's new life, and `discardReadStatePushAbove`'s deletion at
+    // clamp time cannot help because the response arrives after it.
+    const clampedAt =
+      useChannelActivityStore.getState().clampedAtByChannel[channelId];
+    if (clampedAt === undefined || clampedAt < issuedAt) {
+      if (readState.lastReadSeq < lastReadSeq) {
+        refusedReadStatePush.set(channelId, lastReadSeq);
+      } else {
+        refusedReadStatePush.delete(channelId);
+      }
     }
     // Feed the hub's durable value back through the ONE merge path. It is
     // already head-clamped and the merge is monotonic-up, so this can only

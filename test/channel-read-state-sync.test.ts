@@ -367,6 +367,49 @@ describe('read-state push (#1308 slice 3)', () => {
     expect(requests()[1]?.body.lastReadSeq).toBe(41);
   });
 
+  it('does not arm suppression from a PUT the clamp overtook while it was in flight (#1178 fence)', async () => {
+    // The refusal map suppresses future pushes, so it obeys the same clamp
+    // epoch the merge does. Here the clamp lands BETWEEN the PUT leaving and
+    // the hub answering: the mark in flight (40) has already been retracted, so
+    // the hub's lower durable value refuses nothing this device still holds.
+    // Arming it anyway would swallow every mark the operator earns up to 40 in
+    // the recreated channel's new life — cross-device convergence silently off
+    // for the whole first stretch of it, self-healing only on reload.
+    let answerPut: (res: Response) => void = () => {};
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          answerPut = resolve;
+        })
+    );
+    store().recordActivity('topic:dm', 50);
+    store().markChannelRead('topic:dm', 40);
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(requests()[0]?.body.lastReadSeq).toBe(40);
+
+    // The DM was deleted and recreated under the same id: head restarts at 5
+    // and this device retracts its marker while the PUT is still open.
+    store().clampChannelStores('topic:dm', 5);
+    expect(store().lastReadByChannel['topic:dm']).toBe(5);
+
+    // Only now does the pre-clamp PUT come back, head-clamped by the hub.
+    answerPut(readStateResponse('topic:dm', 12));
+    await vi.advanceTimersByTimeAsync(0);
+    // Fenced out of the merge too: the pre-clamp position must not be handed
+    // back to the device that just retracted it.
+    expect(store().lastReadByChannel['topic:dm']).toBe(5);
+
+    // The decisive assertion: the operator reads the recreated DM to 9, and
+    // that mark still reaches the hub. A refusal armed at 40 would eat it.
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(readStateResponse('topic:dm', 9));
+    store().markChannelRead('topic:dm', 9);
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(requests()[0]?.body.lastReadSeq).toBe(9);
+  });
+
   it('adopts a HIGHER mark the hub answers a push with, without waiting for the broadcast', async () => {
     // Another device read further first. The PUT response already carries the
     // hub's durable, head-clamped value, so the merge is free convergence.
