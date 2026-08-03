@@ -69,6 +69,8 @@ interface Harness {
   topicStore: WorkspaceTopicStore;
   hub: ChannelHub;
   channelId: string;
+  /** Every `/ws/events` broadcast the router emitted, in order. */
+  broadcasts: Array<{ type: string; data?: Record<string, unknown> }>;
 }
 
 async function harness(
@@ -121,6 +123,8 @@ async function harness(
     }
     next();
   });
+  const broadcasts: Array<{ type: string; data?: Record<string, unknown> }> =
+    [];
   app.use(
     createChannelChatRouter({
       store: options.withStore === false ? null : store,
@@ -128,6 +132,9 @@ async function harness(
         options.withAttachmentStore === false ? null : attachmentStore,
       hub,
       topicStore,
+      broadcastEvent: (type, data) => {
+        broadcasts.push({ type, ...(data ? { data } : {}) });
+      },
       ...(options.binder
         ? { binder: options.binder as unknown as ChannelAgentBinder }
         : {}),
@@ -156,12 +163,13 @@ async function harness(
     topicStore,
     hub,
     channelId: topic.id,
+    broadcasts,
   };
 }
 
 async function req<T>(input: {
   port: number;
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   url: string;
   body?: unknown;
   capabilities?: string;
@@ -2185,7 +2193,8 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     // returned, with no truncation signal.
     let tick = 0;
     const h = await harness({
-      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+      topicClock: () =>
+        new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
     });
     const buried = await post(h, h.channelId, 'buried needle in an old chat');
     for (let i = 0; i < 220; i += 1) {
@@ -2207,9 +2216,14 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
   it('lets workspace scoping narrow the answer, never the reach', async () => {
     let tick = 0;
     const h = await harness({
-      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+      topicClock: () =>
+        new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
     });
-    const scoped = await post(h, h.channelId, 'scoped needle for one workspace');
+    const scoped = await post(
+      h,
+      h.channelId,
+      'scoped needle for one workspace'
+    );
     // 220 newer channels in ANOTHER workspace. Scoping applied after a global
     // 200-row window would leave nothing of `ws` to search at all.
     for (let i = 0; i < 220; i += 1) {
@@ -2266,5 +2280,254 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     expect(res.body.results).toHaveLength(CHANNEL_SEARCH_MAX_RESULTS);
     // A page that is exactly full must not silently claim it was the whole set.
     expect(res.body.truncated).toBe(true);
+  });
+});
+
+describe('channel routes — operator read state (#1308 slice 3 item 1)', () => {
+  type ReadStateBody = {
+    channels: Array<{
+      channelId: string;
+      lastReadSeq: number;
+      updatedAt: string;
+    }>;
+  };
+  type UpdateBody = {
+    readState: { channelId: string; lastReadSeq: number; updatedAt: string };
+    error?: { code: string; details?: Record<string, unknown> };
+  };
+
+  async function put(
+    h: Harness,
+    channelId: string,
+    body: unknown,
+    headers?: Record<string, string>
+  ) {
+    return req<UpdateBody>({
+      port: h.port,
+      method: 'PUT',
+      url: `/channels/${encodeURIComponent(channelId)}/read-state`,
+      body,
+      ...(headers ? { headers } : {}),
+    });
+  }
+
+  it('seeds every marked channel in one GET and advances a mark through PUT', async () => {
+    const h = await harness();
+    const second = h.topicStore.create({ workspaceId: 'ws', title: 'Second' });
+    for (let i = 0; i < 3; i += 1) {
+      await req({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${h.channelId}/messages`,
+        body: { text: `m${i}` },
+      });
+    }
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${second.id}/messages`,
+      body: { text: 'other' },
+    });
+
+    // Nothing marked yet: the response is a well-formed empty seed, not a 404.
+    const empty = await req<ReadStateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+    });
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({ channels: [] });
+
+    const marked = await put(h, h.channelId, { lastReadSeq: 2 });
+    expect(marked.status).toBe(200);
+    expect(marked.body.readState).toMatchObject({
+      channelId: h.channelId,
+      lastReadSeq: 2,
+    });
+    await put(h, second.id, { lastReadSeq: 1 });
+
+    // One call carries the whole map — a boot seed must not cost N round trips.
+    const seed = await req<ReadStateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+    });
+    expect(seed.status).toBe(200);
+    expect(
+      seed.body.channels.map((row) => [row.channelId, row.lastReadSeq])
+    ).toEqual(
+      expect.arrayContaining([
+        [h.channelId, 2],
+        [second.id, 1],
+      ])
+    );
+    expect(seed.body.channels).toHaveLength(2);
+    for (const row of seed.body.channels) {
+      expect(typeof row.updatedAt).toBe('string');
+    }
+  });
+
+  it('is a no-op for a seq below the stored mark and broadcasts only real advances', async () => {
+    const h = await harness();
+    for (let i = 0; i < 5; i += 1) {
+      await req({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${h.channelId}/messages`,
+        body: { text: `m${i}` },
+      });
+    }
+    const before = h.broadcasts.length;
+
+    const desktop = await put(h, h.channelId, { lastReadSeq: 5 });
+    expect(desktop.body.readState.lastReadSeq).toBe(5);
+    // Cross-device convergence rides the existing global lane.
+    expect(h.broadcasts.slice(before)).toEqual([
+      {
+        type: 'channel-read-state',
+        data: { channelId: h.channelId, lastReadSeq: 5 },
+      },
+    ]);
+
+    // A phone that woke up on seq 2 must not drag the desktop's mark back.
+    const stale = await put(h, h.channelId, { lastReadSeq: 2 });
+    expect(stale.status).toBe(200);
+    expect(stale.body.readState.lastReadSeq).toBe(5);
+    // No advance, no broadcast: the lane is unfiltered fan-out to every tab.
+    expect(h.broadcasts.slice(before)).toHaveLength(1);
+
+    const seed = await req<ReadStateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+    });
+    expect(seed.body.channels).toEqual([
+      {
+        channelId: h.channelId,
+        lastReadSeq: 5,
+        updatedAt: desktop.body.readState.updatedAt,
+      },
+    ]);
+
+    // An idempotent replay of the current mark is accepted and stays quiet.
+    await put(h, h.channelId, { lastReadSeq: 5 });
+    expect(h.broadcasts.slice(before)).toHaveLength(1);
+  });
+
+  it('rejects a malformed seq and an unknown channel', async () => {
+    const h = await harness();
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: 'hello' },
+    });
+    for (const bad of [-1, 1.5, '3', null, undefined]) {
+      const res = await put(h, h.channelId, { lastReadSeq: bad });
+      expect(res.status).toBe(400);
+      expect(res.body.error?.code).toBe('INVALID_ARGUMENT');
+      expect(res.body.error?.details?.['reasonCode']).toBe(
+        'CHANNEL_READ_SEQ_INVALID'
+      );
+    }
+    const missing = await put(h, 'topic:nope', { lastReadSeq: 1 });
+    expect(missing.status).toBe(404);
+    expect(h.broadcasts).toHaveLength(0);
+  });
+
+  it('refuses an agent credential on both halves — this is operator device sync, not read receipts', async () => {
+    const h = await harness();
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: 'hello' },
+    });
+    const agent = { 'x-test-actor-id': 'claude' };
+
+    const read = await req<UpdateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+      headers: agent,
+    });
+    expect(read.status).toBe(403);
+    expect(read.body.error?.details?.['reasonCode']).toBe(
+      'CHANNEL_READ_STATE_HUMAN_ONLY'
+    );
+
+    const write = await put(h, h.channelId, { lastReadSeq: 1 }, agent);
+    expect(write.status).toBe(403);
+    expect(write.body.error?.details?.['reasonCode']).toBe(
+      'CHANNEL_READ_STATE_HUMAN_ONLY'
+    );
+    expect(h.store.listReadState()).toEqual([]);
+    expect(h.broadcasts).toHaveLength(0);
+  });
+
+  it('enforces capabilities and the shared auth lane, and routes read-state above /channels/:id', async () => {
+    const h = await harness({ withAuth: true });
+    const authorized = { authorization: 'Bearer test' };
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: 'hello' },
+      headers: authorized,
+    });
+
+    const unauthenticated = await fetch(
+      `http://127.0.0.1:${h.port}/channels/read-state`
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const noCapability = await req<UpdateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+      capabilities: '',
+      headers: authorized,
+    });
+    expect(noCapability.status).toBe(403);
+    expect(noCapability.body.error?.code).toBe('FORBIDDEN');
+
+    const ok = await req<ReadStateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+      headers: authorized,
+    });
+    // The discriminating assertion for registration order: `read-state` is a
+    // literal segment that `/channels/:id` would otherwise swallow, and that
+    // route answers 404 NOT_FOUND for it (no topic has that id) rather than a
+    // read-state map.
+    expect(ok.status).toBe(200);
+    expect(ok.body.channels).toEqual([]);
+  });
+
+  it('marks an archived channel read — archive browse is a legitimate read surface', async () => {
+    const h = await harness();
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: 'hello' },
+    });
+    h.topicStore.update(h.channelId, { status: 'archived' });
+    const res = await put(h, h.channelId, { lastReadSeq: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.readState.lastReadSeq).toBe(1);
+  });
+
+  it('503s both halves when the store is unavailable', async () => {
+    const h = await harness({ withStore: false });
+    const read = await req<UpdateBody>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/read-state',
+    });
+    expect(read.status).toBe(503);
+    const write = await put(h, h.channelId, { lastReadSeq: 1 });
+    expect(write.status).toBe(503);
   });
 });

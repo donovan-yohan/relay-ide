@@ -125,6 +125,14 @@ export type EventMessage =
     }
   | { type: 'server-restarting'; reason?: string }
   | { type: 'channel-activity'; channelId: string; latestSeq: number }
+  /**
+   * The operator moved their last-read mark on ANOTHER device (#1308 slice 3).
+   * Single-operator device sync, never a read receipt: there is no reader
+   * identity because there is only one reader. The lane is unfiltered, so the
+   * writing device also receives its own echo — applying it is monotonic and
+   * idempotent, so that costs nothing.
+   */
+  | { type: 'channel-read-state'; channelId: string; lastReadSeq: number }
   | {
       type: 'channel-agent-status';
       channelId: string;
