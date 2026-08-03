@@ -12,10 +12,16 @@ import {
   CHANNEL_EDITED_AT_META_KEY,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
+  CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+  CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_QUERY_MAX_CHARS,
+  CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
   isChannelMessagePart,
   isChannelAgentDetail,
   parseMentions,
   type ChannelAgentDetail,
+  type ChannelMessageSearchHit,
   type ChannelBodyFormat,
   type ChannelMemberRef,
   type ChannelMention,
@@ -47,7 +53,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -157,6 +163,199 @@ export function buildChannelThreadSummarySql(): string {
           LIMIT @limit`;
 }
 
+// ── full-text search index (#1308 slice 2 item 1) ───────────────────────────
+
+/** FTS5 virtual table mirroring the searchable subset of `channel_messages`. */
+const CHANNEL_SEARCH_TABLE = 'channel_messages_fts';
+
+/**
+ * Trigger names kept in one list so the boot-time integrity check can assert
+ * the complete set exists — a partially-dropped set is exactly the state that
+ * silently stops indexing while search keeps answering from a stale index.
+ */
+const CHANNEL_SEARCH_TRIGGERS = [
+  'channel_messages_fts_ai',
+  'channel_messages_fts_au',
+  'channel_messages_fts_ad',
+] as const;
+
+/** Terms accepted from one query; a longer query is a paste, not a search. */
+const CHANNEL_SEARCH_MAX_TERMS = 12;
+
+/** `snippet()` window, in tokens (FTS5 allows 1..64). */
+const CHANNEL_SEARCH_SNIPPET_TOKENS = 20;
+
+/**
+ * Rows the index carries, as a SQL predicate over one alias of
+ * `channel_messages`. Shared verbatim by the sync triggers and the backfill so
+ * the index contents cannot drift from what a rebuild would produce.
+ *
+ * Excluded, in order of why:
+ *  * `kind = 'system'` — hub bookkeeping ("agent restarted", sweep notices).
+ *    Searching for prose must not surface the machine's own chatter.
+ *  * `status = 'streaming'` — a half-written body would be indexed at whatever
+ *    prefix the writer had flushed, then re-indexed on every delta. Streaming
+ *    rows enter the index exactly once, through the finalize UPDATE.
+ *  * `meta.agentDetail IS NOT NULL` — agent detail cards are tool payloads
+ *    (`beginStream` with `text: ''`, finalized with the card in meta), not
+ *    conversation. Same predicate `replyCountSql` and the thread aggregate
+ *    already use, so "what counts as a real message" has ONE definition here.
+ *  * empty `body_text` — nothing to match, and it is also the shape a tombstone
+ *    leaves behind.
+ *  * `meta.deletedAt IS NOT NULL` — a tombstone is the operator's statement
+ *    that this row has no body; an index that still answered for its old text
+ *    would be an undelete through the back door.
+ *
+ * Thread replies are deliberately NOT excluded: a reply is a message, and the
+ * deep link the result row produces resolves a reply to its root and opens the
+ * thread panel (#1308 slice 1).
+ */
+function channelSearchIndexablePredicate(alias: string): string {
+  return `${alias}.kind = 'message'
+      AND ${alias}.status <> 'streaming'
+      AND ${alias}.body_text <> ''
+      AND json_extract(${alias}.meta_json, '$.agentDetail') IS NULL
+      AND json_extract(${alias}.meta_json, '$.${CHANNEL_DELETED_AT_META_KEY}') IS NULL`;
+}
+
+/**
+ * DDL for the index and its sync triggers.
+ *
+ * `content='channel_messages'` is the EXTERNAL CONTENT form: FTS5 stores only
+ * the inverted index and reads column values back from the source row by
+ * rowid, so a 256KB body is never duplicated on disk. `id`/`channel_id` ride
+ * along as UNINDEXED columns — they name the hit for `snippet()`-adjacent
+ * reads without polluting the term dictionary with opaque `topic:`/`chm:`
+ * identifiers, and channel scoping is done by joining back to
+ * `channel_messages` (a real index) rather than by matching an id as text.
+ *
+ * Tokenizer: `unicode61 remove_diacritics 2` (NOT `porter`). Channel bodies are
+ * dense with identifiers — file paths, symbol names, branch names, error codes
+ * — and the operator is nearly always searching for a literal string they
+ * remember seeing. Porter stemming would fold `running`/`runs` together, but it
+ * would equally fold `Files`→`file` and mangle identifier fragments, making an
+ * exact-token search for code lossy and its misses unexplainable. `unicode61`
+ * gives predictable exact-token matching; `remove_diacritics 2` still folds
+ * accents so `café` matches `cafe` without touching ASCII identifiers.
+ *
+ * Sync is TRIGGER-based rather than code-level upsert on purpose: this store
+ * has seven distinct write paths into `channel_messages` (append, begin/update/
+ * finalize stream, provisional-terminal resolution, edit, delete) plus two
+ * sweeps that delete rows outright. A trigger cannot be forgotten by a future
+ * eighth path; a call site can. The `'delete'` command form is required by
+ * external-content FTS5 — it must be handed the ORIGINAL column values so the
+ * matching index entries can be found before the row changed.
+ */
+const CHANNEL_SEARCH_SCHEMA_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS ${CHANNEL_SEARCH_TABLE} USING fts5(
+  id UNINDEXED,
+  channel_id UNINDEXED,
+  body_text,
+  content='channel_messages',
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ai
+AFTER INSERT ON channel_messages BEGIN
+  INSERT INTO ${CHANNEL_SEARCH_TABLE}(rowid, id, channel_id, body_text)
+  SELECT new.rowid, new.id, new.channel_id, new.body_text
+   WHERE ${channelSearchIndexablePredicate('new')};
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_messages_fts_ad
+AFTER DELETE ON channel_messages BEGIN
+  INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}, rowid, id, channel_id, body_text)
+  SELECT 'delete', old.rowid, old.id, old.channel_id, old.body_text
+   WHERE ${channelSearchIndexablePredicate('old')};
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_messages_fts_au
+AFTER UPDATE ON channel_messages BEGIN
+  INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}, rowid, id, channel_id, body_text)
+  SELECT 'delete', old.rowid, old.id, old.channel_id, old.body_text
+   WHERE ${channelSearchIndexablePredicate('old')};
+  INSERT INTO ${CHANNEL_SEARCH_TABLE}(rowid, id, channel_id, body_text)
+  SELECT new.rowid, new.id, new.channel_id, new.body_text
+   WHERE ${channelSearchIndexablePredicate('new')};
+END;
+`;
+
+/**
+ * Translate operator text into an FTS5 MATCH expression.
+ *
+ * Every term is emitted as a QUOTED phrase. That is the escaping strategy, not
+ * a stylistic choice: inside a phrase the only character with meaning is `"`
+ * (doubled to escape), so an operator pasting `NOT`, `a:b`, `foo*` or `(` gets
+ * a literal search instead of a syntax error or an accidental operator. The
+ * final term additionally takes the `*` prefix operator so a search feels live
+ * while the operator is still typing the word.
+ *
+ * Terms with no letter or digit are dropped — they would tokenize to an empty
+ * phrase, which FTS5 rejects outright. A query left with no usable term returns
+ * null, and the caller reports it as unsearchable rather than running it.
+ *
+ * Exported for tests: the escaping contract is the security-relevant half of
+ * this feature and deserves direct assertions, not only end-to-end coverage.
+ */
+export function buildChannelSearchMatchQuery(raw: string): string | null {
+  const terms = raw
+    .slice(0, CHANNEL_SEARCH_QUERY_MAX_CHARS)
+    .split(/\s+/)
+    .map((term) => term.replaceAll('"', ' ').trim())
+    .filter((term) => /[\p{L}\p{N}]/u.test(term))
+    .slice(0, CHANNEL_SEARCH_MAX_TERMS);
+  if (terms.length === 0) return null;
+  return terms
+    .map((term, index) =>
+      index === terms.length - 1 ? `"${term}" *` : `"${term}"`
+    )
+    .join(' AND ');
+}
+
+/**
+ * Production search query, exported for the same reason the thread builders
+ * are: a query-plan test can EXPLAIN the exact SQL instead of a hand-copied
+ * approximation that drifts into a full-table walk.
+ *
+ * `CROSS JOIN` is the join-order hint, not a cartesian product (same idiom, and
+ * the same reason, as `buildChannelThreadSummarySql`): SQLite never reorders
+ * across one. With a plain `JOIN`, the `m.channel_id IN (...)` allowlist is
+ * enough to tempt the planner into driving from `channel_messages`
+ * (`SEARCH m USING INDEX idx_chm_channel_seq (channel_id=?)`), which walks
+ * EVERY message in every visible channel and probes the FTS index per row —
+ * turning a term lookup into a full transcript scan that grows with history.
+ * Pinning the order keeps the shape the query-plan test locks in: the FTS index
+ * drives, and `channel_messages` is probed by rowid (its INTEGER PRIMARY KEY
+ * alias), so the allowlist is a filter over matched rows rather than a scan.
+ *
+ * Ranking is bm25 ascending — SQLite returns a more-negative score for a better
+ * match — with newest-first as the tiebreak so two equally relevant rows
+ * present the recent one first.
+ */
+export function buildChannelMessageSearchSql(channelIdCount: number): string {
+  const channelClause =
+    channelIdCount > 0
+      ? `AND m.channel_id IN (${Array.from({ length: channelIdCount }, () => '?').join(', ')})`
+      : '';
+  return `SELECT m.id            AS id,
+                m.channel_id     AS channel_id,
+                m.thread_id      AS thread_id,
+                m.seq            AS seq,
+                m.sender_kind    AS sender_kind,
+                m.sender_id      AS sender_id,
+                m.sender_display AS sender_display,
+                m.meta_json      AS meta_json,
+                m.created_at     AS created_at,
+                snippet(${CHANNEL_SEARCH_TABLE}, 2, ?, ?, ?, ${CHANNEL_SEARCH_SNIPPET_TOKENS}) AS snippet,
+                bm25(${CHANNEL_SEARCH_TABLE}) AS score
+           FROM ${CHANNEL_SEARCH_TABLE}
+           CROSS JOIN channel_messages m ON m.rowid = ${CHANNEL_SEARCH_TABLE}.rowid
+          WHERE ${CHANNEL_SEARCH_TABLE} MATCH ?
+            ${channelClause}
+          ORDER BY score ASC, m.seq DESC
+          LIMIT ?`;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS channel_messages (
   id                TEXT PRIMARY KEY,
@@ -239,6 +438,21 @@ interface ChannelMessageRow {
   updated_at: string;
   completed_at: string | null;
   reply_count?: number;
+}
+
+/** Projection of the FTS join (#1308 slice 2 item 1). */
+interface ChannelSearchRow {
+  id: string;
+  channel_id: string;
+  thread_id: string | null;
+  seq: number;
+  sender_kind: string;
+  sender_id: string;
+  sender_display: string | null;
+  meta_json: string | null;
+  created_at: string;
+  snippet: string;
+  score: number;
 }
 
 /** Projection of the thread aggregate join (#1287 slice 5 item 18). */
@@ -432,6 +646,19 @@ export interface ChannelHistoryFilter {
   threadId?: string;
 }
 
+export interface ChannelMessageSearchQuery {
+  /** Raw operator text; normalized into an FTS5 expression by the store. */
+  query: string;
+  /**
+   * Channels the caller is allowed to see, resolved from the topic store (a
+   * DIFFERENT database, so archive state cannot be filtered in this SQL). An
+   * EMPTY array means "no visible channel" and returns nothing — it is never
+   * read as "no filter", which would leak an archived channel's bodies.
+   */
+  channelIds?: readonly string[];
+  limit?: number;
+}
+
 export interface ChannelBinding {
   channelId: string;
   /** Durable AgentProfile actor identity; binding/session ownership key. */
@@ -509,6 +736,17 @@ export interface ChannelMessageStore {
     clientMessageId: string
   ): ChannelMessage | null;
   history(channelId: string, filter?: ChannelHistoryFilter): ChannelMessage[];
+  /**
+   * Ranked full-text search over durable message bodies (#1308 slice 2 item 1).
+   *
+   * Reads the FTS5 index, never the message table directly, so the searchable
+   * set is exactly what the sync triggers admitted: prose rows only — no system
+   * bookkeeping, no agent detail cards, no tombstones, no half-written streams.
+   * Thread replies ARE included. Returns hits, not `ChannelMessage` rows: a
+   * result is a jump target plus an excerpt, and shipping full 256KB bodies for
+   * 50 hits would make the response a transcript dump.
+   */
+  searchMessages(input: ChannelMessageSearchQuery): ChannelMessageSearchHit[];
   /** Root-inclusive history for one canonical thread. */
   threadHistory(
     channelId: string,
@@ -743,6 +981,27 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   return message;
 }
 
+function searchRowToHit(row: ChannelSearchRow): ChannelMessageSearchHit {
+  const meta = parseMeta(row.meta_json);
+  const providerId =
+    typeof meta?.['providerId'] === 'string'
+      ? (meta['providerId'] as string)
+      : undefined;
+  return {
+    messageId: row.id as ChannelMessageId,
+    channelId: row.channel_id,
+    threadId: (row.thread_id as ChannelMessageId | null) ?? null,
+    seq: row.seq,
+    snippet: row.snippet,
+    senderKind: row.sender_kind as ChannelSenderRef['kind'],
+    senderId: row.sender_id,
+    ...(row.sender_display ? { senderDisplayName: row.sender_display } : {}),
+    ...(providerId ? { providerId } : {}),
+    createdAt: row.created_at,
+    score: row.score,
+  };
+}
+
 function buildMeta(input: {
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
@@ -944,7 +1203,79 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
   return duplicateIds.size;
 }
 
+/**
+ * Rebuild the search index from `channel_messages`, in place.
+ *
+ * `'delete-all'` rather than FTS5's own `'rebuild'`: `rebuild` re-derives the
+ * index from EVERY content row, which would drag system rows, detail cards,
+ * tombstones and half-written streams back in. The index is a filtered
+ * projection, so the backfill has to apply the same predicate the triggers do.
+ */
+function rebuildChannelSearchIndex(db: Database.Database): number {
+  db.prepare(
+    `INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}) VALUES('delete-all')`
+  ).run();
+  const result = db
+    .prepare(
+      `INSERT INTO ${CHANNEL_SEARCH_TABLE}(rowid, id, channel_id, body_text)
+       SELECT m.rowid, m.id, m.channel_id, m.body_text
+         FROM channel_messages m
+        WHERE ${channelSearchIndexablePredicate('m')}`
+    )
+    .run();
+  return result.changes;
+}
+
+/**
+ * Boot-time integrity check for the search index (#1308 slice 2 item 1).
+ *
+ * Runs on EVERY open, not once behind a `schema_version` step, because the
+ * index is a derived artifact: a numbered migration fires exactly once and can
+ * therefore never repair a table or trigger that was dropped afterwards (by an
+ * operator poking at the db, by a restored backup taken mid-migration, or by a
+ * future rebuild of `channel_messages` — the v2 lane already drops and renames
+ * that table, and a DROP takes its triggers with it). Detect-and-rebuild is
+ * cheap: two `sqlite_master` lookups on a healthy db, and a full reindex only
+ * when something is actually missing.
+ *
+ * Idempotent by construction — a healthy db returns before touching anything,
+ * and the repair path is delete-all + backfill, so running it twice produces
+ * the same index as running it once.
+ */
+function ensureChannelSearchIndex(db: Database.Database): void {
+  const hasTable = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(CHANNEL_SEARCH_TABLE);
+  const triggerCount = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM sqlite_master
+          WHERE type = 'trigger'
+            AND name IN (${CHANNEL_SEARCH_TRIGGERS.map(() => '?').join(', ')})`
+      )
+      .get(...CHANNEL_SEARCH_TRIGGERS) as { count: number }
+  ).count;
+  if (hasTable && triggerCount === CHANNEL_SEARCH_TRIGGERS.length) return;
+
+  const indexed = db.transaction(() => {
+    // A partially-present trigger set is repaired by replacing all three: the
+    // `IF NOT EXISTS` creates below would otherwise leave a stale survivor
+    // whose body predates whatever change caused the repair.
+    for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
+      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    }
+    db.exec(CHANNEL_SEARCH_SCHEMA_SQL);
+    return rebuildChannelSearchIndex(db);
+  })();
+  logger.info('channel search index rebuilt over %d message row(s)', indexed);
+}
+
 function runMigrations(db: Database.Database): void {
+  runSchemaMigrations(db);
+  ensureChannelSearchIndex(db);
+}
+
+function runSchemaMigrations(db: Database.Database): void {
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
   );
@@ -1087,6 +1418,28 @@ function runMigrations(db: Database.Database): void {
         'ALTER TABLE channel_messages RENAME COLUMN source_session_id TO source_runtime_id'
       );
       db.prepare('UPDATE schema_version SET version = 5').run();
+    })();
+  }
+  if (current < 6) {
+    db.transaction(() => {
+      // Search index (#1308 slice 2 item 1). This step only DROPS whatever an
+      // earlier version left behind and records the version — the table, the
+      // triggers and the backfill are built by `ensureChannelSearchIndex`,
+      // which runs unconditionally on every open so a dropped index is
+      // repaired rather than being stranded behind a one-shot migration.
+      // Dropping here is what makes an upgrade re-derive the index under the
+      // CURRENT tokenizer/predicate instead of inheriting an older shape.
+      //
+      // Ordering note: this is the LAST numbered step, so it always runs after
+      // the v2 lane's `DROP TABLE channel_messages` / rename. The v2 rebuild
+      // therefore can never destroy triggers this step created — at v2 time no
+      // FTS object exists yet — and a fresh db skips both by jumping straight
+      // to SCHEMA_VERSION.
+      for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
+        db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      }
+      db.exec(`DROP TABLE IF EXISTS ${CHANNEL_SEARCH_TABLE}`);
+      db.prepare('UPDATE schema_version SET version = 6').run();
     })();
   }
 }
@@ -1682,6 +2035,31 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         )
         .all(params) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
+    },
+
+    searchMessages(input) {
+      const match = buildChannelSearchMatchQuery(input.query);
+      if (match === null) return [];
+      // Distinct + explicit: an empty allowlist is "nothing visible", so it
+      // short-circuits instead of falling through to an unscoped search.
+      const channelIds =
+        input.channelIds === undefined ? null : [...input.channelIds];
+      if (channelIds !== null && channelIds.length === 0) return [];
+      // `+ 1` is the LOOKAHEAD allowance, not a wider page: a caller paging at
+      // the maximum asks for one row past it purely to learn whether more hits
+      // existed. Without it, `truncated` could never be true on a full page.
+      const limit = cleanLimit(input.limit, CHANNEL_SEARCH_MAX_RESULTS + 1);
+      const rows = db
+        .prepare(buildChannelMessageSearchSql(channelIds?.length ?? 0))
+        .all(
+          CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+          CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+          CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
+          match,
+          ...(channelIds ?? []),
+          limit
+        ) as ChannelSearchRow[];
+      return rows.map(searchRowToHit);
     },
 
     threadHistory(channelId, rootMessageId, filter = {}) {

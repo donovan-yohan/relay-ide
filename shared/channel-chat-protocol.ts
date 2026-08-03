@@ -343,6 +343,113 @@ export function isChannelMessageTombstone(message: ChannelMessage): boolean {
   );
 }
 
+// ── message search contract (#1308 slice 2 item 1) ──────────────────────────
+
+/**
+ * Snippet highlight sentinels.
+ *
+ * SQLite's `snippet()` wraps every matched term in a caller-supplied pair of
+ * strings. We deliberately do NOT emit markup (`<mark>`, `<b>`, …): the snippet
+ * is derived from an arbitrary operator/agent message body, so any tag we
+ * injected would have to be sanitized again on the client, and a body that
+ * already contains that tag would be indistinguishable from our own marker.
+ *
+ * Instead the delimiters are two Unicode Private Use Area code points. PUA has
+ * no assigned meaning, is never produced by a keyboard or by a model writing
+ * prose or code, survives JSON transport unchanged, and carries no HTML
+ * semantics — so `parseChannelSearchSnippet` can split on them and the renderer
+ * emits plain text nodes plus its own highlight element. (A body that literally
+ * contained U+E000 would confuse the split; that is accepted, it is not
+ * reachable from any real authoring path.)
+ */
+export const CHANNEL_SEARCH_HIGHLIGHT_OPEN = '\uE000';
+export const CHANNEL_SEARCH_HIGHLIGHT_CLOSE = '\uE001';
+
+/** Ellipsis `snippet()` uses when the match is not at a body boundary. */
+export const CHANNEL_SEARCH_SNIPPET_ELLIPSIS = '…';
+
+/** Hard cap on returned hits — search is a jump affordance, not a transcript. */
+export const CHANNEL_SEARCH_MAX_RESULTS = 50;
+
+/** Query text beyond this is truncated before it reaches the index. */
+export const CHANNEL_SEARCH_QUERY_MAX_CHARS = 256;
+
+export interface ChannelSearchSnippetSegment {
+  text: string;
+  /** true when this run was a matched term and should be emphasized. */
+  highlight: boolean;
+}
+
+/**
+ * Split a server snippet into plain/highlighted runs. Shared so the renderer
+ * and the contract test agree on the delimiter by construction rather than by
+ * two copies of the same string literal.
+ */
+export function parseChannelSearchSnippet(
+  snippet: string
+): ChannelSearchSnippetSegment[] {
+  const segments: ChannelSearchSnippetSegment[] = [];
+  let rest = snippet;
+  while (rest.length > 0) {
+    const open = rest.indexOf(CHANNEL_SEARCH_HIGHLIGHT_OPEN);
+    if (open === -1) break;
+    const close = rest.indexOf(CHANNEL_SEARCH_HIGHLIGHT_CLOSE, open + 1);
+    if (close === -1) break;
+    if (open > 0)
+      segments.push({ text: rest.slice(0, open), highlight: false });
+    const inner = rest.slice(open + 1, close);
+    if (inner.length > 0) segments.push({ text: inner, highlight: true });
+    rest = rest.slice(close + 1);
+  }
+  if (rest.length > 0) segments.push({ text: rest, highlight: false });
+  return segments;
+}
+
+/**
+ * One indexed message match. Deliberately jump-shaped: `channelId` +
+ * `messageId` is exactly what the #1308 slice 1 deep link
+ * (`/channel/<segment>#msg-<messageId>`) consumes, so a result row reuses the
+ * shipped bounded-history walk and jump highlight instead of a second
+ * scroll-to-message path.
+ */
+export interface ChannelMessageSearchHit {
+  messageId: ChannelMessageId;
+  channelId: string;
+  /** Canonical thread root when the hit is a reply, else null. */
+  threadId: ChannelMessageId | null;
+  seq: number;
+  /** Highlighted excerpt; split with `parseChannelSearchSnippet`. */
+  snippet: string;
+  senderKind: ChannelSenderKind;
+  senderId: string;
+  /**
+   * Persisted `sender_display`. Never derive a label by splitting `senderId` —
+   * it is a profile Actor id (`agent-profile:<vendor>:default`), not a name.
+   */
+  senderDisplayName?: string;
+  /** Vendor framework id for agent rows; the authoritative label fallback. */
+  providerId?: string;
+  createdAt: string;
+  /** Raw bm25 relevance (more negative is a better match); results are sorted. */
+  score: number;
+}
+
+/** A hit decorated with the channel identity the router resolves. */
+export interface ChannelMessageSearchResult extends ChannelMessageSearchHit {
+  channelTitle: string;
+  archived: boolean;
+}
+
+export interface ChannelMessageSearchResponse {
+  /** Echo of the accepted query text (already length-capped and trimmed). */
+  query: string;
+  results: ChannelMessageSearchResult[];
+  /** true when more hits existed than the cap returned. */
+  truncated: boolean;
+  /** Set when the query could not be run at all, e.g. it held no searchable term. */
+  unavailableReason?: 'empty_query';
+}
+
 interface ChannelEventBaseV1 {
   channelId: string;
   timestamp: string;

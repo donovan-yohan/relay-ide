@@ -6,6 +6,8 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  buildChannelMessageSearchSql,
+  buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
   buildChannelThreadSummarySql,
   createChannelMessageStore,
@@ -325,7 +327,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(5);
+    ).toBe(6);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -977,7 +979,9 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(thread[0]?.body.text).toBe('');
     expect(s.getMessage(root.id)?.replyCount).toBe(1);
     expect(
-      s.listChannelThreadSummaries('topic:c').threads.map((t) => t.rootMessageId)
+      s
+        .listChannelThreadSummaries('topic:c')
+        .threads.map((t) => t.rootMessageId)
     ).toEqual([root.id]);
   });
 
@@ -1775,5 +1779,246 @@ describe('channel-message-store boot sweeps', () => {
     expect(s.history('topic:gone')).toHaveLength(0);
     expect(s.history('topic:live')).toHaveLength(1);
     expect(s.listMembers('topic:gone')).toHaveLength(0);
+  });
+});
+
+describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => {
+  function seq(s: ChannelMessageStore, channelId: string, text: string) {
+    return s.appendComplete({ channelId, sender: HUMAN, text });
+  }
+
+  it('indexes a durable row on insert and finds it by term', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'the deployment pipeline is wedged');
+    const hits = s.searchMessages({ query: 'wedged' });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      messageId: posted.id,
+      channelId: 'topic:alpha',
+      seq: posted.seq,
+      senderKind: 'human',
+      senderId: 'human:operator',
+      threadId: null,
+      createdAt: posted.createdAt,
+    });
+    expect(hits[0]?.snippet).toContain('wedged');
+    expect(hits[0]?.score).toBeLessThan(0);
+  });
+
+  it('re-indexes an edited body and stops matching the replaced text', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'original haystack sentence');
+    s.editMessage({
+      channelId: 'topic:alpha',
+      messageId: posted.id,
+      editorId: 'human:operator',
+      text: 'replacement needle sentence',
+    });
+    expect(s.searchMessages({ query: 'haystack' })).toHaveLength(0);
+    expect(
+      s.searchMessages({ query: 'needle' }).map((hit) => hit.messageId)
+    ).toEqual([posted.id]);
+  });
+
+  it('drops a tombstoned row out of the index', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'secret budget spreadsheet');
+    expect(s.searchMessages({ query: 'spreadsheet' })).toHaveLength(1);
+    s.deleteMessage({
+      channelId: 'topic:alpha',
+      messageId: posted.id,
+      deleterId: 'human:operator',
+    });
+    expect(s.searchMessages({ query: 'spreadsheet' })).toHaveLength(0);
+  });
+
+  it('indexes a streaming row only once it is finalized', () => {
+    const s = store();
+    const streaming = s.beginStream({
+      channelId: 'topic:alpha',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-1', turnId: 'turn-1', itemId: 'item-1' },
+      text: 'partial migrat',
+    });
+    s.updateStreamText(streaming.id, 'partial migration plan');
+    expect(s.searchMessages({ query: 'migration' })).toHaveLength(0);
+
+    s.finalizeStream(streaming.id, {
+      text: 'complete migration plan',
+      status: 'complete',
+    });
+    const hits = s.searchMessages({ query: 'migration' });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      messageId: streaming.id,
+      senderKind: 'agent',
+      providerId: 'claude',
+    });
+  });
+
+  it('excludes agent detail cards and system rows, and includes thread replies', () => {
+    const s = store();
+    const root = seq(s, 'topic:alpha', 'kubernetes rollout question');
+    const reply = s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'kubernetes rollout answer',
+      parentMessageId: root.id,
+    });
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      kind: 'system',
+      sender: { kind: 'system', id: 'system' },
+      text: 'kubernetes agent restarted',
+    });
+    const detail = s.beginStream({
+      channelId: 'topic:alpha',
+      sender: AGENT,
+      source: { runtimeId: 'runtime-2', turnId: 'turn-2', itemId: 'detail-1' },
+      agentDetail: {
+        itemId: 'detail-1',
+        card: {
+          kind: 'thought',
+          title: 'kubernetes get pods',
+          status: 'running',
+          content: 'kubernetes tool payload',
+        },
+      },
+    });
+    s.finalizeStream(detail.id, { text: '', status: 'complete' });
+
+    const ids = s
+      .searchMessages({ query: 'kubernetes' })
+      .map((hit) => hit.messageId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids)).toEqual(new Set([root.id, reply.id]));
+    expect(
+      s
+        .searchMessages({ query: 'kubernetes' })
+        .find((h) => h.messageId === reply.id)?.threadId
+    ).toBe(root.id);
+  });
+
+  it('ranks the denser match first and caps results', () => {
+    const s = store();
+    seq(s, 'topic:alpha', 'a long note that mentions relay once in passing');
+    const dense = seq(s, 'topic:alpha', 'relay relay relay');
+    const ranked = s.searchMessages({ query: 'relay' });
+    expect(ranked[0]?.messageId).toBe(dense.id);
+    expect(ranked[0]!.score).toBeLessThan(ranked[1]!.score);
+
+    for (let i = 0; i < 60; i += 1) {
+      seq(s, 'topic:alpha', `bulk relay row ${i}`);
+    }
+    expect(s.searchMessages({ query: 'relay' })).toHaveLength(50);
+    expect(s.searchMessages({ query: 'relay', limit: 3 })).toHaveLength(3);
+  });
+
+  it('scopes results to the caller-supplied channel allowlist', () => {
+    const s = store();
+    const visible = seq(s, 'topic:visible', 'shared incident report');
+    seq(s, 'topic:hidden', 'shared incident report');
+    expect(
+      s
+        .searchMessages({ query: 'incident', channelIds: ['topic:visible'] })
+        .map((hit) => hit.messageId)
+    ).toEqual([visible.id]);
+    // An EMPTY allowlist means "nothing visible", never "no filter".
+    expect(s.searchMessages({ query: 'incident', channelIds: [] })).toEqual([]);
+    expect(s.searchMessages({ query: 'incident' })).toHaveLength(2);
+  });
+
+  it('treats operator text as literal terms, never as FTS5 operators', () => {
+    const s = store();
+    const posted = seq(s, 'topic:alpha', 'the NOT gate inverts a signal');
+    expect(buildChannelSearchMatchQuery('NOT gate')).toBe('"NOT" AND "gate" *');
+    expect(
+      s.searchMessages({ query: 'NOT gate' }).map((hit) => hit.messageId)
+    ).toEqual([posted.id]);
+    // A quote cannot terminate the generated phrase.
+    expect(buildChannelSearchMatchQuery('say "hi"')).toBe('"say" AND "hi" *');
+    // Nothing tokenizable is not a query at all.
+    expect(buildChannelSearchMatchQuery('  ***  ')).toBeNull();
+    expect(s.searchMessages({ query: '***' })).toEqual([]);
+  });
+
+  it('backfills an existing db idempotently and rebuilds a dropped index', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'durable backfill subject',
+    });
+    const tombstoned = seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'backfill tombstone subject',
+    });
+    seeded.deleteMessage({
+      channelId: 'topic:alpha',
+      messageId: tombstoned.id,
+      deleterId: 'human:operator',
+    });
+    seeded.close();
+
+    // Rewind to a genuine pre-#1308 (v5) db: no index, no triggers, older
+    // schema_version — the exact shape an upgrading hub opens.
+    const raw = new Database(file);
+    raw.exec('DROP TRIGGER channel_messages_fts_ai');
+    raw.exec('DROP TRIGGER channel_messages_fts_au');
+    raw.exec('DROP TRIGGER channel_messages_fts_ad');
+    raw.exec('DROP TABLE channel_messages_fts');
+    raw.exec('UPDATE schema_version SET version = 5');
+    raw.close();
+
+    const reopened = store(file);
+    expect(
+      reopened.searchMessages({ query: 'backfill' }).map((h) => h.snippet)
+    ).toHaveLength(1);
+    expect(reopened.searchMessages({ query: 'tombstone' })).toHaveLength(0);
+    reopened.close();
+
+    // Reopening a healthy db must not duplicate index entries.
+    const again = store(file);
+    expect(again.searchMessages({ query: 'backfill' })).toHaveLength(1);
+    const counted = new Database(file);
+    const rows = counted
+      .prepare(
+        'SELECT COUNT(*) AS count FROM channel_messages_fts WHERE channel_messages_fts MATCH \'"backfill"\''
+      )
+      .get() as { count: number };
+    const version = counted
+      .prepare('SELECT version FROM schema_version')
+      .get() as { version: number };
+    counted.close();
+    expect(rows.count).toBe(1);
+    expect(version.version).toBe(6);
+  });
+
+  it('drives the search from the FTS index, probing messages by rowid', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'query plan subject',
+    });
+    const raw = new Database(file);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelMessageSearchSql(1)}`)
+      .all('', '', '…', '"plan"', 'topic:alpha', 10) as Array<{
+      detail: string;
+    }>;
+    raw.close();
+    const details = plan.map((row) => row.detail);
+    // The FTS index must DRIVE (first) and `channel_messages` must be probed by
+    // rowid — not the reverse, which walks every message in every allowed
+    // channel. A plain JOIN regresses to exactly that; see the CROSS JOIN note
+    // on `buildChannelMessageSearchSql`.
+    expect(details[0]).toMatch(
+      /channel_messages_fts VIRTUAL TABLE INDEX .*M\d/
+    );
+    expect(details[1]).toMatch(/SEARCH m USING INTEGER PRIMARY KEY/);
   });
 });
