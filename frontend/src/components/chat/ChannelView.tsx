@@ -23,6 +23,7 @@ import { isArchivedChannelPostError } from '../../lib/agent-channels.js';
 import { useRestoreTopicMutation } from '../../lib/hooks/use-restore-topic.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+import { selectChannelAgentPresence } from '../../lib/chat/channel-agent-presence.js';
 import {
   channelLastReadKey,
   useChannelActivityStore,
@@ -404,6 +405,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     channelId,
   ]);
 
+  // In-timeline presence rows (#1277). Same chip signal, so a reload rebuilds
+  // the rows from `resolveEffectiveAgentStatus` for free — no new WS event.
+  // `streamingProfileProviders` is the suppression set: an agent already drawing
+  // a live streaming row must not also be announced as thinking/responding.
+  const agentPresence = useMemo(
+    () => selectChannelAgentPresence(agentChips, streamingProfileProviders),
+    [agentChips, streamingProfileProviders]
+  );
+
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
@@ -459,8 +469,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     );
   }
 
+  // Live presence mounts the timeline even with zero history so a DM's very
+  // first turn shows "<agent> is thinking…" instead of the static empty state
+  // (#1277). Smaller diff than duplicating the row inside `.ch-empty`, and the
+  // empty copy comes back the moment every agent goes idle again.
   const hasHistory =
-    reducer.messages.length > 0 || hasMoreOlder || loadingOlder;
+    reducer.messages.length > 0 ||
+    hasMoreOlder ||
+    loadingOlder ||
+    agentPresence.length > 0;
 
   return (
     <div className="ch-view" role="main" aria-label="channel">
@@ -602,6 +619,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               replyOnlyBackfillPaused={replyOnlyBackfillPaused}
               onContinueHistory={continueReplyOnlyBackfill}
               onOpenThread={setActiveThreadRootId}
+              agentPresence={agentPresence}
             />
           ) : (
             <div className="ch-empty">

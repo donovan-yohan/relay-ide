@@ -9,6 +9,12 @@ import {
   formatDayLabel,
   selectTopLevel,
 } from '../../lib/chat/channel-timeline-layout.js';
+import {
+  channelPresenceCopy,
+  type ChannelAgentPresence,
+} from '../../lib/chat/channel-agent-presence.js';
+import { AgentBadge } from '../AgentBadge.js';
+import { TuiProgress } from '../TuiProgress.js';
 import { ChannelMessageGroup } from './ChannelMessageGroup.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
@@ -31,6 +37,12 @@ interface ChannelTimelineProps {
   replyOnlyBackfillPaused?: boolean;
   onContinueHistory?: () => void;
   onOpenThread?: (rootId: ChannelMessageId) => void;
+  /**
+   * Busy agents with no live streaming row of their own (#1277). Already
+   * filtered by `selectChannelAgentPresence` — the timeline renders what it is
+   * given and owns no presence policy.
+   */
+  agentPresence?: readonly ChannelAgentPresence[];
 }
 
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
@@ -47,6 +59,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   replyOnlyBackfillPaused = false,
   onContinueHistory,
   onOpenThread,
+  agentPresence = [],
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
 
@@ -185,6 +198,41 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
               />
             );
           })}
+          {agentPresence.length > 0 ? (
+            // Lives INSIDE `.ch-tl-content` on purpose: `useFollowingScroll`
+            // observes that element, so the row appearing/disappearing is a
+            // content resize the follow model already bottom-anchors. It carries
+            // no `data-channel-message-seq`, so it can never become a reader
+            // anchor, and it changes no message seq, so the "n new messages"
+            // pill cannot be inflated by presence.
+            <div className="ch-presence" aria-label="agent presence">
+              {agentPresence.map((presence) => (
+                <div
+                  key={presence.agentId}
+                  className={`ch-presence__row ch-presence__row--${presence.status}`}
+                  data-channel-presence-agent={presence.agentId}
+                  data-channel-presence-status={presence.status}
+                >
+                  {presence.glyph ? (
+                    <span
+                      className="ch-presence__glyph"
+                      style={{ color: presence.colorVar }}
+                      aria-hidden="true"
+                    >
+                      <AgentBadge agent={presence.glyph} />
+                    </span>
+                  ) : null}
+                  <TuiProgress
+                    variant="braille"
+                    className="ch-presence__spinner"
+                  />
+                  <span className="ch-presence__label">
+                    {channelPresenceCopy(presence)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
       {newMessageCount > 0 ? (

@@ -333,6 +333,49 @@
   white-space: nowrap;
 }
 
+/* in-timeline agent presence (#1277) — "hermes is thinking…" at the foot of the
+   conversation. Dim secondary text, zero radius, shared braille spinner as the
+   only motion. No shimmer, no particles, no emoji (DESIGN.md §6 / motion rules);
+   TuiProgress already freezes on prefers-reduced-motion. */
+.ch-presence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ch-presence__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-presence__glyph {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+}
+
+.ch-presence__spinner {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ch-presence__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* system message — full-width centered muted, own row (never in a group) */
 .ch-system-msg {
   display: flex;
