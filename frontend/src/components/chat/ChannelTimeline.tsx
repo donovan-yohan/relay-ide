@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   retriedMessageIdFromSystemRow,
   type ChannelMessage,
@@ -9,6 +9,7 @@ import {
   deriveReplyCounts,
   formatDayLabel,
   selectTopLevel,
+  SYSTEM_RUN_COLLAPSE_MIN,
 } from '../../lib/chat/channel-timeline-layout.js';
 import {
   channelPresenceCopy,
@@ -29,6 +30,36 @@ const RESYNC_BUTTON_DELAY_MS = 5_000;
  * keeps the class mounted so the animation is never cut mid-flight.
  */
 const JUMP_HIGHLIGHT_MS = 600;
+
+/**
+ * Chevrons for the collapsed/expanded system-run summary. DESIGN.md icon law:
+ * flat line art, 1.5px stroke, square caps, no fill. Two static paths rather
+ * than one rotated path — DESIGN.md allows text motion only, so the glyph
+ * swaps instead of animating.
+ */
+const CHEVRON_DOWN_ICON = (
+  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M3.5 6l4.5 4.5L12.5 6"
+      stroke="currentColor"
+      fill="none"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+    />
+  </svg>
+);
+
+const CHEVRON_UP_ICON = (
+  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M3.5 10.5L8 6l4.5 4.5"
+      stroke="currentColor"
+      fill="none"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+    />
+  </svg>
+);
 
 /** A deep link asking the timeline to scroll to one message. */
 export interface TimelineJumpTarget {
@@ -110,6 +141,20 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   const [showResyncButton, setShowResyncButton] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] =
     useState<ChannelMessageId | null>(null);
+  // #1308 item 5. Runs the operator opened, keyed by the run's first message id.
+  // Message ids are globally unique and opaque (#1296), so a key from another
+  // channel can never match here and the set needs no per-channel reset.
+  const [expandedSystemRuns, setExpandedSystemRuns] = useState<
+    ReadonlySet<ChannelMessageId>
+  >(() => new Set());
+
+  const toggleSystemRun = useCallback((runKey: ChannelMessageId): void => {
+    setExpandedSystemRuns((current) => {
+      const next = new Set(current);
+      if (!next.delete(runKey)) next.add(runKey);
+      return next;
+    });
+  }, []);
 
   // Replies stay in the reducer for gap/catch-up correctness. Every piece of
   // main-lane geometry consumes this render-only projection so hidden reply seqs
@@ -158,6 +203,21 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   // second link to the same row replays the scroll and the emphasis.
   const jumpToken = jumpTarget?.token ?? null;
   const jumpMessageId = jumpTarget?.messageId ?? null;
+
+  // A deep link to a system row inside a collapsed run must not land on nothing.
+  // Resolved during RENDER, not in the jump effect, so the row is already in the
+  // DOM by the time that effect runs and calls `scrollIntoView` (#1308 item 5).
+  const jumpRunKey = useMemo<ChannelMessageId | null>(() => {
+    if (jumpMessageId === null) return null;
+    for (const node of nodes) {
+      if (node.kind !== 'system') continue;
+      if (node.messages.some((message) => message.id === jumpMessageId)) {
+        return node.messages[0]?.id ?? null;
+      }
+    }
+    return null;
+  }, [nodes, jumpMessageId]);
+
   useEffect(() => {
     if (jumpToken === null || jumpMessageId === null) return;
     const container = containerRef.current;
@@ -274,14 +334,54 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
               );
             }
             if (node.kind === 'system') {
+              const runKey = node.messages[0]?.id ?? null;
+              const collapsible =
+                runKey !== null &&
+                node.messages.length >= SYSTEM_RUN_COLLAPSE_MIN;
+              const expanded =
+                !collapsible ||
+                expandedSystemRuns.has(runKey) ||
+                jumpRunKey === runKey;
+              const lastSeq = node.messages[node.messages.length - 1]?.seq;
               return (
-                <ChannelMessageRow
-                  key={node.message.id}
-                  message={node.message}
-                  channelId={channelId}
-                  variant="system"
-                  highlighted={highlightedMessageId === node.message.id}
-                />
+                // A Fragment, not a wrapper element: `.ch-tl-content` is a flex
+                // column whose 14px gap defines system-row rhythm, and a wrapper
+                // would swallow it for the rows inside the run.
+                <React.Fragment key={`system-${runKey ?? index}`}>
+                  {collapsible ? (
+                    <button
+                      type="button"
+                      className="ch-system-run"
+                      aria-expanded={expanded}
+                      data-channel-system-run={runKey}
+                      // Only while collapsed: the folded rows are out of the DOM,
+                      // so the run stands in for their last seq and the reader
+                      // anchor in `useFollowingScroll` keeps a row to hold onto.
+                      // When expanded the real rows carry it, and a duplicate
+                      // would shadow them in the anchor's `querySelector`.
+                      {...(!expanded && lastSeq !== undefined
+                        ? { 'data-channel-message-seq': lastSeq }
+                        : {})}
+                      onClick={() => runKey && toggleSystemRun(runKey)}
+                    >
+                      <span className="ch-system-run__label">
+                        {node.messages.length} system events
+                      </span>
+                      {expanded ? CHEVRON_UP_ICON : CHEVRON_DOWN_ICON}
+                    </button>
+                  ) : null}
+                  {expanded
+                    ? node.messages.map((message) => (
+                        <ChannelMessageRow
+                          key={message.id}
+                          message={message}
+                          channelId={channelId}
+                          variant="system"
+                          highlighted={highlightedMessageId === message.id}
+                        />
+                      ))
+                    : null}
+                </React.Fragment>
               );
             }
             const firstId = node.messages[0]?.id ?? `group-${index}`;

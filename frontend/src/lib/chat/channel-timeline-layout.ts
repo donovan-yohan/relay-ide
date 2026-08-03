@@ -8,6 +8,12 @@
 // (which also emits a day-divider), the first-unread boundary is crossed (which
 // also emits the unread line), or the gap since the previous message in the
 // running group exceeds GROUP_WINDOW_MS.
+//
+// System rows never join a sender group, but consecutive ones coalesce into a
+// single `system` RUN node (#1308 item 5) so a burst of binder notices reads as
+// one line instead of a wall. A run breaks on exactly the same structural
+// boundaries as a group — an interleaved prose message, a day divider, the
+// unread line — plus any system row that carries its own controls.
 import type {
   ChannelMessage,
   ChannelMessageId,
@@ -75,8 +81,30 @@ function timestampOrder(value: string): number {
 export type TimelineNode =
   | { kind: 'day-divider'; date: string /* YYYY-MM-DD local */ }
   | { kind: 'group'; sender: ChannelSenderRef; messages: ChannelMessage[] }
-  | { kind: 'system'; message: ChannelMessage }
+  /**
+   * A RUN of consecutive system rows (#1308 item 5). Always at least one; the
+   * renderer decides whether a run is long enough to collapse. System rows never
+   * join a sender group, so this node is disjoint from `group`.
+   */
+  | { kind: 'system'; messages: ChannelMessage[] }
   | { kind: 'unread-line' };
+
+/**
+ * Run length at which the timeline folds system rows behind one `n system
+ * events` summary. Two one-line notices read faster than a summary the operator
+ * has to click open, so the fold starts at three (DESIGN.md minimalism).
+ */
+export const SYSTEM_RUN_COLLAPSE_MIN = 3;
+
+/**
+ * Whether a system row may be folded into a run. An approval request row (#1167)
+ * carries its own approve/deny controls — folding it behind a summary would hide
+ * an action the operator is being ASKED to take, so it always stands alone and
+ * breaks the run around it.
+ */
+export function systemRowCoalescable(message: ChannelMessage): boolean {
+  return typeof message.meta?.approvalRequestId !== 'string';
+}
 
 function localDayKeyFromDate(date: Date): string {
   const year = date.getFullYear();
@@ -147,10 +175,11 @@ export function buildTimelineNodes(
 ): TimelineNode[] {
   const nodes: TimelineNode[] = [];
   let group: RunningGroup | null = null;
+  let systemRun: ChannelMessage[] | null = null;
   let prevDay: string | null = null;
   let unreadInserted = lastReadSeq === null;
 
-  const flush = (): void => {
+  const flushGroup = (): void => {
     if (group) {
       nodes.push({
         kind: 'group',
@@ -159,6 +188,21 @@ export function buildTimelineNodes(
       });
       group = null;
     }
+  };
+
+  const flushSystemRun = (): void => {
+    if (systemRun) {
+      nodes.push({ kind: 'system', messages: systemRun });
+      systemRun = null;
+    }
+  };
+
+  // A message is either system or prose, so at most one accumulator is ever
+  // open; `flush` closes whichever it is. Every structural break (day divider,
+  // unread line) goes through it, which is what keeps a run from spanning one.
+  const flush = (): void => {
+    flushGroup();
+    flushSystemRun();
   };
 
   for (const message of messages) {
@@ -179,10 +223,20 @@ export function buildTimelineNodes(
     }
 
     if (message.kind === 'system') {
-      flush();
-      nodes.push({ kind: 'system', message });
+      flushGroup();
+      if (!systemRowCoalescable(message)) {
+        flushSystemRun();
+        nodes.push({ kind: 'system', messages: [message] });
+        continue;
+      }
+      if (!systemRun) systemRun = [];
+      systemRun.push(message);
       continue;
     }
+
+    // Any prose row ends the run — an interleaved human/agent message is exactly
+    // the boundary that makes the surrounding system noise separable.
+    flushSystemRun();
 
     if (group) {
       // Key on the RENDER id so a legacy `agent:<vendor>` row coalesces with a

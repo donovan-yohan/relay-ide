@@ -405,6 +405,31 @@
   text-align: center;
 }
 
+/* Coalesced system-run summary (#1308 item 5). Reads as a system row —
+   same muted mono type, same centering — with a chevron to say it opens.
+   Zero radius, outline-only, no fill (DESIGN.md). */
+.ch-system-run {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  align-self: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-system-run:hover,
+.ch-system-run:focus-visible {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
 /* approval controls on an actionable system row (#1167) */
 .ch-system-msg__actions {
   display: inline-flex;

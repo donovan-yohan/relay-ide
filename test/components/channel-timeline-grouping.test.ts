@@ -84,7 +84,8 @@ describe('buildTimelineNodes — mixed fixture', () => {
     const nodes = buildTimelineNodes(fixture, null);
     const system = nodes.find((n) => n.kind === 'system');
     expect(system).toBeTruthy();
-    if (system?.kind === 'system') expect(system.message.seq).toBe(7);
+    if (system?.kind === 'system')
+      expect(system.messages.map((m) => m.seq)).toEqual([7]);
   });
 
   it('inserts the unread line before the first message past lastReadSeq', () => {
