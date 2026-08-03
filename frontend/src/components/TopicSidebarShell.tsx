@@ -17,10 +17,7 @@ import {
   MessageSquare,
   TriangleAlert,
 } from 'lucide-react';
-import {
-  builtInAgentProfileId,
-  parseAgentProfileProviderId,
-} from '../../../shared/agent-profile.js';
+import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
   parseChannelSearchSnippet,
   parseMentions,
@@ -47,6 +44,10 @@ import {
   type ChannelAgentStatus,
 } from '../lib/api.js';
 import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
+import {
+  CURRENT_OPERATOR_SENDER_ID,
+  senderShortLabel,
+} from '../lib/channel-sender-label.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
@@ -58,6 +59,7 @@ import { AgentAvatar } from './chat/AgentAvatar.js';
 import { leaveChatSurface, openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
   applyTopicActiveContext,
+  openChannelMessageSelection,
   openTopicSelection,
 } from '../lib/topic-selection.js';
 import type { SessionSummary } from '../lib/types.js';
@@ -149,7 +151,6 @@ const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
  * refetches.
  */
 const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 10_000;
-const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
 const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 
 function useMobileCockpitViewport(): boolean {
@@ -216,54 +217,15 @@ function channelRowPreview(summary: ChannelRailSummary | null): string | null {
 }
 
 /**
- * Short sender label for a row snippet. NEVER derived by splitting `senderId`:
- * an agent's id is its profile Actor id (`agent-profile:<vendor>:default`, or
- * `agent-profile:<vendor>:<uuid>` for a custom profile), so the trailing segment
- * is `default`/a uuid, not a name (#1234, `shared/channel-chat-protocol.ts`).
- * Read the server-resolved `senderDisplayName`, then `providerId`, and only then
- * fall back to the vendor segment of a profile id / the name half of a
- * `human:<actorId>` ref.
+ * Short sender label for a row snippet, over the shared precedence in
+ * `lib/channel-sender-label.ts` (#1308 slice 2 item 3 lifted it there so the
+ * command palette's message hits label senders identically). Kept as a named
+ * wrapper because a rail summary's `lastMessage` is the rail's own shape.
  */
 function channelRowSenderLabel(
   last: NonNullable<ChannelRailSummary['lastMessage']>
 ): string {
   return senderShortLabel(last);
-}
-
-/**
- * The rule itself, over the three fields any sender-bearing row carries. Split
- * out of `channelRowSenderLabel` (#1308 slice 2) so a message-search hit — which
- * is not a `ChannelRailSummary` — labels its sender by the SAME precedence
- * instead of growing a second, drifting copy.
- */
-function senderShortLabel(sender: {
-  senderId: string;
-  senderDisplayName?: string | undefined;
-  providerId?: string | undefined;
-}): string {
-  if (sender.senderId === CURRENT_OPERATOR_SENDER_ID) return 'you';
-  const label =
-    sender.senderDisplayName?.trim() ||
-    sender.providerId?.trim() ||
-    senderLabelFromId(sender.senderId);
-  return label === 'operator' ? 'you' : label;
-}
-
-/** Last-resort label for a sender id with no server-resolved name/vendor. */
-function senderLabelFromId(senderId: string): string {
-  // CLI-gateway actor rows are `agent:<actorId>` where the actor id may itself
-  // be a profile id (`deriveSender`), so unwrap that prefix first.
-  const withoutAgentPrefix = senderId.startsWith('agent:')
-    ? senderId.slice('agent:'.length)
-    : senderId;
-  // `agent-profile:<vendor>:<rest>` — the VENDOR segment names the sender; the
-  // trailing segment is `default` or a uuid.
-  const vendor = parseAgentProfileProviderId(withoutAgentPrefix);
-  if (vendor) return vendor;
-  const separator = withoutAgentPrefix.indexOf(':');
-  return separator === -1
-    ? withoutAgentPrefix
-    : withoutAgentPrefix.slice(separator + 1);
 }
 
 /**
@@ -3222,43 +3184,29 @@ export function TopicSidebarView({
     },
     [onSelectSession, searchResumeTargetFor, select]
   );
-  // #1308 slice 2 item 2: a message hit opens its channel AND asks that channel
-  // to land on the exact message. The anchor is written AFTER the channel open
-  // on purpose — `setActiveChannelId` clears any un-consumed anchor, so the
-  // other order would erase the intent it had just recorded (same contract the
-  // `#msg-` deep link in `useUrlNav` follows, and the same reason
-  // `openThread` records its thread intent second).
+  // #1308 slice 2: a message hit opens its channel AND asks that channel to land
+  // on the exact message. Both writes — and the order they must happen in — live
+  // in `openChannelMessageSelection`, shared with the command palette's
+  // `messages` category (item 3) so the two entry points cannot drift into
+  // opening the same hit differently. The rail-local state (selected row,
+  // mobile control sheet) is all that stays here.
   //
-  // Nothing here resolves, scrolls, or paginates: `ChannelView` already owns the
-  // bounded backwards walk, the not-in-recent-history toast, and the jump
-  // emphasis (#1308 slice 1), and it opens the thread panel by itself when the
-  // landed row turns out to be a reply. Reimplementing any of that here would
-  // give search a second scroll path that could disagree with the deep link.
-  //
-  // A hit's channel is routinely ABSENT from `topicsById`: while searching, the
+  // `topicsById` routinely does NOT hold a hit's channel: while searching, the
   // rail renders the chat-search topics, and a message can match in a channel
-  // whose title does not. `openTopicSelection` is a no-op for anything it
-  // cannot prove persisted, so an unresolved (or non-persisted) id falls back to
-  // the two writes that gate performs rather than silently dropping the click
-  // and leaving an anchor pointed at a channel nobody opened.
+  // whose title does not. The shared gate opens the channel by id regardless and
+  // treats a resolved topic as workspace/repo context only, so an unknown id
+  // still lands the operator on the message instead of dropping the click.
   const openMessageResult = useCallback(
     (hit: ChannelMessageSearchResult) => {
-      const topic = topicsById.get(hit.channelId);
-      if (topic?.source === 'persisted') {
-        // Known topic: route through the shared gate so the hit also lands the
-        // channel's workspace/repo context, exactly like clicking its rail row.
-        select(hit.channelId, topic);
-      } else {
-        setSelectedId(hit.channelId);
-        setMobileControlTopicId(null);
-        const ui = useUiStore.getState();
-        ui.setActiveChannelId(hit.channelId);
-        ui.setTopicComposerOpen(false);
-      }
-      useUiStore.getState().requestChannelMessage(hit.channelId, hit.messageId);
-      useUiStore.getState().closeSidebar();
+      setSelectedId(hit.channelId);
+      setMobileControlTopicId(null);
+      openChannelMessageSelection({
+        channelId: hit.channelId,
+        messageId: hit.messageId,
+        topic: topicsById.get(hit.channelId),
+      });
     },
-    [select, topicsById]
+    [topicsById]
   );
   const selectMobile = useCallback(
     (id: string) => {
