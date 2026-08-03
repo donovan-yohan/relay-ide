@@ -25,6 +25,13 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       cancelQueued: false,
       resume: false,
       telemetry: true,
+      // `OpenCodeProtocolAdapter.handleMessagePartUpdated` fires
+      // `chat:text-delta` per `message.part.updated`, and
+      // `mapChatEventToAgentPatchV2` DOES have a case for it, so the bridge
+      // really does surface `agent-item-delta-v2` token-by-token. Unlike the
+      // hermes `telemetry` gap below, the compat mapping exists — the flag was
+      // just never set.
+      streaming: true,
     }),
   'opencode-attached': () =>
     new LegacyProtocolAdapterV2Bridge(new OpenCodeAttachedAdapter(), {
@@ -40,6 +47,10 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       cancelQueued: false,
       resume: false,
       telemetry: true,
+      // Same as `opencode`: the attached adapter's `message.part.updated`
+      // handler fires `chat:text-delta` whenever the event carries a string
+      // delta.
+      streaming: true,
     }),
   hermes: () =>
     new LegacyProtocolAdapterV2Bridge(new HermesProtocolAdapter(), {
