@@ -1191,6 +1191,16 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const sender = deriveSender(req, sourceRuntime);
 
     // clientMessageId idempotency: return the existing row without re-broadcast.
+    //
+    // Steering is the ONE thing a replay must still act on (#1308 slice 4
+    // review). The composer keeps its `clientMessageId` after a failed send, so
+    // an operator whose "queue" POST landed server-side but looked like it
+    // failed, and who then presses "interrupt & send", replays a known id. The
+    // row is already persisted and already queued — re-broadcasting it would
+    // double-deliver the message — but the interrupt has NOT happened yet, and
+    // swallowing it silently would report an interrupt-and-send that did
+    // neither. `steerExisting` applies the cancellation half only, and is a
+    // no-op when the addressed binding has no live turn.
     if (clientMessageId) {
       const existing = store.findByClientMessage(
         id,
@@ -1198,6 +1208,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         clientMessageId
       );
       if (existing) {
+        if (steering) deps.binder?.steerExisting(existing, steering);
         res.status(200).json({ message: existing });
         return;
       }

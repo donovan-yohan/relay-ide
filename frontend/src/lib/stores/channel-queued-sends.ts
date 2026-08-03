@@ -56,7 +56,11 @@ export interface ChannelQueuedSendMark {
 
 interface ChannelQueuedSendsState {
   marksByMessageId: Record<string, ChannelQueuedSendMark>;
-  /** Record a durable message id as "sent into a busy agent". */
+  /**
+   * Record a durable message id as "sent into a busy agent", sweeping any
+   * already-retired mark on the way in so the map cannot grow unbounded in a
+   * long-lived channel.
+   */
   markQueuedSend: (messageId: string, mark: ChannelQueuedSendMark) => void;
   /** Drop every mark for a channel (channel switch / unmount). */
   clearChannel: (channelId: string) => void;
@@ -66,9 +70,26 @@ export const useChannelQueuedSendsStore = create<ChannelQueuedSendsState>(
   (set) => ({
     marksByMessageId: {},
     markQueuedSend: (messageId, mark) =>
-      set((state) => ({
-        marksByMessageId: { ...state.marksByMessageId, [messageId]: mark },
-      })),
+      set((state) => {
+        // Sweep on write (#1308 slice 4 review). A mark is only ever READ by the
+        // row it names, so a retired one is invisible — but nothing else drops
+        // it until the channel unmounts, and a daily-driver channel stays
+        // mounted for days. Every insert therefore evicts marks whose drain
+        // generation has already moved, which bounds the map at "sends still
+        // waiting" instead of "sends this session".
+        const drainSeqs =
+          useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent;
+        const next: Record<string, ChannelQueuedSendMark> = {};
+        for (const [id, existing] of Object.entries(state.marksByMessageId)) {
+          if (id === messageId) continue; // replaced below
+          if (queuedSendStillWaiting(existing, drainSeqs)) next[id] = existing;
+        }
+        // The new mark is kept as given: its caller has already checked that no
+        // snapshotted generation moved during the POST round-trip, and that
+        // check is the one allowed to decide whether this send gets a chip.
+        next[messageId] = mark;
+        return { marksByMessageId: next };
+      }),
     clearChannel: (channelId) =>
       set((state) => {
         const next: Record<string, ChannelQueuedSendMark> = {};

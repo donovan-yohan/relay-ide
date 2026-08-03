@@ -201,15 +201,24 @@ Posting to a channel whose bound profile is already mid-turn never opens a
 second concurrent turn and never drops the message. The post joins that
 binding's FIFO queue, and the queue drains on turn completion.
 
-- **Queue (default).** Every human post that arrived while the agent was busy
-  drains into ONE next turn. The newest of them is the trigger; the rest arrive
-  as context rows of the same packet, because the packet is rebuilt from the
+- **Queue (default).** Human posts that arrived while the agent was busy drain
+  into ONE next turn. The newest of them is the trigger; the rest arrive as
+  context rows of the same packet, because the packet is rebuilt from the
   durable message log. Three impatient messages cost one turn, not three.
-- **Interrupt and send.** The post route takes an explicit `steering:
-  "interrupt"` body field. It cancels the live turn through the same interrupt
-  path the header control uses — the partial reply finalizes `interrupted` — and
-  the new message triggers as soon as that turn releases. Steering is never
-  inferred from message text.
+- **What never coalesces.** Coalescing folds older posts into a newer one's
+  packet, so it only applies where that fold is lossless. A run stops at a post
+  from another thread scope, an agent-authored post, a post whose sequence
+  number is not strictly newer than the run's head (a send retried after a
+  transport failure is re-queued behind newer posts, and must not swallow
+  them), or a post carrying **image attachments** — the per-packet image budget
+  is per packet, not per message, so an image-bearing post keeps
+  one-trigger-one-turn and its own budget. Anything the run stops at simply
+  drains on the following completion.
+- **Interrupt and send.** The post route takes an explicit `steering` body
+  field set to `"interrupt"`. It cancels the live turn through the same
+  interrupt path the header control uses — the partial reply finalizes
+  `interrupted` — and the new message triggers as soon as that turn releases.
+  Steering is never inferred from message text.
 - **Agent posts never steer.** Sender attribution is server-derived, so an
   agent (including a CLI-gateway actor) cannot cancel another agent's turn, and
   agent-authored triggers are never coalesced away. Agent fan-out stays bounded
@@ -217,8 +226,13 @@ binding's FIFO queue, and the queue drains on turn completion.
 - **Queue cap.** The per-binding cap still bounds distinct queued turns. An
   over-cap post that would have coalesced with the queue tail supersedes it
   instead of being refused — same trigger, same packet — so fast operator typing
-  is never announced as dropped. Anything the tail cannot represent (another
-  thread, an agent-authored trigger) still produces the explicit drop row.
+  is never announced as dropped. Anything the tail cannot represent — see "what
+  never coalesces" above — still produces the explicit drop row.
+- **Idempotent replay still steers.** The post route dedupes on
+  `clientMessageId`, and the composer keeps that id after a failed send. A
+  replay that carries `steering` therefore applies the interrupt to the
+  already-persisted row rather than swallowing it; the message is not re-routed,
+  because it is already queued.
 - **Observability.** The `channel-agent-status` event and the roster's
   `binding` object both carry `queuedCount`.
 - **Restart.** The queue is in-memory turn-trigger state. A hub restart loses
@@ -256,7 +270,9 @@ emits when it splices the queued run out, immediately before the consuming turn
 starts. A send snapshots the generation before its POST and keeps the chip only
 while that snapshot is still current, so a turn that drains during the round trip
 leaves no chip behind. Both imprecisions fail toward silence: a send that queued
-can miss its chip, and one that was already consumed can never keep one.
+can miss its chip, and one that was already consumed can never keep one. Marks
+are swept on every insert, so the client's memory of them is bounded by sends
+still waiting rather than by session length.
 
 ## Limits and failure behavior
 

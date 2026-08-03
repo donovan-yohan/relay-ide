@@ -3844,6 +3844,34 @@ const STEER_TARGETS: MentionTarget[] = [
   },
 ];
 
+/**
+ * First `sendMessage` parks forever until the test fails it — the shape a dead
+ * transport has when the send hangs and only later rejects. Everything else is
+ * `SteerableAdapter`.
+ */
+class ParkedSendAdapter extends SteerableAdapter {
+  private rejectSend: ((err: unknown) => void) | null = null;
+  override sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    this.sendInputs.push(input);
+    return new Promise<void>((_resolve, reject) => {
+      this.rejectSend = reject;
+    });
+  }
+  failParkedSend(): void {
+    const reject = this.rejectSend;
+    this.rejectSend = null;
+    reject?.(new Error('boom: transport gone'));
+  }
+}
+
+/** Refuses every cancellation so the steering failure row is observable. */
+class RefusingInterruptAdapter extends SteerableAdapter {
+  override async interrupt(): Promise<void> {
+    throw new Error('boom: interrupt refused');
+  }
+}
+
 /** Post with an explicit steering choice, exactly as the post route forwards it. */
 function postSteering(
   store: ChannelMessageStore,
@@ -3851,7 +3879,8 @@ function postSteering(
   text: string,
   knownIds: string[],
   steering: 'interrupt' | undefined,
-  sender: ChannelSenderRef = OPERATOR
+  sender: ChannelSenderRef = OPERATOR,
+  parentMessageId?: string
 ): ChannelMessage {
   const mentions = parseMentions(text, knownIds);
   const message = store.appendComplete({
@@ -3859,12 +3888,40 @@ function postSteering(
     sender,
     text,
     ...(mentions.length ? { mentions } : {}),
+    ...(parentMessageId ? { parentMessageId } : {}),
   });
   binder.handleMessagePosted(
     message,
     message.mentions ?? [],
     steering ? { steering } : undefined
   );
+  return message;
+}
+
+/** Image-bearing post. The payload never resolves — only the turn shape matters. */
+function postSteerImage(
+  store: ChannelMessageStore,
+  binder: ChannelAgentBinder,
+  text: string,
+  partId: string
+): ChannelMessage {
+  const mentions = parseMentions(text, ['steer']);
+  const part: ChannelImagePart = {
+    type: 'image',
+    id: partId,
+    mime: 'image/png',
+    w: 1,
+    h: 1,
+    bytes: 7,
+  };
+  const message = store.appendComplete({
+    channelId: CH,
+    sender: OPERATOR,
+    text,
+    ...(mentions.length ? { mentions } : {}),
+    parts: [part],
+  });
+  binder.handleMessagePosted(message, message.mentions ?? []);
   return message;
 }
 
@@ -4090,5 +4147,132 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
         (row) => row.providerId === 'steer'
       )?.binding?.queuedCount
     ).toBe(0);
+  });
+
+  // The queue is NOT seq-ordered: `handleSendFailure` re-enqueues an older,
+  // already-failed trigger BEHIND whatever arrived while the transport was
+  // failing. Coalescing folds older members into the newest one's packet, so a
+  // run that admitted a stale head would splice a newer post out of the queue
+  // while producing neither a turn for it nor a context row carrying it.
+  it('a re-enqueued failed trigger never swallows a newer queued post', async () => {
+    const built: SteerableAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => {
+        const adapter =
+          built.length === 0
+            ? new ParkedSendAdapter(agentType)
+            : new SteerableAdapter(agentType);
+        built.push(adapter);
+        return adapter;
+      },
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    binder.setStatusBroadcaster((_type, data) => events.push(data));
+    const steerProfile = builtInAgentProfileId('steer');
+
+    const m1 = postSteering(store, binder, '@steer one', ['steer'], undefined);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const parked = built[0] as ParkedSendAdapter;
+
+    // The runtime dies while m1's send is still in flight, so the retry lands on
+    // a DIFFERENT binding and takes the re-enqueue branch rather than redeliver.
+    sessions.fireEnd(sessions.firstSessionId());
+
+    // A newer post rebinds and opens its own turn, which stalls...
+    postSteering(store, binder, '@steer two', ['steer'], undefined);
+    await waitFor(() => built.length === 2 && built[1]!.sendCalls.length === 1);
+    const live = built[1]!;
+
+    // ...and a newer-still post queues behind that live turn.
+    const m3 = postSteering(
+      store,
+      binder,
+      '@steer three',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => events[events.length - 1]?.['queuedCount'] === 1);
+
+    // Only now does m1's parked send fail: it re-enqueues BEHIND m3.
+    parked.failParkedSend();
+    await waitFor(() => events[events.length - 1]?.['queuedCount'] === 2);
+
+    // The drain must trigger on the NEWEST queued post, not the queue tail.
+    live.completeLatest('two reply');
+    await waitFor(() => live.sendCalls.length === 2);
+    expect(live.sendCalls[1]).toBe(channelTurnId(m3.id, steerProfile));
+    expect(live.sendInputs[1]!.content).toContain('@steer three');
+
+    // ...and the re-enqueued older trigger is not lost either — it drains next.
+    live.completeLatest('three reply');
+    await waitFor(() => live.sendCalls.length === 3);
+    expect(live.sendCalls[2]).toBe(channelTurnId(m1.id, steerProfile));
+    expect(live.concurrentPeak).toBe(1);
+  });
+
+  // The packet image budget is per PACKET, not per message, so folding N
+  // image-bearing posts into one turn would silently spend one budget on all of
+  // them. Attachments are operator content the slice promised not to drop.
+  it('never coalesces image-bearing posts, so each keeps its own image budget', async () => {
+    const { binder, store, sessions, events } = makeSteerBinder();
+    postSteering(store, binder, '@steer opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    const steerProfile = builtInAgentProfileId('steer');
+
+    const shotA = postSteerImage(store, binder, '@steer shot a', 'cha:shot-a');
+    const shotB = postSteerImage(store, binder, '@steer shot b', 'cha:shot-b');
+    await waitFor(() => events[events.length - 1]?.['queuedCount'] === 2);
+
+    adapter.completeLatest('opener reply');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    expect(adapter.sendCalls[1]).toBe(channelTurnId(shotA.id, steerProfile));
+    adapter.completeLatest('shot a reply');
+    await waitFor(() => adapter.sendCalls.length === 3);
+    expect(adapter.sendCalls[2]).toBe(channelTurnId(shotB.id, steerProfile));
+    expect(adapter.concurrentPeak).toBe(1);
+  });
+
+  it('parents a refused steering interrupt to the thread it was issued from', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new RefusingInterruptAdapter(agentType),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root',
+    });
+    post(store, binder, '@steer long task', ['steer'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as RefusingInterruptAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    const steer = postSteering(
+      store,
+      binder,
+      '@steer stop that',
+      ['steer'],
+      'interrupt',
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() =>
+      systemRows(store).some((row) =>
+        row.body.text.includes('could not be interrupted')
+      )
+    );
+    const failure = systemRows(store).find((row) =>
+      row.body.text.includes('could not be interrupted')
+    )!;
+    // Without this the explanation lands at channel top level, away from the
+    // thread the operator was actually working in.
+    expect(failure.threadId).toBe(root.id);
+    expect(failure.parentMessageId).toBe(steer.id);
   });
 });

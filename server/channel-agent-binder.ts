@@ -194,6 +194,13 @@ export interface ChannelAgentBinder {
   ): Promise<LiveBinding>;
   interrupt(channelId: string, agentId: string): Promise<void>;
   /**
+   * Apply steering to an ALREADY-persisted row (#1308 slice 4). Used by the post
+   * route when `clientMessageId` idempotency returns an existing row: the
+   * message is already queued, but the operator's interrupt intent would
+   * otherwise be dropped on the floor. Never re-routes the message.
+   */
+  steerExisting(message: ChannelMessage, steering: ChannelPostSteering): void;
+  /**
    * Re-route the ORIGINAL trigger of a failed/interrupted/truncated agent row to
    * the same profile (#1308 slice 1 item 2). The human message is never
    * re-posted — the timeline gains one system row superseding the retried row
@@ -981,6 +988,24 @@ export function createChannelAgentBinder(
   /**
    * True when two queued triggers would drain as ONE turn. Single source of
    * truth for both the drain (`pump`) and the overflow rule below.
+   *
+   * Three conditions, each load-bearing:
+   *   • both HUMAN — see `pump`'s doc comment.
+   *   • same thread scope — see `pump`'s doc comment.
+   *   • STRICTLY INCREASING seq. Coalescing folds the older members into the
+   *     newer one's packet as context rows, which only works while the newer
+   *     one really is newer: `buildPacket` selects rows with `seq <
+   *     trigger.seq`. The queue is NOT guaranteed seq-ordered —
+   *     `handleSendFailure` re-enqueues an older, already-failed trigger behind
+   *     whatever arrived while the transport was failing — so without this
+   *     guard a re-enqueued M1 could swallow a newer M3 that is neither the
+   *     trigger nor a context row of the resulting packet. The message would
+   *     have been spliced out of the queue and produce nothing at all.
+   *   • no image parts on EITHER row. A packet's image budget
+   *     (`PACKET_IMAGE_MAX_COUNT`) is per-packet, not per-message, so folding N
+   *     image-bearing posts into one turn silently spends one budget on all of
+   *     them. Attachments are operator content we promised not to drop, so an
+   *     image-bearing post keeps one-trigger-one-turn and its own budget.
    */
   function coalescesIntoOneTurn(
     earlier: ChannelMessage,
@@ -989,7 +1014,10 @@ export function createChannelAgentBinder(
     return (
       earlier.sender.kind === 'human' &&
       later.sender.kind === 'human' &&
-      earlier.threadId === later.threadId
+      earlier.threadId === later.threadId &&
+      later.seq > earlier.seq &&
+      (earlier.parts?.length ?? 0) === 0 &&
+      (later.parts?.length ?? 0) === 0
     );
   }
 
@@ -1009,7 +1037,7 @@ export function createChannelAgentBinder(
         // their message was dropped for a turn that was never going to exist.
         binding.queue[tailIndex] = { trigger };
         emitAgentStatus(binding);
-        if (steering === 'interrupt') steerInterrupt(binding);
+        if (steering === 'interrupt') steerInterrupt(binding, trigger);
         pump(binding);
         return;
       }
@@ -1027,7 +1055,7 @@ export function createChannelAgentBinder(
     // `finishTurn` → `pump` → this message. When nothing is live the interrupt
     // is a no-op and the pump below dispatches immediately, so "interrupt and
     // send" degrades cleanly to plain "send".
-    if (steering === 'interrupt') steerInterrupt(binding);
+    if (steering === 'interrupt') steerInterrupt(binding, trigger);
     pump(binding);
   }
 
@@ -1040,9 +1068,12 @@ export function createChannelAgentBinder(
    *
    * Fire-and-forget with a visible failure: if the adapter refuses, the queued
    * message stays queued and rides the turn's natural completion (or the
-   * watchdog), which is strictly better than dropping it.
+   * watchdog), which is strictly better than dropping it. The failure row is
+   * parented to the STEERING trigger, exactly like every other binder failure
+   * row — an interrupt issued from a thread panel must explain itself inside
+   * that thread, not at channel top level where the operator is not looking.
    */
-  function steerInterrupt(binding: LiveBinding): void {
+  function steerInterrupt(binding: LiveBinding, trigger: ChannelMessage): void {
     const adapter = binding.adapter;
     const turnId = binding.activeTurnId;
     if (!adapter || turnId === null) return;
@@ -1051,7 +1082,8 @@ export function createChannelAgentBinder(
       logger.warn('channel binder steering interrupt failed:', err);
       postSystemRow(
         binding.channelId,
-        `@${binding.displayName} could not be interrupted: ${errText(err)}`
+        `@${binding.displayName} could not be interrupted: ${errText(err)}`,
+        { parentMessageId: parentForTrigger(trigger) }
       );
     });
   }
@@ -1074,6 +1106,10 @@ export function createChannelAgentBinder(
    *     (they already live in the reused provider conversation), so coalescing an
    *     agent-authored trigger away could silently erase it. Agent posts keep
    *     one-trigger-one-turn and stay bounded by the consecutive-agent brake.
+   *   • image-bearing posts only ever trigger their own turn, so the per-packet
+   *     image budget is never split across several operator messages.
+   * All three live in `coalescesIntoOneTurn`, together with the seq-monotonicity
+   * guard that keeps a re-enqueued failed trigger from swallowing newer posts.
    */
   function pump(binding: LiveBinding): void {
     if (binding.activeTurnId !== null) return;
@@ -1089,7 +1125,17 @@ export function createChannelAgentBinder(
     }
     const batch = binding.queue.splice(0, take);
     emitAgentStatus(binding);
-    sendTurn(binding, batch[batch.length - 1]!.trigger);
+    // Newest member triggers, and "newest" means max seq — NOT last position.
+    // `coalescesIntoOneTurn` is only evaluated head-vs-candidate, so a queue
+    // whose order diverged from seq order (re-enqueue after a send failure)
+    // can still admit a candidate that is newer than the head but older than
+    // an earlier admitted member. Every non-trigger member has a lower seq, so
+    // all of them are read back as context rows of this one packet.
+    let trigger = batch[0]!.trigger;
+    for (const entry of batch) {
+      if (entry.trigger.seq > trigger.seq) trigger = entry.trigger;
+    }
+    sendTurn(binding, trigger);
   }
 
   function buildPacket(
@@ -1803,6 +1849,48 @@ export function createChannelAgentBinder(
   }
 
   /**
+   * Apply an operator's explicit steering intent to a row that ALREADY exists
+   * (#1308 slice 4 review).
+   *
+   * The post route is idempotent on `clientMessageId`, and the composer
+   * deliberately RETAINS that id after a failed send. So an operator whose
+   * "queue" POST looked like it failed but actually landed, and who then presses
+   * "interrupt & send" on the same draft, replays a `clientMessageId` the store
+   * already knows. Returning the stored row alone would silently swallow the
+   * interrupt — the UI would report an interrupt-and-send that did neither.
+   *
+   * This applies the steering HALF only. The message itself is already queued
+   * from the first post, so re-routing it here would double-deliver; what the
+   * operator is still missing is the cancellation. Interrupting is idempotent (a
+   * no-op when the binding has no live turn), which is what makes replaying it
+   * safe on a duplicate.
+   */
+  function steerExisting(
+    message: ChannelMessage,
+    steering: ChannelPostSteering
+  ): void {
+    if (closed) return;
+    if (steering !== 'interrupt') return;
+    if (message.kind !== 'message') return; // system rows never steer (§1)
+    // Server-derived sender kind, the same gate `handleMessagePosted` applies:
+    // an agent post can never cancel another agent's live turn.
+    if (message.sender.kind !== 'human') return;
+    const mentions = currentProfileMentions(message, message.mentions ?? []);
+    let profiles = eligibleProfiles(message, mentions);
+    if (profiles.length === 0) {
+      // Same implicit-DM resolution as `routeImplicitDm`: addressing a DM IS
+      // the mention, so a steered DM post carries no literal `@name` to resolve.
+      const providerId = dmProviderIdFor(message.channelId);
+      if (providerId === null) return;
+      profiles = [defaultProfileForProvider(providerId)];
+    }
+    for (const profile of profiles) {
+      const binding = live.get(bindingKey(message.channelId, profile.id));
+      if (binding) steerInterrupt(binding, message);
+    }
+  }
+
+  /**
    * DM implicit routing. A DM is "a channel with one agent" (ADR-020,
    * `docs/CHANNEL_CHAT.md`), so addressing it IS the mention — a human message
    * in a DM must reach that agent with no literal `@name` typed.
@@ -2099,6 +2187,7 @@ export function createChannelAgentBinder(
     ensureBinding,
     ensureOrchestrator,
     interrupt,
+    steerExisting,
     retryMessage,
     respondToApproval,
     rosterForChannel,

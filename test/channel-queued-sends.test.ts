@@ -184,6 +184,41 @@ describe('queued-send marks (#1308 slice 4)', () => {
     expect(marks['chm:2']).toBeDefined();
   });
 
+  // A daily-driver channel stays mounted for days, and `clearChannel` only
+  // fires on switch/unmount, so an append-only map would grow one entry per
+  // queued send for the whole session.
+  it('sweeps retired marks on every insert so the map stays bounded', () => {
+    const record = useChannelAgentStatusStore.getState().recordStatus;
+    record(CHANNEL, CLAUDE, 'streaming', 'rt:1', 1);
+    const snapshot = snapshotQueueDrainSeqs(
+      CHANNEL,
+      [CLAUDE],
+      useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent
+    );
+    useChannelQueuedSendsStore
+      .getState()
+      .markQueuedSend('chm:1', mark(snapshot));
+    // Still waiting: an insert must not evict a live mark.
+    useChannelQueuedSendsStore
+      .getState()
+      .markQueuedSend('chm:2', mark(snapshot));
+    expect(
+      Object.keys(useChannelQueuedSendsStore.getState().marksByMessageId).sort()
+    ).toEqual(['chm:1', 'chm:2']);
+
+    // The queue drains, retiring both — the next insert is what collects them.
+    record(CHANNEL, CLAUDE, 'idle', 'rt:1', 0);
+    const fresh = snapshotQueueDrainSeqs(
+      CHANNEL,
+      [CLAUDE],
+      useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent
+    );
+    useChannelQueuedSendsStore.getState().markQueuedSend('chm:3', mark(fresh));
+    expect(
+      Object.keys(useChannelQueuedSendsStore.getState().marksByMessageId)
+    ).toEqual(['chm:3']);
+  });
+
   it('names one busy agent and stays generic for several — lowercase, no emoji', () => {
     expect(queuedSendCopy(['claude'])).toBe('queued — claude is mid-turn');
     expect(queuedSendCopy(['claude', 'hermes'])).toBe(
