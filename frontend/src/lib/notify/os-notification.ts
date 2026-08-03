@@ -98,6 +98,16 @@ export interface OsNotifier {
   /**
    * ONE collapsed notification for a burst the gate's global budget held back.
    * Carries a constant tag, so a growing overflow replaces its own line.
+   *
+   * COALESCED, not immediate. The gate raises `osOverflow` on every event that
+   * GROWS the held-back set, so a single producer pass over a reconnect payload
+   * calls this once per held-back channel — twelve calls for the fifteen-DM
+   * shape the burst budget exists to cap. Constructing a Notification per call
+   * would put the storm straight back: `tag` replacement is per-page on several
+   * engines and a replace can re-alert, so the operator would hear fifteen
+   * alerts instead of the promised three plus one. Calls made inside one
+   * synchronous pass therefore flush as a single notification carrying the
+   * LARGEST count seen — the digest the cap promised.
    */
   deliverOverflow: (channelCount: number) => void;
   /**
@@ -122,8 +132,26 @@ export interface OsNotifier {
    * into two prompts.
    */
   requestPermission: () => Promise<NotifyPermissionState>;
-  /** Forget the in-flight request memo and the prime one-shot (sign-out, tests). */
+  /**
+   * Forget the in-flight request memo, the prime one-shot and any digest still
+   * waiting to flush (sign-out, tests).
+   */
   reset: () => void;
+}
+
+/**
+ * Run the coalesced digest flush at the end of the current synchronous pass.
+ *
+ * A microtask, not a timer: the producer loop that raises overflow is
+ * synchronous, so this is the first moment the whole burst is known, and it
+ * adds no observable latency to the one notification the operator does get.
+ */
+function scheduleOverflowFlush(flush: () => void): void {
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(flush);
+    return;
+  }
+  void Promise.resolve().then(flush);
 }
 
 /**
@@ -146,6 +174,10 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
   let pendingRequest: Promise<NotifyPermissionState> | null = null;
   /** Whether the one gestureless prime has already been spent. */
   let primed = false;
+  /** Largest held-back channel count awaiting the coalesced digest flush. */
+  let pendingOverflow = 0;
+  /** Whether a flush is already queued for the current pass. */
+  let overflowScheduled = false;
 
   function requestPermission(): Promise<NotifyPermissionState> {
     const ctor = resolveCtor();
@@ -247,13 +279,28 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
     });
   }
 
+  function flushOverflow(): void {
+    overflowScheduled = false;
+    const channelCount = pendingOverflow;
+    pendingOverflow = 0;
+    if (channelCount <= 0) return;
+    void present((ctor) => showOverflow(channelCount, ctor));
+  }
+
   return {
     deliver: (event) => {
       if (!event.os) return Promise.resolve(false);
       return present((ctor) => show(event, ctor));
     },
     deliverOverflow: (channelCount) => {
-      void present((ctor) => showOverflow(channelCount, ctor));
+      if (channelCount <= 0) return;
+      // The LARGEST count wins, not the last: the gate reports the held-back
+      // set's size as it grows, so the final call in a pass already describes
+      // every channel the earlier ones did.
+      pendingOverflow = Math.max(pendingOverflow, channelCount);
+      if (overflowScheduled) return;
+      overflowScheduled = true;
+      scheduleOverflowFlush(flushOverflow);
     },
     primePermission: () => {
       if (primed) return;
@@ -269,6 +316,10 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
     reset: () => {
       pendingRequest = null;
       primed = false;
+      // The queued flush is left to run and no-op on a zero count: cancelling
+      // it would need a handle the microtask queue does not hand back, and a
+      // reset notifier must not show a digest for a lane that just went away.
+      pendingOverflow = 0;
     },
   };
 }

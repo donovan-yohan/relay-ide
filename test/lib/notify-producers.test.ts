@@ -470,7 +470,7 @@ describe('global burst budget', () => {
     )
   );
 
-  it('collapses a reconnect storm into three notifications plus one digest', () => {
+  it('collapses a reconnect storm into three notifications plus one digest', async () => {
     const rows = [...burstChannels.keys()].map((id) => summaryRow(id));
     const delivered = notifyFromChannelSummaries({
       rows,
@@ -480,8 +480,13 @@ describe('global burst budget', () => {
     // Every row still earns its in-app mark.
     expect(delivered).toHaveLength(8);
     expect(attentionCount()).toBe(8);
-    // Three per-channel notifications, then ONE digest line that keeps
-    // replacing itself (constant tag) as the held-back set grows.
+    // The digest is coalesced onto a microtask, so the pass must be let finish.
+    await Promise.resolve();
+    // Three per-channel notifications and ONE digest line — FOUR Notification
+    // constructions for eight rows. Anything per-held-back-channel would be
+    // eight, which is the storm the cap exists to prevent: `tag` replacement is
+    // per-page on several engines and a replace can re-alert.
+    expect(shown).toHaveLength(4);
     const perChannel = shown.filter((entry) =>
       entry.options?.tag?.startsWith('relay-channel:')
     );
@@ -490,11 +495,8 @@ describe('global burst budget', () => {
     );
     expect(perChannel).toHaveLength(3);
     expect(perChannel[0]?.options?.body).toBe('claude replied in agent 0');
+    // One line, carrying the whole held-back set.
     expect(digests.map((entry) => entry.options?.body)).toEqual([
-      '1 channel has new messages',
-      '2 channels have new messages',
-      '3 channels have new messages',
-      '4 channels have new messages',
       '5 channels have new messages',
     ]);
   });

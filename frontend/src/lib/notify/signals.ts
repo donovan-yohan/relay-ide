@@ -110,6 +110,17 @@ export interface NotifyEvent {
    */
   osOverflow: number;
   /**
+   * The `now` at which the gate CHARGED this channel's rate-limit window and a
+   * global burst slot. Present only when the OS tier was granted (`os: true`).
+   *
+   * It exists so a refund can be matched rather than assumed. `deliver` is
+   * asynchronous on the lazy-permission path, and an operator can sit on a
+   * permission prompt for minutes — long enough for a later event in the same
+   * channel to fire and write a fresh window. A refund that cleared whatever it
+   * found would hand back a charge it never made.
+   */
+  osChargedAt?: number | undefined;
+  /**
    * Lowercase-safe short label for the sender/agent, carried through from the
    * signal. Copy is composed by `notify/copy.ts` (item 2) rather than here: the
    * OS tier renders title and body as one unit and needs the channel inside the
@@ -311,6 +322,18 @@ export interface NotifyGateContext {
   now: number;
 }
 
+/**
+ * What a refund needs from the event it is handing back.
+ *
+ * `osChargedAt` is what makes the refund IDENTIFIABLE rather than positional —
+ * see the field's note on `NotifyEvent`. An event that carries no stamp charged
+ * nothing, so there is nothing to hand back.
+ */
+export type NotifyOsRefund = Pick<
+  NotifyEvent,
+  'channelId' | 'count' | 'osChargedAt'
+>;
+
 export interface NotifyGate {
   /** Decide one signal. Returns null when nothing should be shown. */
   evaluate: (
@@ -333,7 +356,7 @@ export interface NotifyGate {
    * The replay guard is deliberately NOT refunded: the row was evaluated and
    * did earn its in-app badge, so re-raising it would double-badge.
    */
-  refundOs: (event: Pick<NotifyEvent, 'channelId' | 'count'>) => void;
+  refundOs: (event: NotifyOsRefund) => void;
   /** Forget every per-channel ledger entry (sign-out, tests). */
   reset: () => void;
 }
@@ -414,6 +437,7 @@ export function createNotifyGate(): NotifyGate {
     let os = ctx.documentHidden;
     let count = 1;
     let osOverflow = 0;
+    let osChargedAt: number | undefined;
     if (os) {
       const lastOsAt = lastOsAtByChannel.get(channelId);
       const withinChannelWindow =
@@ -447,6 +471,8 @@ export function createNotifyGate(): NotifyGate {
         coalescedByChannel.delete(channelId);
         lastOsAtByChannel.set(channelId, ctx.now);
         osFiredAt.push(ctx.now);
+        // Stamped so a refund can prove it is handing back THIS charge.
+        osChargedAt = ctx.now;
       }
     }
 
@@ -459,22 +485,44 @@ export function createNotifyGate(): NotifyGate {
       os,
       count,
       osOverflow,
+      ...(osChargedAt === undefined ? {} : { osChargedAt }),
       senderLabel: signal.senderLabel,
       seq: signal.seq,
       at: signal.at,
     };
   }
 
-  function refundOs(event: Pick<NotifyEvent, 'channelId' | 'count'>): void {
-    lastOsAtByChannel.delete(event.channelId);
+  function refundOs(event: NotifyOsRefund): void {
+    const chargedAt = event.osChargedAt;
+    // No stamp means the OS tier was never granted, so neither ledger was
+    // touched. Refunding anyway would credit a coalesce pile for signals that
+    // were never held back.
+    if (chargedAt === undefined) return;
     // The undelivered event stood for `count` signals — itself plus whatever it
     // was flushing — and none of them was seen, so all of them go back on the
     // coalesce pile rather than evaporating.
-    coalescedByChannel.set(event.channelId, event.count);
-    // Give the burst slot back too. The most recent grant is popped rather than
-    // matched by timestamp: refunds are same-window and the ledger is a COUNT,
-    // so which entry leaves it only shifts the window edge by microseconds.
-    osFiredAt.pop();
+    //
+    // ADDED, not assigned: `deliver` is asynchronous on the lazy-permission
+    // path, which is the long one — the operator can leave the prompt up while
+    // more messages land in the same channel and coalesce behind it. Assigning
+    // would destroy exactly those, and the next fire would undercount the run
+    // the operator never saw.
+    coalescedByChannel.set(
+      event.channelId,
+      (coalescedByChannel.get(event.channelId) ?? 0) + event.count
+    );
+    // Matched, not assumed. A refund can land long after its event was
+    // evaluated, by which time a LATER event in this channel may have fired for
+    // real and written a fresh window; clearing that one would let the channel
+    // notify twice inside its 60s limit.
+    if (lastOsAtByChannel.get(event.channelId) === chargedAt) {
+      lastOsAtByChannel.delete(event.channelId);
+    }
+    // Same reasoning for the global burst slot: the entry this event pushed is
+    // spliced out by its own timestamp rather than popping whichever grant
+    // happens to be newest, which on a late refund is somebody else's.
+    const slot = osFiredAt.indexOf(chargedAt);
+    if (slot !== -1) osFiredAt.splice(slot, 1);
   }
 
   return {

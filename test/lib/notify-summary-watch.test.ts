@@ -258,6 +258,19 @@ describe('badge pruning', () => {
     expect(attentionCount()).toBe(0);
   });
 
+  it('drops the dot when the LAST channel leaves the list', () => {
+    // The one case where every cached badge is provably stale — and the one
+    // case the notify pass has nothing to do, so a prune behind the notify
+    // guard never reached it and the dot and title count stayed pinned for the
+    // life of the tab.
+    client.setQueryData(['channels'], dmRows(12));
+    client.setQueryData(['workspace-topics'], TOPICS);
+    stop = watchChannelSummaries(client);
+    expect(attentionCount()).toBe(1);
+    client.setQueryData(['workspace-topics'], { topics: [] });
+    expect(attentionCount()).toBe(0);
+  });
+
   it('keeps every flag when the topic payload is TRUNCATED', () => {
     // A page of the corpus is not evidence of deletion.
     client.setQueryData(['channels'], dmRows(12));

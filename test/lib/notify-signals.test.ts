@@ -516,15 +516,86 @@ describe('gate — refund for an event that was never shown', () => {
     ).toMatchObject({ os: true });
   });
 
-  it('carries the undelivered run into the next fire', () => {
+  it('ADDS the undelivered run to the signals that piled up meanwhile', () => {
+    // `deliver` is asynchronous on the lazy-permission path — the long one. The
+    // operator leaves the prompt up while two more messages land in the same
+    // channel and coalesce behind it. Assigning the refund would destroy those
+    // two, and the next fire would undercount the run nobody saw.
     const gate = createNotifyGate();
     const first = gate.evaluate(messageSignal({ seq: 1 }), gateContext());
+    expect(first).toMatchObject({ os: true, count: 1 });
     gate.evaluate(messageSignal({ seq: 2 }), gateContext({ now: NOW + 1 }));
-    // Two signals stood behind that notification and neither was seen.
-    gate.refundOs({ channelId: first!.channelId, count: 2 });
+    gate.evaluate(messageSignal({ seq: 3 }), gateContext({ now: NOW + 2 }));
+    // The prompt is finally dismissed; nothing was ever shown.
+    gate.refundOs(first!);
     expect(
-      gate.evaluate(messageSignal({ seq: 3 }), gateContext({ now: NOW + 2 }))
-    ).toMatchObject({ os: true, count: 3 });
+      gate.evaluate(messageSignal({ seq: 4 }), gateContext({ now: NOW + 3 }))
+    ).toMatchObject({ os: true, count: 4 });
+  });
+
+  it('refunds only the charge it actually made', () => {
+    // A dismissal can land minutes after its event was evaluated. By then a
+    // LATER message in the same channel may have fired for real and written a
+    // fresh window — clearing that one would let the channel notify twice
+    // inside its 60s limit.
+    const gate = createNotifyGate();
+    const stale = gate.evaluate(messageSignal({ seq: 1 }), gateContext());
+    expect(
+      gate.evaluate(
+        messageSignal({ seq: 2 }),
+        gateContext({ now: NOW + NOTIFY_OS_RATE_LIMIT_MS + 1 })
+      )
+    ).toMatchObject({ os: true });
+    gate.refundOs(stale!);
+    expect(
+      gate.evaluate(
+        messageSignal({ seq: 3 }),
+        gateContext({ now: NOW + NOTIFY_OS_RATE_LIMIT_MS + 2 })
+      )
+    ).toMatchObject({ os: false });
+  });
+
+  it('gives back its OWN burst slot, not the newest one', () => {
+    // Popping the newest grant leaves the REFUNDED event's timestamp in the
+    // ledger and drops a live one's. The count is right for the moment, but the
+    // window edges are now somebody else's: the stale entry ages out early and
+    // frees a slot that a still-live grant should have been holding, so the
+    // budget lets a fourth notification through inside one 10s window.
+    const gate = createNotifyGate();
+    const grant = (id: string, now: number) =>
+      gate.evaluate(
+        messageSignal({ seq: 1, channel: { ...channel, id } }),
+        gateContext({ now })
+      );
+    const stale = grant('topic:burst-a', NOW);
+    expect(stale).toMatchObject({ os: true });
+    // Two more grants land near the END of the window, so they outlive the
+    // first by nine seconds.
+    expect(grant('topic:burst-b', NOW + 9_000)).toMatchObject({ os: true });
+    expect(grant('topic:burst-c', NOW + 9_000)).toMatchObject({ os: true });
+    // The first was never shown; refunding it reopens exactly one slot.
+    gate.refundOs(stale!);
+    expect(grant('topic:burst-d', NOW + 9_500)).toMatchObject({ os: true });
+    // Three live grants (b, c, d) still sit inside the window here, so the
+    // budget is spent. Only a's expired ghost could open a fourth.
+    expect(
+      grant('topic:burst-e', NOW + NOTIFY_OS_BURST_WINDOW_MS + 1)
+    ).toMatchObject({ os: false });
+  });
+
+  it('is a no-op for an event that never charged anything', () => {
+    // A visible-tab event holds no window and no burst slot, so crediting a
+    // coalesce pile for it would inflate the next fire's count.
+    const gate = createNotifyGate();
+    const visible = gate.evaluate(
+      messageSignal({ seq: 1 }),
+      gateContext({ documentHidden: false })
+    );
+    expect(visible).toMatchObject({ os: false });
+    gate.refundOs(visible!);
+    expect(
+      gate.evaluate(messageSignal({ seq: 2 }), gateContext({ now: NOW + 1 }))
+    ).toMatchObject({ os: true, count: 1 });
   });
 
   it('hands the burst slot back too', () => {

@@ -296,13 +296,17 @@ describe('delivery reporting', () => {
 });
 
 describe('burst digest', () => {
-  it('collapses the held-back run into one notification', () => {
+  /** The digest is coalesced onto a microtask, so a pass must be let finish. */
+  const flush = (): Promise<void> => Promise.resolve();
+
+  it('collapses the held-back run into one notification', async () => {
     const { ctor } = makeCtor('granted');
     const notifier = createOsNotifier({
       resolveCtor: () => ctor,
       openChannel: vi.fn(),
     });
     notifier.deliverOverflow(12);
+    await flush();
     expect(shown).toHaveLength(1);
     expect(shown[0]?.title).toBe('relay');
     expect(shown[0]?.options).toEqual({
@@ -313,7 +317,41 @@ describe('burst digest', () => {
     });
   });
 
-  it('names no channel and routes nowhere but the tab', () => {
+  it('constructs ONE notification for a whole pass, not one per channel', async () => {
+    // The gate raises `osOverflow` on every event that grows the held-back set,
+    // so a reconnect pass calls this once per held-back channel. Constructing a
+    // Notification per call puts the storm back: `tag` replacement is per-page
+    // on several engines, and a replace can re-alert.
+    const { ctor } = makeCtor('granted');
+    const notifier = createOsNotifier({
+      resolveCtor: () => ctor,
+      openChannel: vi.fn(),
+    });
+    for (let count = 1; count <= 12; count += 1) notifier.deliverOverflow(count);
+    await flush();
+    expect(shown).toHaveLength(1);
+    // The LARGEST count, because the last call already describes every channel
+    // the earlier ones did.
+    expect(shown[0]?.options?.body).toBe('12 channels have new messages');
+  });
+
+  it('opens a fresh digest for the next pass', async () => {
+    const { ctor } = makeCtor('granted');
+    const notifier = createOsNotifier({
+      resolveCtor: () => ctor,
+      openChannel: vi.fn(),
+    });
+    notifier.deliverOverflow(4);
+    await flush();
+    notifier.deliverOverflow(2);
+    await flush();
+    expect(shown.map((entry) => entry.options?.body)).toEqual([
+      '4 channels have new messages',
+      '2 channels have new messages',
+    ]);
+  });
+
+  it('names no channel and routes nowhere but the tab', async () => {
     const { ctor } = makeCtor('granted');
     const openChannel = vi.fn();
     const focusWindow = vi.fn();
@@ -323,6 +361,7 @@ describe('burst digest', () => {
       openChannel,
     });
     notifier.deliverOverflow(1);
+    await flush();
     expect(shown[0]?.options?.body).toBe('1 channel has new messages');
     shown[0]?.onclick?.();
     expect(focusWindow).toHaveBeenCalledTimes(1);
@@ -330,13 +369,27 @@ describe('burst digest', () => {
     expect(shown[0]?.closed).toBe(true);
   });
 
-  it('no-ops when denied', () => {
+  it('no-ops when denied', async () => {
     const { ctor } = makeCtor('denied');
     const notifier = createOsNotifier({
       resolveCtor: () => ctor,
       openChannel: vi.fn(),
     });
     notifier.deliverOverflow(5);
+    await flush();
+    expect(shown).toHaveLength(0);
+  });
+
+  it('drops a digest the lane no longer wants shown', async () => {
+    // Sign-out lands between the pass and its flush.
+    const { ctor } = makeCtor('granted');
+    const notifier = createOsNotifier({
+      resolveCtor: () => ctor,
+      openChannel: vi.fn(),
+    });
+    notifier.deliverOverflow(6);
+    notifier.reset();
+    await flush();
     expect(shown).toHaveLength(0);
   });
 });

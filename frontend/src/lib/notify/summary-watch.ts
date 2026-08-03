@@ -135,12 +135,20 @@ export function watchChannelSummaries(queryClient: QueryClient): () => void {
       topics?: NotifyTopicRecord[];
       truncated?: boolean;
     }>([NOTIFY_TOPICS_QUERY_KEY]);
-    // BOTH are required, and either can land second on a cold boot — which is
-    // why the subscription below watches both keys rather than just the
-    // channel list.
-    if (!rows || !topics?.topics?.length) return;
-    const channels = notifyChannelIndex(topics.topics);
-    pruneBadgesForMissingChannels(channels, topics.truncated === true);
+    // The PRUNE runs before the notify guard, and is keyed on the topic payload
+    // EXISTING rather than being non-empty. Deleting or archiving the last
+    // remaining channel empties that list — which is at once the only case
+    // where every cached badge is provably stale and a case the notify pass has
+    // nothing to do, so a prune behind its guard would leave the favicon dot
+    // and title count pinned for the life of the tab.
+    const channels = topics?.topics ? notifyChannelIndex(topics.topics) : null;
+    if (channels) {
+      pruneBadgesForMissingChannels(channels, topics?.truncated === true);
+    }
+    // BOTH payloads are required for the notify pass, and either can land
+    // second on a cold boot — which is why the subscription below watches both
+    // keys rather than just the channel list.
+    if (!rows || !channels || channels.size === 0) return;
     const osTier = seeded;
     seeded = true;
     notifyFromChannelSummaries({ rows, channels, osTier });

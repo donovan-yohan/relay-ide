@@ -24,6 +24,7 @@ import {
   createFaviconBadge,
   type FaviconBadge,
 } from '../lib/notify/favicon-badge.js';
+import { notifyPermissionState } from '../lib/notify/os-notification.js';
 import { resetNotifyRuntime } from '../lib/notify/runtime.js';
 import {
   channelSummariesHaveObserver,
@@ -77,6 +78,27 @@ const VISIBLE_SUMMARY_REFRESH_MS = 45_000;
 function messageTriggersEnabled(): boolean {
   const settings = currentNotifySettings();
   return settings.mentions || settings.dmReplies;
+}
+
+/**
+ * How long a refresh must wait, decided at FIRE time.
+ *
+ * A HIDDEN tab is only worth the short window when the OS tier can actually
+ * fire, because that tier is the only thing a hidden tab can show. Permission
+ * still does NOT gate whether the refresh happens — `default` must keep the
+ * short cadence or the lazy grant is unreachable (see `messageTriggersEnabled`)
+ * — but `denied`, and a browser with no Notification API at all (an iOS Safari
+ * tab outside an installed PWA), can produce nothing but a favicon dot nobody
+ * is looking at. Those wait the long window rather than holding the hub at a
+ * ten-second `GET /channels` cadence, times every open tab, for the whole
+ * length of an agent turn.
+ */
+function summaryRefreshDelayMs(doc: Document): number {
+  if (!doc.hidden) return VISIBLE_SUMMARY_REFRESH_MS;
+  const permission = notifyPermissionState();
+  return permission === 'denied' || permission === 'unsupported'
+    ? VISIBLE_SUMMARY_REFRESH_MS
+    : HIDDEN_SUMMARY_REFRESH_MS;
 }
 
 export function useNotifyDelivery(
@@ -164,32 +186,48 @@ export function useNotifyDelivery(
   //     Without this the operator gets no mention or DM badge, dot, title count
   //     or notification at all after the boot seed.
   //
-  // Standing down for a mounted rail is decided at FIRE time, not schedule time:
-  // the rail can mount or unmount inside the window, and the question that
-  // matters is who owns the fetch when it is due.
+  // BOTH the stand-down and the WINDOW are decided at FIRE time, not schedule
+  // time: the rail can mount or unmount inside the window, and the tab can be
+  // switched away from inside it. An operator who generates activity with the
+  // tab visible (long window armed) and then switches away is exactly the case
+  // where the OS tier becomes the only tier — waiting out the window the tab
+  // no longer deserves would delay that first notification by up to 45s.
   useEffect(() => {
     if (!enabled) return;
     const doc = typeof document === 'undefined' ? null : document;
     if (!doc) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let armedAt = 0;
+    const fire = (): void => {
+      timer = undefined;
+      const required = summaryRefreshDelayMs(doc);
+      const elapsed = Date.now() - armedAt;
+      // Re-armed for the REMAINDER, never restarted from now: the trailing
+      // guarantee below is measured from the activity that armed the window, so
+      // a tab that went visible mid-window waits out the rest of the long one
+      // and no more.
+      if (elapsed < required) {
+        timer = setTimeout(fire, required - elapsed);
+        return;
+      }
+      // Standing down applies to a VISIBLE tab only. The rail keeps its
+      // observer mounted while hidden but deliberately suppresses its own
+      // refetch there, so an observer on a hidden tab means nobody is
+      // fetching at all — which is the gap this lane exists to fill.
+      if (!doc.hidden && channelSummariesHaveObserver(queryClient)) return;
+      void refreshChannelSummaries(queryClient);
+    };
     const unsubscribe = useChannelActivityStore.subscribe((state, previous) => {
       if (state.latestSeqByChannel === previous.latestSeqByChannel) return;
       if (!messageTriggersEnabled()) return;
-      if (timer !== undefined) return;
       // Trailing, and NOT reset by later activity: an agent streaming a long
       // turn must not be able to starve the refresh it is the reason for.
-      const delay = doc.hidden
-        ? HIDDEN_SUMMARY_REFRESH_MS
-        : VISIBLE_SUMMARY_REFRESH_MS;
-      timer = setTimeout(() => {
-        timer = undefined;
-        // Standing down applies to a VISIBLE tab only. The rail keeps its
-        // observer mounted while hidden but deliberately suppresses its own
-        // refetch there, so an observer on a hidden tab means nobody is
-        // fetching at all — which is the gap this lane exists to fill.
-        if (!doc.hidden && channelSummariesHaveObserver(queryClient)) return;
-        void refreshChannelSummaries(queryClient);
-      }, delay);
+      if (timer !== undefined) return;
+      armedAt = Date.now();
+      // Always the SHORT tick first. It is only a wake-up, not a fetch: `fire`
+      // re-arms for the remainder when the window it finds is the longer one,
+      // which is what lets the decision be made late without ever being late.
+      timer = setTimeout(fire, HIDDEN_SUMMARY_REFRESH_MS);
     });
     return () => {
       unsubscribe();

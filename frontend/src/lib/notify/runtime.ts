@@ -149,6 +149,12 @@ export function deliverNotifySignal(
   } else if (event.osOverflow > 0 && leader.claim(now)) {
     // Mutually exclusive with `os` by construction: overflow is only ever set
     // on an event the burst budget refused.
+    //
+    // Called once per HELD-BACK CHANNEL — the gate raises `osOverflow` on every
+    // event that grows the set — so the notifier coalesces these into a single
+    // digest at the end of the pass. Doing it there rather than here is what
+    // makes a burst spread across the summary pass AND the status stream still
+    // collapse to one notification.
     notifier.deliverOverflow(event.osOverflow);
   }
   primePermissionIfWatching(osTier);
