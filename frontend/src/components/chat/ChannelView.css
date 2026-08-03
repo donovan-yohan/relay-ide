@@ -263,6 +263,14 @@
   min-width: 0;
 }
 
+/* Presence row with no history behind it: push it to the foot of the pane next
+   to the composer instead of stranding it in the top-left corner. `margin-top`
+   auto resolves to 0 once content overflows, so the scroll model is unchanged
+   and this class is only applied when the timeline holds no message nodes. */
+.ch-tl-content--presence-only {
+  margin-top: auto;
+}
+
 /* Square, outline-only floating affordance per DESIGN.md. Info matches the
    unread-divider semantics. */
 .ch-new-messages {
@@ -362,6 +370,14 @@
   flex-shrink: 0;
   width: 12px;
   height: 12px;
+}
+
+/* AgentBadge declares `color: var(--text-muted)` on the svg itself, which beats
+   the wrapper's inherited color. Opt back into the per-agent tint the wrapper's
+   inline `colorVar` sets, otherwise every presence glyph paints muted. */
+.ch-presence__glyph .agent-badge,
+.ch-presence__glyph .agent-badge--fallback {
+  color: currentColor;
 }
 
 .ch-presence__spinner {

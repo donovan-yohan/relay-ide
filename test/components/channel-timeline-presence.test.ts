@@ -5,6 +5,7 @@
 // interaction. `ChannelView`-level suppression/empty-channel behaviour lives in
 // `channel-view-presence.test.ts`.
 
+import fs from 'node:fs';
 import React, { act } from 'react';
 import {
   afterAll,
@@ -18,9 +19,14 @@ import {
 } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { ChannelTimeline } from '../../frontend/src/components/chat/ChannelTimeline.js';
+import { useStreamingPresenceHold } from '../../frontend/src/components/chat/useStreamingPresenceHold.js';
 import {
+  advanceStreamingHold,
   channelPresenceCopy,
+  nextStreamingHoldExpiry,
+  sameStreamingHold,
   selectChannelAgentPresence,
+  PRESENCE_STREAM_HOLD_MS,
   type ChannelAgentPresence,
   type ChannelPresenceChip,
 } from '../../frontend/src/lib/chat/channel-agent-presence.js';
@@ -147,6 +153,79 @@ describe('selectChannelAgentPresence (#1277)', () => {
     expect(channelPresenceCopy(presence(HERMES_ID, 'waiting', 'hermes'))).toBe(
       'hermes is waiting for input'
     );
+  });
+});
+
+describe('advanceStreamingHold (#1277 intra-turn gap)', () => {
+  it('holds a just-closed streaming row instead of releasing it immediately', () => {
+    const live = advanceStreamingHold(new Map(), [CLAUDE_ID], 1_000);
+    expect(live.get(CLAUDE_ID)).toBe(Number.POSITIVE_INFINITY);
+
+    // Item N finalized; item N+1 has not opened yet. Suppression must survive.
+    const gap = advanceStreamingHold(live, [], 1_000);
+    expect(gap.has(CLAUDE_ID)).toBe(true);
+    expect(gap.get(CLAUDE_ID)).toBe(1_000 + PRESENCE_STREAM_HOLD_MS);
+
+    // Still inside the hold window a step later.
+    const stillHeld = advanceStreamingHold(gap, [], 1_100);
+    expect(stillHeld.get(CLAUDE_ID)).toBe(1_000 + PRESENCE_STREAM_HOLD_MS);
+
+    // Item N+1 opens: back to a live row, deadline discarded.
+    const resumed = advanceStreamingHold(stillHeld, [CLAUDE_ID], 1_200);
+    expect(resumed.get(CLAUDE_ID)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('releases the agent once the hold lapses so a finished turn re-announces', () => {
+    const live = advanceStreamingHold(new Map(), [CLAUDE_ID], 1_000);
+    const gap = advanceStreamingHold(live, [], 1_000);
+    const lapsed = advanceStreamingHold(
+      gap,
+      [],
+      1_000 + PRESENCE_STREAM_HOLD_MS + 1
+    );
+    expect(lapsed.has(CLAUDE_ID)).toBe(false);
+
+    // Which is what lets a still-busy chip earn a row again.
+    expect(
+      selectChannelAgentPresence(
+        [chip(CLAUDE_ID, 'thinking', 'claude')],
+        lapsed
+      ).map((row) => row.agentId)
+    ).toEqual([CLAUDE_ID]);
+  });
+
+  it('holds each agent independently', () => {
+    const live = advanceStreamingHold(new Map(), [CLAUDE_ID, HERMES_ID], 1_000);
+    const claudeClosed = advanceStreamingHold(live, [HERMES_ID], 1_000);
+    expect(claudeClosed.get(CLAUDE_ID)).toBe(1_000 + PRESENCE_STREAM_HOLD_MS);
+    expect(claudeClosed.get(HERMES_ID)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('reports the earliest pending deadline and ignores live rows', () => {
+    expect(nextStreamingHoldExpiry(new Map())).toBeNull();
+    expect(
+      nextStreamingHoldExpiry(
+        new Map([[CLAUDE_ID, Number.POSITIVE_INFINITY]])
+      )
+    ).toBeNull();
+    expect(
+      nextStreamingHoldExpiry(
+        new Map([
+          [CLAUDE_ID, 2_000],
+          [HERMES_ID, 1_500],
+        ])
+      )
+    ).toBe(1_500);
+  });
+
+  it('compares hold maps entry-wise so an unchanged step can reuse the previous map', () => {
+    expect(
+      sameStreamingHold(new Map([[CLAUDE_ID, 1]]), new Map([[CLAUDE_ID, 1]]))
+    ).toBe(true);
+    expect(
+      sameStreamingHold(new Map([[CLAUDE_ID, 1]]), new Map([[CLAUDE_ID, 2]]))
+    ).toBe(false);
+    expect(sameStreamingHold(new Map([[CLAUDE_ID, 1]]), new Map())).toBe(false);
   });
 });
 
@@ -311,8 +390,66 @@ describe('ChannelTimeline presence row (#1277)', () => {
     await render([message(1)], [presence(HERMES_ID, 'thinking', 'hermes')]);
     const spinner = host.querySelector('.ch-presence__spinner');
     expect(spinner).not.toBeNull();
-    expect(spinner?.getAttribute('role')).toBe('status');
     expect(spinner?.classList.contains('tui-progress')).toBe(true);
+  });
+
+  it('hides the spinner from assistive tech and announces once per transition', async () => {
+    await render([message(1)], [presence(HERMES_ID, 'thinking', 'hermes')]);
+
+    // TuiProgress rewrites its own text every 80ms and hard-codes
+    // `role="status"`. Inside a live region that is a ~12x/second announcement
+    // flood, so the presence row must hide it: the label already carries the
+    // meaning.
+    const spinner = host.querySelector('.ch-presence__spinner');
+    expect(spinner?.getAttribute('aria-hidden')).toBe('true');
+
+    // Exactly one announcing region for presence — the innermost live region
+    // wins, so the enclosing `role="log"` does not also read the row out.
+    const region = host.querySelector('.ch-presence');
+    expect(region?.getAttribute('role')).toBe('status');
+    expect(region?.getAttribute('aria-live')).toBe('polite');
+    expect(region?.getAttribute('aria-label')).toBe('agent presence');
+  });
+
+  it('tints the glyph with the per-agent color instead of the muted default', async () => {
+    await render([message(1)], [presence(HERMES_ID, 'thinking', 'hermes')]);
+    const glyph = host.querySelector<HTMLElement>('.ch-presence__glyph');
+    expect(glyph?.style.color).toBe('var(--sender-hermes)');
+
+    // `.agent-badge` declares `color: var(--text-muted)` on the svg itself, so
+    // the wrapper's inline color only lands if the sheet opts back in. happy-dom
+    // does not resolve component stylesheets, so assert the rule directly.
+    const css = fs.readFileSync(
+      'frontend/src/components/chat/ChannelView.css',
+      'utf8'
+    );
+    expect(css).toMatch(
+      /\.ch-presence__glyph \.agent-badge[\s\S]*?{[^}]*color:\s*currentColor/
+    );
+  });
+
+  it('bottom-anchors the row when it is the only timeline content', async () => {
+    await render([], [presence(HERMES_ID, 'thinking', 'hermes')]);
+    const content = host.querySelector('.ch-tl-content');
+    expect(content?.classList.contains('ch-tl-content--presence-only')).toBe(
+      true
+    );
+
+    const css = fs.readFileSync(
+      'frontend/src/components/chat/ChannelView.css',
+      'utf8'
+    );
+    expect(css).toMatch(
+      /\.ch-tl-content--presence-only\s*{[^}]*margin-top:\s*auto/
+    );
+
+    // Anti-vacuity: with history behind it the normal top-anchored model stays.
+    await render([message(1)], [presence(HERMES_ID, 'thinking', 'hermes')]);
+    expect(
+      host
+        .querySelector('.ch-tl-content')
+        ?.classList.contains('ch-tl-content--presence-only')
+    ).toBe(false);
   });
 
   it('still renders under prefers-reduced-motion', async () => {
@@ -370,5 +507,81 @@ describe('ChannelTimeline presence row (#1277)', () => {
     await render([message(1), message(2)], []);
     await act(async () => resizeCallback?.([], {} as ResizeObserver));
     expect(timeline().scrollTop).toBe(1_000);
+  });
+});
+
+describe('useStreamingPresenceHold (#1277)', () => {
+  let hookHost: HTMLDivElement;
+  let hookRoot: Root;
+
+  function Probe({
+    live,
+  }: {
+    live: ReadonlySet<string>;
+  }): React.ReactElement {
+    const membership = useStreamingPresenceHold(live, 200);
+    return React.createElement('span', {
+      'data-suppressed': membership.has(CLAUDE_ID) ? 'yes' : 'no',
+    });
+  }
+
+  async function renderProbe(live: ReadonlySet<string>): Promise<void> {
+    await act(async () => {
+      hookRoot.render(React.createElement(Probe, { live }));
+    });
+  }
+
+  function suppressed(): string | null {
+    return hookHost
+      .querySelector('span')
+      ?.getAttribute('data-suppressed') ?? null;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    hookHost = document.createElement('div');
+    document.body.appendChild(hookHost);
+    hookRoot = createRoot(hookHost);
+  });
+
+  afterEach(() => {
+    act(() => hookRoot.unmount());
+    hookHost.remove();
+    vi.useRealTimers();
+  });
+
+  it('keeps suppressing across the gap, then releases once the hold lapses', async () => {
+    await renderProbe(new Set([CLAUDE_ID]));
+    expect(suppressed()).toBe('yes');
+
+    // Streaming row closed — suppression must survive the intra-turn gap.
+    await renderProbe(new Set<string>());
+    expect(suppressed()).toBe('yes');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(suppressed()).toBe('yes');
+
+    // Nothing re-opened inside the window: the row is allowed back.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    expect(suppressed()).toBe('no');
+  });
+
+  it('re-arms the hold when a new row opens inside the window', async () => {
+    await renderProbe(new Set([CLAUDE_ID]));
+    await renderProbe(new Set<string>());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    // Item N+1 opens before the deadline.
+    await renderProbe(new Set([CLAUDE_ID]));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(suppressed()).toBe('yes');
   });
 });

@@ -15,6 +15,16 @@
 // flipped to `streaming` before its first row lands still earns a row, and a
 // non-streaming provider (Hermes) keeps the row for its whole thinking window,
 // which is the entire point of the feature.
+//
+// Suppression also needs a TRAILING HOLD. The bridge finalizes every assistant
+// item independently (`finalize(stream, 'complete', …)` per terminal
+// `agent-item-updated-v2`), while the binder keeps the binding `streaming` for
+// the whole turn. So a normal Claude turn (text → tool → text → tool → text) has
+// gaps between item N closing and item N+1 opening in which no row is streaming.
+// Without a hold the presence row would flash in and out at every one of those
+// boundaries, each toggle growing/shrinking the timeline foot and re-firing the
+// follow-scroll ResizeObserver. `advanceStreamingHold` keeps a just-closed row
+// suppressing for `PRESENCE_STREAM_HOLD_MS` so an intra-turn gap stays silent.
 import type { ChannelAgentStatus } from '../api.js';
 import type { KnownAgentGlyph } from './sender-identity.js';
 
@@ -64,6 +74,70 @@ export function selectChannelAgentPresence(
     });
   }
   return rows;
+}
+
+/**
+ * How long a closed streaming row keeps suppressing its agent's presence row.
+ * Long enough to swallow the bridge's item→item gap inside one turn, short
+ * enough that a genuinely finished turn re-announces promptly if the binder is
+ * still busy (e.g. a follow-up tool phase that produces no text).
+ */
+export const PRESENCE_STREAM_HOLD_MS = 600;
+
+/**
+ * Advance the trailing-hold map one step.
+ *
+ * Live streaming agents map to `Infinity` (suppressed for as long as the row is
+ * open). The step an agent leaves the live set, its entry becomes a finite
+ * `now + holdMs` deadline; entries past their deadline are dropped. Pure so the
+ * timing rule is testable without a component or fake DOM.
+ */
+export function advanceStreamingHold(
+  previousHold: ReadonlyMap<string, number>,
+  liveStreamingAgentIds: Iterable<string>,
+  now: number,
+  holdMs: number = PRESENCE_STREAM_HOLD_MS
+): Map<string, number> {
+  const live = new Set(liveStreamingAgentIds);
+  const next = new Map<string, number>();
+  for (const [agentId, expiresAt] of previousHold) {
+    if (live.has(agentId)) continue; // re-added as live below
+    if (expiresAt === Number.POSITIVE_INFINITY) {
+      next.set(agentId, now + holdMs); // row just closed — start the hold
+    } else if (expiresAt > now) {
+      next.set(agentId, expiresAt); // hold still running
+    }
+    // otherwise the hold lapsed: drop it and let the row come back
+  }
+  for (const agentId of live) next.set(agentId, Number.POSITIVE_INFINITY);
+  return next;
+}
+
+/**
+ * Earliest finite hold deadline, or `null` when nothing is pending. Callers use
+ * it to schedule exactly one wake-up instead of polling.
+ */
+export function nextStreamingHoldExpiry(
+  hold: ReadonlyMap<string, number>
+): number | null {
+  let earliest: number | null = null;
+  for (const expiresAt of hold.values()) {
+    if (!Number.isFinite(expiresAt)) continue;
+    if (earliest === null || expiresAt < earliest) earliest = expiresAt;
+  }
+  return earliest;
+}
+
+/** Entry-wise equality so an unchanged step can reuse the previous map. */
+export function sameStreamingHold(
+  a: ReadonlyMap<string, number>,
+  b: ReadonlyMap<string, number>
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [agentId, expiresAt] of a) {
+    if (b.get(agentId) !== expiresAt) return false;
+  }
+  return true;
 }
 
 /** Lowercase presence copy per DESIGN.md — dim secondary text, no emoji. */

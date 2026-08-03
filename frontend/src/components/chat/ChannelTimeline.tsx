@@ -147,7 +147,18 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
         ) : loadingOlder ? (
           <div className="ch-loading-older">loading older messages…</div>
         ) : null}
-        <div ref={contentRef} className="ch-tl-content">
+        <div
+          ref={contentRef}
+          className={
+            // With zero history the presence row is the only content, and `.ch-tl`
+            // is a top-anchored flex column — the row would otherwise sit alone in
+            // the top-left corner of a full-height blank pane. Bottom-anchor only
+            // in that case so the normal scroll model is untouched (#1277 review).
+            nodes.length === 0 && agentPresence.length > 0
+              ? 'ch-tl-content ch-tl-content--presence-only'
+              : 'ch-tl-content'
+          }
+        >
           {nodes.map((node, index) => {
             if (node.kind === 'day-divider') {
               return (
@@ -205,7 +216,17 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
             // no `data-channel-message-seq`, so it can never become a reader
             // anchor, and it changes no message seq, so the "n new messages"
             // pill cannot be inflated by presence.
-            <div className="ch-presence" aria-label="agent presence">
+            // `role="status"` (implicit polite) makes this the innermost live
+            // region, so a transition is announced ONCE here instead of by the
+            // enclosing `role="log"`. The spinner is `aria-hidden`: its text
+            // mutates every 80ms and is pure decoration — without that, a nested
+            // live region would announce ~12x/second per busy agent.
+            <div
+              className="ch-presence"
+              role="status"
+              aria-live="polite"
+              aria-label="agent presence"
+            >
               {agentPresence.map((presence) => (
                 <div
                   key={presence.agentId}
@@ -225,6 +246,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                   <TuiProgress
                     variant="braille"
                     className="ch-presence__spinner"
+                    aria-hidden="true"
                   />
                   <span className="ch-presence__label">
                     {channelPresenceCopy(presence)}

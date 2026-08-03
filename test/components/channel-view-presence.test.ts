@@ -289,6 +289,57 @@ describe('ChannelView in-timeline presence (#1277)', () => {
     expect(container.querySelector('.ch-presence')).toBeNull();
   });
 
+  it('does not flash the row in the gap between two items of one turn', async () => {
+    // The binder holds the binding `streaming` for the whole turn, but the
+    // bridge finalizes each assistant item independently. Between item N closing
+    // and item N+1 opening no row is streaming — without a trailing hold the
+    // presence row would appear and vanish at every tool boundary, growing and
+    // shrinking the timeline foot each time.
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry(CLAUDE_ID, 'claude', 'streaming'),
+    ]);
+    mocks.messages = [agentMessage(1, CLAUDE_ID, 'claude', 'streaming')];
+    await render();
+    expect(container.querySelector('.ch-presence')).toBeNull();
+
+    // Item 1 finalizes; item 2 has not opened yet.
+    mocks.messages = [agentMessage(1, CLAUDE_ID, 'claude', 'complete')];
+    await render();
+    expect(container.querySelector('.ch-msg__cursor')).toBeNull();
+    expect(container.querySelector('.ch-presence')).toBeNull();
+
+    // Item 2 opens: still no presence row, and no toggle happened in between.
+    mocks.messages = [
+      agentMessage(1, CLAUDE_ID, 'claude', 'complete'),
+      agentMessage(2, CLAUDE_ID, 'claude', 'streaming'),
+    ];
+    await render();
+    expect(container.querySelector('.ch-presence')).toBeNull();
+    // Anti-vacuity: a cold mount with the identical complete-message state DOES
+    // announce (see the anti-vacuity case above), so the silence here is the
+    // hold and not a missing chip.
+  });
+
+  it('keeps the main-lane row while the agent streams inside a thread', async () => {
+    // Thread replies never render in the main timeline (`selectTopLevel`), so a
+    // thread-only stream draws no block cursor here — the channel would look
+    // idle while the agent is working.
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry(CLAUDE_ID, 'claude', 'streaming'),
+    ]);
+    const root = agentMessage(1, CLAUDE_ID, 'claude', 'complete');
+    const reply = agentMessage(2, CLAUDE_ID, 'claude', 'streaming');
+    mocks.messages = [
+      root,
+      { ...reply, threadId: root.id, parentMessageId: root.id },
+    ];
+
+    await render();
+
+    expect(container.querySelector('.ch-msg__cursor')).toBeNull();
+    expect(presenceLabels()).toEqual(['claude is responding…']);
+  });
+
   it('rebuilds the row from the roster snapshot alone (reload path, no socket event)', async () => {
     // A cold mount clears this channel's socket statuses, so the only signal is
     // the roster query — exactly the state after a browser reload mid-turn.
