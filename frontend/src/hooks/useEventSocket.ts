@@ -586,6 +586,21 @@ export function useEventSocket({
           scheduleChannelListRefresh(msg.channelId);
         }
       },
+      'channel-read-state': (msg) => {
+        // The operator moved their mark on another device (#1308 slice 3).
+        // Straight through the SAME fence-aware monotonic-up merge the boot
+        // seed uses, so live convergence cannot acquire semantics the seed does
+        // not have. Stamped with receipt time because a broadcast is by
+        // construction newer than any clamp this device has already applied —
+        // and the hub clamps to head before emitting, so the value it carries
+        // is a real seq in the channel's CURRENT life, not a resurrected one.
+        useChannelActivityStore
+          .getState()
+          .mergeReadState(
+            [{ channelId: msg.channelId, lastReadSeq: msg.lastReadSeq }],
+            Date.now()
+          );
+      },
       'channel-agent-status': (msg) => {
         useChannelAgentStatusStore
           .getState()

@@ -50,6 +50,9 @@ import type {
   ChannelMessagePart,
   ChannelMessageSearchResponse,
   ChannelMessageSearchResult,
+  ChannelReadStateEntry,
+  ChannelReadStateResponse,
+  ChannelReadStateUpdateRequest,
 } from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
@@ -1794,6 +1797,70 @@ export async function fetchChannels(): Promise<ChannelSummaryView[]> {
     })
   );
   return Array.isArray(data.channels) ? data.channels : [];
+}
+
+/**
+ * The operator's durable last-read marks (#1308 slice 3).
+ *
+ * ONE call for every marked channel, deliberately: this runs on boot next to
+ * the channel-list seed, and a per-channel fan-out would cost a phone a round
+ * trip per row before the sidebar could render an honest unread dot.
+ *
+ * Rows are re-validated here rather than trusted, because they feed the unread
+ * projection directly — a malformed row must degrade to "the hub has no
+ * opinion", never to a mark at `NaN` that silently swallows a channel's dot.
+ *
+ * Single-operator device sync (#1231): the payload carries no reader identity
+ * because there is only ever one reader. This is not a read receipt.
+ */
+export async function fetchChannelReadState(): Promise<ChannelReadStateEntry[]> {
+  const data = await json<ChannelReadStateResponse>(
+    await fetch('/channels/read-state', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  if (!Array.isArray(data.channels)) return [];
+  return data.channels.filter(
+    (row): row is ChannelReadStateEntry =>
+      typeof row?.channelId === 'string' &&
+      row.channelId.length > 0 &&
+      typeof row.lastReadSeq === 'number' &&
+      Number.isFinite(row.lastReadSeq)
+  );
+}
+
+/**
+ * Publish one channel's last-read mark (#1308 slice 3).
+ *
+ * `keepalive` is what makes a pagehide flush actually leave the device: a
+ * normal fetch is cancelled the moment the document starts unloading, so
+ * closing the tab would drop the mark the operator just earned. `sendBeacon`
+ * is not an option even though it is the usual answer — it cannot carry the
+ * `x-relay-capabilities` header this route requires.
+ *
+ * Safe to repeat and safe to race: the hub is monotonic-up and clamps to the
+ * channel head, so a retry, a duplicate, or two devices reporting at once
+ * converge on one durable value.
+ */
+export async function putChannelReadState(
+  channelId: string,
+  lastReadSeq: number,
+  options: { keepalive?: boolean } = {}
+): Promise<void> {
+  const body: ChannelReadStateUpdateRequest = { lastReadSeq };
+  const res = await fetch(
+    `/channels/${encodeURIComponent(channelId)}/read-state`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(body),
+      keepalive: options.keepalive === true,
+    }
+  );
+  if (!res.ok) throw await httpErrorFromResponse(res);
 }
 
 /**

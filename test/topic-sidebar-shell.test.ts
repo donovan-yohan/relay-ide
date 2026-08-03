@@ -600,6 +600,80 @@ describe('TopicSidebarView', () => {
     queryClient.clear();
   });
 
+  // #1308 slice 3: the durable half of the same boot seed. Head seqs say what
+  // exists; the hub's read marks say how much of it the operator already read on
+  // another device. Without this the rail on a freshly opened phone lights up
+  // every channel the desktop worked through.
+  it('clears the unread dot from the hub read-state seed on shell mount (#1308 slice 3)', async () => {
+    // Nothing local: this device has never opened the channel.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['workspace-topics'], {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    } satisfies WorkspaceTopicListResponse);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      let body: unknown = {};
+      if (url === '/channels') {
+        body = { channels: [{ id: 'topic:alpha', latestSeq: 9 }] };
+      } else if (url === '/channels/read-state') {
+        body = {
+          channels: [
+            {
+              channelId: 'topic:alpha',
+              lastReadSeq: 9,
+              updatedAt: '2026-08-03T00:00:00.000Z',
+            },
+          ],
+        };
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (
+        useChannelActivityStore.getState().lastReadByChannel['topic:alpha'] !==
+        undefined
+      )
+        break;
+      await act(async () => {
+        await flushQueryEffects();
+      });
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith('/channels/read-state', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(
+      useChannelActivityStore.getState().lastReadByChannel['topic:alpha']
+    ).toBe(9);
+    // The rail renders the merged verdict, not just the store field: head 9,
+    // read 9, no dot.
+    expect(
+      container.querySelector(
+        '[data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).toBeNull();
+    queryClient.clear();
+  });
+
   // `GET /channels` is O(channels) on the hub, and a streaming turn emits a
   // badge per message create / stream open / stream complete. The rail's refresh
   // lane must therefore stay throttled AND silent while the tab is hidden,
