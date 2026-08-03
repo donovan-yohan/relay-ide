@@ -3,8 +3,9 @@
 // producer. Uses a REAL `QueryClient`, so the key match, the cold-boot ordering,
 // and the unsubscribe are exercised as shipped.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import {
+  channelSummariesHaveObserver,
   ensureNotifySummaryCaches,
   refreshChannelSummaries,
 } from '../../frontend/src/lib/notify/summary-watch.js';
@@ -88,6 +89,7 @@ beforeEach(() => {
     configurable: true,
   });
   document.hasFocus = () => false;
+  localStorage.clear();
   resetNotifyRuntime();
   useNotifySettingsStore.getState().resetNotifySettings();
   useChannelActivityStore.setState({ lastReadByChannel: {} });
@@ -199,5 +201,79 @@ describe('cache bootstrap and refresh', () => {
     apiMock.fetchChannels.mockRejectedValue(new Error('hub unreachable'));
     await expect(refreshChannelSummaries(client)).resolves.toBeUndefined();
     expect(shown).toHaveLength(0);
+  });
+});
+
+describe('rail ownership probe', () => {
+  // The notify lane's refresh must stand down when the rail is mounted (it
+  // fetches on a tighter throttle already) and take over when it is not —
+  // otherwise a collapsed sidebar leaves NOTHING refetching `['channels']`,
+  // because `invalidateQueries` defaults to `refetchType: 'active'`.
+  it('is false with the rail unmounted, true while it observes', () => {
+    client.setQueryData(['channels'], dmRows(12));
+    expect(channelSummariesHaveObserver(client)).toBe(false);
+
+    const observer = new QueryObserver(client, {
+      queryKey: ['channels'],
+      queryFn: apiMock.fetchChannels,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    expect(channelSummariesHaveObserver(client)).toBe(true);
+
+    unsubscribe();
+    expect(channelSummariesHaveObserver(client)).toBe(false);
+  });
+
+  it('does not count an observer on a DIFFERENT key', () => {
+    client.setQueryData(['channels'], dmRows(12));
+    const observer = new QueryObserver(client, {
+      queryKey: ['workspace-topics'],
+      queryFn: () => apiMock.fetchWorkspaceTopics(),
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    expect(channelSummariesHaveObserver(client)).toBe(false);
+    unsubscribe();
+  });
+});
+
+describe('badge pruning', () => {
+  it('drops the dot for a channel that left the active topic list', () => {
+    client.setQueryData(['channels'], dmRows(12));
+    client.setQueryData(['workspace-topics'], TOPICS);
+    stop = watchChannelSummaries(client);
+    expect(attentionCount()).toBe(1);
+
+    // The DM was deleted or archived: `['workspace-topics']` is always the
+    // ACTIVE view (the archived one rides a distinct key), so its absence is
+    // the closest thing this lane has to a channel-deleted signal.
+    client.setQueryData(['workspace-topics'], {
+      topics: [
+        {
+          id: 'topic:impl-1308',
+          display: { title: 'impl 1308' },
+          workspaceId: null,
+        },
+      ],
+    });
+    expect(attentionCount()).toBe(0);
+  });
+
+  it('keeps every flag when the topic payload is TRUNCATED', () => {
+    // A page of the corpus is not evidence of deletion.
+    client.setQueryData(['channels'], dmRows(12));
+    client.setQueryData(['workspace-topics'], TOPICS);
+    stop = watchChannelSummaries(client);
+    expect(attentionCount()).toBe(1);
+    client.setQueryData(['workspace-topics'], {
+      topics: [
+        {
+          id: 'topic:impl-1308',
+          display: { title: 'impl 1308' },
+          workspaceId: null,
+        },
+      ],
+      truncated: true,
+    });
+    expect(attentionCount()).toBe(1);
   });
 });

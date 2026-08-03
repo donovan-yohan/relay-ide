@@ -25,6 +25,17 @@ const DOT_RING_RATIO = 0.05;
 const DOT_COLOR = '#d97757';
 /** Pure black — `--bg`. The ring is a cut-out, not a second colour. */
 const DOT_RING_COLOR = '#000000';
+/**
+ * MIME type of the badged data URL, which `canvasFaviconRenderer` always
+ * encodes as PNG.
+ *
+ * The document ships `<link rel="icon" href="/icon.svg" type="image/svg+xml">`.
+ * Rewriting only `href` would leave a PNG payload advertised as SVG, and `type`
+ * is a support HINT browsers are entitled to act on: an engine that honours it
+ * can refuse to decode the resource, so the tab silently loses its icon (or
+ * keeps the stale one) exactly when the badge is supposed to appear.
+ */
+const BADGED_ICON_TYPE = 'image/png';
 
 /** Renders a badged data URL from a base icon href, or null if it cannot. */
 export type FaviconRenderer = (baseHref: string) => Promise<string | null>;
@@ -122,6 +133,9 @@ export function createFaviconBadge(
   // `getAttribute`, not `.href`: the property resolves to an absolute URL, and
   // writing that back would silently rewrite a relative href the app ships.
   const baseHref = link?.getAttribute('href') ?? null;
+  // Captured alongside the href and restored with it: the two attributes
+  // describe ONE resource and must never be written apart.
+  const baseType = link?.getAttribute('type') ?? null;
   let badgedHref: string | null = null;
   let rendering = false;
   /** What the operator last asked for; the async render checks it on landing. */
@@ -129,9 +143,18 @@ export function createFaviconBadge(
 
   function apply(): void {
     if (!link || baseHref === null) return;
-    const next = active && badgedHref ? badgedHref : baseHref;
-    if (link.getAttribute('href') === next) return;
-    link.setAttribute('href', next);
+    const badged = active ? badgedHref : null;
+    const nextHref = badged ?? baseHref;
+    if (link.getAttribute('href') !== nextHref) {
+      link.setAttribute('href', nextHref);
+    }
+    const nextType = badged === null ? baseType : BADGED_ICON_TYPE;
+    if (nextType === null) {
+      // The document shipped no `type`; badging must not invent a permanent one.
+      link.removeAttribute('type');
+    } else if (link.getAttribute('type') !== nextType) {
+      link.setAttribute('type', nextType);
+    }
   }
 
   return {

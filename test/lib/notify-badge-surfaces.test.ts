@@ -18,12 +18,16 @@ function resetDocument(): void {
   document.title = 'Relay';
 }
 
+function iconLink(): HTMLLinkElement | null {
+  return document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+}
+
 function iconHref(): string | null {
-  return (
-    document
-      .querySelector<HTMLLinkElement>('link[rel~="icon"]')
-      ?.getAttribute('href') ?? null
-  );
+  return iconLink()?.getAttribute('href') ?? null;
+}
+
+function iconType(): string | null {
+  return iconLink()?.getAttribute('type') ?? null;
 }
 
 beforeEach(() => {
@@ -42,6 +46,32 @@ describe('favicon badge', () => {
 
     badge.set(false);
     expect(iconHref()).toBe(BASE_ICON);
+  });
+
+  it('rewrites the MIME type with the href and restores it', async () => {
+    // The document ships `type="image/svg+xml"` and the composite is a PNG data
+    // URL. `type` is a support hint browsers are entitled to act on, so leaving
+    // it stale can cost the tab its icon exactly when the dot should appear.
+    const badge = createFaviconBadge({ render: async () => BADGED });
+    expect(iconType()).toBe('image/svg+xml');
+
+    badge.set(true);
+    await vi.waitFor(() => expect(iconHref()).toBe(BADGED));
+    expect(iconType()).toBe('image/png');
+
+    badge.set(false);
+    expect(iconHref()).toBe(BASE_ICON);
+    expect(iconType()).toBe('image/svg+xml');
+  });
+
+  it('invents no MIME type for a link that shipped none', async () => {
+    document.head.innerHTML = `<link rel="icon" href="${BASE_ICON}" />`;
+    const badge = createFaviconBadge({ render: async () => BADGED });
+    badge.set(true);
+    await vi.waitFor(() => expect(iconHref()).toBe(BADGED));
+    expect(iconType()).toBe('image/png');
+    badge.set(false);
+    expect(iconType()).toBeNull();
   });
 
   it('renders the composite once across many update cycles', async () => {

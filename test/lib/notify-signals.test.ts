@@ -11,6 +11,8 @@ import {
   notifyChannelFromNavItem,
   notifyChannelFromTopic,
   notifyRowFromMessage,
+  NOTIFY_OS_BURST_LIMIT,
+  NOTIFY_OS_BURST_WINDOW_MS,
   NOTIFY_OS_RATE_LIMIT_MS,
   type NotifyChannel,
   type NotifyGateContext,
@@ -411,6 +413,147 @@ describe('gate — per-channel rate limit and coalescing', () => {
     expect(
       gate.evaluate(messageSignal({ seq: 2 }), gateContext({ now: NOW + 5 }))
     ).toMatchObject({ os: true, count: 1 });
+  });
+});
+
+describe('gate — global burst budget', () => {
+  /** One fresh channel per index, so the PER-CHANNEL limiter never fires. */
+  function burstSignal(index: number, seq = 1): NotifySignal {
+    return messageSignal({
+      seq,
+      channel: {
+        ...channel,
+        id: `topic:burst-${index}`,
+        title: `burst ${index}`,
+      },
+    });
+  }
+
+  it('caps simultaneous OS notifications across ALL channels', () => {
+    // The reconnect shape: one `/channels` payload, fifteen DM rows, fifteen
+    // untouched 60s windows. Without a global budget that is fifteen
+    // notification-centre entries at once, none replacing another.
+    const gate = createNotifyGate();
+    const events = Array.from({ length: 8 }, (_, index) =>
+      gate.evaluate(burstSignal(index), gateContext({ now: NOW + index }))
+    );
+    expect(events.filter((event) => event?.os).length).toBe(
+      NOTIFY_OS_BURST_LIMIT
+    );
+    // The in-app tier is untouched: every held-back channel still earns a badge.
+    expect(events.every((event) => event?.badge === true)).toBe(true);
+  });
+
+  it('reports the held-back run as a growing collapsed count', () => {
+    const gate = createNotifyGate();
+    for (let index = 0; index < NOTIFY_OS_BURST_LIMIT; index += 1) {
+      expect(
+        gate.evaluate(burstSignal(index), gateContext({ now: NOW }))
+      ).toMatchObject({ os: true, osOverflow: 0 });
+    }
+    const first = gate.evaluate(burstSignal(90), gateContext({ now: NOW + 1 }));
+    const second = gate.evaluate(
+      burstSignal(91),
+      gateContext({ now: NOW + 2 })
+    );
+    expect(first).toMatchObject({ os: false, osOverflow: 1 });
+    expect(second).toMatchObject({ os: false, osOverflow: 2 });
+  });
+
+  it('does not re-alert the digest for a channel already held back', () => {
+    const gate = createNotifyGate();
+    for (let index = 0; index < NOTIFY_OS_BURST_LIMIT; index += 1) {
+      gate.evaluate(burstSignal(index), gateContext({ now: NOW }));
+    }
+    expect(
+      gate.evaluate(burstSignal(90, 1), gateContext({ now: NOW + 1 }))
+    ).toMatchObject({ osOverflow: 1 });
+    expect(
+      gate.evaluate(burstSignal(90, 2), gateContext({ now: NOW + 2 }))
+    ).toMatchObject({ os: false, osOverflow: 0 });
+  });
+
+  it('does not count a per-channel repeat as burst overflow', () => {
+    // That channel already has a live notification the operator can see; adding
+    // it to the digest would describe the same thing twice.
+    const gate = createNotifyGate();
+    for (let index = 0; index < NOTIFY_OS_BURST_LIMIT; index += 1) {
+      gate.evaluate(burstSignal(index), gateContext({ now: NOW }));
+    }
+    expect(
+      gate.evaluate(burstSignal(0, 2), gateContext({ now: NOW + 1 }))
+    ).toMatchObject({ os: false, osOverflow: 0 });
+  });
+
+  it('opens a fresh budget once the window lapses', () => {
+    const gate = createNotifyGate();
+    for (let index = 0; index < NOTIFY_OS_BURST_LIMIT; index += 1) {
+      gate.evaluate(burstSignal(index), gateContext({ now: NOW }));
+    }
+    expect(
+      gate.evaluate(burstSignal(90), gateContext({ now: NOW + 1 }))
+    ).toMatchObject({ os: false });
+    expect(
+      gate.evaluate(
+        burstSignal(91),
+        gateContext({ now: NOW + NOTIFY_OS_BURST_WINDOW_MS })
+      )
+    ).toMatchObject({ os: true });
+  });
+});
+
+describe('gate — refund for an event that was never shown', () => {
+  it('lets the next message in that channel fire again', () => {
+    // Permission was `default`, the operator dismissed the prompt, and nothing
+    // was displayed. Without a refund the burnt 60s slot swallows the next real
+    // message as a silent coalesce increment.
+    const gate = createNotifyGate();
+    const first = gate.evaluate(messageSignal({ seq: 1 }), gateContext());
+    expect(first).toMatchObject({ os: true, count: 1 });
+    gate.refundOs(first!);
+    expect(
+      gate.evaluate(messageSignal({ seq: 2 }), gateContext({ now: NOW + 10 }))
+    ).toMatchObject({ os: true });
+  });
+
+  it('carries the undelivered run into the next fire', () => {
+    const gate = createNotifyGate();
+    const first = gate.evaluate(messageSignal({ seq: 1 }), gateContext());
+    gate.evaluate(messageSignal({ seq: 2 }), gateContext({ now: NOW + 1 }));
+    // Two signals stood behind that notification and neither was seen.
+    gate.refundOs({ channelId: first!.channelId, count: 2 });
+    expect(
+      gate.evaluate(messageSignal({ seq: 3 }), gateContext({ now: NOW + 2 }))
+    ).toMatchObject({ os: true, count: 3 });
+  });
+
+  it('hands the burst slot back too', () => {
+    const gate = createNotifyGate();
+    const events = Array.from({ length: NOTIFY_OS_BURST_LIMIT }, (_, index) =>
+      gate.evaluate(
+        messageSignal({
+          seq: 1,
+          channel: { ...channel, id: `topic:burst-${index}` },
+        }),
+        gateContext({ now: NOW })
+      )
+    );
+    gate.refundOs(events.at(-1)!);
+    expect(
+      gate.evaluate(
+        messageSignal({ seq: 1, channel: { ...channel, id: 'topic:burst-x' } }),
+        gateContext({ now: NOW + 1 })
+      )
+    ).toMatchObject({ os: true });
+  });
+
+  it('does NOT refund the replay guard — the row still earned its badge', () => {
+    const gate = createNotifyGate();
+    const first = gate.evaluate(messageSignal({ seq: 5 }), gateContext());
+    gate.refundOs(first!);
+    expect(
+      gate.evaluate(messageSignal({ seq: 5 }), gateContext({ now: NOW + 10 }))
+    ).toBeNull();
   });
 });
 

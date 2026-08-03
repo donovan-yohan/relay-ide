@@ -102,6 +102,14 @@ export interface NotifyEvent {
    */
   count: number;
   /**
+   * Channels the GLOBAL burst budget has held back inside the current window,
+   * including this one — or `0` when nothing overflowed. Only ever non-zero
+   * when `os` is false, and only on the event that GREW the held-back set, so
+   * item 2 can render one collapsed digest per new channel instead of one
+   * notification per channel.
+   */
+  osOverflow: number;
+  /**
    * Lowercase-safe short label for the sender/agent, carried through from the
    * signal. Copy is composed by `notify/copy.ts` (item 2) rather than here: the
    * OS tier renders title and body as one unit and needs the channel inside the
@@ -118,6 +126,25 @@ export interface NotifyEvent {
  * back-and-forth still pings.
  */
 export const NOTIFY_OS_RATE_LIMIT_MS = 60_000;
+
+/**
+ * GLOBAL burst budget: at most this many OS notifications across ALL channels
+ * inside `NOTIFY_OS_BURST_WINDOW_MS`.
+ *
+ * The per-channel limit above says nothing about a pass that walks a WHOLE
+ * `/channels` payload. A hidden tab whose socket reconnects refetches the
+ * summary list, and under the #1242 orchestrator epic — one DM channel per
+ * agent profile — fifteen DM rows can each carry a fresh agent reply: fifteen
+ * channels, fifteen untouched 60s windows, fifteen notification-centre entries
+ * at once, none of which replaces another because the tag is per channel. That
+ * is the normal shape of a reconnect, not an edge case.
+ *
+ * Overflow is not dropped: the held-back channels are counted and reported on
+ * `osOverflow`, which item 2 renders as ONE collapsed notification. The in-app
+ * badge tier is untouched — every held-back channel still gets its dot.
+ */
+export const NOTIFY_OS_BURST_LIMIT = 3;
+export const NOTIFY_OS_BURST_WINDOW_MS = 10_000;
 
 /**
  * Busy statuses whose fall to `idle` is a completed TURN.
@@ -290,6 +317,23 @@ export interface NotifyGate {
     signal: NotifySignal,
     ctx: NotifyGateContext
   ) => NotifyEvent | null;
+  /**
+   * Hand back the OS budget an event consumed when the notification was never
+   * actually shown.
+   *
+   * `evaluate` charges the per-channel window and the global burst slot at
+   * DECISION time, because that is the only place the ledgers live — but the
+   * delivery downstream can still drop the event (permission `denied` or
+   * `unsupported`, a `Notification` constructor that throws, a `default`
+   * permission request the operator dismisses, or another tab holding the
+   * cross-tab lease). Without a refund the first, never-displayed event burns
+   * a 60s slot and the next real message in that channel is swallowed as a
+   * coalesce increment that shows nothing.
+   *
+   * The replay guard is deliberately NOT refunded: the row was evaluated and
+   * did earn its in-app badge, so re-raising it would double-badge.
+   */
+  refundOs: (event: Pick<NotifyEvent, 'channelId' | 'count'>) => void;
   /** Forget every per-channel ledger entry (sign-out, tests). */
   reset: () => void;
 }
@@ -306,6 +350,26 @@ export function createNotifyGate(): NotifyGate {
   const lastOsAtByChannel = new Map<string, number>();
   /** OS notifications this channel swallowed since its last fire. */
   const coalescedByChannel = new Map<string, number>();
+  /** Timestamps of the OS grants inside the current burst window, oldest first. */
+  const osFiredAt: number[] = [];
+  /** Channels the burst budget has held back in the current window. */
+  const overflowChannels = new Set<string>();
+
+  /**
+   * Drop burst grants that have aged out. The held-back set is cleared with
+   * them: once the window is empty the burst is over, and the next overflow is
+   * a new one that starts counting at one.
+   */
+  function pruneBurstLedger(now: number): void {
+    while (osFiredAt.length > 0) {
+      const oldest = osFiredAt[0];
+      if (oldest === undefined || now - oldest < NOTIFY_OS_BURST_WINDOW_MS) {
+        break;
+      }
+      osFiredAt.shift();
+    }
+    if (osFiredAt.length === 0) overflowChannels.clear();
+  }
 
   function evaluate(
     signal: NotifySignal,
@@ -349,23 +413,40 @@ export function createNotifyGate(): NotifyGate {
     //    already has the in-app badge in view.
     let os = ctx.documentHidden;
     let count = 1;
+    let osOverflow = 0;
     if (os) {
       const lastOsAt = lastOsAtByChannel.get(channelId);
-      if (
-        lastOsAt !== undefined &&
-        ctx.now - lastOsAt < NOTIFY_OS_RATE_LIMIT_MS
-      ) {
-        // Inside the window: swallow the OS tier and remember the miss so the
-        // next fire can say how many piled up.
+      const withinChannelWindow =
+        lastOsAt !== undefined && ctx.now - lastOsAt < NOTIFY_OS_RATE_LIMIT_MS;
+      pruneBurstLedger(ctx.now);
+      // Checked BEFORE anything is charged: a refusal must leave both ledgers
+      // exactly as it found them.
+      const burstExhausted = osFiredAt.length >= NOTIFY_OS_BURST_LIMIT;
+      if (withinChannelWindow || burstExhausted) {
+        // Held back: swallow the OS tier and remember the miss so the next fire
+        // can say how many piled up.
         coalescedByChannel.set(
           channelId,
           (coalescedByChannel.get(channelId) ?? 0) + 1
         );
         os = false;
+        // A channel the per-channel limiter would have swallowed anyway is not
+        // burst overflow — it already has a live notification of its own, and
+        // counting it would inflate the digest with channels the operator can
+        // see.
+        if (burstExhausted && !withinChannelWindow) {
+          const before = overflowChannels.size;
+          overflowChannels.add(channelId);
+          // Only the event that GREW the set reports overflow: a channel that
+          // overflows twice in one window must not re-alert the digest.
+          if (overflowChannels.size > before)
+            osOverflow = overflowChannels.size;
+        }
       } else {
         count = (coalescedByChannel.get(channelId) ?? 0) + 1;
         coalescedByChannel.delete(channelId);
         lastOsAtByChannel.set(channelId, ctx.now);
+        osFiredAt.push(ctx.now);
       }
     }
 
@@ -377,18 +458,34 @@ export function createNotifyGate(): NotifyGate {
       badge: true,
       os,
       count,
+      osOverflow,
       senderLabel: signal.senderLabel,
       seq: signal.seq,
       at: signal.at,
     };
   }
 
+  function refundOs(event: Pick<NotifyEvent, 'channelId' | 'count'>): void {
+    lastOsAtByChannel.delete(event.channelId);
+    // The undelivered event stood for `count` signals — itself plus whatever it
+    // was flushing — and none of them was seen, so all of them go back on the
+    // coalesce pile rather than evaporating.
+    coalescedByChannel.set(event.channelId, event.count);
+    // Give the burst slot back too. The most recent grant is popped rather than
+    // matched by timestamp: refunds are same-window and the ledger is a COUNT,
+    // so which entry leaves it only shifts the window edge by microseconds.
+    osFiredAt.pop();
+  }
+
   return {
     evaluate,
+    refundOs,
     reset: () => {
       lastSeqByChannel.clear();
       lastOsAtByChannel.clear();
       coalescedByChannel.clear();
+      osFiredAt.length = 0;
+      overflowChannels.clear();
     },
   };
 }

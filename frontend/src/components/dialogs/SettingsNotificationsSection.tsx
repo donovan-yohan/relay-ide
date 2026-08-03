@@ -52,8 +52,20 @@ const PERMISSION_DESCRIPTION: Record<NotifyPermissionState, string> = {
 
 export function SettingsNotificationsSection({
   searchQuery,
+  openNonce = 0,
 }: {
   searchQuery: string;
+  /**
+   * Bumped every time the settings dialog is opened.
+   *
+   * `SettingsDialog` is rendered UNCONDITIONALLY from `App` into a native
+   * `<dialog>` that `showModal` reveals — it never unmounts, so a mount-only
+   * read would run once at app boot and never again. An operator who was
+   * `denied` at boot and then re-allowed Relay in browser site settings would
+   * be told they are blocked, with no enable button, for the rest of the tab's
+   * life.
+   */
+  openNonce?: number;
 }) {
   const settings = useNotifySettingsStore((state) => state.settings);
   const setNotifySetting = useNotifySettingsStore(
@@ -67,6 +79,33 @@ export function SettingsNotificationsSection({
     // prompt only ever comes from `requestPermission`, which this section fires
     // exclusively from the button below.
     setPermission(notifyPermissionState());
+  }, [openNonce]);
+
+  // Live updates while the dialog is already open: a lazy grant obtained from
+  // the notify lane itself, or a change made in browser site settings, both land
+  // here. Best effort — Safari has no `permissions.query` for notifications, and
+  // the reject is swallowed because `openNonce` already covers the open path.
+  useEffect(() => {
+    const perms =
+      typeof navigator === 'undefined' ? undefined : navigator.permissions;
+    if (!perms || typeof perms.query !== 'function') return;
+    let cancelled = false;
+    let status: PermissionStatus | null = null;
+    const onChange = () => setPermission(notifyPermissionState());
+    void perms
+      .query({ name: 'notifications' as PermissionName })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        status = result;
+        result.addEventListener('change', onChange);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      status?.removeEventListener('change', onChange);
+    };
   }, []);
 
   return (

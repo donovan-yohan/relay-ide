@@ -4,11 +4,12 @@
 //   1. the MENTION / DM-REPLY producer, fed by the `/channels` summary payload;
 //   2. the favicon dot + title count, both derived from the badge store and the
 //      slice-3 read position — never from a second unread implementation;
-//   3. a narrowly-scoped background refresh so the OS tier is not dead while
-//      the tab is hidden.
+//   3. a narrowly-scoped summary refresh for the two cases the rail cannot
+//      cover — a hidden tab (where the rail suppresses its own refresh) and a
+//      collapsed sidebar (where the rail is not mounted at all).
 //
-// Nothing here requests notification permission. That happens on the first
-// event that would actually notify (`os-notification.ts`) or from the explicit
+// Nothing here requests notification permission. That happens in the runtime,
+// from the first gate-approved event (`notify/runtime.ts`), or from the explicit
 // button in Settings › notifications.
 //
 // It reads the query CACHE and takes the client as an argument rather than
@@ -23,8 +24,9 @@ import {
   createFaviconBadge,
   type FaviconBadge,
 } from '../lib/notify/favicon-badge.js';
-import { notifyPermissionState } from '../lib/notify/os-notification.js';
+import { resetNotifyRuntime } from '../lib/notify/runtime.js';
 import {
+  channelSummariesHaveObserver,
   ensureNotifySummaryCaches,
   refreshChannelSummaries,
   watchChannelSummaries,
@@ -41,25 +43,38 @@ import {
 import { currentNotifySettings } from '../lib/stores/notify-settings.js';
 
 /**
- * Trailing window for the hidden-tab summary refresh.
+ * Trailing window for the summary refresh while the tab is HIDDEN.
  *
- * Long — an order of magnitude above the rail's own foreground throttle. This
- * lane exists to keep OS notifications alive for a tab nobody is looking at, and
- * `GET /channels` is O(channels) server-side, so it buys latency down to ten
- * seconds and no more.
+ * `GET /channels` is O(channels) server-side, so this buys notification latency
+ * down to ten seconds and no more.
  */
 const HIDDEN_SUMMARY_REFRESH_MS = 10_000;
 
 /**
- * True when a summary refresh could actually produce an OS notification.
+ * Trailing window while the tab is VISIBLE.
  *
- * The refresh is gated on this rather than run unconditionally, so the hub pays
- * nothing extra for an operator who never granted permission or switched every
- * message trigger off. Turn-complete is excluded on purpose: it is fed by the
- * socket and needs no fetch.
+ * Deliberately longer. A visible tab usually has the rail mounted, in which case
+ * this lane stands down entirely (see `channelSummariesHaveObserver`); the only
+ * case it covers is a COLLAPSED sidebar, where nothing else fetches the summary
+ * list and the operator would otherwise get no mention or DM badge at all — the
+ * exact hole `ensureNotifySummaryCaches` only plugs once, at boot.
  */
-function osTierReachable(): boolean {
-  if (notifyPermissionState() !== 'granted') return false;
+const VISIBLE_SUMMARY_REFRESH_MS = 45_000;
+
+/**
+ * True when a summary refresh could produce anything the operator would see.
+ *
+ * PERMISSION IS NOT CHECKED HERE, and that is the point: a refresh feeds the
+ * in-app badge tier (favicon dot, title count) as well as the OS tier, and the
+ * badge tier needs no grant. Gating this on `granted` made the OS tier
+ * unreachable on a fresh browser — the only lane that can produce a payload
+ * while hidden refused to run until permission existed, and permission was only
+ * ever requested from an event that lane produced.
+ *
+ * Turn-complete is excluded on purpose: it is fed by the socket and needs no
+ * fetch.
+ */
+function messageTriggersEnabled(): boolean {
   const settings = currentNotifySettings();
   return settings.mentions || settings.dmReplies;
 }
@@ -75,7 +90,15 @@ export function useNotifyDelivery(
     // seen by the subscription rather than missed in the gap.
     const stop = watchChannelSummaries(queryClient);
     void ensureNotifySummaryCaches(queryClient);
-    return stop;
+    return () => {
+      stop();
+      // Stopping the watcher is not enough. The gate's per-channel seq ledger,
+      // its OS rate-limit windows and the badge flags all outlive it, so after
+      // an auth expiry and a re-auth every seq already recorded would be
+      // permanently replay-suppressed — a message the operator never read could
+      // not raise its badge again on this tab.
+      resetNotifyRuntime();
+    };
   }, [enabled, queryClient]);
 
   // ── favicon + title ────────────────────────────────────────────────────────
@@ -129,7 +152,21 @@ export function useNotifyDelivery(
     current.favicon.set(count > 0);
   }, [enabled, attentionCount]);
 
-  // ── hidden-tab summary refresh ─────────────────────────────────────────────
+  // ── self-sufficient summary refresh ────────────────────────────────────────
+  //
+  // Two lanes the rail cannot cover, and it owns the ONLY activity-driven
+  // `['channels']` refetch:
+  //   * HIDDEN tab — the rail deliberately suppresses its refresh there, which
+  //     is exactly when the OS tier is the only tier there is;
+  //   * COLLAPSED sidebar — `TopicSidebarShell` is unmounted, so its
+  //     `invalidateQueries(['channels'])` refetches nothing (invalidation is
+  //     `refetchType: 'active'`) and no observer exists to fetch on its own.
+  //     Without this the operator gets no mention or DM badge, dot, title count
+  //     or notification at all after the boot seed.
+  //
+  // Standing down for a mounted rail is decided at FIRE time, not schedule time:
+  // the rail can mount or unmount inside the window, and the question that
+  // matters is who owns the fetch when it is due.
   useEffect(() => {
     if (!enabled) return;
     const doc = typeof document === 'undefined' ? null : document;
@@ -137,20 +174,22 @@ export function useNotifyDelivery(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const unsubscribe = useChannelActivityStore.subscribe((state, previous) => {
       if (state.latestSeqByChannel === previous.latestSeqByChannel) return;
-      // Visible tabs are already covered: the rail refetches the summary list on
-      // its own (tighter) throttle, and this lane's producer runs off whatever
-      // payload that produces. A HIDDEN tab is the gap — the rail deliberately
-      // suppresses its refresh there, which is exactly when the OS tier is the
-      // only tier there is.
-      if (!doc.hidden) return;
-      if (!osTierReachable()) return;
+      if (!messageTriggersEnabled()) return;
       if (timer !== undefined) return;
       // Trailing, and NOT reset by later activity: an agent streaming a long
       // turn must not be able to starve the refresh it is the reason for.
+      const delay = doc.hidden
+        ? HIDDEN_SUMMARY_REFRESH_MS
+        : VISIBLE_SUMMARY_REFRESH_MS;
       timer = setTimeout(() => {
         timer = undefined;
+        // Standing down applies to a VISIBLE tab only. The rail keeps its
+        // observer mounted while hidden but deliberately suppresses its own
+        // refetch there, so an observer on a hidden tab means nobody is
+        // fetching at all — which is the gap this lane exists to fill.
+        if (!doc.hidden && channelSummariesHaveObserver(queryClient)) return;
         void refreshChannelSummaries(queryClient);
-      }, HIDDEN_SUMMARY_REFRESH_MS);
+      }, delay);
     });
     return () => {
       unsubscribe();

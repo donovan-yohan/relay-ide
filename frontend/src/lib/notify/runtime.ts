@@ -14,6 +14,7 @@ import { useNotifyBadgeStore } from '../stores/notify-badge.js';
 import { currentNotifySettings } from '../stores/notify-settings.js';
 import { useUiStore } from '../stores/ui.js';
 import { openChannelFromNotification } from '../topic-selection.js';
+import { createNotifyLeader, type NotifyLeader } from './leader.js';
 import { createOsNotifier, type OsNotifier } from './os-notification.js';
 import {
   createNotifyGate,
@@ -27,6 +28,9 @@ let gate: NotifyGate = createNotifyGate();
 let notifier: OsNotifier = createOsNotifier({
   openChannel: openChannelFromNotification,
 });
+// Constructed eagerly but INERT until claimed: nothing is read or written until
+// an event actually reaches the OS tier, so importing this module costs nothing.
+let leader: NotifyLeader = createNotifyLeader();
 
 /** The shared OS notifier — Settings uses it for the explicit permission ask. */
 export function notifyOsNotifier(): OsNotifier {
@@ -80,12 +84,37 @@ export interface DeliverNotifyOptions {
 }
 
 /**
+ * Arm the lazy permission prompt from a LIVE event on a tab the operator is
+ * looking at.
+ *
+ * The OS-tier ask in `os-notification.ts` can only fire for an `os` event,
+ * which by construction only exists while `document.hidden` — exactly when
+ * Safari and Firefox refuse to raise a prompt (both tie `requestPermission` to
+ * user activation) and Chrome defers it. So a fresh browser could reach the
+ * documented lazy grant only by accident. A gate-approved event on a VISIBLE,
+ * FOCUSED tab is the same evidence that something notification-worthy just
+ * happened, delivered where the ask can actually land.
+ *
+ * The BOOT SEED is excluded (`osTier: false`): a prompt raised at page load,
+ * before the operator has been shown anything, is the hostile ask this lane
+ * refuses to make.
+ */
+function primePermissionIfWatching(osTier: boolean): void {
+  if (!osTier) return;
+  const doc = typeof document === 'undefined' ? null : document;
+  if (!doc || doc.hidden) return;
+  if (typeof doc.hasFocus === 'function' && !doc.hasFocus()) return;
+  notifier.primePermission();
+}
+
+/**
  * Run one signal through the gate and, if it survives, deliver it.
  *
  * Both tiers fire from here so they cannot disagree about what happened: the
  * in-app flag ALWAYS (an event only exists once it has passed the setting, the
  * replay guard, the read position, and the open-and-focused suppression), and
- * the OS notification only when the gate marked it `os`.
+ * the OS notification only when the gate marked it `os` AND this tab holds the
+ * cross-tab lease.
  *
  * Returns the delivered event so callers and tests can assert on it.
  */
@@ -93,32 +122,57 @@ export function deliverNotifySignal(
   signal: NotifySignal,
   options: DeliverNotifyOptions = {}
 ): NotifyEvent | null {
-  const event = gate.evaluate(
+  // Captured, not re-read: `resetNotifyRuntime` can swap the singleton while a
+  // permission request is in flight, and refunding a FRESH gate would poison a
+  // ledger that never charged anything.
+  const activeGate = gate;
+  const now = options.now ?? Date.now();
+  const osTier = options.osTier ?? true;
+  const event = activeGate.evaluate(
     signal,
-    gateContext(
-      signal.channel.id,
-      options.now ?? Date.now(),
-      options.osTier ?? true
-    )
+    gateContext(signal.channel.id, now, osTier)
   );
   if (!event) return null;
   useNotifyBadgeStore
     .getState()
     .flagChannel(event.channelId, { seq: event.seq, reason: event.reason });
-  notifier.deliver(event);
+  if (event.os) {
+    // A tab that loses the lease reports its event as UNDELIVERED, so the gate
+    // hands the window back: a follower that later becomes the leader must not
+    // be sitting on rate-limit slots it never spent.
+    const delivered = leader.claim(now)
+      ? notifier.deliver(event)
+      : Promise.resolve(false);
+    void delivered.then((shown) => {
+      if (!shown) activeGate.refundOs(event);
+    });
+  } else if (event.osOverflow > 0 && leader.claim(now)) {
+    // Mutually exclusive with `os` by construction: overflow is only ever set
+    // on an event the burst budget refused.
+    notifier.deliverOverflow(event.osOverflow);
+  }
+  primePermissionIfWatching(osTier);
   return event;
 }
 
 /**
  * Drop every ledger and rebuild the singletons.
  *
- * Used by tests, and on sign-out: a gate that remembers another account's seqs
- * would silence that account's first real message on this device.
+ * Called from `useNotifyDelivery` when the lane is disabled (sign-out, auth
+ * expiry) and by tests. Stopping the watcher is NOT enough on its own: the
+ * gate's per-channel seq ledger, the OS rate-limit windows and the badge flags
+ * all outlive it, so after a re-auth every seq already recorded would be
+ * permanently replay-suppressed and an unread message could never raise its
+ * badge again on this tab.
  */
 export function resetNotifyRuntime(): void {
   gate.reset();
   notifier.reset();
+  // Released, not just dropped: a lease left behind under a discarded id would
+  // lock this origin's OS tier out for its full duration.
+  leader.release();
   gate = createNotifyGate();
   notifier = createOsNotifier({ openChannel: openChannelFromNotification });
+  leader = createNotifyLeader();
   useNotifyBadgeStore.getState().reset();
 }

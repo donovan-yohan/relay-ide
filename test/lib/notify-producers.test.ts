@@ -14,6 +14,10 @@ import {
   type NotifySummaryRow,
   type NotifyTopicRecord,
 } from '../../frontend/src/lib/notify/producers.js';
+import {
+  NOTIFY_LEADER_LEASE_MS,
+  NOTIFY_LEADER_STORAGE_KEY,
+} from '../../frontend/src/lib/notify/leader.js';
 import { resetNotifyRuntime } from '../../frontend/src/lib/notify/runtime.js';
 import { useChannelActivityStore } from '../../frontend/src/lib/stores/channel-activity.js';
 import {
@@ -118,6 +122,10 @@ beforeEach(() => {
   FakeNotification.permission = 'granted';
   FakeNotification.requestPermission.mockClear();
   (globalThis as { Notification?: unknown }).Notification = FakeNotification;
+  // Includes the cross-tab lease: a record left behind under ANOTHER tab's id
+  // survives `resetNotifyRuntime` by design (releasing someone else's lease is
+  // exactly what a leader election must not do).
+  localStorage.clear();
   resetNotifyRuntime();
   useNotifySettingsStore.getState().resetNotifySettings();
   useChannelActivityStore.setState({ lastReadByChannel: {} });
@@ -331,6 +339,48 @@ describe('turn complete from channel-agent-status', () => {
   });
 });
 
+describe('cross-tab lease', () => {
+  function otherTabHoldsLease(at: number): void {
+    localStorage.setItem(
+      NOTIFY_LEADER_STORAGE_KEY,
+      JSON.stringify({ id: 'other-tab', at })
+    );
+  }
+
+  it('constructs no notification while another tab holds the lease', () => {
+    otherTabHoldsLease(NOW);
+    notifyFromChannelSummaries({
+      rows: [summaryRow(DM_ID)],
+      channels,
+      at: NOW,
+    });
+    expect(shown).toHaveLength(0);
+    // The in-app tier is legitimately per-tab: this tab still draws its own dot.
+    expect(attentionCount()).toBe(1);
+  });
+
+  it('refunds the window it never spent, so a takeover still fires', async () => {
+    otherTabHoldsLease(NOW);
+    notifyFromChannelSummaries({
+      rows: [summaryRow(DM_ID)],
+      channels,
+      at: NOW,
+    });
+    expect(shown).toHaveLength(0);
+    // The refund rides a microtask (delivery is reported asynchronously).
+    await Promise.resolve();
+    await Promise.resolve();
+    // Lease lapsed, this tab takes over. Without the refund the suppressed event
+    // would still be holding a 60s slot and this message would show nothing.
+    notifyFromChannelSummaries({
+      rows: [summaryRow(DM_ID, { seq: 13 })],
+      channels,
+      at: NOW + NOTIFY_LEADER_LEASE_MS,
+    });
+    expect(shown).toHaveLength(1);
+  });
+});
+
 describe('click routing', () => {
   it('opens the notified channel', () => {
     notifyFromChannelSummaries({
@@ -355,23 +405,97 @@ describe('permission', () => {
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
   });
 
-  it('is requested only once an eligible event actually reaches the OS tier', () => {
+  it('is requested only once a LIVE event survives the gate', () => {
     FakeNotification.permission = 'default';
-    // Visible tab: badge tier only, so nothing is eligible yet.
+    // The boot seed describes what happened while the client was away. A prompt
+    // there lands before the operator has been shown anything, which is the one
+    // ask this lane refuses to make.
     foregroundTab();
     notifyFromChannelSummaries({
       rows: [summaryRow(DM_ID)],
       channels,
+      osTier: false,
       at: NOW,
     });
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
 
-    backgroundTab();
+    // A live event on a VISIBLE, FOCUSED tab: the only moment Safari and
+    // Firefox will raise the prompt at all, so this is where it is armed.
     notifyFromChannelSummaries({
       rows: [summaryRow(DM_ID, { seq: 13 })],
       channels,
       at: NOW + 1,
     });
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+    // And no notification was shown for it — a visible tab is badge tier only.
+    expect(shown).toHaveLength(0);
+  });
+
+  it('is not requested from a hidden tab that cannot show a prompt', () => {
+    // Chrome defers the prompt to the tab's return; Safari and Firefox reject it
+    // outright. The OS-tier ask in `os-notification.ts` still covers this path —
+    // what must NOT happen is the prime spending its one shot here.
+    FakeNotification.permission = 'default';
+    backgroundTab();
+    notifyFromChannelSummaries({
+      rows: [summaryRow(DM_ID)],
+      channels,
+      osTier: false,
+      at: NOW,
+    });
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+  });
+
+  it('asks at most once across a burst', () => {
+    FakeNotification.permission = 'default';
+    foregroundTab();
+    for (let seq = 20; seq < 25; seq += 1) {
+      notifyFromChannelSummaries({
+        rows: [summaryRow(DM_ID, { seq })],
+        channels,
+        at: NOW + seq,
+      });
+    }
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('global burst budget', () => {
+  /** One DM channel per agent profile — the #1242 reconnect shape. */
+  const burstChannels = notifyChannelIndex(
+    Array.from({ length: 8 }, (_, index) =>
+      topic(dmChannelTopicId(`agent-${index}`, null), `agent ${index}`, {
+        providerId: `agent-${index}`,
+      })
+    )
+  );
+
+  it('collapses a reconnect storm into three notifications plus one digest', () => {
+    const rows = [...burstChannels.keys()].map((id) => summaryRow(id));
+    const delivered = notifyFromChannelSummaries({
+      rows,
+      channels: burstChannels,
+      at: NOW,
+    });
+    // Every row still earns its in-app mark.
+    expect(delivered).toHaveLength(8);
+    expect(attentionCount()).toBe(8);
+    // Three per-channel notifications, then ONE digest line that keeps
+    // replacing itself (constant tag) as the held-back set grows.
+    const perChannel = shown.filter((entry) =>
+      entry.options?.tag?.startsWith('relay-channel:')
+    );
+    const digests = shown.filter(
+      (entry) => entry.options?.tag === 'relay-channels'
+    );
+    expect(perChannel).toHaveLength(3);
+    expect(perChannel[0]?.options?.body).toBe('claude replied in agent 0');
+    expect(digests.map((entry) => entry.options?.body)).toEqual([
+      '1 channel has new messages',
+      '2 channels have new messages',
+      '3 channels have new messages',
+      '4 channels have new messages',
+      '5 channels have new messages',
+    ]);
   });
 });

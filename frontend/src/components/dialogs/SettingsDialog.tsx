@@ -267,6 +267,10 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
     const setAdvancedMode = useUiStore((s) => s.setAdvancedMode);
     const [searchQuery, setSearchQuery] = useState('');
     const [tocOpen, setTocOpen] = useState(false);
+    // This dialog is rendered unconditionally into a native `<dialog>` and never
+    // unmounts, so "opened" is not a mount. Sections whose state is read from
+    // outside React (the browser's notification permission) take this instead.
+    const [openNonce, setOpenNonce] = useState(0);
 
     const contentRefCallback = useCallback((el: HTMLDivElement | null) => {
       contentElRef.current = el;
@@ -327,6 +331,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
         }));
         setDevtoolsEnabled(localStorage.getItem('devtools-enabled') === 'true');
         setNotifPerm(getPermissionState());
+        setOpenNonce((n) => n + 1);
         void loadAllData();
         shellRef.current?.open();
         if (scrollToId)
@@ -454,7 +459,10 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               searchQuery={searchQuery}
               handlers={configHandlers}
             />
-            <SettingsNotificationsSection searchQuery={searchQuery} />
+            <SettingsNotificationsSection
+              searchQuery={searchQuery}
+              openNonce={openNonce}
+            />
             <SettingsAgentProfilesSection searchQuery={searchQuery} />
             <IntegrationsSection
               searchQuery={searchQuery}

@@ -8,6 +8,7 @@
 // so this adds an observer's worth of nothing.
 import type { QueryClient } from '@tanstack/react-query';
 import { fetchChannels, fetchWorkspaceTopics } from '../api.js';
+import { useNotifyBadgeStore } from '../stores/notify-badge.js';
 import { notifyChannelIndex, notifyFromChannelSummaries } from './producers.js';
 import type { NotifySummaryRow, NotifyTopicRecord } from './producers.js';
 
@@ -47,6 +48,25 @@ export async function ensureNotifySummaryCaches(
 }
 
 /**
+ * True when something is already OBSERVING `['channels']` — in practice the
+ * rail, which refetches the summary list on its own throttle.
+ *
+ * The notify lane's refresh exists to cover the rail being unmounted (collapsed
+ * sidebar) or deliberately suppressed (hidden tab). When the rail IS mounted and
+ * visible it is the cheaper producer and already runs, so this lane must stand
+ * down rather than double the hub's `GET /channels` load — which is O(channels)
+ * server-side.
+ */
+export function channelSummariesHaveObserver(
+  queryClient: QueryClient
+): boolean {
+  const query = queryClient
+    .getQueryCache()
+    .find({ queryKey: [NOTIFY_CHANNELS_QUERY_KEY], exact: true });
+  return (query?.getObserversCount() ?? 0) > 0;
+}
+
+/**
  * Force a fresh `/channels` payload into the cache.
  *
  * `fetchQuery`, not `invalidateQueries`: invalidation only refetches queries
@@ -82,6 +102,28 @@ export async function refreshChannelSummaries(
  * replay guard is what makes the pass idempotent, which is also why this lane
  * keeps no "rows I have already seen" ledger of its own.
  */
+/**
+ * Drop badge flags for channels the active topic list no longer contains.
+ *
+ * `['workspace-topics']` (the exact key, which is always the ACTIVE view — the
+ * archived one rides a distinct key) is the closest thing this lane has to a
+ * channel-deleted signal: a flagged channel that has left it was deleted or
+ * archived, and neither should keep pulling the operator's eye to a tab.
+ *
+ * Skipped on a TRUNCATED payload, which is a page of the corpus rather than the
+ * whole of it — pruning against it would clear flags for channels that exist.
+ */
+function pruneBadgesForMissingChannels(
+  channels: ReadonlyMap<string, unknown>,
+  truncated: boolean
+): void {
+  if (truncated) return;
+  const badges = useNotifyBadgeStore.getState();
+  for (const channelId of Object.keys(badges.flagByChannel)) {
+    if (!channels.has(channelId)) badges.clearChannel(channelId);
+  }
+}
+
 export function watchChannelSummaries(queryClient: QueryClient): () => void {
   let seeded = false;
 
@@ -89,20 +131,19 @@ export function watchChannelSummaries(queryClient: QueryClient): () => void {
     const rows = queryClient.getQueryData<NotifySummaryRow[]>([
       NOTIFY_CHANNELS_QUERY_KEY,
     ]);
-    const topics = queryClient.getQueryData<{ topics?: NotifyTopicRecord[] }>([
-      NOTIFY_TOPICS_QUERY_KEY,
-    ]);
+    const topics = queryClient.getQueryData<{
+      topics?: NotifyTopicRecord[];
+      truncated?: boolean;
+    }>([NOTIFY_TOPICS_QUERY_KEY]);
     // BOTH are required, and either can land second on a cold boot — which is
     // why the subscription below watches both keys rather than just the
     // channel list.
     if (!rows || !topics?.topics?.length) return;
+    const channels = notifyChannelIndex(topics.topics);
+    pruneBadgesForMissingChannels(channels, topics.truncated === true);
     const osTier = seeded;
     seeded = true;
-    notifyFromChannelSummaries({
-      rows,
-      channels: notifyChannelIndex(topics.topics),
-      osTier,
-    });
+    notifyFromChannelSummaries({ rows, channels, osTier });
   }
 
   runPass();

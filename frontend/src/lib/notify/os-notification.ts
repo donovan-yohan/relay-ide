@@ -12,7 +12,12 @@
 // Deliberately independent of `lib/notifications.ts`, which owns the LEGACY
 // per-session web-push lane (service worker + VAPID + `PUT /config`). Nothing
 // here registers a service worker: this slice adds no push infrastructure.
-import { NOTIFY_OS_TITLE, notifyOsBody } from './copy.js';
+import {
+  NOTIFY_OS_OVERFLOW_KEY,
+  NOTIFY_OS_TITLE,
+  notifyOsBody,
+  notifyOsOverflowBody,
+} from './copy.js';
 import type { NotifyEvent } from './signals.js';
 
 /** Permission states, plus the browser that has no Notification API at all. */
@@ -81,17 +86,43 @@ export interface OsNotifierDeps {
 
 export interface OsNotifier {
   /**
-   * Show `event` if the OS tier is reachable. Fire-and-forget: a permission
-   * round trip must never make the caller (a socket handler) async.
+   * Show `event` if the OS tier is reachable.
+   *
+   * Fire-and-forget for the CALLER — a permission round trip must never make a
+   * socket handler async — but the returned promise reports whether a
+   * `Notification` was actually constructed, so the gate can refund the
+   * rate-limit slot it charged when nothing was shown. Resolves synchronously
+   * (one microtask) on every path except the lazy permission request.
    */
-  deliver: (event: NotifyEvent) => void;
+  deliver: (event: NotifyEvent) => Promise<boolean>;
+  /**
+   * ONE collapsed notification for a burst the gate's global budget held back.
+   * Carries a constant tag, so a growing overflow replaces its own line.
+   */
+  deliverOverflow: (channelCount: number) => void;
+  /**
+   * Arm the permission prompt from a moment the browser can actually raise it,
+   * without showing anything.
+   *
+   * `deliver`'s lazy ask only fires for an OS-tier event, which by construction
+   * only exists while `document.hidden` — precisely when Safari and Firefox
+   * refuse to prompt at all (both tie `requestPermission` to user activation)
+   * and when Chrome defers the prompt until the tab returns. A gate-approved
+   * event on a VISIBLE, focused tab is the same "something worth telling you
+   * about just happened" evidence, delivered where the ask can land.
+   *
+   * At most one request per notifier lifetime, and only from `default` — a
+   * browser that refuses the ungestured ask must not be re-asked on every
+   * subsequent event.
+   */
+  primePermission: () => void;
   /**
    * Ask for permission now, from an explicit operator action (the Settings
    * button). Same memoized request as the lazy path, so the two cannot race
    * into two prompts.
    */
   requestPermission: () => Promise<NotifyPermissionState>;
-  /** Forget the in-flight request memo (sign-out, tests). */
+  /** Forget the in-flight request memo and the prime one-shot (sign-out, tests). */
   reset: () => void;
 }
 
@@ -113,6 +144,8 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
    * issued at once.
    */
   let pendingRequest: Promise<NotifyPermissionState> | null = null;
+  /** Whether the one gestureless prime has already been spent. */
+  let primed = false;
 
   function requestPermission(): Promise<NotifyPermissionState> {
     const ctor = resolveCtor();
@@ -145,7 +178,7 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
     return pendingRequest;
   }
 
-  function show(event: NotifyEvent, ctor: NotificationCtorLike): void {
+  function show(event: NotifyEvent, ctor: NotificationCtorLike): boolean {
     let notification: NotificationLike;
     try {
       notification = new ctor(NOTIFY_OS_TITLE, {
@@ -160,38 +193,82 @@ export function createOsNotifier(deps: OsNotifierDeps): OsNotifier {
       // Constructing a Notification throws on Android Chrome (service-worker
       // notifications only) and in a few embedded webviews. Nothing about the
       // in-app tier depends on this succeeding.
-      return;
+      return false;
     }
     notification.onclick = () => {
       focusWindow();
       deps.openChannel(event.channelId);
       notification.close();
     };
+    return true;
+  }
+
+  /** The burst digest. No channel to route to, so a click only brings the tab up. */
+  function showOverflow(
+    channelCount: number,
+    ctor: NotificationCtorLike
+  ): boolean {
+    let notification: NotificationLike;
+    try {
+      notification = new ctor(NOTIFY_OS_TITLE, {
+        body: notifyOsOverflowBody(channelCount),
+        tag: NOTIFY_OS_OVERFLOW_KEY,
+      });
+    } catch {
+      return false;
+    }
+    notification.onclick = () => {
+      focusWindow();
+      notification.close();
+    };
+    return true;
+  }
+
+  /**
+   * The permission dance every delivery path shares. Resolves TRUE only once
+   * `build` has actually constructed a notification, which is what lets the
+   * gate tell a shown event from a swallowed one.
+   */
+  function present(
+    build: (ctor: NotificationCtorLike) => boolean
+  ): Promise<boolean> {
+    const ctor = resolveCtor();
+    if (!ctor) return Promise.resolve(false);
+    const permission = notifyPermissionState(ctor);
+    if (permission === 'denied') return Promise.resolve(false);
+    if (permission === 'granted') return Promise.resolve(build(ctor));
+    // FIRST eligible event and no grant yet: arm the lazy prompt. The event is
+    // shown once the grant lands, not dropped — the operator said yes to being
+    // told about THIS.
+    return requestPermission().then((result) => {
+      if (result !== 'granted') return false;
+      const grantedCtor = resolveCtor();
+      return grantedCtor ? build(grantedCtor) : false;
+    });
   }
 
   return {
     deliver: (event) => {
-      if (!event.os) return;
+      if (!event.os) return Promise.resolve(false);
+      return present((ctor) => show(event, ctor));
+    },
+    deliverOverflow: (channelCount) => {
+      void present((ctor) => showOverflow(channelCount, ctor));
+    },
+    primePermission: () => {
+      if (primed) return;
       const ctor = resolveCtor();
       if (!ctor) return;
-      const permission = notifyPermissionState(ctor);
-      if (permission === 'denied') return;
-      if (permission === 'granted') {
-        show(event, ctor);
-        return;
-      }
-      // FIRST eligible event: this is the only place the lazy prompt is armed.
-      // The event is shown once the grant lands, not dropped — the operator
-      // said yes to being told about THIS.
-      void requestPermission().then((result) => {
-        if (result !== 'granted') return;
-        const grantedCtor = resolveCtor();
-        if (grantedCtor) show(event, grantedCtor);
-      });
+      // `granted`/`denied` are both settled; neither spends the one shot, so a
+      // browser that only gains the API later can still be primed.
+      if (notifyPermissionState(ctor) !== 'default') return;
+      primed = true;
+      void requestPermission();
     },
     requestPermission,
     reset: () => {
       pendingRequest = null;
+      primed = false;
     },
   };
 }

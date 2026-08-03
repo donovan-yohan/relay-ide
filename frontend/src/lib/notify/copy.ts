@@ -62,6 +62,29 @@ export function notifyRelayCopyFragment(
 }
 
 /**
+ * Tag for the collapsed burst notification.
+ *
+ * CONSTANT, unlike the per-channel `notifyChannelKey`: a growing overflow must
+ * replace its own previous line in the notification centre, which is the whole
+ * point of collapsing the burst in the first place.
+ */
+export const NOTIFY_OS_OVERFLOW_KEY = 'relay-channels';
+
+/**
+ * Collapsed body for a burst the global budget held back:
+ * `12 channels have new messages`.
+ *
+ * Names no channel and no sender. A digest exists because listing them one by
+ * one IS the storm it replaces, and the operator's next move is the same either
+ * way: open Relay and look at the rail, which already carries every dot.
+ */
+export function notifyOsOverflowBody(channelCount: number): string {
+  return channelCount === 1
+    ? '1 channel has new messages'
+    : `${channelCount} channels have new messages`;
+}
+
+/**
  * Document title while unread DM/mention channels exist: `(3) Relay`.
  *
  * N counts CHANNELS, not messages — the tab title is a "where should I look"
