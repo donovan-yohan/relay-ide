@@ -1962,9 +1962,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     expect(buildChannelSearchMatchQuery('𝟙𝟚')).toBeNull();
     // A short term next to a real one keeps its exact-phrase filter.
     expect(buildChannelSearchMatchQuery('deploy a')).toBe('"deploy" AND "a"');
-    expect(buildChannelSearchMatchQuery('a deploy')).toBe(
-      '"a" AND "deploy" *'
-    );
+    expect(buildChannelSearchMatchQuery('a deploy')).toBe('"a" AND "deploy" *');
   });
 
   it('names why a refused query was never dispatched to the index', () => {
@@ -2094,6 +2092,127 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     // 1 anchor + every non-system bulk row, each exactly once.
     expect(indexed.count).toBe(1 + total - total / 10);
     expect(reopened.searchMessages({ query: 'batchword' })).toHaveLength(50);
+  });
+
+  it('finishes a crash-truncated backfill instead of trusting the DDL', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    for (let i = 0; i < 6; i += 1) {
+      seeded.appendComplete({
+        channelId: 'topic:alpha',
+        sender: HUMAN,
+        text: `needle${i} shared subject`,
+      });
+    }
+    seeded.close();
+
+    // Reproduce the exact on-disk state a kill mid-backfill leaves behind:
+    // table + all three triggers committed, the marker still claiming
+    // `building`, and index entries present only up to the cursor. Batches walk
+    // rowid ASCENDING, so what is missing is the NEWEST messages — the ones an
+    // operator is most likely to search for, and the shape that a
+    // presence-only integrity check reports as healthy forever.
+    const raw = new Database(file);
+    const cutoff = (
+      raw
+        .prepare(
+          'SELECT rowid AS id FROM channel_messages ORDER BY rowid LIMIT 1 OFFSET 2'
+        )
+        .get() as { id: number }
+    ).id;
+    raw
+      .prepare(
+        `INSERT INTO channel_messages_fts(channel_messages_fts, rowid, id, channel_id, body_text)
+         SELECT 'delete', m.rowid, m.id, m.channel_id, m.body_text
+           FROM channel_messages m WHERE m.rowid > ?`
+      )
+      .run(cutoff);
+    raw
+      .prepare(
+        `UPDATE channel_search_state
+            SET status = 'building',
+                indexed_through_rowid = ?,
+                snapshot_max_rowid =
+                  (SELECT MAX(rowid) FROM channel_messages)`
+      )
+      .run(cutoff);
+    const truncatedTail = (
+      raw
+        .prepare(
+          `SELECT COUNT(*) AS count FROM channel_messages_fts
+            WHERE channel_messages_fts MATCH '"needle5"'`
+        )
+        .get() as { count: number }
+    ).count;
+    raw.close();
+    // Pre-condition: the tail really is unsearchable in the crashed db.
+    expect(truncatedTail).toBe(0);
+
+    const reopened = store(file);
+    expect(reopened.searchMessages({ query: 'needle5' })).toHaveLength(1);
+    expect(reopened.searchMessages({ query: 'needle0' })).toHaveLength(1);
+    // Exactly once each: a resume that re-ran an already-committed range would
+    // double-index the head, and external-content FTS5 has no upsert to absorb
+    // it. This is also why the cursor advances inside the batch transaction.
+    expect(reopened.searchMessages({ query: 'shared' })).toHaveLength(6);
+    reopened.close();
+
+    const marked = new Database(file);
+    const state = marked
+      .prepare(
+        'SELECT status, indexed_through_rowid FROM channel_search_state WHERE id = 1'
+      )
+      .get() as { status: string; indexed_through_rowid: number };
+    const headEntries = marked
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"needle0"'`
+      )
+      .get() as { count: number };
+    marked.close();
+    expect(state.status).toBe('complete');
+    expect(state.indexed_through_rowid).toBeGreaterThanOrEqual(cutoff);
+    expect(headEntries.count).toBe(1);
+
+    // A second open must be a no-op: the marker, not the DDL, is what says so.
+    const again = store(file);
+    expect(again.searchMessages({ query: 'shared' })).toHaveLength(6);
+  });
+
+  it('rebuilds when the completeness marker is absent under an intact index', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'markerless subject',
+    });
+    seeded.close();
+
+    // A db written before the marker existed (or one an operator edited) has an
+    // index nothing can vouch for. It is not resumable — there is no cursor to
+    // resume from — so it must be rebuilt from scratch, exactly once.
+    const raw = new Database(file);
+    raw.exec('DELETE FROM channel_search_state');
+    raw.close();
+
+    const reopened = store(file);
+    expect(reopened.searchMessages({ query: 'markerless' })).toHaveLength(1);
+    reopened.close();
+
+    const counted = new Database(file);
+    const entries = counted
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"markerless"'`
+      )
+      .get() as { count: number };
+    const state = counted
+      .prepare('SELECT status FROM channel_search_state WHERE id = 1')
+      .get() as { status: string };
+    counted.close();
+    expect(entries.count).toBe(1);
+    expect(state.status).toBe('complete');
   });
 
   it('keeps the implicit-rowid contract the external-content index rides on', () => {

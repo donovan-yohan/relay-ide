@@ -1275,12 +1275,126 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
 const CHANNEL_SEARCH_BACKFILL_BATCH_ROWS = 5_000;
 
 /**
- * Rebuild the search index from `channel_messages`, in place.
+ * Durable completeness marker for the index, and the resume cursor for a
+ * backfill that did not finish.
+ *
+ * Batching the backfill into bounded commits (so boot never holds one writer
+ * over the whole tokenization pass) made a NEW on-disk state reachable: table +
+ * triggers present, index populated only up to some rowid. Presence of the DDL
+ * therefore no longer implies a complete index, and the difference is invisible
+ * — batches walk rowid ASCENDING, so a truncated backfill is missing the NEWEST
+ * messages, which is exactly what an operator searches for. This row is the
+ * only thing that can tell the two apart, so it is written INSIDE the same
+ * transaction that creates the DDL and empties the index, advanced inside each
+ * batch commit, and flipped to `complete` only after the last one.
+ *
+ * Single row by construction (`CHECK (id = 1)`): there is one index per db, and
+ * a second row would be a second, contradictory answer to "is it complete".
+ */
+const CHANNEL_SEARCH_STATE_TABLE = 'channel_search_state';
+
+const CHANNEL_SEARCH_STATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS ${CHANNEL_SEARCH_STATE_TABLE} (
+  id                    INTEGER PRIMARY KEY CHECK (id = 1),
+  status                TEXT NOT NULL CHECK (status IN ('building','complete')),
+  indexed_through_rowid INTEGER NOT NULL,
+  snapshot_max_rowid    INTEGER NOT NULL,
+  updated_at            TEXT NOT NULL
+);
+`;
+
+type ChannelSearchIndexState = {
+  status: 'building' | 'complete';
+  /** Highest source rowid whose batch has COMMITTED into the index. */
+  indexedThroughRowid: number;
+  /** Upper bound of the backfill, snapshot when it began. */
+  snapshotMaxRowid: number;
+};
+
+/** Marker row, or null when it is absent or unreadable (treat as incomplete). */
+function readChannelSearchIndexState(
+  db: Database.Database
+): ChannelSearchIndexState | null {
+  const row = db
+    .prepare(
+      `SELECT status, indexed_through_rowid, snapshot_max_rowid
+         FROM ${CHANNEL_SEARCH_STATE_TABLE} WHERE id = 1`
+    )
+    .get() as
+    | {
+        status: string;
+        indexed_through_rowid: number;
+        snapshot_max_rowid: number;
+      }
+    | undefined;
+  if (!row) return null;
+  if (row.status !== 'building' && row.status !== 'complete') return null;
+  return {
+    status: row.status,
+    indexedThroughRowid: row.indexed_through_rowid,
+    snapshotMaxRowid: row.snapshot_max_rowid,
+  };
+}
+
+/**
+ * Create the index DDL, empty the index, and claim a backfill — atomically.
+ *
+ * All four steps share one transaction on purpose. `'delete-all'` outside it
+ * would let a crash between the truncate and the marker leave an EMPTIED index
+ * that the next boot mistakes for a resumable partial one, and would then
+ * double-index everything it did keep. Either the whole claim lands (empty
+ * index, marker says `building` from rowid 0) or none of it does (no table, so
+ * the next boot repairs from scratch).
  *
  * `'delete-all'` rather than FTS5's own `'rebuild'`: `rebuild` re-derives the
  * index from EVERY content row, which would drag system rows, detail cards,
  * tombstones and half-written streams back in. The index is a filtered
  * projection, so the backfill has to apply the same predicate the triggers do.
+ *
+ * The upper bound is SNAPSHOT here, before the first batch commits. Splitting
+ * the backfill into several transactions means the sync triggers are live
+ * between them, so a row appended mid-rebuild is already indexed by the insert
+ * trigger; without the snapshot a later batch would re-scan it and index it
+ * twice. Snapshot below, triggers above, no overlap — and the bound is
+ * PERSISTED so a resume keeps the same split instead of re-deriving a newer
+ * bound that would overlap the trigger-indexed tail.
+ */
+function beginChannelSearchBackfill(
+  db: Database.Database
+): ChannelSearchIndexState {
+  return db.transaction((): ChannelSearchIndexState => {
+    // A partially-present trigger set is repaired by replacing all three: the
+    // `IF NOT EXISTS` creates below would otherwise leave a stale survivor
+    // whose body predates whatever change caused the repair.
+    for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
+      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    }
+    db.exec(CHANNEL_SEARCH_SCHEMA_SQL);
+    db.prepare(
+      `INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}) VALUES('delete-all')`
+    ).run();
+    const snapshotMaxRowid =
+      (
+        db.prepare('SELECT MAX(rowid) AS hi FROM channel_messages').get() as {
+          hi: number | null;
+        }
+      ).hi ?? 0;
+    db.prepare(
+      `INSERT INTO ${CHANNEL_SEARCH_STATE_TABLE}
+         (id, status, indexed_through_rowid, snapshot_max_rowid, updated_at)
+       VALUES (1, 'building', 0, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = 'building',
+         indexed_through_rowid = 0,
+         snapshot_max_rowid = excluded.snapshot_max_rowid,
+         updated_at = excluded.updated_at`
+    ).run(snapshotMaxRowid, new Date().toISOString());
+    return { status: 'building', indexedThroughRowid: 0, snapshotMaxRowid };
+  })();
+}
+
+/**
+ * Run (or finish) the claimed backfill from `state.indexedThroughRowid`.
  *
  * Batched over rowid RANGES, not over `LIMIT/OFFSET` of the filtered set: the
  * range bound comes from the source table's own rowid order, so each commit
@@ -1288,28 +1402,17 @@ const CHANNEL_SEARCH_BACKFILL_BATCH_ROWS = 5_000;
  * row can be skipped or double-indexed by a shifting offset. Callers may pass
  * `onBatch` to make a long rebuild visible in the journal instead of silent.
  *
- * The upper bound is SNAPSHOT once, before the first commit. Splitting the
- * rebuild into several transactions means the sync triggers are live between
- * them, so a row appended mid-rebuild is already indexed by the insert trigger;
- * without the snapshot a later batch would re-scan it and index it twice.
- * Snapshot below, triggers above, no overlap.
- *
- * MUST also be called after any maintenance that renumbers implicit rowids —
- * see the rowid contract on `buildChannelMessageSearchSql`.
+ * The cursor advances INSIDE the batch transaction. A cursor written after the
+ * commit could be lost to a crash in between, and re-running that range would
+ * insert every one of its rows into the index a second time — external-content
+ * FTS5 has no upsert, so duplicates would surface as duplicate hits that a
+ * later `'delete'` only half removes.
  */
-function rebuildChannelSearchIndex(
+function runChannelSearchBackfill(
   db: Database.Database,
+  state: ChannelSearchIndexState,
   onBatch?: (progress: { scannedThrough: number; indexed: number }) => void
 ): number {
-  db.prepare(
-    `INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}) VALUES('delete-all')`
-  ).run();
-  const snapshotMaxRowid =
-    (
-      db.prepare('SELECT MAX(rowid) AS hi FROM channel_messages').get() as {
-        hi: number | null;
-      }
-    ).hi ?? 0;
   const nextBound = db.prepare(
     `SELECT MAX(rowid) AS hi FROM (
        SELECT rowid FROM channel_messages
@@ -1322,16 +1425,23 @@ function rebuildChannelSearchIndex(
       WHERE m.rowid > ? AND m.rowid <= ?
         AND ${channelSearchIndexablePredicate('m')}`
   );
+  const advanceCursor = db.prepare(
+    `UPDATE ${CHANNEL_SEARCH_STATE_TABLE}
+        SET indexed_through_rowid = ?, updated_at = ? WHERE id = 1`
+  );
   const commitBatch = db.transaction(
-    (from: number, through: number): number =>
-      insertBatch.run(from, through).changes
+    (from: number, through: number): number => {
+      const { changes } = insertBatch.run(from, through);
+      advanceCursor.run(through, new Date().toISOString());
+      return changes;
+    }
   );
   let indexed = 0;
-  let cursor = 0;
-  while (cursor < snapshotMaxRowid) {
+  let cursor = state.indexedThroughRowid;
+  while (cursor < state.snapshotMaxRowid) {
     const { hi } = nextBound.get(
       cursor,
-      snapshotMaxRowid,
+      state.snapshotMaxRowid,
       CHANNEL_SEARCH_BACKFILL_BATCH_ROWS
     ) as { hi: number | null };
     if (hi === null) break;
@@ -1339,7 +1449,25 @@ function rebuildChannelSearchIndex(
     cursor = hi;
     onBatch?.({ scannedThrough: cursor, indexed });
   }
+  db.prepare(
+    `UPDATE ${CHANNEL_SEARCH_STATE_TABLE}
+        SET status = 'complete', indexed_through_rowid = ?, updated_at = ?
+      WHERE id = 1`
+  ).run(state.snapshotMaxRowid, new Date().toISOString());
   return indexed;
+}
+
+/**
+ * Rebuild the search index from `channel_messages`, in place, from scratch.
+ *
+ * MUST be called after any maintenance that renumbers implicit rowids — see the
+ * rowid contract on `buildChannelMessageSearchSql`.
+ */
+function rebuildChannelSearchIndex(
+  db: Database.Database,
+  onBatch?: (progress: { scannedThrough: number; indexed: number }) => void
+): number {
+  return runChannelSearchBackfill(db, beginChannelSearchBackfill(db), onBatch);
 }
 
 /**
@@ -1358,17 +1486,31 @@ function rebuildChannelSearchIndex(
  * and the repair path is delete-all + backfill, so running it twice produces
  * the same index as running it once.
  *
- * The repair is two phases on purpose. The DDL commits FIRST, so the sync
- * triggers are live for the whole backfill and a row appended mid-rebuild is
- * indexed by them (the backfill's snapshot bound keeps the two from
- * overlapping). The backfill then runs in bounded commits OUTSIDE that
- * transaction — this is the hub boot path, and the previous single-transaction
- * form held one writer over the entire tokenization pass (measured ~4s per 50k
- * messages, so ~16s of silent stall on a 200k-message store) with nothing in
- * the journal to explain the pause. Row counts and elapsed time are logged
- * either way.
+ * "Healthy" is table + all three triggers + a marker row that says the last
+ * backfill FINISHED. Structure alone is not enough: the backfill commits in
+ * bounded batches (below), so `table + triggers + half an index` is reachable
+ * whenever the process dies mid-backfill — an OOM kill or a systemd restart on
+ * the boot path, which is precisely where this runs. Batches walk rowid
+ * ascending, so what a truncated backfill is missing is the NEWEST messages,
+ * and nothing about the schema would ever say so.
+ *
+ * The repair is two phases on purpose. The DDL, the truncate and the `building`
+ * marker commit FIRST, as one transaction, so the sync triggers are live for
+ * the whole backfill and a row appended mid-rebuild is indexed by them (the
+ * backfill's persisted snapshot bound keeps the two from overlapping). The
+ * backfill then runs in bounded commits OUTSIDE that transaction — the previous
+ * single-transaction form held one writer over the entire tokenization pass
+ * (measured ~4s per 50k messages, so ~16s of silent stall on a 200k-message
+ * store) with nothing in the journal to explain the pause.
+ *
+ * An interrupted backfill RESUMES from its cursor rather than restarting: a
+ * store big enough for the pass to be interrupted is a store big enough for
+ * restart-from-zero to be interrupted again at the same place, so restarting
+ * would make a crash-looping hub never converge. Row counts and elapsed time
+ * are logged on every path.
  */
 function ensureChannelSearchIndex(db: Database.Database): void {
+  db.exec(CHANNEL_SEARCH_STATE_SCHEMA_SQL);
   const hasTable = db
     .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get(CHANNEL_SEARCH_TABLE);
@@ -1381,17 +1523,13 @@ function ensureChannelSearchIndex(db: Database.Database): void {
       )
       .get(...CHANNEL_SEARCH_TRIGGERS) as { count: number }
   ).count;
-  if (hasTable && triggerCount === CHANNEL_SEARCH_TRIGGERS.length) return;
-
-  db.transaction(() => {
-    // A partially-present trigger set is repaired by replacing all three: the
-    // `IF NOT EXISTS` creates below would otherwise leave a stale survivor
-    // whose body predates whatever change caused the repair.
-    for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
-      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
-    }
-    db.exec(CHANNEL_SEARCH_SCHEMA_SQL);
-  })();
+  const structurallyIntact =
+    Boolean(hasTable) && triggerCount === CHANNEL_SEARCH_TRIGGERS.length;
+  // Only an intact structure can carry a trustworthy marker: if the table or a
+  // trigger is gone, whatever the marker claims describes an index that no
+  // longer exists (or stopped being maintained), so it is not read at all.
+  const marker = structurallyIntact ? readChannelSearchIndexState(db) : null;
+  if (marker?.status === 'complete') return;
 
   const sourceRows = (
     db.prepare('SELECT COUNT(*) AS count FROM channel_messages').get() as {
@@ -1399,23 +1537,37 @@ function ensureChannelSearchIndex(db: Database.Database): void {
     }
   ).count;
   const startedAt = Date.now();
-  logger.info(
-    'channel search index missing; backfilling over %d message row(s)',
-    sourceRows
-  );
-  const indexed = rebuildChannelSearchIndex(
-    db,
-    // One line per commit only once the store is big enough for the rebuild to
-    // be felt; below one batch the start/finish pair already says everything.
+  // Resume only when the structure is intact AND a claim exists: a missing
+  // marker under an intact structure is a pre-marker db (or a hand-edited one),
+  // whose index cannot be trusted to line up with any cursor — rebuild it.
+  const resuming = structurallyIntact && marker !== null;
+  if (resuming) {
+    logger.info(
+      'channel search index backfill was interrupted; resuming from rowid %d through %d over %d message row(s)',
+      marker.indexedThroughRowid,
+      marker.snapshotMaxRowid,
+      sourceRows
+    );
+  } else {
+    logger.info(
+      'channel search index missing; backfilling over %d message row(s)',
+      sourceRows
+    );
+  }
+  // One line per commit only once the store is big enough for the rebuild to be
+  // felt; below one batch the start/finish pair already says everything.
+  const onBatch =
     sourceRows > CHANNEL_SEARCH_BACKFILL_BATCH_ROWS
-      ? (progress) =>
+      ? (progress: { scannedThrough: number; indexed: number }) =>
           logger.info(
             'channel search backfill: %d row(s) indexed through rowid %d',
             progress.indexed,
             progress.scannedThrough
           )
-      : undefined
-  );
+      : undefined;
+  const indexed = resuming
+    ? runChannelSearchBackfill(db, marker, onBatch)
+    : rebuildChannelSearchIndex(db, onBatch);
   logger.info(
     'channel search index rebuilt over %d message row(s) (%d indexed) in %dms',
     sourceRows,

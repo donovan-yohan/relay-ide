@@ -390,6 +390,17 @@ export const CHANNEL_SEARCH_QUERY_MAX_CHARS = 256;
  * Both halves are enforced server-side (the store refuses to build the
  * expression) and mirrored client-side (no request is issued at all), because a
  * UI-only gate is not a guard: the route is reachable by any capability holder.
+ *
+ * Budget this value was chosen against — measured through the production SQL on
+ * a 50k-message / 179MB corpus with a ~20k-term vocabulary: `"w" *` 2805ms
+ * (now refused), `"w1" *` 1079ms (refused), `"w12" *` 158ms, `"the" *` 140ms.
+ * So 3 code points buys ~18x on the worst shape and lands ordinary queries in a
+ * 100-200ms band at that size. It BOUNDS the pathological shape; it does not
+ * bound the worst case, which still grows with corpus size. Anyone widening the
+ * expression (longer prefixes, new operator syntax) is spending that budget and
+ * should re-measure — the durable fix is a wall-clock/progress-handler ceiling
+ * answering `unavailableReason: 'search_timeout'`, or moving the read off the
+ * request thread.
  */
 export const CHANNEL_SEARCH_MIN_QUERY_CHARS = 3;
 
