@@ -1814,7 +1814,9 @@ export async function fetchChannels(): Promise<ChannelSummaryView[]> {
  * Single-operator device sync (#1231): the payload carries no reader identity
  * because there is only ever one reader. This is not a read receipt.
  */
-export async function fetchChannelReadState(): Promise<ChannelReadStateEntry[]> {
+export async function fetchChannelReadState(): Promise<
+  ChannelReadStateEntry[]
+> {
   const data = await json<ChannelReadStateResponse>(
     await fetch('/channels/read-state', {
       headers: { 'x-relay-capabilities': 'context:read' },
@@ -2007,6 +2009,11 @@ export async function postChannelMessage(
     threadId?: string;
     parentMessageId?: string;
     clientMessageId: string;
+    /**
+     * Explicit mid-turn steering (#1308 slice 4). Omitted queues the post behind
+     * the agent's live turn; `'interrupt'` cancels that turn and sends now.
+     */
+    steering?: 'interrupt';
   }
 ): Promise<ChannelMessage> {
   const data = await json<{ message: ChannelMessage }>(
@@ -2093,7 +2100,15 @@ export interface RosterEntry {
   /** Present for a bound runtime when its collaboration role is known. */
   role?: AgentRole;
   /** Present when a live runtime is bound to this agent in the channel. */
-  binding: { runtimeId: string; status: ChannelAgentStatus } | null;
+  binding: {
+    runtimeId: string;
+    status: ChannelAgentStatus;
+    /**
+     * Posts waiting to trigger this agent's NEXT turn (#1308 slice 4).
+     * Optional so an older hub's roster still parses; absent means zero.
+     */
+    queuedCount?: number;
+  } | null;
 }
 
 export async function fetchChannelRoster(

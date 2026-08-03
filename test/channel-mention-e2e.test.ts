@@ -43,6 +43,7 @@ import {
   BaseProtocolAdapterV2,
   type AdapterConfig,
   type AdapterStatus,
+  type AgentInterruptInputV2,
   type AgentSendMessageInputV2,
   type ProtocolAdapterV2,
 } from '../server/protocol-adapter-v2.js';
@@ -141,6 +142,75 @@ class RecordingAdapter extends BaseProtocolAdapterV2 {
       timestamp: 't',
       turnId: input.turnId,
       status: 'completed',
+    });
+  }
+}
+
+/**
+ * Streams a partial reply and then stalls, so a turn is genuinely live when the
+ * next HTTP post lands (#1308 slice 4). `interrupt` emits the terminal patch a
+ * real cancellation produces, which is what releases the binder's queue.
+ */
+class StallingAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    streaming: true,
+    interrupt: true,
+  };
+  readonly contents: string[] = [];
+  readonly interruptCalls: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'stalling';
+  private live: string | null = null;
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.contents.push(input.content);
+    this.live = input.turnId;
+    const itemId = `a-${input.turnId}`;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: { type: 'assistantMessage', id: itemId, text: '' },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      itemId,
+      delta: { text: 'thinking…' },
+    });
+  }
+  async interrupt(input: AgentInterruptInputV2): Promise<void> {
+    const turnId = input.turnId ?? this.live;
+    if (turnId === null || turnId === undefined) return;
+    this.interruptCalls.push(turnId);
+    this.live = null;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'interrupted',
     });
   }
 }
@@ -280,7 +350,9 @@ async function harness(
     configDir: dir,
   });
   cleanup.push(() => binder.close());
-  hub.onMessagePosted((m, mentions) => binder.handleMessagePosted(m, mentions));
+  hub.onMessagePosted((m, mentions, options) =>
+    binder.handleMessagePosted(m, mentions, options)
+  );
 
   const app = express();
   app.use(express.json());
@@ -838,5 +910,70 @@ describe('mention routing — deleted context (#1308 slice 1 item 4)', () => {
     expect(h.store.getMessage(posted.body.message.id)?.body.text).toBe(
       'operator wrote this'
     );
+  });
+});
+
+// ── #1308 slice 4: mid-turn steering through the post route ──────────────────
+
+describe('mid-turn steering — end-to-end via the post route', () => {
+  it('rejects an unknown steering value without writing a row', async () => {
+    const h = await harness();
+    const before = h.store.history(h.channelId, { limit: 50 }).length;
+    const res = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock hello', steering: 'yolo' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_STEERING_INVALID'
+    );
+    expect(h.store.history(h.channelId, { limit: 50 })).toHaveLength(before);
+  });
+
+  it('queues a plain post behind a live turn and interrupts on steering:"interrupt"', async () => {
+    const h = await harness((agentType) => new StallingAdapter(agentType));
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock go' },
+    });
+    await waitFor(() => h.adapters().length === 1);
+    const adapter = h.adapters()[0] as StallingAdapter;
+    await waitFor(() => adapter.contents.length === 1);
+
+    // A plain post lands mid-turn: queued, never a second concurrent dispatch.
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock also this' },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(adapter.contents).toHaveLength(1);
+    expect(adapter.interruptCalls).toHaveLength(0);
+
+    // The explicit steering flag cancels the live turn and sends now.
+    const steered = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock stop and do this', steering: 'interrupt' },
+    });
+    expect(steered.status).toBe(201);
+    await waitFor(() => adapter.interruptCalls.length === 1);
+    await waitFor(() => adapter.contents.length === 2);
+    // Both queued posts ride the one next packet (queue coalescing).
+    expect(adapter.contents[1]).toContain('@mock also this');
+    expect(adapter.contents[1]).toContain('@mock stop and do this');
+    // Existing interrupt semantics: the partial row finalizes `interrupted`.
+    expect(
+      h.store
+        .history(h.channelId, { limit: 50 })
+        .some((m) => m.sender.kind === 'agent' && m.status === 'interrupted')
+    ).toBe(true);
   });
 });

@@ -37,11 +37,14 @@ import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_POST_STEERING_VALUES,
   CHANNEL_READ_STATE_EVENT,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
+  isChannelPostSteering,
   parseMentions,
   type ChannelBodyFormat,
+  type ChannelPostSteering,
   type ChannelMessage,
   type ChannelMessageSearchResponse,
   type ChannelMessageSearchResult,
@@ -523,6 +526,13 @@ function postToChannel(
     clientMessageId?: string;
     mentions: ReturnType<typeof parseMentions>;
     parts?: import('../shared/channel-chat-protocol.js').ChannelMessagePart[];
+    /**
+     * Explicit mid-turn steering intent (#1308 slice 4). Never persisted on the
+     * row — it governs how the binder TRIGGERS a turn for this post, not what
+     * the durable transcript says. Replaying history therefore cannot re-issue
+     * an interrupt.
+     */
+    steering?: ChannelPostSteering;
   }
 ): ChannelMessage {
   const message = store.appendComplete({
@@ -547,7 +557,11 @@ function postToChannel(
     kind: input.sender.kind === 'agent' ? 'agent' : 'human',
     id: input.sender.id,
   });
-  hub.broadcastCreated(message, input.mentions);
+  hub.broadcastCreated(
+    message,
+    input.mentions,
+    input.steering ? { steering: input.steering } : undefined
+  );
   return message;
 }
 
@@ -1143,6 +1157,29 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ? body['clientMessageId']
         : undefined;
 
+    // #1308 slice 4: mid-turn steering rides the EXISTING post route as one
+    // additive body field rather than a second route — the operator is sending a
+    // message either way, and the only thing that differs is whether the agent's
+    // live turn is allowed to finish first. Omitted (the default) queues; the
+    // binder is the sole interpreter and ignores it for non-human senders.
+    const suppliedSteering = body['steering'];
+    if (
+      suppliedSteering !== undefined &&
+      !isChannelPostSteering(suppliedSteering)
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `steering must be one of: ${CHANNEL_POST_STEERING_VALUES.join(', ')}`,
+        false,
+        { field: 'steering', reasonCode: 'CHANNEL_STEERING_INVALID' }
+      );
+      return;
+    }
+    const steering = isChannelPostSteering(suppliedSteering)
+      ? suppliedSteering
+      : undefined;
+
     const credential = authenticatedCliGatewayActorCredential(req);
     const sourceRuntimeId = authenticatedSourceRuntimeId(
       credential,
@@ -1185,6 +1222,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ...(clientMessageId ? { clientMessageId } : {}),
         mentions,
         ...(parts.length ? { parts } : {}),
+        ...(steering ? { steering } : {}),
       });
       res.status(201).json({ message });
     } catch (error) {

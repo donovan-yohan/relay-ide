@@ -195,6 +195,36 @@ Channel controls include:
 - inspect roster availability and live status;
 - designate the channel orchestrator.
 
+### Mid-turn steering
+
+Posting to a channel whose bound profile is already mid-turn never opens a
+second concurrent turn and never drops the message. The post joins that
+binding's FIFO queue, and the queue drains on turn completion.
+
+- **Queue (default).** Every human post that arrived while the agent was busy
+  drains into ONE next turn. The newest of them is the trigger; the rest arrive
+  as context rows of the same packet, because the packet is rebuilt from the
+  durable message log. Three impatient messages cost one turn, not three.
+- **Interrupt and send.** The post route takes an explicit `steering:
+  "interrupt"` body field. It cancels the live turn through the same interrupt
+  path the header control uses — the partial reply finalizes `interrupted` — and
+  the new message triggers as soon as that turn releases. Steering is never
+  inferred from message text.
+- **Agent posts never steer.** Sender attribution is server-derived, so an
+  agent (including a CLI-gateway actor) cannot cancel another agent's turn, and
+  agent-authored triggers are never coalesced away. Agent fan-out stays bounded
+  by the consecutive-agent-turn brake.
+- **Queue cap.** The per-binding cap still bounds distinct queued turns. An
+  over-cap post that would have coalesced with the queue tail supersedes it
+  instead of being refused — same trigger, same packet — so fast operator typing
+  is never announced as dropped. Anything the tail cannot represent (another
+  thread, an agent-authored trigger) still produces the explicit drop row.
+- **Observability.** The `channel-agent-status` event and the roster's
+  `binding` object both carry `queuedCount`.
+- **Restart.** The queue is in-memory turn-trigger state. A hub restart loses
+  pending triggers but never loses messages — every queued post is already
+  durable — and the operator re-triggers by sending again.
+
 ## Limits and failure behavior
 
 - Message bodies and detail payloads are byte-bounded.

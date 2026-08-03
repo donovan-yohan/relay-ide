@@ -461,6 +461,128 @@ class ApprovalAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
+// ── steerable adapter (#1308 slice 4 mid-turn steering) ──────────────────────
+// Every send opens a turn that streams one partial chunk and then STALLS, so a
+// turn is reliably live when the next post lands. `interrupt` emits the same
+// terminal patch a real cancellation produces; `complete` finishes naturally.
+// Tracks the set of turns the adapter believes are open so a double dispatch is
+// OBSERVED (concurrentPeak > 1) rather than inferred from send counts.
+class SteerableAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    queue: false,
+    interrupt: true,
+    approvals: false,
+    streaming: true,
+  };
+  readonly sendCalls: string[] = [];
+  readonly sendInputs: AgentSendMessageInputV2[] = [];
+  readonly interruptCalls: string[] = [];
+  /** Peak simultaneously-open turns; the binder must never let this exceed 1. */
+  concurrentPeak = 0;
+  private readonly open = new Set<string>();
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'steerable';
+
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    this.sendInputs.push(input);
+    this.open.add(input.turnId);
+    this.concurrentPeak = Math.max(this.concurrentPeak, this.open.size);
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `u-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: {
+        type: 'assistantMessage',
+        id: `a-${input.turnId}`,
+        text: '',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      itemId: `a-${input.turnId}`,
+      delta: { text: 'partial…' },
+    });
+    // No terminal patch: the turn stays live until interrupt() or complete().
+  }
+
+  async interrupt(input: AgentInterruptInputV2): Promise<void> {
+    const turnId = input.turnId ?? [...this.open][0];
+    if (turnId === undefined) return;
+    this.interruptCalls.push(turnId);
+    this.closeTurn(turnId, 'interrupted');
+  }
+
+  /** Finish the newest live turn the way a normal completion would. */
+  completeLatest(text = 'done'): void {
+    const turnId = this.sendCalls[this.sendCalls.length - 1];
+    if (turnId === undefined) return;
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: `a-${turnId}`,
+        text,
+        status: 'completed',
+      },
+    });
+    this.closeTurn(turnId, 'completed');
+  }
+
+  private closeTurn(
+    turnId: string,
+    status: 'completed' | 'interrupted' | 'failed'
+  ): void {
+    if (!this.open.delete(turnId)) return;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status,
+    });
+  }
+}
+
 // ── deferred-send adapter (send acceptance resolved/rejected on command) ──────
 // sendMessage returns a promise the test resolves (accept) or rejects (transport
 // failure) explicitly, so the send-failure/rebind interleaving is deterministic.
@@ -1634,7 +1756,12 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(sessions.spawns()).toBe(1);
   });
 
-  it('queue overflow past the cap drops the message with a system row', async () => {
+  // #1308 slice 4 changed what the cap means for the operator's own lane: a
+  // contiguous human run drains as ONE turn, so an overflowing post supersedes
+  // the queue tail (identical trigger + packet) instead of being announced as
+  // dropped for a turn that was never going to exist. The drop row is still the
+  // honest answer whenever superseding would NOT be equivalent.
+  it('supersedes rather than drops when an over-cap post coalesces with the tail', async () => {
     const { binder, store } = makeBinder({
       build: () => new ScriptedAdapter('stall', { mode: 'stall' }),
       targets: [
@@ -1653,22 +1780,64 @@ describe('channel-agent-binder — lifecycle', () => {
       sender: OPERATOR,
       text: 'root',
     });
-    const triggers: ChannelMessage[] = [];
-    for (let i = 0; i < 10; i++) {
-      triggers.push(
-        post(store, binder, `@stall ${i}`, ['stall'], OPERATOR, root.id)
-      );
+    for (let i = 0; i < 12; i++) {
+      post(store, binder, `@stall ${i}`, ['stall'], OPERATOR, root.id);
     }
+    await new Promise((r) => setTimeout(r, 120));
+    expect(
+      systemRows(store).filter((m) => m.body.text.includes('message dropped'))
+    ).toHaveLength(0);
+  });
+
+  it('queue overflow past the cap drops a non-coalescing message with a system row', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new ScriptedAdapter('stall', { mode: 'stall' }),
+      targets: [
+        {
+          id: 'stall',
+          displayName: 'Stall',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['stall'],
+    });
+    const rootA = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root a',
+    });
+    const rootB = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root b',
+    });
+    // One live turn plus a full cap of thread-A posts.
+    for (let i = 0; i < 9; i++) {
+      post(store, binder, `@stall a${i}`, ['stall'], OPERATOR, rootA.id);
+    }
+    await new Promise((r) => setTimeout(r, 120));
+    // A thread-B post cannot be represented by the thread-A tail, so the cap
+    // refuses it explicitly rather than silently losing it.
+    const overflow = post(
+      store,
+      binder,
+      '@stall b0',
+      ['stall'],
+      OPERATOR,
+      rootB.id
+    );
     await waitFor(() =>
-      systemRows(store).some((m) => m.body.text.includes('turns queued'))
+      systemRows(store).some((m) => m.body.text.includes('message dropped'))
     );
     const dropped = systemRows(store).filter((m) =>
       m.body.text.includes('message dropped')
     );
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.body.text).toContain('has 8 turns queued');
-    expect(dropped[0]!.threadId).toBe(root.id);
-    expect(dropped[0]!.parentMessageId).toBe(triggers.at(-1)!.id);
+    expect(dropped[0]!.threadId).toBe(rootB.id);
+    expect(dropped[0]!.parentMessageId).toBe(overflow.id);
   });
 
   it('runtime death unbinds, clears the binding, and respawns on next mention', async () => {
@@ -3299,14 +3468,10 @@ describe('channel-agent-binder — DM implicit routing', () => {
     expect(sessions.spawns()).toBe(1);
 
     // Same gate for the other agent lane: a gateway agent post in the DM.
-    postTo(
-      store,
-      binder,
-      DM_CH,
-      '@codex following up',
-      HERMES_AGENT_SENDER,
-      ['hermes', 'codex']
-    );
+    postTo(store, binder, DM_CH, '@codex following up', HERMES_AGENT_SENDER, [
+      'hermes',
+      'codex',
+    ]);
     await settle();
     expect(systemRowsIn(store, DM_CH)).toHaveLength(0);
     expect(sessions.spawns()).toBe(1);
@@ -3420,7 +3585,9 @@ describe('channel-agent-binder — retry', () => {
     });
     // Exactly one delivery, carrying the SAME deterministic turn identity the
     // lost turn had — a retry re-runs a turn, it does not open a new one.
-    expect(adapter.sendCalls).toEqual([channelTurnId(trigger.id, MOCK_PROFILE)]);
+    expect(adapter.sendCalls).toEqual([
+      channelTurnId(trigger.id, MOCK_PROFILE),
+    ]);
     // The load-bearing invariant: the operator's message is re-routed, never
     // re-posted, so the timeline still holds exactly one copy of it.
     expect(humanRows(store).map((m) => m.id)).toEqual([trigger.id]);
@@ -3476,9 +3643,7 @@ describe('channel-agent-binder — retry', () => {
       ChannelAgentBusyError
     );
     // Nothing was delivered and nothing was superseded by the refused retry.
-    expect(adapter.sendCalls).toEqual([
-      channelTurnId(live.id, MOCK_PROFILE),
-    ]);
+    expect(adapter.sendCalls).toEqual([channelTurnId(live.id, MOCK_PROFILE)]);
     expect(
       systemRows(store).filter(
         (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] !== undefined
@@ -3611,7 +3776,9 @@ describe('channel-agent-binder — retry', () => {
 
     await binder.retryMessage(CH, interrupted.id);
     await waitFor(() => adapter.sendCalls.length > 0);
-    expect(adapter.sendCalls).toEqual([channelTurnId(trigger.id, MOCK_PROFILE)]);
+    expect(adapter.sendCalls).toEqual([
+      channelTurnId(trigger.id, MOCK_PROFILE),
+    ]);
   });
 });
 
@@ -3662,5 +3829,266 @@ describe('channel-agent-binder — retry availability', () => {
       )
     ).toHaveLength(0);
     expect(adapter.sendCalls).toHaveLength(0);
+  });
+});
+
+// ── #1308 slice 4: mid-turn steering ─────────────────────────────────────────
+
+const STEER_TARGETS: MentionTarget[] = [
+  {
+    id: 'steer',
+    displayName: 'Steer',
+    kind: 'framework',
+    available: true,
+    reason: null,
+  },
+];
+
+/** Post with an explicit steering choice, exactly as the post route forwards it. */
+function postSteering(
+  store: ChannelMessageStore,
+  binder: ChannelAgentBinder,
+  text: string,
+  knownIds: string[],
+  steering: 'interrupt' | undefined,
+  sender: ChannelSenderRef = OPERATOR
+): ChannelMessage {
+  const mentions = parseMentions(text, knownIds);
+  const message = store.appendComplete({
+    channelId: CH,
+    sender,
+    text,
+    ...(mentions.length ? { mentions } : {}),
+  });
+  binder.handleMessagePosted(
+    message,
+    message.mentions ?? [],
+    steering ? { steering } : undefined
+  );
+  return message;
+}
+
+function makeSteerBinder() {
+  const harness = makeBinder({
+    build: (agentType) => new SteerableAdapter(agentType),
+    targets: STEER_TARGETS,
+    knownProviderIds: ['steer'],
+  });
+  const events: Array<Record<string, unknown>> = [];
+  harness.binder.setStatusBroadcaster((_type, data) => events.push(data));
+  return { ...harness, events };
+}
+
+async function steerAdapter(
+  sessions: ReturnType<typeof makeBinder>['sessions']
+): Promise<SteerableAdapter> {
+  await waitFor(() => sessions.spawns() === 1);
+  return sessions.adapterFor(sessions.firstSessionId()) as SteerableAdapter;
+}
+
+describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
+  it('queues posts that land mid-turn and drains them all into ONE next turn', async () => {
+    const { binder, store, sessions, events } = makeSteerBinder();
+    postSteering(store, binder, '@steer one', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // Three more posts land while the first turn is still live.
+    postSteering(store, binder, '@steer two', ['steer'], undefined);
+    postSteering(store, binder, '@steer three', ['steer'], undefined);
+    postSteering(store, binder, '@steer four', ['steer'], undefined);
+    await waitFor(() => events.some((event) => event['queuedCount'] === 3));
+    // No concurrent dispatch while the first turn is open — all three queued.
+    expect(adapter.sendCalls).toHaveLength(1);
+
+    adapter.completeLatest('first reply');
+    // Exactly ONE further turn for the three queued posts (coalesced).
+    await waitFor(() => adapter.sendCalls.length === 2);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(adapter.sendCalls).toHaveLength(2);
+    expect(adapter.concurrentPeak).toBe(1);
+
+    // ...and all three ride that one context packet.
+    const packet = adapter.sendInputs[1]!.content;
+    expect(packet).toContain('@steer two');
+    expect(packet).toContain('@steer three');
+    expect(packet).toContain('@steer four');
+    // The newest queued post is the trigger in the packet footer.
+    expect(packet.trimEnd().endsWith('@steer four')).toBe(true);
+  });
+
+  it('never drops a queued trigger and never double-dispatches across finishTurn', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer first', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // Interleave a post with the completion of the live turn: the post enqueues
+    // while the previous turn is still active, then finishTurn pumps it. Only
+    // ONE dispatch may result, and it must not be lost.
+    postSteering(store, binder, '@steer second', ['steer'], undefined);
+    adapter.completeLatest('first reply');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    postSteering(store, binder, '@steer third', ['steer'], undefined);
+    adapter.completeLatest('second reply');
+    await waitFor(() => adapter.sendCalls.length === 3);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(adapter.sendCalls).toHaveLength(3);
+    expect(adapter.concurrentPeak).toBe(1);
+    expect(new Set(adapter.sendCalls).size).toBe(3); // no re-sent turn identity
+    expect(adapter.sendInputs[1]!.content).toContain('@steer second');
+    expect(adapter.sendInputs[2]!.content).toContain('@steer third');
+  });
+
+  it('steering:"interrupt" cancels the live turn and dispatches the new message', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer long task', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    await waitFor(() =>
+      rows(store).some(
+        (m) => m.sender.providerId === 'steer' && m.status === 'streaming'
+      )
+    );
+    const firstTurn = adapter.sendCalls[0]!;
+
+    postSteering(
+      store,
+      binder,
+      '@steer stop, do this instead',
+      ['steer'],
+      'interrupt'
+    );
+
+    await waitFor(() => adapter.interruptCalls.length === 1);
+    expect(adapter.interruptCalls[0]).toBe(firstTurn);
+    // Existing interrupt semantics: the partial row finalizes `interrupted`.
+    await waitFor(() =>
+      rows(store).some(
+        (m) => m.sender.providerId === 'steer' && m.status === 'interrupted'
+      )
+    );
+    // ...and the steering message triggers its own turn immediately after.
+    await waitFor(() => adapter.sendCalls.length === 2);
+    expect(adapter.concurrentPeak).toBe(1);
+    expect(adapter.sendInputs[1]!.content).toContain(
+      '@steer stop, do this instead'
+    );
+  });
+
+  it('steering:"interrupt" on an idle agent degrades to a plain send', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer go now', ['steer'], 'interrupt');
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(adapter.interruptCalls).toHaveLength(0);
+    expect(adapter.sendCalls).toHaveLength(1);
+  });
+
+  it('an agent-authored post never steers: no interrupt, one turn per trigger', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer human opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // A CLI-gateway agent post carrying the same flag must not cancel the turn.
+    postSteering(
+      store,
+      binder,
+      '@steer agent one',
+      ['steer'],
+      'interrupt',
+      AGENT_SENDER
+    );
+    postSteering(
+      store,
+      binder,
+      '@steer agent two',
+      ['steer'],
+      'interrupt',
+      AGENT_SENDER
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    expect(adapter.interruptCalls).toHaveLength(0);
+    expect(adapter.sendCalls).toHaveLength(1);
+
+    // Agent triggers are never coalesced away — each keeps its own turn.
+    adapter.completeLatest('reply one');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    adapter.completeLatest('reply two');
+    await waitFor(() => adapter.sendCalls.length === 3);
+    expect(adapter.concurrentPeak).toBe(1);
+    expect(adapter.sendInputs[1]!.content).toContain('@steer agent one');
+    expect(adapter.sendInputs[2]!.content).toContain('@steer agent two');
+  });
+
+  it('supersedes the queue tail instead of dropping fast operator typing at the cap', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // Far past QUEUE_CAP: they all collapse into the one next turn, so no slot
+    // pressure and no "message dropped" row is honest here.
+    const total = 20;
+    let last: ChannelMessage | null = null;
+    for (let i = 0; i < total; i += 1) {
+      last = postSteering(
+        store,
+        binder,
+        `@steer burst ${i}`,
+        ['steer'],
+        undefined
+      );
+    }
+    await waitFor(
+      () =>
+        store.getMessage(last!.id) !== null && adapter.sendCalls.length === 1
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    expect(
+      systemRows(store).filter((row) =>
+        row.body.text.includes('message dropped')
+      )
+    ).toHaveLength(0);
+
+    adapter.completeLatest('opener reply');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    const packet = adapter.sendInputs[1]!.content;
+    expect(packet.trimEnd().endsWith(`@steer burst ${total - 1}`)).toBe(true);
+    expect(packet).toContain('@steer burst 0');
+    expect(adapter.concurrentPeak).toBe(1);
+  });
+
+  it('publishes queuedCount on the status event and the roster payload', async () => {
+    const { binder, store, sessions, events } = makeSteerBinder();
+    postSteering(store, binder, '@steer one', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    // Every status event carries the field, additively.
+    expect(events.length).toBeGreaterThan(0);
+    expect(
+      events.every((event) => typeof event['queuedCount'] === 'number')
+    ).toBe(true);
+
+    postSteering(store, binder, '@steer two', ['steer'], undefined);
+    postSteering(store, binder, '@steer three', ['steer'], undefined);
+    await waitFor(() => events.some((event) => event['queuedCount'] === 2));
+    const roster = await binder.rosterForChannel(CH);
+    const entry = roster.find((row) => row.providerId === 'steer');
+    expect(entry?.binding?.queuedCount).toBe(2);
+    expect(entry?.binding?.status).toBe('streaming');
+
+    adapter.completeLatest('reply');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    // The drain is reported, not left stale on the last busy count.
+    expect(events[events.length - 1]?.['queuedCount']).toBe(0);
+    expect(
+      (await binder.rosterForChannel(CH)).find(
+        (row) => row.providerId === 'steer'
+      )?.binding?.queuedCount
+    ).toBe(0);
   });
 });
