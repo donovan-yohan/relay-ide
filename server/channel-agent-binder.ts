@@ -225,6 +225,15 @@ export interface ChannelAgentBinder {
 
 interface QueuedTurn {
   trigger: ChannelMessage;
+  /**
+   * Set only by `handleSendFailure`'s re-enqueue after a rebind. Such a trigger
+   * is BELOW the binding's delivery cursor (a newer turn already succeeded and
+   * advanced it past this seq), so it can never survive coalescing as a context
+   * row — `buildMentionContextPacketEnvelope` filters context rows with
+   * `seq > lastDeliveredSeq`. It must therefore always trigger its OWN turn,
+   * where the packet footer renders it unconditionally. See `pump`.
+   */
+  reEnqueued?: true;
 }
 
 export interface LiveBinding {
@@ -1001,6 +1010,10 @@ export function createChannelAgentBinder(
    *     guard a re-enqueued M1 could swallow a newer M3 that is neither the
    *     trigger nor a context row of the resulting packet. The message would
    *     have been spliced out of the queue and produce nothing at all.
+   *     Seq order alone is NOT sufficient for that case: a re-enqueued trigger
+   *     is also below the delivery cursor, so folding it into a NEWER member's
+   *     packet loses it too. `pump` keeps such entries out of runs entirely
+   *     (`QueuedTurn.reEnqueued`); this predicate handles the ordering half.
    *   • no image parts on EITHER row. A packet's image budget
    *     (`PACKET_IMAGE_MAX_COUNT`) is per-packet, not per-message, so folding N
    *     image-bearing posts into one turn silently spends one budget on all of
@@ -1024,18 +1037,32 @@ export function createChannelAgentBinder(
   function enqueueTurn(
     binding: LiveBinding,
     trigger: ChannelMessage,
-    steering?: ChannelPostSteering
+    steering?: ChannelPostSteering,
+    reEnqueued = false
   ): void {
+    const entry: QueuedTurn = reEnqueued
+      ? { trigger, reEnqueued: true }
+      : { trigger };
     if (binding.queue.length >= QUEUE_CAP) {
       const tailIndex = binding.queue.length - 1;
       const tail = binding.queue[tailIndex];
-      if (tail && coalescesIntoOneTurn(tail.trigger, trigger)) {
+      // Neither side may be a re-enqueued trigger: superseding one silently
+      // deletes a message that is below the delivery cursor and therefore
+      // unrecoverable as a context row, and superseding WITH one would delete
+      // the fresh tail in favour of the stale entry. Both fall through to the
+      // explicit drop row below, which at least tells the operator.
+      if (
+        tail &&
+        !tail.reEnqueued &&
+        !reEnqueued &&
+        coalescesIntoOneTurn(tail.trigger, trigger)
+      ) {
         // A human run drains as one turn triggered by its NEWEST member, so
         // superseding the tail is identical to appending: same trigger, same
         // packet (the superseded row is still read back as a context row),
         // one fewer slot. An operator typing fast is therefore never told
         // their message was dropped for a turn that was never going to exist.
-        binding.queue[tailIndex] = { trigger };
+        binding.queue[tailIndex] = entry;
         emitAgentStatus(binding);
         if (steering === 'interrupt') steerInterrupt(binding, trigger);
         pump(binding);
@@ -1048,7 +1075,7 @@ export function createChannelAgentBinder(
       );
       return;
     }
-    binding.queue.push({ trigger });
+    binding.queue.push(entry);
     emitAgentStatus(binding);
     // Interrupt BEFORE pumping: while a turn is live `pump` is a no-op, and the
     // cancellation's terminal patch is what releases the binding into
@@ -1110,6 +1137,9 @@ export function createChannelAgentBinder(
    *     image budget is never split across several operator messages.
    * All three live in `coalescesIntoOneTurn`, together with the seq-monotonicity
    * guard that keeps a re-enqueued failed trigger from swallowing newer posts.
+   * A fourth limit lives here rather than in the predicate because it is a
+   * property of the ENTRY, not of the pair: a re-enqueued trigger never joins a
+   * run in either direction (see below).
    */
   function pump(binding: LiveBinding): void {
     if (binding.activeTurnId !== null) return;
@@ -1117,11 +1147,21 @@ export function createChannelAgentBinder(
     const head = binding.queue[0];
     if (!head) return;
     let take = 1;
-    while (
-      take < binding.queue.length &&
-      coalescesIntoOneTurn(head.trigger, binding.queue[take]!.trigger)
-    ) {
-      take += 1;
+    // A re-enqueued trigger neither STARTS a run nor JOINS one. It sits below
+    // the binding's delivery cursor (the turn that displaced it already
+    // advanced the cursor past its seq), and `buildPacket` selects context rows
+    // with `seq > lastDeliveredSeq` — so folded into someone else's packet it
+    // would be neither trigger nor context row and would vanish entirely, the
+    // exact loss coalescing exists to avoid. Alone it is the trigger, and the
+    // footer renders the trigger unconditionally.
+    if (!head.reEnqueued) {
+      while (
+        take < binding.queue.length &&
+        !binding.queue[take]!.reEnqueued &&
+        coalescesIntoOneTurn(head.trigger, binding.queue[take]!.trigger)
+      ) {
+        take += 1;
+      }
     }
     const batch = binding.queue.splice(0, take);
     emitAgentStatus(binding);
@@ -1334,7 +1374,11 @@ export function createChannelAgentBinder(
           // delivers when the binding is free, and sendTurn re-establishes the
           // status/sawStream/watchdog for the retried turn instead of the
           // fallback overwriting an in-flight turn's lifecycle tracking.
-          enqueueTurn(rebound, trigger);
+          // Marked re-enqueued: the newer turn that took this binding has
+          // already advanced the delivery cursor past this trigger's seq, so it
+          // must get its own turn rather than be coalesced into a later packet
+          // that would filter it out (see `QueuedTurn.reEnqueued` and `pump`).
+          enqueueTurn(rebound, trigger, undefined, true);
           return;
         }
       } catch {
@@ -1863,7 +1907,10 @@ export function createChannelAgentBinder(
    * from the first post, so re-routing it here would double-deliver; what the
    * operator is still missing is the cancellation. Interrupting is idempotent (a
    * no-op when the binding has no live turn), which is what makes replaying it
-   * safe on a duplicate.
+   * safe on a duplicate — with one exception the loop below handles: if the
+   * queued message already DRAINED between the two posts, the live turn is the
+   * one this message triggered, and cancelling it would kill the operator's own
+   * reply.
    */
   function steerExisting(
     message: ChannelMessage,
@@ -1886,7 +1933,20 @@ export function createChannelAgentBinder(
     }
     for (const profile of profiles) {
       const binding = live.get(bindingKey(message.channelId, profile.id));
-      if (binding) steerInterrupt(binding, message);
+      if (!binding) continue;
+      // Never cancel the turn THIS message triggered. Between the two POSTs the
+      // queued message may have drained, so the binding is now running the very
+      // reply the operator is waiting for; replaying the steering there would
+      // interrupt their own answer — the opposite of the intent. Skipping keeps
+      // the replay useful in the case it exists for (the message is still
+      // queued behind someone else's live turn) and a no-op once it is being
+      // answered.
+      if (
+        binding.activeTurnId === channelTurnId(message.id, binding.profileActorId)
+      ) {
+        continue;
+      }
+      steerInterrupt(binding, message);
     }
   }
 

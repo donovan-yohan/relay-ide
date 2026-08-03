@@ -4044,6 +4044,39 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     expect(adapter.sendCalls).toHaveLength(1);
   });
 
+  // The idempotent-replay lane applies the steering half to an already-stored
+  // row. If the row DRAINED between the two posts, the live turn is the reply
+  // the operator is waiting for — replaying the interrupt there would cancel
+  // their own answer, the exact opposite of "interrupt and send".
+  it('an idempotent steering replay never cancels the turn that message triggered', async () => {
+    const { binder, store, sessions } = makeSteerBinder();
+    postSteering(store, binder, '@steer long task', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    const steerProfile = builtInAgentProfileId('steer');
+
+    // First "interrupt & send": cancels the opener, queues behind it. The
+    // cancellation's terminal patch then releases the binding, so m2 drains and
+    // becomes the LIVE turn — exactly the state the second POST arrives into.
+    const m2 = postSteering(
+      store,
+      binder,
+      '@steer do this',
+      ['steer'],
+      'interrupt'
+    );
+    await waitFor(() => adapter.interruptCalls.length === 1);
+    await waitFor(() => adapter.sendCalls.length === 2);
+    expect(adapter.sendCalls[1]).toBe(channelTurnId(m2.id, steerProfile));
+
+    // The operator's first POST looked like it failed, so they press the button
+    // again with the same clientMessageId — the route replays the steering half.
+    binder.steerExisting(m2, 'interrupt');
+    await new Promise((r) => setTimeout(r, 40));
+    expect(adapter.interruptCalls).toHaveLength(1);
+    expect(adapter.sendCalls).toHaveLength(2);
+  });
+
   it('an agent-authored post never steers: no interrupt, one turn per trigger', async () => {
     const { binder, store, sessions } = makeSteerBinder();
     postSteering(store, binder, '@steer human opener', ['steer'], undefined);
@@ -4210,6 +4243,71 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     await waitFor(() => live.sendCalls.length === 3);
     expect(live.sendCalls[2]).toBe(channelTurnId(m1.id, steerProfile));
     expect(live.concurrentPeak).toBe(1);
+  });
+
+  // Same setup as above with ONE reordering: m1's parked send fails BEFORE the
+  // third post, so the re-enqueued trigger is the run's HEAD rather than a
+  // coalescing candidate. The seq-monotonicity guard does not fire here
+  // (m3.seq > m1.seq), so without the `reEnqueued` rule `pump` would splice both
+  // out and trigger on m3 — and m1 could not come back as a context row either,
+  // because m2's successful send already advanced `lastDeliveredSeq` past it.
+  it('gives a re-enqueued failed trigger its own turn when it heads the queue', async () => {
+    const built: SteerableAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => {
+        const adapter =
+          built.length === 0
+            ? new ParkedSendAdapter(agentType)
+            : new SteerableAdapter(agentType);
+        built.push(adapter);
+        return adapter;
+      },
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    binder.setStatusBroadcaster((_type, data) => events.push(data));
+    const steerProfile = builtInAgentProfileId('steer');
+
+    const m1 = postSteering(store, binder, '@steer one', ['steer'], undefined);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const parked = built[0] as ParkedSendAdapter;
+
+    sessions.fireEnd(sessions.firstSessionId());
+
+    // m2 rebinds, delivers (advancing the delivery cursor past m1), and stalls.
+    postSteering(store, binder, '@steer two', ['steer'], undefined);
+    await waitFor(() => built.length === 2 && built[1]!.sendCalls.length === 1);
+    const live = built[1]!;
+
+    // m1's parked send fails FIRST, so it re-enqueues at the head of the queue.
+    parked.failParkedSend();
+    await waitFor(() => events[events.length - 1]?.['queuedCount'] === 1);
+
+    // ...and only then does a newer post land behind it.
+    const m3 = postSteering(
+      store,
+      binder,
+      '@steer three',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => events[events.length - 1]?.['queuedCount'] === 2);
+
+    // m1 must reach the adapter as its OWN trigger — the footer renders a
+    // trigger unconditionally, which is the only place it can still be carried.
+    live.completeLatest('two reply');
+    await waitFor(() => live.sendCalls.length === 2);
+    expect(live.sendCalls[1]).toBe(channelTurnId(m1.id, steerProfile));
+    expect(live.sendInputs[1]!.content).toContain('@steer one');
+
+    // ...and the newer post is not lost to the re-enqueue either.
+    live.completeLatest('one reply');
+    await waitFor(() => live.sendCalls.length === 3);
+    expect(live.sendCalls[2]).toBe(channelTurnId(m3.id, steerProfile));
+    expect(live.sendInputs[2]!.content).toContain('@steer three');
+    expect(live.concurrentPeak).toBe(1);
+    expect(systemRows(store)).toHaveLength(0);
   });
 
   // The packet image budget is per PACKET, not per message, so folding N

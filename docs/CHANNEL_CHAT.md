@@ -208,12 +208,20 @@ binding's FIFO queue, and the queue drains on turn completion.
 - **What never coalesces.** Coalescing folds older posts into a newer one's
   packet, so it only applies where that fold is lossless. A run stops at a post
   from another thread scope, an agent-authored post, a post whose sequence
-  number is not strictly newer than the run's head (a send retried after a
-  transport failure is re-queued behind newer posts, and must not swallow
-  them), or a post carrying **image attachments** — the per-packet image budget
-  is per packet, not per message, so an image-bearing post keeps
-  one-trigger-one-turn and its own budget. Anything the run stops at simply
-  drains on the following completion.
+  number is not strictly newer than the run's head, or a post carrying **image
+  attachments** — the per-packet image budget is per packet, not per message, so
+  an image-bearing post keeps one-trigger-one-turn and its own budget. Anything
+  the run stops at simply drains on the following completion.
+- **Re-queued sends never coalesce, in either direction.** A send retried after
+  a transport failure is re-queued behind whatever arrived meanwhile, and the
+  turn that displaced it has already advanced the binding's delivery cursor past
+  its sequence number. Context rows are selected with `seq > lastDeliveredSeq`,
+  so such a post cannot survive as a context row of anyone else's packet — it
+  would be neither trigger nor context and would vanish. It therefore always
+  triggers its own turn, where the packet footer renders it unconditionally,
+  whether it sits at the head of a would-be run or in the middle of one. At the
+  queue cap it is never superseded and never supersedes; that case takes the
+  explicit drop row instead.
 - **Interrupt and send.** The post route takes an explicit `steering` body
   field set to `"interrupt"`. It cancels the live turn through the same
   interrupt path the header control uses — the partial reply finalizes
@@ -232,7 +240,10 @@ binding's FIFO queue, and the queue drains on turn completion.
   `clientMessageId`, and the composer keeps that id after a failed send. A
   replay that carries `steering` therefore applies the interrupt to the
   already-persisted row rather than swallowing it; the message is not re-routed,
-  because it is already queued.
+  because it is already queued. The replay skips a binding whose live turn was
+  triggered by that same message: if it drained between the two posts, the turn
+  now running IS the operator's answer, and cancelling it would be the opposite
+  of what they asked for.
 - **Observability.** The `channel-agent-status` event and the roster's
   `binding` object both carry `queuedCount`.
 - **Restart.** The queue is in-memory turn-trigger state. A hub restart loses
