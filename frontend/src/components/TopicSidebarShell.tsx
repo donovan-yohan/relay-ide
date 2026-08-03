@@ -21,7 +21,6 @@ import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
   parseChannelSearchSnippet,
-  parseMentions,
   type ChannelMessageId,
   type ChannelMessageSearchResult,
 } from '../../../shared/channel-chat-protocol.js';
@@ -47,7 +46,7 @@ import {
 } from '../lib/api.js';
 import type { CockpitRosterAttention } from '../lib/state/cockpit-attention.js';
 import {
-  CURRENT_OPERATOR_SENDER_ID,
+  messageMentionsOperator,
   senderShortLabel,
 } from '../lib/channel-sender-label.js';
 import { deriveColor } from '../lib/colors.js';
@@ -153,7 +152,6 @@ const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
  * refetches.
  */
 const CHANNEL_SUMMARY_REFRESH_THROTTLE_MS = 10_000;
-const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 
 function useMobileCockpitViewport(): boolean {
   const [matches, setMatches] = useState(
@@ -180,28 +178,15 @@ function useMobileCockpitViewport(): boolean {
  * persist an empty body), which is exactly the row an operator would read as
  * "the last message".
  *
- * `lastMessage.mentions` is authoritative: the server computes it over the FULL
- * body (persisted mentions when the write path resolved them), so a mention past
- * the 200-char preview cut-off still counts. The preview parse below is only the
- * fallback for a payload predating that field.
+ * The predicate itself lives in `channel-sender-label.ts` (#1308 slice 5): the
+ * notification lane raises its MENTION trigger from the same rows, and a second
+ * copy here would be free to drift into badging a mention that never notifies.
  */
 function summaryMentionsCurrentOperator(
   summary: ChannelRailSummary | null
 ): boolean {
   const last = summary?.lastMessage;
-  if (!last) return false;
-  if (last.senderId === CURRENT_OPERATOR_SENDER_ID) return false;
-  // Browser-authored channel posts are canonically `human:operator` with the
-  // display name `Operator` (channel-chat-router deriveSender).
-  const mentions =
-    last.mentions ??
-    // Legacy payload without the field: parse the truncated preview with the
-    // shared parser rather than introducing a cockpit-only tokenizer.
-    parseMentions(last.preview);
-  return mentions.some(
-    (mention) =>
-      mention.raw.slice(1).toLowerCase() === CURRENT_OPERATOR_MENTION_NAME
-  );
+  return last ? messageMentionsOperator(last) : false;
 }
 
 /**

@@ -39,6 +39,7 @@ import {
 import { reloadWhenServerReturns } from '../../lib/server-restart.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
+import { useNotifySettingsStore } from '../../lib/stores/notify-settings.js';
 import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
 import {
   requestPermission,
@@ -88,6 +89,9 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
   general: [
     'default coding agent',
     'notifications',
+    'mentions',
+    'direct message',
+    'turn complete',
     'rename',
     'renamer',
     'branch name',
@@ -574,7 +578,51 @@ function GeneralSection({
           disabled={notifDisabled}
         />
       </SettingRow>
+      <ChannelNotifyRows />
     </section>
+  );
+}
+
+/**
+ * Which channel events may notify (#1308 slice 5). Device-local, so unlike the
+ * row above it writes localStorage, not `PUT /config`: notification preference
+ * belongs to THIS browser and its OS permission grant, not to the account.
+ */
+function ChannelNotifyRows() {
+  const settings = useNotifySettingsStore((state) => state.settings);
+  const setNotifySetting = useNotifySettingsStore(
+    (state) => state.setNotifySetting
+  );
+  return (
+    <>
+      <SettingRow
+        name="Channel Mentions"
+        description="Notify when a channel message mentions @operator"
+      >
+        <TuiCheckbox
+          checked={settings.mentions}
+          onChange={(v) => setNotifySetting('mentions', v)}
+        />
+      </SettingRow>
+      <SettingRow
+        name="Direct Message Replies"
+        description="Notify when an agent replies in a direct message channel"
+      >
+        <TuiCheckbox
+          checked={settings.dmReplies}
+          onChange={(v) => setNotifySetting('dmReplies', v)}
+        />
+      </SettingRow>
+      <SettingRow
+        name="Turn Complete"
+        description="Notify when an agent finishes a turn in a channel you are not viewing"
+      >
+        <TuiCheckbox
+          checked={settings.turnComplete}
+          onChange={(v) => setNotifySetting('turnComplete', v)}
+        />
+      </SettingRow>
+    </>
   );
 }
 
