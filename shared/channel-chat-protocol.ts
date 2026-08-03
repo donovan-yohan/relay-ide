@@ -499,6 +499,52 @@ export interface ChannelMessageSearchResponse {
   unavailableReason?: ChannelSearchUnavailableReason;
 }
 
+/**
+ * The operator's durable last-read mark for one channel (#1308 slice 3).
+ *
+ * Cross-DEVICE sync for a single operator (#1231), not a read receipt: there is
+ * no reader identity in this shape because there is only ever one reader. The
+ * hub stores the marker; unread stays client-derived from marker vs live head
+ * seq (docs/LEARNINGS.md L-20260729-client-derived-unread), so nothing here
+ * carries a count or a boolean verdict.
+ */
+export interface ChannelReadStateEntry {
+  channelId: string;
+  /**
+   * Highest `seq` the operator has seen. Always at or below the channel's
+   * current head — the hub clamps, so a client may treat it as a real seq.
+   */
+  lastReadSeq: number;
+  updatedAt: string;
+}
+
+/** `GET /channels/read-state` — every marked channel, for one boot-time seed. */
+export interface ChannelReadStateResponse {
+  channels: ChannelReadStateEntry[];
+}
+
+/** `PUT /channels/:id/read-state` request body. */
+export interface ChannelReadStateUpdateRequest {
+  lastReadSeq: number;
+}
+
+/** `PUT /channels/:id/read-state` — the mark as it now stands durably. */
+export interface ChannelReadStateUpdateResponse {
+  readState: ChannelReadStateEntry;
+}
+
+/**
+ * `/ws/events` broadcast name for a moved read mark (#1308 slice 3).
+ *
+ * Rides the existing global event lane next to `channel-activity` rather than
+ * the per-channel channel socket: the devices that need it are the ones NOT
+ * looking at the channel (their sidebar dot is what changes), and those devices
+ * hold no subscription to it. The lane has no per-client filter, so the writing
+ * device receives its own echo — which is harmless because applying a mark is
+ * monotonic and idempotent on every client.
+ */
+export const CHANNEL_READ_STATE_EVENT = 'channel-read-state';
+
 interface ChannelEventBaseV1 {
   channelId: string;
   timestamp: string;

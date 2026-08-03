@@ -37,6 +37,7 @@ import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_READ_STATE_EVENT,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
   parseMentions,
@@ -44,6 +45,8 @@ import {
   type ChannelMessage,
   type ChannelMessageSearchResponse,
   type ChannelMessageSearchResult,
+  type ChannelReadStateResponse,
+  type ChannelReadStateUpdateResponse,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -142,6 +145,12 @@ export interface ChannelChatRouterDeps {
     | undefined;
   /** byte budget for one history response body (defaults to 4MB). */
   historyMaxBytes?: number;
+  /**
+   * Global `/ws/events` fan-out (#1308 slice 3). Optional: without it read-state
+   * writes still persist and every device converges on its next boot seed — the
+   * broadcast only removes the wait.
+   */
+  broadcastEvent?: (type: string, data?: Record<string, unknown>) => void;
   requireAuth?: RequestHandler;
   requireReadActorAuth?: (
     command: CliGatewayActorReadCommand,
@@ -242,6 +251,30 @@ function denyMissingCapability(
       capability: missing[0],
       missingCapabilities: missing,
     }
+  );
+  return true;
+}
+
+/**
+ * Reject anything that is not the browser operator lane (#1308 slice 3).
+ *
+ * `requireCliGatewayAuth` admits scoped ACTOR credentials, so "authenticated"
+ * and "the operator" are different questions on these routes. Read state is the
+ * operator's private reading position on their own devices; an agent must be
+ * able to neither observe it nor move it.
+ */
+function denyNonOperator(
+  req: Request,
+  res: Response,
+  verb: 'read' | 'mark'
+): boolean {
+  if (deriveSender(req, undefined).kind === 'human') return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    `only the operator can ${verb} channel read state`,
+    false,
+    { reasonCode: 'CHANNEL_READ_STATE_HUMAN_ONLY' }
   );
   return true;
 }
@@ -685,6 +718,88 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           };
         });
       const body: ChannelMessageSearchResponse = { query, results, truncated };
+      res.json(body);
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  // #1308 slice 3 item 1: the operator's durable last-read marks.
+  //
+  // MUST stay above `/channels/:id` for the same registration-order reason
+  // `/channels/search` does. Topic ids are `topic:`-prefixed, so `read-state`
+  // can never BE a channel id.
+  //
+  // Auth is the edit/delete lane, not a read verb: the shared `auth` handler, an
+  // explicit `context:read` check (no new gateway verb — the existing
+  // `/channels/*` auth-lane inventory entry covers the path), and the
+  // load-bearing human-lane gate. `requireCliGatewayAuth` admits scoped ACTOR
+  // credentials, and an agent has no business reading — or moving — the
+  // operator's private reading position. That gate is also what keeps this
+  // single-operator device sync (#1231) rather than multi-party read receipts:
+  // there is exactly one lane that can touch the table.
+  router.get('/channels/read-state', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    if (denyNonOperator(req, res, 'read')) return;
+    try {
+      const body: ChannelReadStateResponse = {
+        channels: store.listReadState(),
+      };
+      res.json(body);
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  // Idempotent by construction (the store is monotonic-up), which is why this is
+  // PUT and not POST: a device that retries after a timeout, or two devices that
+  // report the same position, converge on one durable value.
+  router.put('/channels/:id/read-state', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    // The human-lane gate runs BEFORE any channel lookup, deliberately. A route
+    // whose whole point is that an agent can neither observe nor move the
+    // operator's reading position must not answer 404-vs-403 to a scoped actor
+    // credential, or the existence probe leaks exactly what the gate withholds.
+    if (denyNonOperator(req, res, 'mark')) return;
+    // Archived channels are deliberately NOT rejected the way edits and deletes
+    // are: archive browse (#1087) is a legitimate read surface, and marking what
+    // was read there mutates no transcript.
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    const lastReadSeq = bodyRecord(req)['lastReadSeq'];
+    if (
+      typeof lastReadSeq !== 'number' ||
+      !Number.isInteger(lastReadSeq) ||
+      lastReadSeq < 0
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'lastReadSeq must be a non-negative integer',
+        false,
+        { field: 'lastReadSeq', reasonCode: 'CHANNEL_READ_SEQ_INVALID' }
+      );
+      return;
+    }
+    try {
+      const { advanced, ...readState } = store.markChannelRead(
+        topic.id,
+        lastReadSeq
+      );
+      // Broadcast only on a real advance. A stale or repeated mark gives other
+      // devices nothing to converge on, and the lane is unfiltered fan-out to
+      // every open tab — spending it on a no-op is pure noise.
+      if (advanced) {
+        deps.broadcastEvent?.(CHANNEL_READ_STATE_EVENT, {
+          channelId: readState.channelId,
+          lastReadSeq: readState.lastReadSeq,
+        });
+      }
+      const body: ChannelReadStateUpdateResponse = { readState };
       res.json(body);
     } catch (error) {
       mapStoreError(res, error);

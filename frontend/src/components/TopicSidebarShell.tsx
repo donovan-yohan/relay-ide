@@ -33,6 +33,7 @@ import {
 } from '../../../shared/workspace-topics.js';
 import {
   fetchHubNodes,
+  fetchChannelReadState,
   fetchChannelRoster,
   fetchChannels,
   fetchWorkspaceSurfaces,
@@ -3635,6 +3636,33 @@ export function TopicSidebarShell({
       .getState()
       .seedChannelActivity(channelRows, channelRowsFetchedAt);
   }, [channelRows, channelRowsFetchedAt]);
+  // The other half of the same boot seed (#1308 slice 3). Head seqs say what
+  // exists; the hub's durable read marks say how much of it the operator has
+  // already seen on ANOTHER device — without them a phone opened after a
+  // desktop reading session lights up every channel that moved. Merged
+  // monotonic-up and behind the same clamp epoch, so a payload fetched before
+  // this device repaired a recreated DM (#1178) is refused exactly like a stale
+  // channel-list payload is. Fetched alongside, never awaited by, the list: an
+  // unreachable hub degrades to the local-only unread this rail already had.
+  //
+  // The live half is the `channel-read-state` broadcast, so marks published
+  // while the events socket was down would be missed entirely — that lane
+  // invalidates this key on reconnect (`invalidateReconnectQueries`), which is
+  // what keeps the staleTime below from outliving a sleep or a hub restart.
+  const readStateQuery = useQuery({
+    queryKey: ['channel-read-state'],
+    queryFn: fetchChannelReadState,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const readStateRows = readStateQuery.data;
+  const readStateFetchedAt = readStateQuery.dataUpdatedAt;
+  useEffect(() => {
+    if (!readStateRows) return;
+    useChannelActivityStore
+      .getState()
+      .mergeReadState(readStateRows, readStateFetchedAt);
+  }, [readStateRows, readStateFetchedAt]);
   // Row snippets/stamps would otherwise freeze at the mount payload, so refresh
   // the list when channels move. Subscribed imperatively (never as a selector)
   // because the rail must not re-render on unrelated channel activity, and

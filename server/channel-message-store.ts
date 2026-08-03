@@ -538,6 +538,21 @@ interface MemberRow {
   metadata_json: string;
 }
 
+/** Projection of a read-state row (#1308 slice 3 item 1). */
+interface ChannelReadStateRow {
+  channel_id: string;
+  last_read_seq: number;
+  updated_at: string;
+}
+
+function readStateRowToState(row: ChannelReadStateRow): ChannelReadState {
+  return {
+    channelId: row.channel_id,
+    lastReadSeq: row.last_read_seq,
+    updatedAt: row.updated_at,
+  };
+}
+
 interface BindingRow {
   channel_id: string;
   profile_actor_id: string;
@@ -739,6 +754,32 @@ export interface StaleStreamSweepResult {
   systemMessage: ChannelMessage;
 }
 
+/**
+ * One channel's durable last-read mark (#1308 slice 3 item 1).
+ *
+ * This is the OPERATOR's own mark and nothing else — Relay is single-operator
+ * (#1231), so there is exactly one marker per channel and no reader identity to
+ * key it by. It exists so the operator's phone and their desktop agree on what
+ * has been seen; it is NOT a read receipt, and no agent or second person ever
+ * appears in this table. Unread itself stays CLIENT-derived (marker vs live
+ * head seq) — the hub stores the marker, never the verdict.
+ */
+export interface ChannelReadState {
+  channelId: string;
+  lastReadSeq: number;
+  updatedAt: string;
+}
+
+/** Outcome of a mark write: `advanced` is false for an ignored (stale) mark. */
+export interface ChannelReadStateWriteResult extends ChannelReadState {
+  /**
+   * True only when this call actually moved the durable mark. The route uses it
+   * to decide whether the cross-device broadcast is worth sending: a mark that
+   * did not move gives other devices nothing to converge on.
+   */
+  advanced: boolean;
+}
+
 export class ChannelMessageStoreError extends Error {
   constructor(
     public readonly status: number,
@@ -833,6 +874,41 @@ export interface ChannelMessageStore {
     limit: number
   ): ChannelMessage[];
   latestSeq(channelId: string): number;
+  /**
+   * Every channel the operator has a durable last-read mark for (#1308 slice 3
+   * item 1). One call, whole map: a client seeds this ONCE on boot, so a
+   * per-channel route would turn a cold start into N round trips on the exact
+   * surface (a phone on mobile data) this exists to serve.
+   *
+   * Marks are returned CLAMPED to the channel's current head seq. A channel can
+   * legitimately lose its history under a stable id — a DM deleted and recreated
+   * under the same deterministic id restarts its seq low (#1178) — and a stored
+   * mark above the head is stale by construction. Left unclamped it would
+   * suppress the unread signal for every message the recreated channel goes on
+   * to accumulate until its seq climbed back past the stale value. Clamping is
+   * exactly what the client's own #1178 repair (`clampChannelStores`) does, so
+   * the seed a device receives here already agrees with what it would compute
+   * locally, and it happens on READ — no repair pass, no window.
+   */
+  listReadState(): ChannelReadState[];
+  /**
+   * Advance the operator's last-read mark for one channel (#1308 slice 3 item 1).
+   *
+   * MONOTONIC-UP, and that is the whole safety property: devices sync through
+   * this table, so a PUT carrying a seq at or below the stored mark is a no-op
+   * rather than a write. Without it the laggard device wins every race — the
+   * phone that has been asleep on seq 12 posts its mark, and the desktop that
+   * just read to seq 400 sees 388 messages turn unread again.
+   *
+   * The incoming seq is clamped to the channel's head for the same reason
+   * `listReadState` clamps: a mark can never legitimately point past the last
+   * durable row, and letting one in would broadcast a marker that hides
+   * messages other devices have not seen.
+   */
+  markChannelRead(
+    channelId: string,
+    lastReadSeq: number
+  ): ChannelReadStateWriteResult;
   listChannelSummaries(): ChannelSummary[];
   getChannelSummary(channelId: string): ChannelSummary | null;
   /**
@@ -1274,6 +1350,35 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
  */
 const CHANNEL_SEARCH_BACKFILL_BATCH_ROWS = 5_000;
 
+const CHANNEL_READ_STATE_TABLE = 'channel_read_state';
+
+/**
+ * The operator's per-channel last-read marks (#1308 slice 3 item 1).
+ *
+ * Auxiliary table, created on EVERY open rather than behind a numbered
+ * `schema_version` step — the same shape `channel_search_state` uses. A numbered
+ * step fires once and can never repair a table dropped afterwards; an
+ * unconditional `IF NOT EXISTS` is idempotent, self-healing, and cannot be
+ * stranded by a db that has already passed the version it was added at.
+ *
+ * `channel_id` is the whole primary key because Relay is single-operator
+ * (#1231): there is one reader, so there is one row per channel and no reader
+ * column to key it by. Adding one later would be the moment this stopped being
+ * device sync and became read receipts, which epic #1308 rules out.
+ *
+ * It deliberately does NOT foreign-key `channel_messages`: a channel's marker
+ * outlives an empty transcript (nothing to read is not the same as never read),
+ * and orphan rows are collected by `sweepOrphans` against the authoritative
+ * topic set in the OTHER database, which no constraint in this one can see.
+ */
+const CHANNEL_READ_STATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS ${CHANNEL_READ_STATE_TABLE} (
+  channel_id    TEXT PRIMARY KEY,
+  last_read_seq INTEGER NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+`;
+
 /**
  * Durable completeness marker for the index, and the resume cursor for a
  * backfill that did not finish.
@@ -1578,6 +1683,7 @@ function ensureChannelSearchIndex(db: Database.Database): void {
 
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
+  db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
   ensureChannelSearchIndex(db);
 }
 
@@ -2450,6 +2556,81 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       return row.latest;
     },
 
+    listReadState() {
+      // The clamp is SQL, not post-processing, so the ceiling is computed by the
+      // same indexed `MAX(seq)` probe (idx_chm_channel_seq) `latestSeq` uses —
+      // one covering-index lookup per marked channel, not a scan.
+      const rows = db
+        .prepare(
+          `SELECT r.channel_id AS channel_id,
+                  MIN(
+                    r.last_read_seq,
+                    COALESCE(
+                      (SELECT MAX(m.seq) FROM channel_messages m
+                        WHERE m.channel_id = r.channel_id),
+                      0
+                    )
+                  ) AS last_read_seq,
+                  r.updated_at AS updated_at
+             FROM ${CHANNEL_READ_STATE_TABLE} r
+            ORDER BY r.channel_id ASC`
+        )
+        .all() as ChannelReadStateRow[];
+      return rows.map(readStateRowToState);
+    },
+
+    markChannelRead(channelId, lastReadSeq) {
+      // Non-finite / negative / fractional input is floored to a sane 0 here
+      // rather than throwing: the route already rejects malformed bodies, and a
+      // store that throws on a read marker would turn a cosmetic sync miss into
+      // a failed request on the operator's own reading path.
+      const requested = Number.isFinite(lastReadSeq)
+        ? Math.max(0, Math.floor(lastReadSeq))
+        : 0;
+      const write = db.transaction((): ChannelReadStateWriteResult => {
+        const head = (
+          db
+            .prepare(
+              'SELECT COALESCE(MAX(seq), 0) AS latest FROM channel_messages WHERE channel_id = ?'
+            )
+            .get(channelId) as { latest: number }
+        ).latest;
+        const next = Math.min(requested, head);
+        const existing = db
+          .prepare(
+            `SELECT last_read_seq, updated_at FROM ${CHANNEL_READ_STATE_TABLE}
+              WHERE channel_id = ?`
+          )
+          .get(channelId) as
+          | { last_read_seq: number; updated_at: string }
+          | undefined;
+        // Compare against — and report — the CLAMPED stored mark, not the raw
+        // one. A mark stranded above a rewound head would otherwise be echoed
+        // straight back to the device that just wrote, contradicting the value
+        // `listReadState` hands every other device on its next boot.
+        const current = Math.min(existing?.last_read_seq ?? 0, head);
+        if (next <= current) {
+          return {
+            channelId,
+            lastReadSeq: current,
+            updatedAt: existing?.updated_at ?? nowIso(),
+            advanced: false,
+          };
+        }
+        const updatedAt = nowIso();
+        db.prepare(
+          `INSERT INTO ${CHANNEL_READ_STATE_TABLE}
+             (channel_id, last_read_seq, updated_at)
+           VALUES (@channelId, @lastReadSeq, @updatedAt)
+           ON CONFLICT(channel_id) DO UPDATE SET
+             last_read_seq = excluded.last_read_seq,
+             updated_at    = excluded.updated_at`
+        ).run({ channelId, lastReadSeq: next, updatedAt });
+        return { channelId, lastReadSeq: next, updatedAt, advanced: true };
+      });
+      return write();
+    },
+
     listChannelSummaries() {
       const rows = db
         .prepare(
@@ -2719,6 +2900,14 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         'channel_messages',
         'channel_members',
         'channel_agent_bindings',
+        // Read marks are swept for the same reason bindings are: a channel the
+        // topic store no longer knows about is gone, and its marker would
+        // otherwise be resurrected verbatim by a channel later created under the
+        // same deterministic id (DMs are keyed by member pair, #1178) — where a
+        // stale-high mark hides the new conversation's messages on every device
+        // at once. Listing the table here also means a channel whose ONLY
+        // remaining row is a read mark is still recognised as an orphan.
+        CHANNEL_READ_STATE_TABLE,
       ]) {
         for (const row of db
           .prepare(`SELECT DISTINCT channel_id FROM ${table}`)
@@ -2741,6 +2930,9 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           );
           db.prepare(
             'DELETE FROM channel_agent_bindings WHERE channel_id = ?'
+          ).run(id);
+          db.prepare(
+            `DELETE FROM ${CHANNEL_READ_STATE_TABLE} WHERE channel_id = ?`
           ).run(id);
         }
       });

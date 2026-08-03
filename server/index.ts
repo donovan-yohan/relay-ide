@@ -2551,6 +2551,12 @@ async function main(): Promise<void> {
             }
           : undefined;
       },
+      // Read-state cross-device sync (#1308 slice 3) rides the same deferred
+      // delegate the webhook routers use: this router is mounted well before
+      // `setupWebSocket` returns the real `broadcastEvent`.
+      broadcastEvent: (type, data) => {
+        broadcastEventDelegate?.(type, data);
+      },
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,

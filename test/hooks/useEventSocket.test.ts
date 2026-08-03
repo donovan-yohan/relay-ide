@@ -25,6 +25,7 @@ const wsMock = vi.hoisted(() => ({
 
 const apiMock = vi.hoisted(() => ({
   fetchHubNodes: vi.fn(),
+  putChannelReadState: vi.fn(async () => undefined),
 }));
 
 const storeMock = vi.hoisted(() => ({
@@ -80,6 +81,7 @@ vi.mock('../../frontend/src/lib/ws.js', () => ({
 
 vi.mock('../../frontend/src/lib/api.js', () => ({
   fetchHubNodes: apiMock.fetchHubNodes,
+  putChannelReadState: apiMock.putChannelReadState,
 }));
 
 vi.mock('../../frontend/src/lib/stores/sessions.js', () => ({
@@ -107,7 +109,11 @@ vi.mock('../../frontend/src/lib/stores/ui.js', () => ({
 }));
 
 import { useEventSocket } from '../../frontend/src/hooks/useEventSocket.js';
-import { useChannelActivityStore } from '../../frontend/src/lib/stores/channel-activity.js';
+import {
+  clearPendingReadStatePushesForTests,
+  hasUnseenActivity,
+  useChannelActivityStore,
+} from '../../frontend/src/lib/stores/channel-activity.js';
 import { useChannelAgentStatusStore } from '../../frontend/src/lib/stores/channel-agent-status.js';
 
 describe('useEventSocket repo-scoped refresh', () => {
@@ -193,6 +199,14 @@ describe('useEventSocket repo-scoped refresh', () => {
     });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['files-list'],
+    });
+    // Cross-device read marks (#1308 slice 3) only arrive live on the
+    // `channel-read-state` broadcast, so everything another device published
+    // while this socket was down was missed. The boot seed is cached for five
+    // minutes and never refetches on focus — without this the tab keeps showing
+    // unread dots for channels the operator has already read elsewhere.
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['channel-read-state'],
     });
     expect(changedFilesRefresh).toHaveBeenCalled();
   });
@@ -755,6 +769,108 @@ describe('useEventSocket repo-scoped refresh', () => {
       if (effectState.cleanup) effectState.cleanup();
 
       expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  // #1308 slice 3: the operator reads a channel on one device; the OTHER
+  // devices are the ones whose sidebar dot has to change, and they hold no
+  // subscription to that channel — so the mark rides the global event lane.
+  describe('cross-device read-state convergence', () => {
+    const CHANNEL = 'topic:alpha';
+
+    beforeEach(() => {
+      clearPendingReadStatePushesForTests();
+      useChannelActivityStore.setState({
+        latestSeqByChannel: {},
+        lastReadByChannel: {},
+        clampedAtByChannel: {},
+      });
+    });
+
+    it('clears the unread dot on a second device when the first device reads', () => {
+      mount(makeQueryClient());
+      // This device knows the channel moved to 12 and has read none of it.
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: CHANNEL,
+        latestSeq: 12,
+      });
+      const before = useChannelActivityStore.getState();
+      expect(
+        hasUnseenActivity(CHANNEL, null, {
+          latestSeq: before.latestSeqByChannel[CHANNEL],
+          lastRead: before.lastReadByChannel[CHANNEL],
+        })
+      ).toBe(true);
+
+      wsMock.onMessage?.({
+        type: 'channel-read-state',
+        channelId: CHANNEL,
+        lastReadSeq: 12,
+      });
+
+      const after = useChannelActivityStore.getState();
+      expect(after.lastReadByChannel[CHANNEL]).toBe(12);
+      expect(
+        hasUnseenActivity(CHANNEL, null, {
+          latestSeq: after.latestSeqByChannel[CHANNEL],
+          lastRead: after.lastReadByChannel[CHANNEL],
+        })
+      ).toBe(false);
+      // A read mark is not activity: it must not touch the head seq, or the
+      // rail would render a channel as newer than it is.
+      expect(after.latestSeqByChannel[CHANNEL]).toBe(12);
+    });
+
+    it('merges monotonic-up, so a device that woke up behind cannot relight a read channel', () => {
+      mount(makeQueryClient());
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: CHANNEL,
+        latestSeq: 400,
+      });
+      useChannelActivityStore.getState().markChannelRead(CHANNEL, 400);
+
+      // The phone catches up from seq 12 and publishes it.
+      wsMock.onMessage?.({
+        type: 'channel-read-state',
+        channelId: CHANNEL,
+        lastReadSeq: 12,
+      });
+
+      expect(
+        useChannelActivityStore.getState().lastReadByChannel[CHANNEL]
+      ).toBe(400);
+      // …and this device, being ahead, publishes back so the phone converges
+      // instead of both sides sitting on different positions forever.
+      vi.advanceTimersByTime(3_000);
+      expect(apiMock.putChannelReadState).toHaveBeenCalledWith(CHANNEL, 400, {
+        keepalive: false,
+      });
+    });
+
+    it('refuses a broadcast for a channel this device has clamped below it', () => {
+      mount(makeQueryClient());
+      // #1178 recreated DM: this device has already repaired down to head 5.
+      wsMock.onMessage?.({
+        type: 'channel-activity',
+        channelId: CHANNEL,
+        latestSeq: 50,
+      });
+      useChannelActivityStore.getState().markChannelRead(CHANNEL, 40);
+      useChannelActivityStore.getState().clampChannelStores(CHANNEL, 5);
+
+      // A broadcast that was emitted before the repair still carries 40.
+      useChannelActivityStore
+        .getState()
+        .mergeReadState(
+          [{ channelId: CHANNEL, lastReadSeq: 40 }],
+          Date.now() - 1
+        );
+
+      expect(
+        useChannelActivityStore.getState().lastReadByChannel[CHANNEL]
+      ).toBe(5);
     });
   });
 });

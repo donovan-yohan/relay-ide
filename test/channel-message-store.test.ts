@@ -2275,3 +2275,191 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     expect(details[1]).toMatch(/SEARCH m USING INTEGER PRIMARY KEY/);
   });
 });
+
+describe('channel-message-store read state (#1308 slice 3 item 1)', () => {
+  function post(s: ChannelMessageStore, channelId: string, text: string) {
+    return s.appendComplete({ channelId, sender: HUMAN, text });
+  }
+
+  it('starts empty and records a mark keyed by channel', () => {
+    const s = store();
+    expect(s.listReadState()).toEqual([]);
+    post(s, 'topic:alpha', 'one');
+    post(s, 'topic:alpha', 'two');
+    const result = s.markChannelRead('topic:alpha', 2);
+    expect(result).toMatchObject({
+      channelId: 'topic:alpha',
+      lastReadSeq: 2,
+      advanced: true,
+    });
+    expect(typeof result.updatedAt).toBe('string');
+    expect(s.listReadState()).toEqual([
+      { channelId: 'topic:alpha', lastReadSeq: 2, updatedAt: result.updatedAt },
+    ]);
+  });
+
+  it('ignores a mark at or below the stored one so a lagging device cannot regress another', () => {
+    const s = store();
+    for (let i = 0; i < 5; i += 1) post(s, 'topic:alpha', `m${i}`);
+    // Desktop reads to the head.
+    const desktop = s.markChannelRead('topic:alpha', 5);
+    expect(desktop.advanced).toBe(true);
+
+    // Phone, asleep since seq 2, reports its stale position.
+    const phone = s.markChannelRead('topic:alpha', 2);
+    expect(phone.advanced).toBe(false);
+    // The response reports the DURABLE mark, not the rejected input, so the
+    // laggard converges from its own reply.
+    expect(phone.lastReadSeq).toBe(5);
+    expect(phone.updatedAt).toBe(desktop.updatedAt);
+    expect(s.listReadState()).toEqual([
+      {
+        channelId: 'topic:alpha',
+        lastReadSeq: 5,
+        updatedAt: desktop.updatedAt,
+      },
+    ]);
+
+    // Equal is a no-op too (idempotent retry), and a higher mark still advances.
+    expect(s.markChannelRead('topic:alpha', 5).advanced).toBe(false);
+    expect(s.markChannelRead('topic:alpha', 5).lastReadSeq).toBe(5);
+  });
+
+  it('clamps a mark to the channel head instead of storing a position past the last row', () => {
+    const s = store();
+    post(s, 'topic:alpha', 'only');
+    const ahead = s.markChannelRead('topic:alpha', 99);
+    expect(ahead).toMatchObject({ lastReadSeq: 1, advanced: true });
+    // A channel with no durable rows has nothing to mark read.
+    expect(s.markChannelRead('topic:empty', 7)).toMatchObject({
+      lastReadSeq: 0,
+      advanced: false,
+    });
+    expect(s.listReadState().map((row) => row.channelId)).toEqual([
+      'topic:alpha',
+    ]);
+  });
+
+  it('reports a mark stranded above a rewound head as the head, and lets the channel be marked again', () => {
+    // A DM deleted and recreated under the same deterministic id restarts its
+    // seq low (#1178). If the sweep has not yet collected the marker, the stored
+    // mark now sits ABOVE the head. Clamping matches the client's own #1178
+    // repair (`clampChannelStores`): the mark drops to the head, so messages
+    // posted from here on are unread again.
+    const file = dbPath();
+    const s = store(file);
+    for (let i = 0; i < 4; i += 1) post(s, 'topic:dm', `old${i}`);
+    s.markChannelRead('topic:dm', 4);
+
+    // Drop the transcript WITHOUT touching the marker (the sweep is what would
+    // normally take both), then rebuild a shorter one: head 2, stored mark 4.
+    const raw = new Database(file);
+    raw
+      .prepare('DELETE FROM channel_messages WHERE channel_id = ?')
+      .run('topic:dm');
+    raw.close();
+    post(s, 'topic:dm', 'recreated 1');
+    post(s, 'topic:dm', 'recreated 2');
+    expect(s.latestSeq('topic:dm')).toBe(2);
+    expect(s.listReadState()[0]?.lastReadSeq).toBe(2);
+
+    // The write path clamps the same way, so its reply agrees with the GET seed
+    // instead of echoing the stranded 4 back at the device that just wrote.
+    expect(s.markChannelRead('topic:dm', 2)).toMatchObject({
+      lastReadSeq: 2,
+      advanced: false,
+    });
+
+    // And the channel is not frozen: once it grows past the stranded mark,
+    // marks land again and the stale row is overwritten.
+    for (let i = 3; i <= 5; i += 1) post(s, 'topic:dm', `recreated ${i}`);
+    expect(s.markChannelRead('topic:dm', 5)).toMatchObject({
+      lastReadSeq: 5,
+      advanced: true,
+    });
+    expect(s.listReadState()[0]?.lastReadSeq).toBe(5);
+  });
+
+  it('sweeps read marks for channels the topic store no longer knows', () => {
+    const s = store();
+    post(s, 'topic:live', 'keep');
+    post(s, 'topic:gone', 'orphan');
+    s.markChannelRead('topic:live', 1);
+    s.markChannelRead('topic:gone', 1);
+    expect(s.listReadState().map((row) => row.channelId)).toEqual([
+      'topic:gone',
+      'topic:live',
+    ]);
+
+    const result = s.sweepOrphans(new Set(['topic:live']));
+    expect(result.channelsDeleted).toEqual(['topic:gone']);
+    expect(s.listReadState()).toEqual([
+      {
+        channelId: 'topic:live',
+        lastReadSeq: 1,
+        updatedAt: expect.any(String),
+      },
+    ]);
+  });
+
+  it('sweeps a channel whose only surviving row is a read mark', () => {
+    const file = dbPath();
+    const s = store(file);
+    post(s, 'topic:live', 'keep');
+    s.markChannelRead('topic:live', 1);
+    // Mark-only channel: nothing in messages/members/bindings names it, so it is
+    // reachable as an orphan candidate only because the sweep enumerates this
+    // table too. Reached here by deleting the transcript out from under a mark
+    // (the shape a partial cleanup leaves behind).
+    post(s, 'topic:markonly', 'gone soon');
+    s.markChannelRead('topic:markonly', 1);
+    const raw = new Database(file);
+    raw
+      .prepare('DELETE FROM channel_messages WHERE channel_id = ?')
+      .run('topic:markonly');
+    raw.close();
+    expect(s.listReadState().map((row) => row.channelId)).toContain(
+      'topic:markonly'
+    );
+
+    const result = s.sweepOrphans(new Set(['topic:live']));
+    expect(result.channelsDeleted).toEqual(['topic:markonly']);
+    expect(s.listReadState().map((row) => row.channelId)).toEqual([
+      'topic:live',
+    ]);
+  });
+
+  it('survives a reopen and repairs a dropped read-state table', () => {
+    const file = dbPath();
+    const first = store(file);
+    first.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'a',
+    });
+    first.markChannelRead('topic:alpha', 1);
+    first.close();
+
+    const reopened = store(file);
+    expect(reopened.listReadState()).toEqual([
+      {
+        channelId: 'topic:alpha',
+        lastReadSeq: 1,
+        updatedAt: expect.any(String),
+      },
+    ]);
+    reopened.close();
+
+    // The table is created on EVERY open, not behind a one-shot numbered
+    // migration, so a dropped table is repaired rather than stranded.
+    const raw = new Database(file);
+    raw.exec('DROP TABLE channel_read_state');
+    raw.close();
+    const repaired = store(file);
+    expect(repaired.listReadState()).toEqual([]);
+    expect(repaired.markChannelRead('topic:alpha', 1)).toMatchObject({
+      lastReadSeq: 1,
+      advanced: true,
+    });
+  });
+});
