@@ -1999,6 +1999,99 @@ export async function interruptChannelAgent(
   );
 }
 
+/**
+ * Rewrite the body of one of the operator's own channel messages (#1308 slice 1
+ * item 3). The updated row arrives on every device through the socket
+ * (`channel-message-edited-v1`), so callers use the response only to know the
+ * write landed — there is no optimistic local apply, exactly as with posting.
+ * `HttpError` propagates: 403 (not the operator's lane), 409 (not an editable
+ * row / archived channel) and 404 are all operator-legible states.
+ */
+export async function editChannelMessage(
+  channelId: string,
+  messageId: string,
+  text: string
+): Promise<ChannelMessage> {
+  const body = await json<{ message: ChannelMessage }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ text }),
+      }
+    )
+  );
+  return body.message;
+}
+
+/**
+ * Delete one of the operator's own channel messages (#1308 slice 1 item 4).
+ * Returns the TOMBSTONE — the row keeps its id and seq and loses its body — so
+ * a caller can see the state it now holds; the same row also arrives on every
+ * device through the socket (`channel-message-deleted-v1`), so nothing is
+ * applied optimistically here. `HttpError` propagates: 403 (not the operator's
+ * lane), 409 (not a deletable row / archived channel) and 404 are all
+ * operator-legible states.
+ */
+export async function deleteChannelMessage(
+  channelId: string,
+  messageId: string
+): Promise<ChannelMessage> {
+  const body = await json<{ message: ChannelMessage }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}`,
+      {
+        method: 'DELETE',
+        headers: { 'x-relay-capabilities': 'context:write' },
+      }
+    )
+  );
+  return body.message;
+}
+
+/** What a retry actually re-ran (#1308 slice 1 item 2). */
+export interface ChannelMessageRetryResult {
+  messageId: string;
+  /** The ORIGINAL trigger that was re-routed; never a newly posted row. */
+  triggerMessageId: string;
+  profileActorId: string;
+}
+
+/**
+ * Re-route the original trigger of a failed/interrupted/truncated agent row to
+ * the same profile. `HttpError` propagates so callers can distinguish 409
+ * (`CHANNEL_AGENT_BUSY` — the storm brake) from a genuine failure.
+ */
+export async function retryChannelMessage(
+  channelId: string,
+  messageId: string
+): Promise<ChannelMessageRetryResult> {
+  const body = await json<{ ok: true; retry: ChannelMessageRetryResult }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}/retry`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+  );
+  return body.retry;
+}
+
 /** Persistent orchestrator binding created by the operator lane. */
 export interface ChannelOrchestratorDesignation {
   ok: true;

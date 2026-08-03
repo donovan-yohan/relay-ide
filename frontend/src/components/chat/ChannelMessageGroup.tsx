@@ -31,6 +31,18 @@ interface ChannelMessageGroupProps {
   replyCounts?: Map<ChannelMessageId, DerivedReplyCount>;
   replyGrowth?: Map<ChannelMessageId, number>;
   onOpenThread?: (rootId: ChannelMessageId) => void;
+  /** #1308 item 1: message a deep link just landed on, if it is in this group. */
+  highlightedMessageId?: ChannelMessageId | null;
+  /** #1308 item 2: re-route a failed row's original trigger. */
+  onRetryMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /** #1308 item 3: rewrite the body of one of the operator's own rows. */
+  onEditMessage?: (message: ChannelMessage, text: string) => Promise<unknown>;
+  /** #1308 item 4: tombstone one of the operator's own rows. */
+  onDeleteMessage?: (message: ChannelMessage) => Promise<unknown>;
+  /** Profile actor ids currently non-idle in this channel (retry storm brake). */
+  busyAgentIds?: ReadonlySet<string>;
+  /** Rows a later `meta.retryOfMessageId` system row already superseded. */
+  retriedMessageIds?: ReadonlySet<ChannelMessageId>;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
@@ -40,6 +52,12 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   replyCounts,
   replyGrowth,
   onOpenThread,
+  highlightedMessageId = null,
+  onRetryMessage,
+  onEditMessage,
+  onDeleteMessage,
+  busyAgentIds,
+  retriedMessageIds,
 }) => {
   const identity = resolveSenderIdentity(sender);
   const first = messages[0];
@@ -78,6 +96,12 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
               key={message.id}
               message={message}
               channelId={channelId}
+              highlighted={highlightedMessageId === message.id}
+              retryBusy={busyAgentIds?.has(message.sender.id) ?? false}
+              retried={retriedMessageIds?.has(message.id) ?? false}
+              {...(onRetryMessage ? { onRetry: onRetryMessage } : {})}
+              {...(onEditMessage ? { onEdit: onEditMessage } : {})}
+              {...(onDeleteMessage ? { onDelete: onDeleteMessage } : {})}
               replyCount={displayedReplyCount(
                 message,
                 derived,

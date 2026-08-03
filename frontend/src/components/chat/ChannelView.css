@@ -405,6 +405,31 @@
   text-align: center;
 }
 
+/* Coalesced system-run summary (#1308 item 5). Reads as a system row —
+   same muted mono type, same centering — with a chevron to say it opens.
+   Zero radius, outline-only, no fill (DESIGN.md). */
+.ch-system-run {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  align-self: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-system-run:hover,
+.ch-system-run:focus-visible {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
 /* approval controls on an actionable system row (#1167) */
 .ch-system-msg__actions {
   display: inline-flex;
@@ -474,6 +499,7 @@
 
 /* single message row */
 .ch-msg {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -555,6 +581,138 @@
   }
 }
 
+/* per-message action toolbar (#1308 item 1). Absolutely positioned so it can
+   never reflow the lane — a row that changed height on hover would fight the
+   follow/anchor scroll model. Mounted only while the row is hovered, focused,
+   or long-press pinned, so the resting DOM is unchanged. */
+.ch-msg__actions {
+  position: absolute;
+  top: -10px;
+  right: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+}
+
+/* A human bubble is right-aligned, so its toolbar sits on the free left edge. */
+.ch-msg__actions--user {
+  right: auto;
+  left: 0;
+}
+
+.ch-msg__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ch-msg__action + .ch-msg__action {
+  border-left: 1px solid var(--border);
+}
+
+.ch-msg__action:hover,
+.ch-msg__action:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.ch-msg__action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ch-msg__action:disabled:hover {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+/* Destructive action (#1308 item 4). Tinted only on hover/focus: at rest it is
+   one icon among peers, and colouring it permanently would make every message
+   carry a standing warning. */
+.ch-msg__action--danger:hover,
+.ch-msg__action--danger:focus-visible {
+  color: var(--status-error);
+}
+
+/* Inline delete confirm (#1308 item 4). Occupies the toolbar's own absolutely
+   positioned slot, so asking the question never reflows the lane and the
+   message being confirmed stays legible underneath — which a browser
+   `confirm()` cannot do. Mono, lowercase, zero radius, no motion. */
+.ch-msg__confirm {
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.ch-msg__confirm-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
+.ch-msg__confirm-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__confirm-btn--danger {
+  color: var(--status-error);
+}
+
+.ch-msg__confirm-btn:hover:not(:disabled),
+.ch-msg__confirm-btn:focus-visible:not(:disabled) {
+  border-color: currentColor;
+  background: var(--surface-hover);
+}
+
+.ch-msg__confirm-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* jump emphasis after a deep link lands (#1308 item 1). DESIGN.md text-motion
+   only: a flat background fade, no shimmer, no particles, and inside the 400ms
+   motion budget. */
+.ch-msg--jump {
+  animation: ch-jump-flash 400ms ease-out 1;
+}
+
+@keyframes ch-jump-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-msg--jump {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+
 /* trailing status tags — interrupted / failed / truncated */
 .ch-msg__tag {
   font-family: var(--font-mono);
@@ -574,6 +732,147 @@
 
 .ch-msg__tag--truncated {
   color: var(--status-warning);
+}
+
+.ch-msg__tag--retried {
+  color: var(--text-muted);
+}
+
+/* Inline retry on a failed row (#1308 item 2). Outline-only, square, mono —
+   same control vocabulary as the thread chip, tinted to the failure it recovers
+   from. No motion: the pending state is a text swap (`retry` → `retrying…`),
+   which is the only motion DESIGN.md allows here. */
+.ch-msg__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  align-self: flex-start;
+  margin-top: var(--space-xs, 4px);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__retry:hover:not(:disabled),
+.ch-msg__retry:focus-visible:not(:disabled) {
+  border-color: var(--status-error);
+  background: var(--surface-hover);
+}
+
+.ch-msg__retry:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* (edited) suffix (#1308 item 3). Dim, mono, and smaller than the body: it is a
+   provenance note, not a status the eye should stop on. No color token — a
+   tinted marker would read as a warning about a message that is simply correct
+   now. Follows the human bubble to the right edge. */
+.ch-msg__edited {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.ch-msg--user .ch-msg__edited {
+  align-self: flex-end;
+}
+
+/* Tombstone placeholder (#1308 item 4). The row keeps its slot — grouping, the
+   scroll anchor and any thread chip below depend on it — and says plainly that
+   something was here. Dim and italic so it reads as absence rather than as a
+   message someone wrote. */
+.ch-msg__deleted {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-style: italic;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* The placeholder replaces the body, so it inherits the body's alignment — the
+   bubble chrome (`.ch-msg--user .ch-msg__body`) is simply never rendered, since
+   there is no message left to frame. */
+.ch-msg--user .ch-msg__deleted {
+  align-self: flex-end;
+}
+
+/* In-place message editor (#1308 item 3). Reuses the composer textarea's
+   metrics — mono, zero radius, underline-only border — so editing a message
+   looks like writing one. Full row width even on a right-aligned human bubble:
+   the 75% bubble cap is a reading-comfort rule, and shrinking the edit surface
+   below the text it holds would be a worse trade. */
+.ch-msg__edit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 4px;
+}
+
+.ch-msg__edit-ta {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  padding: 8px 12px;
+  resize: none;
+  outline: none;
+}
+
+.ch-msg__edit-ta:disabled {
+  opacity: 0.85;
+}
+
+.ch-msg__edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-msg__edit-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__edit-btn:hover:not(:disabled),
+.ch-msg__edit-btn:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.ch-msg__edit-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ch-msg__edit-hint {
+  margin-left: auto;
 }
 
 /* Thread entry point: outline-only informational navigation, matching the

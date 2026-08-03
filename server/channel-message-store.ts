@@ -8,6 +8,8 @@ import { createLogger } from './logger.js';
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
   CHANNEL_AGENT_DETAIL_MAX_BYTES,
+  CHANNEL_DELETED_AT_META_KEY,
+  CHANNEL_EDITED_AT_META_KEY,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
   isChannelMessagePart,
@@ -38,9 +40,12 @@ import {
 //    survives future features.
 //  * Catch-up is ALWAYS DB-backed (the durable seq log is the replay buffer);
 //    there is no in-memory event ring.
-//  * Edits/deletes are out of scope for slice 2 and must NEVER be implemented as
-//    row deletion — that would break gap-free seq. Future mutation lands as new
-//    events over retained rows.
+//  * Edits/deletes must NEVER be implemented as row deletion — that would break
+//    gap-free seq. `editMessage` (#1308 slice 1 item 3) and `deleteMessage`
+//    (item 4, a tombstone) are the sanctioned shapes: the SAME row keeps its
+//    id/seq/createdAt and only its body/meta change, so every seq cursor,
+//    catch-up window, and thread parent stays valid. Nothing in this file may
+//    ever issue `DELETE FROM channel_messages` for an operator action.
 
 const SCHEMA_VERSION = 5;
 const logger = createLogger('channel-message-store');
@@ -319,6 +324,33 @@ export interface FinalizeStreamInput {
   agentDetailTerminalAuthority?: 'provisional' | 'explicit';
 }
 
+export interface EditMessageInput {
+  /** Channel scope — an id from another channel is a 404, never a cross-edit. */
+  channelId: string;
+  messageId: string;
+  /**
+   * Server-derived editor identity (never body-supplied). Must equal the row's
+   * own `sender_id`: single-operator today, but ownership is enforced
+   * structurally so a future second identity cannot silently inherit edit rights.
+   */
+  editorId: string;
+  /** Replacement body. Empty text is rejected — deleting is a separate action. */
+  text: string;
+  /** Re-parsed from the new text by the caller; replaces the stored refs. */
+  mentions?: ChannelMention[];
+}
+
+export interface DeleteMessageInput {
+  /** Channel scope — an id from another channel is a 404, never a cross-delete. */
+  channelId: string;
+  messageId: string;
+  /**
+   * Server-derived deleter identity (never body-supplied). Must equal the row's
+   * own `sender_id`, exactly as with `editMessage`.
+   */
+  deleterId: string;
+}
+
 export interface ResolveProvisionalAgentDetailTerminalResult {
   message: ChannelMessage | null;
   transitioned: boolean;
@@ -446,6 +478,30 @@ export interface ChannelMessageStore {
     }
   ): ResolveProvisionalAgentDetailTerminalResult;
   finalizeStream(id: string, input: FinalizeStreamInput): ChannelMessage | null;
+  /**
+   * Operator edit of their OWN human row (#1308 slice 1 item 3). In-place by
+   * design: id, seq, createdAt, thread links and client dedupe key all survive,
+   * so nothing that indexes the timeline by seq has to move. Throws
+   * `ChannelMessageStoreError` 404 (absent / other channel) or 409 (not an
+   * editable row, or not this editor's row) rather than returning null, so the
+   * route can map both without inventing its own vocabulary.
+   */
+  editMessage(input: EditMessageInput): ChannelMessage;
+  /**
+   * Operator deletion of their OWN human row (#1308 slice 1 item 4) as a
+   * TOMBSTONE: the row survives with its id, seq, createdAt, thread links and
+   * client dedupe key intact and loses only its body, its attachment refs and
+   * its mentions. Row removal is forbidden here — it would renumber nothing but
+   * would punch a hole in the gap-free seq log every cursor depends on, and it
+   * would orphan the replies of a deleted thread parent.
+   *
+   * Idempotent: deleting an already-deleted row returns the existing tombstone
+   * with its original `deletedAt` rather than throwing, so a second device (or a
+   * double tap) does not surface a spurious error for a state already reached.
+   * Throws 404 (absent / other channel) or 409 (not the operator's own settled
+   * prose row).
+   */
+  deleteMessage(input: DeleteMessageInput): ChannelMessage;
   getMessage(id: string): ChannelMessage | null;
   findByClientMessage(
     channelId: string,
@@ -460,12 +516,16 @@ export interface ChannelMessageStore {
     filter?: ChannelHistoryFilter
   ): ChannelMessage[];
   /**
-   * Rows a reconnecting client may still hold as stale `streaming` copies:
-   * agent-origin rows (source triple set) at or below the reconnect cursor, in
-   * their CURRENT state, nearest the cursor first. Only agent streams mutate in
-   * place (streaming → complete/truncated/interrupted/failed without a new seq), so this is
-   * the exact set catch-up must re-send to heal a stream that finalized while the
-   * client was disconnected. Bounded by `limit`.
+   * Rows a reconnecting client may still hold as a stale copy: rows at or below
+   * the reconnect cursor that mutate IN PLACE (no new seq), in their CURRENT
+   * state, nearest the cursor first. Two such classes exist —
+   *  - agent-origin rows (source triple set), whose stream finalizes
+   *    streaming → complete/truncated/interrupted/failed, and
+   *  - edited and deleted rows (#1308 slice 1 items 3/4), whose body changed
+   *    under a seq the client already consumed.
+   * `history({ afterSeq })` never re-sends any of them, so all must ride
+   * catch-up or a disconnected device keeps rendering pre-edit text, a deleted
+   * body, or a stuck stream. Bounded by `limit`.
    */
   listResyncRows(
     channelId: string,
@@ -598,6 +658,16 @@ function parseMeta(raw: string | null): ChannelMessageMeta | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether a raw row is a tombstone (#1308 slice 1 item 4). Read straight off the
+ * persisted meta so every guard in this file agrees with the SQL predicate the
+ * resync/preview queries use.
+ */
+function isTombstoneRow(row: ChannelMessageRow): boolean {
+  const value = parseMeta(row.meta_json)?.[CHANNEL_DELETED_AT_META_KEY];
+  return typeof value === 'string' && value.length > 0;
 }
 
 function rowToMessage(row: ChannelMessageRow): ChannelMessage {
@@ -1411,6 +1481,159 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       return getMessageById(id);
     },
 
+    editMessage(input) {
+      const row = selectById.get(input.messageId) as
+        | ChannelMessageRow
+        | undefined;
+      // Channel mismatch is reported as absence, not as a conflict: the caller
+      // proved access to ONE channel, so it must not learn that an id it does
+      // not own exists somewhere else.
+      if (!row || row.channel_id !== input.channelId) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      if (
+        row.kind !== 'message' ||
+        row.sender_kind !== 'human' ||
+        row.status !== 'complete' ||
+        row.sender_id !== input.editorId ||
+        // A tombstone is not an editable row: an edit writes a body, and
+        // deletion is the operator's statement that this row has none (#1308
+        // item 4). Without this, "edit" would be an undelete.
+        isTombstoneRow(row)
+      ) {
+        throw new ChannelMessageStoreError(
+          409,
+          'channel_message_not_editable',
+          'only the operator’s own completed messages can be edited',
+          {
+            channelId: input.channelId,
+            messageId: input.messageId,
+            kind: row.kind,
+            senderKind: row.sender_kind,
+            status: row.status,
+            ...(isTombstoneRow(row) ? { deleted: true } : {}),
+          }
+        );
+      }
+      if (input.text.length === 0) {
+        throw new ChannelMessageStoreError(
+          400,
+          'channel_message_body_empty',
+          'edited message text must not be empty'
+        );
+      }
+      assertMessagePayloadSize(
+        input.text,
+        parseMeta(row.meta_json)?.agentDetail
+      );
+      const now = nowIso();
+      const meta = parseMeta(row.meta_json) ?? {};
+      // Mentions are a projection of the body, so a stale set would outlive the
+      // text that justified it (a removed @claude would keep lighting the
+      // sidebar's mention lane). Re-parsed refs are stored; routing is NOT
+      // re-run — the edit path never reaches the binder.
+      if (input.mentions !== undefined) {
+        if (input.mentions.length > 0) meta.mentions = input.mentions;
+        else delete meta.mentions;
+      }
+      meta[CHANNEL_EDITED_AT_META_KEY] = now;
+      db.prepare(
+        `UPDATE channel_messages
+         SET body_text = @text, meta_json = @metaJson, updated_at = @now
+         WHERE id = @id`
+      ).run({
+        id: input.messageId,
+        text: input.text,
+        metaJson: JSON.stringify(meta),
+        now,
+      });
+      const updated = getMessageById(input.messageId);
+      if (!updated) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      return updated;
+    },
+
+    deleteMessage(input) {
+      const row = selectById.get(input.messageId) as
+        | ChannelMessageRow
+        | undefined;
+      // Channel mismatch reads as absence, same as `editMessage`: a caller that
+      // proved access to ONE channel must not learn that an id it does not own
+      // exists somewhere else.
+      if (!row || row.channel_id !== input.channelId) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      // Idempotent by design — checked BEFORE the ownership gate would matter,
+      // and returning the ORIGINAL stamp rather than restamping: two devices
+      // racing the same delete must converge on one tombstone, not on whichever
+      // arrived last.
+      if (isTombstoneRow(row)) return rowToMessage(row);
+      if (
+        row.kind !== 'message' ||
+        row.sender_kind !== 'human' ||
+        row.status !== 'complete' ||
+        row.sender_id !== input.deleterId
+      ) {
+        throw new ChannelMessageStoreError(
+          409,
+          'channel_message_not_deletable',
+          'only the operator’s own completed messages can be deleted',
+          {
+            channelId: input.channelId,
+            messageId: input.messageId,
+            kind: row.kind,
+            senderKind: row.sender_kind,
+            status: row.status,
+          }
+        );
+      }
+      const now = nowIso();
+      const meta = parseMeta(row.meta_json) ?? {};
+      // Everything the body implied goes with the body. `mentions` would keep
+      // lighting the sidebar's mention lane for text nobody can read; `parts`
+      // would keep rendering the attached images the operator just erased; the
+      // `editedAt` provenance note is meaningless once there is nothing left to
+      // have been edited. What survives is routing/bookkeeping meta that names
+      // the row rather than its content.
+      delete meta.mentions;
+      delete meta.parts;
+      delete meta[CHANNEL_EDITED_AT_META_KEY];
+      meta[CHANNEL_DELETED_AT_META_KEY] = now;
+      // UPDATE, never DELETE. `seq` is the substrate contract: the row keeps its
+      // number so catch-up windows, deep links and thread parents stay valid.
+      db.prepare(
+        `UPDATE channel_messages
+         SET body_text = '', meta_json = @metaJson, updated_at = @now
+         WHERE id = @id`
+      ).run({ id: input.messageId, metaJson: JSON.stringify(meta), now });
+      const updated = getMessageById(input.messageId);
+      if (!updated) {
+        throw new ChannelMessageStoreError(
+          404,
+          'channel_message_not_found',
+          'message not found in this channel',
+          { channelId: input.channelId, messageId: input.messageId }
+        );
+      }
+      return updated;
+    },
+
     getMessage(id) {
       return getMessageById(id);
     },
@@ -1525,7 +1748,9 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
                   ${replyCountSql('m')} AS reply_count
              FROM channel_messages m
             WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
-              AND m.source_runtime_id IS NOT NULL
+              AND (m.source_runtime_id IS NOT NULL
+                   OR json_extract(m.meta_json, '$.${CHANNEL_EDITED_AT_META_KEY}') IS NOT NULL
+                   OR json_extract(m.meta_json, '$.${CHANNEL_DELETED_AT_META_KEY}') IS NOT NULL)
             ORDER BY m.seq DESC LIMIT @limit`
         )
         .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];
@@ -1555,6 +1780,9 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         .all() as Array<ChannelMessageRow & { cnt?: number }>;
       // Newest prose row per channel — the summary preview reads from this so a
       // turn ending on a detail card (body_text='') does not blank the sidebar.
+      // A tombstone (#1308 item 4) is body-less for the same reason and is
+      // skipped by the same rule: deleting the last message must not leave the
+      // sidebar showing an empty channel.
       const previewRows = new Map<string, ChannelMessageRow>();
       for (const row of db
         .prepare(
@@ -1562,6 +1790,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
              SELECT channel_id, MAX(seq) AS max_seq
              FROM channel_messages
              WHERE json_extract(meta_json, '$.agentDetail') IS NULL
+               AND json_extract(meta_json, '$.${CHANNEL_DELETED_AT_META_KEY}') IS NULL
              GROUP BY channel_id
            ) agg
            JOIN channel_messages prose
@@ -1607,12 +1836,14 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       if (!last) {
         return { channelId, latestSeq: 0, messageCount: 0, lastMessage: null };
       }
-      // Preview from the newest prose row; detail cards persist body_text=''.
+      // Preview from the newest prose row; detail cards and tombstones both
+      // persist body_text='' and are skipped for the same reason.
       const previewRow =
         (db
           .prepare(
             `SELECT * FROM channel_messages WHERE channel_id = ?
                AND json_extract(meta_json, '$.agentDetail') IS NULL
+               AND json_extract(meta_json, '$.${CHANNEL_DELETED_AT_META_KEY}') IS NULL
              ORDER BY seq DESC LIMIT 1`
           )
           .get(channelId) as ChannelMessageRow | undefined) ?? last;

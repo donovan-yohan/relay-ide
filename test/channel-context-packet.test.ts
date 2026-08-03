@@ -75,6 +75,15 @@ function inThread(
   };
 }
 
+/** A row in the shape `deleteMessage` leaves behind: body wiped, stamp set. */
+function deletedRow(message: ChannelMessage): ChannelMessage {
+  return {
+    ...message,
+    body: { ...message.body, text: '' },
+    meta: { ...message.meta, deletedAt: '2026-08-03T02:00:00.000Z' },
+  };
+}
+
 function imagePart(id: string): ChannelImagePart {
   return {
     type: 'image',
@@ -727,5 +736,77 @@ describe('buildMentionContextPacket', () => {
       lastDeliveredSeq: 0,
     });
     expect(packet).toContain('operator: first line\n    second line');
+  });
+
+  // #1308 slice 1 item 4. A deleted row survives as a tombstone in the store, so
+  // it reaches the builder like any other row — and must never be rendered as an
+  // empty message the agent tries to interpret.
+  it('drops deleted rows from the context window entirely', () => {
+    const rows = [
+      msg(1, OPERATOR, 'keep this'),
+      deletedRow(msg(2, OPERATOR, '')),
+      msg(3, OPERATOR, 'keep this too'),
+    ];
+    const trigger = msg(4, OPERATOR, '@claude go');
+    const envelope = buildMentionContextPacketEnvelope({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(envelope.retainedMessageIds).toEqual([
+      'chm:row-1',
+      'chm:row-3',
+      trigger.id,
+    ]);
+    expect(envelope.content).toContain('operator: keep this');
+    expect(envelope.content).not.toContain('[message deleted]');
+    // No blank `operator:` line where the deleted row used to be.
+    expect(envelope.content).not.toMatch(/operator: *\n/);
+  });
+
+  it('never carries a deleted row’s attachments', () => {
+    const rows = [
+      {
+        ...deletedRow(msg(1, OPERATOR, '')),
+        parts: [imagePart('cha:erased')],
+      },
+    ];
+    const trigger = msg(2, OPERATOR, '@claude go');
+    const envelope = buildMentionContextPacketEnvelope({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(envelope.images).toEqual([]);
+    expect(envelope.retainedMessageIds).toEqual([trigger.id]);
+  });
+
+  it('keeps a deleted thread root as a marked anchor instead of dropping it', () => {
+    // The root is structural — a thread packet without it is not buildable — so
+    // it is the one deleted row that stays, standing in as a marker rather than
+    // as a blank line.
+    const root = deletedRow(msg(1, OPERATOR, ''));
+    const rows = [
+      root,
+      inThread(msg(2, OPERATOR, 'reply one'), root.id, root.id),
+    ];
+    const trigger = inThread(
+      msg(3, OPERATOR, '@claude go'),
+      root.id,
+      'chm:row-2'
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(packet).toContain('operator: [message deleted]');
+    expect(packet).toContain('operator: reply one');
   });
 });

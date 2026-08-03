@@ -5,7 +5,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { ChannelMessagePart } from '../../../../shared/channel-chat-protocol.js';
+import type {
+  ChannelMessage,
+  ChannelMessageId,
+  ChannelMessagePart,
+} from '../../../../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
 import type { AgentRole } from '../../../../shared/agent-roster.js';
 import './ChannelView.css';
@@ -15,7 +19,10 @@ import {
   fetchWorkspaceTopic,
   fetchChannelRoster,
   designateChannelOrchestrator,
+  deleteChannelMessage,
+  editChannelMessage,
   interruptChannelAgent,
+  retryChannelMessage,
   HttpError,
   type ChannelAgentStatus,
 } from '../../lib/api.js';
@@ -35,9 +42,10 @@ import {
   useChannelAgentStatusStore,
 } from '../../lib/stores/channel-agent-status.js';
 import { useUiStore } from '../../lib/stores/ui.js';
+import { showToast } from '../../lib/stores/toasts.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { TuiProgress } from '../TuiProgress.js';
-import { ChannelTimeline } from './ChannelTimeline.js';
+import { ChannelTimeline, type TimelineJumpTarget } from './ChannelTimeline.js';
 import { ChannelComposer } from './ChannelComposer.js';
 import { ChannelThreadPanel } from './ChannelThreadPanel.js';
 
@@ -45,6 +53,13 @@ const READ_WRITE_VISIBLE_GRACE_MS = 10_000;
 const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
 const AUTO_BACKFILL_RETRY_BASE_MS = 200;
 const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
+/**
+ * #1308 item 1: how many older-history pages a `#msg-…` deep link may pull
+ * before it gives up. Unbounded, a link to a deleted/foreign message id would
+ * walk the channel to seq 1 on every open; bounded, the worst case is a fixed
+ * number of page fetches and one toast.
+ */
+const ANCHOR_WALK_MAX_PAGES = 8;
 
 interface ChannelViewProps {
   channelId: string;
@@ -307,6 +322,97 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     []
   );
 
+  // ── Deep-link message anchor (#1308 item 1) ────────────────────────────────
+  // A `/channel/<id>#msg-<messageId>` link lands here as a store intent. The
+  // target may be far outside the loaded window, so resolving it is a bounded
+  // walk backwards through history rather than a single lookup; the timeline
+  // only ever receives a target it can already render.
+  const pendingChannelMessage = useUiStore((s) => s.pendingChannelMessage);
+  const [anchorWalk, setAnchorWalk] = useState<{
+    messageId: ChannelMessageId;
+    pages: number;
+  } | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<TimelineJumpTarget | null>(null);
+  const jumpTokenRef = useRef(0);
+  const anchorLoadingRef = useRef(false);
+
+  // Drop an in-flight walk when the channel changes: its message id belongs to
+  // the channel that is leaving, and the new one's history would never match.
+  // Declared BEFORE the adopt effect so a channel switch that also carries an
+  // anchor resets first and adopts second — the other order would erase the
+  // anchor it had just accepted (effects run in declaration order).
+  useEffect(() => {
+    anchorLoadingRef.current = false;
+    setAnchorWalk(null);
+    setJumpTarget(null);
+  }, [channelId]);
+
+  useEffect(() => {
+    if (pendingChannelMessage?.channelId !== channelId) return;
+    setAnchorWalk({ messageId: pendingChannelMessage.messageId, pages: 0 });
+    useUiStore.getState().consumeChannelMessageIntent(channelId);
+  }, [channelId, pendingChannelMessage]);
+
+  const [anchorWalkTick, setAnchorWalkTick] = useState(0);
+  useEffect(() => {
+    if (anchorWalk === null) return;
+    const target = reducer.messages.find(
+      (message) => message.id === anchorWalk.messageId
+    );
+    if (target) {
+      setAnchorWalk(null);
+      jumpTokenRef.current += 1;
+      // A reply's row lives in the thread panel, not the main lane. Open the
+      // thread and put the emphasis on its root, which IS a main-lane row —
+      // otherwise the link resolves to a scroll that finds nothing.
+      if (target.threadId !== null) setActiveThreadRootId(target.threadId);
+      setJumpTarget({
+        messageId: target.threadId ?? target.id,
+        token: jumpTokenRef.current,
+      });
+      return;
+    }
+    if (anchorLoadingRef.current || loadingOlder) return;
+    // Cold boot is the primary case for this feature: a pasted
+    // `/channel/<id>#msg-…` link writes the intent BEFORE this component
+    // mounts, so the adopt effect above fires on the first commit — while
+    // `reducer.messages` is still `[]` and `hasMoreOlder` is still its `false`
+    // default (it is only ever set from the WS snapshot's `truncated` flag).
+    // "No older history" is not an answer until the channel has actually
+    // answered: hold the walk until the first full snapshot lands.
+    if (fullSnapshotRevision === 0) return;
+    if (!hasMoreOlder || anchorWalk.pages >= ANCHOR_WALK_MAX_PAGES) {
+      setAnchorWalk(null);
+      showToast('that message is not in this chat’s recent history', 'info');
+      return;
+    }
+    anchorLoadingRef.current = true;
+    setAnchorWalk((walk) =>
+      walk === null ? null : { ...walk, pages: walk.pages + 1 }
+    );
+    void loadOlder()
+      .catch(() => {})
+      .finally(() => {
+        anchorLoadingRef.current = false;
+        setAnchorWalkTick((tick) => tick + 1);
+      });
+  }, [
+    anchorWalk,
+    anchorWalkTick,
+    fullSnapshotRevision,
+    hasMoreOlder,
+    loadOlder,
+    loadingOlder,
+    reducer.messages,
+    setActiveThreadRootId,
+  ]);
+
+  // The jump is one-shot: `jumpTarget` is what forces a collapsed system run
+  // open and paints the emphasis, so leaving it set for the lifetime of the
+  // channel view would pin that run open (the summary's toggle would have no
+  // visible effect). The timeline calls this once the jump has been consumed.
+  const handleJumpConsumed = useCallback(() => setJumpTarget(null), []);
+
   // Agent presence chips (#1167). One chip per agent that is bound (roster
   // binding) OR currently non-idle in the live status store, with a `streaming`
   // fallback derived from the timeline reducer so the header degrades gracefully
@@ -432,6 +538,82 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const agentPresence = useMemo(
     () => selectChannelAgentPresence(agentChips, presenceSuppression),
     [agentChips, presenceSuppression]
+  );
+
+  // #1308 item 2 storm brake, client half. Same `agentChips` signal the presence
+  // rows use, so the disabled state cannot disagree with what the header says
+  // the agent is doing. The server refuses independently — this only keeps the
+  // operator from firing a request that is already known to be rejected.
+  const busyAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const chip of agentChips) {
+      if (chip.status !== 'idle') ids.add(chip.agentId);
+    }
+    return ids;
+  }, [agentChips]);
+
+  // Wired only while the channel is live, exactly like edit/delete below: a
+  // retry re-runs a turn against an archived (read-only) channel, so the route
+  // refuses it with CHANNEL_ARCHIVED and offering the button would be dead.
+  const handleRetryMessage = useCallback(
+    async (message: ChannelMessage) => {
+      try {
+        await retryChannelMessage(channelId, message.id);
+      } catch (error) {
+        // 409 is the storm brake (agent busy) or an unretryable row; both are
+        // operator-legible states rather than faults, so they get the message
+        // the server sent instead of a generic failure.
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not retry — the agent is busy'
+            : 'could not retry this message'
+        );
+      }
+    },
+    [channelId]
+  );
+
+  // #1308 item 3. Wired only while the channel is live — an archived channel is
+  // read-only (its composer is already a restore bar), so offering an edit the
+  // route would refuse with CHANNEL_ARCHIVED is a dead affordance. The edited row
+  // arrives back through the socket
+  // (`channel-message-edited-v1`), so nothing is applied optimistically here —
+  // same discipline as posting. Rethrown so the row keeps the operator's draft
+  // on screen instead of closing over a failed write.
+  const handleEditMessage = useCallback(
+    async (message: ChannelMessage, text: string) => {
+      try {
+        await editChannelMessage(channelId, message.id, text);
+      } catch (error) {
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not edit — this message is no longer editable'
+            : 'could not edit this message'
+        );
+        throw error;
+      }
+    },
+    [channelId]
+  );
+
+  // #1308 item 4. Same wiring rule as the edit lane: live channels only, no
+  // optimistic apply (the tombstone arrives through
+  // `channel-message-deleted-v1`), rethrown so the row's confirm stays open on a
+  // failed write instead of pretending the row is gone.
+  const handleDeleteMessage = useCallback(
+    async (message: ChannelMessage) => {
+      try {
+        await deleteChannelMessage(channelId, message.id);
+      } catch (error) {
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not delete — this message is no longer deletable'
+            : 'could not delete this message'
+        );
+        throw error;
+      }
+    },
+    [channelId]
   );
 
   const handleInterruptAgent = useCallback(
@@ -640,6 +822,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               onContinueHistory={continueReplyOnlyBackfill}
               onOpenThread={setActiveThreadRootId}
               agentPresence={agentPresence}
+              jumpTarget={jumpTarget}
+              onJumpConsumed={handleJumpConsumed}
+              {...(archived
+                ? {}
+                : {
+                    // Retry belongs with edit/delete, not outside the fence: it
+                    // writes a durable system row and appends a whole new agent
+                    // turn, which the route now refuses with CHANNEL_ARCHIVED.
+                    onRetryMessage: handleRetryMessage,
+                    onEditMessage: handleEditMessage,
+                    onDeleteMessage: handleDeleteMessage,
+                  })}
+              busyAgentIds={busyAgentIds}
             />
           ) : (
             <div className="ch-empty">

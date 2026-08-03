@@ -6,6 +6,7 @@ import {
   parseRoute,
   buildPath,
   parseModal,
+  parseMessageAnchor,
   buildQuery,
   type RouteState,
 } from '../lib/url-nav.js';
@@ -26,12 +27,12 @@ import { leaveChatSurface } from '../lib/topic-task-room.js';
  * the shared `leaveChatSurface()` rather than clearing the channel by hand;
  * clearing only half is what made the composer survive a route restore.
  */
-function applyRoute(route: RouteState): void {
+function applyRoute(route: RouteState, hash = ''): void {
   const ui = useUiStore.getState();
   const sessions = useSessionsStore.getState();
 
   switch (route.view) {
-    case 'channel':
+    case 'channel': {
       ui.setActiveChannelId(route.channelId);
       ui.setTopicComposerOpen(false);
       ui.setAnalyticsView(null);
@@ -39,7 +40,15 @@ function applyRoute(route: RouteState): void {
       // still set, closing the channel would drop the operator onto a terminal
       // they never navigated to on this history entry.
       sessions.setActiveSessionId(null);
+      // #1308 item 1: `/channel/<id>#msg-<id>` is a channel open PLUS a scroll
+      // intent. Written after the open on purpose — `setActiveChannelId` clears
+      // any un-consumed anchor so a cancelled navigation cannot fire one later.
+      const anchoredMessageId = parseMessageAnchor(hash);
+      if (anchoredMessageId !== null) {
+        ui.requestChannelMessage(route.channelId, anchoredMessageId);
+      }
       break;
+    }
 
     case 'repo':
       leaveChatSurface();
@@ -156,7 +165,7 @@ export function useUrlNav() {
       // and lets the push effect below move the URL off the dead link. A
       // segment that is not a legal topic id never gets that far — `parseRoute`
       // already resolved it to `home`.
-      applyRoute(route);
+      applyRoute(route, window.location.hash);
       useUiStore.getState().setActiveModal(modal);
       correctUrlToStore();
     }
@@ -195,7 +204,10 @@ export function useUrlNav() {
   useEffect(() => {
     const handler = () => {
       const currentRepos = useSessionsStore.getState().repos;
-      applyRoute(parseRoute(window.location.pathname, currentRepos));
+      applyRoute(
+        parseRoute(window.location.pathname, currentRepos),
+        window.location.hash
+      );
       // Restore modal state from query params
       useUiStore.getState().setActiveModal(parseModal(window.location.search));
       correctUrlToStore();
@@ -203,6 +215,24 @@ export function useUrlNav() {
 
     window.addEventListener('popstate', handler);
     return () => window.removeEventListener('popstate', handler);
+  }, []);
+
+  // ── Re-arm a message anchor typed/pasted onto the SAME channel ────────────
+  // A fragment-only change never fires `popstate`, so the handler above cannot
+  // see it. Only the anchor is re-applied: the path is unchanged by definition,
+  // so re-running `applyRoute` would be a no-op that also cleared the anchor.
+  useEffect(() => {
+    const handler = () => {
+      const currentRepos = useSessionsStore.getState().repos;
+      const route = parseRoute(window.location.pathname, currentRepos);
+      if (route.view !== 'channel') return;
+      const messageId = parseMessageAnchor(window.location.hash);
+      if (messageId === null) return;
+      useUiStore.getState().requestChannelMessage(route.channelId, messageId);
+    };
+
+    window.addEventListener('hashchange', handler);
+    return () => window.removeEventListener('hashchange', handler);
   }, []);
 
   return { restoreFromUrl };

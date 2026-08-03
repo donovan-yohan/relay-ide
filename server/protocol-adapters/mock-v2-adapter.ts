@@ -97,6 +97,17 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   >();
   private readonly delays: MockProtocolAdapterV2Delays;
   private connectGeneration = 0;
+  /**
+   * Sends seen per turn id (#1308 review). Item ids must be unique per SEND,
+   * not per turn: `channel_messages` is unique on
+   * (source_runtime_id, source_turn_id, source_item_id) and inserts are
+   * `ON CONFLICT DO NOTHING`, so a channel retry — which deliberately re-sends
+   * the SAME deterministic turn id — would have its whole reply silently
+   * deduped if item ids were derived from the turn alone. The first send keeps
+   * the historical `<kind>-<turnId>` shape every fixture reads; each re-send
+   * appends its attempt ordinal.
+   */
+  private readonly sendAttempts = new Map<string, number>();
 
   constructor(delays: Partial<MockProtocolAdapterV2Delays> = {}) {
     super();
@@ -289,15 +300,23 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     }
   }
 
+  /** Item-id scope for this send — see `sendAttempts`. */
+  private nextItemScope(turnId: string): string {
+    const attempt = (this.sendAttempts.get(turnId) ?? 0) + 1;
+    this.sendAttempts.set(turnId, attempt);
+    return attempt > 1 ? `${turnId}-a${attempt}` : turnId;
+  }
+
   private async runTurn(
     input: AgentSendMessageInputV2,
     signal: AbortSignal
   ): Promise<void> {
     const startedAt = nowIso();
+    const scope = this.nextItemScope(input.turnId);
     const turn: AgentTurnV2 = {
       id: input.turnId,
       status: 'running',
-      inputMessageId: `user-${input.turnId}`,
+      inputMessageId: `user-${scope}`,
       items: [],
       startedAt,
     };
@@ -311,7 +330,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
     this.emitItemStarted(input.turnId, {
       type: 'userMessage',
-      id: `user-${input.turnId}`,
+      id: `user-${scope}`,
       text: input.content,
       completedAt: startedAt,
       status: 'completed',
@@ -326,9 +345,9 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     try {
       if (this.isApprovalScenario(input.content)) {
-        await this.runApprovalScenario(input.turnId, signal);
+        await this.runApprovalScenario(input.turnId, scope, signal);
       } else {
-        await this.runHappyPath(input.turnId, signal);
+        await this.runHappyPath(input.turnId, scope, signal);
       }
     } catch (err) {
       if (isAbortError(err)) {
@@ -366,12 +385,13 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
   private async runHappyPath(
     turnId: string,
+    scope: string,
     signal: AbortSignal
   ): Promise<void> {
     const text = 'Mock v2 response complete.';
     const assistant: AgentItemV2 = {
       type: 'assistantMessage',
-      id: `assistant-${turnId}`,
+      id: `assistant-${scope}`,
       text: '',
       phase: 'answer',
       status: 'running',
@@ -380,7 +400,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     this.emitItemStarted(turnId, {
       type: 'reasoning',
-      id: `reasoning-${turnId}`,
+      id: `reasoning-${scope}`,
       summary: 'Mock reasoning summary.',
       visibility: 'summary',
       status: 'completed',
@@ -395,7 +415,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       sessionId: this.sessionId,
       timestamp: nowIso(),
       turnId,
-      itemId: `assistant-${turnId}`,
+      itemId: `assistant-${scope}`,
       delta: { text },
     });
     await sleep(this.delays.stepMs, signal);
@@ -414,7 +434,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     this.emitItemStarted(turnId, {
       type: 'commandExecution',
-      id: `command-${turnId}`,
+      id: `command-${scope}`,
       command: 'npm test -- test/components/chat-v2-rendering.test.ts',
       output: 'Mock command output.',
       exitCode: 0,
@@ -426,7 +446,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     this.emitItemStarted(turnId, {
       type: 'fileChange',
-      id: `file-${turnId}`,
+      id: `file-${scope}`,
       paths: [
         {
           path: 'frontend/src/components/chat/ChannelMessageRow.tsx',
@@ -442,7 +462,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     this.emitItemStarted(turnId, {
       type: 'dynamicToolCall',
-      id: `dynamic-${turnId}`,
+      id: `dynamic-${scope}`,
       namespace: 'mock',
       tool: 'grep',
       arguments: { pattern: 'chat' },
@@ -454,7 +474,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     this.emitItemStarted(turnId, {
       type: 'providerExtension',
-      id: `extension-${turnId}`,
+      id: `extension-${scope}`,
       namespace: 'mock',
       payload: { kind: 'mockExtension', message: 'Mock provider extension.' },
       status: 'completed',
@@ -465,10 +485,11 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
   private async runApprovalScenario(
     turnId: string,
+    scope: string,
     signal: AbortSignal
   ): Promise<void> {
-    const approvalId = `approval-${turnId}`;
-    const toolId = `tool-${turnId}`;
+    const approvalId = `approval-${scope}`;
+    const toolId = `tool-${scope}`;
 
     this.emitItemStarted(turnId, {
       type: 'approval',
@@ -520,7 +541,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
     });
 
-    await this.runHappyPath(turnId, signal);
+    await this.runHappyPath(turnId, scope, signal);
   }
 
   private waitForApproval(

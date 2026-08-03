@@ -16,12 +16,16 @@ import {
 } from '../shared/workspace-topics.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import {
+  buildChannelMessageLink,
   buildPath,
   decodeChannelSegment,
   encodeChannelSegment,
+  encodeMessageAnchor,
   hashPath,
+  parseMessageAnchor,
   parseRoute,
 } from '../frontend/src/lib/url-nav.js';
+import type { ChannelMessageId } from '../shared/channel-chat-protocol.js';
 import type { Repo } from '../frontend/src/lib/types.js';
 import { useUrlNav } from '../frontend/src/hooks/useUrlNav.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
@@ -115,6 +119,64 @@ describe('channel route encoding', () => {
   });
 });
 
+// #1308 slice 1 item 1: a message deep link is the channel path PLUS a URL
+// fragment. It deliberately adds no `RouteState` variant — `parseRoute` still
+// sees only the pathname, so every existing route assertion is untouched.
+describe('message anchor fragment', () => {
+  const messageId =
+    'chm:9f0c1d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f' as ChannelMessageId;
+
+  it('round-trips a message id', () => {
+    const anchor = encodeMessageAnchor(messageId);
+    expect(anchor).toBe(`#msg-${messageId.slice('chm:'.length)}`);
+    expect(parseMessageAnchor(anchor)).toBe(messageId);
+    // Browsers hand back `location.hash` with the `#`; a stripped form must
+    // parse identically so callers never have to normalise.
+    expect(parseMessageAnchor(anchor.slice(1))).toBe(messageId);
+  });
+
+  it('ignores fragments that are not message anchors', () => {
+    expect(parseMessageAnchor('')).toBeNull();
+    expect(parseMessageAnchor('#')).toBeNull();
+    expect(parseMessageAnchor('#msg-')).toBeNull();
+    expect(parseMessageAnchor('#settings')).toBeNull();
+    expect(parseMessageAnchor('#msg-%E0%A4%A')).toBeNull();
+  });
+
+  it('builds a link the router can parse back to channel + message', () => {
+    const channelId = mintWorkspaceTopicId();
+    const link = buildChannelMessageLink(
+      channelId,
+      messageId,
+      'https://relay.example'
+    );
+    const url = new URL(link);
+
+    expect(parseRoute(url.pathname, [])).toEqual({
+      view: 'channel',
+      channelId,
+    });
+    expect(parseMessageAnchor(url.hash)).toBe(messageId);
+    // A trailing slash on the origin must not double up in the path.
+    expect(
+      buildChannelMessageLink(channelId, messageId, 'https://relay.example/')
+    ).toBe(link);
+  });
+
+  it('carries a DM channel id and its `~` separators through the link', () => {
+    const dmId = dmChannelTopicId('claude', null);
+    const url = new URL(
+      buildChannelMessageLink(dmId, messageId, 'https://relay.example')
+    );
+
+    expect(parseRoute(url.pathname, [])).toEqual({
+      view: 'channel',
+      channelId: dmId,
+    });
+    expect(parseMessageAnchor(url.hash)).toBe(messageId);
+  });
+});
+
 describe('buildPath channel priority', () => {
   const repos = [makeRepo()];
   const channelId = mintWorkspaceTopicId();
@@ -202,6 +264,7 @@ describe('useUrlNav channel navigation', () => {
       analyticsView: null,
       activeModal: null,
       topicComposerOpen: false,
+      pendingChannelMessage: null,
     });
     useSessionsStore.setState({
       activeSessionId: null,
@@ -243,6 +306,68 @@ describe('useUrlNav channel navigation', () => {
     expect(useUiStore.getState().activeChannelId).toBe(channelId);
     expect(useSessionsStore.getState().activeSessionId).toBeNull();
     expect(window.location.pathname).toBe(channelPath);
+  });
+
+  it('arms a message anchor from a deep-linked fragment', async () => {
+    await mount(`${channelPath}#msg-row-42`);
+
+    await act(async () => {
+      nav.restoreFromUrl();
+    });
+
+    expect(useUiStore.getState().activeChannelId).toBe(channelId);
+    expect(useUiStore.getState().pendingChannelMessage).toEqual({
+      channelId,
+      messageId: 'chm:row-42',
+    });
+    // Neither the correction pass nor the push effect may eat the fragment —
+    // both build URLs from `pathname + search` alone.
+    expect(window.location.hash).toBe('#msg-row-42');
+  });
+
+  it('leaves no anchor for a fragment that is not a message anchor', async () => {
+    await mount(`${channelPath}#section-2`);
+
+    await act(async () => {
+      nav.restoreFromUrl();
+    });
+
+    expect(useUiStore.getState().activeChannelId).toBe(channelId);
+    expect(useUiStore.getState().pendingChannelMessage).toBeNull();
+  });
+
+  it('re-arms the anchor when only the fragment changes', async () => {
+    await mount(channelPath);
+    await act(async () => {
+      nav.restoreFromUrl();
+    });
+    expect(useUiStore.getState().pendingChannelMessage).toBeNull();
+
+    // Pasting a `#msg-…` link for the channel already on screen fires
+    // `hashchange` and never `popstate`, so the route handler cannot see it.
+    window.history.replaceState(null, '', `${channelPath}#msg-row-7`);
+    await act(async () => {
+      window.dispatchEvent(new Event('hashchange'));
+    });
+
+    expect(useUiStore.getState().pendingChannelMessage).toEqual({
+      channelId,
+      messageId: 'chm:row-7',
+    });
+  });
+
+  it('drops an un-consumed anchor when a different channel opens', async () => {
+    await mount(`${channelPath}#msg-row-42`);
+    await act(async () => {
+      nav.restoreFromUrl();
+    });
+    expect(useUiStore.getState().pendingChannelMessage).not.toBeNull();
+
+    await act(async () => {
+      useUiStore.getState().setActiveChannelId(otherChannelId);
+    });
+
+    expect(useUiStore.getState().pendingChannelMessage).toBeNull();
   });
 
   it('sends an unknown channel segment home and rewrites the URL', async () => {

@@ -196,14 +196,17 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
                 );
               }
               if (node.kind === 'system') {
-                return (
+                // Threads are short and already scoped to one turn, so the run
+                // node is rendered flat here — the #1308 item 5 fold is a
+                // main-lane noise control, not a thread-panel one.
+                return node.messages.map((message) => (
                   <ChannelMessageRow
-                    key={node.message.id}
-                    message={node.message}
+                    key={message.id}
+                    message={message}
                     channelId={channelId}
                     variant="system"
                   />
-                );
+                ));
               }
               if (node.kind === 'unread-line') return null;
               const firstId = node.messages[0]?.id ?? `thread-group-${index}`;

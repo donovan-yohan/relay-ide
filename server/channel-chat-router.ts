@@ -25,9 +25,11 @@ import {
   type ChannelAttachmentStore,
 } from './channel-attachments.js';
 import {
+  ChannelAgentBusyError,
   ChannelAgentNoActiveTurnError,
   ChannelAgentNotFoundError,
   ChannelAgentRoleConflictError,
+  ChannelMessageNotRetryableError,
   type ChannelAgentBinder,
 } from './channel-agent-binder.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
@@ -947,6 +949,172 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
+  // #1308 slice 1 item 3: the operator edits one of their OWN durable rows.
+  //
+  // PATCH, not POST: this replaces a field of an existing resource, and the row
+  // keeps its id/seq/createdAt — the store mutates in place so no seq cursor,
+  // thread link or catch-up window moves.
+  //
+  // Auth shape mirrors the retry lane (#1308 item 2): the shared `auth` lane
+  // plus an explicit `context:write` check, because this slice adds no CLI
+  // gateway verb. The additional human-lane gate below is the load-bearing one —
+  // `requireCliGatewayAuth` admits scoped ACTOR credentials, and an agent must
+  // never be able to rewrite the operator's words.
+  router.patch('/channels/:id/messages/:messageId', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const body = bodyRecord(req);
+    // Same [MF] rule as the post lane: attribution is server-derived, so a body
+    // that tries to name a sender is rejected outright rather than ignored.
+    if ('sender' in body || 'source' in body) {
+      const field = 'sender' in body ? 'sender' : 'source';
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} is server-derived and must not be supplied in the request body`,
+        false,
+        {
+          field,
+          reasonCode:
+            field === 'sender'
+              ? 'CHANNEL_SENDER_NOT_ALLOWED'
+              : 'CHANNEL_SOURCE_NOT_ALLOWED',
+        }
+      );
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can edit channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_EDIT_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
+    const text = body['text'];
+    if (typeof text !== 'string') {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'text must be a string',
+        false,
+        {
+          field: 'text',
+        }
+      );
+      return;
+    }
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      // Not a delete lane: clearing a message is its own action with its own
+      // audit shape, so an empty edit is rejected rather than silently emptying
+      // a durable row.
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'edited text must not be empty',
+        false,
+        { field: 'text', reasonCode: 'CHANNEL_MESSAGE_BODY_EMPTY' }
+      );
+      return;
+    }
+    const providerIds = [
+      ...knownProviderIds,
+      ...(topic.routingDefaults.providerId
+        ? [topic.routingDefaults.providerId]
+        : []),
+    ];
+    try {
+      const message = store.editMessage({
+        channelId: topic.id,
+        messageId: req.params['messageId'] ?? '',
+        editorId: sender.id,
+        text: trimmed,
+        mentions: parseMentions(trimmed, providerIds),
+      });
+      // Broadcast only — NEVER `postToChannel`/`broadcastCreated`. Editing must
+      // not re-run the turn the original text triggered (#1308 S1 non-goal);
+      // future packets pick the new body up because the binder reads rows from
+      // the store when it builds one.
+      deps.hub.broadcastEdited(message);
+      res.json({ message });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  // #1308 slice 1 item 4: the operator deletes one of their OWN durable rows.
+  //
+  // DELETE the resource, TOMBSTONE the record. The HTTP verb describes what the
+  // operator asked for; the store never removes the row, because `seq` is the
+  // substrate contract — a hole in the log would break every catch-up cursor,
+  // deep link and thread parent that already names it. The response body is the
+  // tombstone rather than 204, so the caller sees the row it now holds.
+  //
+  // Auth shape is the edit lane's, unchanged: the shared `auth` lane, an
+  // explicit `context:write` check (no new gateway verb, and the existing
+  // `/channels/*` auth-lane inventory entry covers the path), and a human-lane
+  // gate that is the load-bearing one — `requireCliGatewayAuth` admits scoped
+  // ACTOR credentials, and an agent must never be able to erase the operator's
+  // words.
+  router.delete('/channels/:id/messages/:messageId', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can delete channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_DELETE_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
+    try {
+      const message = store.deleteMessage({
+        channelId: topic.id,
+        messageId: req.params['messageId'] ?? '',
+        deleterId: sender.id,
+      });
+      // Broadcast only, exactly as with an edit: no `postToChannel`, so the
+      // mention-routing handlers never run and a deletion can never raise a turn.
+      deps.hub.broadcastDeleted(message);
+      res.json({ message });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
   // #1167 §2: per-request agent roster (framework availability + live binding
   // status). Derived per request — no persistent handle registry.
   router.get('/channels/:id/roster', rosterAuth, (req, res) => {
@@ -1040,6 +1208,82 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         });
     }
   );
+
+  // #1308 slice 1 item 2: retry one failed/interrupted/truncated agent row by
+  // re-routing the ORIGINAL trigger message to the same profile.
+  //
+  // Auth shape is the edit/delete lane's, and for the same reason. The shared
+  // `auth` lane plus an explicit `context:write` check comes first (this slice
+  // adds no CLI gateway verb), but `denyMissingCapability` is NOT a credential
+  // scope check — it seeds `provided` from the client-supplied
+  // `x-relay-capabilities` header — so the human-lane gate below is the
+  // load-bearing one. `requireCliGatewayAuth` admits scoped ACTOR credentials,
+  // re-running a turn spends real provider tokens and spawns runtimes, and
+  // `retryMessage` calls `routeOne` directly (outside `routeWithBrake`'s
+  // mention-chain cap), so an agent must never be able to reach it.
+  router.post('/channels/:id/messages/:messageId/retry', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    // An archived channel is read-only, exactly as it is for post/edit/delete:
+    // a retry writes a durable `retrying @…` system row and appends a whole new
+    // agent turn, which is the loudest possible violation of that invariant.
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can retry channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_RETRY_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
+    if (!storeOr503(res, deps.store)) return;
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    const messageId = req.params['messageId'] ?? '';
+    binder
+      .retryMessage(topic.id, messageId)
+      .then((retry) => res.json({ ok: true, retry }))
+      .catch((error) => {
+        if (error instanceof ChannelMessageNotRetryableError) {
+          sendGatewayError(
+            res,
+            error.notFound ? 'NOT_FOUND' : 'SESSION_CONFLICT',
+            error.message,
+            false,
+            {
+              channelId: topic.id,
+              messageId,
+              reasonCode: error.reasonCode,
+            }
+          );
+          return;
+        }
+        if (error instanceof ChannelAgentBusyError) {
+          sendGatewayError(res, 'SESSION_CONFLICT', error.message, true, {
+            channelId: topic.id,
+            messageId,
+            agentId: error.profileActorId,
+            status: error.status,
+            reasonCode: 'CHANNEL_AGENT_BUSY',
+          });
+          return;
+        }
+        mapStoreError(res, error);
+      });
+  });
 
   // #1167 §7: respond to an in-channel approval request.
   router.post(

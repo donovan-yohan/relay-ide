@@ -706,6 +706,19 @@ export interface UiState {
     channelId: string;
     rootMessageId: ChannelMessageId;
   } | null;
+  /**
+   * #1308 slice 1: a `#msg-…` deep link (or, later, a search result) asking a
+   * channel to open scrolled to ONE message. Same shape and lifecycle as
+   * `pendingChannelThread` and for the same reason — the target row does not
+   * exist yet when the channel open is written, and it may still be outside the
+   * loaded history window when `ChannelView` mounts. `ChannelView` consumes the
+   * intent once and owns the bounded backfill walk that resolves it.
+   * Session-transient; never persisted.
+   */
+  pendingChannelMessage: {
+    channelId: string;
+    messageId: ChannelMessageId;
+  } | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /**
@@ -775,6 +788,13 @@ export interface UiState {
   ) => void;
   /** Drop the pending intent once the target channel has consumed it. */
   consumeChannelThreadIntent: (channelId: string) => void;
+  /** #1308 item 1: ask `channelId` to open scrolled to `messageId`. */
+  requestChannelMessage: (
+    channelId: string,
+    messageId: ChannelMessageId
+  ) => void;
+  /** Drop the pending anchor once the target channel has consumed it. */
+  consumeChannelMessageIntent: (channelId: string) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -819,6 +839,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   activeChannelId: null,
   activeThreadRootId: null,
   pendingChannelThread: null,
+  pendingChannelMessage: null,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadStringSet(COLLAPSED_WORKSPACES_KEY),
@@ -1260,6 +1281,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       // as a surprise thread panel later. `requestChannelThread` is always
       // called AFTER the channel open, so the rail's own path is unaffected.
       pendingChannelThread: null,
+      // Same contract for the #1308 message anchor: a deep link writes the
+      // channel open first and the anchor second, so clearing here only ever
+      // discards an anchor whose channel never mounted.
+      pendingChannelMessage: null,
       // #1287: an open channel outranks `forceOrgCockpit` in resolveAppViewMode,
       // so a channel activation must also drop the one-off cockpit escape hatch
       // (as sessions.setActiveSessionId does) — otherwise a latched flag fires
@@ -1272,6 +1297,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
   consumeChannelThreadIntent: (channelId) => {
     if (get().pendingChannelThread?.channelId !== channelId) return;
     set({ pendingChannelThread: null });
+  },
+  requestChannelMessage: (channelId, messageId) =>
+    set({ pendingChannelMessage: { channelId, messageId } }),
+  consumeChannelMessageIntent: (channelId) => {
+    if (get().pendingChannelMessage?.channelId !== channelId) return;
+    set({ pendingChannelMessage: null });
   },
   setActiveModal: (v) => set({ activeModal: v }),
 

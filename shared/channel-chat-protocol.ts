@@ -151,6 +151,198 @@ export interface ChannelInFlightRef {
   deltaIndex: number;
 }
 
+// ── retry contract (#1308 slice 1 item 2) ───────────────────────────────────
+
+/**
+ * Prefix of the binder-issued turn identity. A routed turn is named after the
+ * (trigger message, profile) pair it was raised for — that is what makes the
+ * turn deterministic across a redeliver — so the trigger id is recoverable from
+ * any durable row the turn produced. Retry is built on exactly that: it never
+ * re-posts the human message, it re-routes the original one.
+ */
+export const CHANNEL_TURN_ID_PREFIX = 'chturn-';
+
+/** Deterministic turn identity for one routed (trigger, profile) pair. */
+export function channelTurnId(
+  triggerMessageId: ChannelMessageId,
+  profileActorId: string
+): string {
+  return `${CHANNEL_TURN_ID_PREFIX}${triggerMessageId}-${profileActorId}`;
+}
+
+/**
+ * Inverse of `channelTurnId`. Parsed by anchoring on the known prefix AND the
+ * known profile suffix rather than by splitting on `-`: both message ids and
+ * profile actor ids embed UUIDs, so no separator is unambiguous. Returns null
+ * for any turn id the binder did not mint (providers are free to label their
+ * own items — Hermes emits `turn-0` — and those rows simply cannot be retried).
+ */
+export function triggerMessageIdFromTurnId(
+  turnId: string,
+  profileActorId: string
+): ChannelMessageId | null {
+  const suffix = `-${profileActorId}`;
+  if (!turnId.startsWith(CHANNEL_TURN_ID_PREFIX)) return null;
+  if (!turnId.endsWith(suffix) || turnId.length <= suffix.length) return null;
+  const id = turnId.slice(
+    CHANNEL_TURN_ID_PREFIX.length,
+    turnId.length - suffix.length
+  );
+  return id.startsWith('chm:') && id.length > 'chm:'.length
+    ? (id as ChannelMessageId)
+    : null;
+}
+
+/**
+ * Terminal statuses whose turn did NOT deliver a complete reply, so re-running
+ * it is a coherent operator request.
+ *
+ * All three are included deliberately. `failed` is a send/agent error;
+ * `interrupted` is produced both by the operator's ■ AND by a runtime dying
+ * mid-stream (`handleRuntimeEnd` → bridge finalize), which is a lost turn the
+ * operator never chose; `truncated` covers a missing terminal item or a hub
+ * restart as well as the 256KB cap. Retry stays a click — never automatic — so
+ * the operator, not the system, decides whether re-running is worth the tokens.
+ */
+export const CHANNEL_RETRYABLE_STATUSES: readonly ChannelMessageStatus[] = [
+  'failed',
+  'interrupted',
+  'truncated',
+];
+
+/** `meta` key on the system row that supersedes a retried agent row. */
+export const CHANNEL_RETRY_OF_META_KEY = 'retryOfMessageId';
+
+export interface ChannelRetryTarget {
+  /** The ORIGINAL human/agent message the failed turn was raised for. */
+  triggerMessageId: ChannelMessageId;
+  /** Profile actor id that owned the failed turn; the retry re-uses it. */
+  profileActorId: string;
+}
+
+/**
+ * Whether a row can be retried, and against what. Shared so the client's
+ * affordance and the server's route agree by construction: an unresolvable row
+ * never grows a retry button AND is rejected by the route.
+ */
+export function channelRetryTarget(
+  message: ChannelMessage
+): ChannelRetryTarget | null {
+  if (message.kind !== 'message') return null;
+  if (message.sender.kind !== 'agent') return null;
+  if (!CHANNEL_RETRYABLE_STATUSES.includes(message.status)) return null;
+  const turnId = message.source?.turnId;
+  if (!turnId) return null;
+  const profileActorId = message.sender.id;
+  const triggerMessageId = triggerMessageIdFromTurnId(turnId, profileActorId);
+  if (!triggerMessageId || triggerMessageId === message.id) return null;
+  return { triggerMessageId, profileActorId };
+}
+
+/** Agent row a system row supersedes, when it is a retry marker. */
+export function retriedMessageIdFromSystemRow(
+  message: ChannelMessage
+): ChannelMessageId | null {
+  if (message.kind !== 'system') return null;
+  const value = message.meta?.[CHANNEL_RETRY_OF_META_KEY];
+  return typeof value === 'string' && value.startsWith('chm:')
+    ? (value as ChannelMessageId)
+    : null;
+}
+
+// ── edit contract (#1308 slice 1 item 3) ────────────────────────────────────
+
+/**
+ * `meta` key stamped when the operator edits their own row. Presence of the key
+ * IS the edited marker — there is no separate boolean, so a row can never claim
+ * to be edited without carrying when it happened.
+ */
+export const CHANNEL_EDITED_AT_META_KEY = 'editedAt';
+
+/** ISO stamp of the last edit, or null for a row that was never edited. */
+export function channelMessageEditedAt(message: ChannelMessage): string | null {
+  const value = message.meta?.[CHANNEL_EDITED_AT_META_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Whether the operator may edit this row. Human-authored prose rows only in this
+ * slice: an agent row is a durable record of what a provider actually said, and
+ * a system row is the hub's own bookkeeping — editing either would make the
+ * transcript lie. `complete` excludes an in-flight stream (a human row is never
+ * streaming today, so this is a structural guard, not a live case). A tombstone
+ * is excluded too — an edit of a deleted row would resurrect a body the operator
+ * erased (#1308 item 4).
+ *
+ * Shared so the client's affordance and the server's route agree by
+ * construction: a row that grows no edit button is also rejected by the route.
+ */
+export function channelMessageEditable(message: ChannelMessage): boolean {
+  return (
+    message.kind === 'message' &&
+    message.sender.kind === 'human' &&
+    message.status === 'complete' &&
+    !isChannelMessageDeleted(message)
+  );
+}
+
+// ── delete contract (#1308 slice 1 item 4) ──────────────────────────────────
+
+/**
+ * `meta` key stamped when the operator deletes their own row. A deletion is a
+ * TOMBSTONE, never a row removal: `channel_messages.seq` is the substrate's
+ * gap-free log, and every catch-up cursor, deep link and thread parent is a
+ * promise that a seq once issued keeps naming the same row forever.
+ *
+ * The mark lives in `meta` rather than in `status` on purpose. `status` carries
+ * a SQL CHECK constraint, so a `deleted` status would need the constraint
+ * widened plus a table-rebuild migration (`SCHEMA_VERSION` bump, the v2 rebuild
+ * lane) — schema churn buying nothing, since a tombstone is orthogonal to the
+ * streaming lifecycle `status` describes: a deleted row is still `complete`, it
+ * simply no longer has a body. Presence of the key IS the marker, so a row can
+ * never claim to be deleted without carrying when it happened.
+ */
+export const CHANNEL_DELETED_AT_META_KEY = 'deletedAt';
+
+/** ISO stamp of the deletion, or null for a row that is not a tombstone. */
+export function channelMessageDeletedAt(
+  message: ChannelMessage
+): string | null {
+  const value = message.meta?.[CHANNEL_DELETED_AT_META_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** Whether this row is a tombstone — body wiped, id/seq/links retained. */
+export function isChannelMessageDeleted(message: ChannelMessage): boolean {
+  return channelMessageDeletedAt(message) !== null;
+}
+
+/**
+ * Whether the operator may delete this row. Identical to the edit predicate
+ * today — both are "the operator's own settled prose row" — and kept as its own
+ * name because the two affordances answer different questions and are free to
+ * diverge (a future retention rule could forbid deleting a row an agent already
+ * consumed without touching who may fix a typo).
+ */
+export function channelMessageDeletable(message: ChannelMessage): boolean {
+  return channelMessageEditable(message);
+}
+
+/**
+ * Shape check for a row arriving as a tombstone. Deliberately NOT
+ * `channelMessageDeletable` — that predicate answers "may this be deleted",
+ * which is false for an already-deleted row, so the wire needs its own
+ * post-condition: an operator prose row, marked deleted, with no body left.
+ */
+export function isChannelMessageTombstone(message: ChannelMessage): boolean {
+  return (
+    message.kind === 'message' &&
+    message.sender.kind === 'human' &&
+    isChannelMessageDeleted(message) &&
+    message.body.text.length === 0
+  );
+}
+
 interface ChannelEventBaseV1 {
   channelId: string;
   timestamp: string;
@@ -195,6 +387,39 @@ export interface ChannelMessageCompletedEventV1 extends ChannelEventBaseV1 {
   message: ChannelMessage;
 }
 
+/**
+ * Operator edit of an already-durable row (#1308 slice 1 item 3).
+ *
+ * A separate variant rather than a reuse of `channel-message-updated-v1`: that
+ * event is contractually a STREAMING row refresh (its validator rejects any
+ * other status and its reducer ignores a non-streaming target), which is exactly
+ * the shape an edit is not. Widening it would have made every streaming-row
+ * guard in the reducer conditional; this stays additive and leaves the streaming
+ * lane untouched.
+ */
+export interface ChannelMessageEditedEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-message-edited-v1';
+  /** Authoritative full row; same id/seq, new body, `meta.editedAt` stamped. */
+  message: ChannelMessage;
+}
+
+/**
+ * Operator deletion of an already-durable row (#1308 slice 1 item 4).
+ *
+ * Its own variant for the same reason the edit event is: the payload is a row
+ * that must REPLACE a held one in place, and neither the streaming-only
+ * `channel-message-updated-v1` nor the terminal-transition
+ * `channel-message-completed-v1` can carry that without loosening a guard the
+ * streaming lane depends on. Kept separate from the edit event too, so a client
+ * can tell "the operator fixed a typo" from "the operator erased this" without
+ * inspecting `meta` — the two render as different rows.
+ */
+export interface ChannelMessageDeletedEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-message-deleted-v1';
+  /** Authoritative tombstone; same id/seq/thread links, empty body. */
+  message: ChannelMessage;
+}
+
 export interface ChannelResyncRequiredEventV1 extends ChannelEventBaseV1 {
   type: 'channel-resync-required-v1';
   latestSeq: number;
@@ -206,6 +431,8 @@ export type ChannelEventV1 =
   | ChannelMessageDeltaEventV1
   | ChannelMessageUpdatedEventV1
   | ChannelMessageCompletedEventV1
+  | ChannelMessageEditedEventV1
+  | ChannelMessageDeletedEventV1
   | ChannelResyncRequiredEventV1;
 
 // ── runtime validators ──────────────────────────────────────────────────────
@@ -428,6 +655,22 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       );
     case 'channel-message-completed-v1':
       return isChannelMessage(value.message);
+    case 'channel-message-edited-v1':
+      // Same predicate the route enforces: only an editable row can arrive as
+      // an edit, so a malformed or agent-authored payload is dropped at the
+      // wire rather than replacing a durable row in the reducer.
+      return (
+        isChannelMessage(value.message) && channelMessageEditable(value.message)
+      );
+    case 'channel-message-deleted-v1':
+      // Post-condition of the route, not its precondition: the payload must be
+      // an operator prose row that is marked deleted AND carries no body left.
+      // A "deletion" still holding text would be a leak of the thing the
+      // operator asked to erase, so it is dropped at the wire.
+      return (
+        isChannelMessage(value.message) &&
+        isChannelMessageTombstone(value.message)
+      );
     case 'channel-resync-required-v1':
       return typeof value.latestSeq === 'number';
     default:
@@ -618,6 +861,56 @@ export function applyChannelEventV1(
         byId: { ...state.byId, [message.id]: message },
         inFlightDelta,
         quarantined,
+      };
+    }
+
+    case 'channel-message-edited-v1': {
+      const message = event.message;
+      const existing = state.byId[message.id];
+      // Deliberately NOT a catch-up trigger, unlike every other unknown-id case.
+      // An edit adds no seq and closes no gap: an id the client does not hold is
+      // simply a row outside its loaded window (the operator edited something
+      // older on another device). Re-syncing would show the out-of-sync banner
+      // for a timeline that is perfectly in sync, and the edited body arrives
+      // anyway the moment that page is scrolled back into view.
+      if (!existing) return state;
+      // Guards, not corrections: an edit must never resurrect, re-number, or
+      // overwrite a live stream. Any of these means the row on the wire is not
+      // the row this client holds, so the safe move is to keep what is durable.
+      if (existing.status === 'streaming') return state;
+      if (message.seq !== existing.seq) return { ...state, needsCatchup: true };
+      const messages = state.messages.map((row) =>
+        row.id === message.id ? message : row
+      );
+      return {
+        ...state,
+        messages,
+        byId: { ...state.byId, [message.id]: message },
+      };
+    }
+
+    case 'channel-message-deleted-v1': {
+      const message = event.message;
+      const existing = state.byId[message.id];
+      // Same three guards as the edit lane, for the same reasons: an unknown id
+      // is a row outside the loaded window (no seq moved, so nothing is missing
+      // — demanding a resync would raise the out-of-sync banner on a healthy
+      // timeline); a live stream is never a tombstone target; and a seq surprise
+      // means the row on the wire is not the row held here.
+      if (!existing) return state;
+      if (existing.status === 'streaming') return state;
+      if (message.seq !== existing.seq) return { ...state, needsCatchup: true };
+      // Replaced in place, never spliced out. The array keeps its length and
+      // order, so grouping, the unread divider's index and every scroll anchor
+      // survive a deletion untouched — and a deleted thread parent stays where
+      // its replies point.
+      const messages = state.messages.map((row) =>
+        row.id === message.id ? message : row
+      );
+      return {
+        ...state,
+        messages,
+        byId: { ...state.byId, [message.id]: message },
       };
     }
 
