@@ -166,6 +166,43 @@ describe('MockProtocolAdapterV2', () => {
     });
   });
 
+  // Adapter contract (#1308 review). A channel retry deliberately RE-SENDS the
+  // same deterministic turn id, and `channel_messages` is unique on
+  // (source_runtime_id, source_turn_id, source_item_id) with `ON CONFLICT DO
+  // NOTHING` — so an adapter whose item ids come from the turn alone would have
+  // the whole retried reply silently deduped. Item ids must be unique per SEND.
+  it('mints distinct item ids when the SAME turn id is sent again (retry lane)', async () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    const itemIdsSince = (from: number): string[] =>
+      patches
+        .slice(from)
+        .flatMap((patch) =>
+          patch.type === 'agent-item-started-v2'
+            ? [patch.item.id]
+            : patch.type === 'agent-item-updated-v2'
+              ? [patch.item.id]
+              : patch.type === 'agent-item-delta-v2'
+                ? [patch.itemId]
+                : []
+        );
+
+    await adapter.sendMessage({ turnId: 'turn-retry', content: 'hello' });
+    const first = itemIdsSince(0);
+    const mark = patches.length;
+    await adapter.sendMessage({ turnId: 'turn-retry', content: 'hello' });
+    const second = itemIdsSince(mark);
+
+    expect(first.length).toBeGreaterThan(0);
+    expect(second.length).toBe(first.length);
+    // No id survives from the first send into the second.
+    expect(second.filter((id) => first.includes(id))).toEqual([]);
+    // The first send keeps the historical shape every other fixture reads.
+    expect(first).toContain('assistant-turn-retry');
+  });
+
   it('emits a happy-path patch stream that reduces to user and assistant items', async () => {
     const adapter = new MockProtocolAdapterV2(zeroDelays);
     const patches = collectPatches(adapter);

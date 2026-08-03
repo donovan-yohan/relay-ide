@@ -1212,16 +1212,43 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // #1308 slice 1 item 2: retry one failed/interrupted/truncated agent row by
   // re-routing the ORIGINAL trigger message to the same profile.
   //
-  // Auth shape: the shared `auth` lane (browser session or gateway credential)
-  // plus an explicit `context:write` capability check — NOT a new named actor
-  // command, because this slice adds no CLI gateway verb. The capability gate is
-  // load-bearing rather than decorative: `requireCliGatewayAuth` admits an actor
-  // token on its READ lane, and re-running a turn spends real agent tokens, so a
-  // read-scoped credential must not reach it.
+  // Auth shape is the edit/delete lane's, and for the same reason. The shared
+  // `auth` lane plus an explicit `context:write` check comes first (this slice
+  // adds no CLI gateway verb), but `denyMissingCapability` is NOT a credential
+  // scope check — it seeds `provided` from the client-supplied
+  // `x-relay-capabilities` header — so the human-lane gate below is the
+  // load-bearing one. `requireCliGatewayAuth` admits scoped ACTOR credentials,
+  // re-running a turn spends real provider tokens and spawns runtimes, and
+  // `retryMessage` calls `routeOne` directly (outside `routeWithBrake`'s
+  // mention-chain cap), so an agent must never be able to reach it.
   router.post('/channels/:id/messages/:messageId/retry', auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
+    // An archived channel is read-only, exactly as it is for post/edit/delete:
+    // a retry writes a durable `retrying @…` system row and appends a whole new
+    // agent turn, which is the loudest possible violation of that invariant.
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can retry channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_RETRY_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
     if (!storeOr503(res, deps.store)) return;
     const binder = binderOr503(res, deps.binder);
     if (!binder) return;

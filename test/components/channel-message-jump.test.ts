@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => ({
   messages: [] as unknown[],
   hasMoreOlder: false,
   loadOlder: vi.fn(async () => {}),
+  // `useChannelChatSocket` only increments this when a FULL snapshot lands, so
+  // `0` is the cold-boot state: connected socket, nothing answered yet.
+  fullSnapshotRevision: 1,
 }));
 
 vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
@@ -66,7 +69,7 @@ vi.mock('../../frontend/src/hooks/useChannelChatSocket.js', () => ({
     hasMoreOlder: mocks.hasMoreOlder,
     loadingOlder: false,
     loadOlder: mocks.loadOlder,
-    fullSnapshotRevision: 0,
+    fullSnapshotRevision: mocks.fullSnapshotRevision,
     post: vi.fn(),
     postPending: false,
     postError: null,
@@ -136,6 +139,7 @@ describe('ChannelView deep-link message anchor', () => {
     mocks.fetchChannelRoster.mockResolvedValue([]);
     mocks.messages = [];
     mocks.hasMoreOlder = false;
+    mocks.fullSnapshotRevision = 1;
     mocks.loadOlder = vi.fn(async () => {});
     useUiStore.setState({
       activeChannelId: CHANNEL_ID,
@@ -234,6 +238,47 @@ describe('ChannelView deep-link message anchor', () => {
     expect(
       useToastStore.getState().toasts.map((toast) => toast.message)
     ).toContain('that message is not in this chat’s recent history');
+  });
+
+  it('waits for the channel snapshot when the link is opened cold', async () => {
+    // The primary case for this feature: a pasted `/channel/<id>#msg-…` link in
+    // a fresh tab writes the intent BEFORE `ChannelView` mounts, so the adopt
+    // effect fires on the first commit — messages still empty, `hasMoreOlder`
+    // still its `false` default. Giving up there would toast "not in recent
+    // history" about a row that arrives one tick later.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mocks.messages = [];
+    mocks.hasMoreOlder = false;
+    mocks.fullSnapshotRevision = 0;
+    useUiStore
+      .getState()
+      .requestChannelMessage(CHANNEL_ID, 'chm:row-2' as ChannelMessageId);
+
+    await mount();
+
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    // Snapshot lands.
+    mocks.messages = [message(1), message(2), message(3)];
+    mocks.fullSnapshotRevision = 1;
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(ChannelView, { channelId: CHANNEL_ID })
+        )
+      );
+    });
+    await act(async () => {});
+
+    const highlighted = container.querySelector('.ch-msg--jump');
+    expect(highlighted?.getAttribute('data-channel-message-id')).toBe(
+      'chm:row-2'
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 
   it('gives up immediately when there is no older history left to walk', async () => {

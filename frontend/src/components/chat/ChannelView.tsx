@@ -373,6 +373,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       return;
     }
     if (anchorLoadingRef.current || loadingOlder) return;
+    // Cold boot is the primary case for this feature: a pasted
+    // `/channel/<id>#msg-…` link writes the intent BEFORE this component
+    // mounts, so the adopt effect above fires on the first commit — while
+    // `reducer.messages` is still `[]` and `hasMoreOlder` is still its `false`
+    // default (it is only ever set from the WS snapshot's `truncated` flag).
+    // "No older history" is not an answer until the channel has actually
+    // answered: hold the walk until the first full snapshot lands.
+    if (fullSnapshotRevision === 0) return;
     if (!hasMoreOlder || anchorWalk.pages >= ANCHOR_WALK_MAX_PAGES) {
       setAnchorWalk(null);
       showToast('that message is not in this chat’s recent history', 'info');
@@ -391,12 +399,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   }, [
     anchorWalk,
     anchorWalkTick,
+    fullSnapshotRevision,
     hasMoreOlder,
     loadOlder,
     loadingOlder,
     reducer.messages,
     setActiveThreadRootId,
   ]);
+
+  // The jump is one-shot: `jumpTarget` is what forces a collapsed system run
+  // open and paints the emphasis, so leaving it set for the lifetime of the
+  // channel view would pin that run open (the summary's toggle would have no
+  // visible effect). The timeline calls this once the jump has been consumed.
+  const handleJumpConsumed = useCallback(() => setJumpTarget(null), []);
 
   // Agent presence chips (#1167). One chip per agent that is bound (roster
   // binding) OR currently non-idle in the live status store, with a `streaming`
@@ -537,6 +552,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     return ids;
   }, [agentChips]);
 
+  // Wired only while the channel is live, exactly like edit/delete below: a
+  // retry re-runs a turn against an archived (read-only) channel, so the route
+  // refuses it with CHANNEL_ARCHIVED and offering the button would be dead.
   const handleRetryMessage = useCallback(
     async (message: ChannelMessage) => {
       try {
@@ -805,10 +823,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               onOpenThread={setActiveThreadRootId}
               agentPresence={agentPresence}
               jumpTarget={jumpTarget}
-              onRetryMessage={handleRetryMessage}
+              onJumpConsumed={handleJumpConsumed}
               {...(archived
                 ? {}
                 : {
+                    // Retry belongs with edit/delete, not outside the fence: it
+                    // writes a durable system row and appends a whole new agent
+                    // turn, which the route now refuses with CHANNEL_ARCHIVED.
+                    onRetryMessage: handleRetryMessage,
                     onEditMessage: handleEditMessage,
                     onDeleteMessage: handleDeleteMessage,
                   })}

@@ -17,6 +17,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { ChannelTimeline } from '../../frontend/src/components/chat/ChannelTimeline.js';
@@ -355,5 +356,44 @@ describe('ChannelTimeline — system-run fold', () => {
         .querySelector('.ch-msg--jump')
         ?.getAttribute('data-channel-message-id')
     ).toBe('chm:row-2');
+  });
+
+  it('lets the operator fold a run again after a deep link opened it', async () => {
+    // The jump is one-shot. If the request were never consumed it would keep
+    // forcing the run open for the life of the view and the summary's toggle
+    // would do nothing visible (#1308 review).
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const onJumpConsumed = vi.fn();
+      await render({
+        messages: [sys(1), sys(2), sys(3)],
+        jumpTarget: { messageId: 'chm:row-2' as ChannelMessageId, token: 1 },
+        onJumpConsumed,
+      });
+      expect(summary()?.getAttribute('aria-expanded')).toBe('true');
+
+      await act(async () => {
+        vi.advanceTimersByTime(700);
+      });
+      expect(onJumpConsumed).toHaveBeenCalledTimes(1);
+
+      // What the owner does on consume: drop the request.
+      await render({
+        messages: [sys(1), sys(2), sys(3)],
+        jumpTarget: null,
+        onJumpConsumed,
+      });
+      // Still open — the run was handed to the operator-owned set, not dropped
+      // out from under them the moment the emphasis faded.
+      expect(systemRowTexts()).toHaveLength(3);
+
+      await act(async () => {
+        summary()?.click();
+      });
+      expect(systemRowTexts()).toEqual([]);
+      expect(summary()?.getAttribute('aria-expanded')).toBe('false');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   retriedMessageIdFromSystemRow,
   type ChannelMessage,
@@ -99,6 +105,12 @@ interface ChannelTimelineProps {
    */
   jumpTarget?: TimelineJumpTarget | null;
   /**
+   * Called once the jump has been scrolled to and its emphasis has faded, so
+   * the owner can drop the request. A jump that is never consumed keeps forcing
+   * its system run open — the operator could not fold it again (#1308 review).
+   */
+  onJumpConsumed?: () => void;
+  /**
    * #1308 item 2. Re-routes a failed row's original trigger; `ChannelView` owns
    * the call so the timeline keeps no retry policy of its own.
    */
@@ -133,6 +145,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   onOpenThread,
   agentPresence = [],
   jumpTarget = null,
+  onJumpConsumed,
   onRetryMessage,
   onEditMessage,
   onDeleteMessage,
@@ -203,6 +216,8 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   // second link to the same row replays the scroll and the emphasis.
   const jumpToken = jumpTarget?.token ?? null;
   const jumpMessageId = jumpTarget?.messageId ?? null;
+  const jumpConsumedRef = useRef(onJumpConsumed);
+  jumpConsumedRef.current = onJumpConsumed;
 
   // A deep link to a system row inside a collapsed run must not land on nothing.
   // Resolved during RENDER, not in the jump effect, so the row is already in the
@@ -233,13 +248,28 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
       // smooth scroll would finish after the cue it is supposed to explain.
       row.scrollIntoView({ block: 'center' });
     }
+    // Hand the render-time force-open over to the operator-owned set before the
+    // request is consumed: the run stays open (the link landed inside it) but is
+    // now held by the same state the summary button toggles, so it can be
+    // folded again instead of being pinned for the life of the view.
+    if (jumpRunKey !== null) {
+      setExpandedSystemRuns((current) =>
+        current.has(jumpRunKey) ? current : new Set(current).add(jumpRunKey)
+      );
+    }
     setHighlightedMessageId(jumpMessageId);
-    const timer = setTimeout(
-      () => setHighlightedMessageId(null),
-      JUMP_HIGHLIGHT_MS
-    );
+    const timer = setTimeout(() => {
+      // Order matters: clear the emphasis FIRST. Consuming the request changes
+      // this effect's deps, and the cleanup that follows must not be what is
+      // responsible for un-highlighting the row.
+      setHighlightedMessageId(null);
+      // Read through a ref, and keep the callback OUT of the deps: an inline
+      // arrow from a re-rendering parent would otherwise restart the scroll and
+      // the timer on every commit.
+      jumpConsumedRef.current?.();
+    }, JUMP_HIGHLIGHT_MS);
     return () => clearTimeout(timer);
-  }, [containerRef, jumpToken, jumpMessageId]);
+  }, [containerRef, jumpToken, jumpMessageId, jumpRunKey]);
 
   useEffect(() => {
     if (!needsCatchup) {

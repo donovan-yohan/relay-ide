@@ -339,6 +339,13 @@ export function createChannelAgentBinder(
     }
   >();
   const unavailableRowAt = new Map<string, number>();
+  // Retry storm brake, synchronous half (#1308 review). The `live` binding's
+  // busy state is only observable AFTER `routeOne` has awaited its way to
+  // `enqueueTurn`, so a check against it alone is a TOCTOU: two retries issued
+  // in the same window both see an idle (or absent) binding and both enqueue.
+  // This marker is taken synchronously with the busy check and held until the
+  // route settles, so the second caller is refused rather than admitted.
+  const retryInFlight = new Set<string>();
   let statusBroadcaster: ChannelAgentStatusBroadcaster | null = null;
   let targetsCache: { at: number; value: MentionTarget[] } | null = null;
   let closed = false;
@@ -1380,8 +1387,17 @@ export function createChannelAgentBinder(
     return isDmChannel(topic);
   }
 
-  function routeOne(trigger: ChannelMessage, profile: AgentProfile): void {
-    void (async () => {
+  /**
+   * Fire-and-forget routing of one (trigger, profile) pair. The returned promise
+   * settles once the turn is enqueued (or routing gave up) — callers that only
+   * want the side effect ignore it with `void`; the retry lane hangs its storm
+   * brake off it so the marker is held until the turn is real (#1308 review).
+   */
+  function routeOne(
+    trigger: ChannelMessage,
+    profile: AgentProfile
+  ): Promise<void> {
+    return (async () => {
       try {
         const framework = profile.providerId;
         const target = await resolveTarget(framework);
@@ -1554,7 +1570,7 @@ export function createChannelAgentBinder(
       // the brake, and its turns must not consume the worker-turn allowance.
       // Human posts still reset the ordinary brake state below.
       for (const profile of profiles) {
-        routeOne(message, profile);
+        void routeOne(message, profile);
       }
       return;
     }
@@ -1584,7 +1600,7 @@ export function createChannelAgentBinder(
       state.count += 1;
     }
     for (const profile of profiles) {
-      routeOne(message, profile);
+      void routeOne(message, profile);
     }
   }
 
@@ -1618,7 +1634,7 @@ export function createChannelAgentBinder(
       return;
     }
     for (const profile of profiles) {
-      routeOne(message, profile);
+      void routeOne(message, profile);
     }
   }
 
@@ -1647,7 +1663,7 @@ export function createChannelAgentBinder(
     logger.debug(
       `dm implicit route, channel=${message.channelId} provider=${providerId} profile=${profile.id}`
     );
-    routeOne(message, profile);
+    void routeOne(message, profile);
   }
 
   function handleAssistantFinalized(message: ChannelMessage): void {
@@ -1725,11 +1741,14 @@ export function createChannelAgentBinder(
    * stays intact and the supersede marker survives a reload for free.
    *
    * The re-run reuses the same deterministic turn identity (§ Amendment 3), so
-   * a provider that derives item ids from the turn rather than per message could
-   * in principle collide with the retried row's source triple and have its reply
-   * deduped. No built-in adapter does that — all four take item ids from the
-   * provider stream — and minting a fresh identity would fork the turn-parent,
-   * watchdog, and `retriedTurns` bookkeeping that keys off it.
+   * an adapter that derives item ids from the turn rather than per SEND would
+   * collide with the retried row's source triple — `channel_messages` is unique
+   * on (source_runtime_id, source_turn_id, source_item_id) and inserts are
+   * `DO NOTHING` — and the retried reply would be silently dropped. Minting a
+   * fresh identity would fork the turn-parent, watchdog and `retriedTurns`
+   * bookkeeping that keys off it, so the invariant is pushed onto the adapters
+   * instead: item ids are unique per send, asserted by the mock adapter's own
+   * contract test (`test/mock-v2-adapter.test.ts`).
    */
   async function retryMessage(
     channelId: string,
@@ -1782,7 +1801,15 @@ export function createChannelAgentBinder(
     // Storm brake: one in-flight or queued turn for this profile is enough to
     // refuse. `activeTurnId`/`queue` are checked alongside `status` because a
     // turn is enqueued before the first status transition is broadcast.
-    const binding = live.get(bindingKey(channelId, profile.id));
+    //
+    // Taken TOGETHER with the `retryInFlight` marker, and both synchronously:
+    // everything below this point awaits, and a live binding's busy state only
+    // becomes observable once `routeOne` has awaited its way to `enqueueTurn`.
+    // Without the marker two retries in that window — two devices, or two failed
+    // rows for the same profile — would both read an idle (or, on a cold
+    // binding, absent) binding and both enqueue.
+    const key = bindingKey(channelId, profile.id);
+    const binding = live.get(key);
     if (
       binding &&
       (binding.status !== 'idle' ||
@@ -1791,28 +1818,47 @@ export function createChannelAgentBinder(
     ) {
       throw new ChannelAgentBusyError(channelId, profile.id, binding.status);
     }
-    // Availability is checked HERE as well as inside `routeOne` so an
-    // unroutable retry fails as a rejected request instead of as a supersede
-    // mark over a turn that never ran — the mark disables the row's own retry
-    // affordance, so writing it for a no-op would strand the operator.
-    const mentionTarget = await resolveTarget(profile.providerId);
-    if (!mentionTarget?.available) {
-      throw new ChannelMessageNotRetryableError(
-        `@${profile.displayName || profile.providerId} is not available in channels — ${mentionTarget?.reason ?? 'framework unavailable'}`,
-        'AGENT_UNAVAILABLE'
-      );
+    if (retryInFlight.has(key)) {
+      // Reported as `spawning`, never as the binding's own (still idle, still
+      // absent) status: a turn IS being raised for this profile right now, and
+      // saying "idle" would contradict the refusal in the same sentence.
+      throw new ChannelAgentBusyError(channelId, profile.id, 'spawning');
     }
-    const label = await rosterDisplayName(profile);
-    postSystemRow(channelId, `retrying @${label} — previous reply ${failed.status}`, {
-      meta: { [CHANNEL_RETRY_OF_META_KEY]: failed.id, agentId: profile.id },
-      parentMessageId: parentForTrigger(trigger),
-    });
-    routeOne(trigger, profile);
-    return {
-      messageId: failed.id,
-      triggerMessageId: trigger.id,
-      profileActorId: profile.id,
-    };
+    retryInFlight.add(key);
+    let routed = false;
+    try {
+      // Availability is checked HERE as well as inside `routeOne` so an
+      // unroutable retry fails as a rejected request instead of as a supersede
+      // mark over a turn that never ran — the mark disables the row's own retry
+      // affordance, so writing it for a no-op would strand the operator.
+      const mentionTarget = await resolveTarget(profile.providerId);
+      if (!mentionTarget?.available) {
+        throw new ChannelMessageNotRetryableError(
+          `@${profile.displayName || profile.providerId} is not available in channels — ${mentionTarget?.reason ?? 'framework unavailable'}`,
+          'AGENT_UNAVAILABLE'
+        );
+      }
+      const label = await rosterDisplayName(profile);
+      postSystemRow(
+        channelId,
+        `retrying @${label} — previous reply ${failed.status}`,
+        {
+          meta: { [CHANNEL_RETRY_OF_META_KEY]: failed.id, agentId: profile.id },
+          parentMessageId: parentForTrigger(trigger),
+        }
+      );
+      routed = true;
+      // Held until the route settles — by then the turn is enqueued, so the
+      // binding's own busy state takes over as the brake.
+      void routeOne(trigger, profile).finally(() => retryInFlight.delete(key));
+      return {
+        messageId: failed.id,
+        triggerMessageId: trigger.id,
+        profileActorId: profile.id,
+      };
+    } finally {
+      if (!routed) retryInFlight.delete(key);
+    }
   }
 
   async function respondToApproval(
@@ -1896,6 +1942,7 @@ export function createChannelAgentBinder(
       }
       live.clear();
       inflight.clear();
+      retryInFlight.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();
       targetsCache = null;

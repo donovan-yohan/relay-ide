@@ -3486,6 +3486,50 @@ describe('channel-agent-binder — retry', () => {
     ).toHaveLength(0);
   });
 
+  it('admits exactly one of two concurrent retries (brake is not a TOCTOU)', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    // Two different lost rows for the SAME profile — two devices pressing retry
+    // in the same tick. Nothing is bound yet (cold binding after a hub restart),
+    // so the `live` map cannot answer "busy" for either caller.
+    const first = failedAgentRow(store, trigger);
+    const trigger2 = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock and the other one',
+    });
+    const second = failedAgentRow(store, trigger2);
+
+    const results = await Promise.allSettled([
+      binder.retryMessage(CH, first.id),
+      binder.retryMessage(CH, second.id),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = results.find((r) => r.status === 'rejected');
+    expect(refused?.status === 'rejected' && refused.reason).toBeInstanceOf(
+      ChannelAgentBusyError
+    );
+    await waitFor(() => adapter.sendCalls.length > 0);
+    expect(adapter.sendCalls).toHaveLength(1);
+    // The refused retry never wrote a supersede mark either — the row it names
+    // keeps its own retry affordance.
+    expect(
+      systemRows(store).filter(
+        (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] !== undefined
+      )
+    ).toHaveLength(1);
+  });
+
   it('rejects rows no routed turn can be recovered from', async () => {
     const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
     const { binder, store } = makeBinder({

@@ -1499,6 +1499,62 @@ describe('channel routes — message retry (#1308 slice 1 item 2)', () => {
   });
 });
 
+describe('channel routes — retry write fence', () => {
+  it('refuses a retry on an archived channel before touching the binder', async () => {
+    let called = false;
+    const h = await harness({
+      binder: {
+        retryMessage: async () => {
+          called = true;
+          return {} as never;
+        },
+      },
+    });
+    h.topicStore.archive(h.channelId);
+
+    const res = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
+    });
+    // An archived channel is read-only for EVERY write lane: a retry would spawn
+    // a runtime, write a durable `retrying @…` system row and append a whole new
+    // agent turn.
+    expect(res.status).toBe(409);
+    expect(res.body.error.details?.['reasonCode']).toBe('CHANNEL_ARCHIVED');
+    expect(called).toBe(false);
+  });
+
+  it('refuses the agent lane — only the operator may re-run a turn', async () => {
+    let called = false;
+    const h = await harness({
+      binder: {
+        retryMessage: async () => {
+          called = true;
+          return {} as never;
+        },
+      },
+    });
+    // A scoped actor credential carries `context:write`, so the capability gate
+    // admits it; re-running a turn spends real provider tokens and routes
+    // outside the mention-chain brake, so the human gate is the load-bearing one.
+    const res = await req<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
+      headers: { 'x-test-actor-id': 'claude' },
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_RETRY_HUMAN_ONLY'
+    );
+    expect(called).toBe(false);
+  });
+});
+
 describe('channel routes — retry capability gate', () => {
   it('rejects a caller without context:write before touching the binder', async () => {
     let called = false;
