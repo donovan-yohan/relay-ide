@@ -31,6 +31,8 @@ interface ChannelMessageGroupProps {
   replyCounts?: Map<ChannelMessageId, DerivedReplyCount>;
   replyGrowth?: Map<ChannelMessageId, number>;
   onOpenThread?: (rootId: ChannelMessageId) => void;
+  /** #1308 item 1: message a deep link just landed on, if it is in this group. */
+  highlightedMessageId?: ChannelMessageId | null;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
@@ -40,6 +42,7 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   replyCounts,
   replyGrowth,
   onOpenThread,
+  highlightedMessageId = null,
 }) => {
   const identity = resolveSenderIdentity(sender);
   const first = messages[0];
@@ -78,6 +81,7 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
               key={message.id}
               message={message}
               channelId={channelId}
+              highlighted={highlightedMessageId === message.id}
               replyCount={displayedReplyCount(
                 message,
                 derived,

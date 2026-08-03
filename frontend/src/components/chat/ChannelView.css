@@ -474,6 +474,7 @@
 
 /* single message row */
 .ch-msg {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -552,6 +553,76 @@
   51%,
   100% {
     opacity: 0;
+  }
+}
+
+/* per-message action toolbar (#1308 item 1). Absolutely positioned so it can
+   never reflow the lane — a row that changed height on hover would fight the
+   follow/anchor scroll model. Mounted only while the row is hovered, focused,
+   or long-press pinned, so the resting DOM is unchanged. */
+.ch-msg__actions {
+  position: absolute;
+  top: -10px;
+  right: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+}
+
+/* A human bubble is right-aligned, so its toolbar sits on the free left edge. */
+.ch-msg__actions--user {
+  right: auto;
+  left: 0;
+}
+
+.ch-msg__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ch-msg__action + .ch-msg__action {
+  border-left: 1px solid var(--border);
+}
+
+.ch-msg__action:hover,
+.ch-msg__action:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* jump emphasis after a deep link lands (#1308 item 1). DESIGN.md text-motion
+   only: a flat background fade, no shimmer, no particles, and inside the 400ms
+   motion budget. */
+.ch-msg--jump {
+  animation: ch-jump-flash 400ms ease-out 1;
+}
+
+@keyframes ch-jump-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-msg--jump {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
   }
 }
 

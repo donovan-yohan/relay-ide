@@ -1,4 +1,5 @@
 import { isWorkspaceTopicId } from '../../../shared/workspace-topics.js';
+import type { ChannelMessageId } from '../../../shared/channel-chat-protocol.js';
 import type { Repo } from './types.js';
 import type { AnalyticsView } from './stores/ui.js';
 
@@ -95,6 +96,63 @@ export function decodeChannelSegment(segment: string): string | null {
     ? local
     : `${CHANNEL_ID_PREFIX}${local}`;
   return isWorkspaceTopicId(channelId) ? channelId : null;
+}
+
+// ── Message anchor (URL fragment) ────────────────────────────────────────────
+
+/**
+ * A shareable link to ONE message extends the #1297 channel route with a URL
+ * fragment: `/channel/<segment>#msg-<message id suffix>`.
+ *
+ * The anchor deliberately lives in the fragment rather than in `RouteState`.
+ * `parseRoute`/`buildPath` describe which SURFACE is open; a message anchor is a
+ * one-shot scroll intent on the surface the path already names, so it needs no
+ * route variant and no branch of its own in `applyRoute`. The fragment is also
+ * the only part of the URL `buildPath`/`buildQuery` never emit — a same-path
+ * push (open a modal, correct a dead session) therefore cannot clobber it, and
+ * a different-path push drops it exactly when the anchored channel is left.
+ */
+const MESSAGE_ANCHOR_PREFIX = 'msg-';
+const MESSAGE_ID_PREFIX = 'chm:';
+
+/** `#msg-…` fragment for a message id. Inverse of {@link parseMessageAnchor}. */
+export function encodeMessageAnchor(messageId: ChannelMessageId): string {
+  const local = messageId.startsWith(MESSAGE_ID_PREFIX)
+    ? messageId.slice(MESSAGE_ID_PREFIX.length)
+    : messageId;
+  return `#${MESSAGE_ANCHOR_PREFIX}${encodeURIComponent(local)}`;
+}
+
+/**
+ * Message id carried by a URL fragment, or `null` when the fragment is not a
+ * message anchor (no fragment, some other anchor, malformed `%` escape).
+ */
+export function parseMessageAnchor(hash: string): ChannelMessageId | null {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!raw.startsWith(MESSAGE_ANCHOR_PREFIX)) return null;
+  let local: string;
+  try {
+    local = decodeURIComponent(raw.slice(MESSAGE_ANCHOR_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (local.length === 0) return null;
+  const id = local.startsWith(MESSAGE_ID_PREFIX)
+    ? local
+    : `${MESSAGE_ID_PREFIX}${local}`;
+  return id as ChannelMessageId;
+}
+
+/** Absolute, pasteable link to one message inside one channel. */
+export function buildChannelMessageLink(
+  channelId: string,
+  messageId: ChannelMessageId,
+  origin: string
+): string {
+  const base = origin.endsWith('/') ? origin.slice(0, -1) : origin;
+  return `${base}/channel/${encodeChannelSegment(channelId)}${encodeMessageAnchor(
+    messageId
+  )}`;
 }
 
 // ── Route state ──────────────────────────────────────────────────────────────

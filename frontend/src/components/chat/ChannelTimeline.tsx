@@ -22,6 +22,23 @@ import { useLiveReplyGrowth } from './useLiveReplyGrowth.js';
 
 const RESYNC_BUTTON_DELAY_MS = 5_000;
 
+/**
+ * How long the jump emphasis stays on the row a deep link landed on. The fade
+ * itself is a 400ms ease-out (DESIGN.md motion budget); the extra beat only
+ * keeps the class mounted so the animation is never cut mid-flight.
+ */
+const JUMP_HIGHLIGHT_MS = 600;
+
+/** A deep link asking the timeline to scroll to one message. */
+export interface TimelineJumpTarget {
+  messageId: ChannelMessageId;
+  /**
+   * Monotonic per-request token. Two consecutive links to the SAME message must
+   * re-run the scroll, and `messageId` alone cannot express that.
+   */
+  token: number;
+}
+
 interface ChannelTimelineProps {
   /** Full reducer lane, including thread replies for live reply-count derivation. */
   messages: ChannelMessage[];
@@ -43,6 +60,12 @@ interface ChannelTimelineProps {
    * given and owns no presence policy.
    */
   agentPresence?: readonly ChannelAgentPresence[];
+  /**
+   * #1308 item 1. `ChannelView` owns the bounded history walk that guarantees
+   * the target row is loaded; by the time a target arrives here it is only a
+   * DOM scroll plus the brief jump emphasis.
+   */
+  jumpTarget?: TimelineJumpTarget | null;
 }
 
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
@@ -60,8 +83,11 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   onContinueHistory,
   onOpenThread,
   agentPresence = [],
+  jumpTarget = null,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] =
+    useState<ChannelMessageId | null>(null);
 
   // Replies stay in the reducer for gap/catch-up correctness. Every piece of
   // main-lane geometry consumes this render-only projection so hidden reply seqs
@@ -93,6 +119,33 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
 
   const earliestSeq = topLevelMessages[0]?.seq;
   const reachedBeginning = !hasMoreOlder && earliestSeq === 1;
+
+  // Deep-link jump. Keyed on the request token, never on `messageId`, so a
+  // second link to the same row replays the scroll and the emphasis.
+  const jumpToken = jumpTarget?.token ?? null;
+  const jumpMessageId = jumpTarget?.messageId ?? null;
+  useEffect(() => {
+    if (jumpToken === null || jumpMessageId === null) return;
+    const container = containerRef.current;
+    // Attribute equality rather than a `[data-…="…"]` selector: message ids are
+    // opaque, and a selector would need escaping the row markup does not owe us.
+    const row = container
+      ? Array.from(
+          container.querySelectorAll<HTMLElement>('[data-channel-message-id]')
+        ).find((node) => node.dataset.channelMessageId === jumpMessageId)
+      : undefined;
+    if (row) {
+      // Instant, not smooth: the emphasis is a 400ms fade, so a multi-second
+      // smooth scroll would finish after the cue it is supposed to explain.
+      row.scrollIntoView({ block: 'center' });
+    }
+    setHighlightedMessageId(jumpMessageId);
+    const timer = setTimeout(
+      () => setHighlightedMessageId(null),
+      JUMP_HIGHLIGHT_MS
+    );
+    return () => clearTimeout(timer);
+  }, [containerRef, jumpToken, jumpMessageId]);
 
   useEffect(() => {
     if (!needsCatchup) {
@@ -193,6 +246,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                   message={node.message}
                   channelId={channelId}
                   variant="system"
+                  highlighted={highlightedMessageId === node.message.id}
                 />
               );
             }
@@ -205,6 +259,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 channelId={channelId}
                 replyCounts={replyCounts}
                 replyGrowth={replyGrowth}
+                highlightedMessageId={highlightedMessageId}
                 {...(onOpenThread ? { onOpenThread } : {})}
               />
             );

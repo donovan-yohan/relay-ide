@@ -5,7 +5,10 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { ChannelMessagePart } from '../../../../shared/channel-chat-protocol.js';
+import type {
+  ChannelMessageId,
+  ChannelMessagePart,
+} from '../../../../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
 import type { AgentRole } from '../../../../shared/agent-roster.js';
 import './ChannelView.css';
@@ -35,9 +38,10 @@ import {
   useChannelAgentStatusStore,
 } from '../../lib/stores/channel-agent-status.js';
 import { useUiStore } from '../../lib/stores/ui.js';
+import { showToast } from '../../lib/stores/toasts.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { TuiProgress } from '../TuiProgress.js';
-import { ChannelTimeline } from './ChannelTimeline.js';
+import { ChannelTimeline, type TimelineJumpTarget } from './ChannelTimeline.js';
 import { ChannelComposer } from './ChannelComposer.js';
 import { ChannelThreadPanel } from './ChannelThreadPanel.js';
 
@@ -45,6 +49,13 @@ const READ_WRITE_VISIBLE_GRACE_MS = 10_000;
 const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
 const AUTO_BACKFILL_RETRY_BASE_MS = 200;
 const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
+/**
+ * #1308 item 1: how many older-history pages a `#msg-…` deep link may pull
+ * before it gives up. Unbounded, a link to a deleted/foreign message id would
+ * walk the channel to seq 1 on every open; bounded, the worst case is a fixed
+ * number of page fetches and one toast.
+ */
+const ANCHOR_WALK_MAX_PAGES = 8;
 
 interface ChannelViewProps {
   channelId: string;
@@ -306,6 +317,82 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     },
     []
   );
+
+  // ── Deep-link message anchor (#1308 item 1) ────────────────────────────────
+  // A `/channel/<id>#msg-<messageId>` link lands here as a store intent. The
+  // target may be far outside the loaded window, so resolving it is a bounded
+  // walk backwards through history rather than a single lookup; the timeline
+  // only ever receives a target it can already render.
+  const pendingChannelMessage = useUiStore((s) => s.pendingChannelMessage);
+  const [anchorWalk, setAnchorWalk] = useState<{
+    messageId: ChannelMessageId;
+    pages: number;
+  } | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<TimelineJumpTarget | null>(null);
+  const jumpTokenRef = useRef(0);
+  const anchorLoadingRef = useRef(false);
+
+  // Drop an in-flight walk when the channel changes: its message id belongs to
+  // the channel that is leaving, and the new one's history would never match.
+  // Declared BEFORE the adopt effect so a channel switch that also carries an
+  // anchor resets first and adopts second — the other order would erase the
+  // anchor it had just accepted (effects run in declaration order).
+  useEffect(() => {
+    anchorLoadingRef.current = false;
+    setAnchorWalk(null);
+    setJumpTarget(null);
+  }, [channelId]);
+
+  useEffect(() => {
+    if (pendingChannelMessage?.channelId !== channelId) return;
+    setAnchorWalk({ messageId: pendingChannelMessage.messageId, pages: 0 });
+    useUiStore.getState().consumeChannelMessageIntent(channelId);
+  }, [channelId, pendingChannelMessage]);
+
+  const [anchorWalkTick, setAnchorWalkTick] = useState(0);
+  useEffect(() => {
+    if (anchorWalk === null) return;
+    const target = reducer.messages.find(
+      (message) => message.id === anchorWalk.messageId
+    );
+    if (target) {
+      setAnchorWalk(null);
+      jumpTokenRef.current += 1;
+      // A reply's row lives in the thread panel, not the main lane. Open the
+      // thread and put the emphasis on its root, which IS a main-lane row —
+      // otherwise the link resolves to a scroll that finds nothing.
+      if (target.threadId !== null) setActiveThreadRootId(target.threadId);
+      setJumpTarget({
+        messageId: target.threadId ?? target.id,
+        token: jumpTokenRef.current,
+      });
+      return;
+    }
+    if (anchorLoadingRef.current || loadingOlder) return;
+    if (!hasMoreOlder || anchorWalk.pages >= ANCHOR_WALK_MAX_PAGES) {
+      setAnchorWalk(null);
+      showToast('that message is not in this chat’s recent history', 'info');
+      return;
+    }
+    anchorLoadingRef.current = true;
+    setAnchorWalk((walk) =>
+      walk === null ? null : { ...walk, pages: walk.pages + 1 }
+    );
+    void loadOlder()
+      .catch(() => {})
+      .finally(() => {
+        anchorLoadingRef.current = false;
+        setAnchorWalkTick((tick) => tick + 1);
+      });
+  }, [
+    anchorWalk,
+    anchorWalkTick,
+    hasMoreOlder,
+    loadOlder,
+    loadingOlder,
+    reducer.messages,
+    setActiveThreadRootId,
+  ]);
 
   // Agent presence chips (#1167). One chip per agent that is bound (roster
   // binding) OR currently non-idle in the live status store, with a `streaming`
@@ -640,6 +727,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               onContinueHistory={continueReplyOnlyBackfill}
               onOpenThread={setActiveThreadRootId}
               agentPresence={agentPresence}
+              jumpTarget={jumpTarget}
             />
           ) : (
             <div className="ch-empty">
