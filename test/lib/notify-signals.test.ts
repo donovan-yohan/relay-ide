@@ -226,9 +226,10 @@ describe('deriveTurnCompleteSignal', () => {
 });
 
 describe('channel + row adapters', () => {
-  function topic(id: string, providerId: string): Parameters<
-    typeof notifyChannelFromTopic
-  >[0] {
+  function topic(
+    id: string,
+    providerId: string
+  ): Parameters<typeof notifyChannelFromTopic>[0] {
     return {
       id: id as WorkspaceTopic['id'],
       display: { title: 'claude' },
@@ -360,7 +361,9 @@ describe('gate — per-channel rate limit and coalescing', () => {
       gateContext({ now: NOW + NOTIFY_OS_RATE_LIMIT_MS })
     );
     expect(fourth).toMatchObject({ os: true, count: 3 });
-    expect(fourth?.body).toBe('claude mentioned you · 3 new');
+    // The label rides through to delivery, which is where copy is composed
+    // (`notify/copy.ts` renders this run as `… · 3 new`).
+    expect(fourth?.senderLabel).toBe('claude');
   });
 
   it('resets the coalesce count after it is flushed', () => {
@@ -426,12 +429,20 @@ describe('gate — operator settings', () => {
     const gate = createNotifyGate();
     expect(
       gate.evaluate(
-        messageSignal({ reason: 'turn-complete', seq: 0, senderLabel: 'codex' }),
+        messageSignal({
+          reason: 'turn-complete',
+          seq: 0,
+          senderLabel: 'codex',
+        }),
         gateContext({
           settings: { ...DEFAULT_NOTIFY_SETTINGS, turnComplete: true },
         })
       )
-    ).toMatchObject({ os: true, body: 'codex finished' });
+    ).toMatchObject({
+      os: true,
+      reason: 'turn-complete',
+      senderLabel: 'codex',
+    });
   });
 
   it('gates mentions off', () => {
@@ -462,7 +473,9 @@ describe('gate — operator settings', () => {
 describe('gate — replay guard and read position', () => {
   it('refuses a seq it has already evaluated', () => {
     const gate = createNotifyGate();
-    expect(gate.evaluate(messageSignal({ seq: 7 }), gateContext())).not.toBeNull();
+    expect(
+      gate.evaluate(messageSignal({ seq: 7 }), gateContext())
+    ).not.toBeNull();
     expect(gate.evaluate(messageSignal({ seq: 7 }), gateContext())).toBeNull();
     expect(gate.evaluate(messageSignal({ seq: 6 }), gateContext())).toBeNull();
   });
@@ -494,49 +507,47 @@ describe('gate — replay guard and read position', () => {
     const gate = createNotifyGate();
     gate.evaluate(messageSignal({ seq: 7 }), gateContext());
     gate.reset();
-    expect(gate.evaluate(messageSignal({ seq: 7 }), gateContext())).toMatchObject(
-      { os: true, count: 1 }
-    );
+    expect(
+      gate.evaluate(messageSignal({ seq: 7 }), gateContext())
+    ).toMatchObject({ os: true, count: 1 });
   });
 });
 
-describe('notification copy', () => {
-  it('is lowercase prose with no emoji and no transcript text', () => {
-    const gate = createNotifyGate();
-    const bodies = [
-      gate.evaluate(messageSignal({ seq: 1 }), gateContext())?.body,
-      createNotifyGate().evaluate(
-        messageSignal({ reason: 'dm-reply', channel: dmChannel, seq: 1 }),
-        gateContext()
-      )?.body,
-      createNotifyGate().evaluate(
-        messageSignal({ reason: 'turn-complete', seq: 0 }),
-        gateContext({
-          settings: { ...DEFAULT_NOTIFY_SETTINGS, turnComplete: true },
-        })
-      )?.body,
-    ];
-    expect(bodies).toEqual([
-      'claude mentioned you',
-      'claude replied',
-      'claude finished',
-    ]);
-    for (const body of bodies) {
-      expect(body).toBeDefined();
-      expect(body).toBe(body?.toLowerCase());
-      expect(body).not.toMatch(/\p{Extended_Pictographic}/u);
-      // Message text never reaches an OS notification / lock screen.
-      expect(body).not.toContain('pushed the branch');
-    }
-  });
-
-  it('titles with the operator own channel title, verbatim', () => {
+// Copy itself is delivery (item 2) and is covered by `notify-copy.test.ts`.
+// What the gate still owes the delivery lane is the RAW MATERIAL: the channel
+// title verbatim, the sender label, and the coalesce count.
+describe('event payload handed to delivery', () => {
+  it('carries the operator channel title verbatim', () => {
     const gate = createNotifyGate();
     const event = gate.evaluate(
       messageSignal({ channel: { ...channel, title: 'Impl 1308' } }),
       gateContext()
     );
-    expect(event?.title).toBe('Impl 1308');
     expect(event?.channelTitle).toBe('Impl 1308');
+  });
+
+  it('carries the sender label for every reason', () => {
+    expect(
+      createNotifyGate().evaluate(
+        messageSignal({ reason: 'dm-reply', channel: dmChannel, seq: 1 }),
+        gateContext()
+      )
+    ).toMatchObject({ reason: 'dm-reply', senderLabel: 'claude', count: 1 });
+    expect(
+      createNotifyGate().evaluate(
+        messageSignal({ reason: 'turn-complete', seq: 0 }),
+        gateContext({
+          settings: { ...DEFAULT_NOTIFY_SETTINGS, turnComplete: true },
+        })
+      )
+    ).toMatchObject({ reason: 'turn-complete', senderLabel: 'claude' });
+  });
+
+  it('never carries message text', () => {
+    const event = createNotifyGate().evaluate(
+      messageSignal({ seq: 1 }),
+      gateContext()
+    );
+    expect(JSON.stringify(event)).not.toContain('pushed the branch');
   });
 });

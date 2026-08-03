@@ -101,10 +101,13 @@ export interface NotifyEvent {
    * held OS notifications back and this one flushes the coalesced run.
    */
   count: number;
-  /** Notification title. */
-  title: string;
-  /** Notification body — lowercase, no emoji, and never message text. */
-  body: string;
+  /**
+   * Lowercase-safe short label for the sender/agent, carried through from the
+   * signal. Copy is composed by `notify/copy.ts` (item 2) rather than here: the
+   * OS tier renders title and body as one unit and needs the channel inside the
+   * sentence, so a body baked at gate time would have to be re-cut downstream.
+   */
+  senderLabel: string;
   seq: number;
   at: number;
 }
@@ -185,7 +188,9 @@ export interface NotifyMessageRow {
 }
 
 /** Flatten a live channel message onto the shared row shape. */
-export function notifyRowFromMessage(message: ChannelMessage): NotifyMessageRow {
+export function notifyRowFromMessage(
+  message: ChannelMessage
+): NotifyMessageRow {
   return {
     seq: message.seq,
     senderId: message.sender.id,
@@ -281,7 +286,10 @@ export interface NotifyGateContext {
 
 export interface NotifyGate {
   /** Decide one signal. Returns null when nothing should be shown. */
-  evaluate: (signal: NotifySignal, ctx: NotifyGateContext) => NotifyEvent | null;
+  evaluate: (
+    signal: NotifySignal,
+    ctx: NotifyGateContext
+  ) => NotifyEvent | null;
   /** Forget every per-channel ledger entry (sign-out, tests). */
   reset: () => void;
 }
@@ -369,8 +377,7 @@ export function createNotifyGate(): NotifyGate {
       badge: true,
       os,
       count,
-      title: signal.channel.title,
-      body: notifyBody(signal, count),
+      senderLabel: signal.senderLabel,
       seq: signal.seq,
       at: signal.at,
     };
@@ -389,20 +396,4 @@ export function createNotifyGate(): NotifyGate {
 /** Notification tag: one live notification per channel. */
 export function notifyChannelKey(channelId: string): string {
   return `relay-channel:${channelId}`;
-}
-
-/**
- * Notification body. Lowercase, no emoji, no message text — an OS notification
- * renders on a lock screen, and a channel transcript is not lock-screen
- * material. The coalesce count is appended with the mono-spirit separator the
- * rest of the UI uses.
- */
-function notifyBody(signal: NotifySignal, count: number): string {
-  const base =
-    signal.reason === 'mention'
-      ? `${signal.senderLabel} mentioned you`
-      : signal.reason === 'dm-reply'
-        ? `${signal.senderLabel} replied`
-        : `${signal.senderLabel} finished`;
-  return count > 1 ? `${base} · ${count} new` : base;
 }

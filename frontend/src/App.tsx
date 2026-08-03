@@ -53,6 +53,7 @@ import { startShikiGc } from './lib/stores/shiki-gc.js';
 import { IA_WORKSPACES_QUERY_KEY } from './lib/hooks/use-ia-workspaces.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
+import { useNotifyDelivery } from './hooks/useNotifyDelivery.js';
 import { useVisibilityRefresh } from './hooks/useVisibilityRefresh.js';
 import { useAppShortcuts } from './hooks/useAppShortcuts.js';
 import { useActionRegistry } from './hooks/useActionRegistry.js';
@@ -1282,6 +1283,12 @@ export default function App() {
     }, 500);
     return () => clearTimeout(timer);
   }, [authAuthenticated, activeRepoPath, activeSessionId]);
+
+  // ── Channel notifications (#1308 slice 5) ──────────────────────────────────
+  // Mounted next to the event socket because it is the same kind of lane: an
+  // app-lifetime subscription with no rendered output of its own. Gated on auth
+  // so a signed-out tab neither fetches summaries nor badges its own favicon.
+  useNotifyDelivery(authAuthenticated, queryClient);
 
   // ── Event socket ───────────────────────────────────────────────────────────
   useEventSocket({

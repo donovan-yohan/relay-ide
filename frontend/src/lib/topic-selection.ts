@@ -51,6 +51,30 @@ export function openTopicSelectionFromPalette(
 }
 
 /**
+ * Disposition of a clicked OS notification (#1308 slice 5 item 2).
+ *
+ * The channel is opened by ID ALONE — deliberately not routed through a topic
+ * lookup. A notification can be clicked minutes later, from a tab whose topic
+ * corpus has since been refetched, filtered, or never loaded at all (the click
+ * may be the event that wakes a discarded tab), and a lookup miss must not turn
+ * into "clicked the notification, nothing happened". `ChannelView` already owns
+ * the unknown/deleted case, exactly as it does for a `/channel/<id>` deep link.
+ *
+ * No message anchor: the notification body deliberately carries no message
+ * text, and the event that raised it may have been coalesced with others, so
+ * the honest destination is the channel at its live bottom.
+ *
+ * The drawer closes for the same reason the other openers close it — the main
+ * pane just changed, and on mobile the drawer floats over it.
+ */
+export function openChannelFromNotification(channelId: string): void {
+  const ui = useUiStore.getState();
+  ui.setActiveChannelId(channelId);
+  ui.setTopicComposerOpen(false);
+  ui.closeSidebar();
+}
+
+/**
  * Open a channel AND ask it to land on ONE message (#1308 slice 2): the
  * disposition of every message-search hit, wherever it was clicked — the sidebar
  * `messages` section (item 2) and the command palette's `messages` category
