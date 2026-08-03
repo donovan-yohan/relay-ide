@@ -25,6 +25,19 @@ interface CapturedRequest {
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
+/** Backs a redefined `document.hidden` so the backgrounded lane is testable. */
+let documentHidden = false;
+
+/** A hub PUT response carrying the durable value the hub actually holds. */
+function readStateResponse(channelId: string, lastReadSeq: number): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      readState: { channelId, lastReadSeq, updatedAt: '2026-07-27T00:00:00Z' },
+    }),
+  } as unknown as Response;
+}
 
 function requests(): CapturedRequest[] {
   return fetchMock.mock.calls.map((call) => {
@@ -46,6 +59,11 @@ function store(): ReturnType<typeof useChannelActivityStore.getState> {
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  documentHidden = false;
+  Object.defineProperty(document, 'hidden', {
+    configurable: true,
+    get: () => documentHidden,
+  });
   clearPendingReadStatePushesForTests();
   useChannelActivityStore.setState({
     latestSeqByChannel: {},
@@ -105,6 +123,33 @@ describe('hub read-state merge (#1308 slice 3)', () => {
       hasUnseenActivity('topic:elsewhere', null, {
         latestSeq: 20,
         lastRead: merged.lastReadByChannel['topic:elsewhere'],
+      })
+    ).toBe(true);
+  });
+
+  it('treats a corrupt localStorage marker as absent instead of poisoning the channel with NaN', () => {
+    // `Number('null')` is NaN, and NaN loses every comparison it touches:
+    // `Math.max(store, NaN)` is NaN, so BOTH merge branches are false — no
+    // adopt, no push-back — and the channel drops out of the sync in both
+    // directions, permanently and with nothing surfaced.
+    localStorage.setItem(channelLastReadKey('topic:corrupt'), 'null');
+
+    store().mergeReadState(
+      [{ channelId: 'topic:corrupt', lastReadSeq: 7 }],
+      Date.now()
+    );
+
+    // Self-heals: the hub value wins and rewrites the marker.
+    expect(store().lastReadByChannel['topic:corrupt']).toBe(7);
+    expect(localStorage.getItem(channelLastReadKey('topic:corrupt'))).toBe('7');
+
+    // The same NaN silently suppressed the unread dot, which is how a corrupt
+    // marker stayed invisible in the first place.
+    localStorage.setItem(channelLastReadKey('topic:poisoned'), 'undefined');
+    expect(
+      hasUnseenActivity('topic:poisoned', null, {
+        latestSeq: 3,
+        lastRead: undefined,
       })
     ).toBe(true);
   });
@@ -241,16 +286,101 @@ describe('read-state push (#1308 slice 3)', () => {
 
   it('flushes on a hidden visibilitychange, the last event a discarded mobile tab gets', () => {
     store().markChannelRead('topic:beta', 3);
-    Object.defineProperty(document, 'hidden', {
-      configurable: true,
-      get: () => true,
-    });
+    documentHidden = true;
     document.dispatchEvent(new Event('visibilitychange'));
 
     const sent = requests();
     expect(sent).toHaveLength(1);
     expect(sent[0]?.url).toBe('/channels/topic%3Abeta/read-state');
     expect(sent[0]?.keepalive).toBe(true);
+  });
+
+  it('publishes a mark written by a LATER visibilitychange listener within the same dispatch', () => {
+    // The ordering the teardown flush cannot win. This store binds its own
+    // `visibilitychange` listener lazily on the first armed push, and
+    // ChannelView re-registers its listener on every channelId change — so in a
+    // real session ChannelView is the LATER listener and its `markChannelRead`
+    // runs after the store's flush has already found nothing armed. Arm one
+    // push here so the store's listener is definitely registered first.
+    store().markChannelRead('topic:earlier', 2);
+    vi.advanceTimersByTime(3_000);
+    fetchMock.mockClear();
+
+    const channelViewOnVisibility = (): void => {
+      if (document.hidden) store().markChannelRead('topic:beta', 9);
+    };
+    document.addEventListener('visibilitychange', channelViewOnVisibility);
+    documentHidden = true;
+    try {
+      document.dispatchEvent(new Event('visibilitychange'));
+    } finally {
+      document.removeEventListener('visibilitychange', channelViewOnVisibility);
+    }
+
+    // No timer advance: an already-hidden page publishes inline, because a
+    // backgrounded mobile tab may have its timers frozen or be discarded
+    // outright before a 3s window could ever fire.
+    const sent = requests();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.url).toBe('/channels/topic%3Abeta/read-state');
+    expect(sent[0]?.body).toEqual({ lastReadSeq: 9 });
+    expect(sent[0]?.keepalive).toBe(true);
+
+    // Consumed, not left armed behind a duplicate for a bfcache restore.
+    vi.advanceTimersByTime(10_000);
+    expect(requests()).toHaveLength(1);
+  });
+
+  it('stops re-pushing a mark the hub has refused, but still sends a higher one', async () => {
+    // A marker stranded above the channel head (a rewound DM) can never be
+    // accepted: the hub clamps to head and answers with what it holds. Without
+    // reading that answer the boot merge re-issues the identical futile PUT
+    // every boot, forever, with nothing able to stop it.
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '40');
+    fetchMock.mockResolvedValue(readStateResponse('topic:alpha', 12));
+
+    store().mergeReadState(
+      [{ channelId: 'topic:alpha', lastReadSeq: 12 }],
+      Date.now()
+    );
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(requests()[0]?.body.lastReadSeq).toBe(40);
+    // Let the RESPONSE land, not just the request leave: the refusal is learned
+    // from the body. In a real session the next boot merge is a page load away.
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The next boot merge sees the hub still behind — and stays quiet, because
+    // this is the exact value it just refused.
+    store().mergeReadState(
+      [{ channelId: 'topic:alpha', lastReadSeq: 12 }],
+      Date.now()
+    );
+    vi.advanceTimersByTime(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // A genuinely higher mark is still worth one request: suppression is scoped
+    // to the refused value, not to the channel.
+    store().markChannelRead('topic:alpha', 41);
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(requests()[1]?.body.lastReadSeq).toBe(41);
+  });
+
+  it('adopts a HIGHER mark the hub answers a push with, without waiting for the broadcast', async () => {
+    // Another device read further first. The PUT response already carries the
+    // hub's durable, head-clamped value, so the merge is free convergence.
+    fetchMock.mockResolvedValue(readStateResponse('topic:beta', 30));
+
+    store().markChannelRead('topic:beta', 5);
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() =>
+      expect(store().lastReadByChannel['topic:beta']).toBe(30)
+    );
+    expect(localStorage.getItem(channelLastReadKey('topic:beta'))).toBe('30');
+    // Adopting is not a reason to push: the hub already holds the higher value.
+    vi.advanceTimersByTime(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the local mark when the hub rejects the push', async () => {

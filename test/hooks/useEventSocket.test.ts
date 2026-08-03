@@ -200,6 +200,14 @@ describe('useEventSocket repo-scoped refresh', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['files-list'],
     });
+    // Cross-device read marks (#1308 slice 3) only arrive live on the
+    // `channel-read-state` broadcast, so everything another device published
+    // while this socket was down was missed. The boot seed is cached for five
+    // minutes and never refetches on focus — without this the tab keeps showing
+    // unread dots for channels the operator has already read elsewhere.
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['channel-read-state'],
+    });
     expect(changedFilesRefresh).toHaveBeenCalled();
   });
 

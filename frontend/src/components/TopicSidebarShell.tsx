@@ -3644,6 +3644,11 @@ export function TopicSidebarShell({
   // this device repaired a recreated DM (#1178) is refused exactly like a stale
   // channel-list payload is. Fetched alongside, never awaited by, the list: an
   // unreachable hub degrades to the local-only unread this rail already had.
+  //
+  // The live half is the `channel-read-state` broadcast, so marks published
+  // while the events socket was down would be missed entirely — that lane
+  // invalidates this key on reconnect (`invalidateReconnectQueries`), which is
+  // what keeps the staleTime below from outliving a sleep or a hub restart.
   const readStateQuery = useQuery({
     queryKey: ['channel-read-state'],
     queryFn: fetchChannelReadState,

@@ -760,12 +760,16 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
+    // The human-lane gate runs BEFORE any channel lookup, deliberately. A route
+    // whose whole point is that an agent can neither observe nor move the
+    // operator's reading position must not answer 404-vs-403 to a scoped actor
+    // credential, or the existence probe leaks exactly what the gate withholds.
+    if (denyNonOperator(req, res, 'mark')) return;
     // Archived channels are deliberately NOT rejected the way edits and deletes
     // are: archive browse (#1087) is a legitimate read surface, and marking what
     // was read there mutates no transcript.
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
-    if (denyNonOperator(req, res, 'mark')) return;
     const lastReadSeq = bodyRecord(req)['lastReadSeq'];
     if (
       typeof lastReadSeq !== 'number' ||

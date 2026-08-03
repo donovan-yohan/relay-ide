@@ -165,6 +165,14 @@ function invalidateReconnectQueries(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: ['files-list'] });
   queryClient.invalidateQueries({ queryKey: ['changedFiles'] });
   queryClient.invalidateQueries({ queryKey: ['fileDiff'] });
+  // Cross-device read sync (#1308 slice 3) has exactly one live lane — the
+  // `channel-read-state` broadcast — so every mark another device published
+  // while this socket was down was simply missed, and the boot seed is cached
+  // for five minutes behind a query that never refetches on focus. Refetching
+  // it here is what makes convergence survive a sleep, a network drop, or a hub
+  // restart. One small row per marked channel, merged monotonic-up and behind
+  // the same clamp fence, so a redundant refetch costs a dot nothing.
+  queryClient.invalidateQueries({ queryKey: ['channel-read-state'] });
 }
 
 /**

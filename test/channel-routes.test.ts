@@ -2463,6 +2463,15 @@ describe('channel routes — operator read state (#1308 slice 3 item 1)', () => 
     );
     expect(h.store.listReadState()).toEqual([]);
     expect(h.broadcasts).toHaveLength(0);
+
+    // The gate runs before the channel lookup, so an agent cannot use the
+    // 404-vs-403 split to probe which channel ids exist on a route it is not
+    // allowed to observe at all.
+    const probe = await put(h, 'topic:nope', { lastReadSeq: 1 }, agent);
+    expect(probe.status).toBe(403);
+    expect(probe.body.error?.details?.['reasonCode']).toBe(
+      'CHANNEL_READ_STATE_HUMAN_ONLY'
+    );
   });
 
   it('enforces capabilities and the shared auth lane, and routes read-state above /channels/:id', async () => {

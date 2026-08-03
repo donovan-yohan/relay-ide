@@ -53,6 +53,7 @@ import type {
   ChannelReadStateEntry,
   ChannelReadStateResponse,
   ChannelReadStateUpdateRequest,
+  ChannelReadStateUpdateResponse,
 } from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
@@ -1841,12 +1842,19 @@ export async function fetchChannelReadState(): Promise<ChannelReadStateEntry[]> 
  * Safe to repeat and safe to race: the hub is monotonic-up and clamps to the
  * channel head, so a retry, a duplicate, or two devices reporting at once
  * converge on one durable value.
+ *
+ * Returns that durable value so the caller can close the loop. It may be BELOW
+ * what was pushed (the hub clamps to the channel head) or ABOVE it (another
+ * device marked further first); either way the client learns what the hub
+ * actually holds instead of assuming its own mark landed. A body that is
+ * missing or malformed degrades to `null` — "the hub has no opinion" — never to
+ * a mark at `NaN`, because this feeds the unread projection.
  */
 export async function putChannelReadState(
   channelId: string,
   lastReadSeq: number,
   options: { keepalive?: boolean } = {}
-): Promise<void> {
+): Promise<ChannelReadStateEntry | null> {
   const body: ChannelReadStateUpdateRequest = { lastReadSeq };
   const res = await fetch(
     `/channels/${encodeURIComponent(channelId)}/read-state`,
@@ -1861,6 +1869,16 @@ export async function putChannelReadState(
     }
   );
   if (!res.ok) throw await httpErrorFromResponse(res);
+  const parsed = (await res
+    .json()
+    .catch(() => null)) as ChannelReadStateUpdateResponse | null;
+  const row = parsed?.readState;
+  return typeof row?.channelId === 'string' &&
+    row.channelId.length > 0 &&
+    typeof row.lastReadSeq === 'number' &&
+    Number.isFinite(row.lastReadSeq)
+    ? row
+    : null;
 }
 
 /**
