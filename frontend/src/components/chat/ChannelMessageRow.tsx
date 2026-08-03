@@ -17,6 +17,7 @@ import { createLineBreakSubmitGuard } from './composerInput.js';
 import { respondChannelApproval } from '../../lib/api.js';
 import { buildChannelMessageLink } from '../../lib/url-nav.js';
 import { showToast } from '../../lib/stores/toasts.js';
+import { useQueuedSendNotice } from '../../lib/stores/channel-queued-sends.js';
 
 /** Touch hold before the action toolbar pins open, matching `Terminal.tsx`. */
 const LONG_PRESS_MS = 500;
@@ -647,12 +648,30 @@ const MessageRowTrailer: React.FC<{
   replyCount: number;
   lastReplyHint?: string;
   onOpenThread?: (rootId: ChannelMessageId) => void;
-}> = ({ message, retry, replyCount, lastReplyHint, onOpenThread }) => {
+  /** #1308 slice 4 item 2a: "queued — <agent> is mid-turn", or null. */
+  queuedNotice?: string | null;
+}> = ({
+  message,
+  retry,
+  replyCount,
+  lastReplyHint,
+  onOpenThread,
+  queuedNotice = null,
+}) => {
   const truncationLabel = truncationLabelForMessage(message);
   const showThreadChip =
     message.threadId === null && replyCount > 0 && onOpenThread !== undefined;
   return (
     <>
+      {queuedNotice ? (
+        // The one thing the durable row cannot say: this message reached a busy
+        // agent and is waiting for its next turn. Steering intent is never
+        // persisted, so this is client-side memory of the send — see
+        // `channel-queued-sends`.
+        <span className="ch-msg__tag ch-msg__tag--queued" role="status">
+          {queuedNotice}
+        </span>
+      ) : null}
       {message.status === 'interrupted' ? (
         <span className="ch-msg__tag ch-msg__tag--interrupted">
           interrupted
@@ -765,6 +784,10 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   const streaming = message.status === 'streaming';
   const rowRef = useRef<HTMLDivElement>(null);
   const { actionsVisible, ...affordance } = useRowActionAffordance(rowRef);
+  // Read from the store rather than drilled down the timeline: the same row
+  // component renders in the main lane and the thread panel, and only one of
+  // those two paths would otherwise have been wired (#1308 slice 4 item 2d).
+  const queuedNotice = useQueuedSendNotice(message.id);
   const [retryPending, setRetryPending] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editPending, setEditPending] = useState(false);
@@ -939,6 +962,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
         message={message}
         retry={retry}
         replyCount={replyCount}
+        queuedNotice={queuedNotice}
         {...(lastReplyHint ? { lastReplyHint } : {})}
         {...(onOpenThread ? { onOpenThread } : {})}
       />

@@ -3,6 +3,7 @@ import type {
   ChannelMessage,
   ChannelMessageId,
   ChannelMessagePart,
+  ChannelPostSteering,
 } from '../../../../shared/channel-chat-protocol.js';
 import { useChannelThread } from '../../hooks/useChannelThread.js';
 import {
@@ -40,8 +41,16 @@ interface ChannelThreadPanelProps {
   onSend: (
     text: string,
     clientMessageId: string,
-    parts: ChannelMessagePart[]
+    parts: ChannelMessagePart[],
+    steering?: ChannelPostSteering
   ) => Promise<void>;
+  /**
+   * Busy agent labels for the thread composer's steering cluster (#1308 slice
+   * 4 item 2d). The thread lane has its OWN send path (`threadId` is attached
+   * there, not in the composer), so it has to be handed the signal explicitly —
+   * a reply into a busy agent queues exactly like a top-level message.
+   */
+  busyAgentLabels?: readonly string[];
   postPending: boolean;
   storeDown: boolean;
   archived: boolean;
@@ -58,6 +67,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   liveMessages,
   onClose,
   onSend,
+  busyAgentLabels,
   postPending,
   storeDown,
   archived,
@@ -237,6 +247,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
         channelTitle={channelTitle}
         placeholder={isDm ? DM_THREAD_PLACEHOLDER : THREAD_PLACEHOLDER}
         onSend={onSend}
+        {...(busyAgentLabels ? { busyAgentLabels } : {})}
         postPending={postPending}
         storeDown={storeDown}
         archived={archived}

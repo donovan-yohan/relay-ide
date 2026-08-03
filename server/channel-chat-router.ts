@@ -37,11 +37,14 @@ import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_POST_STEERING_VALUES,
   CHANNEL_READ_STATE_EVENT,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
+  isChannelPostSteering,
   parseMentions,
   type ChannelBodyFormat,
+  type ChannelPostSteering,
   type ChannelMessage,
   type ChannelMessageSearchResponse,
   type ChannelMessageSearchResult,
@@ -523,6 +526,13 @@ function postToChannel(
     clientMessageId?: string;
     mentions: ReturnType<typeof parseMentions>;
     parts?: import('../shared/channel-chat-protocol.js').ChannelMessagePart[];
+    /**
+     * Explicit mid-turn steering intent (#1308 slice 4). Never persisted on the
+     * row — it governs how the binder TRIGGERS a turn for this post, not what
+     * the durable transcript says. Replaying history therefore cannot re-issue
+     * an interrupt.
+     */
+    steering?: ChannelPostSteering;
   }
 ): ChannelMessage {
   const message = store.appendComplete({
@@ -547,7 +557,11 @@ function postToChannel(
     kind: input.sender.kind === 'agent' ? 'agent' : 'human',
     id: input.sender.id,
   });
-  hub.broadcastCreated(message, input.mentions);
+  hub.broadcastCreated(
+    message,
+    input.mentions,
+    input.steering ? { steering: input.steering } : undefined
+  );
   return message;
 }
 
@@ -1143,6 +1157,29 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ? body['clientMessageId']
         : undefined;
 
+    // #1308 slice 4: mid-turn steering rides the EXISTING post route as one
+    // additive body field rather than a second route — the operator is sending a
+    // message either way, and the only thing that differs is whether the agent's
+    // live turn is allowed to finish first. Omitted (the default) queues; the
+    // binder is the sole interpreter and ignores it for non-human senders.
+    const suppliedSteering = body['steering'];
+    if (
+      suppliedSteering !== undefined &&
+      !isChannelPostSteering(suppliedSteering)
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `steering must be one of: ${CHANNEL_POST_STEERING_VALUES.join(', ')}`,
+        false,
+        { field: 'steering', reasonCode: 'CHANNEL_STEERING_INVALID' }
+      );
+      return;
+    }
+    const steering = isChannelPostSteering(suppliedSteering)
+      ? suppliedSteering
+      : undefined;
+
     const credential = authenticatedCliGatewayActorCredential(req);
     const sourceRuntimeId = authenticatedSourceRuntimeId(
       credential,
@@ -1154,6 +1191,16 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const sender = deriveSender(req, sourceRuntime);
 
     // clientMessageId idempotency: return the existing row without re-broadcast.
+    //
+    // Steering is the ONE thing a replay must still act on (#1308 slice 4
+    // review). The composer keeps its `clientMessageId` after a failed send, so
+    // an operator whose "queue" POST landed server-side but looked like it
+    // failed, and who then presses "interrupt & send", replays a known id. The
+    // row is already persisted and already queued — re-broadcasting it would
+    // double-deliver the message — but the interrupt has NOT happened yet, and
+    // swallowing it silently would report an interrupt-and-send that did
+    // neither. `steerExisting` applies the cancellation half only, and is a
+    // no-op when the addressed binding has no live turn.
     if (clientMessageId) {
       const existing = store.findByClientMessage(
         id,
@@ -1161,6 +1208,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         clientMessageId
       );
       if (existing) {
+        if (steering) deps.binder?.steerExisting(existing, steering);
         res.status(200).json({ message: existing });
         return;
       }
@@ -1185,6 +1233,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ...(clientMessageId ? { clientMessageId } : {}),
         mentions,
         ...(parts.length ? { parts } : {}),
+        ...(steering ? { steering } : {}),
       });
       res.status(201).json({ message });
     } catch (error) {

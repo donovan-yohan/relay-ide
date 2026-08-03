@@ -139,6 +139,12 @@ export type EventMessage =
       agentId: string;
       status: 'spawning' | 'thinking' | 'streaming' | 'waiting' | 'idle';
       runtimeId: string | null;
+      /**
+       * Posts waiting to trigger this agent's NEXT turn (#1308 slice 4).
+       * Optional so a hub that predates the field is still readable; treat an
+       * absent value as zero.
+       */
+      queuedCount?: number;
     }
   | ({
       type: 'session-durability-changed';

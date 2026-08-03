@@ -217,7 +217,14 @@ describe('ChannelComposer (#1178)', () => {
     ).toBe('ready');
 
     await enterAgain();
-    expect(onSend).toHaveBeenCalledWith('', expect.any(String), [imagePart]);
+    // The 4th argument is the #1308 slice 4 steering choice — `undefined` on a
+    // plain send, which is what an idle composer always produces.
+    expect(onSend).toHaveBeenCalledWith(
+      '',
+      expect.any(String),
+      [imagePart],
+      undefined
+    );
     expect(container.querySelector('.ch-composer__attachment')).toBeNull();
   });
 
@@ -265,9 +272,12 @@ describe('ChannelComposer (#1178)', () => {
     await act(async () => Promise.resolve());
 
     await typeAndEnter('first post');
-    expect(onSend).toHaveBeenCalledWith('first post', expect.any(String), [
-      imagePart,
-    ]);
+    expect(onSend).toHaveBeenCalledWith(
+      'first post',
+      expect.any(String),
+      [imagePart],
+      undefined
+    );
 
     await pasteFiles([imageFile('second.png')]);
     await act(async () => Promise.resolve());

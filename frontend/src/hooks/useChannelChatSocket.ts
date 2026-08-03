@@ -7,6 +7,7 @@ import {
   mergeHistoryPage,
   type ChannelMessage,
   type ChannelMessagePart,
+  type ChannelPostSteering,
   type ChannelReducerState,
 } from '../../../shared/channel-chat-protocol.js';
 import {
@@ -70,6 +71,8 @@ export interface UseChannelChatSocketState {
       clientMessageId?: string;
       threadId?: string;
       parts?: ChannelMessagePart[];
+      /** #1308 slice 4: `'interrupt'` cancels the agent's live turn first. */
+      steering?: ChannelPostSteering;
     }
   ) => Promise<ChannelMessage>;
   postPending: boolean;
@@ -411,6 +414,7 @@ export function useChannelChatSocket(
         clientMessageId?: string;
         threadId?: string;
         parts?: ChannelMessagePart[];
+        steering?: ChannelPostSteering;
       }
     ): Promise<ChannelMessage> => {
       const cid = channelIdRef.current;
@@ -427,6 +431,7 @@ export function useChannelChatSocket(
           clientMessageId,
           ...(opts?.parts !== undefined ? { parts: opts.parts } : {}),
           ...(opts?.threadId !== undefined ? { threadId: opts.threadId } : {}),
+          ...(opts?.steering !== undefined ? { steering: opts.steering } : {}),
         });
       } catch (err) {
         if (err instanceof HttpError) setPostError(err);

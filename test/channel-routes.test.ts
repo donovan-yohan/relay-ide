@@ -626,6 +626,47 @@ describe('channel routes — read / write contract', () => {
     expect(h.store.history(h.channelId)).toHaveLength(1);
   });
 
+  // #1308 slice 4 review: the composer keeps its `clientMessageId` after a
+  // failed send, so "queue → looked like it failed → interrupt & send" replays a
+  // known id. The row must not be duplicated, but the interrupt must still land
+  // — otherwise the UI reports an interrupt-and-send that did neither.
+  it('applies steering on an idempotent replay without re-posting the row', async () => {
+    const steered: Array<{ id: string; steering: string }> = [];
+    const h = await harness({
+      binder: {
+        steerExisting: (message, steering) => {
+          steered.push({ id: message.id, steering });
+        },
+      },
+    });
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const first = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'wait, stop', clientMessageId: 'c-steer' },
+    });
+    expect(first.status).toBe(201);
+    expect(steered).toHaveLength(0); // plain queue post never steers
+
+    const replay = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: {
+        text: 'wait, stop',
+        clientMessageId: 'c-steer',
+        steering: 'interrupt',
+      },
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.body.message.id).toBe(first.body.message.id);
+    expect(h.store.history(h.channelId)).toHaveLength(1);
+    expect(steered).toEqual([
+      { id: first.body.message.id, steering: 'interrupt' },
+    ]);
+  });
+
   it('paginates history with limit and afterSeq', async () => {
     const h = await harness();
     const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;

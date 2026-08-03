@@ -195,6 +195,96 @@ Channel controls include:
 - inspect roster availability and live status;
 - designate the channel orchestrator.
 
+### Mid-turn steering
+
+Posting to a channel whose bound profile is already mid-turn never opens a
+second concurrent turn and never drops the message. The post joins that
+binding's FIFO queue, and the queue drains on turn completion.
+
+- **Queue (default).** Human posts that arrived while the agent was busy drain
+  into ONE next turn. The newest of them is the trigger; the rest arrive as
+  context rows of the same packet, because the packet is rebuilt from the
+  durable message log. Three impatient messages cost one turn, not three.
+- **What never coalesces.** Coalescing folds older posts into a newer one's
+  packet, so it only applies where that fold is lossless. A run stops at a post
+  from another thread scope, an agent-authored post, a post whose sequence
+  number is not strictly newer than the run's head, or a post carrying **image
+  attachments** — the per-packet image budget is per packet, not per message, so
+  an image-bearing post keeps one-trigger-one-turn and its own budget. Anything
+  the run stops at simply drains on the following completion.
+- **Re-queued sends never coalesce, in either direction.** A send retried after
+  a transport failure is re-queued behind whatever arrived meanwhile, and the
+  turn that displaced it has already advanced the binding's delivery cursor past
+  its sequence number. Context rows are selected with `seq > lastDeliveredSeq`,
+  so such a post cannot survive as a context row of anyone else's packet — it
+  would be neither trigger nor context and would vanish. It therefore always
+  triggers its own turn, where the packet footer renders it unconditionally,
+  whether it sits at the head of a would-be run or in the middle of one. At the
+  queue cap it is never superseded and never supersedes; that case takes the
+  explicit drop row instead.
+- **Interrupt and send.** The post route takes an explicit `steering` body
+  field set to `"interrupt"`. It cancels the live turn through the same
+  interrupt path the header control uses — the partial reply finalizes
+  `interrupted` — and the new message triggers as soon as that turn releases.
+  Steering is never inferred from message text.
+- **Agent posts never steer.** Sender attribution is server-derived, so an
+  agent (including a CLI-gateway actor) cannot cancel another agent's turn, and
+  agent-authored triggers are never coalesced away. Agent fan-out stays bounded
+  by the consecutive-agent-turn brake.
+- **Queue cap.** The per-binding cap still bounds distinct queued turns. An
+  over-cap post that would have coalesced with the queue tail supersedes it
+  instead of being refused — same trigger, same packet — so fast operator typing
+  is never announced as dropped. Anything the tail cannot represent — see "what
+  never coalesces" above — still produces the explicit drop row.
+- **Idempotent replay still steers.** The post route dedupes on
+  `clientMessageId`, and the composer keeps that id after a failed send. A
+  replay that carries `steering` therefore applies the interrupt to the
+  already-persisted row rather than swallowing it; the message is not re-routed,
+  because it is already queued. The replay skips a binding whose live turn was
+  triggered by that same message: if it drained between the two posts, the turn
+  now running IS the operator's answer, and cancelling it would be the opposite
+  of what they asked for.
+- **Observability.** The `channel-agent-status` event and the roster's
+  `binding` object both carry `queuedCount`.
+- **Restart.** The queue is in-memory turn-trigger state. A hub restart loses
+  pending triggers but never loses messages — every queued post is already
+  durable — and the operator re-triggers by sending again.
+
+#### Steering in the UI
+
+The composer is the steering surface. While a bound agent is mid-turn its bar
+reveals two explicit controls — no menu, no inference:
+
+- **queue** (also plain <kbd>enter</kbd>) posts with no steering field, so the
+  message waits for the live turn.
+- **interrupt & send** (also <kbd>cmd/ctrl</kbd>+<kbd>enter</kbd>) posts
+  `steering: "interrupt"`, reusing the header control's black-square vocabulary.
+  With no live turn the modifier is a plain send, never a silent variant.
+
+The thread panel's composer inherits both, because a threaded reply queues on
+exactly the same binding.
+
+Two read-back affordances make the wait visible:
+
+- the in-timeline presence row suffixes the agent's activity with
+  `(n queued)`, resolved from `queuedCount` on the same lane its status came
+  from (socket transition or roster snapshot, whichever is newer);
+- a message the operator sent into a busy agent grows a dim chip reading
+  `queued — <agent> is mid-turn`.
+
+**The chip's signal.** Steering intent is deliberately not persisted, so the
+durable row cannot say a message is waiting; the chip is client-side memory of
+the send. It is created from the send-time agent status and retired by a
+per-agent _drain generation_ derived from `queuedCount`: the generation advances
+on any transition that reports an empty queue, which is exactly what the binder
+emits when it splices the queued run out, immediately before the consuming turn
+starts. A send snapshots the generation before its POST and keeps the chip only
+while that snapshot is still current, so a turn that drains during the round trip
+leaves no chip behind. Both imprecisions fail toward silence: a send that queued
+can miss its chip, and one that was already consumed can never keep one. Marks
+are swept on every insert, so the client's memory of them is bounded by sends
+still waiting rather than by session length.
+
 ## Limits and failure behavior
 
 - Message bodies and detail payloads are byte-bounded.

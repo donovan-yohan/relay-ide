@@ -645,9 +645,15 @@ export function useEventSocket({
           useChannelAgentStatusStore.getState().statusByChannelAgent[
             channelAgentStatusKey(msg.channelId, msg.agentId)
           ];
-        useChannelAgentStatusStore
-          .getState()
-          .recordStatus(msg.channelId, msg.agentId, msg.status, msg.runtimeId);
+        useChannelAgentStatusStore.getState().recordStatus(
+          msg.channelId,
+          msg.agentId,
+          msg.status,
+          msg.runtimeId,
+          // A hub that predates #1308 slice 4 omits the field; absent means
+          // "nothing queued", which is also what an unqueued binding reports.
+          msg.queuedCount ?? 0
+        );
         // #1308 slice 5: the ONE trigger the socket carries end to end. Default
         // OFF, so this is inert until the operator opts in from Settings.
         const notifyChannel = cachedNotifyChannel(queryClient, msg.channelId);

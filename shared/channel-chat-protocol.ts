@@ -62,6 +62,35 @@ export type ChannelTruncationReason =
   | 'restart';
 export type ChannelBodyFormat = 'markdown' | 'text';
 
+/**
+ * Mid-turn steering intent carried on a channel post (#1308 slice 4).
+ *
+ * EXPLICIT MECHANICS ONLY — the operator picks this, it is never inferred from
+ * the message text. Absent (the default) means "queue it": a post addressed to
+ * an agent that is already mid-turn joins that binding's FIFO queue and rides
+ * the NEXT turn. `'interrupt'` means "interrupt and send": the agent's live turn
+ * is cancelled through the existing interrupt path (its partial row finalizes
+ * `interrupted`) and the new message triggers as soon as that turn releases.
+ *
+ * Honored only for HUMAN senders — attribution is server-derived, so an agent
+ * post can never cancel another agent's turn (see the binder's steering gate).
+ */
+export type ChannelPostSteering = 'interrupt';
+
+/** All accepted `steering` body values, for route validation + error copy. */
+export const CHANNEL_POST_STEERING_VALUES: readonly ChannelPostSteering[] = [
+  'interrupt',
+];
+
+export function isChannelPostSteering(
+  value: unknown
+): value is ChannelPostSteering {
+  return (
+    typeof value === 'string' &&
+    (CHANNEL_POST_STEERING_VALUES as readonly string[]).includes(value)
+  );
+}
+
 export interface ChannelSenderRef {
   kind: ChannelSenderKind;
   /**

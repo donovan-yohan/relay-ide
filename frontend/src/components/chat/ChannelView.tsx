@@ -9,6 +9,7 @@ import type {
   ChannelMessage,
   ChannelMessageId,
   ChannelMessagePart,
+  ChannelPostSteering,
 } from '../../../../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../../../../shared/agent-profile.js';
 import type { AgentRole } from '../../../../shared/agent-roster.js';
@@ -39,8 +40,14 @@ import {
 import {
   channelAgentStatusKey,
   resolveEffectiveAgentStatus,
+  resolveEffectiveQueuedCount,
   useChannelAgentStatusStore,
 } from '../../lib/stores/channel-agent-status.js';
+import {
+  queuedSendCopy,
+  snapshotQueueDrainSeqs,
+  useChannelQueuedSendsStore,
+} from '../../lib/stores/channel-queued-sends.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { showToast } from '../../lib/stores/toasts.js';
 import { AgentBadge } from '../AgentBadge.js';
@@ -193,31 +200,95 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
 
   const [designatePending, setDesignatePending] = useState(false);
 
+  /**
+   * The busy agents this view would be steering RIGHT NOW, mirrored at render
+   * time (same discipline as `lastSeqRef` above) so the send callbacks can read
+   * the current set without being rebuilt on every status transition. Assigned
+   * further down, once `agentChips` exists.
+   */
+  const steerTargetsRef = useRef<{ agentIds: string[]; labels: string[] }>({
+    agentIds: [],
+    labels: [],
+  });
+
+  /**
+   * One send path for both composers (#1308 slice 4 item 2). It carries the
+   * operator's explicit steering choice to the post route AND owns the queued
+   * chip's bookkeeping, because this is the only place that knows both what the
+   * agent was doing when the message left and which durable row it became.
+   */
+  const postSteered = useCallback(
+    async (
+      text: string,
+      clientMessageId: string,
+      parts: ChannelMessagePart[],
+      steering: ChannelPostSteering | undefined,
+      threadId: ChannelMessageId | null
+    ) => {
+      const targets = steerTargetsRef.current;
+      const statusStore = useChannelAgentStatusStore.getState();
+      // Snapshot BEFORE the round trip: a turn that drains while the POST is in
+      // flight must not leave a chip behind on a message it already consumed.
+      const drainSeqs = snapshotQueueDrainSeqs(
+        channelId,
+        targets.agentIds,
+        statusStore.queueDrainSeqByChannelAgent
+      );
+      const message = await post(text, {
+        clientMessageId,
+        parts,
+        ...(threadId !== null ? { threadId } : {}),
+        ...(steering ? { steering } : {}),
+      });
+      // Nothing was busy → nothing to wait behind. An explicit interrupt is not
+      // a wait either: the operator asked for the live turn to be cancelled, so
+      // announcing the message as "queued" would describe the opposite of what
+      // they chose.
+      if (targets.agentIds.length === 0 || steering === 'interrupt') return;
+      const current =
+        useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent;
+      for (const [key, seq] of Object.entries(drainSeqs)) {
+        if ((current[key] ?? 0) !== seq) return;
+      }
+      useChannelQueuedSendsStore.getState().markQueuedSend(message.id, {
+        channelId,
+        agentIds: targets.agentIds,
+        label: queuedSendCopy(targets.labels),
+        drainSeqs,
+      });
+    },
+    [channelId, post]
+  );
+
   const handleSend = useCallback(
     async (
       text: string,
       clientMessageId: string,
-      parts: ChannelMessagePart[]
+      parts: ChannelMessagePart[],
+      steering?: ChannelPostSteering
     ) => {
-      await post(text, { clientMessageId, parts });
+      await postSteered(text, clientMessageId, parts, steering, null);
     },
-    [post]
+    [postSteered]
   );
 
   const handleThreadSend = useCallback(
     async (
       text: string,
       clientMessageId: string,
-      parts: ChannelMessagePart[]
+      parts: ChannelMessagePart[],
+      steering?: ChannelPostSteering
     ) => {
       if (activeThreadRootId === null) return;
-      await post(text, {
+      await postSteered(
+        text,
         clientMessageId,
-        threadId: activeThreadRootId,
         parts,
-      });
+        steering,
+        activeThreadRootId
+      );
     },
-    [activeThreadRootId, post]
+    [activeThreadRootId, postSteered]
   );
 
   const hasTopLevelMessages = reducer.messages.some(
@@ -427,6 +498,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const statusUpdatedAtMap = useChannelAgentStatusStore(
     (s) => s.updatedAtByChannelAgent
   );
+  const queuedCountMap = useChannelAgentStatusStore(
+    (s) => s.queuedCountByChannelAgent
+  );
 
   // On channel switch, drop this channel's per-agent socket statuses so the
   // freshly-fetched roster is authoritative on open; live transitions repopulate
@@ -434,8 +508,17 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   // never ran and a stale busy chip could survive a channel round-trip (#1167).
   useEffect(() => {
     const { clearChannel } = useChannelAgentStatusStore.getState();
+    const clearQueuedSends = useChannelQueuedSendsStore.getState().clearChannel;
     clearChannel(channelId);
-    return () => clearChannel(channelId);
+    // Queued-send marks are anchored to drain generations that this very reset
+    // discards, so they must go with them — otherwise a mark snapshotted at
+    // generation N would match the fresh zero of a re-entered channel and light
+    // a chip for a send that has long since been answered (#1308 slice 4).
+    clearQueuedSends(channelId);
+    return () => {
+      clearChannel(channelId);
+      clearQueuedSends(channelId);
+    };
   }, [channelId]);
 
   const streamingProfileProviders = useMemo(() => {
@@ -485,6 +568,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       agentId: string;
       status: ChannelAgentStatus;
       role?: AgentRole;
+      queuedCount: number;
       identity: ReturnType<typeof resolveSenderIdentity>;
     }> = [];
     for (const agentId of candidateIds) {
@@ -497,6 +581,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         rosterStatus: entry?.binding?.status,
         rosterUpdatedAt,
         streaming,
+      });
+      // Same lane the status came from (#1308 slice 4 item 2c), so the presence
+      // row can never pair a live status with a stale count or the reverse.
+      const queuedCount = resolveEffectiveQueuedCount({
+        socketQueuedCount: queuedCountMap[key],
+        socketUpdatedAt: statusUpdatedAtMap[key],
+        rosterQueuedCount: entry?.binding?.queuedCount,
+        rosterUpdatedAt,
       });
       // Show a chip for a bound agent (even when idle) or one that is currently
       // active/streaming — but drop an unbound agent whose only signal is a stale
@@ -513,6 +605,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       chips.push({
         agentId,
         status,
+        queuedCount,
         ...(entry?.role ? { role: entry.role } : {}),
         identity,
       });
@@ -523,6 +616,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     rosterUpdatedAt,
     statusMap,
     statusUpdatedAtMap,
+    queuedCountMap,
     streamingProfileProviders,
     channelId,
   ]);
@@ -551,6 +645,21 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     }
     return ids;
   }, [agentChips]);
+
+  // #1308 slice 4 item 2b. The composer's steering cluster keys on the SAME chip
+  // signal, so what the composer offers and what the header says the agent is
+  // doing can never disagree.
+  const busyAgentLabels = useMemo(
+    () =>
+      agentChips
+        .filter((chip) => chip.status !== 'idle')
+        .map((chip) => chip.identity.label),
+    [agentChips]
+  );
+  steerTargetsRef.current = {
+    agentIds: [...busyAgentIds],
+    labels: busyAgentLabels,
+  };
 
   // Wired only while the channel is live, exactly like edit/delete below: a
   // retry re-runs a turn against an archived (read-only) channel, so the route
@@ -848,6 +957,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             {...(dmPlaceholder ? { placeholder: dmPlaceholder } : {})}
             {...(channel?.members ? { members: channel.members } : {})}
             onSend={handleSend}
+            busyAgentLabels={busyAgentLabels}
             postPending={postPending}
             storeDown={storeDown}
             archived={archived}
@@ -866,6 +976,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             liveMessages={reducer.messages}
             onClose={() => setActiveThreadRootId(null)}
             onSend={handleThreadSend}
+            busyAgentLabels={busyAgentLabels}
             postPending={postPending}
             storeDown={storeDown}
             archived={archived}

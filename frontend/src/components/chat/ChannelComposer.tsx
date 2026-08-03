@@ -11,6 +11,7 @@ import type {
   ChannelImagePart,
   ChannelMemberRef,
   ChannelMessagePart,
+  ChannelPostSteering,
 } from '../../../../shared/channel-chat-protocol.js';
 import {
   filterMentionContacts,
@@ -33,6 +34,14 @@ const ALLOWED_IMAGE_MIMES = new Set([
 export const CHANNEL_COMPOSER_MAX_IMAGES = 4;
 export const CHANNEL_COMPOSER_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+/** Tooltip for the queueing default — names who the message is waiting on. */
+function queuedSendHint(busyAgentLabels: readonly string[]): string {
+  const first = busyAgentLabels[0];
+  return busyAgentLabels.length === 1 && first
+    ? `queue behind ${first}'s turn`
+    : 'queue behind the current turn';
+}
+
 interface PendingImage {
   localId: string;
   file: File;
@@ -53,8 +62,16 @@ interface ChannelComposerProps {
   onSend: (
     text: string,
     clientMessageId: string,
-    parts: ChannelMessagePart[]
+    parts: ChannelMessagePart[],
+    steering?: ChannelPostSteering
   ) => Promise<void>;
+  /**
+   * Labels of the bound agents that are mid-turn right now (#1308 slice 4).
+   * Non-empty reveals the steering cluster: the default send QUEUES behind the
+   * live turn, and an explicit second control interrupts it first. Omitted on
+   * surfaces with no status signal, which simply keeps the plain composer.
+   */
+  busyAgentLabels?: readonly string[];
   postPending: boolean;
   /** 503 CHANNEL_STORE_UNAVAILABLE — persistent inline banner, input stays live. */
   storeDown: boolean;
@@ -70,6 +87,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   placeholder,
   members,
   onSend,
+  busyAgentLabels,
   postPending,
   storeDown,
   archived,
@@ -259,51 +277,58 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     if (el) setCaret(el.selectionStart ?? 0);
   }, []);
 
-  const submit = useCallback(() => {
-    const content = draft.trim();
-    if (sendingRef.current) return;
-    if (images.some((image) => image.status === 'uploading')) {
-      setAttachmentError('wait for image uploads to finish');
-      return;
-    }
-    if (images.some((image) => image.status === 'failed')) {
-      setAttachmentError('retry or remove failed images before sending');
-      return;
-    }
-    const parts = images.flatMap((image) => (image.part ? [image.part] : []));
-    if (!content && parts.length === 0) return;
-    const submittedImageIds = new Set(images.map((image) => image.localId));
-    const submittedImages = images;
-    if (!clientIdRef.current) clientIdRef.current = createBrowserId('chm');
-    const clientMessageId = clientIdRef.current;
-    sendingRef.current = true;
-    void onSend(content, clientMessageId, parts)
-      .then(() => {
-        // Success: the row arrives via the socket, not this promise. Reset the
-        // draft and idempotency key so the next message is a fresh attempt.
-        clientIdRef.current = null;
-        setDraft('');
-        setCaret(0);
-        for (const image of submittedImages) revokePreview(image);
-        updateImages((current) =>
-          current.filter((image) => !submittedImageIds.has(image.localId))
-        );
-        if (
-          imagesRef.current.every((image) =>
-            submittedImageIds.has(image.localId)
-          )
-        ) {
-          setAttachmentError(null);
-        }
-      })
-      .catch(() => {
-        // Keep the draft AND the same clientMessageId so a retry (press enter
-        // again) dedupes server-side instead of double-posting.
-      })
-      .finally(() => {
-        sendingRef.current = false;
-      });
-  }, [draft, images, onSend, revokePreview, updateImages]);
+  // #1308 slice 4 item 2b. `busy` is what turns the bar into a steering cluster;
+  // it is derived from the caller's live status signal, never from the draft.
+  const busy = (busyAgentLabels?.length ?? 0) > 0;
+
+  const submit = useCallback(
+    (steering?: ChannelPostSteering) => {
+      const content = draft.trim();
+      if (sendingRef.current) return;
+      if (images.some((image) => image.status === 'uploading')) {
+        setAttachmentError('wait for image uploads to finish');
+        return;
+      }
+      if (images.some((image) => image.status === 'failed')) {
+        setAttachmentError('retry or remove failed images before sending');
+        return;
+      }
+      const parts = images.flatMap((image) => (image.part ? [image.part] : []));
+      if (!content && parts.length === 0) return;
+      const submittedImageIds = new Set(images.map((image) => image.localId));
+      const submittedImages = images;
+      if (!clientIdRef.current) clientIdRef.current = createBrowserId('chm');
+      const clientMessageId = clientIdRef.current;
+      sendingRef.current = true;
+      void onSend(content, clientMessageId, parts, steering)
+        .then(() => {
+          // Success: the row arrives via the socket, not this promise. Reset the
+          // draft and idempotency key so the next message is a fresh attempt.
+          clientIdRef.current = null;
+          setDraft('');
+          setCaret(0);
+          for (const image of submittedImages) revokePreview(image);
+          updateImages((current) =>
+            current.filter((image) => !submittedImageIds.has(image.localId))
+          );
+          if (
+            imagesRef.current.every((image) =>
+              submittedImageIds.has(image.localId)
+            )
+          ) {
+            setAttachmentError(null);
+          }
+        })
+        .catch(() => {
+          // Keep the draft AND the same clientMessageId so a retry (press enter
+          // again) dedupes server-side instead of double-posting.
+        })
+        .finally(() => {
+          sendingRef.current = false;
+        });
+    },
+    [draft, images, onSend, revokePreview, updateImages]
+  );
 
   // Splice the selected SELECTABLE contact into the draft as plain mention text
   // (no rich pill), replacing the active trigger span. The inserted text
@@ -370,10 +395,17 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       lineBreakGuardRef.current.reset();
       if (e.key === 'Enter') {
         e.preventDefault();
-        submit();
+        // #1308 slice 4 item 2b. Enter keeps its one meaning (send); the
+        // modifier only changes what happens to the agent's LIVE turn, and only
+        // while there is one — cmd/ctrl+enter on an idle channel is a plain
+        // send, never a silently-different action. No conflict: the composer's
+        // own bindings are enter / shift+enter / palette arrows / tab / escape,
+        // and no global handler claims cmd+enter.
+        if ((e.metaKey || e.ctrlKey) && busy) submit('interrupt');
+        else submit();
       }
     },
-    [paletteVisible, entries, activeIndex, applyMention, submit]
+    [paletteVisible, entries, activeIndex, applyMention, busy, submit]
   );
 
   // Mobile IME parity: some IMEs only report a beforeinput line-break intent for
@@ -563,8 +595,48 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         >
           +img
         </button>
+        {busy ? (
+          // Mid-turn steering cluster (#1308 slice 4 item 2b). Two EXPLICIT
+          // actions, no menu and no inference: the default send queues behind
+          // the live turn (the operator's row grows a "queued" chip), and the
+          // second one cancels that turn first. It reuses the header chip's
+          // interrupt glyph — the black square is already the one interrupt
+          // vocabulary in the product — with danger-tinted chrome so the
+          // destructive member of the pair reads differently at rest.
+          <span
+            className="ch-composer__steer"
+            role="group"
+            aria-label="mid-turn steering"
+          >
+            <button
+              type="button"
+              className="ch-composer__steer-btn"
+              onClick={() => submit()}
+              title={queuedSendHint(busyAgentLabels ?? [])}
+            >
+              queue
+            </button>
+            <button
+              type="button"
+              className="ch-composer__steer-btn ch-composer__steer-btn--interrupt"
+              onClick={() => submit('interrupt')}
+              aria-label="interrupt and send"
+              title="interrupt and send"
+            >
+              <span aria-hidden="true">■</span> interrupt &amp; send
+            </button>
+          </span>
+        ) : null}
         <span className="ch-composer__hint">
-          <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>@</kbd>mention
+          {busy ? (
+            <>
+              <kbd>↵</kbd>queue <kbd>⌘↵</kbd>interrupt <kbd>⇧↵</kbd>newline
+            </>
+          ) : (
+            <>
+              <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>@</kbd>mention
+            </>
+          )}
         </span>
       </div>
     </div>

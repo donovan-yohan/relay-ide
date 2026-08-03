@@ -1578,8 +1578,8 @@ async function main(): Promise<void> {
       })
     : null;
   if (channelAgentBinder) {
-    channelHub.onMessagePosted((message, mentions) =>
-      channelAgentBinder.handleMessagePosted(message, mentions)
+    channelHub.onMessagePosted((message, mentions, options) =>
+      channelAgentBinder.handleMessagePosted(message, mentions, options)
     );
   }
 

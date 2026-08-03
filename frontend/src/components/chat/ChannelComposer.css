@@ -165,6 +165,51 @@
   opacity: 0.4;
 }
 
+/* mid-turn steering cluster (#1308 slice 4). Outline-only, zero radius, mono,
+   lowercase — DESIGN.md buttons. Ghost for the queueing default, danger tint for
+   the member that cancels a live turn, so the destructive one is legible at rest
+   without a confirm step. */
+.ch-composer__steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ch-composer__steer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-composer__steer-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-composer__steer-btn--interrupt {
+  border-color: color-mix(in srgb, var(--status-error) 50%, transparent);
+  color: var(--status-error);
+}
+
+.ch-composer__steer-btn--interrupt:hover {
+  border-color: var(--status-error);
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
 .ch-composer__hint kbd {
   border: 1px solid var(--border);
   padding: 0 4px;
@@ -213,6 +258,12 @@
   .ch-composer__bar {
     gap: 4px;
     padding: 3px 4px;
+  }
+
+  /* Touch has no cmd+enter, so the two explicit steering controls carry the
+     whole feature there and the keyboard hint is dropped rather than wrapped. */
+  .ch-composer__steer ~ .ch-composer__hint {
+    display: none;
   }
 
   .ch-composer__attachments {

@@ -6,6 +6,7 @@ import {
   type ChannelMemberRef,
   type ChannelMention,
   type ChannelMessage,
+  type ChannelPostSteering,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -92,9 +93,19 @@ interface Accumulator {
   updateTimer: NodeJS.Timeout | null;
 }
 
+/**
+ * Per-post routing options carried alongside the durable row (#1308 slice 4).
+ * Additive and optional: the hub stays a dumb fan-out and never interprets
+ * `steering` — it only forwards the operator's explicit choice to the binder.
+ */
+export interface ChannelMessagePostedOptions {
+  steering?: ChannelPostSteering;
+}
+
 export type ChannelMessagePostedHandler = (
   message: ChannelMessage,
-  mentions: ChannelMention[]
+  mentions: ChannelMention[],
+  options?: ChannelMessagePostedOptions
 ) => void;
 
 export type ChannelBadgeBroadcaster = (
@@ -121,7 +132,11 @@ export interface ChannelHub {
     ws: ChannelSocket,
     input: { channelId: string; sinceSeq: number | null }
   ): void;
-  broadcastCreated(message: ChannelMessage, mentions?: ChannelMention[]): void;
+  broadcastCreated(
+    message: ChannelMessage,
+    mentions?: ChannelMention[],
+    options?: ChannelMessagePostedOptions
+  ): void;
   beginStreamBroadcast(message: ChannelMessage): void;
   pushDelta(messageId: string, text: string): void;
   /** Debounced authoritative full-row refresh for streaming card state. */
@@ -539,7 +554,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       ws.on('error', () => removeSubscriber(channelId, sub));
     },
 
-    broadcastCreated(message, mentions) {
+    broadcastCreated(message, mentions, options) {
       broadcast(message.channelId, {
         type: 'channel-message-created-v1',
         channelId: message.channelId,
@@ -550,7 +565,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       const resolved = mentions ?? message.mentions ?? [];
       for (const handler of [...postedHandlers]) {
         try {
-          handler(message, resolved);
+          handler(message, resolved, options);
         } catch (err) {
           logger.warn('onMessagePosted handler error:', err);
         }
