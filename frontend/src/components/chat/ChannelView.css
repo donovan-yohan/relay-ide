@@ -263,6 +263,14 @@
   min-width: 0;
 }
 
+/* Presence row with no history behind it: push it to the foot of the pane next
+   to the composer instead of stranding it in the top-left corner. `margin-top`
+   auto resolves to 0 once content overflows, so the scroll model is unchanged
+   and this class is only applied when the timeline holds no message nodes. */
+.ch-tl-content--presence-only {
+  margin-top: auto;
+}
+
 /* Square, outline-only floating affordance per DESIGN.md. Info matches the
    unread-divider semantics. */
 .ch-new-messages {
@@ -330,6 +338,57 @@
 }
 
 .ch-unread-line__label {
+  white-space: nowrap;
+}
+
+/* in-timeline agent presence (#1277) — "hermes is thinking…" at the foot of the
+   conversation. Dim secondary text, zero radius, shared braille spinner as the
+   only motion. No shimmer, no particles, no emoji (DESIGN.md §6 / motion rules);
+   TuiProgress already freezes on prefers-reduced-motion. */
+.ch-presence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ch-presence__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-presence__glyph {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+}
+
+/* AgentBadge declares `color: var(--text-muted)` on the svg itself, which beats
+   the wrapper's inherited color. Opt back into the per-agent tint the wrapper's
+   inline `colorVar` sets, otherwise every presence glyph paints muted. */
+.ch-presence__glyph .agent-badge,
+.ch-presence__glyph .agent-badge--fallback {
+  color: currentColor;
+}
+
+.ch-presence__spinner {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ch-presence__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

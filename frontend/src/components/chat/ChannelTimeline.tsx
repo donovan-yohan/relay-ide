@@ -9,6 +9,12 @@ import {
   formatDayLabel,
   selectTopLevel,
 } from '../../lib/chat/channel-timeline-layout.js';
+import {
+  channelPresenceCopy,
+  type ChannelAgentPresence,
+} from '../../lib/chat/channel-agent-presence.js';
+import { AgentBadge } from '../AgentBadge.js';
+import { TuiProgress } from '../TuiProgress.js';
 import { ChannelMessageGroup } from './ChannelMessageGroup.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
@@ -31,6 +37,12 @@ interface ChannelTimelineProps {
   replyOnlyBackfillPaused?: boolean;
   onContinueHistory?: () => void;
   onOpenThread?: (rootId: ChannelMessageId) => void;
+  /**
+   * Busy agents with no live streaming row of their own (#1277). Already
+   * filtered by `selectChannelAgentPresence` — the timeline renders what it is
+   * given and owns no presence policy.
+   */
+  agentPresence?: readonly ChannelAgentPresence[];
 }
 
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
@@ -47,6 +59,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   replyOnlyBackfillPaused = false,
   onContinueHistory,
   onOpenThread,
+  agentPresence = [],
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
 
@@ -134,7 +147,18 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
         ) : loadingOlder ? (
           <div className="ch-loading-older">loading older messages…</div>
         ) : null}
-        <div ref={contentRef} className="ch-tl-content">
+        <div
+          ref={contentRef}
+          className={
+            // With zero history the presence row is the only content, and `.ch-tl`
+            // is a top-anchored flex column — the row would otherwise sit alone in
+            // the top-left corner of a full-height blank pane. Bottom-anchor only
+            // in that case so the normal scroll model is untouched (#1277 review).
+            nodes.length === 0 && agentPresence.length > 0
+              ? 'ch-tl-content ch-tl-content--presence-only'
+              : 'ch-tl-content'
+          }
+        >
           {nodes.map((node, index) => {
             if (node.kind === 'day-divider') {
               return (
@@ -185,6 +209,52 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
               />
             );
           })}
+          {agentPresence.length > 0 ? (
+            // Lives INSIDE `.ch-tl-content` on purpose: `useFollowingScroll`
+            // observes that element, so the row appearing/disappearing is a
+            // content resize the follow model already bottom-anchors. It carries
+            // no `data-channel-message-seq`, so it can never become a reader
+            // anchor, and it changes no message seq, so the "n new messages"
+            // pill cannot be inflated by presence.
+            // `role="status"` (implicit polite) makes this the innermost live
+            // region, so a transition is announced ONCE here instead of by the
+            // enclosing `role="log"`. The spinner is `aria-hidden`: its text
+            // mutates every 80ms and is pure decoration — without that, a nested
+            // live region would announce ~12x/second per busy agent.
+            <div
+              className="ch-presence"
+              role="status"
+              aria-live="polite"
+              aria-label="agent presence"
+            >
+              {agentPresence.map((presence) => (
+                <div
+                  key={presence.agentId}
+                  className={`ch-presence__row ch-presence__row--${presence.status}`}
+                  data-channel-presence-agent={presence.agentId}
+                  data-channel-presence-status={presence.status}
+                >
+                  {presence.glyph ? (
+                    <span
+                      className="ch-presence__glyph"
+                      style={{ color: presence.colorVar }}
+                      aria-hidden="true"
+                    >
+                      <AgentBadge agent={presence.glyph} />
+                    </span>
+                  ) : null}
+                  <TuiProgress
+                    variant="braille"
+                    className="ch-presence__spinner"
+                    aria-hidden="true"
+                  />
+                  <span className="ch-presence__label">
+                    {channelPresenceCopy(presence)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
       {newMessageCount > 0 ? (

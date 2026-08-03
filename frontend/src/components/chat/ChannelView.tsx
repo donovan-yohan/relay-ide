@@ -23,6 +23,8 @@ import { isArchivedChannelPostError } from '../../lib/agent-channels.js';
 import { useRestoreTopicMutation } from '../../lib/hooks/use-restore-topic.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+import { selectChannelAgentPresence } from '../../lib/chat/channel-agent-presence.js';
+import { useStreamingPresenceHold } from './useStreamingPresenceHold.js';
 import {
   channelLastReadKey,
   useChannelActivityStore,
@@ -343,6 +345,21 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     return providers;
   }, [reducer.messages]);
 
+  // Presence suppression keys on MAIN-LANE streaming rows only. `ChannelTimeline`
+  // renders `selectTopLevel(messages)`, so an agent streaming a reply inside a
+  // thread draws its block cursor in the thread panel — the main lane shows
+  // nothing and must still announce "X is responding…" (#1277 review).
+  const topLevelStreamingAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const message of reducer.messages) {
+      if (message.status !== 'streaming' || message.sender.kind !== 'agent')
+        continue;
+      if (message.threadId !== null) continue;
+      ids.add(message.sender.id);
+    }
+    return ids;
+  }, [reducer.messages]);
+
   const rosterUpdatedAt = rosterChipsQuery.dataUpdatedAt;
   const agentChips = useMemo(() => {
     const roster = rosterChipsQuery.data ?? [];
@@ -404,6 +421,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     channelId,
   ]);
 
+  // In-timeline presence rows (#1277). Same chip signal, so a reload rebuilds
+  // the rows from `resolveEffectiveAgentStatus` for free — no new WS event. The
+  // suppression set is "owns a live main-lane streaming row", plus a trailing
+  // hold so the gap between two assistant items of one turn does not strobe the
+  // row in and out.
+  const presenceSuppression = useStreamingPresenceHold(
+    topLevelStreamingAgentIds
+  );
+  const agentPresence = useMemo(
+    () => selectChannelAgentPresence(agentChips, presenceSuppression),
+    [agentChips, presenceSuppression]
+  );
+
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
@@ -459,8 +489,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     );
   }
 
+  // Live presence mounts the timeline even with zero history so a DM's very
+  // first turn shows "<agent> is thinking…" instead of the static empty state
+  // (#1277). Smaller diff than duplicating the row inside `.ch-empty`, and the
+  // empty copy comes back the moment every agent goes idle again.
   const hasHistory =
-    reducer.messages.length > 0 || hasMoreOlder || loadingOlder;
+    reducer.messages.length > 0 ||
+    hasMoreOlder ||
+    loadingOlder ||
+    agentPresence.length > 0;
 
   return (
     <div className="ch-view" role="main" aria-label="channel">
@@ -602,6 +639,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               replyOnlyBackfillPaused={replyOnlyBackfillPaused}
               onContinueHistory={continueReplyOnlyBackfill}
               onOpenThread={setActiveThreadRootId}
+              agentPresence={agentPresence}
             />
           ) : (
             <div className="ch-empty">
