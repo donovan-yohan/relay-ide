@@ -78,12 +78,19 @@ async function harness(
     historyMaxBytes?: number;
     withAuth?: boolean;
     binder?: Partial<ChannelAgentBinder>;
+    /**
+     * Monotonic topic clock. The default is frozen, which is fine until a test
+     * cares about `updated_at DESC` rank — the rail read model's ordering — and
+     * needs "older than the 200 most recent" to be a fact rather than a
+     * tiebreak SQLite is free to resolve either way.
+     */
+    topicClock?: () => string;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
   const topicStore = createWorkspaceTopicStore({
     dbPath: path.join(dir, 'topics.db'),
-    now: () => '2026-07-18T00:00:00.000Z',
+    now: options.topicClock ?? (() => '2026-07-18T00:00:00.000Z'),
   });
   cleanup.push(() => topicStore.close());
   const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
@@ -2143,6 +2150,88 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     expect(empty.status).toBe(200);
     expect(empty.body.results).toEqual([]);
     expect(empty.body.unavailableReason).toBe('empty_query');
+  });
+
+  it('names a refused query instead of reporting it as a miss', async () => {
+    const h = await harness();
+    await post(h, h.channelId, 'a note the index would happily match');
+
+    // Text arrived, but nothing tokenizable: the index was never read, so the
+    // client must not print "no matches for ***".
+    const unsearchable = await search(h, 'q=***');
+    expect(unsearchable.status).toBe(200);
+    expect(unsearchable.body.results).toEqual([]);
+    expect(unsearchable.body.unavailableReason).toBe('no_searchable_term');
+
+    // Below the minimum searchable length the server refuses too — the UI gate
+    // is a courtesy, this route is reachable by any capability holder.
+    for (const short of ['q=a', 'q=ab']) {
+      const refused = await search(h, short);
+      expect(refused.body.results).toEqual([]);
+      expect(refused.body.unavailableReason).toBe('query_too_short');
+    }
+
+    // A dispatched query that genuinely misses carries NO reason, which is how
+    // the client tells "searched and found nothing" from "never searched".
+    const miss = await search(h, 'q=zzzznotpresent');
+    expect(miss.body.results).toEqual([]);
+    expect(miss.body.unavailableReason).toBeUndefined();
+  });
+
+  it('reaches channels the rail read model would have cut off', async () => {
+    // `topicStore.list()` caps at 200 rows by `updated_at DESC`; the store keeps
+    // up to 500. Building the search allowlist from that read model made every
+    // message in an older channel unreachable — indexed, matching, and never
+    // returned, with no truncation signal.
+    let tick = 0;
+    const h = await harness({
+      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+    });
+    const buried = await post(h, h.channelId, 'buried needle in an old chat');
+    for (let i = 0; i < 220; i += 1) {
+      h.topicStore.create({ workspaceId: 'ws', title: `Filler ${i}` });
+    }
+    expect(h.topicStore.list({ includeArchived: true })).toHaveLength(200);
+    expect(
+      h.topicStore
+        .list({ includeArchived: true })
+        .some((topic) => topic.id === h.channelId)
+    ).toBe(false);
+
+    const res = await search(h, 'q=needle');
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((hit) => hit.messageId)).toEqual([buried.id]);
+    expect(res.body.results[0]?.channelTitle).toBe('General');
+  });
+
+  it('lets workspace scoping narrow the answer, never the reach', async () => {
+    let tick = 0;
+    const h = await harness({
+      topicClock: () => new Date(Date.UTC(2026, 0, 1) + tick++ * 60_000).toISOString(),
+    });
+    const scoped = await post(h, h.channelId, 'scoped needle for one workspace');
+    // 220 newer channels in ANOTHER workspace. Scoping applied after a global
+    // 200-row window would leave nothing of `ws` to search at all.
+    for (let i = 0; i < 220; i += 1) {
+      h.topicStore.create({ workspaceId: 'ws-other', title: `Other ${i}` });
+    }
+    const res = await search(h, 'q=needle&workspaceId=ws');
+    expect(res.body.results.map((hit) => hit.messageId)).toEqual([scoped.id]);
+
+    // The scope still excludes: a hit in the other workspace stays out.
+    const elsewhere = h.topicStore.create({
+      workspaceId: 'ws-other',
+      title: 'Loud',
+    });
+    await post(h, elsewhere.id, 'needle somewhere else entirely');
+    expect(
+      (await search(h, 'q=needle&workspaceId=ws')).body.results.map(
+        (hit) => hit.messageId
+      )
+    ).toEqual([scoped.id]);
+    expect(
+      (await search(h, 'q=needle')).body.results.map((hit) => hit.messageId)
+    ).toHaveLength(2);
   });
 
   it('requires context:read and is reachable only past the auth gate', async () => {

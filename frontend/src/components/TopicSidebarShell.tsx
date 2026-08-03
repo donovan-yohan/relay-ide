@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
 import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
   parseChannelSearchSnippet,
   parseMentions,
   type ChannelMessageId,
@@ -1968,12 +1969,28 @@ function topicEmptyStateText(input: {
   return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
+/**
+ * Message-section empty state.
+ *
+ * `unavailableReason` is the server's (or, for a query the client refuses to
+ * send at all, the shell's) statement that the index was NEVER consulted. Each
+ * reason gets its own copy because "no matches" is a factual claim about the
+ * corpus: printing it for a query nothing ever looked up tells the operator
+ * their words are not in the transcript when the truth is that the search never
+ * ran.
+ */
 function messageEmptyStateText(input: {
   unavailableReason?: string | undefined;
   searchQuery: string;
 }): string {
   if (input.unavailableReason === 'empty_query') {
     return 'type to search messages';
+  }
+  if (input.unavailableReason === 'query_too_short') {
+    return `type ${CHANNEL_SEARCH_MIN_QUERY_CHARS} characters to search messages`;
+  }
+  if (input.unavailableReason === 'no_searchable_term') {
+    return 'no searchable term to look up';
   }
   return `no message matches for “${input.searchQuery.trim()}”`;
 }
@@ -3558,6 +3575,15 @@ export function TopicSidebarShell({
   // just the request — the #1288 lesson: two archive states sharing one key
   // serve the first answer to the second question, and the operator sees the
   // toggle do nothing.
+  //
+  // Gated at CHANNEL_SEARCH_MIN_QUERY_CHARS, unlike the chats section above:
+  // chat-title search is a JS scan over a bounded topic list, but a message
+  // query is an FTS5 prefix read whose one-character form ranks essentially the
+  // whole corpus and — synchronous sqlite on the request path — freezes the hub
+  // event loop while it does. The server refuses the same shape; this gate just
+  // means the first keystroke costs no request at all.
+  const messageSearchEnabled =
+    normalizedSearchQuery.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const messageSearchQuery = useQuery({
     queryKey: [
       'channel-message-search',
@@ -3576,7 +3602,7 @@ export function TopicSidebarShell({
         includeArchived: showArchived,
         ...(scopedWorkspaceId ? { workspaceId: scopedWorkspaceId } : {}),
       }),
-    enabled: normalizedSearchQuery.length > 0,
+    enabled: messageSearchEnabled,
     staleTime: 10_000,
   });
   const surfacesQuery = useQuery<WorkspaceSurface[]>({
@@ -3668,9 +3694,18 @@ export function TopicSidebarShell({
     [searchData]
   );
   const messageSearchData = messageSearchQuery.data;
+  // Read against what is TYPED, not against the settled value: while the
+  // debounce is still running on a third character the section must keep
+  // showing the previous state rather than flashing "type 3 characters" for
+  // one frame on its way to results.
+  const messageSearchTooShort =
+    typedSearchQuery.length < CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const messageResults = useMemo(
-    () => messageSearchData?.results ?? EMPTY_MESSAGE_RESULTS,
-    [messageSearchData]
+    () =>
+      messageSearchTooShort
+        ? EMPTY_MESSAGE_RESULTS
+        : (messageSearchData?.results ?? EMPTY_MESSAGE_RESULTS),
+    [messageSearchTooShort, messageSearchData]
   );
   // Keep the arrays passed to TopicSidebarView referentially stable so its
   // model/topicsById memoization is not invalidated on every render.
@@ -3730,12 +3765,24 @@ export function TopicSidebarShell({
       messageResults={messageResults}
       messageSearchLoading={
         searchActive &&
+        !messageSearchTooShort &&
         (searchDebouncePending ||
           (messageSearchQuery.isFetching && searchSettled))
       }
-      messageSearchError={messageSearchQuery.isError && searchSettled}
-      messageSearchTruncated={messageSearchData?.truncated ?? false}
-      messageSearchUnavailableReason={messageSearchData?.unavailableReason}
+      messageSearchError={
+        !messageSearchTooShort && messageSearchQuery.isError && searchSettled
+      }
+      messageSearchTruncated={
+        messageSearchTooShort ? false : (messageSearchData?.truncated ?? false)
+      }
+      // A refused query never reaches the server, so the reason it would have
+      // sent is synthesized here — otherwise the section falls through to
+      // "no message matches", a claim about a search that never ran.
+      messageSearchUnavailableReason={
+        messageSearchTooShort
+          ? 'query_too_short'
+          : messageSearchData?.unavailableReason
+      }
       onSearchQueryChange={setSearchQuery}
       onSearchRetry={() => {
         void topicSearchQuery.refetch();

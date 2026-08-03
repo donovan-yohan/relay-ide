@@ -14,6 +14,7 @@ import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
   type ChannelMessageId,
   type ChannelMessageSearchResult,
 } from '../shared/channel-chat-protocol.js';
@@ -361,5 +362,28 @@ describe('<CommandPalette /> message search (#1308 slice 2 item 3)', () => {
         el.textContent?.trim()
       )
     ).not.toContain('messages');
+  });
+
+  it('does not search below the minimum searchable query length', async () => {
+    // A one-character prefix ranks essentially the whole FTS corpus inside a
+    // synchronous sqlite call on the hub event loop. The palette debounces the
+    // keystroke but would otherwise still SEND it, so the gate is the length,
+    // not the pause.
+    expect(CHANNEL_SEARCH_MIN_QUERY_CHARS).toBe(3);
+    await renderPalette();
+    await search('s');
+    expect(searchUrls).toEqual([]);
+    await search('sq');
+    expect(searchUrls).toEqual([]);
+    expect(
+      [...container.querySelectorAll('.palette-category')].map((el) =>
+        el.textContent?.trim()
+      )
+    ).not.toContain('messages');
+
+    // The third character is what buys the index read.
+    await search('sql');
+    expect(searchUrls).toHaveLength(1);
+    expect(searchUrls[0]).toContain('q=sql');
   });
 });

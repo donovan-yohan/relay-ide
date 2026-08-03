@@ -15,6 +15,7 @@ import {
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
   CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
   isChannelMessagePart,
@@ -22,6 +23,7 @@ import {
   parseMentions,
   type ChannelAgentDetail,
   type ChannelMessageSearchHit,
+  type ChannelSearchUnavailableReason,
   type ChannelBodyFormat,
   type ChannelMemberRef,
   type ChannelMention,
@@ -281,33 +283,81 @@ END;
 `;
 
 /**
- * Translate operator text into an FTS5 MATCH expression.
+ * Split operator text into the terms a MATCH expression may quote.
  *
- * Every term is emitted as a QUOTED phrase. That is the escaping strategy, not
- * a stylistic choice: inside a phrase the only character with meaning is `"`
- * (doubled to escape), so an operator pasting `NOT`, `a:b`, `foo*` or `(` gets
- * a literal search instead of a syntax error or an accidental operator. The
- * final term additionally takes the `*` prefix operator so a search feels live
- * while the operator is still typing the word.
- *
- * Terms with no letter or digit are dropped — they would tokenize to an empty
- * phrase, which FTS5 rejects outright. A query left with no usable term returns
- * null, and the caller reports it as unsearchable rather than running it.
- *
- * Exported for tests: the escaping contract is the security-relevant half of
- * this feature and deserves direct assertions, not only end-to-end coverage.
+ * Terms with no letter or digit are dropped. Not because FTS5 would reject them
+ * — `MATCH '"***" *'` and `MATCH '"" *'` both execute cleanly and return zero
+ * rows — but because such a term can only ever contribute an empty phrase, so
+ * running it is a guaranteed-empty index read the caller can answer without a
+ * query. Length is counted in CODE POINTS: `[...term].length` so an astral
+ * character counts once rather than twice as UTF-16 units.
  */
-export function buildChannelSearchMatchQuery(raw: string): string | null {
-  const terms = raw
+function collectChannelSearchTerms(raw: string): string[] {
+  return raw
     .slice(0, CHANNEL_SEARCH_QUERY_MAX_CHARS)
     .split(/\s+/)
     .map((term) => term.replaceAll('"', ' ').trim())
     .filter((term) => /[\p{L}\p{N}]/u.test(term))
     .slice(0, CHANNEL_SEARCH_MAX_TERMS);
-  if (terms.length === 0) return null;
+}
+
+/**
+ * Why this query will not be dispatched to the index, or null when it will be.
+ *
+ * Exported so the route can answer `unavailableReason` from the SAME predicate
+ * the store applies, instead of inferring "no usable term" from an empty result
+ * array — which is indistinguishable from a genuine miss and made the client
+ * print "no matches" for text the index was never asked about.
+ */
+export function channelSearchUnavailableReason(
+  raw: string
+): ChannelSearchUnavailableReason | null {
+  if (raw.trim().length === 0) return 'empty_query';
+  const terms = collectChannelSearchTerms(raw);
+  if (terms.length === 0) return 'no_searchable_term';
+  if (
+    terms.length === 1 &&
+    [...(terms[0] ?? '')].length < CHANNEL_SEARCH_MIN_QUERY_CHARS
+  ) {
+    return 'query_too_short';
+  }
+  return null;
+}
+
+/**
+ * Translate operator text into an FTS5 MATCH expression.
+ *
+ * Every term is emitted as a QUOTED phrase. That is the escaping strategy, not
+ * a stylistic choice: inside a phrase the only character with meaning is `"`
+ * (doubled to escape), so an operator pasting `NOT`, `a:b`, `foo*` or `(` gets
+ * a literal search instead of a syntax error or an accidental operator.
+ *
+ * The final term takes the `*` prefix operator so a search feels live while the
+ * operator is still typing the word — but ONLY once it is at least
+ * `CHANNEL_SEARCH_MIN_QUERY_CHARS` code points long, and a query that reduces
+ * to one term shorter than that is refused outright (null). A one-character
+ * prefix expands to nearly the whole term dictionary, and `bm25()` +
+ * `ORDER BY score` must rank every match before `LIMIT` drops it; with
+ * synchronous better-sqlite3 on the request path that is a multi-second-to-
+ * multi-ten-second freeze of the entire hub event loop, reachable by one
+ * keystroke. Longer queries keep every term: `a` is a fine filter next to a
+ * real word, since the AND already bounds the match set.
+ *
+ * A query with no usable term returns null too, and the caller reports it via
+ * `channelSearchUnavailableReason` rather than running it.
+ *
+ * Exported for tests: the escaping contract is the security-relevant half of
+ * this feature and deserves direct assertions, not only end-to-end coverage.
+ */
+export function buildChannelSearchMatchQuery(raw: string): string | null {
+  if (channelSearchUnavailableReason(raw) !== null) return null;
+  const terms = collectChannelSearchTerms(raw);
+  const last = terms.length - 1;
   return terms
     .map((term, index) =>
-      index === terms.length - 1 ? `"${term}" *` : `"${term}"`
+      index === last && [...term].length >= CHANNEL_SEARCH_MIN_QUERY_CHARS
+        ? `"${term}" *`
+        : `"${term}"`
     )
     .join(' AND ');
 }
@@ -325,8 +375,20 @@ export function buildChannelSearchMatchQuery(raw: string): string | null {
  * EVERY message in every visible channel and probes the FTS index per row —
  * turning a term lookup into a full transcript scan that grows with history.
  * Pinning the order keeps the shape the query-plan test locks in: the FTS index
- * drives, and `channel_messages` is probed by rowid (its INTEGER PRIMARY KEY
- * alias), so the allowlist is a filter over matched rows rather than a scan.
+ * drives, and `channel_messages` is probed by rowid, so the allowlist is a
+ * filter over matched rows rather than a scan.
+ *
+ * That rowid is the table's IMPLICIT one — `channel_messages.id` is `TEXT
+ * PRIMARY KEY`, so there is no INTEGER PRIMARY KEY alias to make it stable.
+ * The external-content index keys every entry by that implicit rowid, which
+ * makes it the join key AND the identity contract:
+ *   * NEVER `VACUUM` (or `INSERT INTO ... SELECT` rebuild) `channel-chat.db`
+ *     without calling `rebuildChannelSearchIndex` afterwards. VACUUM renumbers
+ *     implicit rowids; the index would keep pointing at the OLD numbers and
+ *     search would answer with other channels' bodies under correct-looking
+ *     snippets — silent, and invisible to every existing assertion.
+ *   * `channel_messages` must never be declared `WITHOUT ROWID`; that removes
+ *     the mapping outright. A migration test asserts both of these.
  *
  * Ranking is bm25 ascending — SQLite returns a more-negative score for a better
  * match — with newest-first as the tiebreak so two equally relevant rows
@@ -1204,26 +1266,80 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
 }
 
 /**
+ * Source rows scanned per backfill commit. Bounded so a rebuild never holds one
+ * write transaction over the whole table: a single unbounded transaction grows
+ * the WAL by the size of the entire index and returns SQLITE_BUSY to any other
+ * process that opens the db meanwhile (dev and prod hubs sharing a config dir
+ * do exactly that), for as long as tokenization takes.
+ */
+const CHANNEL_SEARCH_BACKFILL_BATCH_ROWS = 5_000;
+
+/**
  * Rebuild the search index from `channel_messages`, in place.
  *
  * `'delete-all'` rather than FTS5's own `'rebuild'`: `rebuild` re-derives the
  * index from EVERY content row, which would drag system rows, detail cards,
  * tombstones and half-written streams back in. The index is a filtered
  * projection, so the backfill has to apply the same predicate the triggers do.
+ *
+ * Batched over rowid RANGES, not over `LIMIT/OFFSET` of the filtered set: the
+ * range bound comes from the source table's own rowid order, so each commit
+ * scans a bounded slice regardless of how selective the predicate is, and no
+ * row can be skipped or double-indexed by a shifting offset. Callers may pass
+ * `onBatch` to make a long rebuild visible in the journal instead of silent.
+ *
+ * The upper bound is SNAPSHOT once, before the first commit. Splitting the
+ * rebuild into several transactions means the sync triggers are live between
+ * them, so a row appended mid-rebuild is already indexed by the insert trigger;
+ * without the snapshot a later batch would re-scan it and index it twice.
+ * Snapshot below, triggers above, no overlap.
+ *
+ * MUST also be called after any maintenance that renumbers implicit rowids —
+ * see the rowid contract on `buildChannelMessageSearchSql`.
  */
-function rebuildChannelSearchIndex(db: Database.Database): number {
+function rebuildChannelSearchIndex(
+  db: Database.Database,
+  onBatch?: (progress: { scannedThrough: number; indexed: number }) => void
+): number {
   db.prepare(
     `INSERT INTO ${CHANNEL_SEARCH_TABLE}(${CHANNEL_SEARCH_TABLE}) VALUES('delete-all')`
   ).run();
-  const result = db
-    .prepare(
-      `INSERT INTO ${CHANNEL_SEARCH_TABLE}(rowid, id, channel_id, body_text)
-       SELECT m.rowid, m.id, m.channel_id, m.body_text
-         FROM channel_messages m
-        WHERE ${channelSearchIndexablePredicate('m')}`
-    )
-    .run();
-  return result.changes;
+  const snapshotMaxRowid =
+    (
+      db.prepare('SELECT MAX(rowid) AS hi FROM channel_messages').get() as {
+        hi: number | null;
+      }
+    ).hi ?? 0;
+  const nextBound = db.prepare(
+    `SELECT MAX(rowid) AS hi FROM (
+       SELECT rowid FROM channel_messages
+        WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?)`
+  );
+  const insertBatch = db.prepare(
+    `INSERT INTO ${CHANNEL_SEARCH_TABLE}(rowid, id, channel_id, body_text)
+     SELECT m.rowid, m.id, m.channel_id, m.body_text
+       FROM channel_messages m
+      WHERE m.rowid > ? AND m.rowid <= ?
+        AND ${channelSearchIndexablePredicate('m')}`
+  );
+  const commitBatch = db.transaction(
+    (from: number, through: number): number =>
+      insertBatch.run(from, through).changes
+  );
+  let indexed = 0;
+  let cursor = 0;
+  while (cursor < snapshotMaxRowid) {
+    const { hi } = nextBound.get(
+      cursor,
+      snapshotMaxRowid,
+      CHANNEL_SEARCH_BACKFILL_BATCH_ROWS
+    ) as { hi: number | null };
+    if (hi === null) break;
+    indexed += commitBatch(cursor, hi);
+    cursor = hi;
+    onBatch?.({ scannedThrough: cursor, indexed });
+  }
+  return indexed;
 }
 
 /**
@@ -1241,6 +1357,16 @@ function rebuildChannelSearchIndex(db: Database.Database): number {
  * Idempotent by construction — a healthy db returns before touching anything,
  * and the repair path is delete-all + backfill, so running it twice produces
  * the same index as running it once.
+ *
+ * The repair is two phases on purpose. The DDL commits FIRST, so the sync
+ * triggers are live for the whole backfill and a row appended mid-rebuild is
+ * indexed by them (the backfill's snapshot bound keeps the two from
+ * overlapping). The backfill then runs in bounded commits OUTSIDE that
+ * transaction — this is the hub boot path, and the previous single-transaction
+ * form held one writer over the entire tokenization pass (measured ~4s per 50k
+ * messages, so ~16s of silent stall on a 200k-message store) with nothing in
+ * the journal to explain the pause. Row counts and elapsed time are logged
+ * either way.
  */
 function ensureChannelSearchIndex(db: Database.Database): void {
   const hasTable = db
@@ -1257,7 +1383,7 @@ function ensureChannelSearchIndex(db: Database.Database): void {
   ).count;
   if (hasTable && triggerCount === CHANNEL_SEARCH_TRIGGERS.length) return;
 
-  const indexed = db.transaction(() => {
+  db.transaction(() => {
     // A partially-present trigger set is repaired by replacing all three: the
     // `IF NOT EXISTS` creates below would otherwise leave a stale survivor
     // whose body predates whatever change caused the repair.
@@ -1265,9 +1391,37 @@ function ensureChannelSearchIndex(db: Database.Database): void {
       db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
     }
     db.exec(CHANNEL_SEARCH_SCHEMA_SQL);
-    return rebuildChannelSearchIndex(db);
   })();
-  logger.info('channel search index rebuilt over %d message row(s)', indexed);
+
+  const sourceRows = (
+    db.prepare('SELECT COUNT(*) AS count FROM channel_messages').get() as {
+      count: number;
+    }
+  ).count;
+  const startedAt = Date.now();
+  logger.info(
+    'channel search index missing; backfilling over %d message row(s)',
+    sourceRows
+  );
+  const indexed = rebuildChannelSearchIndex(
+    db,
+    // One line per commit only once the store is big enough for the rebuild to
+    // be felt; below one batch the start/finish pair already says everything.
+    sourceRows > CHANNEL_SEARCH_BACKFILL_BATCH_ROWS
+      ? (progress) =>
+          logger.info(
+            'channel search backfill: %d row(s) indexed through rowid %d',
+            progress.indexed,
+            progress.scannedThrough
+          )
+      : undefined
+  );
+  logger.info(
+    'channel search index rebuilt over %d message row(s) (%d indexed) in %dms',
+    sourceRows,
+    indexed,
+    Date.now() - startedAt
+  );
 }
 
 function runMigrations(db: Database.Database): void {

@@ -374,6 +374,39 @@ export const CHANNEL_SEARCH_MAX_RESULTS = 50;
 /** Query text beyond this is truncated before it reaches the index. */
 export const CHANNEL_SEARCH_QUERY_MAX_CHARS = 256;
 
+/**
+ * Shortest term that may carry the FTS5 prefix operator, and the shortest
+ * single-term query that is dispatched to the index at all.
+ *
+ * This is a LOAD-BEARING guard, not a UX nicety. `buildChannelSearchMatchQuery`
+ * appends `*` to the final term so search feels live while typing, and a
+ * one-character prefix expands to essentially the whole term dictionary: every
+ * matching row must then be scored by `bm25()` and sorted before `LIMIT` can
+ * discard it. better-sqlite3 is synchronous and the route runs the query inline,
+ * so on a daily-driver-sized transcript that single keystroke holds the Node
+ * event loop — WebSocket channel traffic, PTY streaming and `/healthz` included
+ * — for as long as the ranking takes (tens of seconds at 50k messages).
+ *
+ * Both halves are enforced server-side (the store refuses to build the
+ * expression) and mirrored client-side (no request is issued at all), because a
+ * UI-only gate is not a guard: the route is reachable by any capability holder.
+ */
+export const CHANNEL_SEARCH_MIN_QUERY_CHARS = 3;
+
+/**
+ * Why a search request produced no index read.
+ *  * `empty_query` — nothing but whitespace was submitted.
+ *  * `query_too_short` — one term below CHANNEL_SEARCH_MIN_QUERY_CHARS, which
+ *    is refused rather than run (see that constant).
+ *  * `no_searchable_term` — text arrived but held no letter or digit (`***`),
+ *    so there is no term to look up.
+ * Absent means the index WAS consulted, so an empty `results` is a real miss.
+ */
+export type ChannelSearchUnavailableReason =
+  | 'empty_query'
+  | 'query_too_short'
+  | 'no_searchable_term';
+
 export interface ChannelSearchSnippetSegment {
   text: string;
   /** true when this run was a matched term and should be emphasized. */
@@ -446,8 +479,13 @@ export interface ChannelMessageSearchResponse {
   results: ChannelMessageSearchResult[];
   /** true when more hits existed than the cap returned. */
   truncated: boolean;
-  /** Set when the query could not be run at all, e.g. it held no searchable term. */
-  unavailableReason?: 'empty_query';
+  /**
+   * Set when the query was never dispatched to the index. Distinguishing this
+   * from a real miss is the whole point: without it a refused query and a
+   * consulted-but-empty index are the same response, and the client claims
+   * "no matches" for text the server declined to look up.
+   */
+  unavailableReason?: ChannelSearchUnavailableReason;
 }
 
 interface ChannelEventBaseV1 {

@@ -14,6 +14,7 @@ import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
   ChannelMessageStoreError,
+  channelSearchUnavailableReason,
   type ChannelHistoryFilter,
   type ChannelMessageStore,
 } from './channel-message-store.js';
@@ -605,14 +606,20 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const query = (rawQuery ?? '')
       .slice(0, CHANNEL_SEARCH_QUERY_MAX_CHARS)
       .trim();
-    if (!query) {
-      const empty: ChannelMessageSearchResponse = {
+    // Asked BEFORE any work: the store owns the predicate for what it will and
+    // will not run (blank text, no letter/digit, one term under the minimum
+    // searchable length), and answering from it keeps "refused" distinguishable
+    // from "consulted and empty". Without the distinction the client prints
+    // "no matches" for a query the index never saw.
+    const unavailableReason = channelSearchUnavailableReason(query);
+    if (unavailableReason) {
+      const unavailable: ChannelMessageSearchResponse = {
         query,
         results: [],
         truncated: false,
-        unavailableReason: 'empty_query',
+        unavailableReason,
       };
-      res.json(empty);
+      res.json(unavailable);
       return;
     }
     const includeArchived = parseBooleanQuery(req.query['includeArchived']);
@@ -625,12 +632,26 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // from the message log, so the visible-channel set is resolved here and
       // pushed INTO the index query as an allowlist. Filtering after the fact
       // would let 50 archived hits crowd out live ones and return a short page.
-      // Same bound as `GET /channels` (the store's 200-row list read model), so
-      // search reaches exactly the channels the rail can render.
+      //
+      // Enumerated through `listAllTopicIds()`, NOT `list()`. `list()` is the
+      // rail READ MODEL: it caps at WORKSPACE_TOPICS_MAX_LIST_ENTRIES (200) by
+      // `updated_at DESC` across all workspaces while the store retains up to
+      // WORKSPACE_TOPICS_MAX_STORED_ENTRIES (500), so building the allowlist
+      // from it made every message in the 201st-and-older channel silently
+      // unreachable — indexed, matching, and never returned, with no
+      // `truncated` signal to admit it. Worse, the scope filters ran AFTER that
+      // global window, so asking for one workspace narrowed the ANSWER instead
+      // of the search space. Reach must be the corpus; the rail's cap is a
+      // rendering budget. Cost is bounded by the 500-row retention: at most 500
+      // point reads on a debounced, minimum-length query.
+      const candidateIds = scopeChannelId
+        ? [scopeChannelId]
+        : topicStore.listAllTopicIds();
       const visible = new Map<string, WorkspaceTopic>();
-      for (const topic of topicStore.list({ includeArchived: true })) {
+      for (const candidateId of candidateIds) {
+        const topic = topicStore.get(candidateId);
+        if (!topic) continue;
         if (topic.source !== 'persisted') continue;
-        if (scopeChannelId && topic.id !== scopeChannelId) continue;
         if (scopeWorkspaceId && topic.workspaceId !== scopeWorkspaceId)
           continue;
         if (!includeArchived && topic.status === 'archived') continue;

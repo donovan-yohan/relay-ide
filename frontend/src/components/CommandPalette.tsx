@@ -40,7 +40,10 @@ import {
   type MessagePaletteResult,
 } from '../lib/command-palette-message-results.js';
 import type { PipelineHandoffArtifactEnvelope } from '../lib/pipeline-handoff-timeline.js';
-import type { ChannelMessageSearchResult } from '../../../shared/channel-chat-protocol.js';
+import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  type ChannelMessageSearchResult,
+} from '../../../shared/channel-chat-protocol.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import { openChannelMessageSelection } from '../lib/topic-selection.js';
 import {
@@ -645,14 +648,20 @@ function useArtifactPaletteResults(
  *
  * `enabled` carries `open` because the palette unmounts nothing when it closes
  * (`usePaletteState` only resets `query` on the way back IN), so without it a
- * closed palette would keep refetching the last query the operator typed.
+ * closed palette would keep refetching the last query the operator typed. It
+ * also carries CHANNEL_SEARCH_MIN_QUERY_CHARS: the palette is a keystroke
+ * surface over the same FTS5 index as the sidebar, and a one-character prefix
+ * query ranks essentially the whole corpus inside a synchronous sqlite call on
+ * the hub's event loop. The server refuses that shape too; this keeps the
+ * palette from asking. Other categories keep answering from the first
+ * character — they are in-memory filters, not index reads.
  */
 function useMessagePaletteResults(
   debouncedQuery: string,
   open: boolean
 ): MessagePaletteResult[] {
   const trimmed = debouncedQuery.trim();
-  const enabled = open && trimmed.length > 0;
+  const enabled = open && trimmed.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const { data } = useQuery({
     queryKey: ['channel-message-search', 'palette', trimmed],
     queryFn: () =>

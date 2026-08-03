@@ -10,11 +10,15 @@ import {
   buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
   buildChannelThreadSummarySql,
+  channelSearchUnavailableReason,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
-import type { ChannelSenderRef } from '../shared/channel-chat-protocol.js';
+import {
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  type ChannelSenderRef,
+} from '../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
 
 const cleanup: Array<() => void> = [];
@@ -1935,11 +1939,50 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     expect(
       s.searchMessages({ query: 'NOT gate' }).map((hit) => hit.messageId)
     ).toEqual([posted.id]);
-    // A quote cannot terminate the generated phrase.
-    expect(buildChannelSearchMatchQuery('say "hi"')).toBe('"say" AND "hi" *');
+    // A quote cannot terminate the generated phrase. `hi` is under the minimum
+    // prefix length, so it stays an EXACT phrase — the AND already bounds the
+    // match set, so a short trailing term needs no prefix expansion.
+    expect(buildChannelSearchMatchQuery('say "hi"')).toBe('"say" AND "hi"');
     // Nothing tokenizable is not a query at all.
     expect(buildChannelSearchMatchQuery('  ***  ')).toBeNull();
     expect(s.searchMessages({ query: '***' })).toEqual([]);
+  });
+
+  it('never builds a prefix expression for a short trailing term', () => {
+    // The P0 guard: `*` on a one-character term expands to nearly the whole
+    // term dictionary, and bm25 must rank every match before LIMIT drops it —
+    // synchronously, on the hub's event loop. Asserted on the EXPRESSION, not
+    // on latency, so the guard cannot be lost to a faster machine.
+    expect(CHANNEL_SEARCH_MIN_QUERY_CHARS).toBe(3);
+    expect(buildChannelSearchMatchQuery('a')).toBeNull();
+    expect(buildChannelSearchMatchQuery('ab')).toBeNull();
+    expect(buildChannelSearchMatchQuery('  a  ')).toBeNull();
+    expect(buildChannelSearchMatchQuery('abc')).toBe('"abc" *');
+    // Astral characters count once: length is code points, not UTF-16 units.
+    expect(buildChannelSearchMatchQuery('𝟙𝟚')).toBeNull();
+    // A short term next to a real one keeps its exact-phrase filter.
+    expect(buildChannelSearchMatchQuery('deploy a')).toBe('"deploy" AND "a"');
+    expect(buildChannelSearchMatchQuery('a deploy')).toBe(
+      '"a" AND "deploy" *'
+    );
+  });
+
+  it('names why a refused query was never dispatched to the index', () => {
+    const s = store();
+    seq(s, 'topic:alpha', 'a note that would match almost any prefix');
+    expect(channelSearchUnavailableReason('   ')).toBe('empty_query');
+    expect(channelSearchUnavailableReason('***')).toBe('no_searchable_term');
+    expect(channelSearchUnavailableReason('a')).toBe('query_too_short');
+    expect(channelSearchUnavailableReason('ab')).toBe('query_too_short');
+    expect(channelSearchUnavailableReason('abc')).toBeNull();
+    expect(channelSearchUnavailableReason('a note')).toBeNull();
+    // The store agrees with the predicate: every refused shape returns no hits
+    // WITHOUT reading the index, so the caller must not read an empty array as
+    // "searched and found nothing".
+    for (const query of ['   ', '***', 'a', 'ab']) {
+      expect(s.searchMessages({ query })).toEqual([]);
+    }
+    expect(s.searchMessages({ query: 'note' })).toHaveLength(1);
   });
 
   it('backfills an existing db idempotently and rebuilds a dropped index', () => {
@@ -1994,6 +2037,97 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     counted.close();
     expect(rows.count).toBe(1);
     expect(version.version).toBe(6);
+  });
+
+  it('backfills across more than one batch without dropping or duplicating rows', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'batchword anchor row',
+    });
+    seeded.close();
+
+    // Raw inserts so the fixture crosses the 5k-row commit boundary quickly.
+    // The point is the rowid-range cursor: a batched backfill that mis-bounds a
+    // range silently skips or double-indexes whole 5k blocks, and a small
+    // fixture would never leave the first batch to notice.
+    const total = 5_200;
+    const raw = new Database(file);
+    const insert = raw.prepare(
+      `INSERT INTO channel_messages
+         (id, channel_id, seq, kind, sender_kind, sender_id, body_text, created_at, updated_at)
+       VALUES (?, 'topic:alpha', ?, ?, 'human', 'human:operator', ?, ?, ?)`
+    );
+    const now = new Date().toISOString();
+    raw.transaction(() => {
+      for (let i = 0; i < total; i += 1) {
+        // Every tenth row is hub bookkeeping: the predicate must be applied per
+        // batch, not only to the first one.
+        const systemRow = i % 10 === 0;
+        insert.run(
+          `chm:bulk-${i}`,
+          i + 2,
+          systemRow ? 'system' : 'message',
+          `batchword bulk row ${i}`,
+          now,
+          now
+        );
+      }
+    })();
+    raw.exec('DROP TRIGGER channel_messages_fts_ai');
+    raw.exec('DROP TRIGGER channel_messages_fts_au');
+    raw.exec('DROP TRIGGER channel_messages_fts_ad');
+    raw.exec('DROP TABLE channel_messages_fts');
+    raw.close();
+
+    const reopened = store(file);
+    const counted = new Database(file);
+    const indexed = counted
+      .prepare(
+        `SELECT COUNT(*) AS count FROM channel_messages_fts
+          WHERE channel_messages_fts MATCH '"batchword"'`
+      )
+      .get() as { count: number };
+    counted.close();
+    // 1 anchor + every non-system bulk row, each exactly once.
+    expect(indexed.count).toBe(1 + total - total / 10);
+    expect(reopened.searchMessages({ query: 'batchword' })).toHaveLength(50);
+  });
+
+  it('keeps the implicit-rowid contract the external-content index rides on', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:alpha',
+      sender: HUMAN,
+      text: 'rowid contract subject',
+    });
+    const raw = new Database(file);
+    const ddl = (
+      raw
+        .prepare(
+          `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channel_messages'`
+        )
+        .get() as { sql: string }
+    ).sql;
+    raw.close();
+    // `id` is TEXT PRIMARY KEY, so the FTS join key is the table's IMPLICIT
+    // rowid. WITHOUT ROWID would remove that mapping outright and break every
+    // index entry; assert the declaration can never acquire it.
+    expect(ddl).not.toMatch(/WITHOUT\s+ROWID/i);
+    expect(ddl).toMatch(/id\s+TEXT PRIMARY KEY/);
+
+    // Implicit rowids are renumbered by VACUUM, which would silently repoint
+    // every index entry at a different message — search answering with another
+    // channel's body under a correct-looking snippet. No maintenance path in
+    // the store may issue one without rebuilding the index afterwards.
+    const source = fs.readFileSync(
+      new URL('../server/channel-message-store.ts', import.meta.url),
+      'utf8'
+    );
+    expect(source).not.toMatch(/^\s*[^*/\n]*\bVACUUM\b/im);
   });
 
   it('drives the search from the FTS index, probing messages by rowid', () => {

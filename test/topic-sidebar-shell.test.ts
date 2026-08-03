@@ -20,6 +20,7 @@ import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  CHANNEL_SEARCH_MIN_QUERY_CHARS,
   type ChannelMessageId,
   type ChannelMessageSearchResult,
 } from '../shared/channel-chat-protocol.js';
@@ -4486,6 +4487,111 @@ describe('TopicSidebarView', () => {
         limit: '20',
       });
       expect(container.textContent).not.toContain('no message matches for');
+      queryClient.clear();
+    });
+
+    it('refuses to search messages below the minimum query length', async () => {
+      // A one-character prefix ranks essentially the whole FTS corpus inside a
+      // synchronous sqlite call on the hub's event loop, so the rail must not
+      // send it at all. Chat-title search is an in-memory scan and keeps
+      // answering from the first keystroke.
+      expect(CHANNEL_SEARCH_MIN_QUERY_CHARS).toBe(3);
+      const topicQueries: string[] = [];
+      const messageQueries: string[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/workspace-topics/search')) {
+          topicQueries.push(url);
+          return Response.json({
+            query: 'sq',
+            results: [],
+            truncated: false,
+            derived: false,
+          });
+        }
+        if (url.startsWith('/channels/search')) {
+          messageQueries.push(url);
+          return Response.json({
+            query: 'sq',
+            results: [makeMessageHit()],
+            truncated: false,
+          });
+        }
+        return Response.json({
+          topics: [],
+          surfaces: [],
+          nodes: [],
+          workspaces: [],
+          truncated: false,
+          derived: false,
+        });
+      }) as unknown as typeof fetch;
+      vi.stubGlobal('fetch', fetchMock);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          React.createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            React.createElement(TopicSidebarShell, { onSelectSession })
+          )
+        );
+      });
+      await act(async () => {
+        await flushQueryEffects();
+      });
+
+      const searchInput = container.querySelector(
+        '.topic-search__input'
+      ) as HTMLInputElement;
+      await act(async () => {
+        setInputValue(searchInput, 'sq');
+        searchInput.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'sq',
+            inputType: 'insertText',
+          })
+        );
+      });
+      await waitForRendered(
+        () =>
+          container.textContent?.includes(
+            'type 3 characters to search messages'
+          ) === true,
+        'the too-short message-search state'
+      );
+
+      // The chats section is an in-memory scan, so it still answers two
+      // characters; only the index read is withheld.
+      await waitForRendered(
+        () => topicQueries.length === 1,
+        'the chat-title search for the same two characters'
+      );
+      expect(messageQueries).toEqual([]);
+      // The refusal is named, never dressed up as a miss over a corpus nothing
+      // consulted.
+      expect(container.textContent).not.toContain('no message matches for');
+
+      await act(async () => {
+        setInputValue(searchInput, 'sql');
+        searchInput.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'l',
+            inputType: 'insertText',
+          })
+        );
+      });
+      await waitForRendered(
+        () => container.textContent?.includes('Build UI shell') === true,
+        'the message hit once the query is long enough'
+      );
+      expect(messageQueries).toHaveLength(1);
+      expect(messageQueries[0]).toContain('q=sql');
       queryClient.clear();
     });
   });
