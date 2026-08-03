@@ -225,6 +225,39 @@ binding's FIFO queue, and the queue drains on turn completion.
   pending triggers but never loses messages — every queued post is already
   durable — and the operator re-triggers by sending again.
 
+#### Steering in the UI
+
+The composer is the steering surface. While a bound agent is mid-turn its bar
+reveals two explicit controls — no menu, no inference:
+
+- **queue** (also plain <kbd>enter</kbd>) posts with no steering field, so the
+  message waits for the live turn.
+- **interrupt & send** (also <kbd>cmd/ctrl</kbd>+<kbd>enter</kbd>) posts
+  `steering: "interrupt"`, reusing the header control's black-square vocabulary.
+  With no live turn the modifier is a plain send, never a silent variant.
+
+The thread panel's composer inherits both, because a threaded reply queues on
+exactly the same binding.
+
+Two read-back affordances make the wait visible:
+
+- the in-timeline presence row suffixes the agent's activity with
+  `(n queued)`, resolved from `queuedCount` on the same lane its status came
+  from (socket transition or roster snapshot, whichever is newer);
+- a message the operator sent into a busy agent grows a dim chip reading
+  `queued — <agent> is mid-turn`.
+
+**The chip's signal.** Steering intent is deliberately not persisted, so the
+durable row cannot say a message is waiting; the chip is client-side memory of
+the send. It is created from the send-time agent status and retired by a
+per-agent _drain generation_ derived from `queuedCount`: the generation advances
+on any transition that reports an empty queue, which is exactly what the binder
+emits when it splices the queued run out, immediately before the consuming turn
+starts. A send snapshots the generation before its POST and keeps the chip only
+while that snapshot is still current, so a turn that drains during the round trip
+leaves no chip behind. Both imprecisions fail toward silence: a send that queued
+can miss its chip, and one that was already consumed can never keep one.
+
 ## Limits and failure behavior
 
 - Message bodies and detail payloads are byte-bounded.

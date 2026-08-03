@@ -39,6 +39,8 @@ export interface ChannelAgentPresence {
   /** `var(--sender-*)` token or hash-derived hex from `resolveSenderIdentity`. */
   colorVar: string;
   glyph: KnownAgentGlyph | null;
+  /** Posts waiting to trigger this agent's NEXT turn (#1308 slice 4). */
+  queuedCount: number;
 }
 
 /** Minimal shape of the header chips this projection consumes. */
@@ -46,6 +48,8 @@ export interface ChannelPresenceChip {
   agentId: string;
   status: ChannelAgentStatus;
   identity: { label: string; colorVar: string; glyph: KnownAgentGlyph | null };
+  /** Absent on surfaces that predate the queue signal — treated as zero. */
+  queuedCount?: number;
 }
 
 /** Membership probe — satisfied by both `Set` and `Map` of agent ids. */
@@ -71,6 +75,7 @@ export function selectChannelAgentPresence(
       label: chip.identity.label,
       colorVar: chip.identity.colorVar,
       glyph: chip.identity.glyph,
+      queuedCount: chip.queuedCount ?? 0,
     });
   }
   return rows;
@@ -142,10 +147,25 @@ export function sameStreamingHold(
 
 /** Lowercase presence copy per DESIGN.md — dim secondary text, no emoji. */
 export function channelPresenceCopy(presence: ChannelAgentPresence): string {
-  if (presence.status === 'streaming') return `${presence.label} is responding…`;
+  return `${presenceActivityCopy(presence)}${queuedSuffix(presence.queuedCount)}`;
+}
+
+function presenceActivityCopy(presence: ChannelAgentPresence): string {
+  if (presence.status === 'streaming')
+    return `${presence.label} is responding…`;
   if (presence.status === 'waiting')
     return `${presence.label} is waiting for input`;
   // spawning and thinking read the same to an operator: the agent has the turn
   // and nothing has come back yet.
   return `${presence.label} is thinking…`;
+}
+
+/**
+ * "(n queued)" tail (#1308 slice 4 item 2c). The presence row is the one place
+ * that already says what the agent is doing, so the depth of what is waiting
+ * behind it belongs here rather than in a control of its own. Suffix only —
+ * an empty queue leaves the sentence exactly as it was.
+ */
+function queuedSuffix(queuedCount: number): string {
+  return queuedCount > 0 ? ` (${queuedCount} queued)` : '';
 }

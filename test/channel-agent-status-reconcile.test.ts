@@ -100,6 +100,8 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
     useChannelAgentStatusStore.setState({
       statusByChannelAgent: {},
       runtimeByChannelAgent: {},
+      queuedCountByChannelAgent: {},
+      queueDrainSeqByChannelAgent: {},
       updatedAtByChannelAgent: {},
     });
   });

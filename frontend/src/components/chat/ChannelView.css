@@ -738,6 +738,13 @@
   color: var(--text-muted);
 }
 
+/* queued-send chip (#1308 slice 4). Dim by design: it reports a wait, not a
+   fault, and it retires itself the moment the next turn starts consuming. */
+.ch-msg__tag--queued {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
 /* Inline retry on a failed row (#1308 item 2). Outline-only, square, mono —
    same control vocabulary as the thread chip, tinted to the failure it recovers
    from. No motion: the pending state is a text swap (`retry` → `retrying…`),
