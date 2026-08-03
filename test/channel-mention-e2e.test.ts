@@ -324,7 +324,7 @@ async function harness(
 
 async function req<T>(input: {
   port: number;
-  method: 'GET' | 'POST' | 'PATCH';
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   url: string;
   body?: unknown;
   headers?: Record<string, string>;
@@ -767,6 +767,73 @@ describe('mention routing — edited context (#1308 slice 1 item 3)', () => {
     expect(res.status).toBe(403);
     expect(res.body.error.details?.['reasonCode']).toBe(
       'CHANNEL_EDIT_HUMAN_ONLY'
+    );
+    expect(h.store.getMessage(posted.body.message.id)?.body.text).toBe(
+      'operator wrote this'
+    );
+  });
+});
+
+describe('mention routing — deleted context (#1308 slice 1 item 4)', () => {
+  it('never delivers a deleted body to a later turn', async () => {
+    // The packet-exclusion promise reduces to one question: can a deleted row's
+    // text still reach an adapter? The binder builds packets from store rows at
+    // send time, so this is a property of the real path, not of the pure builder.
+    const h = await harness(
+      (agentType) => new RecordingAdapter(agentType, 'ack')
+    );
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'the production password is hunter2' },
+    });
+    expect(posted.status).toBe(201);
+
+    const removed = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${url}/${encodeURIComponent(posted.body.message.id)}`,
+    });
+    expect(removed.status).toBe(200);
+
+    // Deleting must not trigger a turn of its own.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.adapters()).toHaveLength(0);
+
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock what did I just say?' },
+    });
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    const adapter = h.adapters()[0] as RecordingAdapter;
+    expect(adapter.contents).toHaveLength(1);
+    expect(adapter.contents[0]).not.toContain('hunter2');
+    // Dropped entirely, not rendered as an empty message the agent must parse.
+    expect(adapter.contents[0]).not.toMatch(/operator: *\n/);
+  });
+
+  it('rejects a delete from a scoped actor credential without touching the row', async () => {
+    const h = await harness();
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'operator wrote this' },
+    });
+    const res = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${url}/${encodeURIComponent(posted.body.message.id)}`,
+      headers: { 'x-test-actor-id': 'orchestrator' },
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_DELETE_HUMAN_ONLY'
     );
     expect(h.store.getMessage(posted.body.message.id)?.body.text).toBe(
       'operator wrote this'

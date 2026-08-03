@@ -129,6 +129,8 @@ export interface ChannelHub {
   completeStreamBroadcast(message: ChannelMessage): void;
   /** Fan out an operator edit of an already-durable row (#1308 slice 1 item 3). */
   broadcastEdited(message: ChannelMessage): void;
+  /** Fan out an operator deletion (tombstone) of a row (#1308 slice 1 item 4). */
+  broadcastDeleted(message: ChannelMessage): void;
   onMessagePosted(handler: ChannelMessagePostedHandler): () => void;
   setBadgeBroadcaster(broadcaster: ChannelBadgeBroadcaster): void;
   channelExists(channelId: string): boolean;
@@ -630,6 +632,27 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       // them here would re-trigger a past turn, which this feature explicitly
       // must not do. The sidebar preview of an edited newest row therefore
       // heals on the next channel-list fetch rather than instantly.
+    },
+
+    broadcastDeleted(message) {
+      // An in-flight accumulator would keep appending deltas onto a row the
+      // operator just erased. A human row never streams today, so this is a
+      // structural guard rather than a live case — but it is the same guard
+      // `completeStreamBroadcast` makes, and the cost of omitting it is a
+      // resurrected body.
+      const acc = accumulators.get(message.id);
+      if (acc?.coalesceTimer) clearTimeout(acc.coalesceTimer);
+      if (acc?.updateTimer) clearTimeout(acc.updateTimer);
+      accumulators.delete(message.id);
+      broadcast(message.channelId, {
+        type: 'channel-message-deleted-v1',
+        channelId: message.channelId,
+        timestamp: nowIso(),
+        message,
+      });
+      // No badge and no `onMessagePosted` fan-out, for the same reasons as
+      // `broadcastEdited`: no seq moved, and the posted handlers are the
+      // mention-routing lane — a deletion must never raise a turn.
     },
 
     onMessagePosted(handler) {

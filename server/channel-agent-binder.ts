@@ -31,6 +31,7 @@ import {
 import {
   channelRetryTarget,
   channelTurnId,
+  isChannelMessageDeleted,
   parseMentions,
   CHANNEL_RETRY_OF_META_KEY,
   type ChannelMention,
@@ -1755,6 +1756,16 @@ export function createChannelAgentBinder(
       throw new ChannelMessageNotRetryableError(
         'the message that triggered this turn is no longer in this channel',
         'RETRY_TRIGGER_MISSING'
+      );
+    }
+    // The trigger survives a deletion as a tombstone (#1308 item 4), so the id
+    // still resolves — but re-running the turn would hand a provider the very
+    // text the operator erased. Refused rather than sent empty: an empty packet
+    // footer would spend real tokens asking an agent to reply to nothing.
+    if (isChannelMessageDeleted(trigger)) {
+      throw new ChannelMessageNotRetryableError(
+        'the message that triggered this turn was deleted',
+        'RETRY_TRIGGER_DELETED'
       );
     }
     const profile =

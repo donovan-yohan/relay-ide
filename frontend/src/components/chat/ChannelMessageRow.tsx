@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  channelMessageDeletable,
   channelMessageEditable,
   channelMessageEditedAt,
   channelRetryTarget,
+  isChannelMessageDeleted,
   type ChannelMessage,
   type ChannelMessageId,
 } from '../../../../shared/channel-chat-protocol.js';
@@ -64,6 +66,19 @@ const EDIT_ICON = (
   <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
     <path
       d="M2.5 10.5l7-7 3 3-7 7H2.5v-3zM2.5 14.5h11"
+      stroke="currentColor"
+      fill="none"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+    />
+  </svg>
+);
+
+/** Bin outline — DESIGN.md flat line art, no fill, square caps. */
+const DELETE_ICON = (
+  <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M2.5 4.5h11M6 4.5V2.5h4v2M4 4.5l.75 9h6.5l.75-9M6.5 7v4M9.5 7v4"
       stroke="currentColor"
       fill="none"
       strokeWidth="1.5"
@@ -460,14 +475,73 @@ const MessageEditForm: React.FC<{
   );
 };
 
+/**
+ * Two-step delete confirm, inline in the toolbar (#1308 item 4).
+ *
+ * No `window.confirm`: a native modal is a browser chrome dialog in a product
+ * whose whole visual argument is a TUI, it steals focus from the row it is
+ * about, and it cannot be tested or styled. The confirm replaces the toolbar's
+ * contents in place instead, so the question appears exactly where the operator
+ * clicked and the row underneath stays readable — which is the thing being
+ * confirmed.
+ */
+const DeleteConfirmStrip: React.FC<{
+  isHuman: boolean;
+  pending: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}> = ({ isHuman, pending, onConfirm, onCancel }) => {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  // Focus the destructive button, not the row: it makes escape/tab meaningful
+  // and it keeps `useRowActionAffordance`'s focus branch true, so the toolbar
+  // cannot unmount from under an open question when the pointer wanders off.
+  useEffect(() => confirmRef.current?.focus(), []);
+  return (
+    <div
+      className={`ch-msg__actions ch-msg__confirm${
+        isHuman ? ' ch-msg__actions--user' : ''
+      }`}
+      role="group"
+      aria-label="delete message confirmation"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        onCancel();
+      }}
+    >
+      <span className="ch-msg__confirm-label">delete?</span>
+      <button
+        ref={confirmRef}
+        type="button"
+        className="ch-msg__confirm-btn ch-msg__confirm-btn--danger"
+        aria-label="confirm delete message"
+        disabled={pending}
+        onClick={onConfirm}
+      >
+        {pending ? 'deleting…' : 'yes'}
+      </button>
+      <button
+        type="button"
+        className="ch-msg__confirm-btn"
+        aria-label="cancel delete message"
+        disabled={pending}
+        onClick={onCancel}
+      >
+        no
+      </button>
+    </div>
+  );
+};
+
 /** Compact hover/focus/long-press toolbar (#1308 item 1, retry added in item 2). */
 const MessageActionToolbar: React.FC<{
   isHuman: boolean;
   onCopyLink: () => void;
-  onCopyText: () => void;
+  onCopyText: (() => void) | null;
   onEdit: (() => void) | null;
+  onDelete: (() => void) | null;
   retry: RetryAffordance | null;
-}> = ({ isHuman, onCopyLink, onCopyText, onEdit, retry }) => (
+}> = ({ isHuman, onCopyLink, onCopyText, onEdit, onDelete, retry }) => (
   <div
     className={`ch-msg__actions${isHuman ? ' ch-msg__actions--user' : ''}`}
     role="group"
@@ -493,15 +567,17 @@ const MessageActionToolbar: React.FC<{
     >
       {LINK_ICON}
     </button>
-    <button
-      type="button"
-      className="ch-msg__action"
-      title="copy text"
-      aria-label="copy message text"
-      onClick={onCopyText}
-    >
-      {COPY_ICON}
-    </button>
+    {onCopyText ? (
+      <button
+        type="button"
+        className="ch-msg__action"
+        title="copy text"
+        aria-label="copy message text"
+        onClick={onCopyText}
+      >
+        {COPY_ICON}
+      </button>
+    ) : null}
     {retry ? (
       <button
         type="button"
@@ -512,6 +588,17 @@ const MessageActionToolbar: React.FC<{
         onClick={retry.onRetry}
       >
         {RETRY_ICON}
+      </button>
+    ) : null}
+    {onDelete ? (
+      <button
+        type="button"
+        className="ch-msg__action ch-msg__action--danger"
+        title="delete"
+        aria-label="delete message"
+        onClick={onDelete}
+      >
+        {DELETE_ICON}
       </button>
     ) : null}
   </div>
@@ -543,6 +630,87 @@ const InlineRetryAffordance: React.FC<{ retry: RetryAffordance }> = ({
     </button>
   );
 
+/**
+ * Everything rendered BELOW a prose row's body: terminal status tags, the
+ * always-visible failed-row retry, the truncation label and the thread entry
+ * point. Split out of `ChannelMessageRow` when the delete affordance landed
+ * (#1308 item 4) — the row function had accumulated one branch per trailing
+ * ornament on top of its own body/editor/toolbar decisions.
+ *
+ * None of it is suppressed on a tombstone: a deleted row keeps its thread chip
+ * (it is still the anchor its replies point at), and a human row carries no
+ * status tags to begin with.
+ */
+const MessageRowTrailer: React.FC<{
+  message: ChannelMessage;
+  retry: RetryAffordance | null;
+  replyCount: number;
+  lastReplyHint?: string;
+  onOpenThread?: (rootId: ChannelMessageId) => void;
+}> = ({ message, retry, replyCount, lastReplyHint, onOpenThread }) => {
+  const truncationLabel = truncationLabelForMessage(message);
+  const showThreadChip =
+    message.threadId === null && replyCount > 0 && onOpenThread !== undefined;
+  return (
+    <>
+      {message.status === 'interrupted' ? (
+        <span className="ch-msg__tag ch-msg__tag--interrupted">
+          interrupted
+        </span>
+      ) : null}
+      {message.status === 'failed' ? (
+        <span className="ch-msg__tag ch-msg__tag--failed">failed</span>
+      ) : null}
+      {retry && message.status === 'failed' ? (
+        <InlineRetryAffordance retry={retry} />
+      ) : null}
+      {truncationLabel ? (
+        <span className="ch-msg__tag ch-msg__tag--truncated">
+          {truncationLabel}
+        </span>
+      ) : null}
+      {showThreadChip && onOpenThread ? (
+        <button
+          type="button"
+          className="ch-msg__thread-chip"
+          onClick={() => onOpenThread(message.id)}
+          aria-label={`${replyCount} repl${replyCount === 1 ? 'y' : 'ies'} — open thread`}
+        >
+          <span className="ch-msg__thread-chip__count">
+            {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
+          </span>
+          {lastReplyHint ? (
+            <span className="ch-msg__thread-chip__hint">{lastReplyHint}</span>
+          ) : null}
+        </button>
+      ) : null}
+    </>
+  );
+};
+
+const STATUS_ROW_MODIFIERS: Partial<Record<ChannelMessage['status'], string>> = {
+  streaming: 'ch-msg--streaming',
+  truncated: 'ch-msg--truncated',
+  interrupted: 'ch-msg--interrupted',
+  failed: 'ch-msg--failed',
+};
+
+/** Row modifier classes for a prose row — one table lookup plus two flags. */
+function proseRowClassName(
+  message: ChannelMessage,
+  flags: { deleted: boolean; highlighted: boolean }
+): string {
+  return [
+    'ch-msg',
+    message.sender.kind === 'human' ? 'ch-msg--user' : null,
+    STATUS_ROW_MODIFIERS[message.status] ?? null,
+    flags.deleted ? 'ch-msg--deleted' : null,
+    flags.highlighted ? 'ch-msg--jump' : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 interface ChannelMessageRowProps {
   message: ChannelMessage;
   channelId: string;
@@ -565,6 +733,12 @@ interface ChannelMessageRowProps {
    */
   onEdit?: (message: ChannelMessage, text: string) => Promise<unknown>;
   /**
+   * #1308 item 4. Tombstones this row. Omitted where the surface has no delete
+   * lane, which also removes the affordance; the row never invents one.
+   * Rejecting the promise leaves the confirm open so the operator can retry.
+   */
+  onDelete?: (message: ChannelMessage) => Promise<unknown>;
+  /**
    * The bound profile is non-idle in this channel. Retry stays visible but
    * disabled so a busy agent cannot be stacked with a second turn (storm brake;
    * the server refuses independently).
@@ -584,6 +758,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   highlighted = false,
   onRetry,
   onEdit,
+  onDelete,
   retryBusy = false,
   retried = false,
 }) => {
@@ -593,11 +768,27 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   const [retryPending, setRetryPending] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editPending, setEditPending] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
 
   // Human-authored prose rows only, and only where the surface wired a lane.
   // The predicate is the SHARED one the route enforces, so the button cannot
-  // appear on a row the server would refuse.
+  // appear on a row the server would refuse. Both predicates already exclude a
+  // tombstone, so a deleted row grows neither control.
   const editable = onEdit !== undefined && channelMessageEditable(message);
+  const deletable = onDelete !== undefined && channelMessageDeletable(message);
+  const deleted = isChannelMessageDeleted(message);
+
+  const handleConfirmDelete = useCallback(() => {
+    if (!onDelete || deletePending) return;
+    setDeletePending(true);
+    void onDelete(message)
+      .then(() => setConfirmingDelete(false))
+      // Failure keeps the confirm open rather than silently reverting to the
+      // toolbar — the operator asked for this and is owed the outcome.
+      .catch(() => {})
+      .finally(() => setDeletePending(false));
+  }, [deletePending, message, onDelete]);
 
   const handleSaveEdit = useCallback(
     (text: string) => {
@@ -664,18 +855,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
 
   const isHuman = message.sender.kind === 'human';
   const editedAt = channelMessageEditedAt(message);
-  const truncationLabel = truncationLabelForMessage(message);
-  const rowClasses = [
-    'ch-msg',
-    isHuman ? 'ch-msg--user' : null,
-    message.status === 'streaming' ? 'ch-msg--streaming' : null,
-    message.status === 'truncated' ? 'ch-msg--truncated' : null,
-    message.status === 'interrupted' ? 'ch-msg--interrupted' : null,
-    message.status === 'failed' ? 'ch-msg--failed' : null,
-    highlighted ? 'ch-msg--jump' : null,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const rowClasses = proseRowClassName(message, { deleted, highlighted });
 
   const streamStyle =
     streaming && !isHuman
@@ -693,12 +873,24 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       data-channel-message-id={message.id}
       {...affordance}
     >
-      {actionsVisible && !editing ? (
+      {confirmingDelete && deletable ? (
+        // The confirm occupies the toolbar's own slot, so the question sits
+        // where the button the operator just pressed was.
+        <DeleteConfirmStrip
+          isHuman={isHuman}
+          pending={deletePending}
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      ) : actionsVisible && !editing ? (
         <MessageActionToolbar
           isHuman={isHuman}
           onCopyLink={handleCopyLink}
-          onCopyText={handleCopyText}
+          // A tombstone keeps its deep link — it is still an addressable row and
+          // still a thread anchor — but there is nothing left to copy as text.
+          onCopyText={deleted ? null : handleCopyText}
           onEdit={editable ? () => setEditing(true) : null}
+          onDelete={deletable ? () => setConfirmingDelete(true) : null}
           retry={retry}
         />
       ) : null}
@@ -708,7 +900,11 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
           itemId={message.agentDetail.itemId}
         />
       ) : null}
-      {editing ? (
+      {deleted ? (
+        // Placeholder, not a removal: the row keeps its slot so grouping, the
+        // scroll anchor and any thread chip below stay exactly where they were.
+        <span className="ch-msg__deleted">message deleted</span>
+      ) : editing ? (
         <MessageEditForm
           initialText={message.body.text}
           pending={editPending}
@@ -722,7 +918,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
           streaming={streaming}
         />
       )}
-      {editedAt && !editing ? (
+      {editedAt && !editing && !deleted ? (
         <span className="ch-msg__edited" title={`edited ${editedAt}`}>
           (edited)
         </span>
@@ -739,37 +935,13 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
           ))}
         </div>
       ) : null}
-      {message.status === 'interrupted' ? (
-        <span className="ch-msg__tag ch-msg__tag--interrupted">
-          interrupted
-        </span>
-      ) : null}
-      {message.status === 'failed' ? (
-        <span className="ch-msg__tag ch-msg__tag--failed">failed</span>
-      ) : null}
-      {retry && message.status === 'failed' ? (
-        <InlineRetryAffordance retry={retry} />
-      ) : null}
-      {truncationLabel ? (
-        <span className="ch-msg__tag ch-msg__tag--truncated">
-          {truncationLabel}
-        </span>
-      ) : null}
-      {message.threadId === null && replyCount > 0 && onOpenThread ? (
-        <button
-          type="button"
-          className="ch-msg__thread-chip"
-          onClick={() => onOpenThread(message.id)}
-          aria-label={`${replyCount} repl${replyCount === 1 ? 'y' : 'ies'} — open thread`}
-        >
-          <span className="ch-msg__thread-chip__count">
-            {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
-          </span>
-          {lastReplyHint ? (
-            <span className="ch-msg__thread-chip__hint">{lastReplyHint}</span>
-          ) : null}
-        </button>
-      ) : null}
+      <MessageRowTrailer
+        message={message}
+        retry={retry}
+        replyCount={replyCount}
+        {...(lastReplyHint ? { lastReplyHint } : {})}
+        {...(onOpenThread ? { onOpenThread } : {})}
+      />
     </div>
   );
 };

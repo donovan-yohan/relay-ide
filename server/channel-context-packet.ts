@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 
-import type {
-  ChannelImagePart,
-  ChannelMessage,
+import {
+  isChannelMessageDeleted,
+  type ChannelImagePart,
+  type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import type { Attachment } from './protocol-adapter-v2.js';
@@ -43,6 +44,15 @@ export const PACKET_FRAMEWORK_IMAGE_SUPPORT: Readonly<Record<string, boolean>> =
 
 const OMITTED_MARKER = '[…earlier messages omitted]';
 const ROW_TRUNCATED_SUFFIX = '…[truncated]';
+/**
+ * Stand-in for a tombstoned thread root (#1308 slice 1 item 4). Deleted rows are
+ * dropped from the context window entirely — see `eligible` below — with one
+ * exception: a thread root is structural, and a thread packet without its root
+ * is not buildable. The root is therefore retained as this marker, so the agent
+ * is told the anchor exists and is gone rather than being handed a blank line
+ * that reads like an empty message.
+ */
+const DELETED_ROW_MARKER = '[message deleted]';
 const THREAD_SCOPE_MARKER =
   '[Thread scope — only this thread is shown; its root message is always included]';
 
@@ -117,10 +127,16 @@ function triggerAttribution(message: ChannelMessage): string {
 
 /** Render one row as `label: text`, agent-tagged, with multi-line bodies indented. */
 function renderRow(message: ChannelMessage): string {
+  // A tombstone reaching this point is a retained thread root; its body is
+  // already empty in the store, so the marker is what stands in for it. Every
+  // other deleted row was filtered out before assembly.
+  const source = isChannelMessageDeleted(message)
+    ? DELETED_ROW_MARKER
+    : message.body.text;
   const truncated =
-    message.body.text.length > PACKET_ROW_MAX_CHARS
-      ? message.body.text.slice(0, PACKET_ROW_MAX_CHARS) + ROW_TRUNCATED_SUFFIX
-      : message.body.text;
+    source.length > PACKET_ROW_MAX_CHARS
+      ? source.slice(0, PACKET_ROW_MAX_CHARS) + ROW_TRUNCATED_SUFFIX
+      : source;
   const lines = truncated.split('\n');
   const first = lines[0] ?? '';
   const rest = lines.slice(1);
@@ -174,8 +190,13 @@ export function buildMentionContextPacketEnvelope(
     if (threadRootId !== null) {
       const isRoot = row.id === threadRootId;
       if (!isRoot && row.threadId !== threadRootId) return false;
+      // A deleted row carries nothing an agent can act on, so it is dropped —
+      // except a thread root, which is structural and is retained as
+      // `DELETED_ROW_MARKER` instead (#1308 slice 1 item 4).
+      if (isChannelMessageDeleted(row)) return isRoot;
       return isRoot || !isOwnAgentRow(row);
     }
+    if (isChannelMessageDeleted(row)) return false;
     return row.seq > input.lastDeliveredSeq && !isOwnAgentRow(row);
   });
 

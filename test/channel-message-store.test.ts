@@ -822,6 +822,207 @@ describe('channel-message-store streaming lifecycle', () => {
     );
   });
 
+  // #1308 slice 1 item 4 — deleting one of the operator's own rows. Deletion is
+  // a TOMBSTONE: the row is the substrate's seq log, and a hole in it would
+  // break every catch-up cursor, deep link and thread parent that already names
+  // the seq.
+  it('deleteMessage tombstones the row, keeping id, seq and the seq log intact', () => {
+    const s = store();
+    const first = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'first',
+    });
+    const target = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'ship @claude the anchor',
+      mentions: [{ raw: '@claude', providerId: 'claude' }],
+    });
+    const after = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'after',
+    });
+
+    const tombstone = s.deleteMessage({
+      channelId: 'topic:c',
+      messageId: target.id,
+      deleterId: HUMAN.id,
+    });
+    expect(tombstone.id).toBe(target.id);
+    expect(tombstone.seq).toBe(target.seq);
+    expect(tombstone.createdAt).toBe(target.createdAt);
+    expect(tombstone.body.text).toBe('');
+    expect(typeof tombstone.meta?.['deletedAt']).toBe('string');
+    // Mentions go with the body: a removed message must not keep lighting the
+    // sidebar's mention lane.
+    expect(tombstone.mentions).toBeUndefined();
+
+    // The log is unchanged in length AND in numbering. Renumbering `seq` would
+    // be the one unrecoverable mistake here.
+    const history = s.history('topic:c', { limit: 50 });
+    expect(history.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(history.map((m) => m.id)).toEqual([first.id, target.id, after.id]);
+    expect(history[1]?.body.text).toBe('');
+    expect(s.latestSeq('topic:c')).toBe(3);
+    expect(s.getMessage(target.id)?.body.text).toBe('');
+  });
+
+  it('deleteMessage is idempotent and refuses rows the operator does not own', () => {
+    const s = store();
+    const human = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'operator says hi',
+    });
+    const first = s.deleteMessage({
+      channelId: 'topic:c',
+      messageId: human.id,
+      deleterId: HUMAN.id,
+    });
+    // A second delete (another device, a double tap) converges on the SAME
+    // tombstone rather than restamping or throwing.
+    const again = s.deleteMessage({
+      channelId: 'topic:c',
+      messageId: human.id,
+      deleterId: HUMAN.id,
+    });
+    expect(again.meta?.['deletedAt']).toBe(first.meta?.['deletedAt']);
+
+    // A tombstone is not an editable row — an edit would be an undelete.
+    expect(() =>
+      s.editMessage({
+        channelId: 'topic:c',
+        messageId: human.id,
+        editorId: HUMAN.id,
+        text: 'back from the dead',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_editable' })
+    );
+    expect(s.getMessage(human.id)?.body.text).toBe('');
+
+    // Agent rows are a durable record of what a provider actually said.
+    const agent = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { runtimeId: 'r', turnId: 't', itemId: 'i' },
+    });
+    s.finalizeStream(agent.id, { text: 'agent said this', status: 'complete' });
+    expect(() =>
+      s.deleteMessage({
+        channelId: 'topic:c',
+        messageId: agent.id,
+        deleterId: HUMAN.id,
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_deletable' })
+    );
+    expect(s.getMessage(agent.id)?.body.text).toBe('agent said this');
+
+    // Another identity cannot delete the operator's row...
+    const other = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'still here',
+    });
+    expect(() =>
+      s.deleteMessage({
+        channelId: 'topic:c',
+        messageId: other.id,
+        deleterId: 'agent:claude',
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_deletable' })
+    );
+    // ...and a row in another channel reads as absent, never as a conflict.
+    expect(() =>
+      s.deleteMessage({
+        channelId: 'topic:other',
+        messageId: other.id,
+        deleterId: HUMAN.id,
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'channel_message_not_found' })
+    );
+    expect(s.getMessage(other.id)?.body.text).toBe('still here');
+  });
+
+  it('keeps a deleted thread parent as the anchor its replies still point at', () => {
+    const s = store();
+    const root = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'root question',
+    });
+    const reply = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'a reply',
+      parentMessageId: root.id,
+    });
+    expect(reply.threadId).toBe(root.id);
+
+    s.deleteMessage({
+      channelId: 'topic:c',
+      messageId: root.id,
+      deleterId: HUMAN.id,
+    });
+
+    // The root still resolves, still roots the thread, and still counts replies:
+    // removing the row would have orphaned every reply pointing at it.
+    const thread = s.threadHistory('topic:c', root.id, { limit: 50 });
+    expect(thread.map((m) => m.id)).toEqual([root.id, reply.id]);
+    expect(thread[0]?.body.text).toBe('');
+    expect(s.getMessage(root.id)?.replyCount).toBe(1);
+    expect(
+      s.listChannelThreadSummaries('topic:c').threads.map((t) => t.rootMessageId)
+    ).toEqual([root.id]);
+  });
+
+  it('carries tombstones on catch-up and keeps them out of the sidebar preview', () => {
+    const s = store();
+    const kept = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'the visible one',
+    });
+    const doomed = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'about to go',
+    });
+    expect(s.getChannelSummary('topic:c').lastMessage?.preview).toBe(
+      'about to go'
+    );
+
+    s.deleteMessage({
+      channelId: 'topic:c',
+      messageId: doomed.id,
+      deleterId: HUMAN.id,
+    });
+
+    // A deletion mutates a row under a seq the client already consumed, so
+    // `history({ afterSeq })` never re-sends it — without catch-up a device that
+    // was offline keeps rendering the deleted body.
+    const resync = s.listResyncRows('topic:c', 2, 500);
+    expect(resync.map((m) => m.id)).toEqual([doomed.id]);
+    expect(resync[0]?.body.text).toBe('');
+
+    // A body-less newest row must not blank the sidebar, the same rule detail
+    // cards already follow.
+    expect(s.getChannelSummary('topic:c').lastMessage?.preview).toBe(
+      'the visible one'
+    );
+    expect(s.getChannelSummary('topic:c').lastMessage?.id).toBe(kept.id);
+    expect(s.getChannelSummary('topic:c').latestSeq).toBe(2);
+    expect(
+      s.listChannelSummaries().find((c) => c.channelId === 'topic:c')
+        ?.lastMessage?.preview
+    ).toBe('the visible one');
+  });
+
   it('keeps replyCount on point reads, finalization rows, and resync replacements', () => {
     const s = store();
     const root = s.beginStream({

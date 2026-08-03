@@ -1059,6 +1059,62 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
+  // #1308 slice 1 item 4: the operator deletes one of their OWN durable rows.
+  //
+  // DELETE the resource, TOMBSTONE the record. The HTTP verb describes what the
+  // operator asked for; the store never removes the row, because `seq` is the
+  // substrate contract — a hole in the log would break every catch-up cursor,
+  // deep link and thread parent that already names it. The response body is the
+  // tombstone rather than 204, so the caller sees the row it now holds.
+  //
+  // Auth shape is the edit lane's, unchanged: the shared `auth` lane, an
+  // explicit `context:write` check (no new gateway verb, and the existing
+  // `/channels/*` auth-lane inventory entry covers the path), and a human-lane
+  // gate that is the load-bearing one — `requireCliGatewayAuth` admits scoped
+  // ACTOR credentials, and an agent must never be able to erase the operator's
+  // words.
+  router.delete('/channels/:id/messages/:messageId', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const sender = deriveSender(req, undefined);
+    if (sender.kind !== 'human') {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'only the operator can delete channel messages',
+        false,
+        {
+          channelId: topic.id,
+          reasonCode: 'CHANNEL_DELETE_HUMAN_ONLY',
+        }
+      );
+      return;
+    }
+    try {
+      const message = store.deleteMessage({
+        channelId: topic.id,
+        messageId: req.params['messageId'] ?? '',
+        deleterId: sender.id,
+      });
+      // Broadcast only, exactly as with an edit: no `postToChannel`, so the
+      // mention-routing handlers never run and a deletion can never raise a turn.
+      deps.hub.broadcastDeleted(message);
+      res.json({ message });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
   // #1167 §2: per-request agent roster (framework availability + live binding
   // status). Derived per request — no persistent handle registry.
   router.get('/channels/:id/roster', rosterAuth, (req, res) => {

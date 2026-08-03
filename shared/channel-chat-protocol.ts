@@ -270,7 +270,9 @@ export function channelMessageEditedAt(message: ChannelMessage): string | null {
  * slice: an agent row is a durable record of what a provider actually said, and
  * a system row is the hub's own bookkeeping — editing either would make the
  * transcript lie. `complete` excludes an in-flight stream (a human row is never
- * streaming today, so this is a structural guard, not a live case).
+ * streaming today, so this is a structural guard, not a live case). A tombstone
+ * is excluded too — an edit of a deleted row would resurrect a body the operator
+ * erased (#1308 item 4).
  *
  * Shared so the client's affordance and the server's route agree by
  * construction: a row that grows no edit button is also rejected by the route.
@@ -279,7 +281,65 @@ export function channelMessageEditable(message: ChannelMessage): boolean {
   return (
     message.kind === 'message' &&
     message.sender.kind === 'human' &&
-    message.status === 'complete'
+    message.status === 'complete' &&
+    !isChannelMessageDeleted(message)
+  );
+}
+
+// ── delete contract (#1308 slice 1 item 4) ──────────────────────────────────
+
+/**
+ * `meta` key stamped when the operator deletes their own row. A deletion is a
+ * TOMBSTONE, never a row removal: `channel_messages.seq` is the substrate's
+ * gap-free log, and every catch-up cursor, deep link and thread parent is a
+ * promise that a seq once issued keeps naming the same row forever.
+ *
+ * The mark lives in `meta` rather than in `status` on purpose. `status` carries
+ * a SQL CHECK constraint, so a `deleted` status would need the constraint
+ * widened plus a table-rebuild migration (`SCHEMA_VERSION` bump, the v2 rebuild
+ * lane) — schema churn buying nothing, since a tombstone is orthogonal to the
+ * streaming lifecycle `status` describes: a deleted row is still `complete`, it
+ * simply no longer has a body. Presence of the key IS the marker, so a row can
+ * never claim to be deleted without carrying when it happened.
+ */
+export const CHANNEL_DELETED_AT_META_KEY = 'deletedAt';
+
+/** ISO stamp of the deletion, or null for a row that is not a tombstone. */
+export function channelMessageDeletedAt(
+  message: ChannelMessage
+): string | null {
+  const value = message.meta?.[CHANNEL_DELETED_AT_META_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** Whether this row is a tombstone — body wiped, id/seq/links retained. */
+export function isChannelMessageDeleted(message: ChannelMessage): boolean {
+  return channelMessageDeletedAt(message) !== null;
+}
+
+/**
+ * Whether the operator may delete this row. Identical to the edit predicate
+ * today — both are "the operator's own settled prose row" — and kept as its own
+ * name because the two affordances answer different questions and are free to
+ * diverge (a future retention rule could forbid deleting a row an agent already
+ * consumed without touching who may fix a typo).
+ */
+export function channelMessageDeletable(message: ChannelMessage): boolean {
+  return channelMessageEditable(message);
+}
+
+/**
+ * Shape check for a row arriving as a tombstone. Deliberately NOT
+ * `channelMessageDeletable` — that predicate answers "may this be deleted",
+ * which is false for an already-deleted row, so the wire needs its own
+ * post-condition: an operator prose row, marked deleted, with no body left.
+ */
+export function isChannelMessageTombstone(message: ChannelMessage): boolean {
+  return (
+    message.kind === 'message' &&
+    message.sender.kind === 'human' &&
+    isChannelMessageDeleted(message) &&
+    message.body.text.length === 0
   );
 }
 
@@ -343,6 +403,23 @@ export interface ChannelMessageEditedEventV1 extends ChannelEventBaseV1 {
   message: ChannelMessage;
 }
 
+/**
+ * Operator deletion of an already-durable row (#1308 slice 1 item 4).
+ *
+ * Its own variant for the same reason the edit event is: the payload is a row
+ * that must REPLACE a held one in place, and neither the streaming-only
+ * `channel-message-updated-v1` nor the terminal-transition
+ * `channel-message-completed-v1` can carry that without loosening a guard the
+ * streaming lane depends on. Kept separate from the edit event too, so a client
+ * can tell "the operator fixed a typo" from "the operator erased this" without
+ * inspecting `meta` — the two render as different rows.
+ */
+export interface ChannelMessageDeletedEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-message-deleted-v1';
+  /** Authoritative tombstone; same id/seq/thread links, empty body. */
+  message: ChannelMessage;
+}
+
 export interface ChannelResyncRequiredEventV1 extends ChannelEventBaseV1 {
   type: 'channel-resync-required-v1';
   latestSeq: number;
@@ -355,6 +432,7 @@ export type ChannelEventV1 =
   | ChannelMessageUpdatedEventV1
   | ChannelMessageCompletedEventV1
   | ChannelMessageEditedEventV1
+  | ChannelMessageDeletedEventV1
   | ChannelResyncRequiredEventV1;
 
 // ── runtime validators ──────────────────────────────────────────────────────
@@ -584,6 +662,15 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       return (
         isChannelMessage(value.message) && channelMessageEditable(value.message)
       );
+    case 'channel-message-deleted-v1':
+      // Post-condition of the route, not its precondition: the payload must be
+      // an operator prose row that is marked deleted AND carries no body left.
+      // A "deletion" still holding text would be a leak of the thing the
+      // operator asked to erase, so it is dropped at the wire.
+      return (
+        isChannelMessage(value.message) &&
+        isChannelMessageTombstone(value.message)
+      );
     case 'channel-resync-required-v1':
       return typeof value.latestSeq === 'number';
     default:
@@ -792,6 +879,31 @@ export function applyChannelEventV1(
       // the row this client holds, so the safe move is to keep what is durable.
       if (existing.status === 'streaming') return state;
       if (message.seq !== existing.seq) return { ...state, needsCatchup: true };
+      const messages = state.messages.map((row) =>
+        row.id === message.id ? message : row
+      );
+      return {
+        ...state,
+        messages,
+        byId: { ...state.byId, [message.id]: message },
+      };
+    }
+
+    case 'channel-message-deleted-v1': {
+      const message = event.message;
+      const existing = state.byId[message.id];
+      // Same three guards as the edit lane, for the same reasons: an unknown id
+      // is a row outside the loaded window (no seq moved, so nothing is missing
+      // — demanding a resync would raise the out-of-sync banner on a healthy
+      // timeline); a live stream is never a tombstone target; and a seq surprise
+      // means the row on the wire is not the row held here.
+      if (!existing) return state;
+      if (existing.status === 'streaming') return state;
+      if (message.seq !== existing.seq) return { ...state, needsCatchup: true };
+      // Replaced in place, never spliced out. The array keeps its length and
+      // order, so grouping, the unread divider's index and every scroll anchor
+      // survive a deletion untouched — and a deleted thread parent stays where
+      // its replies point.
       const messages = state.messages.map((row) =>
         row.id === message.id ? message : row
       );

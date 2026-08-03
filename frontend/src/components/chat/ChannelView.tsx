@@ -19,6 +19,7 @@ import {
   fetchWorkspaceTopic,
   fetchChannelRoster,
   designateChannelOrchestrator,
+  deleteChannelMessage,
   editChannelMessage,
   interruptChannelAgent,
   retryChannelMessage,
@@ -577,6 +578,26 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     [channelId]
   );
 
+  // #1308 item 4. Same wiring rule as the edit lane: live channels only, no
+  // optimistic apply (the tombstone arrives through
+  // `channel-message-deleted-v1`), rethrown so the row's confirm stays open on a
+  // failed write instead of pretending the row is gone.
+  const handleDeleteMessage = useCallback(
+    async (message: ChannelMessage) => {
+      try {
+        await deleteChannelMessage(channelId, message.id);
+      } catch (error) {
+        showToast(
+          error instanceof HttpError && error.status === 409
+            ? 'could not delete — this message is no longer deletable'
+            : 'could not delete this message'
+        );
+        throw error;
+      }
+    },
+    [channelId]
+  );
+
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
@@ -785,7 +806,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               agentPresence={agentPresence}
               jumpTarget={jumpTarget}
               onRetryMessage={handleRetryMessage}
-              {...(archived ? {} : { onEditMessage: handleEditMessage })}
+              {...(archived
+                ? {}
+                : {
+                    onEditMessage: handleEditMessage,
+                    onDeleteMessage: handleDeleteMessage,
+                  })}
               busyAgentIds={busyAgentIds}
             />
           ) : (

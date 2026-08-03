@@ -2030,6 +2030,33 @@ export async function editChannelMessage(
   return body.message;
 }
 
+/**
+ * Delete one of the operator's own channel messages (#1308 slice 1 item 4).
+ * Returns the TOMBSTONE — the row keeps its id and seq and loses its body — so
+ * a caller can see the state it now holds; the same row also arrives on every
+ * device through the socket (`channel-message-deleted-v1`), so nothing is
+ * applied optimistically here. `HttpError` propagates: 403 (not the operator's
+ * lane), 409 (not a deletable row / archived channel) and 404 are all
+ * operator-legible states.
+ */
+export async function deleteChannelMessage(
+  channelId: string,
+  messageId: string
+): Promise<ChannelMessage> {
+  const body = await json<{ message: ChannelMessage }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(
+        messageId
+      )}`,
+      {
+        method: 'DELETE',
+        headers: { 'x-relay-capabilities': 'context:write' },
+      }
+    )
+  );
+  return body.message;
+}
+
 /** What a retry actually re-ran (#1308 slice 1 item 2). */
 export interface ChannelMessageRetryResult {
   messageId: string;

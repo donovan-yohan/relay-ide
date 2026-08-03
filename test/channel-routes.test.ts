@@ -148,7 +148,7 @@ async function harness(
 
 async function req<T>(input: {
   port: number;
-  method: 'GET' | 'POST' | 'PATCH';
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   url: string;
   body?: unknown;
   capabilities?: string;
@@ -1691,5 +1691,190 @@ describe('channel routes — message edit (#1308 slice 1 item 3)', () => {
     expect(forged.body.error.details?.['reasonCode']).toBe(
       'CHANNEL_SENDER_NOT_ALLOWED'
     );
+  });
+});
+
+describe('channel routes — message delete (#1308 slice 1 item 4)', () => {
+  const messagesUrl = (channelId: string): string =>
+    `/channels/${encodeURIComponent(channelId)}/messages`;
+
+  async function postHuman(
+    h: Harness,
+    text: string,
+    body: Record<string, unknown> = {}
+  ): Promise<{ id: string; seq: number }> {
+    const res = await req<{ message: { id: string; seq: number } }>({
+      port: h.port,
+      method: 'POST',
+      url: messagesUrl(h.channelId),
+      body: { text, ...body },
+    });
+    expect(res.status).toBe(201);
+    return res.body.message;
+  }
+
+  it('tombstones the row, keeps its seq, and broadcasts the deletion', async () => {
+    const h = await harness();
+    const first = await postHuman(h, 'first');
+    const target = await postHuman(h, 'ship @claude the anchor');
+    const after = await postHuman(h, 'after');
+    const sock = fakeSocket();
+    h.hub.handleConnection(sock, { channelId: h.channelId, sinceSeq: null });
+
+    const res = await req<{
+      message: {
+        id: string;
+        seq: number;
+        body: { text: string };
+        meta?: Record<string, unknown>;
+        mentions?: unknown[];
+      };
+    }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(target.id)}`,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.message.id).toBe(target.id);
+    expect(res.body.message.seq).toBe(target.seq);
+    expect(res.body.message.body.text).toBe('');
+    expect(typeof res.body.message.meta?.['deletedAt']).toBe('string');
+    expect(res.body.message.mentions).toBeUndefined();
+
+    // The seq log is the substrate contract: the row count and the numbering
+    // are both unchanged, so no cursor, deep link or thread parent moved.
+    const history = h.store.history(h.channelId, { limit: 50 });
+    expect(history.map((m) => m.id)).toEqual([first.id, target.id, after.id]);
+    expect(history.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(h.store.getMessage(target.id)?.body.text).toBe('');
+
+    const event = sock.sent.find(
+      (e) => e.type === 'channel-message-deleted-v1'
+    );
+    expect(event?.type).toBe('channel-message-deleted-v1');
+    if (event?.type === 'channel-message-deleted-v1') {
+      expect(event.message.id).toBe(target.id);
+      expect(event.message.body.text).toBe('');
+    }
+    // Deleting is not posting: no created event may ride this lane.
+    expect(sock.sent.some((e) => e.type === 'channel-message-created-v1')).toBe(
+      false
+    );
+  });
+
+  it('is idempotent and refuses agent rows, the agent lane, archived channels, and unknown ids', async () => {
+    const h = await harness();
+    const posted = await postHuman(h, 'operator says hi');
+    const url = `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`;
+
+    const first = await req<{ message: { meta?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'DELETE',
+      url,
+    });
+    expect(first.status).toBe(200);
+    // A double tap (or a second device) converges on the same tombstone rather
+    // than surfacing an error for a state already reached.
+    const again = await req<{ message: { meta?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'DELETE',
+      url,
+    });
+    expect(again.status).toBe(200);
+    expect(again.body.message.meta?.['deletedAt']).toBe(
+      first.body.message.meta?.['deletedAt']
+    );
+
+    const agentPost = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messagesUrl(h.channelId),
+      body: { text: 'agent says hi' },
+      headers: { 'x-test-actor-id': 'claude' },
+    });
+    expect(agentPost.status).toBe(201);
+    const agentRow = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(agentPost.body.message.id)}`,
+    });
+    expect(agentRow.status).toBe(409);
+    expect(agentRow.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MESSAGE_NOT_DELETABLE'
+    );
+
+    // An actor credential must never erase the operator's words — this lane
+    // admits scoped actors, so the human gate is load-bearing.
+    const live = await postHuman(h, 'still here');
+    const agentLane = await req<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(live.id)}`,
+      headers: { 'x-test-actor-id': 'claude' },
+    });
+    expect(agentLane.status).toBe(403);
+    expect(agentLane.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_DELETE_HUMAN_ONLY'
+    );
+    expect(h.store.getMessage(live.id)?.body.text).toBe('still here');
+
+    const missing = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${messagesUrl(h.channelId)}/chm%3Anope`,
+    });
+    expect(missing.status).toBe(404);
+
+    h.topicStore.archive(h.channelId);
+    const archived = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'DELETE',
+      url: `${messagesUrl(h.channelId)}/${encodeURIComponent(live.id)}`,
+    });
+    expect(archived.status).toBe(409);
+    expect(archived.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_ARCHIVED'
+    );
+    expect(h.store.getMessage(live.id)?.body.text).toBe('still here');
+  });
+
+  it('rejects a caller without context:write, and refuses to edit a tombstone', async () => {
+    const h = await harness();
+    const posted = await postHuman(h, 'operator says hi');
+    const url = `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`;
+
+    const readOnly = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'DELETE',
+      url,
+      capabilities: 'context:read',
+    });
+    expect(readOnly.status).toBe(403);
+    expect(readOnly.body.error.code).toBe('FORBIDDEN');
+    expect(h.store.getMessage(posted.id)?.body.text).toBe('operator says hi');
+
+    expect((await req({ port: h.port, method: 'DELETE', url })).status).toBe(
+      200
+    );
+    // An edit of a tombstone would be an undelete.
+    const undelete = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'PATCH',
+      url,
+      body: { text: 'back from the dead' },
+    });
+    expect(undelete.status).toBe(409);
+    expect(undelete.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MESSAGE_NOT_EDITABLE'
+    );
+    expect(h.store.getMessage(posted.id)?.body.text).toBe('');
   });
 });

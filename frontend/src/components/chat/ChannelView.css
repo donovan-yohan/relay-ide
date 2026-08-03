@@ -613,6 +613,58 @@
   background: transparent;
 }
 
+/* Destructive action (#1308 item 4). Tinted only on hover/focus: at rest it is
+   one icon among peers, and colouring it permanently would make every message
+   carry a standing warning. */
+.ch-msg__action--danger:hover,
+.ch-msg__action--danger:focus-visible {
+  color: var(--status-error);
+}
+
+/* Inline delete confirm (#1308 item 4). Occupies the toolbar's own absolutely
+   positioned slot, so asking the question never reflows the lane and the
+   message being confirmed stays legible underneath — which a browser
+   `confirm()` cannot do. Mono, lowercase, zero radius, no motion. */
+.ch-msg__confirm {
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.ch-msg__confirm-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
+.ch-msg__confirm-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__confirm-btn--danger {
+  color: var(--status-error);
+}
+
+.ch-msg__confirm-btn:hover:not(:disabled),
+.ch-msg__confirm-btn:focus-visible:not(:disabled) {
+  border-color: currentColor;
+  background: var(--surface-hover);
+}
+
+.ch-msg__confirm-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* jump emphasis after a deep link lands (#1308 item 1). DESIGN.md text-motion
    only: a flat background fade, no shimmer, no particles, and inside the 400ms
    motion budget. */
@@ -707,6 +759,25 @@
 }
 
 .ch-msg--user .ch-msg__edited {
+  align-self: flex-end;
+}
+
+/* Tombstone placeholder (#1308 item 4). The row keeps its slot — grouping, the
+   scroll anchor and any thread chip below depend on it — and says plainly that
+   something was here. Dim and italic so it reads as absence rather than as a
+   message someone wrote. */
+.ch-msg__deleted {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-style: italic;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* The placeholder replaces the body, so it inherits the body's alignment — the
+   bubble chrome (`.ch-msg--user .ch-msg__body`) is simply never rendered, since
+   there is no message left to frame. */
+.ch-msg--user .ch-msg__deleted {
   align-self: flex-end;
 }
 

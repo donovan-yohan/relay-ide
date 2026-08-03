@@ -77,6 +77,11 @@ interface ChannelTimelineProps {
    * the mutation; the timeline only routes the callback to the rows.
    */
   onEditMessage?: (message: ChannelMessage, text: string) => Promise<unknown>;
+  /**
+   * #1308 item 4. Tombstones one of the operator's own rows. `ChannelView` owns
+   * the mutation; the timeline only routes the callback to the rows.
+   */
+  onDeleteMessage?: (message: ChannelMessage) => Promise<unknown>;
   /** Profile actor ids currently non-idle here — the retry storm brake. */
   busyAgentIds?: ReadonlySet<string>;
 }
@@ -99,6 +104,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   jumpTarget = null,
   onRetryMessage,
   onEditMessage,
+  onDeleteMessage,
   busyAgentIds,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
@@ -292,6 +298,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 {...(busyAgentIds ? { busyAgentIds } : {})}
                 {...(onRetryMessage ? { onRetryMessage } : {})}
                 {...(onEditMessage ? { onEditMessage } : {})}
+                {...(onDeleteMessage ? { onDeleteMessage } : {})}
                 {...(onOpenThread ? { onOpenThread } : {})}
               />
             );

@@ -3516,6 +3516,41 @@ describe('channel-agent-binder — retry', () => {
     expect(adapter.sendCalls).toHaveLength(0);
   });
 
+  it('refuses to re-run a turn whose trigger the operator deleted (#1308 item 4)', async () => {
+    const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@mock ship the anchor',
+    });
+    const failed = failedAgentRow(store, trigger);
+    // A tombstone keeps its id, so the trigger still RESOLVES — re-running the
+    // turn would hand the provider exactly the text the operator erased.
+    store.deleteMessage({
+      channelId: CH,
+      messageId: trigger.id,
+      deleterId: OPERATOR.id,
+    });
+
+    await expect(binder.retryMessage(CH, failed.id)).rejects.toMatchObject({
+      reasonCode: 'RETRY_TRIGGER_DELETED',
+      notFound: false,
+    });
+    expect(adapter.sendCalls).toHaveLength(0);
+    // Refused before the supersede mark: a mark for a turn that never ran would
+    // disable the row's own retry affordance forever.
+    expect(
+      systemRows(store).filter(
+        (row) => row.meta?.[CHANNEL_RETRY_OF_META_KEY] !== undefined
+      )
+    ).toHaveLength(0);
+  });
+
   it('retries interrupted and truncated rows too — every lost turn, not just failed', async () => {
     const adapter = new ScriptedAdapter('mock', { mode: 'stall' });
     const { binder, store } = makeBinder({

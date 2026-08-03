@@ -79,6 +79,24 @@ function edited(m: ChannelMessage): ChannelEventV1 {
   };
 }
 
+function deleted(m: ChannelMessage): ChannelEventV1 {
+  return {
+    type: 'channel-message-deleted-v1',
+    channelId: CHANNEL,
+    timestamp: 't',
+    message: m,
+  };
+}
+
+/** A row in the shape the delete route produces: body wiped, `deletedAt` set. */
+function tombstone(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
+  return message({
+    body: { text: '', format: 'markdown' },
+    meta: { deletedAt: '2026-08-03T02:00:00.000Z' },
+    ...overrides,
+  });
+}
+
 function reduce(
   state: ChannelReducerState,
   events: ChannelEventV1[]
@@ -610,6 +628,119 @@ describe('channel-message-edited-v1', () => {
           body: { text: 'rewritten', format: 'markdown' },
         })
       )
+    );
+    expect(renumbered.needsCatchup).toBe(true);
+    expect(renumbered.byId['chm:1']?.body.text).toBe('hi');
+  });
+});
+
+// #1308 slice 1 item 4 — operator message deletion. A tombstone replaces the
+// row IN PLACE; nothing may ever splice a row out of the seq log.
+describe('channel-message-deleted-v1', () => {
+  it('accepts a wiped operator row and rejects anything still carrying a body', () => {
+    expect(isChannelEventV1(deleted(tombstone()))).toBe(true);
+    // A "deletion" still holding text would leak the very thing the operator
+    // asked to erase, so it is dropped at the wire.
+    expect(
+      isChannelEventV1(
+        deleted(tombstone({ body: { text: 'still here', format: 'markdown' } }))
+      )
+    ).toBe(false);
+    // Unmarked rows are not tombstones.
+    expect(
+      isChannelEventV1(deleted(message({ body: { text: '', format: 'text' } })))
+    ).toBe(false);
+    // Agent rows are a durable record of what a provider said; system rows are
+    // the hub's own bookkeeping.
+    expect(
+      isChannelEventV1(
+        deleted(
+          tombstone({ sender: { kind: 'agent', id: 'agent-profile:mock:x' } })
+        )
+      )
+    ).toBe(false);
+    expect(isChannelEventV1(deleted(tombstone({ kind: 'system' })))).toBe(false);
+  });
+
+  it('rejects a tombstone arriving on the edit lane', () => {
+    // `channelMessageEditable` excludes a deleted row, so a delete cannot be
+    // laundered through the edit event to bypass the tombstone shape check.
+    expect(isChannelEventV1(edited(tombstone()))).toBe(false);
+  });
+
+  it('replaces the row in place, keeping the array length, order and seq', () => {
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(message({ id: 'chm:1' as ChannelMessageId, seq: 1 })),
+      created(message({ id: 'chm:2' as ChannelMessageId, seq: 2 })),
+      created(message({ id: 'chm:3' as ChannelMessageId, seq: 3 })),
+      deleted(tombstone({ id: 'chm:2' as ChannelMessageId, seq: 2 })),
+    ]);
+    // Grouping, the unread divider and every scroll anchor read positions out of
+    // this array — a splice would move all of them.
+    expect(state.messages.map((m) => m.id)).toEqual([
+      'chm:1',
+      'chm:2',
+      'chm:3',
+    ]);
+    expect(state.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(state.byId['chm:2']?.body.text).toBe('');
+    expect(state.byId['chm:2']?.meta?.['deletedAt']).toBe(
+      '2026-08-03T02:00:00.000Z'
+    );
+    expect(state.lastSeq).toBe(3);
+    expect(state.needsCatchup).toBe(false);
+  });
+
+  it('keeps a deleted thread parent as the anchor its replies point at', () => {
+    const root = message({ id: 'chm:root' as ChannelMessageId, seq: 1 });
+    const reply = message({
+      id: 'chm:reply' as ChannelMessageId,
+      seq: 2,
+      threadId: 'chm:root' as ChannelMessageId,
+      parentMessageId: 'chm:root' as ChannelMessageId,
+    });
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(root),
+      created(reply),
+      deleted(tombstone({ id: 'chm:root' as ChannelMessageId, seq: 1 })),
+    ]);
+    expect(state.byId['chm:root']).toBeDefined();
+    expect(state.byId['chm:reply']?.threadId).toBe('chm:root');
+  });
+
+  it('ignores a row outside the loaded window WITHOUT a catch-up, and guards streams and seq surprises', () => {
+    const state = reduce(initialChannelReducerState(CHANNEL), [
+      created(message({ id: 'chm:1' as ChannelMessageId, seq: 1 })),
+    ]);
+    // A deletion adds no seq and closes no gap: an unknown id means "not loaded
+    // here", so demanding a resync would raise the banner on a healthy client.
+    const unknown = applyChannelEventV1(
+      state,
+      deleted(tombstone({ id: 'chm:older' as ChannelMessageId, seq: 0 }))
+    );
+    expect(unknown.needsCatchup).toBe(false);
+    expect(unknown.messages.map((m) => m.id)).toEqual(['chm:1']);
+
+    const streaming = reduce(initialChannelReducerState(CHANNEL), [
+      created(
+        message({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          status: 'streaming',
+          body: { text: 'partial', format: 'markdown' },
+        })
+      ),
+    ]);
+    expect(
+      applyChannelEventV1(
+        streaming,
+        deleted(tombstone({ id: 'chm:1' as ChannelMessageId, seq: 1 }))
+      ).byId['chm:1']?.body.text
+    ).toBe('partial');
+
+    const renumbered = applyChannelEventV1(
+      state,
+      deleted(tombstone({ id: 'chm:1' as ChannelMessageId, seq: 9 }))
     );
     expect(renumbered.needsCatchup).toBe(true);
     expect(renumbered.byId['chm:1']?.body.text).toBe('hi');
