@@ -44,6 +44,7 @@ need Vite HMR or a fresh build before package-mode verification.
 | Provider adapters | `docs/provider-guide.md`               |
 | Self-hosting      | `docs/SELF_HOSTING.md`                 |
 | Federated dev     | `docs/FEDERATED_DEV.md`                |
+| Release notes     | `CHANGELOG.md`                         |
 | Deployment        | `docs/references/deployment.md`        |
 | Devbox hub        | `docs/references/devbox-hub-deploy.md` |
 | ADRs              | `docs/adrs/`                           |
@@ -93,6 +94,8 @@ Repo skills live in `.chalk/skills/` and are projected by chalkbag:
 
 - `/scope` — issue scoping and brainstorming guardrails
 - `/ticket` — GitHub issue creation, sub-issues, and blockers
+- `/changelog` — write an `[Unreleased]` entry: category, voice, PR ref
+- `/release` — cut a release: preflight, bump, drain, tag, verify, dogfood
 
 Issues live in `donovan-yohan/relay-ide`. Workflow is `backlog` → `refined` →
 `todo` → `in-progress`. Claim work in `.worktrees/<issue-slug>`.
@@ -102,5 +105,10 @@ Issues live in `donovan-yohan/relay-ide`. Workflow is `backlog` → `refined` �
 - `nightly` is the active-development base and default PR target.
 - `master` is protected; tags publish stable releases.
 - Do not push directly to `master`.
+- Every user-visible PR adds a `CHANGELOG.md` `[Unreleased]` entry; a PR without
+  one starts a body line with "No user-visible change" or takes the
+  `no-user-visible-change` label. CI enforces this on `server/`, `frontend/`,
+  and `shared/` diffs. `/release` drains `[Unreleased]` into a dated section at
+  bump time.
 - Stable release and hotfix details live in
   `docs/references/deployment.md`.
