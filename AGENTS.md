@@ -94,6 +94,8 @@ Repo skills live in `.chalk/skills/` and are projected by chalkbag:
 
 - `/scope` — issue scoping and brainstorming guardrails
 - `/ticket` — GitHub issue creation, sub-issues, and blockers
+- `/changelog` — write an `[Unreleased]` entry: category, voice, PR ref
+- `/release` — cut a release: preflight, bump, drain, tag, verify, dogfood
 
 Issues live in `donovan-yohan/relay-ide`. Workflow is `backlog` → `refined` →
 `todo` → `in-progress`. Claim work in `.worktrees/<issue-slug>`.
