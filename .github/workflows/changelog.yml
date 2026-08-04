@@ -34,6 +34,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Scope first, so a docs-only PR reports the honest reason instead of
+          # tripping an escape hatch it never needed.
+          MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          CHANGED=$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA")
+
+          if ! printf '%s\n' "$CHANGED" | grep -Eq '^(server|frontend|shared)/'; then
+            echo "No changes under server/, frontend/, or shared/; entry not required."
+            exit 0
+          fi
+
           case ",${PR_LABELS}," in
             *,no-user-visible-change,*)
               echo "Labelled no-user-visible-change; entry not required."
@@ -41,16 +51,13 @@ jobs:
               ;;
           esac
 
-          if printf '%s' "${PR_BODY:-}" | grep -qiF 'no user-visible change'; then
+          # The declaration must lead its own line. A substring match would let
+          # any PR that merely quotes the rule -- this workflow's own PR, or any
+          # doc change describing it -- silently exempt itself.
+          if printf '%s\n' "${PR_BODY:-}" \
+            | sed -E 's/^[[:space:]]*([-*+>][[:space:]]*)*(\[[ xX]\][[:space:]]*)?//; s/^[*_`]+//' \
+            | grep -qiE '^no user-visible change'; then
             echo "PR body declares no user-visible change; entry not required."
-            exit 0
-          fi
-
-          MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
-          CHANGED=$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA")
-
-          if ! printf '%s\n' "$CHANGED" | grep -Eq '^(server|frontend|shared)/'; then
-            echo "No changes under server/, frontend/, or shared/; entry not required."
             exit 0
           fi
 
@@ -70,5 +77,5 @@ jobs:
             exit 0
           fi
 
-          echo "::error::This PR touches server/, frontend/, or shared/ but adds no CHANGELOG.md [Unreleased] entry. Add one (see the /changelog skill), or declare the exemption by writing 'no user-visible change' in the PR body or applying the no-user-visible-change label."
+          echo "::error::This PR touches server/, frontend/, or shared/ but adds no CHANGELOG.md [Unreleased] entry. Add one (see the /changelog skill), or declare the exemption by starting a line of the PR body with 'No user-visible change' or applying the no-user-visible-change label."
           exit 1

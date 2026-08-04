@@ -106,7 +106,7 @@ Issues live in `donovan-yohan/relay-ide`. Workflow is `backlog` â†’ `refined` â†
 - `master` is protected; tags publish stable releases.
 - Do not push directly to `master`.
 - Every user-visible PR adds a `CHANGELOG.md` `[Unreleased]` entry; a PR without
-  one states "no user-visible change" in its body or takes the
+  one starts a body line with "No user-visible change" or takes the
   `no-user-visible-change` label. CI enforces this on `server/`, `frontend/`,
   and `shared/` diffs. `/release` drains `[Unreleased]` into a dated section at
   bump time.

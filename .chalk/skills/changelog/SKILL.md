@@ -38,9 +38,11 @@ Two tests when it is close:
 Declining is a legitimate outcome — state it in the PR. Silence is not, and CI
 agrees: `.github/workflows/changelog.yml` fails any PR touching `server/`,
 `frontend/`, or `shared/` that neither adds an `[Unreleased]` line nor declares
-the exemption. To decline, put the literal phrase **"no user-visible change"** in
-the PR body, or apply the `no-user-visible-change` label. Paraphrases do not
-satisfy the gate.
+the exemption. To decline, start a line of the PR body with **"No user-visible
+change"** (a bullet, checkbox, or bold wrapper is fine), or apply the
+`no-user-visible-change` label. The phrase has to lead its line — quoting it
+mid-sentence does not count, so a PR that merely discusses this rule cannot
+exempt itself by accident.
 
 ## Step 2: Pick the category
 

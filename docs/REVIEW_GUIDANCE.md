@@ -67,7 +67,7 @@ Checked at review time, not when the tag is cut. The PR template
 `server/`, `frontend/`, or `shared/`. The rest are review judgement — CI can see
 that an entry exists, not whether it is honest or readable.
 
-- Is there a `CHANGELOG.md` `[Unreleased]` entry, or does the PR explicitly state "no user-visible change"? Internal refactors, test-only work, and CI plumbing may decline — silence may not. A PR that took the label or body escape hatch while shipping user-visible behavior is a review finding, not a passing check.
+- Is there a `CHANGELOG.md` `[Unreleased]` entry, or does a body line start with "No user-visible change"? Internal refactors, test-only work, and CI plumbing may decline — silence may not. A PR that took the label or body escape hatch while shipping user-visible behavior is a review finding, not a passing check.
 - Is the entry honest about what landed on this head? Right group (Added / Changed / Fixed / Removed), no claims the diff does not support, issue or PR number attached.
 - For feature PRs, does the entry read like a release note — user-visible behavior in the product vocabulary — not implementation? "Channel search jumps to the matching message" beats "add an FTS5 index to the messages table".
 - Are docs named or declined? The PR should say which of `AGENTS.md`, `docs/*.md`, or `DESIGN.md` it touched, or state "none needed".
