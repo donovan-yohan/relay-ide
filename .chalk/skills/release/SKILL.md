@@ -111,8 +111,9 @@ step.
 ## Step 3: Bump and drain the changelog on `nightly`
 
 One commit carries the version bump and the changelog drain. Never bump without
-draining — CI uses the dated section as the GitHub Release body, so a missing
-section ships an empty release note.
+draining — CI resolves the dated section as the GitHub Release body before it
+builds, and a version with no matching section fails the run before anything is
+published. A bump without a drain is a dead tag you have to delete and re-cut.
 
 ```bash
 git checkout nightly && git pull --ff-only
@@ -129,6 +130,12 @@ Then edit `CHANGELOG.md`:
   version. CI falls back from `0.2.0-rc.1` to the `0.2.0` section, so both the
   rc and the eventual stable release reuse one section. Do not write an
   `-rc.N` heading.
+- Group the drained section when it is large. Under roughly 25 entries, keep the
+  flat `### Added` / `### Changed` / `### Fixed` / `### Security` shape the
+  entries arrived in. Above that, a flat list stops scanning: regroup by product
+  area with `### <area>` headings and `#### <Category>` under each, ordering
+  areas by how much a reader cares. `[Unreleased]` always stays flat — grouping
+  is a drain-time judgement call, not something entry authors do.
 
 ```bash
 git add package.json package-lock.json CHANGELOG.md
@@ -144,11 +151,14 @@ git push origin nightly
 gh pr create --repo donovan-yohan/relay-ide \
   --base master --head nightly --title "vX.Y.Z" \
   --body "Release vX.Y.Z. See CHANGELOG.md."
-gh pr merge --merge          # merge commit, not squash: master must contain the nightly SHAs
+gh pr merge --merge          # merge commit, not squash: keep master and nightly on one line
 ```
 
-Use `--merge`. A squash rewrites the SHA, and CI's "tag is on master" check
-looks for the tagged commit's SHA on `origin/master`.
+Use `--merge`. CI will not catch a squash — the tag is cut from `master` after
+the merge, so a squash commit satisfies the tag-on-master check just as well.
+The damage shows up at Step 8: a squash rewrites the SHAs, `master` and
+`nightly` diverge, `git pull --ff-only` on `nightly` stops working, and the next
+release PR replays the commits you already released.
 
 ## Step 5: Tag on `master`
 
@@ -163,11 +173,13 @@ git push origin vX.Y.Z
 ```
 
 CI then: verifies the tag is on `master`, verifies the tag equals `v` +
-`package.json` version, classifies the channel (no suffix -> `latest`, `-rc.N`
--> `rc`, anything else fails), builds, tests, publishes, and cuts a GitHub
-Release with the matching `CHANGELOG.md` section as the body. The stable publish
-step independently refuses any hyphenated tag or version, so a prerelease can
-never take `@latest`.
+`package.json` version, gates the version shape and classifies the channel
+(`X.Y.Z` -> `latest`, `X.Y.Z-rc.N` -> `rc`, anything else fails), resolves the
+GitHub Release body from `CHANGELOG.md` and **aborts if no section matches**,
+then builds, tests, publishes, and cuts the Release. The notes gate runs before
+the build, so a missing section costs you a deleted tag, not a bad publish. The
+stable publish step independently refuses any hyphenated tag or version, so a
+prerelease can never take `@latest`.
 
 ```bash
 gh run watch --repo donovan-yohan/relay-ide
@@ -264,13 +276,16 @@ Skipping this makes the next release PR replay old commits and the next
 ## Pitfalls
 
 1. **Bump without drain.** The GitHub Release body is extracted from the
-   `## [X.Y.Z]` section. No section, empty release notes on a published tag.
-2. **Squash-merging the release PR.** The tagged SHA must be reachable from
-   `origin/master` or CI aborts at the first step. Use `--merge`.
+   `## [X.Y.Z]` section. No section, and CI aborts before the build — you delete
+   the tag, drain, and re-cut.
+2. **Squash-merging the release PR.** CI does not catch this one; `master` and
+   `nightly` diverge and you pay for it at the Step 8 back-merge and again on
+   the next release PR. Use `--merge`.
 3. **Tag/version mismatch.** `git tag v0.2.0` on a tree whose `package.json`
    says `0.1.0` fails the classify step. Read the version back before tagging.
-4. **Invented prerelease shapes.** `-beta.1`, `-next.1`, and bare `-rc` have no
-   lane and fail CI. Only `-rc.N`.
+4. **Invented prerelease shapes.** Only `X.Y.Z` and `X.Y.Z-rc.N` have lanes.
+   `-beta.1`, `-next.1`, bare `-rc`, `-rc.x`, `-rc.0`, and `-rc.1.2` all fail the
+   shape gate before npm is touched.
 5. **An `-rc.N` changelog heading.** CI looks for `## [X.Y.Z]` first and falls
    back to the base version; an `## [0.2.0-rc.1]` heading orphans the stable
    release's notes.

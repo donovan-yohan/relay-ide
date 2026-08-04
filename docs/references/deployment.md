@@ -11,7 +11,7 @@
 
 PRs target `nightly` by default. Stable releases are promoted from `nightly` to `master` via PR.
 
-Every stable and rc tag needs a matching section in [`CHANGELOG.md`](../../CHANGELOG.md) before the tag is pushed — CI uses it as the GitHub Release body.
+Every stable and rc tag needs a matching section in [`CHANGELOG.md`](../../CHANGELOG.md) before the tag is pushed — CI uses it as the GitHub Release body. The section is resolved before anything is published, so a tag with no matching section fails the run instead of publishing a package and cutting a release with no notes.
 
 ## Release Channels
 
@@ -21,7 +21,7 @@ Every stable and rc tag needs a matching section in [`CHANGELOG.md`](../../CHANG
 | `vX.Y.Z-rc.N` tag on `master` | `X.Y.Z-rc.N`  | `rc`         | yes, prerelease |
 | push to `nightly`             | stamped       | `nightly`    | no              |
 
-The tag must equal `v` + the `package.json` version or CI aborts before publishing. Prerelease versions other than `-rc.N` have no lane and fail the classify step. The stable publish step re-checks the tag and the version independently and refuses to run if either contains a hyphen, so an rc can never take `@latest`.
+The tag must equal `v` + the `package.json` version or CI aborts before publishing. The classify step then gates the version *shape*: only `X.Y.Z` and `X.Y.Z-rc.N` (N starting at 1) have lanes, so malformed stable versions and near-miss candidates — `0.2.0-rc.x`, `0.2.0-rc.1.2`, `0.2.0-beta-rc.1`, bare `0.2.0-rc` — are rejected there rather than reaching npm. The stable publish step re-checks the tag and the version independently and refuses to run if either contains a hyphen, so an rc can never take `@latest`.
 
 ## Install Channels
 
@@ -95,7 +95,7 @@ git push origin v0.2.0-rc.1      # CI publishes to npm @rc
 Three independent checks keep an rc off `@latest`, so no single mistake can promote one by accident:
 
 1. The classify step aborts unless the tag equals `v` + the `package.json` version.
-2. It then routes `-rc.N` to the `rc` lane and fails any other prerelease shape (`-beta.1`, `-next.1`, bare `-rc`) outright — those have no lane.
+2. It then gates the version shape against `X.Y.Z` or `X.Y.Z-rc.N` and routes `-rc.N` to the `rc` lane. Every other shape (`-beta.1`, `-next.1`, bare `-rc`, `-rc.0`, `-rc.x`, `-rc.1.2`) fails outright — those have no lane.
 3. The stable publish step re-reads the tag and the version and refuses to run if either contains a hyphen, regardless of what classify decided.
 
 The rc publish step passes `--tag rc` explicitly, so even a successful rc publish leaves `latest` where it was. Confirm this after every rc:
@@ -154,6 +154,8 @@ git push origin v0.2.0           # CI publishes to npm @latest
 git checkout nightly && git merge master && git push origin nightly
 ```
 
+Use `--merge`, not `--squash`. This is not something CI catches: the tag is created after `git checkout master && git pull`, so a squash commit is on `master` too and the tag-on-master check passes either way. The cost lands at step 4 — a squash rewrites the SHAs, `master` and `nightly` diverge, the back-merge conflicts instead of fast-forwarding, and the next release PR replays the already-released commits.
+
 Pre-1.0 bump semantics: any `Added` or `Changed` entry means a minor bump, a release with only `Fixed`/`Security` entries is a patch, and breaking changes are absorbed by the minor bump. Leaving `0.x` is a product decision, not a mechanical one.
 
 ### 4. Hotfix (skip nightly)
@@ -191,9 +193,9 @@ git merge master && git push origin nightly
 
 [`CHANGELOG.md`](../../CHANGELOG.md) is the release-note source of truth, in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) form.
 
-- Every user-visible PR adds one entry to `[Unreleased]`. A PR with nothing user-visible states that in its description instead — internal refactors, test-only work, docs, and CI plumbing do not get entries.
+- Every user-visible PR adds one entry to `[Unreleased]`. A PR with nothing user-visible states that in its description instead — internal refactors, test-only work, docs, and CI plumbing do not get entries. This is enforced, not just asked for: `.github/workflows/changelog.yml` fails any PR that touches `server/`, `frontend/`, or `shared/` without adding an `[Unreleased]` line, unless the PR body contains "no user-visible change" or carries the `no-user-visible-change` label.
 - `[Unreleased]` accumulates flat `### Added` / `### Changed` / `### Fixed` / `### Security` lists in user-visible voice, each line ending with its PR ref. See the `/changelog` skill for wording and category rules.
-- The release skill (`/release`) drains `[Unreleased]` at bump time: it renames the section to `## [X.Y.Z] - YYYY-MM-DD`, opens a fresh empty `[Unreleased]`, and updates the compare links. Bump and drain travel in the same commit — CI publishes that dated section verbatim as the GitHub Release body, so a bump without a drain ships an empty release note.
+- The release skill (`/release`) drains `[Unreleased]` at bump time: it renames the section to `## [X.Y.Z] - YYYY-MM-DD`, opens a fresh empty `[Unreleased]`, updates the compare links, and groups the section by product area when it is large enough that a flat list stops scanning. Bump and drain travel in the same commit — CI publishes that dated section verbatim as the GitHub Release body, and a tag whose version has no section fails the run before anything is published.
 - A release candidate reuses the target stable version's section. There is no `[X.Y.Z-rc.N]` heading; CI falls back from the rc version to its base version when it extracts the body.
 - Never edit an already-released section. It is the published body of a GitHub Release and the two would disagree.
 
@@ -203,12 +205,13 @@ Stable, rc, and nightly publishing are handled by a single workflow (`.github/wo
 
 **On `v*` tag push (stable or rc):**
 
-1. Checks out the tagged commit with full history
-2. Verifies the tagged SHA is reachable from `origin/master` and fails otherwise — this is why the release PR is merged, not squashed
-3. Verifies the tag equals `v` + the `package.json` version, then classifies it: no suffix means `latest`, `-rc.N` means `rc`, any other prerelease shape fails with no lane
-4. Builds and runs tests against the tagged tree
-5. Publishes with `npm publish --provenance --access public`, adding `--tag rc` on the rc lane. The stable step independently re-reads the tag and the version and refuses either one hyphenated, so a prerelease cannot reach `@latest`
-6. Creates a GitHub Release (marked prerelease for rc) whose body is the matching `CHANGELOG.md` section, extracted by version heading. An rc falls back to its base version's section, then to a one-line placeholder if neither exists
+1. Checks out the tagged commit with full history, without persisting the git credential — the job holds `contents: write` for the release step, and that token must not be readable by `npm ci`, the build, the test suite, or a dependency postinstall
+2. Verifies the tagged SHA is reachable from `origin/master` and fails otherwise
+3. Verifies the tag equals `v` + the `package.json` version, then gates the version shape and classifies it: `X.Y.Z` means `latest`, `X.Y.Z-rc.N` means `rc`, anything else fails with no lane
+4. Resolves the GitHub Release body from `CHANGELOG.md` by version heading, with an rc falling back to its base version's section, and **fails the run if no section matches** — this happens before the build, so a bump without a drain never reaches `npm publish`
+5. Builds and runs tests against the tagged tree
+6. Publishes with `npm publish --provenance --access public`, adding `--tag rc` on the rc lane. The stable step independently re-reads the tag and the version and refuses either one hyphenated, so a prerelease cannot reach `@latest`
+7. Creates a GitHub Release (marked prerelease for rc) using the body resolved in step 4
 
 **On push to `nightly`:**
 

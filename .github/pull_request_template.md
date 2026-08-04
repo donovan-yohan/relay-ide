@@ -8,7 +8,7 @@ Refs #
 
 ## Checklist
 
-- [ ] `CHANGELOG.md` `[Unreleased]` entry added, or "no user-visible change" stated here
+- [ ] `CHANGELOG.md` `[Unreleased]` entry added, or the literal phrase "no user-visible change" stated in this body (CI checks it on `server/`, `frontend/`, `shared/` diffs; the `no-user-visible-change` label works too)
 - [ ] Docs updated — name which (`AGENTS.md` / `docs/*.md` / `DESIGN.md`) — or "none needed" stated here
 - [ ] Tests added/updated, with the decisive command under Verification
 - [ ] New HTTP route → added to `AUTH_ROUTE_LANE_INVENTORY` (`server/auth.ts`) and `test/auth.test.ts`

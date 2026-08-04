@@ -35,7 +35,12 @@ Two tests when it is close:
 - **Would a user notice without reading the diff?** If no, no entry.
 - **Would you mention it in a release announcement?** If no, no entry.
 
-Declining is a legitimate outcome — state it in the PR. Silence is not.
+Declining is a legitimate outcome — state it in the PR. Silence is not, and CI
+agrees: `.github/workflows/changelog.yml` fails any PR touching `server/`,
+`frontend/`, or `shared/` that neither adds an `[Unreleased]` line nor declares
+the exemption. To decline, put the literal phrase **"no user-visible change"** in
+the PR body, or apply the `no-user-visible-change` label. Paraphrases do not
+satisfy the gate.
 
 ## Step 2: Pick the category
 
@@ -112,9 +117,10 @@ already-released sections — they are the published body of a GitHub Release.
 - Unread counts survive a reload instead of resetting to zero (#1290)
 ```
 
-Released sections may add a second level (`### <area>` then `#### <Category>`)
-when a release is large enough that flat lists stop scanning; `/release` groups
-at drain time. Keep `[Unreleased]` flat while it accumulates.
+Keep `[Unreleased]` flat while it accumulates. Released sections may add a second
+level (`### <area>` then `#### <Category>`) once a release runs past roughly 25
+entries and a flat list stops scanning — `/release` Step 3 does that regrouping
+at drain time, so entry authors never pick an area.
 
 ## Step 6: Verify
 

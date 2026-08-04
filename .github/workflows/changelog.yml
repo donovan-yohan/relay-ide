@@ -1,0 +1,74 @@
+name: Changelog
+
+# Backpressure for the release-hygiene rule in AGENTS.md and the PR template:
+# a PR that touches product code must either add a CHANGELOG.md [Unreleased]
+# entry or say out loud that it has no user-visible change. Docs-only, test-only,
+# and CI-only PRs never trip it, and the two escape hatches keep the legitimate
+# declines that docs/REVIEW_GUIDANCE.md enumerates cheap.
+
+on:
+  pull_request:
+    branches: [nightly, master]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  entry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an [Unreleased] entry for user-visible changes
+        env:
+          # Untrusted PR text stays in env vars; it is never interpolated into
+          # the script body.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          case ",${PR_LABELS}," in
+            *,no-user-visible-change,*)
+              echo "Labelled no-user-visible-change; entry not required."
+              exit 0
+              ;;
+          esac
+
+          if printf '%s' "${PR_BODY:-}" | grep -qiF 'no user-visible change'; then
+            echo "PR body declares no user-visible change; entry not required."
+            exit 0
+          fi
+
+          MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          CHANGED=$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA")
+
+          if ! printf '%s\n' "$CHANGED" | grep -Eq '^(server|frontend|shared)/'; then
+            echo "No changes under server/, frontend/, or shared/; entry not required."
+            exit 0
+          fi
+
+          unreleased() {
+            git show "$1:CHANGELOG.md" 2>/dev/null \
+              | awk '/^## \[Unreleased\]/{f=1;next} f && /^## \[/{exit} f' \
+              || true
+          }
+          unreleased "$MERGE_BASE" > /tmp/unreleased-base.txt
+          unreleased "$HEAD_SHA" > /tmp/unreleased-head.txt
+
+          # `|| true` because diff exits 1 whenever the sections differ, which
+          # under pipefail would mask a successful grep.
+          ADDED=$(diff /tmp/unreleased-base.txt /tmp/unreleased-head.txt | grep -c '^> ' || true)
+          if [ "${ADDED:-0}" -gt 0 ]; then
+            echo "CHANGELOG.md [Unreleased] gained ${ADDED} line(s) on this head."
+            exit 0
+          fi
+
+          echo "::error::This PR touches server/, frontend/, or shared/ but adds no CHANGELOG.md [Unreleased] entry. Add one (see the /changelog skill), or declare the exemption by writing 'no user-visible change' in the PR body or applying the no-user-visible-change label."
+          exit 1
