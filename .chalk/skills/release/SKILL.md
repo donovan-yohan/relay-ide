@@ -5,7 +5,7 @@ description: >
   CHANGELOG [Unreleased], promote nightly to master, tag, verify the npm dist-tag
   and GitHub Release, dogfood a release candidate on the prod hub, and sync master
   back. Use when the user says "release", "cut a release", "ship a version",
-  "publish stable", "cut an rc", "tag v0.2.0", or "promote the rc".
+  "publish stable", "cut an rc", "tag v0.1.1", or "promote the rc".
 ---
 
 # /release -- Cut a relay-ide release
@@ -92,19 +92,23 @@ Use `/changelog` for entry wording and category rules.
 
 ## Step 2: Choose the version
 
-Pre-1.0 semantics — the current line is `0.y.z`:
+Pre-1.0 semantics — the current line is `0.y.z`, on the cargo-style convention:
+**the minor is the breaking-change axis.** Everything additive — features and
+fixes alike — rides the patch bump; only a break moves the minor.
 
-| `[Unreleased]` contains           | Bump  | Example                                                                |
-| --------------------------------- | ----- | ---------------------------------------------------------------------- |
-| Any `Added` or `Changed` entry    | minor | 0.1.0 -> 0.2.0                                                         |
-| Only `Fixed` / `Security` entries | patch | 0.1.0 -> 0.1.1                                                         |
-| Breaking change                   | minor | pre-1.0 absorbs breaks in minor; call it out at the top of the section |
+| `[Unreleased]` contains                                            | Bump  | Example        |
+| ------------------------------------------------------------------ | ----- | -------------- |
+| Only additive entries (`Added` / `Changed` / `Fixed` / `Security`) | patch | 0.1.1 -> 0.1.2 |
+| Any breaking change                                                | minor | 0.1.x -> 0.2.0 |
+
+A breaking release must call the break out at the top of its changelog section —
+pre-1.0 the version number alone does not warn anyone.
 
 Never bump to `1.0.0` from this skill. Leaving 0.x is a product decision and
 needs an explicit operator call.
 
 Release candidates carry the target stable version plus `-rc.N`: the first
-candidate for `0.2.0` is `0.2.0-rc.1`, the next is `0.2.0-rc.2`. `-rc.N` is the
+candidate for `0.1.1` is `0.1.1-rc.1`, the next is `0.1.1-rc.2`. `-rc.N` is the
 only prerelease shape with a publish lane; any other suffix fails CI's classify
 step.
 
@@ -127,7 +131,7 @@ Then edit `CHANGELOG.md`:
 - Update the link refs at the bottom: point `[Unreleased]` at
   `compare/vX.Y.Z...nightly` and add `[X.Y.Z]` -> `releases/tag/vX.Y.Z`.
 - For a release candidate, the section stays `## [X.Y.Z]` with the target stable
-  version. CI falls back from `0.2.0-rc.1` to the `0.2.0` section, so both the
+  version. CI falls back from `0.1.1-rc.1` to the `0.1.1` section, so both the
   rc and the eventual stable release reuse one section. Do not write an
   `-rc.N` heading.
 - Group the drained section when it is large. Under roughly 25 entries, keep the
@@ -281,13 +285,13 @@ Skipping this makes the next release PR replay old commits and the next
 2. **Squash-merging the release PR.** CI does not catch this one; `master` and
    `nightly` diverge and you pay for it at the Step 8 back-merge and again on
    the next release PR. Use `--merge`.
-3. **Tag/version mismatch.** `git tag v0.2.0` on a tree whose `package.json`
-   says `0.1.0` fails the classify step. Read the version back before tagging.
+3. **Tag/version mismatch.** `git tag v0.1.2` on a tree whose `package.json`
+   says `0.1.1` fails the classify step. Read the version back before tagging.
 4. **Invented prerelease shapes.** Only `X.Y.Z` and `X.Y.Z-rc.N` have lanes.
    `-beta.1`, `-next.1`, bare `-rc`, `-rc.x`, `-rc.0`, and `-rc.1.2` all fail the
    shape gate before npm is touched.
 5. **An `-rc.N` changelog heading.** CI looks for `## [X.Y.Z]` first and falls
-   back to the base version; an `## [0.2.0-rc.1]` heading orphans the stable
+   back to the base version; an `## [0.1.1-rc.1]` heading orphans the stable
    release's notes.
 6. **Assuming `@nightly` advanced.** Publishes occasionally get skipped for a
    merge. Check `npm view relay-ide@nightly version` against the head you think

@@ -21,7 +21,7 @@ Every stable and rc tag needs a matching section in [`CHANGELOG.md`](../../CHANG
 | `vX.Y.Z-rc.N` tag on `master` | `X.Y.Z-rc.N`  | `rc`         | yes, prerelease |
 | push to `nightly`             | stamped       | `nightly`    | no              |
 
-The tag must equal `v` + the `package.json` version or CI aborts before publishing. The classify step then gates the version *shape*: only `X.Y.Z` and `X.Y.Z-rc.N` (N starting at 1) have lanes, so malformed stable versions and near-miss candidates — `0.2.0-rc.x`, `0.2.0-rc.1.2`, `0.2.0-beta-rc.1`, bare `0.2.0-rc` — are rejected there rather than reaching npm. The stable publish step re-checks the tag and the version independently and refuses to run if either contains a hyphen, so an rc can never take `@latest`.
+The tag must equal `v` + the `package.json` version or CI aborts before publishing. The classify step then gates the version _shape_: only `X.Y.Z` and `X.Y.Z-rc.N` (N starting at 1) have lanes, so malformed stable versions and near-miss candidates — `0.1.1-rc.x`, `0.1.1-rc.1.2`, `0.1.1-beta-rc.1`, bare `0.1.1-rc` — are rejected there rather than reaching npm. The stable publish step re-checks the tag and the version independently and refuses to run if either contains a hyphen, so an rc can never take `@latest`.
 
 ## Install Channels
 
@@ -77,17 +77,17 @@ Same promotion path as a stable release, but the version carries an `-rc.N` prer
 ```bash
 # 1. Bump to the rc version on nightly and stage the CHANGELOG section
 git checkout nightly
-npm version 0.2.0-rc.1 --no-git-tag-version
-# CHANGELOG.md keeps a ## [0.2.0] section; the rc release body reuses it
+npm version 0.1.1-rc.1 --no-git-tag-version
+# CHANGELOG.md keeps a ## [0.1.1] section; the rc release body reuses it
 git add package.json package-lock.json CHANGELOG.md
-git commit -m "0.2.0-rc.1" && git push origin nightly
+git commit -m "0.1.1-rc.1" && git push origin nightly
 
 # 2. Promote to master and tag
-gh pr create --base master --head nightly --title "v0.2.0-rc.1"
+gh pr create --base master --head nightly --title "v0.1.1-rc.1"
 gh pr merge --merge
 git checkout master && git pull
-git tag v0.2.0-rc.1
-git push origin v0.2.0-rc.1      # CI publishes to npm @rc
+git tag v0.1.1-rc.1
+git push origin v0.1.1-rc.1      # CI publishes to npm @rc
 ```
 
 #### Prerelease-never-latest guard
@@ -136,19 +136,19 @@ blocked — all commits must arrive via PR.
 ```bash
 # 1. Bump version on nightly (no tag yet) and close the CHANGELOG section
 git checkout nightly
-npm version <patch|minor|major> --no-git-tag-version
-# move [Unreleased] entries into a new ## [0.2.0] - YYYY-MM-DD section in CHANGELOG.md
+npm version <patch|minor> --no-git-tag-version
+# move [Unreleased] entries into a new ## [0.1.2] - YYYY-MM-DD section in CHANGELOG.md
 git add package.json package-lock.json CHANGELOG.md
-git commit -m "0.2.0" && git push origin nightly
+git commit -m "0.1.2" && git push origin nightly
 
 # 2. Create and merge a release PR
-gh pr create --base master --head nightly --title "v0.2.0"
+gh pr create --base master --head nightly --title "v0.1.2"
 gh pr merge --merge
 
 # 3. Tag on master and push (tags bypass branch protection)
 git checkout master && git pull
-git tag v0.2.0
-git push origin v0.2.0           # CI publishes to npm @latest
+git tag v0.1.2
+git push origin v0.1.2           # CI publishes to npm @latest
 
 # 4. Sync master back to nightly
 git checkout nightly && git merge master && git push origin nightly
@@ -156,7 +156,7 @@ git checkout nightly && git merge master && git push origin nightly
 
 Use `--merge`, not `--squash`. This is not something CI catches: the tag is created after `git checkout master && git pull`, so a squash commit is on `master` too and the tag-on-master check passes either way. The cost lands at step 4 — a squash rewrites the SHAs, `master` and `nightly` diverge, the back-merge conflicts instead of fast-forwarding, and the next release PR replays the already-released commits.
 
-Pre-1.0 bump semantics: any `Added` or `Changed` entry means a minor bump, a release with only `Fixed`/`Security` entries is a patch, and breaking changes are absorbed by the minor bump. Leaving `0.x` is a product decision, not a mechanical one.
+Pre-1.0 bump semantics follow the cargo-style convention, where the minor is the breaking-change axis: an additive release — `Added`, `Changed`, `Fixed`, or `Security` entries that break nothing — is a **patch** bump (`0.1.1` -> `0.1.2`), and only a breaking change moves the **minor** (`0.1.x` -> `0.2.0`), called out at the top of that changelog section. `major` is not used below 1.0; leaving `0.x` is a product decision, not a mechanical one.
 
 ### 4. Hotfix (skip nightly)
 
@@ -175,14 +175,14 @@ git checkout master && git pull
 git checkout -b hotfix/bump-version
 npm version patch --no-git-tag-version
 git add package.json package-lock.json
-git commit -m "0.2.1" && git push origin hotfix/bump-version
-gh pr create --base master --title "v0.2.1"
+git commit -m "0.1.2" && git push origin hotfix/bump-version
+gh pr create --base master --title "v0.1.2"
 gh pr merge --merge
 
 # 3. Tag and push
 git checkout master && git pull
-git tag v0.2.1
-git push origin v0.2.1           # CI publishes to npm @latest
+git tag v0.1.2
+git push origin v0.1.2           # CI publishes to npm @latest
 
 # 4. Sync the fix back to nightly
 git checkout nightly && git pull
@@ -263,7 +263,7 @@ TypeScript source, test files, docs, and local config are excluded from the publ
 npm pack --dry-run                            # preview what will be included
 npm info relay-ide                            # check stable version
 npm dist-tag ls relay-ide                     # check all dist-tags (latest, rc, nightly)
-gh release view v0.2.0                        # confirm the release body matches CHANGELOG.md
+gh release view v0.1.1                        # confirm the release body matches CHANGELOG.md
 ```
 
 Install smoke in a throwaway prefix, so verifying a release cannot disturb a running hub:
