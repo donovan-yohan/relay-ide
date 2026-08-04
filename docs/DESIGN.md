@@ -1,130 +1,130 @@
-# Design
+# Backend design
 
-Backend patterns and conventions for claude-remote-cli. The server is a composition-root architecture where `index.ts` wires together single-concern modules communicating via ESM imports.
+Relay's TypeScript backend uses a composition-root architecture:
+`server/index.ts` initializes required stores and wires single-purpose modules,
+routers, WebSocket upgrades, auth, policy, and shutdown.
 
-## Key Decisions
+## Core decisions
 
-| Decision | Rationale | Source |
-|----------|-----------|--------|
-| No dependency injection | Direct ESM imports are simpler for a small module count | ADR-001 |
-| In-memory sessions with update persistence | Sessions are ephemeral PTY processes, but serialized to disk before auto-updates and restored on restart | ADR-003, Design doc |
-| scrypt + cookie tokens | PIN hashed with scrypt (migrated from bcrypt), cookie-based session auth, rate limiting | ADR-004 |
-| Dual-path PIN setup | TTY: interactive CLI prompt at startup. Non-TTY (background service): server starts PIN-less, PinGate frontend gates all access until PIN set via `POST /auth/setup` | Bug fix 2026-03-28 |
-| Dev tmux isolation | Dev mode (`NO_PIN=1`) uses `crcd-` tmux prefix; production uses `crc-`. Orphan cleanup only kills sessions matching its own prefix, preventing cross-instance kills | Bug fix 2026-03-28 |
-| node:test, no Jest/Vitest | Fewer dependencies, built-in to Node.js | ADR-005 |
-| Dual distribution (global + local) | npm global for production, local clone for dev | ADR-006 |
-| TypeScript + ESM migration | Type safety, modern module system, strict mode | ADR-008 |
-| Multi-agent CLI support | Abstract UI concepts (yolo, continue) map to agent-specific flags via `AGENT_COMMANDS`/`AGENT_YOLO_ARGS`/`AGENT_CONTINUE_ARGS` records in sessions.ts | Design doc |
-| Global session defaults | `defaultContinue`, `defaultYolo`, `launchInTmux` extend the `defaultAgent` pattern; shared reactive store (`config.svelte.ts`) ensures all components see fresh values after settings changes | Design doc |
-| Tmux clipboard passthrough | OSC 52 sequences from tmux flow through PTY→WebSocket to xterm.js; frontend handler decodes and writes to browser Clipboard API. Shift+click bypasses tmux mouse capture for native selection | Design doc |
-| Tmux copy-mode for mobile selection | Long-press on mobile enters tmux copy-mode (vi bindings) instead of browser-native selection. Toolbar swaps to copy-mode buttons (hjkl, w/b, Space, Copy, Exit). `mode-keys vi` set in session config. | Design doc |
-| Push notifications | Browser Notification API (desktop/open tab) + Web Push via service worker (mobile PWA). Per-session toggle in context menu, global default in settings. Server-side `push.ts` module owns `web-push` dependency and VAPID keys. | Design doc |
-| Fixture-based mobile input testing | Event-intent pipeline extracted to `server/mobile-input-pipeline.ts` for unit testing; JSON fixtures in `test/fixtures/mobile-input/` | Design doc |
-| File system browser API | `GET /workspaces/browse` returns directory entries with `isGitRepo`/`hasChildren` metadata. `POST /workspaces/bulk` for multi-add. FileBrowser.svelte provides lazy tree UI with filter, multi-select, keyboard nav. Denylist skips `node_modules`/.git/etc, 100 entry cap. | Design doc |
-| Session-end broadcast | `session-ended` event emitted via `/ws/events` on PTY exit and `kill()`. Follows `onIdleChange` callback pattern in sessions.ts. Frontend invalidates svelte-query PR/CI caches on receipt. | Design doc |
-| PR lifecycle state machine | `pr-state.ts` derives action from PR state + CI + mergeable + unresolved comments. Supports dual buttons (resolve + review). Archive flow kills session + deletes worktree. GraphQL query for unresolved review thread count. | Design doc |
-| Hooks-based state detection | Claude Code hooks (--settings injection) replace fragile regex parsing for AgentState. Parser kept as fallback with 30s reconciliation timeout. | Design doc, CEO review |
-| Hook-driven branch rename | UserPromptSubmit hook triggers claude -p for descriptive branch names, replacing ws.ts keystroke capture | CEO review override of design doc |
-| forceOutputParser config | Escape hatch to disable hooks and use parser-only mode | Eng review |
-| Local analytics | SQLite-backed event tracking (`analytics.ts` module). Auto-capture clicks via `data-track` attributes + explicit `trackEvent()` calls. Agent-queryable via direct `sqlite3` CLI access to `~/.config/claude-remote-cli/analytics.db`. Frontend batches events to `POST /analytics/events`. | Design doc |
-| GitHub webhook self-service | `webhook-manager.ts` owns webhook CRUD, smee-client lifecycle, and health state. The webhook receiver (`/webhooks`) is mounted unconditionally so it is ready before any webhook is configured. Smart polling (`startSmartPolling`) runs a 30-second interval that broadcasts `pr-updated`/`ci-updated` only for repos that have no working webhook (`webhookEnabled !== true` or `webhookError` set) — automatically going silent once webhooks are active. Auto-provision backfill (`POST /webhooks/manage/backfill`) creates webhooks for all configured workspaces in one shot. | Design doc |
-| OAuth scope for webhooks | GitHub OAuth App authorisation requests `repo admin:repo_hook` scope (previously `repo` only). The extra scope is required for `POST /repos/{owner}/{repo}/hooks` webhook creation. | Design doc |
-| `extractOwnerRepo` + `buildRepoMap` in git.ts | Helper functions for resolving "owner/repo" from a git remote URL (SSH and HTTPS forms) and building a workspace-path lookup map. Extracted to `git.ts` so both `webhook-manager.ts` and `review-poller.ts` share one implementation. | Design doc |
-| Enriched branch API | `GET /branches` returns `BranchInfo[]` with `isLocal`, `isRemote`, and `checkedOutIn` (worktree path + session ID). Cross-references `git worktree list --porcelain` with active sessions. | Design doc |
-| Agent-running guard on branch ops | Branch switching, rename, and PR base change are disabled when `agentState === 'processing'`. Copy branch name is always available (read-only). | Design doc |
-| PR base branch change | `POST /workspaces/pr-base` runs `gh pr edit --base` to change a PR's target branch from the UI. TargetBranchSwitcher dropdown shows remote-only branches. | Design doc |
-| Inline branch rename + PR warning modal | Pencil icon triggers inline rename input. If a PR exists for the old branch, a warning modal offers Push (to remote), Ignore, or Cancel (undo rename). | Design doc |
+- Channels own conversation history.
+- Agent profiles own participant identity.
+- Private channel-agent runtimes own provider execution.
+- Public sessions own terminal/process execution.
+- SQLite stores initialize before the server accepts work.
+- The hub owns routing and policy; nodes own local paths and processes.
+- Stable agent integrations use the versioned CLI/action contract.
+- Interactive terminals use `relay-pty`/libghostty-vt.
 
-## Config Precedence (canonical)
+## Configuration and state
 
-1. CLI flags (`--port`, `--host`, `--config`)
-2. Environment variables (`CLAUDE_REMOTE_PORT`, `CLAUDE_REMOTE_HOST`, `CLAUDE_REMOTE_CONFIG`)
-3. Config file (`~/.config/claude-remote-cli/config.json` global, `./config.json` dev)
-4. Hardcoded defaults
+Configuration precedence:
 
-## PTY Management
+1. CLI flags
+2. environment variables
+3. config file
+4. defaults
 
-- `CLAUDECODE` env var stripped from PTY env to allow nesting
-- Scrollback buffer: max 256KB per session, FIFO eviction
-- PTY sessions survive browser disconnects — server keeps them alive
-- Session auto-deleted when PTY exits; WebSocket closed with code 1000
-- `claudeArgs` from POST body merged with `config.claudeArgs` (config args first)
-- Re-attaching to a previous agent conversation uses agent-specific continue args (`--continue` for Claude, `resume --last` for Codex); reconnecting to a live PTY session requires no special args
-- **Session persistence across updates:** When `POST /update` triggers a restart, `serializeAll()` writes session metadata (including `yolo` and `claudeArgs` flags) to `pending-sessions.json` (version 3) and scrollback buffers to `scrollback/<id>.buf` in the config directory. On startup, `restoreFromDisk()` reads them back: tmux sessions re-attach to surviving tmux server processes; non-tmux agent sessions re-spawn with `--continue` args plus preserved flags (yolo, claudeArgs); terminal sessions re-spawn the shell. Original session IDs are preserved for seamless frontend reconnection. Stale files (>5 min) are ignored. Version 2 pending files (with `repoPath` instead of `cwd`/`workspacePath`/`worktreePath`) are migrated on load via the v2→v3 migration path in `restoreFromDisk()`.
-- **PTY retry on `--continue` failure:** If a session spawned with continue args exits within 3 seconds (regardless of exit code), the retry mechanism strips continue args and respawns. Exit code is intentionally not checked because tmux wrapping masks inner exit codes to 0. WebSocket clients are reattached via `onPtyReplacedCallbacks` (supports multiple concurrent connections). Tmux retries use a `-retry` suffix on the session name to avoid collision.
+Global state lives under `~/.config/relay-ide/`. Source development uses an
+isolated path under `~/.config/relay-ide/dev/`. The checkout is not the runtime
+database directory.
 
-## Session Types
+Durable stores use schema-versioned migrations and fail startup when a
+required store cannot initialize. Channel messages and bindings live in
+`channel-chat.db`; attachments use their own store and content-addressed
+payload directory.
 
-Sessions are typed as `'agent' | 'terminal'`. All sessions carry a `workspacePath` (the repo root) and an optional `worktreePath` (null for workspace-root sessions, populated for worktree sessions). There is no `'repo'` or `'worktree'` type distinction — the presence of `worktreePath` encodes location.
+## Channel conversations
 
-- **Agent sessions** — The selected coding agent (Claude or Codex) runs in either the workspace root (`worktreePath` is null) or a git worktree (`worktreePath` is set). Workspace-root agent sessions support `continue: true`, which maps to agent-specific continue args. Multiple sessions per workspace are allowed.
-- **Terminal sessions** — A bare shell spawned in either the workspace root or a worktree. Useful for running commands alongside agent sessions.
-- **Worktree creation** — `POST /workspaces/worktree` creates a new git worktree with the next mountain name (everest, kilimanjaro, denali, ...) tracked per-config via `nextMountainIndex`. The frontend then calls `POST /sessions` with the returned `worktreePath` to start a session in the new worktree. `POST /sessions` does not create worktrees itself.
-- **Branch auto-rename** — New worktrees with mountain names get `needsBranchRename: true`. The rename instruction is delivered via a sideband `claude -p` invocation (a one-shot non-interactive Claude process) rather than PTY injection, keeping the main session's input stream clean. The `BranchWatcher` (`server/watcher.ts`) uses `fs.watch` on `.git/HEAD` files to detect branch changes reactively and broadcasts `session-renamed` when a branch changes. Additionally, `GET /sessions` enriches session data with live branch names (rate-limited to 10s intervals).
-- **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted.
+`ChannelMessageStore` owns ordered rows, members, threads, idempotency keys, and
+profile bindings. The channel hub owns live subscribers and streaming
+accumulators. SQLite is the replay/catch-up buffer.
 
-## Session State Detection
+The channel router applies browser or scoped actor auth plus `context:read` /
+`context:write` capability checks. Agent attribution is server-derived from
+the private runtime; callers cannot forge an agent sender with request JSON.
 
-- Backend computes a merged `BackendDisplayState` (`initializing | running | idle | permission`) from `agentState` + PTY idle timer, deduplicated (only emits when state changes)
-- `session-backend-state-changed` is the single WebSocket event for all state changes (replaces the old dual `session-idle-changed` + `session-state-changed` events)
-- PTY idle timer (`5s` silence) and output parser are inputs to `computeBackendState()` in `sessions.ts`; the merge eliminates spurious idle cycling from PTY noise
-- For agents with hooks (Claude), `agentState` from hooks is authoritative. Parser reconciliation overrides after 30s of stale hooks. Raw idle is the fallback for agents without parsers (Codex stub).
+The binder resolves mentions to profiles, creates/reuses a private runtime,
+assembles bounded context, queues the turn, and invokes the adapter. The bridge
+reduces provider patches into durable channel rows and rich detail cards.
 
-## Output Parser
+## Private agent runtimes
 
-The `server/output-parsers/` directory implements a vendor-extensible registry for parsing terminal output into semantic `AgentState` values.
+`ChannelAgentRuntime` is intentionally not a public `Session`. It is:
 
-- **Registry pattern:** `index.ts` exports a `getParser(agentType)` function that returns the appropriate parser keyed by `AgentType`. Callers do not import individual parsers directly.
-- **Per-vendor parsers:** `claude-parser.ts` and `codex-parser.ts` each export a stateless parse function `(chunk: string, currentState: AgentState) => AgentState`.
-- **No cross-module deps:** The `output-parsers/` module only imports from `types.ts`; it does not depend on any other server module.
-- **Extending:** To add a new agent, create `<vendor>-parser.ts` and register it in `index.ts`.
+- held in the channel runtime manager;
+- owned by one channel/profile binding;
+- absent from session lists and terminal routes;
+- destroyed when its binding/runtime ends;
+- recreated with stored provider resume state when supported.
 
-## Hook System
+Provider adapters implement `ProtocolAdapterV2`. Adapter capabilities,
+environment refresh, interruption, approvals, provider session ids, and patch
+lifecycle remain internal runtime contracts.
 
-`server/hooks.ts` registers an Express Router mounted at `/hooks` in `index.ts`. Endpoints receive callbacks from Claude Code's hooks mechanism, which is injected via `--settings` when spawning PTY sessions.
+## Public sessions and terminals
 
-- **State detection:** `POST /hooks/stop` sets session state to idle; `POST /hooks/notification` sets `permission-prompt` or `waiting-for-input` based on the notification title; `POST /hooks/prompt-submit` sets state to `processing`.
-- **Activity tracking:** `POST /hooks/tool-use` sets `currentActivity` (tool name + detail); `POST /hooks/tool-result` clears it.
-- **Session cleanup:** `POST /hooks/session-end` triggers session cleanup with deduplication (ignores duplicate events within a short window).
-- **Branch rename:** `POST /hooks/prompt-submit` also triggers the branch rename flow on the first user message, replacing the previous ws.ts keystroke-capture approach.
-- **Claude-only:** Hooks are injected only for Claude PTY sessions. Codex sessions continue to use the output parser exclusively.
-- **Parser fallback:** The output parser remains active with a 30-second reconciliation timeout — if a hook-derived state has not been confirmed by a subsequent hook event within 30s, the parser state takes precedence.
-- **Restored tmux sessions:** Sessions restored after an auto-update may not have hooks re-injected; these fall back to parser-based state detection.
-- **Auth:** Endpoints are localhost-only. Each session uses a per-session token (not the user's PIN cookie) to authenticate hook callbacks.
+Public sessions are terminal process handles with cwd, node, optional
+repo/worktree context, display/control state, and bounded scrollback. Agents do
+not own public sessions; they participate in channels through private
+`ChannelAgentRuntime` handles.
 
-## Clipboard Image Passthrough
+`relay-pty` owns interactive child-process execution. xterm.js is the browser
+renderer. Browser reconnect can reattach while the Relay server and child
+remain live. Relay server restart cold-resumes saved terminal
+metadata/scrollback; it does not preserve the old child process.
 
-1. Browser paste/drop detects image, base64-encodes and POSTs to `/sessions/:id/image`
-2. Server saves to `/tmp/claude-remote-cli/:sessionId/paste-:timestamp.:ext`
-3. Attempts system clipboard set (osascript on macOS, xclip on Linux)
-4. If clipboard set succeeds: sends `\x16` (Ctrl+V) to PTY stdin
-5. If fails: returns file path; frontend shows "Insert Path" button
+Scrollback is capped and evicted FIFO. Writes/resizes after session reaping fail
+closed rather than throwing through the socket.
 
-**Platform-specific:** On Windows/Linux, xterm.js intercepts Ctrl+V (custom key handler reads Clipboard API). On macOS, only Cmd+V triggers paste.
+## Hub and nodes
 
-## Background Service
+The local hub is also a node. Paired nodes authenticate independently and hold
+an outbound reverse link. The hub:
 
-- `--bg` is shortcut for `install` (installs + starts)
-- Service files generated with current CLI flags baked in
-- macOS: launchd plist (`RunAtLoad` + `KeepAlive`); Linux: systemd user unit (`Restart=on-failure`)
-- To change port/host: `uninstall` then re-install with new flags
+- tracks heartbeat/capability state;
+- authorizes each routed operation;
+- aggregates federated reads;
+- routes terminal/file/session operations to the owning node.
 
-## Slash Commands
+A node never receives another node's credential or acts as another node.
 
-- Claude Code slash commands live in `.claude/commands/` and are tracked in git
-- `.gitignore` ignores `.claude/` subdirectories individually (not blanket) to allow `commands/` to be versioned
-- Commands are markdown prompt templates executed interactively by Claude
+## Auth and policy
 
-## Deep Docs
+- Browser clients authenticate with the Relay PIN cookie.
+- Hooks use per-runtime or per-session scoped tokens.
+- CLI actors use scoped credentials and advertised capabilities.
+- High-risk node actions pass through policy and confirmation lanes.
+- Audit rows store compact ids, decisions, hashes, and redaction metadata.
 
-| Document | Purpose |
-|----------|---------|
-| `design-docs/core-beliefs.md` | Agent-first operating principles |
-| `design-docs/` | Feature design documents (brainstorm outputs) |
+## Images
 
-## See Also
+Channel image ingress:
 
-- [Architecture](ARCHITECTURE.md) — module boundaries and invariants
-- [Frontend](FRONTEND.md) — Svelte 5 patterns and component conventions
-- [Quality](QUALITY.md) — testing patterns and test isolation
-- [Plans](PLANS.md) — active and completed execution plans
+1. accepts bounded multipart uploads;
+2. decodes bytes to determine actual format;
+3. rejects unsupported types, excessive bytes, or excessive pixels;
+4. strips metadata by re-encoding;
+5. content-addresses the sanitized payload;
+6. persists a typed channel image part.
+
+Terminal paste remains a separate session input feature and must not be used as
+channel image storage.
+
+## Services
+
+The background hub runs under launchd on macOS or a user systemd service when
+available on Linux. Service install/status/logs/uninstall are exposed by the
+CLI. Node service support is capability-detected, including WSL2 variants.
+
+## Extension rules
+
+- Add a focused module instead of expanding `index.ts` with domain logic.
+- Put shared wire/schema types under `shared/`.
+- Keep provider-native behavior inside adapter modules.
+- Add storage migrations through the owning store's version runner.
+- Bound every history, stream, queue, attachment, and agent-output path.
+- Put tests at the interface that owns the invariant.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md),
+[`CHANNEL_CHAT.md`](CHANNEL_CHAT.md), and
+[`provider-guide.md`](provider-guide.md).

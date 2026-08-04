@@ -1,0 +1,11 @@
+## meta
+rule: bootstrap-operator-grant
+module: bootstrap-diagnostics
+redactor: redactBootstrapSecrets
+description: operator handshake grant handles and scoped actor tokens are scrubbed from bootstrap CLI examples and errors
+secrets: relay-ohg-v1.grant_abc123.secret_def456,relay-sac-v1.actor_abc123.secret_def456,pair_FAKE_PAIR_aaaaaaaa,node_FAKE_NODE_aaaaaaaa.secret_FAKE_NODE_SECRET_bbbbbbbb,browser_session_cookie_value
+preserves: relay-ide node mint-pair-token,--hub https://hub.example.test,--operator-grant,grant-backed mint failed
+## input
+relay-ide node mint-pair-token --hub https://hub.example.test --operator-grant relay-ohg-v1.grant_abc123.secret_def456 --actor-token relay-sac-v1.actor_abc123.secret_def456
+{"operatorGrant":"relay-ohg-v1.grant_abc123.secret_def456","actorToken":"relay-sac-v1.actor_abc123.secret_def456","pairToken":"pair_FAKE_PAIR_aaaaaaaa","nodeCredential":"node_FAKE_NODE_aaaaaaaa.secret_FAKE_NODE_SECRET_bbbbbbbb"}
+grant-backed mint failed with cookie=browser_session_cookie_value

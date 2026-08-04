@@ -1,0 +1,33 @@
+.rename-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rename-message {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.rename-message code {
+  background: var(--surface-hover);
+  padding: 2px 4px;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.rename-detail {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.rename-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

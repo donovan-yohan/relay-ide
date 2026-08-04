@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "eventId": "hmevt_556_session_started",
+  "timestamp": "2026-05-17T08:00:00.000Z",
+  "source": {
+    "kind": "hermes-agent",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "runId": "run_1009",
+    "sessionId": "hermes_session_556",
+    "pluginVersion": "spike.1"
+  },
+  "eventKind": "session.lifecycle",
+  "status": "started",
+  "workContext": {
+    "workContextId": "wc:relay-ide:556",
+    "taskRefs": [
+      {
+        "kind": "github-issue",
+        "id": "556",
+        "title": "#552: Hermes metadata event ingestion spike",
+        "url": "https://github.com/donovan-yohan/relay-ide/issues/556",
+        "parentRef": "552",
+        "status": "in-progress"
+      },
+      {
+        "kind": "kanban-task",
+        "id": "t_5a0c16a8",
+        "status": "running"
+      }
+    ],
+    "anchors": {
+      "node": {
+        "nodeId": "local",
+        "kind": "local",
+        "displayName": "Donovan-Yohans-MacBook-Pro",
+        "online": true
+      },
+      "session": {
+        "nodeId": "local",
+        "sessionId": "hermes_session_556",
+        "globalSessionId": "local:hermes_session_556",
+        "tabId": "tab-hermes-556",
+        "tabKind": "agent",
+        "cwd": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion"
+      },
+      "repo": {
+        "ownerRepo": "donovan-yohan/relay-ide",
+        "remoteUrl": "git@github.com:donovan-yohan/relay-ide.git",
+        "localPath": "/Users/donovanyohan/Documents/Programs/personal/relay-ide",
+        "branchName": "spike/556-hermes-event-ingestion"
+      },
+      "worktree": {
+        "localPath": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion",
+        "branchName": "spike/556-hermes-event-ingestion"
+      }
+    }
+  },
+  "actor": {
+    "kind": "agent",
+    "id": "kani-backend",
+    "displayName": "Kani backend",
+    "providerId": "hermes",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "model": "gpt-5.5",
+    "nodeId": "local",
+    "sessionId": "hermes_session_556"
+  },
+  "artifacts": [
+    {
+      "id": "artifact:556-spike-notes",
+      "kind": "report",
+      "title": "Spike recommendation note",
+      "path": "docs/spikes/hermes-metadata-event-ingestion.md",
+      "mediaType": "text/markdown",
+      "producedByActorId": "kani-backend",
+      "producedAt": "2026-05-17T08:00:00.000Z",
+      "summary": "Bounded metadata event shape and next implementation recommendation; no raw Hermes DB, env, or transcript content.",
+      "privacy": {
+        "classification": "internal",
+        "retention": "project",
+        "rawPayloadStored": false,
+        "redaction": {
+          "redacted": true,
+          "strategy": "summary",
+          "classes": ["path", "payload"],
+          "preview": "metadata-only artifact ref"
+        }
+      }
+    }
+  ],
+  "privacy": {
+    "classification": "internal",
+    "retention": "audit",
+    "rawPayloadStored": false,
+    "redaction": {
+      "redacted": true,
+      "strategy": "summary",
+      "classes": ["path", "payload"],
+      "preview": "bounded Hermes metadata envelope"
+    }
+  },
+  "audit": {
+    "correlationId": "wc:relay-ide:556",
+    "emittedByPluginVersion": "spike.1",
+    "recommendedNextStep": "Mount an authenticated Relay route that calls the shared validator and persists only accepted metadata summaries."
+  }
+}

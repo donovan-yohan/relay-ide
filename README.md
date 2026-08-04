@@ -1,253 +1,191 @@
-# claude-remote-cli
+# relay-ide
 
-Control Claude Code from your phone or any browser — manage multiple terminal sessions across repos and worktrees with a mobile-friendly web UI.
+Relay is a channel-first workspace for collaborating with AI coding agents from
+any device. A channel is the durable conversation, a DM is a channel with one
+agent profile, and agents participate alongside people. Relay keeps the
+conversation, mentions, threads, agent output, and orchestration in one
+Slack-style interface while local or paired nodes run the actual coding tools
+and terminals.
+
+The hub serves the React application and stable JSON gateway. Nodes provide
+agent CLIs, shells, files, repositories, and `relay-pty` terminal execution.
+Claude Code, Codex, OpenCode, Hermes, and custom profiles can participate in
+channels without turning provider-specific process state into the product
+model.
+
+## What is built
+
+- Durable channels and DMs backed by SQLite conversation history.
+- Human, agent, and system messages with Markdown, streaming updates, native
+  image attachments, mentions, and threaded replies.
+- Rich agent output in the live channel timeline: collapsible reasoning, tool,
+  code, output, and diff cards with syntax highlighting.
+- Agent profiles with built-in vendor profiles, custom profile configuration,
+  availability state, and channel rosters.
+- Mention routing that starts or reuses the addressed profile's runtime,
+  supplies bounded channel context, and mirrors the response into the same
+  conversation.
+- A persistent channel orchestrator that can route work to child agents;
+  lineage is visible in the operator cockpit.
+- Mobile-ready channel navigation, unread state, agent status, approvals,
+  interrupt controls, and terminal fallback.
+- A hub/node execution model for local and paired machines, plus a versioned
+  `relay-ide v1 ... --json` gateway for agent-operable actions.
 
 ## Prerequisites
 
-| Dependency | Why |
-|------------|-----|
-| **[Node.js 24+](https://nodejs.org/)** | Runtime for the server |
-| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH` |
-| **[Codex CLI](https://github.com/openai/codex)** | *Optional* — alternative coding agent. Install if you want to use Codex sessions |
-| **[GitHub CLI (`gh`)](https://cli.github.com/)** | *Optional* — required for the **PRs tab**. Run `gh auth login` after installing. |
+| Dependency                                             | Why                                                                                   |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                                              |
+| Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured frameworks as private channel runtimes from the node `PATH` |
+| [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional PR and CI integration                                                        |
+| [Tailscale](https://tailscale.com/)                    | Recommended private phone/tablet access                                               |
 
-## Getting Started
-
-### 1. Install
+## Install and run
 
 ```bash
-npm install -g claude-remote-cli
+npm install -g relay-ide
+relay-ide
 ```
 
-### 2. Start the server
+Or install the background hub service:
 
 ```bash
-claude-remote-cli --bg
+relay-ide hub install
 ```
 
-This installs a persistent background service (launchd on macOS, systemd on Linux) that starts on login and restarts on crash. See [Background Service](#background-service) for more options.
+Open `http://localhost:3456`. Relay requires a PIN before accepting browser
+traffic. Foreground startup prompts in an interactive terminal when needed;
+background startup can complete setup in the browser.
 
-Or run in the foreground:
+Reset the PIN from the host:
 
 ```bash
-claude-remote-cli
+relay-ide pin reset
 ```
 
-### 3. Set your PIN
+Do not expose Relay directly to the public internet. For another device, prefer
+Tailscale and open `http://<tailscale-ip>:3456` from the same tailnet.
 
-Open `http://localhost:3456` in your browser. On first visit you'll be prompted to create a PIN that protects access to your Claude sessions.
+## Start a conversation
 
-If you started the server in the foreground, you can set the PIN in the terminal instead.
+1. Open a workspace in Relay.
+2. Choose a channel or start a DM with an agent profile.
+3. Write normally or mention a profile, such as `@codex`, in a channel.
+4. Keep follow-up discussion in the channel or open a message thread.
+5. Use the channel roster and orchestrator controls to inspect or interrupt
+   active agents.
 
-### 4. Add your project directories
+Channels own conversation history. Agent runtimes are replaceable execution
+details bound behind profile identities; they are not separate chat
+destinations.
 
-Click **Settings** in the app to add root directories — these are parent folders that contain your git repos (scanned one level deep).
-
-You can also edit `~/.config/claude-remote-cli/config.json` directly:
-
-```json
-{
-  "rootDirs": ["/home/you/projects", "/home/you/work"]
-}
-```
-
-### 5. Access from your phone
-
-claude-remote-cli binds to `0.0.0.0` by default, but you should **not** expose it to the public internet. Use [Tailscale](https://tailscale.com/) for a private encrypted connection between your devices — see [Remote Access](#remote-access) below.
-
-## Remote Access
-
-The recommended way to access claude-remote-cli from another device (phone, tablet, laptop) is [Tailscale](https://tailscale.com/), which creates a private encrypted network using WireGuard.
-
-1. **Install Tailscale** on your computer and on your phone/tablet
-   - macOS: `brew install tailscale` or download from [tailscale.com/download](https://tailscale.com/download)
-   - Linux: follow the [install guide](https://tailscale.com/download/linux)
-   - iOS/Android: install the Tailscale app from your app store
-
-2. **Sign in** to the same Tailscale account on both devices
-
-3. **Find your computer's Tailscale IP** — run `tailscale ip` or check the admin console (looks like `100.x.y.z`)
-
-4. **Open the app** on your phone at `http://100.x.y.z:3456`
-
-Your traffic is encrypted end-to-end, no ports are exposed to the internet, and only devices on your Tailscale network can reach the server.
-
-> **Alternatives:** [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [ngrok](https://ngrok.com/) also work, but they expose your server to the public internet and rely on the PIN as your only defense.
-
-## Platform Support
-
-Tested on **macOS** and **Linux**. Windows is not currently tested — file watching and PTY spawning may behave differently.
-
-## CLI Usage
-
-```
-Usage: claude-remote-cli [options]
-       claude-remote-cli <command>
-
-Commands:
-  update             Update to the latest version from npm
-  install            Install as a background service (survives reboot)
-  uninstall          Stop and remove the background service
-  status             Show whether the service is running
-  worktree           Manage git worktrees (wraps git worktree)
-    add [path] [-b branch] [--yolo]   Create worktree and launch Claude
-    remove <path>                      Forward to git worktree remove
-    list                               Forward to git worktree list
-  pin                Manage authentication PIN
-    reset              Reset the PIN (interactive, requires TTY)
-
-Options:
-  --bg               Shortcut: install and start as background service
-  --port <port>      Override server port (default: 3456)
-  --host <host>      Override bind address (default: 0.0.0.0)
-  --config <path>    Path to config.json (default: ~/.config/claude-remote-cli/config.json)
-  --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
-  --version, -v      Show version
-  --help, -h         Show this help
-```
-
-## Background Service
-
-Run as a persistent service that starts on login and restarts on crash:
+## Source development
 
 ```bash
-claude-remote-cli --bg
+npm install
+npm run dev
 ```
 
-Or with custom options:
+`npm run dev` builds the TypeScript backend, starts an isolated backend on
+`127.0.0.1:3457`, and runs the Vite frontend on `127.0.0.1:5173`. Vite proxies
+REST and WebSocket traffic to the backend.
+
+Useful commands:
 
 ```bash
-claude-remote-cli install --port 4000
+npm run dev:self
+npm run dev:backend
+npm run dev:vite
+npm run check
+npm test
+npm run build
 ```
 
-Manage the service:
+Use `npm run dev:self` when Relay is developing Relay so the child instance gets
+isolated config, ports, and process identity. See
+[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+
+## Hub and nodes
+
+Bare `relay-ide` and `relay-ide hub` run the hub. A node can pair with the hub,
+publish a capability manifest, and hold a reverse node-link WebSocket:
 
 ```bash
-claude-remote-cli status      # Check if running
-claude-remote-cli uninstall   # Stop and remove
+relay-ide manifest
+relay-ide node doctor --hub http://hub.example:3456
+relay-ide node pair http://hub.example:3456
+relay-ide node link --hub http://hub.example:3456
 ```
 
-- **macOS**: Uses launchd (`~/Library/LaunchAgents/`)
-- **Linux**: Uses systemd user units (`~/.config/systemd/user/`)
-- **Logs (macOS)**: `~/.config/claude-remote-cli/logs/`
-- **Logs (Linux)**: `journalctl --user -u claude-remote-cli -f`
+The hub owns browser auth, channels, routing, policy, and federated views. Each
+node owns its local processes, filesystem paths, and repository checkouts.
+Remote file browsing is available for online nodes; remote git actions remain
+more limited than local repository actions.
 
 ## Configuration
 
-Config is stored at `~/.config/claude-remote-cli/config.json` (created on first run).
+Runtime data lives under the configured Relay config directory, not in the
+source checkout:
 
-When running from source, it uses `./config.json` in the project root instead.
+- global: `~/.config/relay-ide/`
+- source development: `~/.config/relay-ide/dev/<slug>-<hash>/`
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address |
-| `port` | `3456` | Server port |
-| `cookieTTL` | `24h` | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`) |
-| `rootDirs` | `[]` | Directories containing your git repos (scanned one level deep) |
-| `claudeCommand` | `claude` | Path to the Claude Code CLI binary |
-| `claudeArgs` | `[]` | Extra arguments passed to every session |
-| `defaultAgent` | `claude` | Default coding agent CLI (`claude` or `codex`) |
+The main config file is `config.json`. Common fields include `host`, `port`,
+`cookieTTL`, `rootDirs`, `repos`, `workspaces`, `defaultFramework`,
+`frameworks`, `updateChannel`, and optional GitHub integration settings.
+Channel history and other durable stores live beside it.
 
-Root directories can also be managed from the **Settings** button in the app.
+## CLI
 
-### PIN Management
+Run `relay-ide --help` for the exact installed command set. Main command
+families:
 
-The PIN hash is stored in config under `pinHash`.
-
-**Reset via CLI** (recommended):
-
-```bash
-claude-remote-cli pin reset
+```text
+relay-ide                    run the hub
+relay-ide hub ...            install, status, logs, nodes, doctor
+relay-ide node ...           pair, connect, install, link, diagnose
+relay-ide v1 ... --json      stable agent-facing gateway
+relay-ide worktree ...       git worktree helper
+relay-ide browser <path>     open an HTML artifact
+relay-ide diag bundle ...    write a redacted diagnostics bundle
+relay-ide audit verify ...   verify the security audit chain
+relay-ide pin reset          reset browser authentication
 ```
-
-This requires an interactive terminal. You'll be asked to verify your current PIN (if set), then enter a new one.
-
-**Reset manually:**
-
-1. Delete the `pinHash` field from `~/.config/claude-remote-cli/config.json`
-2. Restart the server (`claude-remote-cli uninstall && claude-remote-cli --bg`)
-3. Open the web UI and set a new PIN
-
-## Features
-
-### Session Management
-- **Multi-agent support** — choose between Claude Code and Codex as the coding agent per session, with a configurable default in Settings
-- **Repo sessions** — click any idle repo to instantly open Claude with `--continue` (no dialog), or start fresh from the new-session dialog
-- **Branch-aware worktrees** — create worktrees from new or existing branches with a type-to-search branch picker
-- **Worktree isolation** — each worktree session runs in its own git worktree under `.worktrees/`
-- **Resume sessions** — click inactive worktrees to reconnect with `--continue`
-- **Persistent session names** — display names, branch names, and timestamps survive server restarts
-- **Scrollback buffer** — reconnect to a session and see prior output
-- **Yolo mode** — skip permission prompts with `--dangerously-skip-permissions` (per-session pill button)
-- **Worktree cleanup** — delete inactive worktrees via the trash pill button (removes worktree, prunes refs, deletes branch)
-
-### Pull Requests
-- **Pull requests tab** — view your open PRs (authored and review-requested) via `gh` CLI, organized in collapsible per-repo groups with count badges, Author/Reviewer filter, and one-click session creation from any PR branch
-
-### GitHub Webhooks (real-time PR / CI updates)
-
-By default the app polls GitHub every 30 seconds for PR and CI status. Connect a webhook for instant updates instead:
-
-1. **Connect GitHub** — open **Settings → Integrations → GitHub** and authorise the OAuth App. This requests the `repo` and `admin:repo_hook` scopes so the app can manage webhooks on your behalf.
-2. **Set up webhooks** — open **Settings → Integrations → Webhooks**. Click **Setup Webhook** next to any repo. The app creates a GitHub webhook pointing at a [smee.io](https://smee.io/) proxy channel and starts a local smee client to relay events.
-3. **Verify** — the webhook panel shows a health indicator (last event timestamp). Once connected, polling stops for that repo and updates arrive in real time.
-
-> No public server is required. The smee.io proxy forwards GitHub webhook payloads to your local instance over a persistent SSE connection.
-
-### UI
-- **Tabbed sidebar** — switch between Repos, Worktrees, and PRs views with shared filters and item counts
-- **Sidebar filters** — filter by root directory, repo, or text search
-- **Inline actions** — pill buttons on session cards for rename, YOLO, worktree creation, and delete (hover on desktop, long-press on mobile)
-- **Resizable sidebar** — drag the sidebar edge to resize; collapse/expand with a button (persisted to localStorage)
-- **Responsive layout** — works on desktop and mobile with slide-out sidebar
-- **Touch toolbar** — mobile-friendly buttons for special keys (hidden on desktop)
-- **Clipboard image paste** — paste screenshots directly into remote terminal sessions (macOS clipboard + xclip on Linux)
-
-### Settings
-- **Full-screen Settings dialog** — redesigned as a scrollable full-screen modal with a table-of-contents drawer for quick section navigation
-- **GitHub integration** — connect via OAuth App (Device Flow) for PR data, CI status, and webhook management
-- **Webhook management** — self-service webhook CRUD per repo with smee.io proxy, health state, and auto-provision backfill
-- **Jira integration** — connect Jira and configure project mappings for the org dashboard tickets panel
-
-### Operations
-- **PIN-protected access** with rate limiting
-- **Real-time updates** — worktree changes on disk are pushed to the browser instantly via WebSocket
-- **Smart polling** — falls back to 30-second polling for repos without webhooks; switches off automatically once a webhook is active
-- **Update notifications** — toast notification when a new version is available, with one-click update
-- **CLI self-update** — `claude-remote-cli update` to update from npm
 
 ## Architecture
 
-TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
+```text
+browser
+  ├─ ChannelView → ChannelTimeline → ChannelMessageRow
+  ├─ ChannelComposer / ChannelThreadPanel / roster controls
+  └─ terminal, file, diff, artifact, and settings surfaces
+          │
+          ▼
+Relay hub
+  ├─ channel router + durable message/attachment stores
+  ├─ live channel fan-out + mention binder + agent bridge
+  ├─ profile, roster, orchestration, auth, policy, and CLI gateway
+  └─ local node + routed paired-node links
+          │
+          ▼
+local and paired nodes
+  └─ agent CLIs, relay-pty terminals, files, repos, worktrees
+```
 
-```
-claude-remote-cli/
-├── bin/
-│   └── claude-remote-cli.ts  # CLI entry point
-├── server/
-│   ├── index.ts        # Express server, REST API routes
-│   ├── sessions.ts     # PTY session manager (node-pty)
-│   ├── ws.ts           # WebSocket relay (PTY ↔ browser)
-│   ├── watcher.ts      # File watcher for .worktrees/ changes
-│   ├── auth.ts         # PIN hashing, verification, rate limiting
-│   ├── config.ts       # Config loading/saving, worktree metadata
-│   ├── clipboard.ts    # System clipboard operations (image paste)
-│   ├── service.ts      # Background service management (launchd/systemd)
-│   └── types.ts        # Shared TypeScript interfaces
-├── frontend/
-│   └── src/
-│       ├── components/  # Svelte 5 components (Sidebar, Terminal, SessionList, etc.)
-│       ├── lib/state/   # Reactive state modules (.svelte.ts)
-│       ├── lib/api.ts   # REST API client
-│       ├── lib/ws.ts    # WebSocket connection management
-│       ├── lib/types.ts # Frontend TypeScript interfaces
-│       ├── lib/utils.ts # Shared utilities (path display, time formatting, device detection)
-│       └── lib/actions.ts # Svelte actions (scroll-on-hover, longpress-click)
-├── test/               # Unit tests (node:test)
-├── dist/               # Compiled output (gitignored)
-├── config.example.json
-└── package.json
-```
+Start with [`docs/README.md`](docs/README.md), then read:
+
+- [`docs/CHANNEL_CHAT.md`](docs/CHANNEL_CHAT.md) — conversation and agent model
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — backend and protocol map
+- [`docs/FRONTEND.md`](docs/FRONTEND.md) — live React surface map
+- [`DESIGN.md`](DESIGN.md) — visual system
+- [`docs/QUALITY.md`](docs/QUALITY.md) — tests and release gates
+
+## Platform support
+
+Linux and macOS are the primary host platforms. WSL2 nodes are supported with
+documented limitations. Browser access works from desktop and mobile devices;
+mobile behavior should be verified on the real target browser when changed.
 
 ## License
 

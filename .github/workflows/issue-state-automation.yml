@@ -1,0 +1,115 @@
+name: Issue State Automation
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, closed]
+
+jobs:
+  sync-labels:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) return;
+
+            const body = pr.body || '';
+
+            // Match issue references: #123, closes #123, fixes #123, resolves #123, related #123
+            const regex = /(?:closes|fixes|resolves|related|refs?)?\s*#(\d+)/gi;
+            const issueNumbers = new Set();
+            let match;
+            while ((match = regex.exec(body)) !== null) {
+              issueNumbers.add(Number(match[1]));
+            }
+
+            if (issueNumbers.size === 0) {
+              console.log('No issue references found in PR body.');
+              return;
+            }
+
+            const isMerged = pr.merged === true;
+            const isClosed = pr.state === 'closed' && !isMerged;
+
+            for (const issueNumber of issueNumbers) {
+              try {
+                // Get current labels
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+
+                const currentLabels = issue.labels.map(l =>
+                  typeof l === 'string' ? l : l.name
+                );
+
+                if (isMerged) {
+                  // PR merged — remove in-progress
+                  if (currentLabels.includes('in-progress')) {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      name: 'in-progress',
+                    });
+                    console.log(`Removed in-progress from #${issueNumber}`);
+                  }
+                  // Note: GitHub natively closes issues when PR body says "Closes #X"
+                  // and the PR is merged. We don't need to call close here.
+                  continue;
+                }
+
+                if (isClosed && !isMerged) {
+                  // PR closed without merge — optionally revert to todo
+                  if (currentLabels.includes('in-progress')) {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      name: 'in-progress',
+                    });
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      labels: ['todo'],
+                    });
+                    console.log(`Reverted #${issueNumber} from in-progress to todo`);
+                  }
+                  continue;
+                }
+
+                // PR opened / reopened / edited — mark as in-progress
+                const labelsToRemove = ['backlog', 'todo'];
+                for (const label of labelsToRemove) {
+                  if (currentLabels.includes(label)) {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      name: label,
+                    });
+                    console.log(`Removed ${label} from #${issueNumber}`);
+                  }
+                }
+
+                if (!currentLabels.includes('in-progress')) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    labels: ['in-progress'],
+                  });
+                  console.log(`Added in-progress to #${issueNumber}`);
+                }
+              } catch (err) {
+                // Log but don't fail the workflow (issue might not exist or
+                // the bot might not have permission)
+                console.warn(`Skipping #${issueNumber}: ${err.message}`);
+              }
+            }

@@ -1,0 +1,1224 @@
+/* Channel timeline density and tokens follow DESIGN.md's 4px scale. */
+
+.ch-view {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.ch-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.ch-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* header — title + kind/DM glyph + member/partner label + connection dot */
+.ch-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.ch-header__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.ch-header__title {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 700;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-header__meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-header__spacer {
+  margin-left: auto;
+}
+
+/* agent presence chips (#1167) — one per bound/active agent, glyph + status dot
+   + optional interrupt button. Status color: grey idle, pulsing amber busy,
+   green streaming. Only DESIGN.md tokens. */
+.ch-header__agents {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
+.ch-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-agent-chip__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 12px;
+  height: 12px;
+}
+
+.ch-agent-chip__dot {
+  /* #1191: the header keeps its legacy status colors; the mobile cockpit uses
+     cockpit-presence.ts (streaming -> working/warning, waiting -> blocked/error). */
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ch-agent-chip--streaming .ch-agent-chip__dot {
+  background: var(--status-success);
+}
+
+.ch-agent-chip--thinking .ch-agent-chip__dot,
+.ch-agent-chip--spawning .ch-agent-chip__dot,
+.ch-agent-chip--waiting .ch-agent-chip__dot {
+  background: var(--status-warning);
+  animation: ch-agent-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ch-agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.ch-agent-chip__name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12ch;
+}
+
+/* Role is a structural, monochrome tag. Agent identity remains the resolved
+   sender color on the reused vendor glyph; this adds no second color system. */
+.ch-agent-chip__role {
+  padding: 0 3px;
+  border: 1px solid currentColor;
+  color: inherit;
+  font-size: 0.65rem;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
+/* Inline operator control: outline-only and transparent on the primary black
+   header surface, never a floating --surface treatment. */
+.ch-designate-orchestrator {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-transform: lowercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ch-designate-orchestrator:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-designate-orchestrator:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ch-designate-orchestrator__progress {
+  color: currentColor;
+  font-size: inherit;
+}
+
+.ch-agent-chip__stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ch-agent-chip__stop:hover {
+  color: var(--status-error, var(--accent));
+}
+
+.ch-conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.ch-conn-dot--on {
+  background: var(--status-success);
+}
+
+.ch-conn-dot--off {
+  background: var(--status-error, var(--text-muted));
+}
+
+/* manual reconnect affordance shown when reconnect backoff has given up */
+.ch-reconnect-btn {
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-reconnect-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Timeline shell owns floating scroll affordances without making them part of
+   the scrollable geometry. */
+.ch-tl-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* timeline scroll container — mirrors .tl */
+.ch-tl {
+  height: 100%;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ch-tl::-webkit-scrollbar {
+  width: 4px;
+}
+.ch-tl::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.ch-tl-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Presence row with no history behind it: push it to the foot of the pane next
+   to the composer instead of stranding it in the top-left corner. `margin-top`
+   auto resolves to 0 once content overflows, so the scroll model is unchanged
+   and this class is only applied when the timeline holds no message nodes. */
+.ch-tl-content--presence-only {
+  margin-top: auto;
+}
+
+/* Square, outline-only floating affordance per DESIGN.md. Info matches the
+   unread-divider semantics. */
+.ch-new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 6;
+  transform: translateX(-50%);
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--status-info);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ch-new-messages:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, var(--surface));
+}
+
+/* day divider — mirrors .tl-session-break, centered muted label + rule */
+.ch-day-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-day-divider::before,
+.ch-day-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.ch-day-divider__label {
+  white-space: nowrap;
+}
+
+/* unread line — 1px info rule + right-aligned "new" label */
+.ch-unread-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-unread-line::before {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--status-info);
+}
+
+.ch-unread-line__label {
+  white-space: nowrap;
+}
+
+/* in-timeline agent presence (#1277) — "hermes is thinking…" at the foot of the
+   conversation. Dim secondary text, zero radius, shared braille spinner as the
+   only motion. No shimmer, no particles, no emoji (DESIGN.md §6 / motion rules);
+   TuiProgress already freezes on prefers-reduced-motion. */
+.ch-presence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ch-presence__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-presence__glyph {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+}
+
+/* AgentBadge declares `color: var(--text-muted)` on the svg itself, which beats
+   the wrapper's inherited color. Opt back into the per-agent tint the wrapper's
+   inline `colorVar` sets, otherwise every presence glyph paints muted. */
+.ch-presence__glyph .agent-badge,
+.ch-presence__glyph .agent-badge--fallback {
+  color: currentColor;
+}
+
+.ch-presence__spinner {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ch-presence__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* system message — full-width centered muted, own row (never in a group) */
+.ch-system-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+/* Coalesced system-run summary (#1308 item 5). Reads as a system row —
+   same muted mono type, same centering — with a chevron to say it opens.
+   Zero radius, outline-only, no fill (DESIGN.md). */
+.ch-system-run {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  align-self: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-system-run:hover,
+.ch-system-run:focus-visible {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+/* approval controls on an actionable system row (#1167) */
+.ch-system-msg__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ch-system-msg__btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-system-msg__btn--approve:hover {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.ch-system-msg__btn--deny:hover {
+  border-color: var(--status-error, var(--accent));
+  color: var(--status-error, var(--accent));
+}
+
+/* message group — one sender header + tightly-stacked bodies */
+.ch-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ch-group__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.ch-group__avatar {
+  /* baseline-aligned header row → pull the badge to optical center of the name */
+  align-self: center;
+}
+
+.ch-group__name {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.ch-group__time {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.ch-group__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* single message row */
+.ch-msg {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 2px solid transparent;
+  padding-left: 8px;
+  margin-left: -8px;
+}
+
+.ch-msg--streaming,
+.ch-msg--truncated,
+.ch-msg--interrupted,
+.ch-msg--failed {
+  border-left-width: 2px;
+  border-left-style: solid;
+}
+
+.ch-msg--truncated {
+  border-left-color: var(--status-warning);
+}
+
+.ch-msg--interrupted {
+  border-left-color: var(--status-warning);
+}
+
+.ch-msg--failed {
+  border-left-color: var(--status-error);
+}
+
+/* message body text — matches .tl-text scale */
+.ch-msg__text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* human message bubble — reuses .tl-text--user treatment (right-aligned) */
+.ch-msg--user .ch-msg__body {
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  margin: 0 0 0 auto;
+  max-width: 75%;
+  width: fit-content;
+  align-self: flex-end;
+}
+
+.ch-msg--user {
+  align-items: flex-end;
+  border-left: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+
+/* streaming block cursor — DESIGN.md motion effect 4 (solid while active,
+   blinks after 530ms idle, opacity 0.7 when visible) */
+.ch-msg__cursor {
+  display: inline-block;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+.ch-msg__cursor--blinking {
+  animation: ch-cursor-blink 1s step-end infinite;
+}
+
+@keyframes ch-cursor-blink {
+  0%,
+  50% {
+    opacity: 0.7;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* per-message action toolbar (#1308 item 1). Absolutely positioned so it can
+   never reflow the lane — a row that changed height on hover would fight the
+   follow/anchor scroll model. Mounted only while the row is hovered, focused,
+   or long-press pinned, so the resting DOM is unchanged. */
+.ch-msg__actions {
+  position: absolute;
+  top: -10px;
+  right: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+}
+
+/* A human bubble is right-aligned, so its toolbar sits on the free left edge. */
+.ch-msg__actions--user {
+  right: auto;
+  left: 0;
+}
+
+.ch-msg__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ch-msg__action + .ch-msg__action {
+  border-left: 1px solid var(--border);
+}
+
+.ch-msg__action:hover,
+.ch-msg__action:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.ch-msg__action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ch-msg__action:disabled:hover {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+/* Destructive action (#1308 item 4). Tinted only on hover/focus: at rest it is
+   one icon among peers, and colouring it permanently would make every message
+   carry a standing warning. */
+.ch-msg__action--danger:hover,
+.ch-msg__action--danger:focus-visible {
+  color: var(--status-error);
+}
+
+/* Inline delete confirm (#1308 item 4). Occupies the toolbar's own absolutely
+   positioned slot, so asking the question never reflows the lane and the
+   message being confirmed stays legible underneath — which a browser
+   `confirm()` cannot do. Mono, lowercase, zero radius, no motion. */
+.ch-msg__confirm {
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.ch-msg__confirm-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
+.ch-msg__confirm-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__confirm-btn--danger {
+  color: var(--status-error);
+}
+
+.ch-msg__confirm-btn:hover:not(:disabled),
+.ch-msg__confirm-btn:focus-visible:not(:disabled) {
+  border-color: currentColor;
+  background: var(--surface-hover);
+}
+
+.ch-msg__confirm-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* jump emphasis after a deep link lands (#1308 item 1). DESIGN.md text-motion
+   only: a flat background fade, no shimmer, no particles, and inside the 400ms
+   motion budget. */
+.ch-msg--jump {
+  animation: ch-jump-flash 400ms ease-out 1;
+}
+
+@keyframes ch-jump-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-msg--jump {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+
+/* trailing status tags — interrupted / failed / truncated */
+.ch-msg__tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  margin-left: 6px;
+  opacity: 0.85;
+}
+
+.ch-msg__tag--interrupted {
+  color: var(--status-warning);
+}
+
+.ch-msg__tag--failed {
+  color: var(--status-error);
+}
+
+.ch-msg__tag--truncated {
+  color: var(--status-warning);
+}
+
+.ch-msg__tag--retried {
+  color: var(--text-muted);
+}
+
+/* queued-send chip (#1308 slice 4). Dim by design: it reports a wait, not a
+   fault, and it retires itself the moment the next turn starts consuming. */
+.ch-msg__tag--queued {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* Inline retry on a failed row (#1308 item 2). Outline-only, square, mono —
+   same control vocabulary as the thread chip, tinted to the failure it recovers
+   from. No motion: the pending state is a text swap (`retry` → `retrying…`),
+   which is the only motion DESIGN.md allows here. */
+.ch-msg__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  align-self: flex-start;
+  margin-top: var(--space-xs, 4px);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__retry:hover:not(:disabled),
+.ch-msg__retry:focus-visible:not(:disabled) {
+  border-color: var(--status-error);
+  background: var(--surface-hover);
+}
+
+.ch-msg__retry:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* (edited) suffix (#1308 item 3). Dim, mono, and smaller than the body: it is a
+   provenance note, not a status the eye should stop on. No color token — a
+   tinted marker would read as a warning about a message that is simply correct
+   now. Follows the human bubble to the right edge. */
+.ch-msg__edited {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.ch-msg--user .ch-msg__edited {
+  align-self: flex-end;
+}
+
+/* Tombstone placeholder (#1308 item 4). The row keeps its slot — grouping, the
+   scroll anchor and any thread chip below depend on it — and says plainly that
+   something was here. Dim and italic so it reads as absence rather than as a
+   message someone wrote. */
+.ch-msg__deleted {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-style: italic;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* The placeholder replaces the body, so it inherits the body's alignment — the
+   bubble chrome (`.ch-msg--user .ch-msg__body`) is simply never rendered, since
+   there is no message left to frame. */
+.ch-msg--user .ch-msg__deleted {
+  align-self: flex-end;
+}
+
+/* In-place message editor (#1308 item 3). Reuses the composer textarea's
+   metrics — mono, zero radius, underline-only border — so editing a message
+   looks like writing one. Full row width even on a right-aligned human bubble:
+   the 75% bubble cap is a reading-comfort rule, and shrinking the edit surface
+   below the text it holds would be a worse trade. */
+.ch-msg__edit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 4px;
+}
+
+.ch-msg__edit-ta {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  padding: 8px 12px;
+  resize: none;
+  outline: none;
+}
+
+.ch-msg__edit-ta:disabled {
+  opacity: 0.85;
+}
+
+.ch-msg__edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-msg__edit-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg__edit-btn:hover:not(:disabled),
+.ch-msg__edit-btn:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.ch-msg__edit-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ch-msg__edit-hint {
+  margin-left: auto;
+}
+
+/* Thread entry point: outline-only informational navigation, matching the
+   compact agent-chip vocabulary and DESIGN.md's square control law. */
+.ch-msg__thread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  align-self: flex-start;
+  margin-top: var(--space-xs, 4px);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-msg--user .ch-msg__thread-chip {
+  align-self: flex-end;
+}
+
+.ch-msg__thread-chip:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  border-color: var(--status-info);
+}
+
+.ch-msg__thread-chip__count {
+  color: var(--status-info);
+  font-weight: 700;
+}
+
+.ch-msg__thread-chip__hint {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* Thread panel is structural on desktop: pure-black attached column, not a
+   floating surface. It owns its history backfill but projects live rows from
+   the channel reducer/socket. */
+.ch-thread {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.ch-thread__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-transform: lowercase;
+}
+
+.ch-thread__title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.ch-thread__count {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ch-thread__close {
+  min-width: 28px;
+  min-height: 28px;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-thread__close:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.ch-thread__close-mobile {
+  display: none;
+}
+
+.ch-thread__root {
+  flex-shrink: 0;
+  padding: 16px 24px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.ch-thread__root-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-thread__root-divider::before,
+.ch-thread__root-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.ch-thread__root-divider > span {
+  white-space: nowrap;
+}
+
+.ch-thread__scroll-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.ch-thread__scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 16px 24px;
+}
+
+.ch-thread__scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ch-thread__scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.ch-thread__content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ch-thread__state {
+  padding: 8px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  text-transform: lowercase;
+}
+
+/* empty / unavailable / paging chrome */
+.ch-empty,
+.ch-unavailable {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.ch-back-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-back-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-loading-older,
+.ch-top-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-history-paused {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-history-continue {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-history-continue:hover {
+  border-color: var(--status-info);
+  color: var(--status-info);
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+}
+
+/* catch-up banner — mirrors .tl-resume-banner, sticky at top of scroll area */
+.ch-catchup-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ch-catchup-banner__btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-catchup-banner__btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 767px) {
+  .ch-header {
+    padding: 8px 10px;
+  }
+
+  .ch-header__meta {
+    display: none;
+  }
+
+  .ch-header__title {
+    flex: 1 1 auto;
+  }
+
+  /* Retain the role distinction in the shared mobile header without consuming
+     the full desktop label width. The DOM text stays "orchestrator" for AT. */
+  .ch-agent-chip__role {
+    padding: 0 2px;
+    font-size: 0;
+  }
+
+  .ch-agent-chip__role::after {
+    content: 'orch';
+    font-size: 0.65rem;
+  }
+
+  .ch-tl {
+    padding: 10px 6px;
+    gap: 12px;
+  }
+
+  .ch-tl-content {
+    gap: 12px;
+  }
+
+  .ch-msg--user .ch-msg__body {
+    max-width: 92%;
+  }
+
+  .ch-thread {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    width: auto;
+    border-left: 0;
+    background: var(--bg);
+  }
+
+  .ch-thread__header {
+    padding: 8px 10px;
+  }
+
+  .ch-thread__close {
+    order: -1;
+    margin-right: 4px;
+    margin-left: 0;
+  }
+
+  .ch-thread__close-desktop {
+    display: none;
+  }
+
+  .ch-thread__close-mobile {
+    display: inline;
+  }
+
+  .ch-thread__root,
+  .ch-thread__scroll {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+}

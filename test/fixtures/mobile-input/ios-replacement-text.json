@@ -2,6 +2,16 @@
   "name": "ios-replacement-text",
   "description": "iOS Safari autocorrect via insertReplacementText with range",
   "device": "ios-safari-default",
-  "events": [{"inputType": "insertReplacementText", "data": "the", "rangeStart": 0, "rangeEnd": 3, "valueBefore": "teh", "cursorBefore": 3, "valueAfter": "the"}],
+  "events": [
+    {
+      "inputType": "insertReplacementText",
+      "data": "the",
+      "rangeStart": 0,
+      "rangeEnd": 3,
+      "valueBefore": "teh",
+      "cursorBefore": 3,
+      "valueAfter": "the"
+    }
+  ],
   "expectedPayload": "\u007f\u007f\u007fthe"
 }

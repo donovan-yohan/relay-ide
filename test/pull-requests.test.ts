@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import type { PullRequest, PullRequestsResponse } from '../server/types.js';
 
 describe('PullRequest types', () => {
@@ -21,8 +20,8 @@ describe('PullRequest types', () => {
       isDraft: false,
       ciStatus: null,
     };
-    assert.equal(pr.role, 'author');
-    assert.equal(pr.state, 'OPEN');
+    expect(pr.role).toBe('author');
+    expect(pr.state).toBe('OPEN');
   });
 
   it('constructs a valid reviewer PR', () => {
@@ -43,7 +42,7 @@ describe('PullRequest types', () => {
       isDraft: false,
       ciStatus: null,
     };
-    assert.equal(pr.role, 'reviewer');
+    expect(pr.role).toBe('reviewer');
   });
 
   it('constructs a valid response with error', () => {
@@ -51,31 +50,33 @@ describe('PullRequest types', () => {
       prs: [],
       error: 'gh_not_authenticated',
     };
-    assert.equal(response.prs.length, 0);
-    assert.equal(response.error, 'gh_not_authenticated');
+    expect(response.prs.length).toBe(0);
+    expect(response.error).toBe('gh_not_authenticated');
   });
 
   it('constructs a valid response without error', () => {
     const response: PullRequestsResponse = {
-      prs: [{
-        number: 1,
-        title: 'Test',
-        url: 'https://github.com/o/r/pull/1',
-        headRefName: 'test',
-        baseRefName: 'main',
-        state: 'OPEN',
-        author: 'user',
-        role: 'author',
-        updatedAt: '2026-02-24T00:00:00Z',
-        additions: 0,
-        deletions: 0,
-        reviewDecision: null,
-        mergeable: null,
-        isDraft: false,
-        ciStatus: null,
-      }],
+      prs: [
+        {
+          number: 1,
+          title: 'Test',
+          url: 'https://github.com/o/r/pull/1',
+          headRefName: 'test',
+          baseRefName: 'main',
+          state: 'OPEN',
+          author: 'user',
+          role: 'author',
+          updatedAt: '2026-02-24T00:00:00Z',
+          additions: 0,
+          deletions: 0,
+          reviewDecision: null,
+          mergeable: null,
+          isDraft: false,
+          ciStatus: null,
+        },
+      ],
     };
-    assert.equal(response.prs.length, 1);
-    assert.equal(response.error, undefined);
+    expect(response.prs.length).toBe(1);
+    expect(response.error).toBe(undefined);
   });
 });

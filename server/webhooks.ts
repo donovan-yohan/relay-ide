@@ -4,6 +4,8 @@ import { Router } from 'express';
 import express from 'express';
 import type { Request, Response } from 'express';
 
+import { recordWebhookEventForRepo } from './webhook-manager.js';
+
 // ---------------------------------------------------------------------------
 // Deps type
 // ---------------------------------------------------------------------------
@@ -17,13 +19,56 @@ export interface WebhookDeps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function verifySignature(secret: string, payload: string, signature: string): boolean {
-  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(payload).digest('hex');
+function verifySignature(
+  secret: string,
+  payload: string,
+  signature: string
+): boolean {
+  const expected =
+    'sha256=' +
+    crypto.createHmac('sha256', secret).update(payload).digest('hex');
   try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    return crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    );
   } catch {
     return false;
   }
+}
+
+function buildPrPayload(
+  event: string | string[] | undefined,
+  body: Record<string, unknown>,
+  repoFullName: string | undefined
+): Record<string, unknown> | undefined {
+  const eventName = Array.isArray(event) ? event[0] : event;
+  const pr = body.pull_request as Record<string, unknown> | undefined;
+  const payload: Record<string, unknown> = {};
+  if (repoFullName) payload.repo = repoFullName;
+  if (pr?.number !== undefined) payload.number = pr.number;
+
+  if (eventName === 'pull_request') {
+    const action = body.action as string | undefined;
+    if (action) payload.action = action;
+    if (pr?.state) payload.state = pr.state;
+    if (action === 'closed' && pr?.merged === true) {
+      payload.merged = true;
+    }
+  }
+
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function shouldBroadcastWorktreesChanged(
+  event: string | string[] | undefined,
+  body: Record<string, unknown>
+): boolean {
+  const eventName = Array.isArray(event) ? event[0] : event;
+  if (eventName !== 'pull_request') return false;
+  const action = body.action as string | undefined;
+  const pr = body.pull_request as Record<string, unknown> | undefined;
+  return action === 'closed' && pr?.merged === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -37,9 +82,10 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
   router.use(
     express.json({
       verify: (req, _res, buf) => {
-        (req as unknown as Record<string, unknown>).rawBody = buf.toString('utf8');
+        (req as unknown as Record<string, unknown>).rawBody =
+          buf.toString('utf8');
       },
-    }),
+    })
   );
 
   // POST / — receive GitHub webhook events
@@ -61,7 +107,10 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
     }
 
     // Verify signature against raw body
-    const rawBody = (req as unknown as Record<string, unknown>).rawBody as string | undefined ?? '';
+    const rawBody =
+      ((req as unknown as Record<string, unknown>).rawBody as
+        | string
+        | undefined) ?? '';
     if (!verifySignature(secret, rawBody, signature)) {
       res.status(401).json({ error: 'Invalid signature' });
       return;
@@ -71,13 +120,31 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
     const event = req.headers['x-github-event'];
 
     const repoFullName = (req.body as Record<string, unknown>)?.repository
-      ? ((req.body as Record<string, unknown>).repository as Record<string, unknown>)?.full_name as string | undefined
+      ? ((
+          (req.body as Record<string, unknown>).repository as Record<
+            string,
+            unknown
+          >
+        )?.full_name as string | undefined)
       : undefined;
 
+    if (repoFullName) {
+      recordWebhookEventForRepo(repoFullName);
+    }
+
     if (event === 'pull_request' || event === 'pull_request_review') {
-      deps.broadcastEvent('pr-updated', repoFullName ? { repo: repoFullName } : undefined);
+      const body = req.body as Record<string, unknown>;
+      const payload = buildPrPayload(event, body, repoFullName);
+      deps.broadcastEvent('pr-updated', payload);
+
+      if (shouldBroadcastWorktreesChanged(event, body)) {
+        deps.broadcastEvent('worktrees-changed');
+      }
     } else if (event === 'check_suite' || event === 'check_run') {
-      deps.broadcastEvent('ci-updated', repoFullName ? { repo: repoFullName } : undefined);
+      deps.broadcastEvent(
+        'ci-updated',
+        repoFullName ? { repo: repoFullName } : undefined
+      );
     }
     // Unknown events: ignore, return 200 OK
 

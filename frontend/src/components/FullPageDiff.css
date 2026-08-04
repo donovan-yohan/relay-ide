@@ -1,0 +1,118 @@
+.full-page-diff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg, #000);
+  color: var(--text, #e0e0e0);
+  font-family: var(--font-mono, monospace);
+}
+
+.fpd-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #333);
+  flex-shrink: 0;
+}
+
+.fpd-close-btn {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.fpd-close-btn:hover {
+  color: var(--status-error, #f87171);
+  border-color: var(--status-error, #f87171);
+}
+
+.fpd-title {
+  flex: 1;
+  font-size: var(--font-size-sm, 0.85rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fpd-summary {
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.fpd-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.fpd-mode-toggle {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.fpd-mode-toggle:hover {
+  color: var(--accent, #d97757);
+  border-color: var(--accent, #d97757);
+}
+
+.fpd-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fpd-main {
+  flex: 1;
+  overflow: auto;
+  min-width: 0;
+}
+
+.fpd-main .diff-viewer {
+  max-height: none;
+  border: none;
+}
+
+.fpd-empty {
+  padding: 24px;
+  color: var(--text-muted, #888);
+  text-align: center;
+}
+
+.fpd-footer {
+  display: flex;
+  gap: 16px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border, #333);
+  flex-shrink: 0;
+}
+
+.fpd-hint {
+  font-size: 0.65rem;
+  color: var(--text-muted, #888);
+}
+
+@media (max-width: 600px) {
+  .fpd-body {
+    flex-direction: column;
+  }
+
+  .fpd-body .diff-sidebar {
+    max-width: none;
+    min-width: 0;
+    max-height: 120px;
+    border-right: none;
+    border-bottom: 1px solid var(--border, #333);
+  }
+}

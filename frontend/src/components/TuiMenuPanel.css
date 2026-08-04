@@ -1,0 +1,7 @@
+.tui-menu-panel {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 4px 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-radius: 0;
+}

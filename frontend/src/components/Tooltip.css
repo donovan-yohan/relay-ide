@@ -1,0 +1,92 @@
+.tui-tooltip {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.tui-tooltip__bubble {
+  position: absolute;
+  z-index: 1000;
+  display: grid;
+  gap: 4px;
+  min-width: max-content;
+  max-width: 260px;
+  padding: 6px 8px;
+  background: var(--bg, #000);
+  border: 1px solid var(--border, #333);
+  color: var(--text, #e0e0e0);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  line-height: 1.35;
+  border-radius: 0;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  white-space: normal;
+}
+
+.tui-tooltip:hover .tui-tooltip__bubble,
+.tui-tooltip:has(:focus-visible) .tui-tooltip__bubble {
+  opacity: 1;
+  visibility: visible;
+}
+
+.tui-tooltip--top .tui-tooltip__bubble {
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+}
+
+.tui-tooltip--right .tui-tooltip__bubble {
+  top: 50%;
+  left: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+
+.tui-tooltip--bottom .tui-tooltip__bubble {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.tui-tooltip--left .tui-tooltip__bubble {
+  top: 50%;
+  right: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+
+.tui-tooltip__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tui-tooltip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tui-tooltip__shortcut {
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-muted, #888);
+  border: 1px solid var(--border, #333);
+  padding: 1px 6px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.tui-tooltip__description {
+  color: var(--text-muted, #888);
+  max-width: 240px;
+}
+
+@media (pointer: coarse) {
+  .tui-tooltip__bubble {
+    display: none;
+  }
+}

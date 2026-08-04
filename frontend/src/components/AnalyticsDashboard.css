@@ -1,0 +1,256 @@
+.analytics-dashboard {
+  padding: 16px 20px;
+  overflow-y: auto;
+  height: 100%;
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.analytics-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.analytics-close-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 2px 8px;
+  border-radius: 2px;
+}
+
+.analytics-close-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.analytics-page-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  text-transform: lowercase;
+}
+
+.analytics-divider {
+  border-top: 1px solid var(--border);
+  margin: 8px 0 16px;
+}
+
+.analytics-loading-state,
+.analytics-error-state {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  padding: 24px 0;
+}
+
+.analytics-error-state {
+  color: var(--status-error);
+}
+
+.analytics-top-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 768px) {
+  .analytics-top-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+.analytics-section {
+  margin-bottom: 24px;
+}
+
+.analytics-section-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 4px;
+  text-transform: lowercase;
+}
+
+.analytics-section-divider {
+  border-top: 1px solid var(--border);
+  margin: 4px 0 8px;
+}
+
+.analytics-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.analytics-kv-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.analytics-kv-label {
+  color: var(--text-muted);
+  min-width: 120px;
+  flex-shrink: 0;
+}
+
+.analytics-kv-value {
+  color: var(--text);
+}
+
+.analytics-bar-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.analytics-bar {
+  color: var(--accent);
+  letter-spacing: -0.05em;
+  font-size: var(--font-size-xs);
+}
+
+.analytics-bar-pct {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  min-width: 32px;
+}
+
+.analytics-token-down {
+  color: var(--text-muted);
+}
+
+.analytics-token-up {
+  color: var(--text);
+}
+
+.analytics-empty-text {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+
+.analytics-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.analytics-tool-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.analytics-tool-name {
+  color: var(--text);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.analytics-tool-bar {
+  color: var(--accent);
+  letter-spacing: -0.05em;
+  font-size: var(--font-size-xs);
+}
+
+.analytics-tool-count {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  min-width: 40px;
+  text-align: right;
+}
+
+.analytics-sessions-table-wrap {
+  overflow-x: auto;
+}
+
+.analytics-sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+}
+
+.analytics-sessions-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 400;
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+
+.analytics-sessions-table td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  white-space: nowrap;
+  color: var(--text);
+  vertical-align: baseline;
+}
+
+.analytics-session-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.analytics-session-row:hover {
+  background: var(--surface-hover);
+}
+
+.analytics-session-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.analytics-cell-time {
+  color: var(--text-muted);
+}
+
+.analytics-date-part {
+  margin-right: 4px;
+}
+
+.analytics-time-part {
+  opacity: 0.7;
+}
+
+.analytics-cell-repo {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analytics-cell-duration {
+  color: var(--text);
+}
+
+.analytics-cell-turns {
+  text-align: right;
+  padding-right: 12px;
+}
+
+.analytics-cell-tools {
+  color: var(--text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analytics-sessions-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  padding: 8px 0;
+}

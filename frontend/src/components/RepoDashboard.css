@@ -1,0 +1,217 @@
+.repo-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px;
+  background: var(--bg);
+  min-height: 0;
+  max-width: none;
+  overflow: hidden;
+  flex: 1;
+}
+
+.dashboard-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dashboard-section--scroll {
+  flex: 1;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.scroll-container {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.dashboard-section--scroll {
+  position: relative;
+}
+
+.dashboard-section--scroll::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.dashboard-section--scroll.has-overflow::after {
+  opacity: 1;
+}
+
+.section-heading {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-message {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+
+.section-message.info a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.section-message.info a:hover {
+  text-decoration: underline;
+}
+
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.usage-label {
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.usage-bar {
+  flex-shrink: 0;
+}
+
+.usage-value {
+  color: var(--text);
+}
+
+.usage-meta {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.usage-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  min-width: 0;
+}
+
+.commit-hash {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+.commit-msg {
+  color: var(--text);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.commit-branch {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.commit-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+
+.non-git-notice {
+  padding: 8px 0;
+}
+
+.non-git-msg {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.cta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  flex-shrink: 0;
+}
+
+.non-git-error {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--status-error);
+  margin: 4px 0 0 0;
+  padding: 0;
+}
+
+.skeleton {
+  pointer-events: none;
+}
+
+.skeleton-line {
+  background: var(--border);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.skeleton-activity {
+  height: 12px;
+  width: 75%;
+}
+
+@media (max-width: 600px) {
+  .repo-dashboard {
+    padding: 16px;
+  }
+}

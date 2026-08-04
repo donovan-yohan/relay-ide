@@ -1,0 +1,139 @@
+/* #1058: live PTY session list on the chat-first landing. TUI-native — black
+   surface, 1px borders, zero radius, lowercase labels (see DESIGN.md). Aligns
+   to the same 620px column as the topic composer it sits above. */
+.live-sessions {
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto 4px;
+  font-family: var(--font-mono);
+}
+
+.live-sessions__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.live-sessions__title {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.live-sessions__count {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.live-sessions__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+}
+
+.live-sessions__row-wrap + .live-sessions__row-wrap {
+  border-top: 1px solid var(--border);
+}
+
+.live-sessions__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.live-sessions__row:hover,
+.live-sessions__row:focus-visible {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  outline: none;
+}
+
+.live-sessions__row.selected {
+  background: var(--surface-hover);
+}
+
+.live-sessions__dot {
+  display: inline-flex;
+  justify-content: center;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.live-sessions__terminal {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.live-sessions__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.live-sessions__name {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-sessions__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.live-sessions__terminal-name {
+  flex-shrink: 0;
+}
+
+.live-sessions__loc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-sessions__sep {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.live-sessions__state {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+@media (max-width: 640px) {
+  .live-sessions {
+    max-width: none;
+  }
+
+  .live-sessions__row {
+    padding: 8px;
+  }
+}

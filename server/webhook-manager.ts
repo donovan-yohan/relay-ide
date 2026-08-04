@@ -1,12 +1,17 @@
 import { Router } from 'express';
-import type { Request, Response as ExpressResponse, RequestHandler } from 'express';
+import type {
+  Request,
+  Response as ExpressResponse,
+  RequestHandler,
+} from 'express';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { loadConfig, saveConfig } from './config.js';
 import { extractOwnerRepo, buildRepoMap } from './git.js';
-import type { Config } from './types.js';
+import type { Config, WebhookStatus, WorkspaceSettings } from './types.js';
+import { createLogger } from './logger.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -26,64 +31,51 @@ type CreateWebhookResult =
 let smeeHandle: { close(): void } | null = null;
 let smeeConnected = false;
 let lastEventAt: string | null = null;
+const logger = createLogger('webhook');
 
-// ── Smart polling state ────────────────────────────────────────────────────────
+// ── Per-repo webhook receipt state ──────────────────────────────────────────────
 
-let pollingTimer: ReturnType<typeof setInterval> | null = null;
+const lastWebhookEventByRepo = new Map<string, string>();
 
-function stopSmartPolling(): void {
-  if (pollingTimer !== null) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
-  }
+function normalizeOwnerRepo(ownerRepo: string): string {
+  return ownerRepo.trim().toLowerCase();
 }
 
-/**
- * Starts a 30-second polling interval that broadcasts `pr-updated` and
- * `ci-updated` events only for workspaces that do NOT have a working webhook
- * configured (`webhookEnabled !== true` or `webhookError` is set).
- *
- * Calling this again replaces any existing polling timer.
- */
-export function startSmartPolling(
-  configPath: string,
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void,
-): void {
-  stopSmartPolling();
+export function recordWebhookEventForRepo(
+  ownerRepo: string,
+  receivedAt: Date = new Date()
+): string {
+  const timestamp = receivedAt.toISOString();
+  const key = normalizeOwnerRepo(ownerRepo);
+  if (!key) return timestamp;
+  lastWebhookEventByRepo.set(key, timestamp);
+  lastEventAt = timestamp;
+  return timestamp;
+}
 
-  const POLL_INTERVAL_MS = 30_000;
+export function getLastWebhookEventAt(ownerRepo: string): string | null {
+  return lastWebhookEventByRepo.get(normalizeOwnerRepo(ownerRepo)) ?? null;
+}
 
-  const tick = (): void => {
-    const config = loadConfig(configPath);
-    const workspacePaths = config.workspaces ?? [];
-    if (workspacePaths.length === 0) return;
+export function clearWebhookEventTimestamps(): void {
+  lastWebhookEventByRepo.clear();
+  lastEventAt = null;
+}
 
-    const workspaceSettings = config.workspaceSettings ?? {};
-
-    // Collect paths that need polling (no webhook or webhook has an error)
-    const unwebhookedPaths = workspacePaths.filter((wsPath) => {
-      const ws = workspaceSettings[wsPath];
-      return !ws?.webhookEnabled || ws?.webhookError;
-    });
-
-    if (unwebhookedPaths.length === 0) return;
-
-    // Resolve owner/repo for each unwebhooked path synchronously via git config cache
-    // We use the async buildRepoMap but fire-and-forget inside the interval
-    void (async () => {
-      const execFn = (file: string, args: string[], opts: { cwd: string; timeout?: number }) =>
-        execFileAsync(file, args, opts);
-      const repoMap = await buildRepoMap(unwebhookedPaths, execFn);
-
-      // Single broadcast per poll cycle — frontend debounces invalidation
-      if (repoMap.size > 0) {
-        broadcastEvent('pr-updated', { repos: [...repoMap.keys()] });
-        broadcastEvent('ci-updated', { repos: [...repoMap.keys()] });
-      }
-    })();
-  };
-
-  pollingTimer = setInterval(tick, POLL_INTERVAL_MS);
+export function getWebhookStatus(
+  settings: Pick<WorkspaceSettings, 'webhookEnabled' | 'webhookError'> | undefined
+): { webhookStatus: WebhookStatus; webhookError?: string } {
+  const webhookError = settings?.webhookError;
+  if (webhookError === 'not-admin') {
+    return { webhookStatus: 'limited', webhookError };
+  }
+  if (webhookError) {
+    return { webhookStatus: 'error', webhookError };
+  }
+  if (settings?.webhookEnabled === true) {
+    return { webhookStatus: 'live' };
+  }
+  return { webhookStatus: 'manual' };
 }
 
 function stopSmee(): void {
@@ -105,13 +97,19 @@ function startSmee(smeeUrl: string, targetPort: number): void {
   void (async () => {
     try {
       // Import as unknown first to avoid type-mismatch with varying smee-client versions
-      const smeeModule = await import('smee-client') as unknown as {
+      const smeeModule = (await import('smee-client')) as unknown as {
         default: new (opts: {
           source: string;
           target: string;
-          logger?: { info(...args: unknown[]): void; error(...args: unknown[]): void };
+          logger?: {
+            info(...args: unknown[]): void;
+            error(...args: unknown[]): void;
+          };
         }) => {
-          start(): Promise<{ close(): void; addEventListener(type: string, fn: () => void): void }>;
+          start(): Promise<{
+            close(): void;
+            addEventListener(type: string, fn: () => void): void;
+          }>;
           stop(): Promise<void>;
           onmessage: ((msg: unknown) => void) | null;
           onerror: ((ev: unknown) => void) | null;
@@ -123,8 +121,10 @@ function startSmee(smeeUrl: string, targetPort: number): void {
         source: smeeUrl,
         target: `http://localhost:${targetPort}/webhooks`,
         logger: {
-          info: (...args: unknown[]) => console.log('[smee]', ...args),
-          error: (...args: unknown[]) => console.error('[smee]', ...args),
+          info: (message: unknown, ...args: unknown[]) =>
+            logger.info(String(message), ...args),
+          error: (message: unknown, ...args: unknown[]) =>
+            logger.error(String(message), ...args),
         },
       });
 
@@ -144,7 +144,7 @@ function startSmee(smeeUrl: string, targetPort: number): void {
       smeeHandle = { close: () => void es.close() };
       smeeConnected = true;
     } catch (err) {
-      console.warn('[webhook-manager] smee-client not available or failed to start:', err);
+      logger.warn('smee-client not available or failed to start:', err);
       smeeConnected = false;
     }
   })();
@@ -159,7 +159,10 @@ export function reloadSmee(configPath: string, port: number): void {
   }
 }
 
-export function getSmeeStatus(): { smeeConnected: boolean; lastEventAt: string | null } {
+export function getSmeeStatus(): {
+  smeeConnected: boolean;
+  lastEventAt: string | null;
+} {
   return { smeeConnected, lastEventAt };
 }
 
@@ -172,7 +175,7 @@ function makeGithubApi(fetchFn: FetchFn) {
     method: string,
     path: string,
     token: string,
-    body?: unknown,
+    body?: unknown
   ): Promise<globalThis.Response> {
     const init: RequestInit = {
       method,
@@ -196,10 +199,14 @@ const execFileAsync = promisify(execFile);
 
 async function getOwnerRepoForPath(repoPath: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
-      cwd: repoPath,
-      timeout: 10_000,
-    });
+    const { stdout } = await execFileAsync(
+      'git',
+      ['remote', 'get-url', 'origin'],
+      {
+        cwd: repoPath,
+        timeout: 10_000,
+      }
+    );
     return extractOwnerRepo(stdout.trim());
   } catch {
     return null;
@@ -210,14 +217,16 @@ async function createWebhookForPath(
   repoPath: string,
   configPath: string,
   config: Config,
-  githubApi: ReturnType<typeof makeGithubApi>,
+  githubApi: ReturnType<typeof makeGithubApi>
 ): Promise<CreateWebhookResult> {
   const token = config.github?.accessToken;
   const secret = config.github?.webhookSecret;
   const smeeUrl = config.github?.smeeUrl;
 
-  if (!token) return { ok: false, error: 'not_authenticated', webhookError: null };
-  if (!secret || !smeeUrl) return { ok: false, error: 'not_configured', webhookError: null };
+  if (!token)
+    return { ok: false, error: 'not_authenticated', webhookError: null };
+  if (!secret || !smeeUrl)
+    return { ok: false, error: 'not_configured', webhookError: null };
 
   const ownerRepo = await getOwnerRepoForPath(repoPath);
   if (!ownerRepo) return { ok: false, error: 'no_remote', webhookError: null };
@@ -225,7 +234,8 @@ async function createWebhookForPath(
   const parts = ownerRepo.split('/');
   const owner = parts[0];
   const repo = parts[1];
-  if (!owner || !repo) return { ok: false, error: 'invalid_remote', webhookError: null };
+  if (!owner || !repo)
+    return { ok: false, error: 'invalid_remote', webhookError: null };
 
   let apiRes: globalThis.Response;
   try {
@@ -241,15 +251,26 @@ async function createWebhookForPath(
       },
     });
   } catch (err) {
-    return { ok: false, error: `fetch_failed: ${String(err)}`, webhookError: null };
+    return {
+      ok: false,
+      error: `fetch_failed: ${String(err)}`,
+      webhookError: null,
+    };
   }
 
   // 422 — webhook already exists; try to find the existing webhook ID
   if (apiRes.status === 422) {
     try {
-      const listRes = await githubApi('GET', `/repos/${owner}/${repo}/hooks`, token);
+      const listRes = await githubApi(
+        'GET',
+        `/repos/${owner}/${repo}/hooks`,
+        token
+      );
       if (listRes.ok) {
-        const hooks = await listRes.json() as Array<{ id: number; config?: { url?: string } }>;
+        const hooks = (await listRes.json()) as Array<{
+          id: number;
+          config?: { url?: string };
+        }>;
         const existing = hooks.find((h) => h.config?.url === smeeUrl);
         if (existing) {
           persistWebhookSuccess(configPath, config, repoPath, existing.id);
@@ -257,7 +278,7 @@ async function createWebhookForPath(
         }
       }
     } catch (err) {
-      console.warn('[webhook-manager] Could not retrieve existing webhook ID for', ownerRepo, err);
+      logger.warn('Could not retrieve existing webhook ID for', ownerRepo, err);
     }
     // Webhook exists on GitHub but we couldn't find its ID — don't persist a fake ID
     return { ok: true, webhookId: 0, ownerRepo };
@@ -278,10 +299,14 @@ async function createWebhookForPath(
   }
 
   if (!apiRes.ok) {
-    return { ok: false, error: `github_error_${apiRes.status}`, webhookError: null };
+    return {
+      ok: false,
+      error: `github_error_${apiRes.status}`,
+      webhookError: null,
+    };
   }
 
-  const created = await apiRes.json() as { id: number };
+  const created = (await apiRes.json()) as { id: number };
   persistWebhookSuccess(configPath, config, repoPath, created.id);
   return { ok: true, webhookId: created.id, ownerRepo };
 }
@@ -290,11 +315,11 @@ function persistWebhookSuccess(
   configPath: string,
   config: Config,
   repoPath: string,
-  webhookId: number,
+  webhookId: number
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  if (!config.workspaceSettings[repoPath]) config.workspaceSettings[repoPath] = {};
-  const ws = config.workspaceSettings[repoPath]!;
+  if (!config.repoSettings) config.repoSettings = {};
+  if (!config.repoSettings[repoPath]) config.repoSettings[repoPath] = {};
+  const ws = config.repoSettings[repoPath]!;
   ws.webhookId = webhookId;
   ws.webhookEnabled = true;
   delete ws.webhookError;
@@ -305,12 +330,41 @@ function persistWebhookError(
   configPath: string,
   config: Config,
   repoPath: string,
-  errorCode: string,
+  errorCode: string
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  if (!config.workspaceSettings[repoPath]) config.workspaceSettings[repoPath] = {};
-  config.workspaceSettings[repoPath]!.webhookError = errorCode;
+  if (!config.repoSettings) config.repoSettings = {};
+  if (!config.repoSettings[repoPath]) config.repoSettings[repoPath] = {};
+  config.repoSettings[repoPath]!.webhookError = errorCode;
   saveConfig(configPath, config);
+}
+
+async function tryDeleteWebhookRemote(
+  repoPath: string,
+  webhookId: number,
+  token: string,
+  githubApi: ReturnType<typeof makeGithubApi>
+): Promise<void> {
+  const ownerRepo = await getOwnerRepoForPath(repoPath);
+  if (!ownerRepo) return;
+
+  const parts = ownerRepo.split('/');
+  const owner = parts[0];
+  const repo = parts[1];
+  if (!owner || !repo) return;
+
+  try {
+    const delRes = await githubApi(
+      'DELETE',
+      `/repos/${owner}/${repo}/hooks/${webhookId}`,
+      token
+    );
+    // 404 is fine — webhook already gone
+    if (!delRes.ok && delRes.status !== 404) {
+      logger.warn(`DELETE hook returned ${delRes.status}`);
+    }
+  } catch (err) {
+    logger.warn('Failed to delete webhook via API:', err);
+  }
 }
 
 // ── Router factory ─────────────────────────────────────────────────────────────
@@ -343,13 +397,17 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     // Create smee channel via redirect
     let channelUrl: string;
     try {
-      const smeeRes = await fetchFn('https://smee.io/new', { redirect: 'manual' });
+      const smeeRes = await fetchFn('https://smee.io/new', {
+        redirect: 'manual',
+      });
       const location = smeeRes.headers.get('location');
       if (location) {
         channelUrl = location;
       } else {
         // No location header — try following redirect
-        const followRes = await fetchFn('https://smee.io/new', { redirect: 'follow' });
+        const followRes = await fetchFn('https://smee.io/new', {
+          redirect: 'follow',
+        });
         channelUrl = followRes.url;
       }
       if (!channelUrl || !channelUrl.startsWith('https://smee.io/')) {
@@ -383,8 +441,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     const token = config.github?.accessToken;
     let deleted = 0;
 
-    if (token && config.workspaceSettings) {
-      const entries = Object.entries(config.workspaceSettings);
+    if (token && config.repoSettings) {
+      const entries = Object.entries(config.repoSettings);
       for (const [repoPath, ws] of entries) {
         const webhookId = ws.webhookId;
         if (!webhookId) continue;
@@ -398,15 +456,22 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
         if (!owner || !repo) continue;
 
         try {
-          await githubApi('DELETE', `/repos/${owner}/${repo}/hooks/${webhookId}`, token);
+          await githubApi(
+            'DELETE',
+            `/repos/${owner}/${repo}/hooks/${webhookId}`,
+            token
+          );
           deleted++;
         } catch (err) {
-          console.warn(`[webhook-manager] Failed to delete webhook ${webhookId} for ${ownerRepo}:`, err);
+          logger.warn(
+            `Failed to delete webhook ${webhookId} for ${ownerRepo}:`,
+            err
+          );
         }
       }
 
-      // Clear webhook fields from all workspace settings
-      for (const ws of Object.values(config.workspaceSettings)) {
+      // Clear webhook fields from all repo settings
+      for (const ws of Object.values(config.repoSettings)) {
         delete ws.webhookId;
         delete ws.webhookEnabled;
         delete ws.webhookError;
@@ -473,8 +538,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     let foundOwnerRepo: string | null = null;
     let foundWebhookId: number | null = null;
 
-    if (config.workspaceSettings) {
-      for (const [repoPath, ws] of Object.entries(config.workspaceSettings)) {
+    if (config.repoSettings) {
+      for (const [repoPath, ws] of Object.entries(config.repoSettings)) {
         if (!ws.webhookId) continue;
         const ownerRepo = await getOwnerRepoForPath(repoPath);
         if (ownerRepo) {
@@ -502,12 +567,14 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
       const pingRes = await githubApi(
         'POST',
         `/repos/${owner}/${repo}/hooks/${foundWebhookId}/pings`,
-        token,
+        token
       );
       if (pingRes.ok || pingRes.status === 204) {
         res.json({ ok: true });
       } else {
-        res.status(pingRes.status).json({ error: 'ping_failed', status: pingRes.status });
+        res
+          .status(pingRes.status)
+          .json({ error: 'ping_failed', status: pingRes.status });
       }
     } catch (err) {
       res.status(502).json({ error: 'ping_failed', detail: String(err) });
@@ -525,13 +592,20 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     }
 
     const config = getConfig();
-    const result = await createWebhookForPath(repoPath, configPath, config, githubApi);
+    const result = await createWebhookForPath(
+      repoPath,
+      configPath,
+      config,
+      githubApi
+    );
 
     if (result.ok) {
       res.json({ ok: true, webhookId: result.webhookId });
     } else {
       const status = result.webhookError === 'not-admin' ? 403 : 400;
-      res.status(status).json({ error: result.error, webhookError: result.webhookError });
+      res
+        .status(status)
+        .json({ error: result.error, webhookError: result.webhookError });
     }
   });
 
@@ -547,7 +621,7 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
 
     const config = getConfig();
     const token = config.github?.accessToken;
-    const ws = config.workspaceSettings?.[repoPath];
+    const ws = config.repoSettings?.[repoPath];
     const webhookId = ws?.webhookId;
 
     if (!webhookId) {
@@ -556,32 +630,12 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     }
 
     if (token) {
-      const ownerRepo = await getOwnerRepoForPath(repoPath);
-      if (ownerRepo) {
-        const parts = ownerRepo.split('/');
-        const owner = parts[0];
-        const repo = parts[1];
-        if (owner && repo) {
-          try {
-            const delRes = await githubApi(
-              'DELETE',
-              `/repos/${owner}/${repo}/hooks/${webhookId}`,
-              token,
-            );
-            // 404 is fine — webhook already gone
-            if (!delRes.ok && delRes.status !== 404) {
-              console.warn(`[webhook-manager] DELETE hook returned ${delRes.status}`);
-            }
-          } catch (err) {
-            console.warn('[webhook-manager] Failed to delete webhook via API:', err);
-          }
-        }
-      }
+      await tryDeleteWebhookRemote(repoPath, webhookId, token, githubApi);
     }
 
     // Clear local webhook state regardless of API result
-    if (config.workspaceSettings?.[repoPath]) {
-      const wsEntry = config.workspaceSettings[repoPath]!;
+    if (config.repoSettings?.[repoPath]) {
+      const wsEntry = config.repoSettings[repoPath]!;
       delete wsEntry.webhookId;
       delete wsEntry.webhookEnabled;
       delete wsEntry.webhookError;
@@ -595,7 +649,7 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
 
   router.post('/backfill', async (_req: Request, res: ExpressResponse) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       res.json({ total: 0, success: 0, failed: 0, results: [] });
@@ -603,12 +657,20 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     }
 
     // Build repo map to confirm which paths have valid git remotes
-    const execFn = (file: string, args: string[], opts: { cwd: string; timeout?: number }) =>
-      execFileAsync(file, args, opts);
+    const execFn = (
+      file: string,
+      args: string[],
+      opts: { cwd: string; timeout?: number }
+    ) => execFileAsync(file, args, opts);
 
     const repoMap = await buildRepoMap(workspacePaths, execFn);
 
-    type BackfillResult = { path: string; ownerRepo: string | null; ok: boolean; error?: string };
+    type BackfillResult = {
+      path: string;
+      ownerRepo: string | null;
+      ok: boolean;
+      error?: string;
+    };
     const results: BackfillResult[] = [];
 
     // Bounded concurrency: 5 at a time
@@ -629,18 +691,28 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
           }
 
           if (!ownerRepo) {
-            return { path: wsPath, ownerRepo: null, ok: false, error: 'no_remote' };
+            return {
+              path: wsPath,
+              ownerRepo: null,
+              ok: false,
+              error: 'no_remote',
+            };
           }
 
           // Reload config for each path to pick up writes from previous batch items
           const freshConfig = getConfig();
-          const result = await createWebhookForPath(wsPath, configPath, freshConfig, githubApi);
+          const result = await createWebhookForPath(
+            wsPath,
+            configPath,
+            freshConfig,
+            githubApi
+          );
           if (result.ok) {
             return { path: wsPath, ownerRepo, ok: true };
           } else {
             return { path: wsPath, ownerRepo, ok: false, error: result.error };
           }
-        }),
+        })
       );
       results.push(...batchResults);
     }

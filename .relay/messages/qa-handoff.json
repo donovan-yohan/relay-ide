@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "relay.qa.handoff",
+  "name": "QA handoff",
+  "description": "Repo-local WorkContext message guide for handing a PR or branch to QA.",
+  "kind": "qa-handoff",
+  "payloadSchema": "relay.qa.handoff.v1",
+  "mediaType": "application/json",
+  "encoding": "json",
+  "bodyGuide": {
+    "required": ["scope", "exactHead", "checks", "risks"],
+    "fields": {
+      "scope": "What changed and what QA should verify.",
+      "exactHead": "Branch and commit SHA under test.",
+      "checks": "Commands, manual flows, or screenshots already exercised.",
+      "risks": "Known risky areas and intentionally untested areas."
+    }
+  },
+  "example": {
+    "summary": "QA requested for PR #123 at abc1234",
+    "payload": {
+      "body": {
+        "scope": "Verify the new WorkContext message template CLI flow.",
+        "exactHead": {
+          "branch": "issue-950-repo-message-templates",
+          "sha": "abc1234"
+        },
+        "checks": ["npm run check", "targeted vitest"],
+        "risks": ["CLI actor-token auth", "template discovery edge cases"]
+      }
+    },
+    "refs": [{ "kind": "github-pr", "id": "123" }]
+  },
+  "tags": ["qa", "handoff"]
+}

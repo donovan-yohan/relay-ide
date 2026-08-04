@@ -1,0 +1,626 @@
+import {
+  LOCAL_COMPATIBILITY_SESSION_INTENT,
+  normalizeSessionEnvelope,
+  sessionEnvelopeKey,
+  type SessionEnvelope,
+  type SessionEnvelopeFallback,
+  type SessionIntentKind,
+} from '../shared/session-envelope.js';
+import type { RelayNodeError, RelayNodeErrorCode } from '../shared/relay-node-protocol.js';
+
+export type ScopedSessionLifecycleState = 'active' | 'expired' | 'revoked';
+
+export interface SessionEnvelopeCreateInput extends SessionEnvelopeFallback {
+  envelope?: unknown;
+  intentKind?: SessionIntentKind;
+}
+
+export interface SessionEnvelopeRecord {
+  envelope: SessionEnvelope;
+  revokedAt: string | null;
+  revokeReason: string | null;
+}
+
+export interface ScopedSessionSummary {
+  sessionId: string;
+  globalSessionId: string;
+  nodeId: string;
+  intent: SessionEnvelope['intent'];
+  scope: SessionEnvelope['scope'];
+  peerIdentity: SessionEnvelope['peerIdentity'];
+  issuedAt: string;
+  expiresAt: string | null;
+  revocable: boolean;
+  status: ScopedSessionLifecycleState;
+  revokedAt: string | null;
+  revokeReason: string | null;
+  expired: boolean;
+  expiresInMs: number | null;
+  correlationId?: string;
+  auditId?: string;
+}
+
+export interface SessionLifecycleValidationContext {
+  sessionId: string;
+  nodeId?: string;
+  globalSessionId?: string;
+  now?: Date;
+}
+
+export interface SessionRenewInput {
+  sessionId: string;
+  nodeId?: string;
+  expiresAt: string;
+  now?: Date;
+}
+
+export type SessionLifecycleValidation =
+  | { ok: true; record: SessionEnvelopeRecord; summary: ScopedSessionSummary }
+  | { ok: false; error: RelayNodeError; record?: SessionEnvelopeRecord; summary?: ScopedSessionSummary };
+
+export type SessionRenewResult =
+  | {
+      ok: true;
+      record: SessionEnvelopeRecord;
+      previousSummary: ScopedSessionSummary;
+      summary: ScopedSessionSummary;
+    }
+  | { ok: false; error: RelayNodeError; record?: SessionEnvelopeRecord; summary?: ScopedSessionSummary };
+
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
+
+function nowDate(now?: Date): Date {
+  return now ?? new Date();
+}
+
+function parseExpiryMs(expiresAt: string | null): number | null {
+  if (!expiresAt) return null;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function lifecycleState(
+  record: SessionEnvelopeRecord,
+  now = new Date()
+): ScopedSessionLifecycleState {
+  if (record.revokedAt) return 'revoked';
+  const expiryMs = parseExpiryMs(record.envelope.expiresAt);
+  if (expiryMs !== null && expiryMs <= now.getTime()) return 'expired';
+  return 'active';
+}
+
+function relaySessionError(
+  code: RelayNodeErrorCode,
+  reasonCode: string,
+  message: string,
+  details: Record<string, unknown> = {}
+): RelayNodeError {
+  return {
+    code,
+    message,
+    retryable: false,
+    details: { reasonCode, ...details },
+  };
+}
+
+function expectedGlobalId(nodeId: string, sessionId: string): string {
+  return `${encodeURIComponent(nodeId)}:${encodeURIComponent(sessionId)}`;
+}
+
+function isIsoLike(value: string): boolean {
+  return ISO_DATE_PATTERN.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function validDateMs(value: number): boolean {
+  return Number.isFinite(value) && Number.isFinite(new Date(value).getTime());
+}
+
+function ttlExpiryIso(ttlMs: number, now: Date): string | undefined {
+  const expiresMs = now.getTime() + Math.round(ttlMs);
+  if (!validDateMs(expiresMs)) return undefined;
+  return new Date(expiresMs).toISOString();
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+export interface LifecycleInputError {
+  field: 'expiresAt' | 'ttlMs' | 'ttlSeconds';
+  message: string;
+}
+
+export function lifecycleInputError(
+  input: Record<string, unknown>,
+  now = new Date()
+): LifecycleInputError | null {
+  if (hasOwn(input, 'expiresAt')) {
+    const expiresAt = input['expiresAt'];
+    if (expiresAt !== null && !(typeof expiresAt === 'string' && isIsoLike(expiresAt))) {
+      return {
+        field: 'expiresAt',
+        message: 'expiresAt must be null or an ISO timestamp',
+      };
+    }
+  }
+
+  if (hasOwn(input, 'ttlMs')) {
+    const ttlMs = input['ttlMs'];
+    if (!(typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0)) {
+      return { field: 'ttlMs', message: 'ttlMs must be a positive finite number' };
+    }
+    if (!ttlExpiryIso(ttlMs, now)) {
+      return { field: 'ttlMs', message: 'ttlMs is too large to produce a valid expiry' };
+    }
+  }
+
+  if (hasOwn(input, 'ttlSeconds')) {
+    const ttlSeconds = input['ttlSeconds'];
+    if (!(typeof ttlSeconds === 'number' && Number.isFinite(ttlSeconds) && ttlSeconds > 0)) {
+      return {
+        field: 'ttlSeconds',
+        message: 'ttlSeconds must be a positive finite number',
+      };
+    }
+    const ttlMs = ttlSeconds * 1000;
+    if (!Number.isFinite(ttlMs) || !ttlExpiryIso(ttlMs, now)) {
+      return {
+        field: 'ttlSeconds',
+        message: 'ttlSeconds is too large to produce a valid expiry',
+      };
+    }
+  }
+
+  return null;
+}
+
+export function expiresAtFromLifecycleInput(
+  input: Record<string, unknown>,
+  now = new Date()
+): string | null | undefined {
+  const expiresAt = input['expiresAt'];
+  if (expiresAt === null) return null;
+  if (typeof expiresAt === 'string') return expiresAt;
+
+  const ttlMs = input['ttlMs'];
+  if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0) {
+    return ttlExpiryIso(ttlMs, now);
+  }
+
+  const ttlSeconds = input['ttlSeconds'];
+  if (
+    typeof ttlSeconds === 'number' &&
+    Number.isFinite(ttlSeconds) &&
+    ttlSeconds > 0
+  ) {
+    return ttlExpiryIso(ttlSeconds * 1000, now);
+  }
+
+  return undefined;
+}
+
+export function lifecycleSummary(
+  record: SessionEnvelopeRecord,
+  now = new Date()
+): ScopedSessionSummary {
+  const { envelope } = record;
+  const expiryMs = parseExpiryMs(envelope.expiresAt);
+  const remaining = expiryMs === null ? null : Math.max(0, expiryMs - now.getTime());
+  const status = lifecycleState(record, now);
+  return {
+    sessionId: envelope.sessionId,
+    globalSessionId: envelope.globalSessionId,
+    nodeId: envelope.nodeId,
+    intent: envelope.intent,
+    scope: envelope.scope,
+    peerIdentity: envelope.peerIdentity,
+    issuedAt: envelope.issuedAt,
+    expiresAt: envelope.expiresAt,
+    revocable: envelope.revocable,
+    status,
+    revokedAt: record.revokedAt,
+    revokeReason: record.revokeReason,
+    expired: status === 'expired',
+    expiresInMs: remaining,
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+    ...(envelope.auditId ? { auditId: envelope.auditId } : {}),
+  };
+}
+
+function revokeRecord(
+  record: SessionEnvelopeRecord,
+  options: { reason?: string; now?: Date } = {}
+): void {
+  const nowIso = nowDate(options.now).toISOString();
+  record.revokedAt = record.revokedAt ?? nowIso;
+  record.revokeReason = options.reason ?? record.revokeReason ?? 'operator-revoked';
+}
+
+function sameOptionalPath(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left ?? undefined) === (right ?? undefined);
+}
+
+function samePeerAuthority(
+  previous: SessionEnvelope['peerIdentity'],
+  incoming: SessionEnvelope['peerIdentity']
+): boolean {
+  switch (previous.kind) {
+    case 'local-user':
+      return incoming.kind === 'local-user' && previous.id === incoming.id;
+    case 'relay-node':
+      return (
+        incoming.kind === 'relay-node' &&
+        previous.nodeId === incoming.nodeId &&
+        (previous.credentialId ?? undefined) === (incoming.credentialId ?? undefined)
+      );
+    case 'agent':
+      return (
+        incoming.kind === 'agent' &&
+        previous.id === incoming.id &&
+        previous.adapter === incoming.adapter &&
+        (previous.credentialId ?? undefined) === (incoming.credentialId ?? undefined)
+      );
+    case 'unknown':
+      return (
+        incoming.kind === 'unknown' &&
+        (previous.id ?? undefined) === (incoming.id ?? undefined)
+      );
+  }
+}
+
+function sameAuthorityForExpiryPreservation(
+  previous: SessionEnvelope,
+  incoming: SessionEnvelope
+): boolean {
+  return (
+    previous.sessionId === incoming.sessionId &&
+    previous.globalSessionId === incoming.globalSessionId &&
+    previous.nodeId === incoming.nodeId &&
+    previous.issuedAt === incoming.issuedAt &&
+    previous.revocable === incoming.revocable &&
+    previous.intent.kind === incoming.intent.kind &&
+    previous.scope.kind === incoming.scope.kind &&
+    previous.scope.nodeId === incoming.scope.nodeId &&
+    previous.scope.cwd === incoming.scope.cwd &&
+    sameOptionalPath(previous.scope.repoPath, incoming.scope.repoPath) &&
+    sameOptionalPath(previous.scope.worktreePath, incoming.scope.worktreePath) &&
+    samePeerAuthority(previous.peerIdentity, incoming.peerIdentity)
+  );
+}
+
+function preserveRenewedExpiry(
+  previous: SessionEnvelope,
+  incoming: SessionEnvelope
+): SessionEnvelope {
+  if (!sameAuthorityForExpiryPreservation(previous, incoming)) return incoming;
+  if (!previous.expiresAt || !incoming.expiresAt) return incoming;
+  const previousMs = Date.parse(previous.expiresAt);
+  const incomingMs = Date.parse(incoming.expiresAt);
+  if (Number.isFinite(previousMs) && Number.isFinite(incomingMs) && previousMs > incomingMs) {
+    return { ...incoming, expiresAt: previous.expiresAt };
+  }
+  return incoming;
+}
+
+export class InMemorySessionEnvelopeRegistry {
+  private readonly records = new Map<string, SessionEnvelopeRecord>();
+
+  create(input: SessionEnvelopeCreateInput): SessionEnvelope {
+    const envelope = normalizeSessionEnvelope(
+      input.envelope,
+      input,
+      input.intentKind ?? LOCAL_COMPATIBILITY_SESSION_INTENT
+    );
+    this.records.set(sessionEnvelopeKey(envelope), {
+      envelope,
+      revokedAt: null,
+      revokeReason: null,
+    });
+    return envelope;
+  }
+
+  upsert(envelope: SessionEnvelope): SessionEnvelope {
+    const key = sessionEnvelopeKey(envelope);
+    const previous = this.records.get(key);
+    const storedEnvelope = previous
+      ? preserveRenewedExpiry(previous.envelope, envelope)
+      : envelope;
+    this.records.set(key, {
+      envelope: storedEnvelope,
+      revokedAt: previous?.revokedAt ?? null,
+      revokeReason: previous?.revokeReason ?? null,
+    });
+    return storedEnvelope;
+  }
+
+  readRecord(sessionIdOrGlobalId: string, nodeId?: string): SessionEnvelopeRecord | undefined {
+    if (nodeId) {
+      const direct = this.records.get(expectedGlobalId(nodeId, sessionIdOrGlobalId));
+      if (direct) return direct;
+      return Array.from(this.records.values()).find(
+        (record) =>
+          record.envelope.nodeId === nodeId &&
+          (record.envelope.sessionId === sessionIdOrGlobalId ||
+            record.envelope.globalSessionId === sessionIdOrGlobalId)
+      );
+    }
+    const direct = this.records.get(sessionIdOrGlobalId);
+    if (direct) return direct;
+    return Array.from(this.records.values()).find(
+      (record) => record.envelope.sessionId === sessionIdOrGlobalId
+    );
+  }
+
+  read(sessionIdOrGlobalId: string, nodeId?: string): SessionEnvelope | undefined {
+    return this.readRecord(sessionIdOrGlobalId, nodeId)?.envelope;
+  }
+
+  listActive(now = new Date()): SessionEnvelope[] {
+    return this.list({ now, includeRevoked: false, includeExpired: false }).map(
+      (entry) => entry.envelope
+    );
+  }
+
+  list(options: {
+    now?: Date;
+    includeRevoked?: boolean;
+    includeExpired?: boolean;
+  } = {}): SessionEnvelopeRecord[] {
+    const now = nowDate(options.now);
+    const includeRevoked = options.includeRevoked ?? false;
+    const includeExpired = options.includeExpired ?? true;
+    return Array.from(this.records.values())
+      .filter((record) => {
+        const state = lifecycleState(record, now);
+        if (state === 'revoked') return includeRevoked;
+        if (state === 'expired') return includeExpired;
+        return true;
+      })
+      .sort((a, b) => b.envelope.issuedAt.localeCompare(a.envelope.issuedAt));
+  }
+
+  listSummaries(options: {
+    now?: Date;
+    includeRevoked?: boolean;
+    includeExpired?: boolean;
+  } = {}): ScopedSessionSummary[] {
+    const now = nowDate(options.now);
+    return this.list({ ...options, now }).map((record) => lifecycleSummary(record, now));
+  }
+
+  hasGlobalSessionId(globalSessionId: string): boolean {
+    return this.records.has(globalSessionId);
+  }
+
+  countLocalSessionId(sessionId: string): number {
+    return Array.from(this.records.values()).filter(
+      (record) => record.envelope.sessionId === sessionId
+    ).length;
+  }
+
+  revoke(
+    sessionIdOrGlobalId: string,
+    options: { nodeId?: string; reason?: string; now?: Date } = {}
+  ): ScopedSessionSummary | undefined {
+    const record = options.nodeId
+      ? this.readRecord(sessionIdOrGlobalId, options.nodeId)
+      : this.records.get(sessionIdOrGlobalId);
+    if (!record) return undefined;
+    revokeRecord(record, options);
+    return lifecycleSummary(record, nowDate(options.now));
+  }
+
+  revokeForNode(
+    nodeId: string,
+    options: { reason?: string; now?: Date } = {}
+  ): ScopedSessionSummary[] {
+    const revoked: ScopedSessionSummary[] = [];
+    const now = nowDate(options.now);
+    for (const record of Array.from(this.records.values())) {
+      if (record.envelope.nodeId !== nodeId) continue;
+      if (lifecycleState(record, now) !== 'active') continue;
+      revokeRecord(record, { ...options, now });
+      revoked.push(lifecycleSummary(record, now));
+    }
+    return revoked;
+  }
+
+  validate(context: SessionLifecycleValidationContext): SessionLifecycleValidation {
+    const now = nowDate(context.now);
+    if (!context.nodeId && !this.records.has(context.sessionId)) {
+      const localMatches = this.countLocalSessionId(context.sessionId);
+      if (localMatches > 1) {
+        return {
+          ok: false,
+          error: relaySessionError(
+            'INVALID_REQUEST',
+            'AMBIGUOUS_LOCAL_SESSION_ID',
+            'nodeId is required when addressing a scoped session by node-local session id',
+            {
+              sessionId: context.sessionId,
+              matches: localMatches,
+            }
+          ),
+        };
+      }
+    }
+    const record = this.readRecord(context.sessionId, context.nodeId);
+    if (!record) {
+      const mismatchedRecord = context.nodeId
+        ? this.readRecord(context.sessionId)
+        : undefined;
+      if (mismatchedRecord) {
+        const summary = lifecycleSummary(mismatchedRecord, now);
+        return {
+          ok: false,
+          record: mismatchedRecord,
+          summary,
+          error: relaySessionError(
+            'SESSION_MISMATCH',
+            'SESSION_NODE_MISMATCH',
+            'scoped session node does not match the routed node',
+            {
+              expectedNodeId: mismatchedRecord.envelope.nodeId,
+              actualNodeId: context.nodeId,
+            }
+          ),
+        };
+      }
+      return {
+        ok: false,
+        error: relaySessionError(
+          'NOT_FOUND',
+          'SESSION_ENVELOPE_NOT_FOUND',
+          'scoped session envelope was not found',
+          {
+            sessionId: context.sessionId,
+            nodeId: context.nodeId ?? null,
+            globalSessionId: context.globalSessionId ?? null,
+          }
+        ),
+      };
+    }
+
+    const summary = lifecycleSummary(record, now);
+    const { envelope } = record;
+    if (context.nodeId && envelope.nodeId !== context.nodeId) {
+      return {
+        ok: false,
+        record,
+        summary,
+        error: relaySessionError(
+          'SESSION_MISMATCH',
+          'SESSION_NODE_MISMATCH',
+          'scoped session node does not match the routed node',
+          { expectedNodeId: envelope.nodeId, actualNodeId: context.nodeId }
+        ),
+      };
+    }
+    if (envelope.sessionId !== context.sessionId) {
+      return {
+        ok: false,
+        record,
+        summary,
+        error: relaySessionError(
+          'SESSION_MISMATCH',
+          'SESSION_ID_MISMATCH',
+          'scoped session id does not match the routed session',
+          { expectedSessionId: envelope.sessionId, actualSessionId: context.sessionId }
+        ),
+      };
+    }
+    if (context.globalSessionId && envelope.globalSessionId !== context.globalSessionId) {
+      return {
+        ok: false,
+        record,
+        summary,
+        error: relaySessionError(
+          'SESSION_MISMATCH',
+          'SESSION_GLOBAL_ID_MISMATCH',
+          'scoped global session id does not match the routed session',
+          {
+            expectedGlobalSessionId: envelope.globalSessionId,
+            actualGlobalSessionId: context.globalSessionId,
+          }
+        ),
+      };
+    }
+    if (summary.status === 'revoked') {
+      return {
+        ok: false,
+        record,
+        summary,
+        error: relaySessionError(
+          'SESSION_REVOKED',
+          'SESSION_REVOKED',
+          'scoped session has been revoked',
+          { revokedAt: summary.revokedAt, revokeReason: summary.revokeReason }
+        ),
+      };
+    }
+    if (summary.status === 'expired') {
+      return {
+        ok: false,
+        record,
+        summary,
+        error: relaySessionError(
+          'SESSION_EXPIRED',
+          'SESSION_EXPIRED',
+          'scoped session has expired',
+          { expiresAt: summary.expiresAt }
+        ),
+      };
+    }
+    return { ok: true, record, summary };
+  }
+
+  renew(input: SessionRenewInput): SessionRenewResult {
+    const now = nowDate(input.now);
+    const lifecycle = this.validate({
+      sessionId: input.sessionId,
+      ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+      now,
+    });
+    if (lifecycle.ok === false) return lifecycle;
+
+    if (!lifecycle.record.envelope.revocable) {
+      return {
+        ok: false,
+        record: lifecycle.record,
+        summary: lifecycle.summary,
+        error: relaySessionError(
+          'SESSION_NON_RENEWABLE',
+          'SESSION_NON_RENEWABLE',
+          'scoped session is not renewable',
+          {
+            sessionId: lifecycle.summary.sessionId,
+            nodeId: lifecycle.summary.nodeId,
+          }
+        ),
+      };
+    }
+
+    const expiryMs = Date.parse(input.expiresAt);
+    if (!Number.isFinite(expiryMs) || expiryMs <= now.getTime()) {
+      return {
+        ok: false,
+        record: lifecycle.record,
+        summary: lifecycle.summary,
+        error: relaySessionError(
+          'SESSION_EXPIRED',
+          'SESSION_RENEWAL_EXPIRES_IN_PAST',
+          'renewed scoped session expiry must be in the future',
+          { expiresAt: input.expiresAt }
+        ),
+      };
+    }
+
+    const previousSummary = lifecycle.summary;
+    lifecycle.record.envelope = {
+      ...lifecycle.record.envelope,
+      expiresAt: new Date(expiryMs).toISOString(),
+    };
+    return {
+      ok: true,
+      record: lifecycle.record,
+      previousSummary,
+      summary: lifecycleSummary(lifecycle.record, now),
+    };
+  }
+
+  delete(sessionIdOrGlobalId: string, nodeId?: string): boolean {
+    const found = this.readRecord(sessionIdOrGlobalId, nodeId);
+    if (!found) return false;
+    return this.records.delete(sessionEnvelopeKey(found.envelope));
+  }
+
+  clear(): void {
+    this.records.clear();
+  }
+}
+
+export function createSessionEnvelopeRegistry(): InMemorySessionEnvelopeRegistry {
+  return new InMemorySessionEnvelopeRegistry();
+}
+
+export const sessionEnvelopeRegistry = createSessionEnvelopeRegistry();

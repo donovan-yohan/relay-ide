@@ -1,0 +1,275 @@
+import type { Request, Response } from 'express';
+
+import {
+  SUPERVISOR_READ_REQUIRED_CAPABILITIES,
+  supervisorActionRequiredCapabilities,
+  supervisorSubmitRequiredCapabilities,
+  type SupervisorActionError,
+  type SupervisorActionType,
+} from '../shared/supervisor-actions.js';
+import type { SessionSummary } from './types.js';
+import {
+  actorFromRequestBody,
+  capabilitiesDecisionFromRequest,
+  capabilityError,
+  errorStatus as sessionControlErrorStatus,
+  type ControlCapabilityDecision,
+} from './session-control-api.js';
+import {
+  executeSupervisorAction,
+  listSupervisorSessions,
+  type SupervisorActionSessionBoundary,
+} from './supervisor-actions.js';
+
+export interface SupervisorSessionsBoundary {
+  list(): SessionSummary[];
+}
+
+function supervisorActionError(
+  reasonCode: SupervisorActionError['reasonCode'],
+  message: string,
+  details?: Record<string, unknown>
+): SupervisorActionError {
+  return {
+    code: 'INVALID_ARGUMENT',
+    reasonCode,
+    message,
+    retryable: false,
+    ...(details ? { details } : {}),
+  };
+}
+
+function supervisorActionErrorStatus(error: SupervisorActionError): number {
+  switch (error.code) {
+    case 'FORBIDDEN':
+      return 403;
+    case 'NOT_FOUND':
+      return 404;
+    case 'INVALID_ARGUMENT':
+      return 400;
+    default:
+      return 409;
+  }
+}
+
+function actionFromParam(
+  actionParam: string | undefined
+): SupervisorActionType | undefined {
+  return actionParam === 'sendText' || actionParam === 'sendKey' || actionParam === 'submit'
+    ? actionParam
+    : undefined;
+}
+
+function requestBody(req: Request): Record<string, unknown> {
+  return typeof req.body === 'object' && req.body !== null
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
+function validateSupervisorActionTargets(
+  body: Record<string, unknown>
+):
+  | { ok: true; targetIds: string[] }
+  | { ok: false; error: SupervisorActionError } {
+  const id = body['id'];
+  const targetIds = body['targetIds'];
+  const hasIdField = id !== undefined;
+  const hasTargetIdsField = targetIds !== undefined;
+
+  if (hasIdField && hasTargetIdsField) {
+    return {
+      ok: false,
+      error: supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        'exactly one of id or targetIds is required',
+        { field: 'id' }
+      ),
+    };
+  }
+
+  if (!hasIdField && !hasTargetIdsField) {
+    return {
+      ok: false,
+      error: supervisorActionError(
+        'TARGET_SELECTOR_REQUIRED',
+        'exactly one of id or targetIds is required',
+        { field: 'id' }
+      ),
+    };
+  }
+
+  if (hasIdField) {
+    if (typeof id !== 'string' || id.trim().length === 0) {
+      return {
+        ok: false,
+        error: supervisorActionError(
+          'TARGET_SELECTOR_INVALID',
+          'id must be a non-empty session id',
+          { field: 'id' }
+        ),
+      };
+    }
+    return { ok: true, targetIds: [id.trim()] };
+  }
+
+  if (!Array.isArray(targetIds)) {
+    return {
+      ok: false,
+      error: supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        'targetIds must be a non-empty list of session ids',
+        { field: 'targetIds' }
+      ),
+    };
+  }
+
+  if (
+    targetIds.length === 0 ||
+    !targetIds.every(
+      (entry) => typeof entry === 'string' && entry.trim().length > 0
+    )
+  ) {
+    return {
+      ok: false,
+      error: supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        'targetIds must be a non-empty list of session ids',
+        { field: 'targetIds' }
+      ),
+    };
+  }
+
+  return { ok: true, targetIds: targetIds.map((entry) => entry.trim()) };
+}
+
+function validateSubmitBooleanOptions(
+  body: Record<string, unknown>
+): SupervisorActionError | undefined {
+  for (const field of ['clearInput', 'paste', 'dryRun'] as const) {
+    const value = body[field];
+    if (value !== undefined && typeof value !== 'boolean') {
+      return supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        `${field} must be a boolean when provided`,
+        { field }
+      );
+    }
+  }
+  return undefined;
+}
+
+function missingCapabilityEvidenceDecision(
+  capability: ControlCapabilityDecision['capability']
+): ControlCapabilityDecision {
+  return {
+    decision: 'deny',
+    capability,
+    placeholder: true,
+    reasonCode: 'CAPABILITY_REQUIRED',
+    message: 'missing required supervisor action capability evidence',
+  };
+}
+
+function supervisorActionCapabilitiesDecision(
+  req: Request,
+  action: SupervisorActionType,
+  hasSubmitText: boolean
+): ControlCapabilityDecision {
+  // A submit that types an inline text body needs the send-text capability in
+  // addition to the submit capability (#958).
+  const capabilities =
+    action === 'submit'
+      ? supervisorSubmitRequiredCapabilities(hasSubmitText)
+      : supervisorActionRequiredCapabilities(action);
+  const header = req.header('x-relay-capabilities') ?? undefined;
+  if (header === undefined || header.trim().length === 0) {
+    const highRiskCapability =
+      capabilities.find((capability) => capability.startsWith('tab:intervention:')) ??
+      'session:attach';
+    return missingCapabilityEvidenceDecision(highRiskCapability);
+  }
+  return capabilitiesDecisionFromRequest(req, capabilities);
+}
+
+export function handleSupervisorSessionsRequest(
+  req: Request,
+  res: Response,
+  sessions: SupervisorSessionsBoundary
+): void {
+  const decision = capabilitiesDecisionFromRequest(
+    req,
+    SUPERVISOR_READ_REQUIRED_CAPABILITIES
+  );
+  if (decision.decision !== 'allow') {
+    const error = capabilityError(decision);
+    res.status(sessionControlErrorStatus(error)).json({ error });
+    return;
+  }
+  res.json(listSupervisorSessions(sessions.list()));
+}
+
+export function handleSupervisorActionRequest(
+  req: Request,
+  res: Response,
+  sessions: SupervisorActionSessionBoundary
+): void {
+  const action = actionFromParam(req.params['action']);
+  if (!action) {
+    const error = supervisorActionError(
+      'TARGET_SELECTOR_INVALID',
+      'supervisor action must be sendText, sendKey, or submit',
+      { field: 'action' }
+    );
+    res.status(supervisorActionErrorStatus(error)).json({ error });
+    return;
+  }
+
+  const body = requestBody(req);
+  const targets = validateSupervisorActionTargets(body);
+  if (targets.ok === false) {
+    const error = targets.error;
+    res.status(supervisorActionErrorStatus(error)).json({ error });
+    return;
+  }
+
+  const hasSubmitText =
+    action === 'submit' &&
+    typeof body['text'] === 'string' &&
+    (body['text'] as string).length > 0;
+
+  if (action === 'submit') {
+    const submitOptionsError = validateSubmitBooleanOptions(body);
+    if (submitOptionsError) {
+      res
+        .status(supervisorActionErrorStatus(submitOptionsError))
+        .json({ error: submitOptionsError });
+      return;
+    }
+  }
+
+  const decision = supervisorActionCapabilitiesDecision(req, action, hasSubmitText);
+  if (decision.decision !== 'allow') {
+    const error = capabilityError(decision);
+    res.status(sessionControlErrorStatus(error)).json({ error });
+    return;
+  }
+
+  const actor = actorFromRequestBody(body['actor']);
+  const result = executeSupervisorAction({
+    boundary: sessions,
+    action,
+    targetIds: targets.targetIds,
+    text: body['text'],
+    key: body['key'],
+    // Submit-only options (#958); ignored for sendText/sendKey.
+    ...(action === 'submit'
+      ? {
+          clearInput: body['clearInput'] === true,
+          paste: body['paste'] === true,
+          dryRun: body['dryRun'] === true,
+        }
+      : {}),
+    ...(actor === undefined ? {} : { actor }),
+  });
+  res.json(result);
+}

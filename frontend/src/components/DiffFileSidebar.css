@@ -1,0 +1,95 @@
+.diff-sidebar {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-right: 1px solid var(--border, #333);
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.sidebar-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-muted, #222);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text, #e0e0e0);
+  min-height: 28px;
+  width: 100%;
+}
+
+.sidebar-file:hover {
+  background: var(--surface-hover, #141414);
+}
+
+.sidebar-file.active {
+  background: rgba(217, 119, 87, 0.08);
+  border-left: 2px solid var(--accent, #d97757);
+}
+
+.sidebar-file.focused {
+  outline: 1px solid var(--accent, #d97757);
+  outline-offset: -1px;
+}
+
+.diff-sidebar .status {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.diff-sidebar .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* git status name colors — vscode-style decoration. active state keeps status color (no override) */
+.sidebar-file[data-state='modified'] .name {
+  color: var(--status-warning, #fbbf24);
+}
+.sidebar-file[data-state='added'] .name {
+  color: var(--status-success, #4ade80);
+}
+.sidebar-file[data-state='untracked'] .name {
+  color: var(--status-info, #60a5fa);
+}
+.sidebar-file[data-state='renamed'] .name {
+  color: var(--status-merged, var(--status-info, #60a5fa));
+}
+.sidebar-file[data-state='deleted'] .name {
+  color: var(--status-error, #f87171);
+  text-decoration: line-through;
+  text-decoration-color: var(--status-error, #f87171);
+}
+
+.diff-sidebar .dir {
+  color: var(--text-muted, #888);
+  font-size: 0.7rem;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-sidebar .stats {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  font-size: 0.65rem;
+}
+
+.diff-sidebar .stat-add {
+  color: var(--status-success, #4ade80);
+}
+.diff-sidebar .stat-del {
+  color: var(--status-error, #f87171);
+}

@@ -1,71 +1,148 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, FilterPreset, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type {
+  AutomationSettings,
+  Config,
+  FilterPreset,
+  TerminalBackend,
+  WorkspaceSettings,
+  WorktreeMetadata,
+} from './types.js';
+import { createLogger } from './logger.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
-  { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
-  { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
+  {
+    name: 'Needs Attention',
+    builtIn: true,
+    filters: {},
+    sort: { column: 'role', direction: 'asc' },
+  },
+  {
+    name: 'All PRs',
+    builtIn: true,
+    filters: {},
+    sort: { column: 'age', direction: 'desc' },
+  },
 ];
 
-export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
+/** Default per-session scrollback cap: 256 KB. */
+export const DEFAULT_MAX_SCROLLBACK_PER_SESSION_BYTES = 256 * 1024;
+
+/** Default global scrollback cap across all sessions: 4 MB. */
+export const DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES = 4 * 1024 * 1024;
+
+export const DEFAULTS: Omit<
+  Config,
+  'pinHash' | 'rootDirs' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'
+> = {
   host: '0.0.0.0',
   port: 3456,
   cookieTTL: '24h',
   repos: [],
-  claudeCommand: 'claude',
-  claudeArgs: [],
-  defaultAgent: 'claude',
-  defaultContinue: true,
-  defaultYolo: false,
-  launchInTmux: false,
+  defaultFramework: 'claude',
+  maxPtySessions: 64,
+  terminalBackend: 'relay-pty',
   defaultNotifications: true,
-  workspaces: [],
+  updateChannel: 'stable',
+  maxScrollbackPerSessionBytes: DEFAULT_MAX_SCROLLBACK_PER_SESSION_BYTES,
+  maxScrollbackGlobalBytes: DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES,
 };
+
+// Legacy no-op only: kept as a plain searchable string so audits can find and
+// delete stale config writers. Do not reintroduce this as a supported setting.
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
+const RETIRED_PUBLIC_AGENT_SETTING_KEYS = [
+  'defaultContinue',
+  'defaultContinuePolicy',
+  'defaultYolo',
+  'claudeFullscreen',
+  'claudeArgs',
+  'promptCreatePr',
+  'promptBranchRename',
+  'promptGeneral',
+  'promptStartWork',
+] as const;
+const CONFIG_LOG = createLogger('config');
+let warnedLegacyTmuxLaunchSetting = false;
+
+function normalizeAutomationSettings(
+  value: unknown
+): AutomationSettings | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const settings = value as Record<string, unknown>;
+  return {
+    ...(typeof settings['autoCheckoutReviewRequests'] === 'boolean'
+      ? {
+          autoCheckoutReviewRequests: settings['autoCheckoutReviewRequests'],
+        }
+      : {}),
+    ...(typeof settings['pollIntervalMs'] === 'number'
+      ? { pollIntervalMs: settings['pollIntervalMs'] }
+      : {}),
+    ...(typeof settings['lastPollTimestamp'] === 'string'
+      ? { lastPollTimestamp: settings['lastPollTimestamp'] }
+      : {}),
+  };
+}
+
+function omitRetiredSettings<T extends object>(settings: T): T {
+  if (
+    !warnedLegacyTmuxLaunchSetting &&
+    Object.prototype.hasOwnProperty.call(settings, LEGACY_TMUX_LAUNCH_KEY)
+  ) {
+    warnedLegacyTmuxLaunchSetting = true;
+    CONFIG_LOG.warn(
+      'ignoring legacy launchInTmux setting; use terminalBackend instead'
+    );
+  }
+  const sanitized = { ...(settings as T & Record<string, unknown>) };
+  delete sanitized[LEGACY_TMUX_LAUNCH_KEY];
+  for (const key of RETIRED_PUBLIC_AGENT_SETTING_KEYS) {
+    delete sanitized[key];
+  }
+  return sanitized as T;
+}
 
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<Config>;
-  const config: Config = { ...DEFAULTS, ...parsed };
+  const parsed = JSON.parse(raw) as Partial<Config> & Record<string, unknown>;
+  const config: Config = {
+    ...DEFAULTS,
+    ...omitRetiredSettings(parsed),
+  };
+  config.automations = normalizeAutomationSettings(config.automations);
+  if (config.repoSettings) {
+    config.repoSettings = Object.fromEntries(
+      Object.entries(config.repoSettings).map(([repoPath, settings]) => [
+        repoPath,
+        omitRetiredSettings(settings),
+      ])
+    );
+  }
+  if (config.workspaces) {
+    config.workspaces = config.workspaces.map((workspace) =>
+      workspace.settings
+        ? {
+            ...workspace,
+            settings: omitRetiredSettings(workspace.settings),
+          }
+        : workspace
+    );
+  }
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
-    config.filterPresets = DEFAULT_PRESETS.map(p => ({ ...p, filters: { ...p.filters }, sort: { ...p.sort } }));
-  }
-
-  // Validate and clean workspaceGroups
-  if (config.workspaceGroups != null) {
-    const validPaths = new Set(config.workspaces ?? []);
-    const seenPaths = new Set<string>();
-    const cleaned: Record<string, string[]> = {};
-
-    for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
-      if (!Array.isArray(paths)) {
-        console.warn(`workspaceGroups: group "${groupName}" value is not an array, skipping`);
-        continue;
-      }
-      const filteredPaths: string[] = [];
-      for (const p of paths) {
-        if (!validPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in workspaces[], skipping`);
-          continue;
-        }
-        if (seenPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is already assigned to another group, skipping`);
-          continue;
-        }
-        seenPaths.add(p);
-        filteredPaths.push(p);
-      }
-      if (filteredPaths.length > 0) {
-        cleaned[groupName] = filteredPaths;
-      }
-    }
-
-    config.workspaceGroups = cleaned;
+    config.filterPresets = DEFAULT_PRESETS.map((p) => ({
+      ...p,
+      filters: { ...p.filters },
+      sort: { ...p.sort },
+    }));
   }
 
   return config;
@@ -75,12 +152,20 @@ export function saveConfig(configPath: string, config: Config): void {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 }
 
+export function getConfigDir(configPath: string): string {
+  return path.dirname(configPath);
+}
+
 function metaDir(configPath: string): string {
-  return path.join(path.dirname(configPath), 'worktree-meta');
+  return path.join(getConfigDir(configPath), 'worktree-meta');
 }
 
 function metaFilePath(configPath: string, worktreePath: string): string {
-  const hash = crypto.createHash('sha256').update(worktreePath).digest('hex').slice(0, 16);
+  const hash = crypto
+    .createHash('sha256')
+    .update(worktreePath)
+    .digest('hex')
+    .slice(0, 16);
   return path.join(metaDir(configPath), hash + '.json');
 }
 
@@ -91,7 +176,10 @@ export function ensureMetaDir(configPath: string): void {
   }
 }
 
-export function readMeta(configPath: string, worktreePath: string): WorktreeMetadata | null {
+export function readMeta(
+  configPath: string,
+  worktreePath: string
+): WorktreeMetadata | null {
   const fp = metaFilePath(configPath, worktreePath);
   try {
     return JSON.parse(fs.readFileSync(fp, 'utf8')) as WorktreeMetadata;
@@ -115,76 +203,158 @@ export function deleteMeta(configPath: string, worktreePath: string): void {
   }
 }
 
-export function getWorkspaceSettings(config: Config, workspacePath: string): WorkspaceSettings {
+export function getRepoSettings(
+  config: Config,
+  repoPath: string
+): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
-    defaultAgent: config.defaultAgent,
-    defaultContinue: config.defaultContinue,
-    defaultYolo: config.defaultYolo,
-    launchInTmux: config.launchInTmux,
-    claudeArgs: config.claudeArgs,
+    defaultFramework: config.defaultFramework,
+    terminalBackend: defaultTerminalBackend(config),
   };
-  const perWorkspace = config.workspaceSettings?.[workspacePath] || {};
-  // Per-workspace settings override global — only for defined keys
-  return { ...globalDefaults, ...perWorkspace };
+  const perWorkspace = omitRetiredSettings(
+    config.repoSettings?.[repoPath] ?? {}
+  );
+  // Per-repo settings override global — only for defined keys
+  return {
+    ...globalDefaults,
+    ...perWorkspace,
+  };
 }
 
 export interface ResolvedSessionSettings {
-  agent: AgentType;
-  yolo: boolean;
-  continue: boolean;
-  useTmux: boolean;
-  claudeArgs: string[];
+  terminalBackend: TerminalBackend;
+  /** #614 slice 4: effective per-session scrollback cap, undefined = use pty-handler default. */
+  scrollbackBytes?: number;
+}
+
+const SESSION_DURABILITY_LOG = createLogger('session-durability-config');
+
+/**
+ * Resolve the effective per-session scrollback cap for a (config, workspace,
+ * repo) tuple. Precedence (most specific first):
+ *   1. repo-specific `WorkspaceSettings.sessionDurability.scrollbackBytes`
+ *   2. workspace-level `WorkspaceSettings.sessionDurability.scrollbackBytes`
+ *   3. global `Config.sessionDurability.scrollbackBytes`
+ *   4. legacy `Config.maxScrollbackPerSessionBytes`
+ *   5. undefined — pty-handler applies its own 256 KB default.
+ * Non-positive values are rejected with a warning and fall through.
+ */
+export function resolveSessionDurabilityScrollbackBytes(
+  config: Config,
+  repoPath: string,
+  workspaceId?: string
+): number | undefined {
+  const repoOverride =
+    config.repoSettings?.[repoPath]?.sessionDurability?.scrollbackBytes;
+  const wsOverride = workspaceId
+    ? config.workspaces?.find((w) => w.id === workspaceId)?.settings
+        ?.sessionDurability?.scrollbackBytes
+    : undefined;
+  const globalOverride = config.sessionDurability?.scrollbackBytes;
+  const legacyTopLevel = config.maxScrollbackPerSessionBytes;
+
+  for (const [layer, value] of [
+    ['repo', repoOverride],
+    ['workspace', wsOverride],
+    ['global.sessionDurability', globalOverride],
+    ['legacy.maxScrollbackPerSessionBytes', legacyTopLevel],
+  ] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      SESSION_DURABILITY_LOG.warn(
+        'ignoring non-positive scrollbackBytes at layer %s (got %s); falling through',
+        layer,
+        String(value)
+      );
+      continue;
+    }
+    return value;
+  }
+  return undefined;
 }
 
 export interface SessionSettingsOverrides {
-  agent?: AgentType | undefined;
-  yolo?: boolean | undefined;
-  continue?: boolean | undefined;
-  useTmux?: boolean | undefined;
-  claudeArgs?: string[] | undefined;
+  terminalBackend?: TerminalBackend | undefined;
+}
+
+export function normalizeTerminalBackend(
+  value: unknown
+): TerminalBackend | undefined {
+  return value === 'relay-pty' ? value : undefined;
+}
+
+export function defaultTerminalBackend(config: Config): TerminalBackend {
+  return (
+    normalizeTerminalBackend(process.env.RELAY_IDE_TERMINAL_BACKEND) ??
+    normalizeTerminalBackend(config.terminalBackend) ??
+    'relay-pty'
+  );
 }
 
 export function resolveSessionSettings(
   config: Config,
   repoPath: string,
   overrides: SessionSettingsOverrides,
+  workspaceId?: string
 ): ResolvedSessionSettings {
-  const ws = getWorkspaceSettings(config, repoPath);
+  const globalDefaults: Partial<WorkspaceSettings> = {
+    defaultFramework: config.defaultFramework,
+    terminalBackend: defaultTerminalBackend(config),
+  };
+
+  let wsDefaults: Partial<WorkspaceSettings> = {};
+  if (workspaceId) {
+    const workspace = config.workspaces?.find((w) => w.id === workspaceId);
+    if (workspace?.settings) wsDefaults = workspace.settings;
+  }
+
+  const repoSpecific = config.repoSettings?.[repoPath] ?? {};
+
+  // Merge: repo overrides workspace overrides global
+  const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
+  const terminalBackend =
+    normalizeTerminalBackend(overrides.terminalBackend) ??
+    normalizeTerminalBackend(merged.terminalBackend) ??
+    'relay-pty';
+
+  const scrollbackBytes = resolveSessionDurabilityScrollbackBytes(
+    config,
+    repoPath,
+    workspaceId
+  );
+
   return {
-    agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
-    yolo: overrides.yolo ?? ws.defaultYolo ?? false,
-    continue: overrides.continue ?? ws.defaultContinue ?? true,
-    useTmux: overrides.useTmux ?? ws.launchInTmux ?? false,
-    claudeArgs: overrides.claudeArgs ?? ws.claudeArgs ?? [],
+    terminalBackend,
+    ...(scrollbackBytes !== undefined ? { scrollbackBytes } : {}),
   };
 }
 
-export function deleteWorkspaceSettingKeys(
+export function deleteRepoSettingKeys(
   configPath: string,
   config: Config,
-  workspacePath: string,
-  keys: string[],
+  repoPath: string,
+  keys: string[]
 ): void {
-  if (!config.workspaceSettings?.[workspacePath]) return;
+  if (!config.repoSettings?.[repoPath]) return;
   for (const key of keys) {
-    delete (config.workspaceSettings[workspacePath] as Record<string, unknown>)[key];
+    delete (config.repoSettings[repoPath] as Record<string, unknown>)[key];
   }
-  // Clean up empty workspace entries
-  if (Object.keys(config.workspaceSettings[workspacePath]!).length === 0) {
-    delete config.workspaceSettings[workspacePath];
+  // Clean up empty repo setting entries
+  if (Object.keys(config.repoSettings[repoPath]!).length === 0) {
+    delete config.repoSettings[repoPath];
   }
   saveConfig(configPath, config);
 }
 
-export function setWorkspaceSettings(
+export function setRepoSettings(
   configPath: string,
   config: Config,
-  workspacePath: string,
-  settings: Partial<WorkspaceSettings>,
+  repoPath: string,
+  settings: Partial<WorkspaceSettings>
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  config.workspaceSettings[workspacePath] = {
-    ...config.workspaceSettings[workspacePath],
+  if (!config.repoSettings) config.repoSettings = {};
+  config.repoSettings[repoPath] = {
+    ...config.repoSettings[repoPath],
     ...settings,
   };
   saveConfig(configPath, config);

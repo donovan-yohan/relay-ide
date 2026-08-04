@@ -1,0 +1,277 @@
+/* Channel composer (#1166). Reuses Composer.css rules (textarea, bar, hint,
+   attach) at the same type/spacing scale — no slash palette, no queue chips, no
+   context popover (turn/session concepts that don't exist on ChannelMessage). */
+
+.ch-composer {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.ch-composer__banner {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--status-error);
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+/* Positioning context for the floating @mention palette (absolute, anchored to
+   the top of the textarea via `bottom: calc(100% + 8px)`). */
+.ch-composer__mention-anchor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.ch-composer__ta {
+  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 10px 12px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  overflow-y: auto;
+}
+
+.ch-composer__ta::placeholder {
+  color: var(--text-muted);
+}
+
+.ch-composer__ta:focus {
+  border-bottom-color: var(--accent);
+}
+
+/* pending POST round-trip: dim the affordance subtly, but never block typing */
+.ch-composer__ta[data-pending='true'] {
+  opacity: 0.85;
+}
+
+.ch-composer__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 0;
+}
+
+.ch-composer__attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 320px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__attachment--uploading {
+  border-color: var(--status-warning);
+}
+
+.ch-composer__attachment--failed {
+  border-color: color-mix(in srgb, var(--status-error) 50%, transparent);
+}
+
+.ch-composer__attachment-thumb {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.ch-composer__attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-composer__attachment-status {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ch-composer__attachment--uploading .ch-composer__attachment-status {
+  color: var(--status-warning);
+}
+
+.ch-composer__attachment--failed .ch-composer__attachment-status {
+  color: var(--status-error);
+}
+
+.ch-composer__attachment-retry,
+.ch-composer__attachment-remove {
+  flex-shrink: 0;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-composer__attachment-retry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-composer__attachment-remove:hover {
+  border-color: var(--status-error);
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
+.ch-composer__attachment-error {
+  padding: 4px 10px 0;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__attach {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 2px 6px;
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* mid-turn steering cluster (#1308 slice 4). Outline-only, zero radius, mono,
+   lowercase — DESIGN.md buttons. Ghost for the queueing default, danger tint for
+   the member that cancels a live turn, so the destructive one is legible at rest
+   without a confirm step. */
+.ch-composer__steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ch-composer__steer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-composer__steer-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-composer__steer-btn--interrupt {
+  border-color: color-mix(in srgb, var(--status-error) 50%, transparent);
+  color: var(--status-error);
+}
+
+.ch-composer__steer-btn--interrupt:hover {
+  border-color: var(--status-error);
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
+.ch-composer__hint kbd {
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  font-size: 0.65rem;
+  opacity: 0.7;
+  margin-right: 4px;
+}
+
+/* archived state — composer replaced by a single-row restore bar */
+.ch-composer__archived-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.ch-composer__restore {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-composer__restore:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-composer__restore:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 767px) {
+  .ch-composer__ta {
+    padding: 6px 4px;
+  }
+
+  .ch-composer__bar {
+    gap: 4px;
+    padding: 3px 4px;
+  }
+
+  /* Touch has no cmd+enter, so the two explicit steering controls carry the
+     whole feature there and the keyboard hint is dropped rather than wrapped. */
+  .ch-composer__steer ~ .ch-composer__hint {
+    display: none;
+  }
+
+  .ch-composer__attachments {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .ch-composer__attachment {
+    max-width: 100%;
+  }
+}

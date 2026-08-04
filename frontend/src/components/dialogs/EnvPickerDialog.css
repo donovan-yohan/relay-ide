@@ -1,0 +1,141 @@
+/* EnvPickerDialog (#630) — overlay wrapper around <EnvironmentPicker>.
+   Follows the TUI aesthetic from DESIGN.md: lowercase labels, zero
+   border-radius, outline-only chrome, monospace stack inherited from the
+   palette/picker. */
+
+.env-picker-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.env-picker-dialog {
+  width: min(640px, 95vw);
+  max-height: 80vh;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.env-picker-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.env-picker-dialog__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.env-picker-dialog__close {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.env-picker-dialog__close:hover,
+.env-picker-dialog__close:focus-visible {
+  color: var(--text);
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.env-picker-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  overflow: hidden;
+}
+
+.env-picker-dialog__block-reason {
+  border: 1px solid var(--warning, #c97f00);
+  background: transparent;
+  color: var(--warning, #c97f00);
+  padding: 6px 10px;
+  font-size: 12px;
+  text-transform: lowercase;
+}
+
+.env-picker-dialog__launching {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  text-transform: lowercase;
+}
+
+/* #863: launch-target chooser. Outline-only buttons per DESIGN.md
+   (transparent at rest, 1px border, 0 radius, lowercase). `terminal` is the
+   always-available default; agent providers selectable when available,
+   disabled with a visible reason otherwise. */
+.env-picker-dialog__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 2px;
+  border-top: 1px solid var(--border);
+}
+
+.env-picker-dialog__target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.env-picker-dialog__target:hover:not(:disabled),
+.env-picker-dialog__target:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: none;
+}
+
+/* Persistent "chosen target" mark — accent border, matches the picker's
+   selected-row accent so the active launch target reads at a glance. */
+.env-picker-dialog__target--selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Disabled provider (degraded/unavailable/unknown): DESIGN.md disabled token
+   (opacity 0.4, not-allowed). The reason text stays readable so the user can
+   see WHY without hover. */
+.env-picker-dialog__target:disabled,
+.env-picker-dialog__target--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.env-picker-dialog__target-reason {
+  color: var(--text-muted);
+  font-size: 11px;
+}

@@ -3,6 +3,9 @@ import type { Request, Response } from 'express';
 
 import { loadConfig, saveConfig } from './config.js';
 import type { Config } from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('github-app');
 
 // Deps type
 
@@ -24,7 +27,7 @@ interface DeviceFlowState {
   pollInFlight: boolean;
 }
 
-let deviceFlow: DeviceFlowState = {
+const deviceFlow: DeviceFlowState = {
   generation: 0,
   deviceCode: '',
   interval: 5,
@@ -85,10 +88,13 @@ export function createGitHubAppRouter(deps: GitHubAppDeps): Router {
       const codeRes = await fetchFn('https://github.com/login/device/code', {
         method: 'POST',
         headers: {
-          'Accept': 'application/json',
+          Accept: 'application/json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ client_id: clientId, scope: 'repo admin:repo_hook' }),
+        body: JSON.stringify({
+          client_id: clientId,
+          scope: 'repo admin:repo_hook',
+        }),
         signal: controller.signal,
       });
 
@@ -97,7 +103,7 @@ export function createGitHubAppRouter(deps: GitHubAppDeps): Router {
         return;
       }
 
-      deviceCodeData = await codeRes.json() as typeof deviceCodeData;
+      deviceCodeData = (await codeRes.json()) as typeof deviceCodeData;
     } catch {
       res.status(500).json({ error: 'Failed to initiate device flow' });
       return;
@@ -111,8 +117,9 @@ export function createGitHubAppRouter(deps: GitHubAppDeps): Router {
     deviceFlow.flowStatus = 'polling';
 
     deviceFlow.timerId = setInterval(
-      () => void poll(generation, configPath, clientId, fetchFn, deps.onConnected),
-      deviceFlow.interval * 1000,
+      () =>
+        void poll(generation, configPath, clientId, fetchFn, deps.onConnected),
+      deviceFlow.interval * 1000
     );
 
     res.json({
@@ -131,7 +138,9 @@ export function createGitHubAppRouter(deps: GitHubAppDeps): Router {
     res.json({
       connected,
       username,
-      ...(deviceFlow.flowStatus ? { deviceFlowStatus: deviceFlow.flowStatus } : {}),
+      ...(deviceFlow.flowStatus
+        ? { deviceFlowStatus: deviceFlow.flowStatus }
+        : {}),
     });
   });
 
@@ -160,7 +169,7 @@ async function poll(
   configPath: string,
   clientId: string,
   fetchFn: typeof globalThis.fetch,
-  onConnected?: () => void,
+  onConnected?: () => void
 ): Promise<void> {
   // Generation check — abort if a newer flow has started
   if (deviceFlow.generation !== generation) return;
@@ -168,105 +177,106 @@ async function poll(
   if (deviceFlow.pollInFlight) return;
   deviceFlow.pollInFlight = true;
   try {
-
-  let data: Record<string, string>;
-  const pollController = new AbortController();
-  const pollTimeoutId = setTimeout(() => pollController.abort(), 10_000);
-  try {
-    const res = await fetchFn('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: clientId,
-        device_code: deviceFlow.deviceCode,
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      }),
-      signal: pollController.signal,
-    });
-    data = await res.json() as Record<string, string>;
-  } catch (err) {
-    console.warn('Device flow poll network error:', err);
-    return;
-  } finally {
-    clearTimeout(pollTimeoutId);
-  }
-
-  // Re-check generation after await
-  if (deviceFlow.generation !== generation) return;
-
-  if (data['error'] === 'authorization_pending') {
-    // No-op — keep polling
-    return;
-  }
-
-  if (data['error'] === 'slow_down') {
-    // Re-check generation before restarting timer
-    if (deviceFlow.generation !== generation) return;
-    // Clear timer and restart with increased interval (do NOT increment generation)
-    stopPollTimer();
-    deviceFlow.interval += 5;
-    deviceFlow.timerId = setInterval(
-      () => void poll(generation, configPath, clientId, fetchFn, onConnected),
-      deviceFlow.interval * 1000,
-    );
-    return;
-  }
-
-  if (data['error'] === 'expired_token') {
-    stopPollTimer();
-    deviceFlow.flowStatus = 'expired';
-    return;
-  }
-
-  if (data['error'] === 'access_denied') {
-    stopPollTimer();
-    deviceFlow.flowStatus = 'denied';
-    return;
-  }
-
-  if (data['access_token']) {
-    const accessToken = data['access_token'];
-
-    // Fetch username via GraphQL (best-effort)
-    let username: string | undefined;
+    let data: Record<string, string>;
+    const pollController = new AbortController();
+    const pollTimeoutId = setTimeout(() => pollController.abort(), 10_000);
     try {
-      const gqlRes = await fetchFn('https://api.github.com/graphql', {
+      const res = await fetchFn('https://github.com/login/oauth/access_token', {
         method: 'POST',
         headers: {
-          'Authorization': `bearer ${accessToken}`,
+          Accept: 'application/json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query: '{ viewer { login } }' }),
+        body: JSON.stringify({
+          client_id: clientId,
+          device_code: deviceFlow.deviceCode,
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        }),
+        signal: pollController.signal,
       });
-
-      if (gqlRes.ok) {
-        const gqlData = await gqlRes.json() as { data?: { viewer?: { login?: string } } };
-        username = gqlData.data?.viewer?.login ?? undefined;
-      }
-    } catch {
-      // Best-effort — username stays undefined
+      data = (await res.json()) as Record<string, string>;
+    } catch (err) {
+      logger.warn('Device flow poll network error:', err);
+      return;
+    } finally {
+      clearTimeout(pollTimeoutId);
     }
 
-    // Save token to config first, then username (best-effort)
-    const config = loadConfig(configPath);
-    if (!config.github) config.github = {};
-    config.github.accessToken = accessToken;
-    if (username) config.github.username = username;
-    saveConfig(configPath, config);
+    // Re-check generation after await
+    if (deviceFlow.generation !== generation) return;
 
-    // Clear timer and mark flow complete
-    stopPollTimer();
-    deviceFlow.flowStatus = null;
+    if (data['error'] === 'authorization_pending') {
+      // No-op — keep polling
+      return;
+    }
 
-    onConnected?.();
-    return;
-  }
+    if (data['error'] === 'slow_down') {
+      // Re-check generation before restarting timer
+      if (deviceFlow.generation !== generation) return;
+      // Clear timer and restart with increased interval (do NOT increment generation)
+      stopPollTimer();
+      deviceFlow.interval += 5;
+      deviceFlow.timerId = setInterval(
+        () => void poll(generation, configPath, clientId, fetchFn, onConnected),
+        deviceFlow.interval * 1000
+      );
+      return;
+    }
+
+    if (data['error'] === 'expired_token') {
+      stopPollTimer();
+      deviceFlow.flowStatus = 'expired';
+      return;
+    }
+
+    if (data['error'] === 'access_denied') {
+      stopPollTimer();
+      deviceFlow.flowStatus = 'denied';
+      return;
+    }
+
+    if (data['access_token']) {
+      const accessToken = data['access_token'];
+
+      // Fetch username via GraphQL (best-effort)
+      let username: string | undefined;
+      try {
+        const gqlRes = await fetchFn('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: {
+            Authorization: `bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query: '{ viewer { login } }' }),
+        });
+
+        if (gqlRes.ok) {
+          const gqlData = (await gqlRes.json()) as {
+            data?: { viewer?: { login?: string } };
+          };
+          username = gqlData.data?.viewer?.login ?? undefined;
+        }
+      } catch {
+        // Best-effort — username stays undefined
+      }
+
+      // Save token to config first, then username (best-effort)
+      const config = loadConfig(configPath);
+      if (!config.github) config.github = {};
+      config.github.accessToken = accessToken;
+      if (username) config.github.username = username;
+      saveConfig(configPath, config);
+
+      // Clear timer and mark flow complete
+      stopPollTimer();
+      deviceFlow.flowStatus = null;
+
+      onConnected?.();
+      return;
+    }
 
     // Unknown response
-    console.warn('Unknown device flow poll response', data);
+    logger.warn('Unknown device flow poll response', data);
   } finally {
     deviceFlow.pollInFlight = false;
   }

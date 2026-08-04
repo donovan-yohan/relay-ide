@@ -1,185 +1,258 @@
 # Architecture
 
-This document describes the high-level architecture of claude-remote-cli.
-If you want to familiarize yourself with the codebase, you are in the right place.
+Relay is a channel-first collaboration hub over local and paired execution
+nodes. The hub owns the browser application, durable conversations, profile
+identity, routing, policy, and the stable CLI gateway. Nodes own local
+processes, terminal execution, files, repositories, and worktrees.
 
-## Bird's Eye View
+## Product model
 
-claude-remote-cli is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a Claude Code CLI process running on the host machine. The server manages PTY processes, relays I/O over WebSocket, and watches for git worktree changes.
+| Concept       | Meaning                                                      |
+| ------------- | ------------------------------------------------------------ |
+| Channel       | Durable conversation and ordered message history             |
+| DM            | Deterministic channel targeting one agent profile            |
+| Agent profile | Durable participant actor plus provider launch configuration |
+| Runtime       | Private provider execution handle owned by a channel binding |
+| Session       | Terminal/process execution handle, not a conversation        |
+| Thread        | Replies rooted in a message inside the same channel          |
+| Workspace     | Saved grouping and routing configuration                     |
+| Node          | Local or paired machine that owns execution and paths        |
 
-Input: browser keystrokes, session management commands, clipboard images.
-Output: terminal rendering via xterm.js, real-time session state updates.
+The conversation identity never depends on a provider runtime id. A runtime may
+end or be replaced while the channel, profile actor, messages, and threads stay
+stable.
 
-The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`, and a Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
+## System shape
 
-## Code Map
-
-### `server/`
-
-Twenty-seven TypeScript modules compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
-
-| Module | Role |
-|--------|------|
-| `index.ts` | Composition root: Express app, REST routes, auth middleware, static serving |
-| `workspaces.ts` | Workspace CRUD (replaces roots), Express Router: dashboard, settings, CI status, branch switch, path autocomplete |
-| `sessions.ts` | Session registry: routes `create()` to pty-handler, lifecycle ops, idle sweep |
-| `pty-handler.ts` | PTY session creation via node-pty, scrollback buffering (256KB), tmux wrapping, continue-retry |
-| `git.ts` | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch; exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
-| `ws.ts` | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel |
-| `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input; unit-tested via JSON fixtures |
-| `utils.ts` | Shared server utilities |
-| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh) |
-| `auth.ts` | PIN hashing (scrypt), rate limiting (5 fails = 15-min lockout), cookie tokens |
-| `config.ts` | Config loading/saving with defaults, per-workspace settings, worktree metadata |
-| `clipboard.ts` | System clipboard detection and image-set operations (osascript/xclip) |
-| `service.ts` | Background service install/uninstall/status (launchd on macOS, systemd on Linux) |
-| `push.ts` | Web Push notification management (VAPID keys, subscription registry, SDK event enrichment) |
-| `hooks.ts` | Claude Code hook HTTP endpoints: state detection (Stop, Notification, UserPromptSubmit), activity tracking (PreToolUse, PostToolUse), session cleanup (SessionEnd), and branch rename. Localhost-only with per-session token auth. |
-| `types.ts` | Shared TypeScript interfaces (Session, Workspace, Config, PR, CI, Activity types) |
-| `analytics.ts` | Local analytics: SQLite-backed event tracking, `trackEvent()`, batch ingest endpoint, DB size/clear endpoints |
-| `review-poller.ts` | PR review automation: polls GitHub notifications for review requests, creates worktrees, optionally starts review sessions |
-| `output-parsers/` | Vendor-extensible terminal output parsing for semantic agent state detection (AgentState), keyed by AgentType. Contains `index.ts` (registry + dispatch), `claude-parser.ts`, `codex-parser.ts` |
-| `github-app.ts` | GitHub OAuth App flow: authorization URL generation (with CSRF state), token exchange callback, connection status, disconnect |
-| `github-graphql.ts` | GitHub GraphQL client: PR search query, response mapping (PRs → PullRequest[]), fetchPrsGraphQL() |
-| `webhooks.ts` | GitHub webhook receiver: HMAC signature verification, event routing, broadcast to frontend |
-| `webhook-manager.ts` | GitHub webhook CRUD, smee client lifecycle, health state, auto-provision backfill, smart polling fallback (30s interval, batched broadcasts for repos without webhooks) |
-| `branch-linker.ts` | Maps ticket IDs (Jira-style and GH-NNN) extracted from branch names to workspace repos; 60s cache; Express Router at `/branch-linker/links`; exports `invalidateBranchLinkerCache()` |
-| `integration-github.ts` | GitHub Issues integration: fetches open issues assigned to `@me` across all workspaces via `gh` CLI; per-repo 60s cache; Express Router at `/integrations/github/issues` |
-| `integration-jira.ts` | Jira integration via `acli`: fetches open issues assigned to current user, fetches project statuses; 60s cache; Express Router at `/integrations/jira/issues` and `/integrations/jira/statuses` |
-| `org-dashboard.ts` | Org-wide PR dashboard: aggregates open PRs involving the current user across all workspaces via `gh` search API or GraphQL fallback; triggers ticket transitions on PR state changes; 60s cache |
-| `ticket-transitions.ts` | Automated ticket state machine: transitions GitHub Issues (labels) and Jira tickets (acli) through in-progress → code-review → ready-for-qa based on session creation and PR merge events |
-
-**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` consumes `sessions`, `git`, `config`, and `push` via injected dependencies (not direct imports); all other modules are self-contained. **Exception:** `analytics.ts` and `push.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently twenty-seven server modules.
-
-### `frontend/`
-
-Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compiled output.
-
-| Path | Role |
-|------|------|
-| `frontend/src/components/` | Svelte 5 components (Terminal, Sidebar, WorkspaceItem, PrTopBar, SessionTabBar, RepoDashboard, Spotlight, dialogs, etc.) |
-| `frontend/src/lib/state/` | Reactive state modules (`.svelte.ts` files) exporting state + mutations; includes pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation) |
-| `frontend/src/lib/api.ts` | REST API client functions |
-| `frontend/src/lib/ws.ts` | WebSocket connection management (PTY relay + event channel) |
-| `frontend/src/lib/types.ts` | Frontend TypeScript interfaces |
-| `frontend/src/lib/actions.ts` | Shared Svelte actions (scroll-on-hover, longpress-click) |
-| `frontend/src/lib/notifications.ts` | Browser Notification API wrapper, service worker registration, Web Push subscription |
-| `frontend/src/lib/utils.ts` | Shared utilities (path display, relative time formatting, device detection) |
-| `frontend/src/lib/pr-state.ts` | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments |
-| `frontend/src/lib/analytics.ts` | Frontend analytics: batch event collection, `data-track` attribute integration |
-
-**Architecture Invariant:** The frontend does NOT vendor any libraries. xterm.js, xterm-addon-fit, and `@tanstack/svelte-query` are npm dependencies. State lives in `.svelte.ts` modules, not in component files (PR data is an exception — managed via svelte-query cache).
-
-### `bin/`
-
-`bin/claude-remote-cli.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run.
-
-**Architecture Invariant:** CLI flags are passed to the server via environment variables (`CLAUDE_REMOTE_CONFIG`, `CLAUDE_REMOTE_PORT`, `CLAUDE_REMOTE_HOST`), not direct function calls.
-
-### `test/`
-
-Unit tests using `node:test` and `node:assert`. TypeScript source compiled via `tsc -p tsconfig.test.json`.
-
-**Architecture Invariant:** No external test framework. Tests MUST NOT require a running server instance.
-
-## Data Flow
-
-**PTY relay:**
-```
-Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--PTY I/O--> node-pty <--spawns--> agent CLI / shell
-                                              |
-                                         scrollback buffer (in-memory, per session)
+```text
+browser clients
+  ├─ channels, DMs, threads, profiles, roster, orchestration
+  ├─ terminal/file/diff/artifact/settings surfaces
+  └─ authenticated REST + WebSocket
+          │
+          ▼
+Relay hub
+  ├─ channel message/attachment stores
+  ├─ channel fan-out, mention binder, agent bridge, private runtimes
+  ├─ workspace topics, profiles, roster, WorkContexts
+  ├─ auth, policy, audit, integrations
+  ├─ stable CLI gateway
+  └─ local node + paired-node router
+          │
+          ▼
+execution nodes
+  ├─ relay-pty terminals and agent CLIs
+  ├─ filesystem and repository state
+  └─ capability manifest + reverse node link
 ```
 
-**Event channel:**
+## Channel path
+
+### Shared contract
+
+`shared/channel-chat-protocol.ts` defines message identity, sender identity,
+mentions, message parts, streaming/terminal status, snapshots, deltas,
+completion events, reducer state, history merge behavior, and bounds.
+
+`shared/agent-profile.ts` defines profile actor identity and built-in profile
+ids. Provider ids describe execution adapters; profile actor ids describe
+participants.
+
+### Persistence
+
+`server/channel-message-store.ts` owns `channel-chat.db`:
+
+- messages ordered by channel-local sequence;
+- source/client idempotency indexes;
+- thread roots and replies;
+- channel membership;
+- channel/profile binding and provider resume state.
+
+`server/channel-attachments.ts` owns sanitized image metadata and payloads.
+Runtime data lives under the Relay config directory.
+
+### HTTP and live events
+
+`server/channel-chat-router.ts` exposes authenticated, capability-checked
+channel operations:
+
+- list/get channels;
+- page channel history;
+- upload/read channel image attachments;
+- read a thread;
+- post a message or reply;
+- read the channel roster;
+- designate an orchestrator;
+- interrupt an agent;
+- answer an approval.
+
+`server/channel-hub.ts` owns live WebSocket fan-out on
+`/ws/channels/:channelId`. SQLite is the catch-up buffer. The hub coalesces
+deltas, bounds connect queues and snapshots, and forces sequence-based resync
+when a client falls behind.
+
+### Agent execution
+
+`server/channel-agent-binder.ts` resolves profile mentions, owns one binding per
+channel/profile pair, supplies bounded context, queues turns, and applies the
+agent-turn brake.
+
+`server/channel-agent-runtime.ts` owns private provider execution handles.
+These handles are not public sessions, terminal tabs, or conversation
+destinations.
+
+`server/channel-agent-bridge.ts` reduces provider patches into channel-native
+text, detail cards, images, and terminal states. It is the only presentation
+bridge between provider execution events and channel messages.
+
+Provider adapters implement `ProtocolAdapterV2` and emit `AgentPatchV2`.
+Provider-specific payloads remain inside the adapter/extension boundary.
+
+## Frontend path
+
+The live conversation tree is:
+
+```text
+ChatHome
+  └─ ChannelView
+       ├─ ChannelTimeline
+       │    └─ ChannelMessageRow
+       │         ├─ AssistantMarkdown
+       │         ├─ AgentDetailCard
+       │         └─ ChannelImagePart
+       ├─ ChannelComposer
+       └─ ChannelThreadPanel
 ```
-Browser (Svelte)   <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .worktrees/)
-                                                    <-- POST/DELETE /roots (manual broadcast)
+
+`useChannelChatSocket` combines REST history with channel WebSocket events,
+reduces them through the shared protocol reducer, reconnects from the last
+durable sequence, and exposes REST posting.
+
+Zustand stores own browser-local navigation, unread, and live agent-status
+state. TanStack Query owns server reads such as topics, profiles, rosters,
+nodes, and integrations.
+
+## Hub and node boundary
+
+The hub is also a local node through `server/local-node.ts`. Paired nodes:
+
+1. authenticate to the hub;
+2. publish a capability manifest and heartbeat;
+3. hold an outbound `/hub/node-link` WebSocket;
+4. receive hub-mediated, capability-checked operations.
+
+Nodes never address peer nodes directly. Cross-node work is hub-mediated and
+authorized per leg. Paths are node-scoped; the hub does not pretend that a
+remote checkout is a hub-local path.
+
+Public terminal sessions use `relay-pty`/libghostty-vt. xterm.js renders
+terminal bytes in the browser. Browser reconnect can reattach to a live Relay
+process, but a Relay server restart cold-resumes saved metadata and scrollback
+rather than supervising the child process across restart. Agents participate
+through channels and DMs; their private channel runtimes are protocol-adapter
+processes, not public terminal sessions.
+
+## Stable external agent contract
+
+External agent brains use the versioned CLI gateway:
+
+```text
+relay-ide v1 <resource> <action> --json
 ```
 
-PTY flow:
-1. User types in xterm.js terminal
-2. Keystrokes sent via WebSocket to server
-3. Server writes to PTY stdin
-4. PTY stdout/stderr relayed back over WebSocket
-5. xterm.js renders output in browser
-6. Resize events sent as JSON: `{type: 'resize', cols, rows}`
+The contract is declared in `shared/cli-gateway-contract.ts` and projected
+through the relay command manifest and action descriptors. Private browser
+routes, node-link envelopes, provider adapters, and raw database tables are not
+stable adapter APIs.
 
-## REST API
+The gateway covers node discovery, session/process actions, files, channels,
+WorkContexts, context packets, artifacts, handoffs, and bounded supervisor
+reads/actions as advertised by the installed command manifest.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/auth` | Authenticate with PIN, returns session cookie |
-| `GET` | `/sessions` | List active sessions |
-| `POST` | `/sessions` | Create session (agent or terminal, in workspace root or worktree) |
-| `PATCH` | `/sessions/:id` | Rename session |
-| `DELETE` | `/sessions/:id` | Terminate session |
-| `POST` | `/sessions/:id/image` | Upload clipboard image |
-| `GET` | `/branches` | List local and remote branches |
-| `GET` | `/worktrees` | List inactive Claude Code worktrees |
-| `DELETE` | `/worktrees` | Remove worktree, prune refs, delete branch |
-| `GET` | `/workspaces` | List configured workspace folders with git info |
-| `POST` | `/workspaces` | Add workspace folder (body: `{path}`) |
-| `DELETE` | `/workspaces` | Remove workspace folder |
-| `GET` | `/workspaces/dashboard` | Aggregated PRs + activity for a workspace (`?path=X`) |
-| `GET` | `/workspaces/settings` | Per-workspace settings (`?path=X`) |
-| `PATCH` | `/workspaces/settings` | Update per-workspace settings |
-| `GET` | `/workspaces/pr` | PR info for a branch (`?path=X&branch=Y`) |
-| `GET` | `/workspaces/ci-status` | CI check results (`?path=X&branch=Y`) |
-| `POST` | `/workspaces/branch` | Switch branch (`?path=X`, body: `{branch}`) |
-| `GET` | `/workspaces/browse` | Browse filesystem directories for tree UI (`?path=X&prefix=Y&showHidden=bool`) |
-| `POST` | `/workspaces/bulk` | Add multiple workspace paths at once (body: `{paths}`) |
-| `GET` | `/workspaces/autocomplete` | Path prefix autocomplete (`?prefix=X`) |
-| `POST` | `/workspaces/worktree` | Create worktree with mountain name (`?path=X`) |
-| `GET` | `/workspaces/current-branch` | Current checked-out branch (`?path=X`) |
-| `GET` | `/version` | Check for npm updates |
-| `POST` | `/update` | Self-update via npm |
-| `GET` | `/config/defaultAgent` | Get default coding agent |
-| `PATCH` | `/config/defaultAgent` | Set default coding agent (`claude` or `codex`) |
-| `POST` | `/hooks/stop` | Hook callback: set session state to idle (localhost-only, per-session token auth) |
-| `POST` | `/hooks/notification` | Hook callback: permission-prompt or waiting-for-input state (localhost-only, per-session token auth) |
-| `POST` | `/hooks/prompt-submit` | Hook callback: set processing state, trigger branch rename on first message (localhost-only, per-session token auth) |
-| `POST` | `/hooks/session-end` | Hook callback: session cleanup dedup (localhost-only, per-session token auth) |
-| `POST` | `/hooks/tool-use` | Hook callback: set currentActivity (tool name + detail) (localhost-only, per-session token auth) |
-| `POST` | `/hooks/tool-result` | Hook callback: clear currentActivity (localhost-only, per-session token auth) |
-| `POST` | `/webhooks/manage/setup` | Create GitHub webhook + start smee client for current workspace (`?path=X`) |
-| `DELETE` | `/webhooks/manage/setup` | Delete GitHub webhook and stop smee client (`?path=X`) |
-| `GET` | `/webhooks/manage/status` | Webhook health state (smee connected, last event timestamp) |
-| `POST` | `/webhooks/manage/reload` | Reload smee client from saved config |
-| `POST` | `/webhooks/manage/ping` | Send test ping to smee channel |
-| `POST` | `/webhooks/manage/repos` | Add a repo to the webhook-managed set (body: `{path}`) |
-| `POST` | `/webhooks/manage/repos/remove` | Remove a repo from the webhook-managed set (body: `{path}`) |
-| `POST` | `/webhooks/manage/backfill` | Auto-provision webhooks for all repos that don't have one |
+## Main code map
 
-## WebSocket Channels
+### Server
 
-- `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
-- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`).
+| Module                     | Responsibility                                              |
+| -------------------------- | ----------------------------------------------------------- |
+| `index.ts`                 | Composition root, auth, persistence boot, routers, upgrades |
+| `channel-message-store.ts` | Durable channel log, members, bindings                      |
+| `channel-attachments.ts`   | Sanitized native image storage                              |
+| `channel-chat-router.ts`   | Channel REST API and controls                               |
+| `channel-hub.ts`           | Live channel fan-out, catch-up, backpressure                |
+| `channel-agent-binder.ts`  | Mentions, profile bindings, context, queues                 |
+| `channel-agent-runtime.ts` | Private provider runtime lifecycle                          |
+| `channel-agent-bridge.ts`  | Provider patches to channel messages/cards                  |
+| `agent-profile-store.ts`   | Durable profile configuration                               |
+| `agent-profile-router.ts`  | Profile CRUD/default routes                                 |
+| `workspace-topics.ts`      | Channel/workspace metadata and routing defaults             |
+| `sessions.ts`              | Public terminal/process session registry                    |
+| `pty-handler.ts`           | `relay-pty` process and terminal lifecycle                  |
+| `hub-node-registry.ts`     | Paired node identity and heartbeat state                    |
+| `hub-node-router.ts`       | Hub-mediated node operations                                |
+| `node-link-client.ts`      | Node-side reverse link                                      |
 
-Both channels require authentication via `token` cookie verified during HTTP upgrade.
+### Shared
 
-## Cross-Cutting Concerns
+| Module                      | Responsibility                      |
+| --------------------------- | ----------------------------------- |
+| `channel-chat-protocol.ts`  | Channel messages/events/reducer     |
+| `agent-chat-protocol-v2.ts` | Provider adapter patch model        |
+| `agent-profile.ts`          | Durable agent profile identity      |
+| `workspace-topics.ts`       | Workspace/channel metadata contract |
+| `cli-gateway-contract.ts`   | Stable CLI JSON schema              |
+| `relay-node-protocol.ts`    | Internal hub/node protocol          |
+| `control-state.ts`          | Process/tab control state           |
 
-**Build:** TypeScript compiles via `tsc` to `dist/`. Frontend builds via Vite to `dist/frontend/`. ESM throughout (`"type": "module"`), all relative imports use `.js` extensions, Node builtins use `node:` prefix.
+### Frontend
 
-**Auth:** Every HTTP request (except `/auth` POST) and every WebSocket upgrade requires a valid session cookie. Rate limiting is per-IP.
+| Area                                    | Responsibility                         |
+| --------------------------------------- | -------------------------------------- |
+| `components/chat/Channel*`              | Conversation, thread, composer, images |
+| `components/chat/AssistantMarkdown.tsx` | Markdown and code rendering            |
+| `components/chat/AgentDetailCard.tsx`   | Rich collapsible agent output          |
+| `hooks/useChannelChatSocket.ts`         | Channel history/live state             |
+| `lib/stores/channel-activity.ts`        | Browser-local unread state             |
+| `lib/stores/channel-agent-status.ts`    | Live profile status                    |
+| `components/TopicSidebarShell.tsx`      | Channel and active-work navigation     |
+| `components/WorkspaceArea.tsx`          | Terminal/file/diff/artifact surfaces   |
 
-**Session lifecycle:** Sessions are in-memory during normal operation. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart.
+## Persistence and startup
 
----
+Persistence services initialize before routes accept work. Required-store
+failure stops startup rather than running without durable state. Channel store
+startup repairs abandoned streaming rows to an honest terminal state and
+cleans invalid bindings.
 
-## Architecture Decision Records
+Config and SQLite files live under:
 
-> Normative constraints are documented in `docs/adrs/`. Regenerate with `/adr:update`.
+- `~/.config/relay-ide/` for installed/global Relay;
+- `~/.config/relay-ide/dev/<slug>-<hash>/` for source development.
 
-| ADR | Topic |
-|-----|-------|
-| ADR-001 | Modular server architecture (eighteen modules, composition root, dependency flow) |
-| ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping) |
-| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting) |
-| ADR-005 | Built-in test runner (node:test, nine test files, no external framework) |
-| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars) |
-| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher) |
-| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24) |
+## Security boundaries
 
-> ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration. `hooks.ts` does not yet have a dedicated ADR.
+- Browser routes require authenticated cookies.
+- CLI actors use scoped credentials and command-specific capabilities.
+- Channel agent attribution is server-derived from its private runtime.
+- Image bytes are decoded, bounded, sanitized, and content-addressed.
+- Node routing is hub-mediated; a node credential cannot impersonate a peer.
+- Audit stores metadata, hashes, and decisions rather than raw prompts,
+  transcripts, secrets, or PTY input by default.
+
+See [`SECURITY_POLICY.md`](SECURITY_POLICY.md) for the full policy.
+
+## Architecture decisions
+
+- [ADR-015](adrs/ADR-015-core-primitives-domain-agnostic.md) — core primitives
+  remain domain-agnostic.
+- [ADR-016](adrs/ADR-016-node-to-node-isolation.md) — all inter-node work is
+  hub-mediated.
+- [ADR-017](adrs/ADR-017-brain-as-peer-cli-session-events.md) — retained
+  hub-level CLI boundary; its conversation ownership model is superseded by
+  ADR-020.
+- [ADR-018](adrs/ADR-018-command-mediated-handoff-supervisor.md) — handoff and
+  supervision are command-mediated.
+- [ADR-019](adrs/ADR-019-context-packet-storage-and-primitive.md) — context
+  packets live in hub-owned durable storage.
+- [ADR-020](adrs/ADR-020-channel-is-conversation.md) — current conversation and
+  agent-runtime ownership model.

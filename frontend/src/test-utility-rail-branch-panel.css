@@ -1,0 +1,20 @@
+.branch-panel-harness {
+  display: grid;
+  gap: 8px;
+  min-height: 100vh;
+  padding: 8px;
+  background: var(--bg, #000);
+  color: var(--text, #e0e0e0);
+  font-family: var(--font-mono, monospace);
+}
+
+.branch-panel-frame {
+  width: min(360px, calc(100vw - 16px));
+  height: 760px;
+  border: 1px solid var(--border, #333);
+}
+
+.branch-panel-harness output {
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 0.75rem);
+}

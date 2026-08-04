@@ -1,0 +1,791 @@
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  useCallback,
+} from 'react';
+import DialogShell, { type DialogShellHandle } from './DialogShell.js';
+import TuiButton from '../TuiButton.js';
+import TuiCheckbox from '../TuiCheckbox.js';
+import SettingRow from './SettingRow.js';
+import SettingsToc from './SettingsToc.js';
+import GitHubIntegration from './integrations/GitHubIntegration.js';
+import WebhookIntegration from './integrations/WebhookIntegration.js';
+import JiraIntegration from './integrations/JiraIntegration.js';
+import SettingsNodesSection from './SettingsNodesSection.js';
+import SettingsAgentProfilesSection from './SettingsAgentProfilesSection.js';
+import { useUiStore } from '../../lib/stores/ui.js';
+import {
+  setDefaultAgent,
+  setDefaultNotifications,
+  checkVersion,
+  triggerUpdate,
+  updateFailureText,
+  UPDATE_NO_CHANGE_TEXT,
+  fetchAnalyticsSize,
+  clearAnalytics,
+  fetchGitHubStatus,
+  fetchWebhookStatus,
+  fetchDefaultAgent,
+  fetchDefaultNotifications,
+  fetchUpdateChannel,
+  setUpdateChannel,
+  fetchRenamerTool,
+  setRenamerTool,
+  type RenamerTool,
+} from '../../lib/api.js';
+import { reloadWhenServerReturns } from '../../lib/server-restart.js';
+import { useSessionsStore } from '../../lib/stores/sessions.js';
+import { useConfigStore } from '../../lib/stores/config.js';
+import SettingsNotificationsSection, {
+  NOTIFICATIONS_SECTION_KEYWORDS,
+} from './SettingsNotificationsSection.js';
+import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
+import {
+  requestPermission,
+  getPermissionState,
+  syncPushSubscription,
+} from '../../lib/notifications.js';
+import './SettingsDialog.css';
+
+export interface SettingsDialogHandle {
+  open(scrollToId?: string): void;
+  close(): void;
+}
+
+interface ConfigState {
+  defaultAgent: string;
+  defaultNotifications: boolean;
+  renamerTool: RenamerTool;
+}
+
+const DEFAULT_CONFIG: ConfigState = {
+  defaultAgent: 'claude',
+  defaultNotifications: true,
+  renamerTool: 'claude',
+};
+
+const TOC_SECTIONS = [
+  { id: 'section-general', label: 'general' },
+  { id: 'section-notifications', label: 'notifications' },
+  {
+    id: 'section-agent-profiles',
+    label: 'agents',
+  },
+  {
+    id: 'section-integrations',
+    label: 'integrations',
+    children: [
+      { id: 'integration-github', label: 'GitHub' },
+      { id: 'integration-webhooks', label: 'Webhooks' },
+      { id: 'integration-jira', label: 'Jira' },
+    ],
+  },
+  { id: 'section-nodes', label: 'nodes' },
+  { id: 'section-advanced', label: 'advanced' },
+  { id: 'section-about', label: 'about' },
+];
+
+const SECTION_KEYWORDS: Record<string, string[]> = {
+  general: [
+    'default coding agent',
+    'notifications',
+    'rename',
+    'renamer',
+    'branch name',
+    'session name',
+  ],
+  notifications: NOTIFICATIONS_SECTION_KEYWORDS,
+  'agent-profiles': ['agents', 'profiles', 'claude', 'codex', 'opencode'],
+  integrations: [
+    'github',
+    'webhooks',
+    'jira',
+    'real-time',
+    'ci',
+    'pr',
+    'tickets',
+  ],
+  nodes: [
+    'node',
+    'nodes',
+    'pair device',
+    'add node',
+    'pending request',
+    'device code',
+    'rotate credential',
+    'revoke',
+    'offline',
+    'stale',
+  ],
+  advanced: [
+    'advanced mode',
+    'infrastructure',
+    'nodes',
+    'active work',
+    'developer tools',
+    'analytics',
+    'debug panel',
+    'workspace layout',
+    'experimental',
+    'tabs',
+  ],
+  about: ['version', 'update', 'channel', 'nightly', 'stable'],
+};
+
+async function loadConfig(): Promise<ConfigState> {
+  const [agent, notif, renamer] = await Promise.all([
+    fetchDefaultAgent().catch(() => DEFAULT_CONFIG.defaultAgent),
+    fetchDefaultNotifications().catch(
+      () => DEFAULT_CONFIG.defaultNotifications
+    ),
+    fetchRenamerTool().catch(() => ({
+      renamerTool: DEFAULT_CONFIG.renamerTool as RenamerTool,
+    })),
+  ]);
+  return {
+    defaultAgent: agent,
+    defaultNotifications: notif,
+    renamerTool: renamer.renamerTool,
+  };
+}
+
+function sectionClass(id: string, query: string): string {
+  if (!query.trim()) return 'settings-dialog-section';
+  const q = query.toLowerCase();
+  const key = id.replace('section-', '');
+  const matches =
+    key.includes(q) ||
+    (SECTION_KEYWORDS[key]?.some((t) => t.includes(q)) ?? false);
+  return ['settings-dialog-section', !matches ? 'dimmed' : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
+function useConfigHandlers(
+  config: ConfigState,
+  setConfig: React.Dispatch<React.SetStateAction<ConfigState>>,
+  setError: (e: string) => void,
+  notifPerm: NotificationPermission | 'unsupported',
+  setNotifPerm: (p: NotificationPermission | 'unsupported') => void
+) {
+  async function handleAgentChange(v: string) {
+    const prev = config.defaultAgent;
+    setConfig((c) => ({ ...c, defaultAgent: v }));
+    setError('');
+    try {
+      await setDefaultAgent(v);
+    } catch {
+      setConfig((c) => ({ ...c, defaultAgent: prev }));
+      setError('Failed to update default agent.');
+    }
+  }
+  async function handleNotifChange(v: boolean) {
+    const prev = config.defaultNotifications;
+    setConfig((c) => ({ ...c, defaultNotifications: v }));
+    setError('');
+    if (v && notifPerm !== 'granted') {
+      const perm = await requestPermission();
+      setNotifPerm(perm);
+      if (perm !== 'granted') {
+        setConfig((c) => ({ ...c, defaultNotifications: prev }));
+        setError(
+          perm === 'unsupported'
+            ? 'Notifications are not supported in this browser.'
+            : perm === 'default'
+              ? 'Notification permission is required.'
+              : 'Notifications blocked by browser.'
+        );
+        return;
+      }
+    }
+    try {
+      await setDefaultNotifications(v);
+      if (notifPerm === 'granted')
+        await syncPushSubscription(
+          useSessionsStore.getState().getNotificationSessionIds()
+        );
+    } catch {
+      setConfig((c) => ({ ...c, defaultNotifications: prev }));
+      setError('Failed to update notifications default.');
+    }
+  }
+  async function handleRenamerToolChange(v: RenamerTool) {
+    const prev = config.renamerTool;
+    setConfig((c) => ({ ...c, renamerTool: v }));
+    setError('');
+    try {
+      await setRenamerTool(v);
+    } catch {
+      setConfig((c) => ({ ...c, renamerTool: prev }));
+      setError('Failed to update renamer tool setting.');
+    }
+  }
+  return {
+    handleAgentChange,
+    handleNotifChange,
+    handleRenamerToolChange,
+  };
+}
+
+interface SettingsDialogProps {
+  onClose?: () => void;
+}
+
+const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
+  function SettingsDialog({ onClose }, ref) {
+    const shellRef = useRef<DialogShellHandle>(null);
+    const contentElRef = useRef<HTMLDivElement | null>(null);
+    // The post-update restart wait can run for up to 90s; closing the dialog
+    // must stop it rather than let it reload the page or set state later.
+    const restartWaitRef = useRef<AbortController | null>(null);
+    useEffect(() => () => restartWaitRef.current?.abort(), []);
+    const [contentEl, setContentEl] = useState<HTMLDivElement | undefined>(
+      undefined
+    );
+    const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
+    const [error, setError] = useState('');
+    const [versionInfo, setVersionInfo] = useState({
+      current: '',
+      latest: null as string | null,
+      available: false,
+      checked: false,
+      updating: false,
+      status: '',
+    });
+    const [analyticsSize, setAnalyticsSize] = useState<number | null>(null);
+    const [clearing, setClearing] = useState(false);
+    const [githubConnected, setGithubConnected] = useState(false);
+    const [webhookCount, setWebhookCount] = useState(0);
+    const [notifPerm, setNotifPerm] = useState<
+      NotificationPermission | 'unsupported'
+    >(getPermissionState());
+    const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
+    const advancedMode = useUiStore((s) => s.advancedMode);
+    const setAdvancedMode = useUiStore((s) => s.setAdvancedMode);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [tocOpen, setTocOpen] = useState(false);
+    // This dialog is rendered unconditionally into a native `<dialog>` and never
+    // unmounts, so "opened" is not a mount. Sections whose state is read from
+    // outside React (the browser's notification permission) take this instead.
+    const [openNonce, setOpenNonce] = useState(0);
+
+    const contentRefCallback = useCallback((el: HTMLDivElement | null) => {
+      contentElRef.current = el;
+      setContentEl(el ?? undefined);
+    }, []);
+
+    const configHandlers = useConfigHandlers(
+      config,
+      setConfig,
+      setError,
+      notifPerm,
+      setNotifPerm
+    );
+
+    async function loadAllData() {
+      const [cfg] = await Promise.all([
+        loadConfig(),
+        checkVersion()
+          .then((d) =>
+            setVersionInfo((v) => ({
+              ...v,
+              current: d.current,
+              latest: d.latest,
+              available: d.updateAvailable,
+              checked: true,
+            }))
+          )
+          .catch(() =>
+            setVersionInfo((v) => ({
+              ...v,
+              status: 'Failed to check for updates.',
+            }))
+          ),
+        fetchAnalyticsSize()
+          .then((d) => setAnalyticsSize(d.bytes))
+          .catch(() => undefined),
+        fetchGitHubStatus()
+          .then(async (s) => {
+            setGithubConnected(s.connected);
+            if (s.connected) {
+              const ws = await fetchWebhookStatus().catch(() => null);
+              if (ws?.configured) setWebhookCount(1);
+            }
+          })
+          .catch(() => undefined),
+      ]);
+      setConfig(cfg);
+    }
+
+    useImperativeHandle(ref, () => ({
+      open(scrollToId?: string) {
+        setError('');
+        setVersionInfo((v) => ({
+          ...v,
+          status: '',
+          checked: false,
+          updating: false,
+        }));
+        setDevtoolsEnabled(localStorage.getItem('devtools-enabled') === 'true');
+        setNotifPerm(getPermissionState());
+        setOpenNonce((n) => n + 1);
+        void loadAllData();
+        shellRef.current?.open();
+        if (scrollToId)
+          requestAnimationFrame(() =>
+            contentElRef.current
+              ?.querySelector(`#${scrollToId}`)
+              ?.scrollIntoView({ behavior: 'smooth' })
+          );
+      },
+      close() {
+        shellRef.current?.close();
+        void useSessionsStore.getState().refreshAll();
+      },
+    }));
+
+    async function handleClearAnalytics() {
+      if (!confirm('Clear all analytics data? This cannot be undone.')) return;
+      setClearing(true);
+      try {
+        await clearAnalytics();
+        setAnalyticsSize(0);
+      } catch {
+        setError('Failed to clear analytics.');
+      } finally {
+        setClearing(false);
+      }
+    }
+
+    async function handleUpdate() {
+      setVersionInfo((v) => ({ ...v, updating: true, status: '' }));
+      try {
+        const result = await triggerUpdate();
+        if (result.verified === false) {
+          setVersionInfo((v) => ({
+            ...v,
+            status: UPDATE_NO_CHANGE_TEXT,
+            updating: false,
+          }));
+          return;
+        }
+        const updated = result.version
+          ? `Updated to v${result.version}!`
+          : 'Updated!';
+        if (result.restarting) {
+          setVersionInfo((v) => ({
+            ...v,
+            status: `${updated} Restarting\u2026`,
+            available: false,
+          }));
+          // Same shared wait-then-reload path as the update toast.
+          const controller = new AbortController();
+          restartWaitRef.current = controller;
+          await reloadWhenServerReturns(
+            (timeoutText) => {
+              setVersionInfo((v) => ({
+                ...v,
+                status: timeoutText,
+                updating: false,
+              }));
+            },
+            { previousBootId: result.bootId ?? null, signal: controller.signal }
+          );
+        } else
+          setVersionInfo((v) => ({
+            ...v,
+            status: `${updated} Please restart the server manually.`,
+            available: false,
+          }));
+      } catch (err) {
+        setVersionInfo((v) => ({
+          ...v,
+          status: updateFailureText(err),
+          updating: false,
+        }));
+      }
+    }
+
+    const notifDescription =
+      notifPerm === 'denied'
+        ? 'Blocked by browser — check site settings'
+        : notifPerm === 'unsupported'
+          ? 'Not supported in this browser'
+          : 'Notify when sessions need attention';
+    const headerExtra = (
+      <div className="settings-dialog-header-extra">
+        <button
+          className="settings-dialog-hamburger-btn"
+          onClick={() => setTocOpen((v) => !v)}
+          aria-label="Navigation"
+        >
+          &#9776;
+        </button>
+        <input
+          className="settings-dialog-search-input"
+          type="text"
+          placeholder="Search..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.currentTarget.value)}
+          aria-label="Search settings"
+        />
+      </div>
+    );
+
+    return (
+      <DialogShell
+        ref={shellRef}
+        title="settings"
+        variant="fullscreen"
+        headerExtra={headerExtra}
+        onClose={onClose}
+      >
+        <div className="settings-dialog-content" ref={contentRefCallback}>
+          {error && <p className="error-msg">{error}</p>}
+          <SettingsToc
+            open={tocOpen}
+            onclose={() => setTocOpen(false)}
+            {...(contentEl ? { contentEl } : {})}
+            sections={TOC_SECTIONS}
+          />
+          <div className="settings-dialog-sections">
+            <GeneralSection
+              config={config}
+              notifDescription={notifDescription}
+              notifPerm={notifPerm}
+              searchQuery={searchQuery}
+              handlers={configHandlers}
+            />
+            <SettingsNotificationsSection
+              searchQuery={searchQuery}
+              openNonce={openNonce}
+            />
+            <SettingsAgentProfilesSection searchQuery={searchQuery} />
+            <IntegrationsSection
+              searchQuery={searchQuery}
+              githubConnected={githubConnected}
+              webhookCount={webhookCount}
+              onGitHubDisconnect={() => setGithubConnected(false)}
+            />
+            <SettingsNodesSection searchQuery={searchQuery} />
+            <AdvancedSection
+              searchQuery={searchQuery}
+              analyticsSize={analyticsSize}
+              clearing={clearing}
+              devtoolsEnabled={devtoolsEnabled}
+              onDevtoolsChange={(v) => {
+                setDevtoolsEnabled(v);
+                localStorage.setItem('devtools-enabled', v ? 'true' : 'false');
+                window.dispatchEvent(new Event('devtools-changed'));
+              }}
+              advancedModeEnabled={advancedMode}
+              onAdvancedModeChange={(v) => setAdvancedMode(v)}
+              onClearAnalytics={() => void handleClearAnalytics()}
+            />
+            <AboutSection
+              searchQuery={searchQuery}
+              versionInfo={versionInfo}
+              onUpdate={() => void handleUpdate()}
+            />
+          </div>
+        </div>
+      </DialogShell>
+    );
+  }
+);
+
+// ── Sub-sections ─────────────────────────────────────────────────────────────
+
+type ConfigHandlers = ReturnType<typeof useConfigHandlers>;
+
+function GeneralSection({
+  config,
+  notifDescription,
+  notifPerm,
+  searchQuery,
+  handlers,
+}: {
+  config: ConfigState;
+  notifDescription: string;
+  notifPerm: NotificationPermission | 'unsupported';
+  searchQuery: string;
+  handlers: ConfigHandlers;
+}) {
+  const notifDisabled =
+    (notifPerm === 'denied' || notifPerm === 'unsupported') &&
+    !config.defaultNotifications;
+  const frameworks = useConfigStore((state) => state.frameworks);
+  return (
+    <section
+      id="section-general"
+      className={sectionClass('section-general', searchQuery)}
+    >
+      <h3 className="settings-dialog-section-heading">general</h3>
+      <SettingRow
+        name="Default Coding Agent"
+        description="Seeds new topic composer sessions; per-topic overrides do not change this setting"
+      >
+        <select
+          className="settings-dialog-select"
+          value={config.defaultAgent}
+          onChange={(e) =>
+            void handlers.handleAgentChange(e.currentTarget.value)
+          }
+        >
+          {(frameworks.length > 0
+            ? frameworks
+            : [
+                { id: 'claude', displayName: 'Claude' },
+                { id: 'codex', displayName: 'Codex' },
+                { id: 'opencode', displayName: 'OpenCode' },
+              ]
+          ).map((framework) => (
+            <option
+              key={framework.id}
+              value={framework.id}
+              disabled={
+                'availability' in framework &&
+                !isFrameworkAvailable(framework as (typeof frameworks)[number])
+              }
+            >
+              {framework.displayName}
+              {'availability' in framework &&
+              !isFrameworkAvailable(framework as (typeof frameworks)[number])
+                ? ' (not installed)'
+                : ''}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        name="Session Renamer"
+        description="CLI tool used to suggest descriptive session and branch names"
+      >
+        <select
+          className="settings-dialog-select"
+          value={config.renamerTool}
+          onChange={(e) =>
+            void handlers.handleRenamerToolChange(
+              e.currentTarget.value as RenamerTool
+            )
+          }
+        >
+          <option value="claude">claude (default)</option>
+          <option value="codex">codex</option>
+          <option value="none">none (disable AI naming)</option>
+          <option value="custom-script">
+            custom-script (configured externally)
+          </option>
+        </select>
+      </SettingRow>
+      <SettingRow name="Notifications" description={notifDescription}>
+        <TuiCheckbox
+          checked={config.defaultNotifications}
+          onChange={(v) => void handlers.handleNotifChange(v)}
+          disabled={notifDisabled}
+        />
+      </SettingRow>
+    </section>
+  );
+}
+
+function IntegrationsSection({
+  searchQuery,
+  githubConnected,
+  webhookCount,
+  onGitHubDisconnect,
+}: {
+  searchQuery: string;
+  githubConnected: boolean;
+  webhookCount: number;
+  onGitHubDisconnect: () => void;
+}) {
+  return (
+    <section
+      id="section-integrations"
+      className={sectionClass('section-integrations', searchQuery)}
+    >
+      <h3 className="settings-dialog-section-heading">integrations</h3>
+      <div id="integration-github">
+        <GitHubIntegration
+          onDisconnect={onGitHubDisconnect}
+          webhookCount={webhookCount}
+        />
+      </div>
+      <div id="integration-webhooks">
+        <WebhookIntegration githubConnected={githubConnected} />
+      </div>
+      <div id="integration-jira">
+        <JiraIntegration />
+      </div>
+    </section>
+  );
+}
+
+function AdvancedSection({
+  searchQuery,
+  analyticsSize,
+  clearing,
+  devtoolsEnabled,
+  onDevtoolsChange,
+  advancedModeEnabled,
+  onAdvancedModeChange,
+  onClearAnalytics,
+}: {
+  searchQuery: string;
+  analyticsSize: number | null;
+  clearing: boolean;
+  devtoolsEnabled: boolean;
+  onDevtoolsChange: (v: boolean) => void;
+  advancedModeEnabled: boolean;
+  onAdvancedModeChange: (v: boolean) => void;
+  onClearAnalytics: () => void;
+}) {
+  return (
+    <section
+      id="section-advanced"
+      className={sectionClass('section-advanced', searchQuery)}
+    >
+      <h3 className="settings-dialog-section-heading">advanced</h3>
+      <SettingRow
+        name="Advanced mode"
+        description="Show infrastructure surfaces: nodes, analytics, active work detail"
+      >
+        <TuiCheckbox
+          checked={advancedModeEnabled}
+          onChange={(v) => onAdvancedModeChange(v)}
+        />
+      </SettingRow>
+      <SettingRow name="Developer Tools" description="Mobile debug panel">
+        <TuiCheckbox
+          checked={devtoolsEnabled}
+          onChange={(v) => onDevtoolsChange(v)}
+        />
+      </SettingRow>
+      <SettingRow name="Analytics" description="Local usage data">
+        <div className="settings-dialog-analytics-action">
+          {analyticsSize !== null && (
+            <span className="settings-dialog-analytics-size">
+              {(analyticsSize / 1024 / 1024).toFixed(1)} MB
+            </span>
+          )}
+          <TuiButton
+            variant="ghost"
+            size="sm"
+            onClick={onClearAnalytics}
+            disabled={clearing}
+          >
+            {clearing ? 'Clearing\u2026' : 'Clear'}
+          </TuiButton>
+        </div>
+      </SettingRow>
+    </section>
+  );
+}
+
+interface VersionInfo {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  checked: boolean;
+  updating: boolean;
+  status: string;
+}
+function AboutSection({
+  searchQuery,
+  versionInfo,
+  onUpdate,
+}: {
+  searchQuery: string;
+  versionInfo: VersionInfo;
+  onUpdate: () => void;
+}) {
+  const [updateChannelValue, setUpdateChannelValue] = useState<
+    'stable' | 'nightly'
+  >('stable');
+  const [savingChannel, setSavingChannel] = useState(false);
+
+  useEffect(() => {
+    fetchUpdateChannel().then(
+      (ch) => setUpdateChannelValue(ch),
+      () => setUpdateChannelValue('stable')
+    );
+  }, []);
+
+  const handleChannelChange = useCallback(
+    async (channel: 'stable' | 'nightly') => {
+      if (savingChannel || channel === updateChannelValue) return;
+      setSavingChannel(true);
+      try {
+        await setUpdateChannel(channel);
+        setUpdateChannelValue(channel);
+      } catch {
+        // ignore
+      } finally {
+        setSavingChannel(false);
+      }
+    },
+    [savingChannel, updateChannelValue]
+  );
+
+  return (
+    <section
+      id="section-about"
+      className={sectionClass('section-about', searchQuery)}
+    >
+      <h3 className="settings-dialog-section-heading">about</h3>
+      <SettingRow
+        name="Version"
+        description={versionInfo.current ? `v${versionInfo.current}` : ''}
+      >
+        {versionInfo.available ? (
+          <TuiButton
+            variant="primary"
+            size="sm"
+            onClick={onUpdate}
+            disabled={versionInfo.updating}
+          >
+            {versionInfo.updating
+              ? 'Updating\u2026'
+              : `Update to v${versionInfo.latest}`}
+          </TuiButton>
+        ) : versionInfo.checked ? (
+          <span className="settings-dialog-version-ok">Up to date</span>
+        ) : null}
+      </SettingRow>
+      <SettingRow
+        name="Update Channel"
+        description={
+          updateChannelValue === 'nightly'
+            ? 'Nightly builds'
+            : 'Stable releases'
+        }
+      >
+        <div className="settings-dialog-channel-selector">
+          <button
+            className={`settings-dialog-channel-btn${updateChannelValue === 'stable' ? ' active' : ''}`}
+            disabled={savingChannel}
+            onClick={() => handleChannelChange('stable')}
+          >
+            stable
+          </button>
+          <button
+            className={`settings-dialog-channel-btn${updateChannelValue === 'nightly' ? ' active' : ''}`}
+            disabled={savingChannel}
+            onClick={() => handleChannelChange('nightly')}
+          >
+            nightly
+          </button>
+        </div>
+      </SettingRow>
+      {versionInfo.status && (
+        <p className="settings-dialog-update-status">{versionInfo.status}</p>
+      )}
+    </section>
+  );
+}
+
+export default SettingsDialog;

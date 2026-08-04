@@ -1,0 +1,91 @@
+.tickets-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* -- Tab strip -- */
+.tab-strip {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  padding: 8px 12px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  letter-spacing: 0.06em;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* -- Panel header -- */
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.panel-count {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* -- State messages -- */
+.state-message {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.state-message--info a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.state-message--info a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .tab-btn {
+    padding: 4px 8px;
+  }
+}

@@ -1,22 +1,29 @@
-import { describe, it, afterEach } from 'node:test';
-import assert from 'node:assert';
+import { describe, it, afterEach, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as sessions from '../server/sessions.js';
-import { resolveTmuxSpawn, generateTmuxSessionName, TMUX_PREFIX } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
+import { LOCAL_COMPATIBILITY_SESSION_INTENT } from '../shared/session-envelope.js';
+import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-afterEach(() => {
-  // Kill any remaining sessions created during tests
-  for (const id of createdIds) {
+afterEach(async () => {
+  // Kill any remaining sessions created during tests. Some restore tests add
+  // sessions directly from disk, so cleanup must inspect the live registry too.
+  const ids = new Set([
+    ...createdIds,
+    ...sessions.list().map((session) => session.id),
+  ]);
+  for (const id of ids) {
     try {
-      const session = sessions.get(id);
-      if (session) {
+      if (sessions.get(id)) {
         sessions.kill(id);
       }
     } catch {
@@ -26,17 +33,54 @@ afterEach(() => {
   createdIds.length = 0;
 });
 
+describe('routed PTY control-session cleanup', () => {
+  it('releases a routed control session idempotently', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-cleanup',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSession('remote-cleanup', 'session-one')
+    ).toBe(true);
+    expect(
+      sessions.releaseRoutedPtyControlSession('remote-cleanup', 'session-one')
+    ).toBe(false);
+  });
+
+  it('releases every routed control session owned by a revoked node', () => {
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-one',
+      data: 'x',
+    });
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-revoked',
+      sessionId: 'session-two',
+      data: 'y',
+    });
+
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(2);
+    expect(
+      sessions.releaseRoutedPtyControlSessionsForNode('remote-revoked')
+    ).toBe(0);
+  });
+});
+
 describe('sessions', () => {
   it('list returns empty array initially', () => {
     const result = sessions.list();
-    assert.ok(Array.isArray(result));
-    assert.strictEqual(result.length, 0);
+    expect(result).toBeInstanceOf(Array);
+    expect(result.length).toBe(0);
   });
 
   it('create spawns PTY and adds session to registry', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
@@ -47,22 +91,241 @@ describe('sessions', () => {
 
     createdIds.push(result.id);
 
-    assert.ok(result.id, 'should have an id');
-    assert.strictEqual(result.repoName, 'test-repo');
-    assert.strictEqual(result.cwd, '/tmp');
-    assert.ok(typeof result.pid === 'number', 'should have a numeric pid');
-    assert.ok(result.createdAt, 'should have a createdAt timestamp');
-    assert.strictEqual('pty' in result, false, 'should not expose pty object');
+    expect(result.id).toBeTruthy();
+    expect(result.repoName).toBe('test-repo');
+    expect(result.cwd).toBe('/tmp');
+    expect(result.pid).toBeTypeOf('number');
+    expect(result.createdAt).toBeTruthy();
+    expect('pty' in result).toBe(false);
+    expect(result.sessionEnvelope).toMatchObject({
+      sessionId: result.id,
+      globalSessionId: `local:${result.id}`,
+      nodeId: 'local',
+      intent: { kind: LOCAL_COMPATIBILITY_SESSION_INTENT },
+      scope: {
+        kind: 'local-compatibility',
+        nodeId: 'local',
+        cwd: '/tmp',
+        repoPath: '/tmp',
+        worktreePath: null,
+      },
+      revocable: true,
+      peerIdentity: { kind: 'local-user', id: 'local-dev' },
+    });
+    expect(result.sessionEnvelope.expiresAt).toBeNull();
 
     const list = sessions.list();
-    assert.strictEqual(list.length, 1);
-    assert.strictEqual(list[0]?.id, result.id);
+    expect(list.length).toBe(1);
+    expect(list[0]?.id).toBe(result.id);
+    expect(list[0]?.sessionEnvelope).toMatchObject({
+      sessionId: result.id,
+      intent: { kind: LOCAL_COMPATIBILITY_SESSION_INTENT },
+      scope: { kind: 'local-compatibility', cwd: '/tmp' },
+    });
+  });
+
+  it('records optional best-effort session lineage without requiring the parent to exist', () => {
+    const child = sessions.create({
+      spawnedBySessionId: 'unknown-parent-session',
+      repoName: 'lineage-child',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(child.id);
+
+    expect(child.spawnedBySessionId).toBe('unknown-parent-session');
+    expect(sessions.get(child.id)?.spawnedBySessionId).toBe(
+      'unknown-parent-session'
+    );
+    expect(
+      sessions.list().find((session) => session.id === child.id)
+        ?.spawnedBySessionId
+    ).toBe('unknown-parent-session');
+
+    const topLevel = sessions.create({
+      repoName: 'lineage-top-level',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    createdIds.push(topLevel.id);
+    expect(topLevel).not.toHaveProperty('spawnedBySessionId');
+    expect(sessions.get(topLevel.id)).not.toHaveProperty('spawnedBySessionId');
+    expect(
+      sessions.list().find((session) => session.id === topLevel.id)
+    ).not.toHaveProperty('spawnedBySessionId');
+  });
+
+  it('does not synthesize repo instance identity without repoPath', () => {
+    const result = sessions.create({
+      repoName: 'shell-only',
+      repoPath: '',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/echo',
+      args: ['hello'],
+      cols: 80,
+      rows: 24,
+    });
+
+    createdIds.push(result.id);
+
+    expect(result.nodeId).toBe('local');
+    expect(result.globalSessionId).toBe(`local:${result.id}`);
+    expect(result.repoInstanceId).toBeUndefined();
+    expect(result.worktreeInstanceId).toBeUndefined();
+    expect(result).not.toHaveProperty('branchName');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed?.globalSessionId).toBe(`local:${result.id}`);
+    expect(listed?.repoInstanceId).toBeUndefined();
+    expect(listed?.worktreeInstanceId).toBeUndefined();
+    expect(listed).not.toHaveProperty('branchName');
+  });
+
+  it('list populates durability and emits a transition event on change', () => {
+    const transitions: Array<{
+      sessionId: string;
+      from: string | undefined;
+      to: string;
+    }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({
+        sessionId: event.sessionId,
+        from: event.from,
+        to: event.to,
+      });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-repo',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // First list() call must populate `durability` and emit the
+      // initial transition (undefined -> running-attached).
+      let summary = sessions.list().find((session) => session.id === result.id);
+      expect(summary?.durability).toBe('running-attached');
+      const initial = transitions.filter((t) => t.sessionId === result.id);
+      expect(initial).toHaveLength(1);
+      expect(initial[0]).toMatchObject({
+        from: undefined,
+        to: 'running-attached',
+      });
+
+      // No change between calls: emit must not refire.
+      sessions.list();
+      expect(transitions.filter((t) => t.sessionId === result.id)).toHaveLength(
+        1
+      );
+
+      // Flip the underlying session to `disconnected` and recompute.
+      const session = sessions.get(result.id);
+      expect(session).toBeTruthy();
+      session!.status = 'disconnected';
+      summary = sessions.list().find((entry) => entry.id === result.id);
+      expect(summary?.durability).toBe('running-detached');
+      const after = transitions.filter((t) => t.sessionId === result.id);
+      expect(after).toHaveLength(2);
+      expect(after[1]).toMatchObject({
+        from: 'running-attached',
+        to: 'running-detached',
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits durability transitions pushed from fireStateChange without list()', () => {
+    const transitions: Array<{ from: string | undefined; to: string }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({ from: event.from, to: event.to });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-push',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // Initial list() warms `_lastEmittedDurability` so subsequent state
+      // changes have a baseline to compare against.
+      sessions.list();
+      const baselineCount = transitions.length;
+
+      const session = sessions.get(result.id);
+      expect(session).toBeTruthy();
+      session!.activityState = 'permission-prompt';
+      sessions.fireStateChange(result.id, 'permission-prompt');
+
+      // No list() call between the state change and now — the event must
+      // have fired directly from fireStateChange.
+      expect(transitions.length).toBeGreaterThan(baselineCount);
+      expect(transitions[transitions.length - 1]).toMatchObject({
+        to: 'permission-needed',
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('surfaces stale-node when the hub reports the owning node is offline', () => {
+    const transitions: Array<{ to: string }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({ to: event.to });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-stale',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // Treat this session as belonging to a remote node so the resolver
+      // is consulted. Without a resolver, the field is null and the
+      // session resolves to `running-attached`.
+      const session = sessions.get(result.id);
+      session!.nodeId = 'remote-test' as typeof session.nodeId;
+
+      let reportedStatus: 'online' | 'offline' = 'online';
+      sessions.setSessionNodeStatusResolver(() => reportedStatus);
+      try {
+        sessions.list(); // emits running-attached
+        reportedStatus = 'offline';
+        sessions.refreshDurability([result.id]);
+        const last = transitions[transitions.length - 1];
+        expect(last?.to).toBe('stale-node');
+      } finally {
+        sessions.setSessionNodeStatusResolver(null);
+      }
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('get returns session by id', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
@@ -72,22 +335,22 @@ describe('sessions', () => {
     createdIds.push(result.id);
 
     const session = sessions.get(result.id);
-    assert.ok(session, 'should return the session');
-    assert.strictEqual(session.id, result.id);
-    assert.strictEqual(session.repoName, 'test-repo');
-    assert.strictEqual(session.mode, 'pty');
-    assert.ok((session as PtySession).pty, 'get should include the pty object');
+    expect(session).toBeTruthy();
+    expect(session!.id).toBe(result.id);
+    expect(session!.repoName).toBe('test-repo');
+    expect(session!.mode).toBe('pty');
+    expect((session as PtySession).pty).toBeTruthy();
   });
 
   it('get returns undefined for nonexistent id', () => {
     const session = sessions.get('nonexistent-id-12345');
-    assert.strictEqual(session, undefined);
+    expect(session).toBe(undefined);
   });
 
   it('kill removes session from registry', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
@@ -101,67 +364,63 @@ describe('sessions', () => {
     createdIds.splice(createdIds.indexOf(result.id), 1);
 
     const session = sessions.get(result.id);
-    assert.strictEqual(session, undefined, 'session should be removed after kill');
+    expect(session).toBe(undefined);
 
     const list = sessions.list();
-    assert.ok(!list.some((s) => s.id === result.id), 'killed session should not appear in list');
+    expect(list.some((s) => s.id === result.id)).toBe(false);
   });
 
   it('kill throws for nonexistent session', () => {
-    assert.throws(
-      () => sessions.kill('nonexistent-id'),
-      /Session not found/,
-    );
+    expect(() => sessions.kill('nonexistent-id')).toThrow(/Session not found/);
   });
 
   it('resize throws for nonexistent session', () => {
-    assert.throws(
-      () => sessions.resize('nonexistent-id', 100, 40),
-      /Session not found/,
+    expect(() => sessions.resize('nonexistent-id', 100, 40)).toThrow(
+      /Session not found/
     );
   });
 
-  it('write sends data to PTY stdin', (_, done) => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      cols: 80,
-      rows: 24,
-    });
+  it('write sends data to PTY stdin', () =>
+    new Promise<void>((done) => {
+      const result = sessions.create({
+        repoName: 'test-repo',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/cat',
+        args: [],
+        cols: 80,
+        rows: 24,
+      });
 
-    createdIds.push(result.id);
+      createdIds.push(result.id);
 
-    const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
-    const ptySession = session as PtySession;
+      const session = sessions.get(result.id);
+      expect(session).toBeTruthy();
+      expect(session!.mode).toBe('pty');
+      const ptySession = session as PtySession;
 
-    let output = '';
-    ptySession.pty.onData((data: string) => {
-      output += data;
-      if (output.includes('hello')) {
-        done();
-      }
-    });
+      let output = '';
+      ptySession.pty.onData((data: string) => {
+        output += data;
+        if (output.includes('hello')) {
+          done();
+        }
+      });
 
-    sessions.write(result.id, 'hello');
-  });
+      sessions.write(result.id, 'hello');
+    }));
 
   it('write throws for nonexistent session', () => {
-    assert.throws(
-      () => sessions.write('nonexistent-id', 'data'),
-      /Session not found/,
+    expect(() => sessions.write('nonexistent-id', 'data')).toThrow(
+      /Session not found/
     );
   });
 
   it('session starts as not idle', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -169,14 +428,14 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.idle, false);
+    expect(session).toBeTruthy();
+    expect(session!.idle).toBe(false);
   });
 
   it('list includes idle field', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -184,50 +443,50 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
     const list = sessions.list();
-    assert.strictEqual(list.length, 1);
-    assert.strictEqual(list[0]?.idle, false);
+    expect(list.length).toBe(1);
+    expect(list[0]?.idle).toBe(false);
   });
 
-  it('type defaults to agent when not specified', () => {
+  it('type defaults to terminal when not specified', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.strictEqual(result.type, 'agent');
+    expect(result.type).toBe('terminal');
 
     const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.type, 'agent');
+    expect(session).toBeTruthy();
+    expect(session!.type).toBe('terminal');
   });
 
-  it('type is set to agent when specified', () => {
+  it('type is set to terminal when specified', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.strictEqual(result.type, 'agent');
+    expect(result.type).toBe('terminal');
 
     const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.type, 'agent');
+    expect(session).toBeTruthy();
+    expect(session!.type).toBe('terminal');
   });
 
   it('list includes type field', () => {
     const r1 = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'repo-a',
-      workspacePath: '/tmp/a',
+      repoPath: '/tmp/a',
       worktreePath: null,
       cwd: '/tmp/a',
       command: '/bin/echo',
@@ -236,9 +495,9 @@ describe('sessions', () => {
     createdIds.push(r1.id);
 
     const r2 = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'repo-b',
-      workspacePath: '/tmp/b',
+      repoPath: '/tmp/b',
       worktreePath: null,
       cwd: '/tmp/b',
       command: '/bin/echo',
@@ -247,20 +506,24 @@ describe('sessions', () => {
     createdIds.push(r2.id);
 
     const list = sessions.list();
-    const s1 = list.find(function (s) { return s.id === r1.id; });
-    const s2 = list.find(function (s) { return s.id === r2.id; });
+    const s1 = list.find(function (s) {
+      return s.id === r1.id;
+    });
+    const s2 = list.find(function (s) {
+      return s.id === r2.id;
+    });
 
-    assert.ok(s1);
-    assert.strictEqual(s1.type, 'agent');
-    assert.ok(s2);
-    assert.strictEqual(s2.type, 'agent');
+    expect(s1).toBeTruthy();
+    expect(s1!.type).toBe('terminal');
+    expect(s2).toBeTruthy();
+    expect(s2!.type).toBe('terminal');
   });
 
-  it('list includes workspacePath, worktreePath, and cwd fields', () => {
+  it('list includes repoPath, worktreePath, and cwd fields', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
-      workspacePath: '/tmp/workspace',
+      repoPath: '/tmp/workspace',
       worktreePath: '/tmp/workspace/.worktrees/my-branch',
       cwd: '/tmp/workspace/.worktrees/my-branch',
       command: '/bin/echo',
@@ -269,265 +532,279 @@ describe('sessions', () => {
     createdIds.push(result.id);
 
     const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
-    assert.ok(session);
-    assert.strictEqual(session.workspacePath, '/tmp/workspace');
-    assert.strictEqual(session.worktreePath, '/tmp/workspace/.worktrees/my-branch');
-    assert.strictEqual(session.cwd, '/tmp/workspace/.worktrees/my-branch');
+    const session = list.find((s) => s.id === result.id);
+    expect(session).toBeTruthy();
+    expect(session!.repoPath).toBe('/tmp/workspace');
+    expect(session!.worktreePath).toBe('/tmp/workspace/.worktrees/my-branch');
+    expect(session!.cwd).toBe('/tmp/workspace/.worktrees/my-branch');
   });
 
   it('branchName defaults to empty string when branchName is not provided', () => {
     const result = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.strictEqual(result.branchName, '');
+
+    expect(result.branchName).toBe('');
+    expect(result).toHaveProperty('branchName');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed!.branchName).toBe('');
+    expect(listed).toHaveProperty('branchName');
   });
 
-  it('resolveTmuxSpawn returns correct tmux command and args', () => {
-    const result = resolveTmuxSpawn('claude', ['--continue'], 'test-session');
-    assert.deepStrictEqual(result, {
-      command: 'tmux',
-      args: [
-        '-u', 'new-session', '-s', 'test-session', '--', 'claude', '--continue',
-        ';', 'set', 'set-clipboard', 'on',
-        ';', 'set', 'allow-passthrough', 'on',
-        ';', 'set', 'mode-keys', 'vi',
-      ],
+  it('preserves explicit branchName for repo-bound sessions', () => {
+    const result = sessions.create({
+      type: 'terminal',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: '/tmp/workspace/.worktrees/feature-branch',
+      cwd: '/tmp/workspace/.worktrees/feature-branch',
+      branchName: 'feature/branch',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(result.id);
+
+    expect(result.branchName).toBe('feature/branch');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed!.branchName).toBe('feature/branch');
+
+    const stored = sessions.get(result.id);
+    expect(stored).toBeDefined();
+    expect(stored!.branchName).toBe('feature/branch');
+  });
+
+  it('serializes control state separately from transport mode for PTY sessions', () => {
+    const result = sessions.create({
+      type: 'terminal',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: null,
+      cwd: '/tmp/workspace',
+      command: '/bin/echo',
+      args: ['hello'],
+      controlState: {
+        controlMode: 'human-driven',
+        activeActors: [{ kind: 'human', id: 'operator' }],
+        lastInterventionAt: '2026-01-02T03:04:05.000Z',
+        lastInterventionBy: { kind: 'human', id: 'operator' },
+        lastInterventionEventId: 'evt-pty-1',
+        controlFreshness: 'fresh',
+      },
+    });
+    createdIds.push(result.id);
+
+    expect(result.mode).toBe('pty');
+    expect(result.controlMode).toBe('human-driven');
+    expect(result).not.toHaveProperty('activeWorker');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toMatchObject({
+      mode: 'pty',
+      controlMode: 'human-driven',
+      controlFreshness: 'fresh',
+      lastInterventionEventId: 'evt-pty-1',
     });
   });
 
-  it('generateTmuxSessionName has crc- prefix', () => {
-    const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
-    assert.ok(name.startsWith('crc-'), `expected crc- prefix, got: ${name}`);
+  it('backfills missing PTY control state to human-driven unknown freshness', () => {
+    const result = sessions.create({
+      type: 'terminal',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: null,
+      cwd: '/tmp/workspace',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(result.id);
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toMatchObject({
+      mode: 'pty',
+      controlMode: 'human-driven',
+      controlFreshness: 'unknown',
+      lastInterventionAt: null,
+      lastInterventionBy: null,
+      lastInterventionEventId: null,
+    });
   });
 
-  it('generateTmuxSessionName sanitizes special characters', () => {
-    const name = generateTmuxSessionName('feat/auth-flow', 'abcdef1234567890');
-    assert.ok(name.startsWith('crc-feat-auth-flow-'), `expected sanitized name, got: ${name}`);
+  it('prod prefix (relay-ide-) does not match dev prefix (relay-dev-)', () => {
+    const prodPrefix = 'relay-ide-';
+    const devPrefix = 'relay-dev-';
+    expect(devPrefix.startsWith(prodPrefix)).toBe(false);
+    expect(prodPrefix.startsWith(devPrefix)).toBe(false);
   });
 
-  it('generateTmuxSessionName limits display name to 30 chars', () => {
-    const longName = 'a-very-long-display-name-that-exceeds-thirty-characters';
-    const id = 'abcdef1234567890';
-    const name = generateTmuxSessionName(longName, id);
-    // Format is crc-<sanitized up to 30>-<8 char id>
-    // The sanitized portion should be at most 30 chars
-    const withoutPrefix = name.slice('crc-'.length);
-    const parts = withoutPrefix.split('-');
-    const idPart = parts[parts.length - 1];
-    const displayPart = withoutPrefix.slice(0, withoutPrefix.length - idPart!.length - 1);
-    assert.ok(displayPart.length <= 30, `display portion should be <= 30 chars, got: ${displayPart.length}`);
-  });
-
-  it('generateTmuxSessionName uses 8 chars from the provided id', () => {
-    const id = 'abcdef1234567890';
-    const name = generateTmuxSessionName('my-session', id);
-    assert.ok(name.endsWith(id.slice(0, 8)), `expected name to end with ${id.slice(0, 8)}, got: ${name}`);
-  });
-
-  it('prod TMUX_PREFIX (crc-) does not match dev prefix (crcd-)', () => {
-    // Production prefix must not be a prefix of the dev prefix, otherwise
-    // prod orphan cleanup (startsWith('crc-')) would kill dev tmux sessions.
-    const prodPrefix = 'crc-';
-    const devPrefix = 'crcd-';
-    assert.ok(!devPrefix.startsWith(prodPrefix), `dev prefix '${devPrefix}' must not start with prod prefix '${prodPrefix}'`);
-    assert.ok(!prodPrefix.startsWith(devPrefix), `prod prefix '${prodPrefix}' must not start with dev prefix '${devPrefix}'`);
-  });
-
-  it('TMUX_PREFIX is crc- in normal mode (no NO_PIN)', () => {
-    // Tests run without NO_PIN=1, so prefix should be production
-    assert.strictEqual(TMUX_PREFIX, 'crc-');
-  });
-
-  it('agent defaults to claude when not specified', () => {
+  it('does not expose a provider identity on terminal creation', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.strictEqual(result.agent, 'claude');
+    expect(result).not.toHaveProperty('agent');
+    expect(
+      sessions.list().find((session) => session.id === result.id)
+    ).not.toHaveProperty('agent');
   });
 
-  it('agent is set when specified', () => {
+  it('returns a bounded rendered screen snapshot for relay-pty sessions', async () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      agent: 'codex',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    assert.strictEqual(result.agent, 'codex');
-  });
-
-  it('list includes agent field', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      agent: 'codex',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
-    assert.ok(session);
-    assert.strictEqual(session.agent, 'codex');
-  });
-
-  it('useTmux defaults to false when not specified', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    assert.strictEqual(result.useTmux, false);
-    assert.strictEqual(result.tmuxSessionName, '');
-  });
-
-  it('useTmux is disabled when custom command is provided even if useTmux is true', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
-      useTmux: true,
-    });
-    createdIds.push(result.id);
-    // Custom command sessions should never use tmux
-    assert.strictEqual(result.useTmux, false);
-    assert.strictEqual(result.tmuxSessionName, '');
-  });
-
-  it('list includes useTmux and tmuxSessionName fields', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
-    });
-    createdIds.push(result.id);
-    const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
-    assert.ok(session);
-    assert.strictEqual(session.useTmux, false);
-    assert.strictEqual(session.tmuxSessionName, '');
-  });
-
-  it('calls onPtyReplaced when continue-arg process fails quickly', (_, done) => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/false',
-      args: [...sessions.AGENT_CONTINUE_ARGS.claude],
-    });
-    createdIds.push(result.id);
-
-    const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
-    const ptySession = session as PtySession;
-
-    ptySession.onPtyReplacedCallbacks.push((newPty) => {
-      assert.ok(newPty, 'should receive new PTY');
-      assert.strictEqual(ptySession.pty, newPty, 'session.pty should be updated to new PTY');
-      done();
-    });
-  });
-
-  it('session survives after continue-arg retry', (_, done) => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/false',
-      args: [...sessions.AGENT_CONTINUE_ARGS.claude],
-    });
-    createdIds.push(result.id);
-
-    const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
-    const ptySession = session as PtySession;
-
-    ptySession.onPtyReplacedCallbacks.push(() => {
-      const stillExists = sessions.get(result.id);
-      assert.ok(stillExists, 'session should still exist after retry');
-      done();
-    });
-  });
-
-  it('retries when continue-arg process exits quickly with code 0 (tmux behavior)', (_, done) => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/sh',
-      args: ['-c', 'exit 0', ...sessions.AGENT_CONTINUE_ARGS.claude],
+      args: ['-i'],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
     });
     createdIds.push(result.id);
 
-    const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
-    const ptySession = session as PtySession;
+    sessions.write(result.id, 'printf SCREEN_SNAPSHOT_READY\\n');
+    sessions.write(result.id, '\n');
 
-    ptySession.onPtyReplacedCallbacks.push((newPty) => {
-      assert.ok(newPty, 'should receive new PTY even with exit code 0');
-      assert.strictEqual(ptySession.pty, newPty, 'session.pty should be updated');
-      const stillExists = sessions.get(result.id);
-      assert.ok(stillExists, 'session should still exist after retry');
-      done();
+    let snapshot: Record<string, unknown> | undefined;
+    for (let i = 0; i < 20; i++) {
+      const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+        requestedId: result.globalSessionId,
+        includeScrollback: true,
+        maxScrollbackLines: 5,
+      });
+      expect(resultSnapshot.ok).toBe(true);
+      if (resultSnapshot.ok) {
+        snapshot = resultSnapshot.snapshot;
+        const visible = snapshot.visible as { text?: string };
+        if (visible.text?.includes('SCREEN_SNAPSHOT_READY')) break;
+      }
+      await delay(50);
+    }
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot).toMatchObject({
+      session: {
+        id: result.id,
+        requestedId: result.globalSessionId,
+        nodeId: 'local',
+        globalSessionId: result.globalSessionId,
+        status: 'active',
+      },
+      backend: {
+        terminalBackend: 'relay-pty',
+        runtime: 'relay-pty/libghostty-vt',
+      },
+      scrollback: {
+        requested: true,
+        included: true,
+        maxLines: 5,
+      },
     });
+    const visible = snapshot!.visible as { text?: string; rows?: unknown[] };
+    expect(visible.text).toContain('SCREEN_SNAPSHOT_READY');
+    expect(Array.isArray(visible.rows)).toBe(true);
+  });
+
+  it('defaults rendered screen scrollback counters for legacy relay-pty records', () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
+    });
+    createdIds.push(result.id);
+
+    const session = sessions.get(result.id) as PtySession;
+    delete (session as Partial<PtySession>).scrollbackBytesEvicted;
+    delete (session as Partial<PtySession>).scrollbackCapacityBytes;
+
+    const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+      includeScrollback: true,
+      maxScrollbackLines: 5,
+    });
+
+    expect(resultSnapshot.ok).toBe(true);
+    if (!resultSnapshot.ok)
+      throw new Error('expected rendered screen snapshot');
+    expect(resultSnapshot.snapshot).toMatchObject({
+      scrollback: {
+        rows: expect.any(Array),
+        bytesDropped: 0,
+        capacityBytes: DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+      },
+    });
+  });
+
+  it('rejects Object prototype terminal keys for relay-pty sessions', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      terminalBackend: 'relay-pty',
+    });
+    createdIds.push(result.id);
+
+    await sessions.sendTerminalText(result.id, 'VALID_KEY');
+    await sessions.sendTerminalKeys(result.id, ['Enter']);
+    await expect
+      .poll(() => sessions.captureTerminalVisibleText(result.id))
+      .toContain('VALID_KEY');
+
+    for (const inheritedKey of [
+      'toString',
+      'constructor',
+      '__proto__',
+      'hasOwnProperty',
+    ]) {
+      await expect(
+        sessions.sendTerminalKeys(result.id, [inheritedKey])
+      ).rejects.toThrow(`Unsupported relay-pty input key: ${inheritedKey}`);
+    }
   });
 
   it('create accepts a predetermined id', () => {
     const result = sessions.create({
       id: 'custom-id-12345678',
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.strictEqual(result.id, 'custom-id-12345678');
+    expect(result.id).toBe('custom-id-12345678');
     const session = sessions.get('custom-id-12345678');
-    assert.ok(session);
+    expect(session).toBeTruthy();
   });
 
   it('create accepts initialScrollback', () => {
     const result = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/echo',
@@ -536,10 +813,10 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
-    assert.ok((session as PtySession).scrollback.length >= 1);
-    assert.strictEqual((session as PtySession).scrollback[0], 'prior output\r\n');
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
+    expect((session as PtySession).scrollback.length).toBeGreaterThanOrEqual(1);
+    expect((session as PtySession).scrollback[0]).toBe('prior output\r\n');
   });
 });
 
@@ -549,17 +826,48 @@ describe('session persistence', () => {
   afterEach(() => {
     // Clean up any sessions created during tests
     for (const s of sessions.list()) {
-      try { sessions.kill(s.id); } catch { /* ignore */ }
+      try {
+        sessions.kill(s.id);
+      } catch {
+        /* ignore */
+      }
     }
     // Clean up temp directory
     if (tmpDir) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   });
 
   function createTmpDir(): string {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-test-'));
     return tmpDir;
+  }
+
+  function pendingPtySession(
+    id: string,
+    overrides: Record<string, unknown> = {}
+  ) {
+    const timestamp = new Date().toISOString();
+    return {
+      id,
+      type: 'terminal' as const,
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      repoName: 'test',
+      branchName: '',
+      displayName: id,
+      createdAt: timestamp,
+      lastActivity: timestamp,
+      useTmux: true,
+      tmuxSessionName: `relay-ide-${id}`,
+      customCommand: '/bin/cat',
+      ...overrides,
+    };
   }
 
   it('serializeAll writes pending-sessions.json and scrollback files', () => {
@@ -567,7 +875,7 @@ describe('session persistence', () => {
 
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -576,28 +884,55 @@ describe('session persistence', () => {
 
     // Manually push some scrollback
     const session = sessions.get(s.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
     (session as PtySession).scrollback.push('hello world');
 
-    serializeAll(configDir);
+    serializeAll(configDir, { reason: 'dev-restart' });
 
     // Check pending-sessions.json
     const pendingPath = path.join(configDir, 'pending-sessions.json');
-    assert.ok(fs.existsSync(pendingPath), 'pending-sessions.json should exist');
+    expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    assert.strictEqual(pending.version, 3);
-    assert.ok(pending.timestamp);
-    assert.strictEqual(pending.sessions.length, 1);
-    assert.strictEqual(pending.sessions[0].id, s.id);
-    assert.strictEqual(pending.sessions[0].cwd, '/tmp');
-    assert.strictEqual(pending.sessions[0].workspacePath, '/tmp');
+    expect(pending.version).toBe(7);
+    expect(pending.reason).toBe('dev-restart');
+    expect(pending.timestamp).toBeTruthy();
+    expect(pending.sessions.length).toBe(1);
+    expect(pending.sessions[0].id).toBe(s.id);
+    expect(pending.sessions[0].cwd).toBe('/tmp');
+    expect(pending.sessions[0].repoPath).toBe('/tmp');
 
     // Check scrollback file
     const scrollbackPath = path.join(configDir, 'scrollback', s.id + '.buf');
-    assert.ok(fs.existsSync(scrollbackPath), 'scrollback file should exist');
+    expect(fs.existsSync(scrollbackPath)).toBeTruthy();
     const scrollbackData = fs.readFileSync(scrollbackPath, 'utf-8');
-    assert.ok(scrollbackData.includes('hello world'));
+    expect(scrollbackData).toContain('hello world');
+  });
+
+  it('serializeAll prunes scrollback files that are not in the new manifest', () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    const orphanPath = path.join(scrollbackDir, 'orphan.buf');
+    fs.writeFileSync(orphanPath, 'stale output');
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    const session = sessions.get(s.id);
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
+    (session as PtySession).scrollback.push('current output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    expect(fs.existsSync(path.join(scrollbackDir, `${s.id}.buf`))).toBe(true);
+    expect(fs.existsSync(orphanPath)).toBe(false);
   });
 
   it('restoreFromDisk restores sessions with original IDs', async () => {
@@ -606,44 +941,60 @@ describe('session persistence', () => {
     // Create and serialize a session
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
       args: [],
       displayName: 'my-session',
+      spawnedBySessionId: 'orchestrator-session',
     });
     const originalId = s.id;
 
     const session = sessions.get(originalId);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
     (session as PtySession).scrollback.push('saved output');
 
     serializeAll(configDir);
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    ) as { sessions: Array<{ spawnedBySessionId?: string }> };
+    expect(serialized.sessions[0]?.spawnedBySessionId).toBe(
+      'orchestrator-session'
+    );
 
     // Kill the original session
     sessions.kill(originalId);
-    assert.strictEqual(sessions.get(originalId), undefined);
+    expect(sessions.get(originalId)).toBe(undefined);
 
     // Restore
     const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 1);
+    expect(restored).toBe(1);
 
     // Verify session exists with original ID
     const restoredSession = sessions.get(originalId);
-    assert.ok(restoredSession, 'restored session should exist');
-    assert.strictEqual(restoredSession.cwd, '/tmp');
-    assert.strictEqual(restoredSession.workspacePath, '/tmp');
-    assert.strictEqual(restoredSession.displayName, 'my-session');
+    expect(restoredSession).toBeTruthy();
+    expect(restoredSession!.cwd).toBe('/tmp');
+    expect(restoredSession!.repoPath).toBe('/tmp');
+    expect(restoredSession!.displayName).toBe('my-session');
+    expect(restoredSession!.spawnedBySessionId).toBe('orchestrator-session');
+    expect(
+      sessions.list().find((entry) => entry.id === originalId)
+        ?.spawnedBySessionId
+    ).toBe('orchestrator-session');
 
     // Scrollback should be restored
-    assert.strictEqual(restoredSession.mode, 'pty');
-    assert.ok((restoredSession as PtySession).scrollback.length >= 1);
-    assert.strictEqual((restoredSession as PtySession).scrollback[0], 'saved output');
+    expect(restoredSession!.mode).toBe('pty');
+    expect(
+      (restoredSession as PtySession).scrollback.length
+    ).toBeGreaterThanOrEqual(1);
+    expect((restoredSession as PtySession).scrollback[0]).toBe('saved output');
 
     // pending-sessions.json should be cleaned up
-    assert.ok(!fs.existsSync(path.join(configDir, 'pending-sessions.json')));
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
   });
 
   it('restoreFromDisk ignores stale files (>5 min old)', async () => {
@@ -654,13 +1005,248 @@ describe('session persistence', () => {
     const pending = {
       version: 3,
       timestamp: staleTime,
-      sessions: [{ id: 'stale-id', type: 'agent', agent: 'claude', workspacePath: '/tmp', worktreePath: null, cwd: '/tmp', repoName: 'test', branchName: '', displayName: 'test', createdAt: staleTime, lastActivity: staleTime, useTmux: false, tmuxSessionName: '', customCommand: null }],
+      sessions: [
+        {
+          id: 'stale-id',
+          type: 'terminal',
+          workspacePath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test',
+          branchName: '',
+          displayName: 'test',
+          createdAt: staleTime,
+          lastActivity: staleTime,
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: null,
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    fs.mkdirSync(path.join(configDir, 'scrollback'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'scrollback', 'stale-id.buf'),
+      'stale'
+    );
 
     const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 0, 'should not restore stale sessions');
-    assert.ok(!fs.existsSync(path.join(configDir, 'pending-sessions.json')), 'stale file should be deleted');
+    expect(restored).toBe(0);
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(path.join(configDir, 'scrollback'))).toBe(false);
+  });
+
+  it('discards fresh retired PTY agent records instead of restoring them', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify({
+        version: 7,
+        timestamp,
+        sessions: [
+          {
+            id: 'retired-agent',
+            type: 'agent',
+            cwd: '/tmp',
+            displayName: 'Retired agent',
+            createdAt: timestamp,
+            lastActivity: timestamp,
+            terminalBackend: 'relay-pty',
+            customCommand: '/bin/cat',
+          },
+        ],
+      })
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'retired-agent.buf'), 'old');
+
+    await expect(restoreFromDisk(configDir)).resolves.toBe(0);
+    expect(sessions.get('retired-agent')).toBeUndefined();
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk removes malformed timestamp pending files and scrollback', async () => {
+    const configDir = createTmpDir();
+    const pending = {
+      version: 6,
+      timestamp: 'not-a-date',
+      reason: 'dev-restart',
+      sessions: [
+        {
+          id: 'bad-timestamp-id',
+          type: 'terminal' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test',
+          branchName: '',
+          displayName: 'bad timestamp',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: true,
+          tmuxSessionName: 'relay-ide-bad-timestamp',
+          customCommand: '/bin/cat',
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'bad-timestamp-id.buf'), 'stale');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk removes orphan scrollback when no pending manifest exists', async () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'orphan.buf'), 'old output');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('serializeAll keeps fresh live sessions restorable when old preserved failures age out', async () => {
+    const configDir = createTmpDir();
+    const nowMs = Date.now();
+    const nearlyStaleTime = new Date(
+      nowMs - (5 * 60 * 1000 - 1000)
+    ).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: nearlyStaleTime,
+      sessions: [
+        pendingPtySession('old-restore-fails', {
+          cwd: path.join(configDir, 'missing-cwd'),
+          displayName: 'old failed restore',
+          tmuxSessionName: 'relay-ide-old-failed-restore',
+          pendingSince: nearlyStaleTime,
+        }),
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'old-restore-fails.buf'),
+      'old failed output'
+    );
+
+    const live = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      displayName: 'fresh live session',
+    });
+    const liveSession = sessions.get(live.id);
+    expect(liveSession).toBeTruthy();
+    expect(liveSession!.mode).toBe('pty');
+    (liveSession as PtySession).scrollback.push('fresh output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    const serializedSessions = serialized.sessions as Array<{
+      id: string;
+      pendingSince?: string;
+    }>;
+    const serializedFailure = serializedSessions.find(
+      (session) => session.id === 'old-restore-fails'
+    );
+    const serializedLive = serializedSessions.find(
+      (session) => session.id === live.id
+    );
+    expect(serializedFailure?.pendingSince).toBe(nearlyStaleTime);
+    expect(serializedLive?.pendingSince).toBe(serialized.timestamp);
+
+    sessions.kill(live.id);
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs + 2000);
+    try {
+      const restored = await restoreFromDisk(configDir);
+
+      expect(restored).toBe(1);
+      expect(sessions.get(live.id)).toBeTruthy();
+      expect(sessions.get('old-restore-fails')).toBeUndefined();
+      expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+        false
+      );
+      expect(fs.existsSync(scrollbackDir)).toBe(false);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it('serializeAll prunes stale failed restore records instead of refreshing them', () => {
+    const configDir = createTmpDir();
+    const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: staleTime,
+      sessions: [pendingPtySession('stale-failure')],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'stale-failure.buf'),
+      'old output'
+    );
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(
+      retryPending.sessions.map((session: { id: string }) => session.id)
+    ).toEqual([s.id]);
+    expect(fs.existsSync(path.join(scrollbackDir, 'stale-failure.buf'))).toBe(
+      false
+    );
   });
 
   it('restoreFromDisk handles missing scrollback gracefully', async () => {
@@ -669,7 +1255,7 @@ describe('session persistence', () => {
     // Create a session, serialize, then delete scrollback file
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -680,100 +1266,32 @@ describe('session persistence', () => {
 
     // Delete scrollback file
     const scrollbackPath = path.join(configDir, 'scrollback', s.id + '.buf');
-    try { fs.unlinkSync(scrollbackPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(scrollbackPath);
+    } catch {
+      /* ignore */
+    }
 
     const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 1, 'should still restore without scrollback');
+    expect(restored).toBe(1);
   });
 
   it('restoreFromDisk returns 0 when no pending file exists', async () => {
     const configDir = createTmpDir();
     const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 0);
+    expect(restored).toBe(0);
   });
 
-  it('restoreFromDisk preserves tmuxSessionName for tmux sessions', async () => {
-    const configDir = createTmpDir();
-
-    // Write a pending file with a tmux session
-    const pending = {
-      version: 3,
-      timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'tmux-test-id',
-        type: 'agent' as const,
-        agent: 'claude' as const,
-        workspacePath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'my-branch',
-        displayName: 'my-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: true,
-        tmuxSessionName: 'crc-my-session-tmux-tes',
-        customCommand: '/bin/cat', // Use /bin/cat to avoid spawning real claude binary in test
-      }],
-    };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
-
-    const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 1);
-
-    const session = sessions.get('tmux-test-id');
-    assert.ok(session, 'restored session should exist');
-    assert.strictEqual(session.mode, 'pty');
-    assert.strictEqual((session as PtySession).tmuxSessionName, 'crc-my-session-tmux-tes', 'tmuxSessionName should be preserved from serialized data');
-  });
-
-  it('restored session remains in list after PTY exits (disconnected status)', async () => {
-    const configDir = createTmpDir();
-
-    const pending = {
-      version: 3,
-      timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'restore-exit-test',
-        type: 'agent' as const,
-        agent: 'claude' as const,
-        workspacePath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'my-branch',
-        displayName: 'restored-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/false',
-      }],
-    };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
-
-    await restoreFromDisk(configDir);
-
-    // Wait for PTY to exit
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Session should still be in the list with disconnected status
-    const list = sessions.list();
-    const found = list.find(s => s.id === 'restore-exit-test');
-    assert.ok(found, 'restored session should remain in list after PTY exit');
-    assert.strictEqual(found.status, 'disconnected');
-  });
-
-  it('full serialize-restore round trip preserves all session fields including tmuxSessionName', async () => {
+  it('full serialize-restore round trip preserves relay-pty session fields', async () => {
     const configDir = createTmpDir();
 
     // Create sessions of different types
     const agentSession = sessions.create({
-      type: 'agent',
+      type: 'terminal',
       repoName: 'my-repo',
-      workspacePath: '/tmp/repo',
+      repoPath: '/tmp',
       worktreePath: null,
-      cwd: '/tmp/repo',
+      cwd: '/tmp',
       command: '/bin/cat',
       args: [],
       displayName: 'My Agent',
@@ -781,7 +1299,7 @@ describe('session persistence', () => {
 
     const terminal = sessions.create({
       type: 'terminal',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/sh',
@@ -792,158 +1310,83 @@ describe('session persistence', () => {
     // Serialize all
     serializeAll(configDir);
 
-    // Kill originals
-    sessions.kill(agentSession.id);
-    sessions.kill(terminal.id);
-    assert.strictEqual(sessions.list().length, 0);
-
-    // Also inject a tmux-style session into the pending file to test tmuxSessionName round-trip.
-    // Use customCommand so restore spawns that instead of claude --continue (which would exit instantly).
-    const pendingPath = path.join(configDir, 'pending-sessions.json');
-    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    pending.sessions.push({
-      id: 'tmux-roundtrip-id',
-      type: 'agent',
-      agent: 'claude',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      repoName: 'tmux-repo',
-      branchName: 'feat/tmux',
-      displayName: 'Tmux Session',
-      createdAt: new Date().toISOString(),
-      lastActivity: new Date().toISOString(),
-      useTmux: true,
-      tmuxSessionName: 'crc-tmux-session-tmux-rou',
-      customCommand: '/bin/cat',
-    });
-    fs.writeFileSync(pendingPath, JSON.stringify(pending));
+    // Detach (preserves tmux sessions for restore reattach) rather than kill,
+    // which would tear down tmux and leave nothing for restore to adopt.
+    // Restore re-creates the in-memory entry under the same id, replacing it.
+    sessions.detachForRestart(agentSession.id);
+    sessions.detachForRestart(terminal.id);
 
     // Restore
     const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 3);
+    expect(restored).toBe(2);
 
     // Verify all sessions exist
     const list = sessions.list();
-    assert.strictEqual(list.length, 3);
+    expect(list.length).toBe(2);
 
-    const restoredAgent = list.find(s => s.id === agentSession.id);
-    assert.ok(restoredAgent);
-    assert.strictEqual(restoredAgent.type, 'agent');
-    assert.strictEqual(restoredAgent.displayName, 'My Agent');
-    assert.strictEqual(restoredAgent.status, 'active');
+    const restoredAgent = list.find((s) => s.id === agentSession.id);
+    expect(restoredAgent).toBeTruthy();
+    expect(restoredAgent!.type).toBe('terminal');
+    expect(restoredAgent!.displayName).toBe('My Agent');
+    expect(restoredAgent!.status).toBe('active');
 
-    const restoredTerminal = list.find(s => s.id === terminal.id);
-    assert.ok(restoredTerminal);
-    assert.strictEqual(restoredTerminal.type, 'terminal');
-    assert.strictEqual(restoredTerminal.displayName, 'Terminal 1');
-
-    // Verify tmux session name survived the round trip
-    const restoredTmux = sessions.get('tmux-roundtrip-id');
-    assert.ok(restoredTmux);
-    assert.strictEqual(restoredTmux.mode, 'pty');
-    assert.strictEqual((restoredTmux as PtySession).tmuxSessionName, 'crc-tmux-session-tmux-rou');
-    assert.strictEqual(restoredTmux.displayName, 'Tmux Session');
+    const restoredTerminal = list.find((s) => s.id === terminal.id);
+    expect(restoredTerminal).toBeTruthy();
+    expect(restoredTerminal!.type).toBe('terminal');
+    expect(restoredTerminal!.displayName).toBe('Terminal 1');
   });
 
-  it('serialize/restore preserves yolo flag', async () => {
+  it('serialize/restore preserves needsBranchRename and branchRenamePrompt', async () => {
     const configDir = createTmpDir();
 
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
       args: [],
-      yolo: true,
+      needsBranchRename: true,
+      branchRenamePrompt: 'Name this feature branch:',
     });
 
     const session = sessions.get(s.id);
-    assert.ok(session);
-    assert.strictEqual((session as PtySession).yolo, true);
-
-    serializeAll(configDir);
-    sessions.kill(s.id);
-
-    // Verify yolo is in the serialized JSON
-    const pending = JSON.parse(fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8'));
-    assert.strictEqual(pending.version, 3);
-    assert.strictEqual(pending.sessions[0].yolo, true);
-
-    await restoreFromDisk(configDir);
-    const restored = sessions.get(s.id);
-    assert.ok(restored);
-    assert.strictEqual((restored as PtySession).yolo, true);
-  });
-
-  it('serialize/restore preserves claudeArgs', async () => {
-    const configDir = createTmpDir();
-
-    const s = sessions.create({
-      repoName: 'test-repo',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-      claudeArgs: ['--model', 'opus', '--verbose'],
-    });
-
-    const session = sessions.get(s.id);
-    assert.ok(session);
-    assert.deepStrictEqual((session as PtySession).claudeArgs, ['--model', 'opus', '--verbose']);
+    expect(session).toBeTruthy();
+    expect(session!.needsBranchRename).toBe(true);
 
     serializeAll(configDir);
     sessions.kill(s.id);
 
     await restoreFromDisk(configDir);
     const restored = sessions.get(s.id);
-    assert.ok(restored);
-    assert.deepStrictEqual((restored as PtySession).claudeArgs, ['--model', 'opus', '--verbose']);
+    expect(restored).toBeTruthy();
+    expect(restored!.needsBranchRename).toBe(true);
+    expect((restored as PtySession).branchRenamePrompt).toBe(
+      'Name this feature branch:'
+    );
   });
 
-  it('restoreFromDisk handles v1/v2 pending files (v2→v3 migration)', async () => {
+  it('serializeAll writes version 7 in pending-sessions.json', () => {
     const configDir = createTmpDir();
 
-    // Write a v2 format pending file with old fields: type: 'repo', repoPath, root
-    const v2Timestamp = new Date().toISOString();
-    const pending = {
-      version: 2,
-      timestamp: v2Timestamp,
-      sessions: [{
-        id: 'v2-migration-test',
-        type: 'repo',
-        agent: 'claude',
-        root: '',
-        repoName: 'test-repo',
-        repoPath: '/tmp/my-repo',
-        worktreeName: '',
-        branchName: 'main',
-        displayName: 'v2-session',
-        createdAt: v2Timestamp,
-        lastActivity: v2Timestamp,
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/cat',
-        cwd: '/tmp/my-repo',
-      }],
-    };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(s.id);
 
-    const restored = await restoreFromDisk(configDir);
-    assert.strictEqual(restored, 1);
+    serializeAll(configDir);
 
-    const session = sessions.get('v2-migration-test');
-    assert.ok(session, 'restored session should exist');
-    // type should be migrated from 'repo' to 'agent'
-    assert.strictEqual(session.type, 'agent', 'type should be migrated to agent');
-    // cwd should equal the old repoPath
-    assert.strictEqual(session.cwd, '/tmp/my-repo', 'cwd should be set from old repoPath');
-    // workspacePath should be derived from cwd (no configured workspaces, so falls back to cwd)
-    assert.strictEqual(session.workspacePath, '/tmp/my-repo', 'workspacePath should be derived');
-    // worktreePath should be null since cwd === workspacePath
-    assert.strictEqual(session.worktreePath, null, 'worktreePath should be null for main repo sessions');
+    const pendingPath = path.join(configDir, 'pending-sessions.json');
+    expect(fs.existsSync(pendingPath)).toBeTruthy();
+    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
+    expect(pending.version).toBe(7);
+    expect(pending.sessions[0].repoPath).toBe('/tmp');
+    expect('workspacePath' in pending.sessions[0]).toBe(false);
   });
 
   it('serializeAll captures session state before kill', () => {
@@ -951,7 +1394,7 @@ describe('session persistence', () => {
 
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -960,8 +1403,8 @@ describe('session persistence', () => {
     });
 
     const session = sessions.get(s.id);
-    assert.ok(session);
-    assert.strictEqual(session.mode, 'pty');
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
     (session as PtySession).scrollback.push('important output');
 
     serializeAll(configDir);
@@ -971,9 +1414,9 @@ describe('session persistence', () => {
 
     // Verify data is on disk
     const pendingPath = path.join(configDir, 'pending-sessions.json');
-    assert.ok(fs.existsSync(pendingPath));
+    expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    assert.strictEqual(pending.sessions.length, 1);
-    assert.strictEqual(pending.sessions[0].displayName, 'before-kill');
+    expect(pending.sessions.length).toBe(1);
+    expect(pending.sessions[0].displayName).toBe('before-kill');
   });
 });
