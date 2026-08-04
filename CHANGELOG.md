@@ -18,7 +18,10 @@ workflow.
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-04
+## [0.1.1] - 2026-08-04
+
+This is the first public release of the channel era, branded v0.1; it ships as
+`0.1.1` because npm's `0.1.0` was consumed by the 2026-04 package rename.
 
 Everything in this section shipped on `@nightly` only, before this release. The
 last tagged release is `v3.19.0` (2026-03-28), and `0.1.0` was published from
@@ -166,6 +169,6 @@ Package renamed from `claude-remote-cli` to `relay-ide` and first published unde
 the new name. Published from `nightly` without a git tag, so there is no release
 tag to link — the npm version is the record.
 
-[Unreleased]: https://github.com/donovan-yohan/relay-ide/compare/v0.2.0...nightly
-[0.2.0]: https://github.com/donovan-yohan/relay-ide/releases/tag/v0.2.0
+[Unreleased]: https://github.com/donovan-yohan/relay-ide/compare/v0.1.1...nightly
+[0.1.1]: https://github.com/donovan-yohan/relay-ide/releases/tag/v0.1.1
 [0.1.0]: https://www.npmjs.com/package/relay-ide/v/0.1.0

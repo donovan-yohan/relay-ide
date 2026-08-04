@@ -1,6 +1,6 @@
 {
   "name": "relay-ide",
-  "version": "0.2.0-rc.1",
+  "version": "0.1.1-rc.1",
   "description": "Channel-first workspace for collaborating with AI coding agents from any device",
   "type": "module",
   "main": "dist/server/index.js",
