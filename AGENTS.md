@@ -103,5 +103,8 @@ Issues live in `donovan-yohan/relay-ide`. Workflow is `backlog` â†’ `refined` â†
 - `nightly` is the active-development base and default PR target.
 - `master` is protected; tags publish stable releases.
 - Do not push directly to `master`.
+- Every user-visible PR adds a `CHANGELOG.md` `[Unreleased]` entry; a PR without
+  one states that it has no user-visible change. `/release` drains
+  `[Unreleased]` into a dated section at bump time.
 - Stable release and hotfix details live in
   `docs/references/deployment.md`.

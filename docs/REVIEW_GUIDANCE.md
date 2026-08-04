@@ -3,7 +3,7 @@
 ## Deployment Context
 
 - **Package type:** npm package (NOT a web app)
-- **Publishing:** Automated via GitHub Actions on `v*` tag push to `master`
+- **Publishing:** Automated via GitHub Actions on `v*` tag push to `master` (`vX.Y.Z` → `latest`, `vX.Y.Z-rc.N` → `rc`); every push to `nightly` → `nightly`
 - **Workflow:** `npm version <type>` → `git push && git push --tags` → CI publishes
 - **Node requirement:** >= 24.0.0 (`.nvmrc` present — run `nvm use` before testing)
 
@@ -58,6 +58,17 @@ See `docs/references/review-agent-setup.md` for full config field reference.
 - Do mobile input changes include fixture-based tests in `test/fixtures/mobile-input/`?
 - Does `npm test` pass cleanly? (runs `vitest run` — `node-pty` is a native addon and may compile if no compatible prebuild is available; `postinstall` fixes macOS ARM64 `spawn-helper` permissions)
 - Does `npm run build` succeed? (`node-pty` is a native addon and may compile if no compatible prebuild is available; `postinstall` fixes macOS ARM64 `spawn-helper` permissions)
+
+## Release Hygiene
+
+Checked at review time, not when the tag is cut. The PR template
+(`.github/pull_request_template.md`) carries the author-side version.
+
+- Is there a `CHANGELOG.md` `[Unreleased]` entry, or does the PR explicitly state "no user-visible change"? Internal refactors, test-only work, and CI plumbing may decline — silence may not.
+- Is the entry honest about what landed on this head? Right group (Added / Changed / Fixed / Removed), no claims the diff does not support, issue or PR number attached.
+- For feature PRs, does the entry read like a release note — user-visible behavior in the product vocabulary — not implementation? "Channel search jumps to the matching message" beats "add an FTS5 index to the messages table".
+- Are docs named or declined? The PR should say which of `AGENTS.md`, `docs/*.md`, or `DESIGN.md` it touched, or state "none needed".
+- On a version-bump PR, is `[Unreleased]` drained into a dated section for the new version? CI uses that section as the GitHub Release body, so a missing section ships an empty release note.
 
 ## Escape Log
 
