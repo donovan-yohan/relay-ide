@@ -97,21 +97,34 @@ That is enforced, not just documented:
 | `test/playwright-fixture-target-gate.test.ts` | `npm test` (required CI job) — any spec target that is missing or unregistered |
 | `test/e2e/global-setup.ts`                    | `npm run test:e2e` aborts before launching a browser                           |
 
-Both read `test/e2e/fixture-targets.ts`. The gate is bidirectional: a registered fixture page that no spec navigates to also fails, so dead pages cannot accumulate in the build.
+Both read `test/e2e/fixture-targets.ts`. The rule is **positive**, and it covers every `.ts`/`.tsx` file under `test/e2e/`, not only `*.spec.ts`:
+
+- every `.goto()` argument must be a static path that resolves — the app root or a built fixture page. A dynamic argument (`` `/${FIXTURE}.html` ``) is reported as an unverifiable target, not skipped.
+- every spec must end up with at least one recognised target, counting the `test/e2e/` helpers it imports. A spec that navigates nowhere fails instead of passing silently.
+- a registered fixture page that no spec navigates to also fails, so dead pages cannot accumulate in the build.
+
+The positive form is the point. The first version matched literal `/test-*.html` substrings inside spec files, and review broke it three ways in one sitting: hoist the page name into a `const`, move the navigation into a helper (helpers were not scanned), or name the page something that does not start with `test-`. Each produced a spec with zero recognised targets, and zero targets meant "nothing to check" — the exact recurrence the gate exists to prevent. All three are pinned as failing cases in the gate's own test.
 
 ### Config isolation (enforced)
 
-The fixture web-server runs against a **run-scoped temp config dir**, never the shared root a deployed hub owns. `test/e2e/isolated-config.ts` mints `"$TMPDIR"/relay-ide-e2e-*/config.json` per run and `playwright.config.ts` passes it as `RELAY_IDE_CONFIG`; the default e2e port is `3466`, not the installed hub's `3456`, so `reuseExistingServer` cannot silently attach the whole suite to a deployed hub.
+The fixture web-server runs against a **run-scoped temp config dir**, never the shared root a deployed hub owns. `test/e2e/isolated-config.ts` mints `"$TMPDIR"/relay-ide-e2e-*/config.json` and `playwright.config.ts` passes it as `RELAY_IDE_CONFIG`.
 
-There is no fallback, on either side:
+There is no fallback, on any side:
 
-| Where                                        | What fails                                                                             |
-| -------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `playwright.config.ts` (config load)         | an inherited `RELAY_IDE_CONFIG` pointing inside a shared root — the run aborts          |
-| `server/index.ts` (boot, `RELAY_IDE_E2E_FIXTURES=1`) | a missing, relative, or shared-root config — the server exits 1 before reading anything |
-| `test/e2e-fixture-config-isolation.test.ts`  | `npm test` (required CI job), including the built server's boot refusal                |
+| Where                                               | What fails                                                                              |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `playwright.config.ts` (web-server launch)          | an inherited `RELAY_IDE_CONFIG` that is not itself a run-scoped `relay-ide-e2e-*` dir     |
+| `test/e2e/global-setup.ts`                          | a server already listening on the e2e port whose `/healthz` reports a different config    |
+| `server/index.ts` (boot, `RELAY_IDE_E2E_FIXTURES=1`) | a missing, relative, or shared-root config — the server exits 1 before reading anything   |
+| `test/e2e-fixture-config-isolation.test.ts`         | `npm test` (required CI job), including the built server's boot refusal                   |
 
-Both sides call `findFixtureConfigIsolationViolation` in `server/runtime-state-paths.ts`, which treats the XDG root *and* the hardcoded `~/.config/relay-ide` root as off-limits (`server/service.ts` ignores XDG, so checking one root leaves the other reachable).
+Three properties are worth stating exactly, because the looser versions read the same and are not the same thing:
+
+- **An inherited `RELAY_IDE_CONFIG` is validated, never trusted.** It must be outside every shared root *and* run-scoped — a `relay-ide-e2e-*` directory under `$TMPDIR`. "Not under `~/.config/relay-ide`" was the old rule and it was too weak: `RELAY_IDE_CONFIG=/srv/relay/hub/config.json` exported in a shell passed it and got exactly the silent override #1214 was about, one directory over.
+- **The temp dir is minted lazily and removed by `globalTeardown`.** `--list`, `--ui`, and `--debug` never start a server and no longer create one; abandoned runs leave a dir behind, and the next mint sweeps `relay-ide-e2e-*` dirs older than a day.
+- **The default port `3466` is not the safeguard.** It avoids the installed hub's `3456`, but `reuseExistingServer` still adopts whatever is listening. `global-setup.ts` probes `/healthz` and refuses any server that does not report this run's config path — the fixture server publishes `fixtureConfigPath` there in fixture mode only. CI does not set `RELAY_IDE_PORT`; the harness owns the port.
+
+Both the harness and the server call `findFixtureConfigIsolationViolation` in `server/runtime-state-paths.ts`, which treats the XDG root *and* the hardcoded `~/.config/relay-ide` root as off-limits (`server/service.ts` ignores XDG, so checking one root leaves the other reachable).
 
 This is #1214: before it, the fixture server inherited the default config resolution. Once a deploy put a PIN in the shared config, every smoke test failed on an unlock screen, and runs that "passed" had only recycled a PIN-less server started before the deploy. Never work around it by pointing `RELAY_IDE_CONFIG` at a hub's config; a per-run temp dir is the only supported value.
 
@@ -119,38 +132,46 @@ Adding an e2e spec therefore means adding **three** things: the spec, `frontend/
 
 ### The #1299 audit (2026-08-05)
 
-56 of 69 specs pointed at fixture pages that had never existed, so they had never run a single assertion. `test/e2e/` was swept against the live channel-era app: **kept 12 / rewritten 0 / deleted 57.**
+57 of 69 specs pointed at fixture pages that had never existed, so they had never run a single assertion. `test/e2e/` was swept against the live channel-era app: **kept 11 / rewritten 0 / deleted 58.**
 
 Rewrites were deliberately not attempted. Re-pointing a stale component spec at a surface it was not written for produces a test that asserts the wrong thing, and a wrong test is worse than no test — the flows below are recorded as gaps instead.
 
-**Kept (12)** — target resolves and the spec runs:
+**Kept (11)** — target resolves *and the suite goes green*:
 
-| Spec                                              | Target                                |
-| ------------------------------------------------- | ------------------------------------- |
-| `basic.spec.ts`, `components/CipherText.spec.tsx` | `/` (the app itself)                  |
-| `channel-thread.spec.ts`                          | `test-channel-thread.html`            |
-| `channel-timeline-scroll.spec.ts`                 | `test-channel-timeline.html`          |
-| `mobile-cockpit.spec.ts`                          | `test-mobile-cockpit.html`            |
-| `sidebar-mechanics.spec.ts`                       | `test-sidebar-mechanics.html`         |
-| `components/CustomizeSessionDialog.spec.ts`       | `test-customize-session-dialog.html`  |
-| `components/EnvPickerDialog.spec.ts`              | `test-env-picker-dialog.html`         |
-| `components/FullPageDiff.spec.ts`                 | `test-full-page-diff.html`            |
-| `components/PrRow.spec.ts`                        | `test-pr-row-long.html`               |
-| `components/Terminal.spec.ts`                     | `test-terminal.html`                  |
-| `components/UtilityRailBranchPanel.spec.ts`       | `test-utility-rail-branch-panel.html` |
+| Spec                                        | Target                                |
+| --------------------------------------------- | ---------------------------------------- |
+| `basic.spec.ts`                             | `/` (the app itself)                  |
+| `channel-thread.spec.ts`                    | `test-channel-thread.html`            |
+| `channel-timeline-scroll.spec.ts`           | `test-channel-timeline.html`          |
+| `mobile-cockpit.spec.ts`                    | `test-mobile-cockpit.html`            |
+| `sidebar-mechanics.spec.ts`                 | `test-sidebar-mechanics.html`         |
+| `components/CustomizeSessionDialog.spec.ts` | `test-customize-session-dialog.html`  |
+| `components/EnvPickerDialog.spec.ts`        | `test-env-picker-dialog.html`         |
+| `components/FullPageDiff.spec.ts`           | `test-full-page-diff.html`            |
+| `components/PrRow.spec.ts`                  | `test-pr-row-long.html`               |
+| `components/Terminal.spec.ts`               | `test-terminal.html`                  |
+| `components/UtilityRailBranchPanel.spec.ts` | `test-utility-rail-branch-panel.html` |
 
-**Deleted (57)**, grouped by why:
+"Target resolves" was the original claim and it was not enough — running the suite found three ways a resolvable target still fails:
 
-_(a) Dead surface — the component module has no importer left in the app, or is gone entirely. Nothing to re-cover (11):_
-`ChangedFiles`, `FilterChipBar`, `MobileInput`, `PickerResultRow`, `PrGlyph`, `SessionIndicator`, `SessionItem`, `ShortcutHint`, `StatusMappingModal`, `TuiRow`, `WorkspaceItem` (module deleted from the tree). The mobile-input _pipeline_ keeps its own coverage via `test/mobile-input.test.ts` and `test/fixtures/mobile-input/`.
+- `components/CustomizeSessionDialog.spec.ts` (12 tests) threw `No QueryClient set` on load, so every test timed out waiting for a button the page never rendered. Fixed by wrapping the fixture harness in `QueryClientProvider`.
+- `basic.spec.ts`'s four `visual regression` screenshots had never had a baseline committed. `test/e2e/basic.spec.ts-snapshots/*-chromium-linux.png` now exists.
+- `mobile-cockpit.spec.ts`'s roster pending-inbox test cannot pass: `TopicSidebarShell` builds `rosterAttentionBySessionKey` as a literal `{}` and never fills it, so `pendingInboxCount` is always `0`. Marked `test.fixme` rather than deleted — the assertion is the record of the product gap.
 
-_(b) Live surface, behaviour already covered by a vitest test that imports the same module (18):_
-`BranchSwitcher`, `PrTopBar`, `RenameWarningModal`, `TargetBranchSwitcher` → `test/pr-top-bar-action.test.ts`; `CommandPalette` → `test/command-palette-*.test.ts`; `DeleteWorktreeDialog` → `test/workspace-lifecycle-registry.test.ts`; `DialogShell` → `test/customize-session-dialog-*.test.ts`; `DiffFileSidebar`, `DiffSourceToggle`, `DiffViewer` → `test/components/UtilityRailReviewPanel.test.ts`; `FilePicker` → `test/components/FilePicker.test.ts`; `FileTreeSidebar` → `test/components/FileTree.test.ts` + `file-tree-remote.test.ts`; `RepoDashboard`, `TicketsPanel`, `TuiProgress` → `test/repo-dashboard-tickets-flow.test.ts`; `SearchableSelect` → `test/components/SettingsAgentProfilesSection.test.ts`; `TuiButton` → `test/components/Tooltip.test.ts`; `WorkspaceEditor` → `test/workspace-editor-validation.test.ts`.
+**Deleted (58)**, grouped by why. The list below is generated from `test/e2e-sweep-ledger.ts`, which `test/e2e-sweep-ledger.test.ts` checks against the real import graph — including cutting `vi.mock`ed edges, which is how three wrong "already covered" credits were caught. Counts here are asserted against that ledger, so this table cannot drift from it.
 
-_(c) Live surface with no behavioural coverage — deleted because the spec never ran, and recorded here as a real gap (28):_
-`AgentBadge`, `AnalyticsDashboard`, `BootScreen`, `ContextMenu`, `DataTable`, `GitHubIntegration`, `ImageToast`, `IntegrationRow`, `JiraIntegration`, `MarqueeText`, `MobileHeader`, `OpenPicker`, `OrgDashboard`, `PinGate`, `PinInput`, `SessionDetail`, `SettingRow`, `SettingsDialog`, `SettingsToc`, `Sidebar`, `StatusDot`, `TicketCard`, `Toolbar`, `TuiMenuItem`, `TuiMenuPanel`, `UpdateToast`, `WebhookIntegration`, `WorkspaceSettingsDialog`.
+_(a) Dead surface — the component module has no importer left in the app, or is gone entirely. Nothing to re-cover (12):_
+`ChangedFiles`, `FileTreeSidebar` (no such module; the surviving `FileTree` emits none of the `.file-tree-sidebar__*` classes the spec asserted), `FilterChipBar`, `MobileInput`, `PickerResultRow`, `PrGlyph`, `SessionIndicator`, `SessionItem`, `ShortcutHint`, `StatusMappingModal`, `TuiRow`, `WorkspaceItem` (module deleted from the tree). The mobile-input _pipeline_ keeps its own coverage via `test/mobile-input.test.ts` and `test/fixtures/mobile-input/`.
 
-Note that `test/components/leaf-component-migration.test.ts` names several group-(c) components. It asserts the file exists and exports the expected symbols — structural, not behavioural — so it is not counted as coverage here. `AddWorkspaceDialog` was the same class of gap; #1298 closed it with `test/components/AddWorkspaceDialog.test.ts`, which drives the real dialog (host picker, folder browser, submit) against a mocked `POST /workspaces/bulk` and pins the add-project outcomes the pure `resolveBulkAddLanes` unit test cannot reach — most importantly the refresh-vs-reveal split, where an archived-only add must still call `onWorkspacesAdded`, with an empty array.
+_(b) Live surface, still loaded for real by a vitest test that imports the same module (13):_
+`CommandPalette` → `test/command-palette-message-search.test.ts`; `DeleteWorktreeDialog`, `WorkspaceEditor` → `test/workspace-lifecycle-registry.test.ts`; `DialogShell` → `test/components/AddWorkspaceDialog.test.ts`; `DiffFileSidebar`, `DiffSourceToggle` → `test/components/UtilityRailReviewPanel.test.ts`; `DiffViewer` → `test/components/file-surface-parity.test.ts`; `FilePicker` → `test/components/FilePicker.test.ts`; `PrTopBar` → `test/pr-top-bar-action.test.ts`; `RepoDashboard` → `test/repo-dashboard-tickets-flow.test.ts`; `SearchableSelect` → `test/components/SettingsAgentProfilesSection.test.ts`; `TuiButton` → `test/components/Tooltip.test.ts`; `TuiProgress` → `test/components/channel-timeline-presence.test.ts`.
+
+_(c) Live surface with no behavioural coverage — deleted because the spec never ran, and recorded here as a real gap (33):_
+`AgentBadge`, `AnalyticsDashboard`, `BootScreen`, `BranchSwitcher`, `CipherText`, `ContextMenu`, `DataTable`, `GitHubIntegration`, `ImageToast`, `IntegrationRow`, `JiraIntegration`, `MarqueeText`, `MobileHeader`, `OpenPicker`, `OrgDashboard`, `PinGate`, `PinInput`, `RenameWarningModal`, `SessionDetail`, `SettingRow`, `SettingsDialog`, `SettingsToc`, `Sidebar`, `StatusDot`, `TargetBranchSwitcher`, `TicketCard`, `TicketsPanel`, `Toolbar`, `TuiMenuItem`, `TuiMenuPanel`, `UpdateToast`, `WebhookIntegration`, `WorkspaceSettingsDialog`.
+
+Four of those started in group (b) and moved here when the check went in: `test/pr-top-bar-action.test.ts` `vi.mock`s `BranchSwitcher`, `TargetBranchSwitcher`, and `RenameWarningModal` away, and `test/repo-dashboard-tickets-flow.test.ts` does the same to `TicketsPanel`. Crediting a suite that replaces the module with a stub is the same failure mode as a spec pointed at a page that does not exist, one layer up. `CipherText` is here for a different reason: its spec asserted `.cipher-text` at `/`, where only the transient `BootScreen` renders it, and 2 of its 5 tests failed on a real run.
+
+Note that `test/components/leaf-component-migration.test.ts` names several group-(c) components. It asserts the file exists and exports the expected symbols — structural, not behavioural — so it is not counted as coverage here, and the ledger test rejects it as a credit. `AddWorkspaceDialog` was the same class of gap; #1298 closed it with `test/components/AddWorkspaceDialog.test.ts`, which drives the real dialog (host picker, folder browser, submit) against a mocked `POST /workspaces/bulk` and pins the add-project outcomes the pure `resolveBulkAddLanes` unit test cannot reach — most importantly the refresh-vs-reveal split, where an archived-only add must still call `onWorkspacesAdded`, with an empty array. The remote lane is covered too: selecting a node swaps the folder browser for a cwd input, and submitting calls `createTerminalSession` and reports `failed to create remote terminal: ...` rather than the project-registry copy.
 
 Also removed in the sweep: `test/e2e/helpers/visual.ts` (no spec imported it), the snapshot directories of the deleted specs, and `frontend/test-environment-picker.html` + `frontend/src/test-environment-picker.tsx` (a built fixture page no spec navigated to — the inverse of the same rot).
 

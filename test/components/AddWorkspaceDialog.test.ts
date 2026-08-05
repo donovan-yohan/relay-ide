@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   addWorkspacesBulk: vi.fn(),
   browseFsDirectory: vi.fn(),
   fetchHubNodes: vi.fn(),
+  createTerminalSession: vi.fn(),
 }));
 
 vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
@@ -43,6 +44,15 @@ vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
     browseFsDirectory: mocks.browseFsDirectory,
     fetchHubNodes: mocks.fetchHubNodes,
   };
+});
+
+// The remote lane never touches /workspaces: it opens a terminal on the node.
+// Stubbing at this seam keeps the rest of the dialog real.
+vi.mock('../../frontend/src/lib/session-utils.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../frontend/src/lib/session-utils.js')
+  >();
+  return { ...actual, createTerminalSession: mocks.createTerminalSession };
 });
 
 const AddWorkspaceDialog = (
@@ -192,6 +202,33 @@ async function selectPath(name: string): Promise<void> {
   await flush();
 }
 
+/** Pick a host from `#aw-node`, which is what flips the dialog to remote mode. */
+async function selectHost(nodeId: string): Promise<void> {
+  const select = container.querySelector('#aw-node') as HTMLSelectElement;
+  if (!select) throw new Error('host picker not rendered');
+  await act(async () => {
+    select.value = nodeId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+}
+
+/** Type into the controlled cwd input the way React's onChange will see it. */
+async function typeRemoteCwd(cwd: string): Promise<void> {
+  const input = container.querySelector('#aw-remote-cwd') as HTMLInputElement;
+  if (!input) throw new Error('remote cwd input not rendered');
+  const setValue = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  if (!setValue) throw new Error('no native value setter');
+  await act(async () => {
+    setValue.call(input, cwd);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await flush();
+}
+
 function submitButton(): HTMLButtonElement {
   const btn = container.querySelector(
     '.add-workspace-footer-actions .tui-btn--primary'
@@ -211,8 +248,10 @@ beforeEach(() => {
   mocks.addWorkspacesBulk.mockReset();
   mocks.browseFsDirectory.mockReset();
   mocks.fetchHubNodes.mockReset();
+  mocks.createTerminalSession.mockReset();
   mocks.browseFsDirectory.mockResolvedValue(browseResponse());
   mocks.fetchHubNodes.mockResolvedValue([]);
+  window.localStorage.clear();
   onWorkspacesAdded = vi.fn();
   dialogRef = React.createRef<AddWorkspaceDialogHandle>();
   queryClient = new QueryClient({
@@ -465,5 +504,110 @@ describe('<AddWorkspaceDialog /> add-project outcomes (#1294/#1287)', () => {
     expect(container.querySelector('.add-workspace-partial-errors')).toBeNull();
     expect(submitButton().disabled).toBe(true);
     expect(text('.add-workspace-selected-count').trim()).toBe('');
+  });
+});
+
+// #1299 review follow-up: the first pass covered only the `!isRemote` half of
+// `handleSubmit`. The remote branch has its own submit gate, its own call, and
+// its own error copy, and it was left with exactly the zero-behavioural-coverage
+// status #1298 was raised to close.
+describe('<AddWorkspaceDialog /> remote lane (#1298)', () => {
+  beforeEach(() => {
+    mocks.fetchHubNodes.mockResolvedValue([hubNode()]);
+  });
+
+  it('swaps the folder browser for a cwd input prefilled from the node home', async () => {
+    await mountAndOpen();
+    await selectHost('node-mac');
+
+    expect(container.querySelector('.tree-row')).toBeNull();
+    const cwd = container.querySelector('#aw-remote-cwd') as HTMLInputElement;
+    expect(cwd).toBeTruthy();
+    expect(cwd.value).toBe('/Users/me');
+    expect(text('.add-workspace-dialog-label')).toContain('dev mac');
+    expect(submitButton().disabled).toBe(false);
+  });
+
+  it('blocks submit until the cwd is non-empty', async () => {
+    await mountAndOpen();
+    await selectHost('node-mac');
+    await typeRemoteCwd('   ');
+
+    expect(submitButton().disabled).toBe(true);
+    await submit();
+    expect(mocks.createTerminalSession).not.toHaveBeenCalled();
+  });
+
+  it('creates the remote terminal from the typed cwd, remembers it, and closes', async () => {
+    mocks.createTerminalSession.mockResolvedValue({
+      session: { id: 'node-mac:remote-1' },
+      error: null,
+    });
+    await mountAndOpen();
+    await selectHost('node-mac');
+    await typeRemoteCwd('/Users/me/src/relay-ide');
+    await submit();
+
+    expect(mocks.createTerminalSession).toHaveBeenCalledTimes(1);
+    expect(mocks.createTerminalSession.mock.calls[0]?.[0]).toMatchObject({
+      nodeId: 'node-mac',
+      mode: 'pty',
+      cwd: '/Users/me/src/relay-ide',
+      sessionLane: 'remote-cwd',
+    });
+    // Remote is not a project: no registry write, so no refresh callback.
+    expect(mocks.addWorkspacesBulk).not.toHaveBeenCalled();
+    expect(onWorkspacesAdded).not.toHaveBeenCalled();
+    expect(dialogEl().open).toBe(false);
+    expect(
+      window.localStorage.getItem('relay-ide.remote-node-cwd.node-mac')
+    ).toBe('/Users/me/src/relay-ide');
+  });
+
+  it('surfaces the distinct remote failure copy and stays retryable', async () => {
+    mocks.createTerminalSession.mockRejectedValue(new Error('node said 500'));
+    await mountAndOpen();
+    await selectHost('node-mac');
+    await typeRemoteCwd('/Users/me/src/relay-ide');
+    await submit();
+
+    // Not "failed to add workspaces" — the remote branch has its own message,
+    // and a wrong one sends the operator to the project registry for a node
+    // problem.
+    expect(text('.add-workspace-error-msg')).toContain(
+      'failed to create remote terminal: node said 500'
+    );
+    expect(dialogEl().open).toBe(true);
+    expect(submitButton().disabled).toBe(false);
+    expect(onWorkspacesAdded).not.toHaveBeenCalled();
+  });
+
+  it('reports a rejected session create without closing', async () => {
+    mocks.createTerminalSession.mockResolvedValue({
+      session: undefined,
+      error: new Error('shell unavailable on node'),
+    });
+    await mountAndOpen();
+    await selectHost('node-mac');
+    await typeRemoteCwd('/Users/me/src/relay-ide');
+    await submit();
+
+    expect(text('.add-workspace-error-msg')).toContain(
+      'shell unavailable on node'
+    );
+    expect(dialogEl().open).toBe(true);
+    expect(
+      window.localStorage.getItem('relay-ide.remote-node-cwd.node-mac')
+    ).toBeNull();
+  });
+
+  it('switching back to this host restores the folder browser', async () => {
+    await mountAndOpen();
+    await selectHost('node-mac');
+    await selectHost('local');
+
+    expect(container.querySelector('#aw-remote-cwd')).toBeNull();
+    expect(container.querySelectorAll('.tree-row')).toHaveLength(2);
+    expect(submitButton().disabled).toBe(true);
   });
 });

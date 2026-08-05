@@ -85,6 +85,9 @@ telemetry/
 # Test artifacts
 test-results/
 playwright-report/
+# Raw `page.screenshot()` output. Real visual baselines live in
+# test/e2e/<spec>-snapshots/ and are committed.
+/test/e2e/screenshots/*.png
 .omx/
 .env
 

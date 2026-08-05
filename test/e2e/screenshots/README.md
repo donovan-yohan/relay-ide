@@ -1,32 +1,34 @@
 # Playwright Screenshots
 
-This directory stores baseline screenshots for visual regression testing.
+Scratch output for `page.screenshot({ path: ... })` calls. Files here are
+**not** baselines, are not compared against anything, and are gitignored.
 
-## Structure
+Real visual baselines live beside their spec, in the directory Playwright owns:
 
 ```
-test/e2e/screenshots/
-├── basic.spec.ts/
-│   ├── homepage.png
-│   ├── mobile-homepage.png
-│   ├── tablet-homepage.png
-│   └── desktop-homepage.png
+test/e2e/
+├── basic.spec.ts-snapshots/
+│   ├── homepage-chromium-linux.png
+│   ├── mobile-homepage-chromium-linux.png
+│   ├── tablet-homepage-chromium-linux.png
+│   └── desktop-homepage-chromium-linux.png
+└── sidebar-mechanics.spec.ts-snapshots/
+    └── sidebar-default-no-mechanics-chromium-linux.png
 ```
 
-## Usage
+Those are committed, and `expect(page).toHaveScreenshot()` fails when a run
+diverges from them. A spec whose baseline was never committed is not visual
+coverage — Playwright writes the missing file and the assertion has nothing to
+compare against, which is the same "reads like coverage, checks nothing" trap
+the #1299 audit swept (see `docs/QUALITY.md`).
 
-Baseline screenshots are automatically created on first test run with `--update-snapshots`:
+## Updating baselines
+
+When a UI change is intentional:
 
 ```bash
 npx playwright test --update-snapshots
 ```
 
-Subsequent runs will compare against these baselines and fail if visual differences exceed thresholds.
-
-## Updating Baselines
-
-When UI changes are intentional, update baselines:
-
-```bash
-npx playwright test --update-snapshots
-```
+Baselines are platform-specific (`-chromium-linux`). Regenerate them on the same
+platform CI and other developers run, or the diff is noise.

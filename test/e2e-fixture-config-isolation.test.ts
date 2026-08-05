@@ -14,8 +14,14 @@ import {
 } from '../server/runtime-state-paths.js';
 import {
   createIsolatedE2eConfigPath,
+  E2E_CONFIG_DIR_PREFIX,
   e2eWebServerEnv,
+  lazyE2eWebServerEnv,
+  removeRunScopedE2eConfigDir,
+  resolveE2eConfig,
   resolveE2eConfigPath,
+  STALE_E2E_CONFIG_DIR_MAX_AGE_MS,
+  sweepStaleE2eConfigDirs,
 } from './e2e/isolated-config.js';
 
 /**
@@ -194,12 +200,67 @@ describe('e2e harness config resolution (#1214)', () => {
     ).toThrow(/shared Relay config root/);
   });
 
-  it('honors an inherited RELAY_IDE_CONFIG that is already isolated', () => {
+  it('honors an inherited RELAY_IDE_CONFIG that is itself run-scoped', () => {
     const tmpRoot = makeTmpDir();
-    const configPath = path.join(tmpRoot, 'config.json');
-    expect(resolveE2eConfigPath({ [CONFIG_PATH_ENV_VAR]: configPath })).toBe(
-      configPath
+    const configPath = path.join(
+      fs.mkdtempSync(path.join(tmpRoot, E2E_CONFIG_DIR_PREFIX)),
+      'config.json'
     );
+    expect(resolveE2eConfig({ [CONFIG_PATH_ENV_VAR]: configPath }, tmpRoot))
+      .toEqual({ configPath, minted: false });
+  });
+
+  // Review found the old rule too weak: "outside ~/.config/relay-ide" is not
+  // isolation. A developer with RELAY_IDE_CONFIG=/srv/relay/hub/config.json
+  // exported in their shell passed the shared-root check and got exactly the
+  // silent override #1214 was about, one directory over.
+  it('refuses an inherited config that is outside every shared root but still some hub', () => {
+    const tmpRoot = makeTmpDir();
+    const foreignHub = path.join(makeTmpDir(), 'srv-relay-hub');
+    fs.mkdirSync(foreignHub, { recursive: true });
+    expect(() =>
+      resolveE2eConfig(
+        { [CONFIG_PATH_ENV_VAR]: path.join(foreignHub, 'config.json') },
+        tmpRoot
+      )
+    ).toThrow(/not run-scoped/);
+  });
+
+  it('reports whether it minted the dir, so teardown only removes its own', () => {
+    const tmpRoot = makeTmpDir();
+    const minted = resolveE2eConfig({}, tmpRoot);
+    expect(minted.minted).toBe(true);
+    expect(removeRunScopedE2eConfigDir(minted.configPath, tmpRoot)).toBe(true);
+    expect(fs.existsSync(path.dirname(minted.configPath))).toBe(false);
+  });
+
+  it('never removes a dir it did not mint', () => {
+    const tmpRoot = makeTmpDir();
+    const foreign = path.join(tmpRoot, 'someone-elses-hub');
+    fs.mkdirSync(foreign, { recursive: true });
+    expect(
+      removeRunScopedE2eConfigDir(path.join(foreign, 'config.json'), tmpRoot)
+    ).toBe(false);
+    expect(fs.existsSync(foreign)).toBe(true);
+    expect(removeRunScopedE2eConfigDir(undefined, tmpRoot)).toBe(false);
+  });
+
+  // `--list`, `--ui`, `--debug`, and aborted runs never reach globalTeardown.
+  // Before this sweep those orphans piled up in $TMPDIR forever, and each one
+  // is a real config dir a later run could be pointed at.
+  it('sweeps abandoned run dirs that are older than the cutoff', () => {
+    const tmpRoot = makeTmpDir();
+    const stale = fs.mkdtempSync(path.join(tmpRoot, E2E_CONFIG_DIR_PREFIX));
+    const fresh = fs.mkdtempSync(path.join(tmpRoot, E2E_CONFIG_DIR_PREFIX));
+    const unrelated = path.join(tmpRoot, 'not-a-relay-run');
+    fs.mkdirSync(unrelated);
+    const old = Date.now() - STALE_E2E_CONFIG_DIR_MAX_AGE_MS - 60_000;
+    fs.utimesSync(stale, old / 1000, old / 1000);
+
+    expect(sweepStaleE2eConfigDirs(tmpRoot)).toEqual([stale]);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(unrelated)).toBe(true);
   });
 
   it('builds a web-server env that pins fixture mode, port, and the isolated config', () => {
@@ -210,6 +271,41 @@ describe('e2e harness config resolution (#1214)', () => {
       RELAY_IDE_PORT: '3466',
       [CONFIG_PATH_ENV_VAR]: configPath,
     });
+  });
+
+  it('defers the config-path mint until the web-server env is read', () => {
+    const tmpRoot = makeTmpDir();
+    let resolves = 0;
+    const serverEnv = lazyE2eWebServerEnv({
+      port: 3466,
+      env: {},
+      resolveConfigPath: () => {
+        resolves += 1;
+        return createIsolatedE2eConfigPath({}, tmpRoot);
+      },
+    });
+    // Loading the Playwright config must not create anything: `--list` and
+    // `--ui` never start a server, and used to leave an orphan dir each time.
+    expect(resolves).toBe(0);
+    expect(fs.readdirSync(tmpRoot)).toEqual([]);
+
+    const spread = { ...serverEnv };
+    expect(resolves).toBe(1);
+    expect(spread[E2E_FIXTURE_ENV_VAR]).toBe('1');
+    expect(spread.RELAY_IDE_PORT).toBe('3466');
+    expect(spread[CONFIG_PATH_ENV_VAR]?.startsWith(tmpRoot)).toBe(true);
+  });
+
+  it('refuses a lazily resolved config path inside a shared root', () => {
+    const shared = path.join(
+      relayAppDataDir(process.env, os.homedir()),
+      'config.json'
+    );
+    const serverEnv = lazyE2eWebServerEnv({
+      port: 3466,
+      resolveConfigPath: () => shared,
+    });
+    expect(() => ({ ...serverEnv })).toThrow(/#1214/);
   });
 
   it('refuses to build a web-server env around a shared config path', () => {

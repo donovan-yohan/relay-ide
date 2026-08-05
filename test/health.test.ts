@@ -51,6 +51,42 @@ async function serveHealthz(lagMs: number): Promise<string> {
   return `http://127.0.0.1:${String(address.port)}`;
 }
 
+describe('/healthz fixture identity (#1214/#1299)', () => {
+  function respond(
+    options: Parameters<typeof createHealthMonitor>[0]
+  ): Record<string, unknown> {
+    const monitor = createHealthMonitor({
+      getLagMs: () => 0,
+      lagThresholdMs: 100,
+      bootId: TEST_BOOT_ID,
+      memoryLogIntervalMs: 60_000,
+      ...options,
+    });
+    monitors.push(monitor);
+    const json = vi.fn();
+    monitor.handler(
+      {} as never,
+      { status: vi.fn().mockReturnThis(), json } as never,
+      vi.fn()
+    );
+    return json.mock.calls[0]?.[0] as Record<string, unknown>;
+  }
+
+  // The Playwright harness uses this to tell its own fixture server from a
+  // leftover one before `reuseExistingServer` adopts whatever is listening.
+  it('reports the config path it booted with when the harness supplies one', () => {
+    expect(
+      respond({ fixtureConfigPath: '/tmp/relay-ide-e2e-abc/config.json' })
+    ).toMatchObject({ fixtureConfigPath: '/tmp/relay-ide-e2e-abc/config.json' });
+  });
+
+  it('omits the field entirely outside fixture mode', () => {
+    // A deployed hub must not publish its config path on an unauthenticated
+    // endpoint, so absence is the default and the key is not even present.
+    expect(respond({})).not.toHaveProperty('fixtureConfigPath');
+  });
+});
+
 describe('/healthz', () => {
   it('returns 503 from the actual monotonic interval drift probe', () => {
     vi.useFakeTimers();
