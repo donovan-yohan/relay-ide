@@ -52,6 +52,7 @@ export function useTopicRoomCreate({
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
+  const laneRepoRouting = useUiStore((s) => s.laneRepoRouting);
   const defaultAgent = useConfigStore((s) => s.defaultAgent);
   const frameworks = useConfigStore((s) => s.frameworks);
   const activeSession = useMemo(
@@ -80,14 +81,44 @@ export function useTopicRoomCreate({
   const effectiveTitle = effectiveDraftTitle(draft);
   const taskRef = taskRefFromDraft(draft.taskRef, effectiveTitle);
   const defaultNodeId = activeSession?.nodeId ?? undefined;
+  // #1303: a workspace lane the operator explicitly selected outranks EVERY
+  // inherited anchor below it. The lane click is the newest statement of where
+  // this chat belongs, and the create files the channel in that lane
+  // (`activeWorkspaceId`) regardless — so letting a terminal still open in the
+  // project the operator just left decide `repoPath`/`cwd` splits one chat
+  // across two projects. Ranked ABOVE `activeSession`, not merely above
+  // `activeRepoPath`, because that is exactly where the stale session won.
+  //
+  // Only while the stamp still describes the ACTIVE lane: once the operator
+  // moves on, the lane it was about is no longer the one being created in, and
+  // the ordinary inheritance chain is the honest answer again.
+  const laneRepoPath =
+    laneRepoRouting && laneRepoRouting.workspaceId === activeWorkspaceId
+      ? laneRepoRouting.repoPath
+      : undefined;
   // Prefer repo/worktree context when it exists, but launch only needs a cwd
   // anchor. Fresh dev/self-host sessions can rely on the backend's local cwd
   // fallback when no repo has been configured yet.
   const defaultRepoPath =
-    activeSession?.repoPath ?? activeRepoPath ?? repos[0]?.path ?? undefined;
-  const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
+    laneRepoPath ??
+    activeSession?.repoPath ??
+    activeRepoPath ??
+    repos[0]?.path ??
+    undefined;
+  // A worktree and a cwd from the abandoned project are the SAME bug wearing a
+  // different field: `buildTopicRoomLaunchBody` copies both, and `cwd` is what
+  // the process actually starts in — so a lane-routed create that kept them
+  // would claim the new repo and run in the old one. The lane anchor replaces
+  // them wholesale; a lane has no worktree of its own to offer.
+  const defaultWorktreePath = laneRepoPath
+    ? undefined
+    : (activeSession?.worktreePath ?? undefined);
   const defaultCwd =
-    activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
+    laneRepoPath ??
+    activeSession?.cwd ??
+    defaultWorktreePath ??
+    defaultRepoPath ??
+    undefined;
   const selectedProviderId = draft.providerId.trim() || defaultAgent;
   const nodes = useMemo(
     () =>

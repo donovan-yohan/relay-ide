@@ -18,6 +18,10 @@ workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- A chat started from a workspace you just selected runs in that workspace's project instead of the project of whatever terminal was still open (#1303)
+
 ## [0.1.1] - 2026-08-04
 
 This is the first public release of the channel era, branded v0.1; it ships as

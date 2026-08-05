@@ -16,6 +16,10 @@ export function applyTopicActiveContext(
   if (!topic) return;
   const context = resolveTopicActiveContext(topic);
   const ui = useUiStore.getState();
+  // #1303: this topic's context is now the newest routing intent, so a lane
+  // the operator picked earlier is spent — leaving the stamp would let it
+  // outrank the very context being applied here on the next create.
+  ui.setLaneRepoRouting(null);
   ui.setActiveWorkspaceId(context.workspaceId);
   if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
 }

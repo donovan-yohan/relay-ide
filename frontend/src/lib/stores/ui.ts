@@ -584,6 +584,23 @@ export type ActiveModal =
   | { modal: 'handoff-plan' }
   | null;
 
+/**
+ * #1303: the repo anchor of a workspace lane the operator explicitly selected
+ * THIS session, carried together with the lane it came from.
+ *
+ * Deliberately not another `activeRepoPath`: that pointer is persisted, is
+ * written by repo-dashboard navigation, and cannot say WHO wrote it — so it can
+ * never answer "did the operator just choose a lane?". This one is
+ * session-transient (no localStorage slot) because the intent it records is,
+ * and it is keyed by `workspaceId` so it self-invalidates the moment the active
+ * lane moves somewhere else instead of following the operator into a lane it
+ * was never about.
+ */
+export interface LaneRepoRouting {
+  workspaceId: string;
+  repoPath: string;
+}
+
 // ── State interface ────────────────────────────────────────────────────────
 export interface UiState {
   sidebarOpen: boolean;
@@ -592,6 +609,7 @@ export interface UiState {
   searchQuery: string;
   activeRepoPath: string | null;
   activeWorkspaceId: string | null;
+  laneRepoRouting: LaneRepoRouting | null;
   terminalFontSize: number;
   hasHardwareKeyboard: boolean;
   keyboardOpen: boolean;
@@ -748,6 +766,7 @@ export interface UiState {
   saveTerminalFontSize: () => void;
   setActiveRepoPath: (v: string | null) => void;
   setActiveWorkspaceId: (id: string | null) => void;
+  setLaneRepoRouting: (routing: LaneRepoRouting | null) => void;
   setFileDiffViewMode: (v: DiffViewMode) => void;
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
@@ -811,6 +830,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   searchQuery: '',
   activeRepoPath: ls(ACTIVE_WORKSPACE_KEY),
   activeWorkspaceId: loadPersistedActiveWorkspaceId(),
+  // #1303: no `ls(...)` here on purpose — see `LaneRepoRouting`. A reload has
+  // no "just selected" lane, so a fresh tab starts with session inheritance.
+  laneRepoRouting: null,
   terminalFontSize: loadTerminalFontSize(),
   hasHardwareKeyboard: false,
   keyboardOpen: false,
@@ -872,6 +894,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
     else lsSave(ACTIVE_WORKSPACE_GROUP_KEY, id);
     set({ activeWorkspaceId: id });
   },
+
+  setLaneRepoRouting: (routing) => set({ laneRepoRouting: routing }),
 
   setFileDiffViewMode: (v) => {
     lsSave(DIFF_VIEW_MODE_KEY, v);
