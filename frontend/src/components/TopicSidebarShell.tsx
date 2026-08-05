@@ -3092,6 +3092,8 @@ export function TopicSidebarView({
           rosterStatus: entry?.binding?.status,
           rosterUpdatedAt: query.dataUpdatedAt,
           streaming: false,
+          // #1307 staleness floor — same rule the channel header applies.
+          rosterHasLiveBinding: entry?.binding != null,
         });
         // A fresh unbound roster row supersedes a stale idle socket entry. A
         // newer active socket transition still wins through the resolver.

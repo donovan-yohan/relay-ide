@@ -35,6 +35,7 @@ workflow.
   operator's unread mark now follows the messages the repair renumbers instead
   of skipping the tail of the channel, and every pass logs its result instead of
   staying silent when it removes nothing (#1209)
+- Agent presence no longer sticks on "thinking"/"streaming"/"waiting" after an agent's runtime dies without a clean finish: every teardown path now ends in a terminal idle for the header chip and the in-timeline presence row, posts still queued behind the dead agent are released with a system row instead of staying counted against it, and a busy status that has gone stale with nothing bound is retired on the client (#1307)
 
 ### Changed
 

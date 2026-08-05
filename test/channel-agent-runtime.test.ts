@@ -20,6 +20,8 @@ const adapterState = vi.hoisted(() => ({
   all: [] as TestAdapter[],
   /** Runs inside `connect()`, before it resolves. */
   onConnect: null as ((adapter: TestAdapter) => void) | null,
+  /** Make the next adapter report its child dying from inside `connect` (#1307). */
+  dieDuringConnect: false,
 }));
 
 class TestAdapter implements ProtocolAdapterV2 {
@@ -39,9 +41,15 @@ class TestAdapter implements ProtocolAdapterV2 {
   sessionId = 'channel-runtime';
 
   async connect(config: AdapterConfig): Promise<void> {
+    // Real adapters flip to 'connected' partway through their own connect, so
+    // the manager's disconnect listener is already live when the child dies.
     this.status = 'connected';
     this.sessionId = config.sessionId;
     adapterState.onConnect?.(this);
+    if (adapterState.dieDuringConnect) {
+      await Promise.resolve();
+      this.emitDisconnected();
+    }
   }
   async disconnect(): Promise<void> {
     this.status = 'disconnected';
@@ -118,6 +126,23 @@ class TestAdapter implements ProtocolAdapterV2 {
       completedAt: '2026-07-26T00:00:00.000Z',
     });
   }
+  /** Unexpected process/transport death (#1307). */
+  emitDisconnected(): void {
+    for (const handler of [...this.handlers]) {
+      handler({
+        type: 'agent-live-state-updated-v2',
+        sessionId: 'channel-runtime',
+        timestamp: '2026-07-26T00:00:00.000Z',
+        live: {
+          status: 'disconnected',
+          activeTurnId: null,
+          waitingOn: null,
+          activeRequestIds: [],
+          queueLength: 0,
+        },
+      });
+    }
+  }
 }
 
 vi.mock('../server/protocol-adapters/index.js', () => ({
@@ -139,6 +164,7 @@ afterEach(async () => {
   adapterState.last = null;
   adapterState.all.length = 0;
   adapterState.onConnect = null;
+  adapterState.dieDuringConnect = false;
 });
 
 describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
@@ -535,6 +561,56 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(channelAgentRuntimes.get(runtime.id)).toBeUndefined();
     offThrowing();
     offHealthy();
+  });
+
+  it('ends a runtime whose adapter reports an unexpected disconnect (#1307)', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    const runtime = await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const ended: string[] = [];
+    const off = channelAgentRuntimes.onRuntimeEnd((id) => ended.push(id));
+
+    // No `destroy` call anywhere: the child died on its own. Without this the
+    // runtime stays 'active' in the registry forever and the channel binder —
+    // whose ONLY teardown signal is `onRuntimeEnd` — keeps broadcasting the
+    // status the agent had when it died.
+    adapterState.last!.emitDisconnected();
+    await vi.waitFor(() => expect(ended).toEqual([runtime.id]));
+
+    expect(channelAgentRuntimes.get(runtime.id)).toBeUndefined();
+    expect(runtime.status).toBe('disconnected');
+    off();
+  });
+
+  it('rejects instead of returning a runtime the disconnect listener already ended (#1307)', async () => {
+    // The death lands INSIDE `create`'s own connect await, so the listener
+    // installed above has already destroyed this runtime by the time connect
+    // resolves. Returning it anyway would hand the channel binder a corpse: it
+    // would attach its bridge to the disconnected adapter and persist
+    // `runtimeId` durably for a runtime that is no longer in the registry.
+    const { channelAgentRuntimes } = await runtimeModule();
+    adapterState.dieDuringConnect = true;
+
+    await expect(
+      channelAgentRuntimes.create({
+        id: 'channel-runtime',
+        providerId: 'codex',
+        profileActorId: 'agent-profile:codex:default',
+        cwd: '/tmp',
+        displayName: '#eng · Codex',
+        port: 3456,
+        configDir: '/tmp',
+      })
+    ).rejects.toThrow(/died during connect/);
+
+    expect(channelAgentRuntimes.get('channel-runtime')).toBeUndefined();
   });
 
   it('closes every runtime when one adapter disconnect rejects', async () => {

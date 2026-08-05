@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   channelAgentStatusKey,
   resolveEffectiveAgentStatus,
+  shouldPollRosterForPresence,
+  STALE_AGENT_STATUS_MS,
   useChannelAgentStatusStore,
 } from '../frontend/src/lib/stores/channel-agent-status.js';
 
@@ -73,6 +75,57 @@ describe('resolveEffectiveAgentStatus', () => {
     ).toBe('idle');
   });
 
+  // #1307 staleness floor. The server broadcasts a terminal idle on every
+  // runtime teardown, but a client that was not listening when it fired keeps a
+  // busy status the socket will never correct — and while that status stays
+  // newer than the roster snapshot it wins the tie-break forever.
+  it('retires a socket-won busy status older than the floor once the roster shows no live binding', () => {
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'thinking',
+        socketUpdatedAt,
+        rosterStatus: undefined,
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: false,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS,
+      })
+    ).toBe('idle');
+  });
+
+  it('keeps a busy status while the roster still shows a live binding, however old the transition', () => {
+    // The long-turn guard: an agent that has been thinking for an hour is still
+    // bound, and its chip must not blink out from under the operator.
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'thinking',
+        socketUpdatedAt,
+        rosterStatus: 'thinking',
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: true,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS * 6,
+      })
+    ).toBe('thinking');
+  });
+
+  it('keeps a busy status that is younger than the floor even when nothing is bound', () => {
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'streaming',
+        socketUpdatedAt,
+        rosterStatus: undefined,
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: false,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS - 1,
+      })
+    ).toBe('streaming');
+  });
+
   it('reducer-derived streaming upgrades a resolved idle but never downgrades a live status', () => {
     expect(
       resolveEffectiveAgentStatus({
@@ -131,5 +184,75 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
     // The other channel is untouched.
     expect(state.statusByChannelAgent[c2]).toBe('thinking');
     expect(state.updatedAtByChannelAgent[c2]).toBeGreaterThan(0);
+  });
+});
+
+// #1307 roster poll arming. `staleTime` alone never refetches, so a busy socket
+// status whose terminal 'idle' never arrived had nothing to reconcile it while
+// the view stayed mounted. The poll must arm on that case AND disarm itself once
+// a snapshot has landed — nothing writes the reconciled verdict back into the
+// store, so arming on the raw status alone would poll every open channel view
+// forever.
+describe('shouldPollRosterForPresence', () => {
+  const CH = 'chan-1';
+  const key = channelAgentStatusKey(CH, 'mock');
+
+  it('arms while a busy socket status is still newer than the roster snapshot', () => {
+    expect(
+      shouldPollRosterForPresence({
+        statusByChannelAgent: { [key]: 'thinking' },
+        updatedAtByChannelAgent: { [key]: 5_000 },
+        channelId: CH,
+        rosterUpdatedAt: 4_000,
+      })
+    ).toBe(true);
+  });
+
+  it('disarms once a poll lands: the fresh snapshot outranks the socket transition', () => {
+    // Arm → poll → disarm, driven only by `dataUpdatedAt` advancing past the
+    // socket's last transition. This is the exact tie-break the resolver uses,
+    // so the moment the poll stops the roster is already authoritative for the
+    // chip: the status it renders can no longer come from the stale socket entry.
+    const armed = {
+      statusByChannelAgent: { [key]: 'thinking' as const },
+      updatedAtByChannelAgent: { [key]: 5_000 },
+      channelId: CH,
+      rosterUpdatedAt: 4_000,
+    };
+    expect(shouldPollRosterForPresence(armed)).toBe(true);
+    expect(
+      shouldPollRosterForPresence({ ...armed, rosterUpdatedAt: 5_001 })
+    ).toBe(false);
+    // A fresh live transition re-arms it.
+    expect(
+      shouldPollRosterForPresence({
+        ...armed,
+        updatedAtByChannelAgent: { [key]: 6_000 },
+        rosterUpdatedAt: 5_001,
+      })
+    ).toBe(true);
+  });
+
+  it('stays disarmed for an idle channel and ignores other channels', () => {
+    expect(
+      shouldPollRosterForPresence({
+        statusByChannelAgent: { [key]: 'idle' },
+        updatedAtByChannelAgent: { [key]: 9_000 },
+        channelId: CH,
+        rosterUpdatedAt: 1_000,
+      })
+    ).toBe(false);
+    expect(
+      shouldPollRosterForPresence({
+        statusByChannelAgent: {
+          [channelAgentStatusKey('other', 'mock')]: 'thinking',
+        },
+        updatedAtByChannelAgent: {
+          [channelAgentStatusKey('other', 'mock')]: 9_000,
+        },
+        channelId: CH,
+        rosterUpdatedAt: 1_000,
+      })
+    ).toBe(false);
   });
 });
