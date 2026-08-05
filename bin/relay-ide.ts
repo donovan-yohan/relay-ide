@@ -181,6 +181,15 @@ Commands:
     ssh-bootstrap --target <host> --hub <url>
                                        Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
+    update [--check]                   Update the relay-ide install on this node (--check reports only)
+  sessions           Read and control terminal sessions (requires RELAY_IDE_BROWSER_TOKEN)
+    get <session-id>                   Print one session descriptor as JSON
+    interventions <session-id> [--limit <n>]
+                                       List recorded human interventions for a session
+    scoped list [--include-revoked] [--active-only]
+                                       List scoped session grants
+    scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]
+                                       Revoke a scoped session grant
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch]            Create a git worktree
     remove <path>                      Forward to git worktree remove
