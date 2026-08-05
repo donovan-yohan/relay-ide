@@ -30,6 +30,11 @@ workflow.
   and later read marks reach your other devices again instead of being swallowed
   (#1318).
 - A chat you create with an explicit repo or terminal target now runs in the workspace you just selected, instead of in the project of whatever terminal was still open (#1303)
+- Historical duplicated Claude replies are healed on hub start even when the
+  database already passed the schema version that first shipped the repair, the
+  operator's unread mark now follows the messages the repair renumbers instead
+  of skipping the tail of the channel, and every pass logs its result instead of
+  staying silent when it removes nothing (#1209)
 
 ### Changed
 

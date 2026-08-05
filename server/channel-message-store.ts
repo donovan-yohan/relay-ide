@@ -1330,6 +1330,56 @@ interface LegacyClaudeEchoAliasCandidate {
   duplicate_completed_at: string;
 }
 
+interface LegacyClaudeEchoHealResult {
+  /** Rows the SQL predicate matched, BEFORE the bounded-signature guards. */
+  candidates: number;
+  /** Duplicate rows actually removed. */
+  healed: number;
+}
+
+/**
+ * Candidate pairs for the pre-v2 Claude stream/echo alias, held as ONE SQL
+ * string so the cheap `EXISTS` probe on the boot path and the full pass that
+ * follows it can never drift apart. It reads the head schema
+ * (`source_runtime_id`, post-v5 rename) because the heal now runs after every
+ * numbered migration rather than inside one.
+ */
+const LEGACY_CLAUDE_ECHO_CANDIDATE_SQL = `SELECT keeper.id AS keeper_id,
+        duplicate.id AS duplicate_id,
+        keeper.channel_id AS channel_id,
+        keeper.source_item_id AS keeper_item_id,
+        duplicate.source_item_id AS duplicate_item_id,
+        keeper.created_at AS keeper_created_at,
+        duplicate.created_at AS duplicate_created_at,
+        keeper.completed_at AS keeper_completed_at,
+        duplicate.completed_at AS duplicate_completed_at
+   FROM channel_messages keeper
+   JOIN channel_messages duplicate
+     ON duplicate.channel_id = keeper.channel_id
+    AND duplicate.seq = keeper.seq + 1
+    AND duplicate.source_runtime_id = keeper.source_runtime_id
+    AND duplicate.source_turn_id = keeper.source_turn_id
+    AND duplicate.sender_kind = keeper.sender_kind
+    AND duplicate.sender_id = keeper.sender_id
+    AND duplicate.sender_display IS keeper.sender_display
+    AND duplicate.kind = keeper.kind
+    AND duplicate.status = keeper.status
+    AND duplicate.thread_id IS keeper.thread_id
+    AND duplicate.parent_message_id IS keeper.parent_message_id
+    AND duplicate.body_text = keeper.body_text
+    AND duplicate.body_format = keeper.body_format
+    AND duplicate.meta_json IS keeper.meta_json
+  WHERE keeper.sender_kind = 'agent'
+    AND keeper.sender_id = 'agent:claude'
+    AND keeper.kind = 'message'
+    AND keeper.status = 'complete'
+    AND keeper.completed_at IS NOT NULL
+    AND duplicate.completed_at IS NOT NULL
+    AND keeper.source_runtime_id IS NOT NULL
+    AND keeper.source_turn_id IS NOT NULL
+    AND keeper.source_item_id GLOB '*-1'
+    AND duplicate.source_item_id GLOB '*-0'`;
+
 function legacyClaudeItemBase(
   itemId: string,
   suffix: '-1' | '-0'
@@ -1347,49 +1397,26 @@ function legacyClaudeItemBase(
  *
  * Deleted aliases are migration-only exceptions to the append-only runtime
  * contract. References are repointed to the earliest durable id, affected
- * channels are resequenced in-place, and persisted agent-delivery cursors are
- * translated before resequencing. Browser-local read cursors cannot be
- * translated here; full-snapshot head clamping remains their recovery lane.
+ * channels are resequenced in-place, and every persisted seq cursor is
+ * translated before resequencing: agent delivery cursors AND the operator's
+ * durable last-read marks. A mark left untranslated would slide DOWN with the
+ * rows and silently swallow the unread tail — `listReadState`'s head clamp only
+ * catches a mark stranded ABOVE the head, never one that moved with the log.
+ *
+ * Callers must run this AFTER `CHANNEL_READ_STATE_SCHEMA_SQL` (i.e. from
+ * `runMigrations`, never from inside a numbered `schema_version` lane) so that
+ * table exists to be translated.
+ *
+ * Returns the candidate count alongside the healed count so the caller can log
+ * a ZERO pass. #1209 burned a day of forensics precisely because a pass that
+ * healed nothing printed nothing, leaving "the migration ran" and "the
+ * migration healed" indistinguishable from the log.
  */
-function healLegacyClaudeEchoAliases(db: Database.Database): number {
+function healLegacyClaudeEchoAliases(
+  db: Database.Database
+): LegacyClaudeEchoHealResult {
   const candidates = db
-    .prepare(
-      `SELECT keeper.id AS keeper_id,
-              duplicate.id AS duplicate_id,
-              keeper.channel_id AS channel_id,
-              keeper.source_item_id AS keeper_item_id,
-              duplicate.source_item_id AS duplicate_item_id,
-              keeper.created_at AS keeper_created_at,
-              duplicate.created_at AS duplicate_created_at,
-              keeper.completed_at AS keeper_completed_at,
-              duplicate.completed_at AS duplicate_completed_at
-         FROM channel_messages keeper
-         JOIN channel_messages duplicate
-           ON duplicate.channel_id = keeper.channel_id
-          AND duplicate.seq = keeper.seq + 1
-          AND duplicate.source_session_id = keeper.source_session_id
-          AND duplicate.source_turn_id = keeper.source_turn_id
-          AND duplicate.sender_kind = keeper.sender_kind
-          AND duplicate.sender_id = keeper.sender_id
-          AND duplicate.sender_display IS keeper.sender_display
-          AND duplicate.kind = keeper.kind
-          AND duplicate.status = keeper.status
-          AND duplicate.thread_id IS keeper.thread_id
-          AND duplicate.parent_message_id IS keeper.parent_message_id
-          AND duplicate.body_text = keeper.body_text
-          AND duplicate.body_format = keeper.body_format
-          AND duplicate.meta_json IS keeper.meta_json
-        WHERE keeper.sender_kind = 'agent'
-          AND keeper.sender_id = 'agent:claude'
-          AND keeper.kind = 'message'
-          AND keeper.status = 'complete'
-          AND keeper.completed_at IS NOT NULL
-          AND duplicate.completed_at IS NOT NULL
-          AND keeper.source_session_id IS NOT NULL
-          AND keeper.source_turn_id IS NOT NULL
-          AND keeper.source_item_id GLOB '*-1'
-          AND duplicate.source_item_id GLOB '*-0'`
-    )
+    .prepare(LEGACY_CLAUDE_ECHO_CANDIDATE_SQL)
     .all() as LegacyClaudeEchoAliasCandidate[];
 
   const affectedChannels = new Set<string>();
@@ -1437,8 +1464,13 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
     affectedChannels.add(candidate.channel_id);
   }
 
+  // Selected/updated BY ROWID rather than by (channel_id, agent_framework):
+  // v3 re-keyed the table to (channel_id, profile_actor_id), and two profiles of
+  // one provider can share a framework in one channel. Keying by rowid
+  // translates each binding's own cursor instead of stamping the last computed
+  // cursor onto its siblings.
   const selectBindings = db.prepare(
-    `SELECT channel_id, agent_framework, provider_session_json
+    `SELECT rowid AS binding_rowid, provider_session_json
        FROM channel_agent_bindings WHERE channel_id = ?`
   );
   const translateSeq = db.prepare(
@@ -1447,7 +1479,20 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
   );
   const updateBinding = db.prepare(
     `UPDATE channel_agent_bindings SET provider_session_json = ?
-      WHERE channel_id = ? AND agent_framework = ?`
+      WHERE rowid = ?`
+  );
+  // Same `COUNT(*) WHERE seq <= cursor` translation the delivery cursors get,
+  // applied to the operator's durable last-read mark (#1308 slice 3 item 1).
+  // `updated_at` is deliberately NOT touched: the mark still points at the same
+  // durable message, so nothing about WHEN the operator read it changed.
+  const translateReadMark = db.prepare(
+    `UPDATE ${CHANNEL_READ_STATE_TABLE}
+        SET last_read_seq = (
+              SELECT COUNT(*) FROM channel_messages
+               WHERE channel_messages.channel_id = ?
+                 AND channel_messages.seq <=
+                     ${CHANNEL_READ_STATE_TABLE}.last_read_seq)
+      WHERE ${CHANNEL_READ_STATE_TABLE}.channel_id = ?`
   );
   const selectOrderedIds = db.prepare(
     'SELECT id FROM channel_messages WHERE channel_id = ? ORDER BY seq ASC'
@@ -1458,8 +1503,7 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
 
   for (const channelId of affectedChannels) {
     const bindings = selectBindings.all(channelId) as Array<{
-      channel_id: string;
-      agent_framework: string;
+      binding_rowid: number;
       provider_session_json: string;
     }>;
     for (const binding of bindings) {
@@ -1477,14 +1521,15 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
             ...providerSession,
             lastDeliveredSeq: translated.count,
           }),
-          channelId,
-          binding.agent_framework
+          binding.binding_rowid
         );
       } catch {
         // Invalid legacy provider state is preserved byte-for-byte; migration
         // must not turn an unrelated malformed binding into DB unavailability.
       }
     }
+
+    translateReadMark.run(channelId, channelId);
 
     const ordered = selectOrderedIds.all(channelId) as Array<{ id: string }>;
     // The negative lane avoids transient UNIQUE(channel_id, seq) collisions
@@ -1497,7 +1542,7 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
     }
   }
 
-  return duplicateIds.size;
+  return { candidates: candidates.length, healed: duplicateIds.size };
 }
 
 /**
@@ -1537,6 +1582,39 @@ CREATE TABLE IF NOT EXISTS ${CHANNEL_READ_STATE_TABLE} (
   updated_at    TEXT NOT NULL
 );
 `;
+
+const CHANNEL_HEAL_STATE_TABLE = 'channel_heal_state';
+
+/**
+ * Ledger of one-shot historical repairs that have already run on this db
+ * (#1209).
+ *
+ * Auxiliary table, created on EVERY open, for the same reason
+ * `channel_read_state` and `channel_search_state` are: a numbered
+ * `schema_version` step fires exactly once, so a repair welded to one can never
+ * run on a db that reached that version WITHOUT it — restored from a stamped
+ * copy, rolled forward out of order, or hand-stamped. That is precisely what
+ * #1209 hit: the version said the repair had happened and the duplicate rows
+ * were still there, with no way back short of editing `schema_version`.
+ *
+ * A marker row is cheaper than a version bump in both directions. It does not
+ * make the db unopenable by an older hub (a numbered bump does — `current >
+ * SCHEMA_VERSION` throws), and re-arming a pass is
+ * `DELETE FROM channel_heal_state WHERE heal_id = '...'` rather than rewinding
+ * a schema version past migrations that must not replay. The row is also the
+ * diagnostic: it records what the pass saw and what it removed.
+ */
+const CHANNEL_HEAL_STATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS ${CHANNEL_HEAL_STATE_TABLE} (
+  heal_id      TEXT PRIMARY KEY,
+  completed_at TEXT NOT NULL,
+  candidates   INTEGER NOT NULL,
+  healed       INTEGER NOT NULL
+);
+`;
+
+/** Marker id for the pre-v2 Claude stream/echo alias repair (#1207, #1209). */
+const CLAUDE_ECHO_HEAL_ID = 'claude-echo-alias-v1';
 
 /**
  * Durable completeness marker for the index, and the resume cursor for a
@@ -1840,9 +1918,91 @@ function ensureChannelSearchIndex(db: Database.Database): void {
   );
 }
 
+/**
+ * Run the pre-v2 Claude echo alias repair once per database (#1207, #1209).
+ *
+ * Gated on a marker ROW, not on a `schema_version` step. The v2 lane welded the
+ * heal to the CHECK-widening rebuild, so it could only ever fire on the single
+ * boot that carried a db across the 1 -> 2 boundary; a db that arrived at v2 or
+ * later without that exact lane executing its heal could never heal again, and
+ * printed nothing to say so. Version numbers describe SHAPE, and the shape was
+ * already correct — what was missing was a repair, which is state.
+ *
+ * The WAL hypothesis in #1209 is refuted (see the migration tests): the old v2
+ * lane read the duplicate rows itself when it copied them into
+ * `channel_messages_v2`, then healed the renamed table in the SAME transaction
+ * on the SAME connection, so any row that survived the rebuild was by
+ * definition visible to the heal. A hot, uncheckpointed WAL copy heals
+ * normally. (The issue's second suspect — a concurrent writer holding the db —
+ * is untested here, but it cannot produce the reported outcome either: rows the
+ * rebuild did not see would not be in the table afterwards, and the reported
+ * db still had them.)
+ *
+ * This is a bounded historical repair, not an every-boot sweep. On a db that
+ * has already run it the whole cost is one primary-key lookup; on one that has
+ * not, an `EXISTS` probe short-circuits on the first matching pair (or scans
+ * once, ever, and writes the marker).
+ *
+ * When there IS work, the FTS index is torn down first and rebuilt afterwards
+ * by `ensureChannelSearchIndex`. Healing renumbers `seq` for every row of an
+ * affected channel, so leaving the sync triggers live would fire one FTS delete
+ * plus one re-insert per row inside this transaction — the exact unbounded
+ * tokenization stall the batched backfill exists to avoid — and would hard-fail
+ * the boot on a db whose FTS table was dropped while its triggers survived.
+ */
+function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
+  db.exec(CHANNEL_HEAL_STATE_SCHEMA_SQL);
+  const done = db
+    .prepare(`SELECT 1 FROM ${CHANNEL_HEAL_STATE_TABLE} WHERE heal_id = ?`)
+    .get(CLAUDE_ECHO_HEAL_ID);
+  if (done) return;
+  const hasCandidates = db.prepare(
+    `SELECT EXISTS (${LEGACY_CLAUDE_ECHO_CANDIDATE_SQL}) AS present`
+  );
+  const recordPass = db.prepare(
+    `INSERT INTO ${CHANNEL_HEAL_STATE_TABLE}
+       (heal_id, completed_at, candidates, healed)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(heal_id) DO UPDATE SET
+       completed_at = excluded.completed_at,
+       candidates   = excluded.candidates,
+       healed       = excluded.healed`
+  );
+  const result = db.transaction((): LegacyClaudeEchoHealResult => {
+    const pending = (hasCandidates.get() as { present: number }).present === 1;
+    let pass: LegacyClaudeEchoHealResult = { candidates: 0, healed: 0 };
+    if (pending) {
+      for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
+        db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      }
+      db.exec(`DROP TABLE IF EXISTS ${CHANNEL_SEARCH_TABLE}`);
+      pass = healLegacyClaudeEchoAliases(db);
+    }
+    recordPass.run(
+      CLAUDE_ECHO_HEAL_ID,
+      new Date().toISOString(),
+      pass.candidates,
+      pass.healed
+    );
+    return pass;
+  })();
+  // Logged on every path, including a ZERO pass: this runs at most once per db,
+  // so it is one line per db — not boot noise — and it is the difference between
+  // "the repair ran" and "the repair healed", which #1209 could not tell apart.
+  logger.info(
+    'channel Claude echo alias heal: %d candidate pair(s) matched, %d duplicate row(s) removed',
+    result.candidates,
+    result.healed
+  );
+}
+
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
   db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
+  // Order matters both ways: the heal translates `channel_read_state` (created
+  // above) and may drop the search index, which `ensureChannelSearchIndex`
+  // (below) then rebuilds in bounded batches.
+  ensureLegacyClaudeEchoHeal(db);
   ensureChannelSearchIndex(db);
 }
 
@@ -1868,7 +2028,7 @@ function runSchemaMigrations(db: Database.Database): void {
     return;
   }
   if (current < 2) {
-    const healed = db.transaction(() => {
+    db.transaction(() => {
       // SQLite cannot widen a CHECK constraint in place. Rebuild only the
       // message table, preserving every durable row and its sequence/source
       // identity, then recreate its indexes against the replacement table.
@@ -1914,8 +2074,10 @@ function runSchemaMigrations(db: Database.Database): void {
         ALTER TABLE channel_messages_v2 RENAME TO channel_messages;
       `);
 
-      const healedCount = healLegacyClaudeEchoAliases(db);
-
+      // The Claude echo alias heal used to live HERE, inside the rebuild. It
+      // now runs from `runMigrations` behind its own marker row: welding it to
+      // this one-shot lane is what made #1209 unrecoverable, and the rebuild
+      // itself has nothing to do with the duplicates.
       db.exec(`
         CREATE INDEX idx_chm_channel_seq
           ON channel_messages(channel_id, seq);
@@ -1931,14 +2093,7 @@ function runSchemaMigrations(db: Database.Database): void {
           WHERE client_message_id IS NOT NULL;
       `);
       db.prepare('UPDATE schema_version SET version = 2').run();
-      return healedCount;
     })();
-    if (healed > 0) {
-      logger.info(
-        'channel schema v2 healed %d historical Claude echo duplicate row(s)',
-        healed
-      );
-    }
   }
   if (current < 3) {
     db.transaction(() => {
