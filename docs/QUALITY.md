@@ -6,9 +6,14 @@ Testing patterns and quality standards for Relay IDE.
 
 - vitest (^4.1.2) as test runner, configured in `vitest.config.ts`
 - TypeScript test files in `test/`, run directly via vitest (no compilation step)
-- 99 unit/integration test files covering server modules and frontend utilities
+- The unit/integration suite is the bulk of coverage: several hundred `*.test.ts`
+  files across server modules, shared protocol code, and frontend utilities.
+  Deliberately not counted here — a hard number rots within a week.
 - React 19 frontend with TypeScript strict mode
-- E2E tests (Playwright) in `test/e2e/` are excluded from `npm test` and run separately; their fixture-page targets are gated (see [Fixture-page contract](#fixture-page-contract-gated))
+- E2E tests (Playwright) in `test/e2e/` are excluded from `npm test`
+  (`exclude: ['test/e2e/**']`) and run through their own CI job; their
+  fixture-page targets are gated (see
+  [Fixture-page contract](#fixture-page-contract-gated))
 - Pre-push hook (`.husky/pre-push`) runs only changed tests via `vitest run --changed`
 - Pre-commit hook: husky + lint-staged (eslint + prettier)
 
@@ -22,12 +27,16 @@ npx vitest run test/auth.test.ts            # Run a single test file
 npx vitest run --changed HEAD~1             # Run only tests affected by recent changes
 npx vitest run --testNamePattern 'pattern'  # Run tests matching a name pattern
 npm run build                               # Build server + frontend
-npm run check                               # Type check everything (tsc)
+npm run check                               # tsc (server) + tsc (frontend) + tsc (test) + eslint .
 ```
+
+`npm run check` is four gates, not one:
+`tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json && npm run typecheck:test && npm run lint`.
+A lint failure fails `check` even when types are clean.
 
 ## Type Checking
 
-TypeScript strict mode covers the full codebase via `tsc`. Both `build` and `test` fail on type errors. CI runs both via `npm run build && npm test`, ensuring no code with type errors can be published.
+TypeScript strict mode covers the full codebase via `tsc`, across three projects: the server/root config, `frontend/tsconfig.json`, and `test/tsconfig.json`. Both `build` and `test` fail on type errors, and the `ci` job runs `npm run check` before `npm run build`, so no code with type errors can be merged or published.
 
 `frontend/tsconfig.json` strict flags: `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noFallthroughCasesInSwitch`, `skipLibCheck`.
 
@@ -65,7 +74,23 @@ The `.husky/pre-push` hook detects git worktree context and adapts:
 - **Worktree:** runs changed tests, excluding `[needs:git-init]` tests via `--testNamePattern`
 - **No test-related changes:** skips vitest entirely (exits 0)
 
-Full suite always runs in CI (`npm test` in `.github/workflows/publish.yml`).
+## Required gates
+
+Pull requests into `nightly` or `master` must pass three workflows. Drafts are
+skipped.
+
+| Gate        | Workflow                          | What it runs                                                                                                             |
+| ----------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ci`        | `.github/workflows/ci.yml`        | `npm run check` → `npm run build` → eslint on files changed vs. the base ref → `npm test`                                |
+| `e2e`       | `.github/workflows/ci.yml`        | `needs: ci`. Builds with `RELAY_IDE_E2E_FIXTURES=1` and runs `playwright test --grep smoke` on the hosted Chrome channel |
+| `changelog` | `.github/workflows/changelog.yml` | Fails a PR touching `server/`, `frontend/`, or `shared/` without a `CHANGELOG.md` `[Unreleased]` entry                   |
+
+The `e2e` job is conditional: it detects changed files against the base ref and
+no-ops successfully when the diff is docs/markdown-only. Any other change makes
+it required.
+
+`.github/workflows/publish.yml` is the publish lane (tags and `nightly` pushes),
+not the PR gate. It is not what proves a pull request.
 
 ## Test Isolation Patterns
 
@@ -84,7 +109,7 @@ Full suite always runs in CI (`npm test` in `.github/workflows/publish.yml`).
 
 ## E2E Testing
 
-Playwright component tests live in `test/e2e/`. They are excluded from `npm test` via `vitest.config.ts` (`exclude: ['test/e2e/**']`) and run separately.
+Playwright component tests live in `test/e2e/`. They are excluded from `npm test` via `vitest.config.ts` (`exclude: ['test/e2e/**']`) and run in the dedicated `e2e` job described under Required gates — conditional on the diff touching something other than docs/markdown.
 
 ### Fixture-page contract (gated)
 

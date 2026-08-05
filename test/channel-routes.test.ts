@@ -46,6 +46,7 @@ import {
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
   parseChannelSearchSnippet,
   type ChannelEventV1,
 } from '../shared/channel-chat-protocol.js';
@@ -87,6 +88,12 @@ async function harness(
      * tiebreak SQLite is free to resolve either way.
      */
     topicClock?: () => string;
+    /**
+     * Wall-clock ceiling for one search read (#1316). `0` makes the ceiling
+     * fire on the first matched row, so the route's `search_timeout` mapping is
+     * provable without a pathological corpus or a latency assertion.
+     */
+    searchTimeBudgetMs?: number;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
@@ -95,7 +102,12 @@ async function harness(
     now: options.topicClock ?? (() => '2026-07-18T00:00:00.000Z'),
   });
   cleanup.push(() => topicStore.close());
-  const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+  const store = createChannelMessageStore(
+    path.join(dir, 'channel-chat.db'),
+    options.searchTimeBudgetMs === undefined
+      ? {}
+      : { searchTimeBudgetMs: options.searchTimeBudgetMs }
+  );
   cleanup.push(() => store.close());
   const attachmentStore = createChannelAttachmentStore({
     dbPath: path.join(dir, 'channel-attachments.db'),
@@ -2225,6 +2237,43 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     const miss = await search(h, 'q=zzzznotpresent');
     expect(miss.body.results).toEqual([]);
     expect(miss.body.unavailableReason).toBeUndefined();
+  });
+
+  it('answers a cost refusal with 200 and a reason, not an error status (#1316)', async () => {
+    const h = await harness();
+    // Seeded through the store, not the route: this needs one distinct term per
+    // row under a shared prefix to reproduce the expansion #1316 measured, and
+    // 1032 HTTP round trips would buy nothing the store call does not.
+    for (let i = 0; i < CHANNEL_SEARCH_PREFIX_TERM_BUDGET + 8; i += 1) {
+      h.store.appendComplete({
+        channelId: h.channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: `broadcast zzq${i.toString(36)} payload`,
+      });
+    }
+    const broad = await search(h, 'q=zzq');
+    // 200, not 4xx/5xx: the request was well formed and the corpus is fine —
+    // what failed is affordability, which the client answers by narrowing.
+    expect(broad.status).toBe(200);
+    expect(broad.body.results).toEqual([]);
+    expect(broad.body.truncated).toBe(false);
+    expect(broad.body.unavailableReason).toBe('search_query_too_broad');
+    // Same store, same request shape: an ordinary query is untouched by the
+    // gate and still reports NO reason, so an empty result stays meaningful.
+    const ordinary = await search(h, 'q=broadcast');
+    expect(ordinary.status).toBe(200);
+    expect(ordinary.body.results.length).toBeGreaterThan(0);
+    expect(ordinary.body.unavailableReason).toBeUndefined();
+  });
+
+  it('answers search_timeout when a read outruns its wall-clock ceiling (#1316)', async () => {
+    const timed = await harness({ searchTimeBudgetMs: 0 });
+    await post(timed, timed.channelId, 'the deployment pipeline is wedged');
+    const res = await search(timed, 'q=deployment');
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([]);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.unavailableReason).toBe('search_timeout');
   });
 
   it('reaches channels the rail read model would have cut off', async () => {

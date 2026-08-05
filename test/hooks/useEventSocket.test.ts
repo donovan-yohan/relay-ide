@@ -486,6 +486,7 @@ describe('useEventSocket repo-scoped refresh', () => {
         latestSeqByChannel: {},
         lastReadByChannel: {},
         clampedAtByChannel: {},
+        activityRaisedAtByChannel: {},
       });
       useChannelAgentStatusStore.setState({
         statusByChannelAgent: {},
@@ -784,6 +785,7 @@ describe('useEventSocket repo-scoped refresh', () => {
         latestSeqByChannel: {},
         lastReadByChannel: {},
         clampedAtByChannel: {},
+        activityRaisedAtByChannel: {},
       });
     });
 

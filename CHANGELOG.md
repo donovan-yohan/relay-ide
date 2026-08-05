@@ -18,6 +18,34 @@ workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- Message search no longer freezes the hub on a broad query. A prefix that would
+  expand across too much of the transcript is now declined before the index is
+  read, and any search that outruns its wall-clock budget is abandoned instead of
+  holding the server; both answer "type more characters" rather than a misleading
+  "no matches". Ordinary searches are unchanged. (#1316)
+- A recreated DM whose stored read marker outlived the old channel now repairs
+  itself from the hub's answer: the unread dot returns with the next message,
+  and later read marks reach your other devices again instead of being swallowed
+  (#1318).
+- A chat you create with an explicit repo or terminal target now runs in the workspace you just selected, instead of in the project of whatever terminal was still open (#1303)
+- Historical duplicated Claude replies are healed on hub start even when the
+  database already passed the schema version that first shipped the repair, the
+  operator's unread mark now follows the messages the repair renumbers instead
+  of skipping the tail of the channel, and every pass logs its result instead of
+  staying silent when it removes nothing (#1209)
+
+### Changed
+
+- Rewrote the README — the npm landing page — for the 0.1.1 product: a real
+  first-run quickstart (hub, PIN, add project, new chat, `@mention`), the
+  execution-workbench boundary stated up front, the shipped message layer
+  (search, edit/delete, retry, deep links, read sync, notifications, steering),
+  the three install channels with a `CHANGELOG.md` pointer, and a corrected CLI
+  list. `relay-ide --help` now documents `node update` and the `sessions`
+  command family, so the README's "run `--help` for the exact set" holds.
+
 ## [0.1.1] - 2026-08-04
 
 This is the first public release of the channel era, branded v0.1; it ships as

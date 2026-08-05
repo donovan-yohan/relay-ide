@@ -1,43 +1,77 @@
 # Relay documentation
 
-These documents describe behavior present in the repository today. Git history
-holds superseded plans and removed product models; the working tree does not use
+Everything under **Current** describes behavior present in the repository today.
+Everything under **Historical and reference** is dated material kept for
+traceability — snapshots, audits, and per-incident write-ups that were true when
+written and are not maintained against the current tree. Git history holds
+superseded plans and removed product models; the working tree does not use
 historical design documents as product documentation.
 
-## Start here
+Every doc listed here is linked from this index. If you add a doc, add a row.
 
-| Area               | Source                                           |
-| ------------------ | ------------------------------------------------ |
-| User onboarding    | [`../README.md`](../README.md)                   |
-| Agent/repo map     | [`../AGENTS.md`](../AGENTS.md)                   |
-| Channel model      | [`CHANNEL_CHAT.md`](CHANNEL_CHAT.md)             |
-| Architecture       | [`ARCHITECTURE.md`](ARCHITECTURE.md)             |
-| Frontend           | [`FRONTEND.md`](FRONTEND.md)                     |
-| Visual system      | [`../DESIGN.md`](../DESIGN.md)                   |
-| Backend patterns   | [`DESIGN.md`](DESIGN.md)                         |
-| Quality            | [`QUALITY.md`](QUALITY.md)                       |
-| Provider adapters  | [`provider-guide.md`](provider-guide.md)         |
-| Security           | [`SECURITY_POLICY.md`](SECURITY_POLICY.md)       |
-| Session durability | [`SESSION_DURABILITY.md`](SESSION_DURABILITY.md) |
-| Terminal backend   | [`TERMINAL_BACKENDS.md`](TERMINAL_BACKENDS.md)   |
-| Self-hosting       | [`SELF_HOSTING.md`](SELF_HOSTING.md)             |
-| CLI gateway        | [`CLI_GATEWAY.md`](CLI_GATEWAY.md)               |
-| Workbench boundary | [`WORKBENCH_BOUNDARY.md`](WORKBENCH_BOUNDARY.md) |
+## Current
 
-## Hub, node, and operations
+### Start here
 
-| Area             | Source                                                                                 |
-| ---------------- | -------------------------------------------------------------------------------------- |
-| Hub/node package | [`RELAY_HUB_NODE_PACKAGING.md`](RELAY_HUB_NODE_PACKAGING.md)                           |
-| Node bootstrap   | [`RELAY_NODE_BOOTSTRAP.md`](RELAY_NODE_BOOTSTRAP.md)                                   |
-| Pairing UX       | [`ADD_NODE_PAIR_DEVICE_UX.md`](ADD_NODE_PAIR_DEVICE_UX.md)                             |
-| WSL2             | [`WSL2_RELAY_NODE_SUPPORT.md`](WSL2_RELAY_NODE_SUPPORT.md)                             |
-| Federated dev    | [`FEDERATED_DEV.md`](FEDERATED_DEV.md)                                                 |
-| Federation       | [`federated-relay.md`](federated-relay.md)                                             |
-| Deployment       | [`references/deployment.md`](references/deployment.md)                                 |
-| Devbox hub       | [`references/devbox-hub-deploy.md`](references/devbox-hub-deploy.md)                   |
-| Dogfood recovery | [`references/dogfood-recovery.md`](references/dogfood-recovery.md)                     |
-| Browser checks   | [`references/agent-browser-verification.md`](references/agent-browser-verification.md) |
+| Area                 | Source                                                                           |
+| -------------------- | -------------------------------------------------------------------------------- |
+| User onboarding      | [`../README.md`](../README.md)                                                   |
+| Release notes        | [`../CHANGELOG.md`](../CHANGELOG.md)                                             |
+| Agent/repo map       | [`../AGENTS.md`](../AGENTS.md)                                                   |
+| Channel model        | [`CHANNEL_CHAT.md`](CHANNEL_CHAT.md)                                             |
+| Architecture         | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                             |
+| Frontend             | [`FRONTEND.md`](FRONTEND.md)                                                     |
+| Visual system        | [`../DESIGN.md`](../DESIGN.md)                                                   |
+| Backend patterns     | [`DESIGN.md`](DESIGN.md)                                                         |
+| Quality              | [`QUALITY.md`](QUALITY.md)                                                       |
+| Provider adapters    | [`provider-guide.md`](provider-guide.md)                                         |
+| Security             | [`SECURITY_POLICY.md`](SECURITY_POLICY.md)                                       |
+| Handshake grants     | [`OPERATOR_HANDSHAKE_GRANTS.md`](OPERATOR_HANDSHAKE_GRANTS.md)                   |
+| Session durability   | [`SESSION_DURABILITY.md`](SESSION_DURABILITY.md)                                 |
+| Terminal backend     | [`TERMINAL_BACKENDS.md`](TERMINAL_BACKENDS.md)                                   |
+| Self-hosting         | [`SELF_HOSTING.md`](SELF_HOSTING.md)                                             |
+| CLI gateway          | [`CLI_GATEWAY.md`](CLI_GATEWAY.md)                                               |
+| CLI schemas          | [`cli-schema/`](cli-schema/)                                                     |
+| Workbench boundary   | [`WORKBENCH_BOUNDARY.md`](WORKBENCH_BOUNDARY.md)                                 |
+| Agent view artifacts | [`AGENT_VIEW_ARTIFACTS.md`](AGENT_VIEW_ARTIFACTS.md)                             |
+| Handoff artifacts    | [`pipeline-handoff-artifact-template.md`](pipeline-handoff-artifact-template.md) |
+
+### Working in this repo
+
+| Area                    | Source                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| Cross-session learnings | [`LEARNINGS.md`](LEARNINGS.md)                                                         |
+| Review guidance         | [`REVIEW_GUIDANCE.md`](REVIEW_GUIDANCE.md)                                             |
+| Review agent setup      | [`references/review-agent-setup.md`](references/review-agent-setup.md)                 |
+| Manual QA pass          | [`references/qa-guide.md`](references/qa-guide.md)                                     |
+| README screenshots      | [`assets/README.md`](assets/README.md) — spec for the shots the README still needs     |
+| Agent browser checks    | [`references/agent-browser-verification.md`](references/agent-browser-verification.md) |
+
+### Hub, node, and operations
+
+| Area             | Source                                                               |
+| ---------------- | -------------------------------------------------------------------- |
+| Hub/node package | [`RELAY_HUB_NODE_PACKAGING.md`](RELAY_HUB_NODE_PACKAGING.md)         |
+| Node bootstrap   | [`RELAY_NODE_BOOTSTRAP.md`](RELAY_NODE_BOOTSTRAP.md)                 |
+| Pairing UX       | [`ADD_NODE_PAIR_DEVICE_UX.md`](ADD_NODE_PAIR_DEVICE_UX.md)           |
+| WSL2             | [`WSL2_RELAY_NODE_SUPPORT.md`](WSL2_RELAY_NODE_SUPPORT.md)           |
+| Federated dev    | [`FEDERATED_DEV.md`](FEDERATED_DEV.md)                               |
+| Federation       | [`federated-relay.md`](federated-relay.md)                           |
+| Deployment       | [`references/deployment.md`](references/deployment.md)               |
+| Devbox hub       | [`references/devbox-hub-deploy.md`](references/devbox-hub-deploy.md) |
+| Dogfood recovery | [`references/dogfood-recovery.md`](references/dogfood-recovery.md)   |
+
+## Historical and reference
+
+Dated material, not maintained against the current tree. Read the date before
+trusting a claim.
+
+| Area                 | Source                                   | Status                                                                                                           |
+| -------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Boo substrate audit  | [`BOO_PHILOSOPHY.md`](BOO_PHILOSOPHY.md) | Gap audit against the `coder/boo` direction. Aspirational by design — verify against code before citing.         |
+| Bug analyses         | [`bug-analyses/`](bug-analyses/)         | Per-incident write-ups, dated in the filename. Historical; see [`bug-analyses/index.md`](bug-analyses/index.md). |
+| Refactor audits      | [`refactor/`](refactor/)                 | One-off audit snapshots, dated in the filename. Historical.                                                      |
+| Design-system assets | [`design-system/`](design-system/)       | Extracted palette/type CSS and the logo asset. Reference; `../DESIGN.md` is authoritative.                       |
 
 ## Product invariants
 
