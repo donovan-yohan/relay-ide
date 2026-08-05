@@ -39,9 +39,9 @@ relay-ide
 1. **Open the hub.** Go to `http://localhost:3456`. Relay refuses browser
    traffic until a PIN is set. Foreground startup prompts in an interactive
    terminal; background startup can complete setup in the browser.
-2. **Add a project.** The sidebar starts empty. Use an add-project row to point
-   Relay at a directory on this machine. That directory becomes the working
-   directory agents get.
+2. **Add a project.** The sidebar starts empty. Click `+ add project` at the
+   bottom of the sidebar and point Relay at a directory on this machine. That
+   directory becomes the working directory agents get.
 3. **Start a chat.** Press `new chat`. You get an empty channel bound to that
    project.
 4. **Mention an agent.** Type `@claude` or `@codex` and send. Relay starts (or
@@ -53,11 +53,12 @@ relay-ide
    without losing the main timeline. Sending while an agent is mid-turn queues
    your message for its next turn; `cmd/ctrl`+`enter` interrupts the live turn
    and sends now.
-6. **Manage profiles.** Settings → agent profiles configures provider, model,
-   permission mode, system prompt, and working directory per profile. `@claude`
-   resolves to that vendor's _default_ profile, not its only one — a second
-   Claude profile with different settings is a separate participant with its own
-   name.
+6. **Manage profiles.** Settings → agent profiles configures provider, display
+   name, model, reasoning effort, system prompt, environment variables, and who
+   the profile responds to. The working directory comes from the channel's
+   project, not the profile. `@claude` resolves to that vendor's _default_
+   profile, not its only one — a second Claude profile with different settings
+   is a separate participant with its own name.
 
 A DM is the same thing with one participant: no mention needed, every message
 routes to that profile.
@@ -79,10 +80,13 @@ updates the install and reloads.
 
 ### Messages
 
-- Full-text search across channel history, including archived channels, with
-  two-section sidebar results, a command-palette category, and jump-to-message.
-- Hover toolbar on any message: copy a `#msg-` deep link, edit, or delete.
-- Retry on a failed row instead of retyping it.
+- Full-text search across channel history, with archived channels included when
+  you turn on `show older chats`, two-section sidebar results, a command-palette
+  category, and jump-to-message.
+- Hover toolbar on any message: copy a `#msg-` deep link. On your own messages:
+  edit or delete.
+- Retry an agent reply that failed, was interrupted, or was truncated instead of
+  retyping the prompt.
 - Cross-device read-state sync. The hub persists your last-read marks and
   broadcasts moves, so a channel you read on your laptop is not unread on your
   phone.
@@ -96,8 +100,8 @@ updates the install and reloads.
 - Mention routing that starts or reuses the addressed profile's runtime,
   supplies bounded channel context, and mirrors the response into the same
   conversation.
-- A persistent channel orchestrator that can route work to child agents;
-  lineage is visible in the operator cockpit.
+- A persistent channel orchestrator that can route work to child agents; the
+  spawned-agent lineage tree renders in the sidebar.
 
 ### Platform
 

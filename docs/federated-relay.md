@@ -80,9 +80,11 @@ Planned/deferred:
 
 > **Historical.** The six-layer product vocabulary — View → Workspace → Project
 > → Instance → Bench → Tab — came from #444, which is closed. It was dropped
-> from `AGENTS.md` and `README.md` in the channel realignment and no current doc
-> uses it. It is recorded here only so older commits and issues remain readable;
-> do not treat it as the live product IA. The current model is in
+> from `AGENTS.md` and `README.md` in the channel realignment and no current
+> product doc uses it; `docs/adrs/ADR-015-core-primitives-domain-agnostic.md`
+> still names it as the vocabulary of its time, which is fine for a dated
+> decision record. It is recorded here only so older commits and issues remain
+> readable; do not treat it as the live product IA. The current model is in
 > `docs/WORKBENCH_BOUNDARY.md` (canonical nouns) and `docs/CHANNEL_CHAT.md`
 > (conversation model).
 

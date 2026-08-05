@@ -36,10 +36,14 @@ that future:
 
 [^workspace]:
     "Workspace" in this ADR refers to the IDE-layer grouping of repos
-    surfaced in the frontend. The workbench vocabulary in
-    `docs/WORKBENCH_BOUNDARY.md` (View → Workspace → Project → Instance → Bench →
-    Tab) is the canonical product taxonomy; consult that doc to avoid conflating
-    the two senses.
+    surfaced in the frontend, as distinct from a paired node's set of repos.
+    **Historical:** when this ADR was written, the canonical product taxonomy
+    was the six-layer vocabulary View → Workspace → Project → Instance → Bench →
+    Tab, then documented in `docs/WORKBENCH_BOUNDARY.md`. That vocabulary came
+    from #444, which is closed; it is now recorded only in
+    `../federated-relay.md` § "Historical vocabulary (#444 six-layer IA,
+    closed)". The decision below is unaffected — read the current model in
+    `docs/WORKBENCH_BOUNDARY.md` and `docs/CHANNEL_CHAT.md`.
 
 Each assumption is fine for the IDE use case but constrains the broader
 platform story and bleeds repo/IDE semantics into modules that should be

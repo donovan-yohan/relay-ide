@@ -88,7 +88,7 @@ with a toast.
 
 `NotificationStack.tsx` renders the `notifications.ts` stack. `UpdateToast.tsx`
 checks the server version on mount, and on a one-click update reloads through
-`lib/server-restart.ts` once the server returns.
+`frontend/src/lib/server-restart.ts` once the server returns.
 
 The notification runtime is `frontend/src/lib/notify/`:
 
@@ -208,7 +208,7 @@ device proof when unit/e2e coverage cannot establish the behavior.
 
 ## Styling
 
-- Global tokens live in `frontend/src/app.css`.
+- Global tokens live in `frontend/src/App.css`.
 - Component styles live beside their TSX files.
 - Channel styles use `ChannelView.css`, `ChannelComposer.css`, and
   `ChannelImagePart.css`.

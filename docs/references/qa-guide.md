@@ -48,7 +48,7 @@ runtime.
 
 ### Projects and channels
 
-- [ ] Add-project row is visible in the empty sidebar
+- [ ] `+ add project` is visible in the empty sidebar
 - [ ] Add a project → its lane appears and persists across reload
 - [ ] `new chat` creates a channel in the selected lane, not the previous one
 - [ ] `new chat` still works immediately after adding a project (#1302)
@@ -143,15 +143,32 @@ Mobile terminal input changes need a fixture under
 
 ## Automated QA with gstack browse
 
-For `/design-review` and `/qa`, the browse tool needs a running server.
+For `/design-review` and `/qa`, the browse tool needs a running server. Pick one
+of the two lanes and browse the URL that lane actually serves the UI on —
+mixing them is how a design review silently reviews stale assets.
 
-1. Start the instance: `npm run dev` (or the package-mode command above)
-2. Verify: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3457/` returns `200`
-3. Authenticate:
+**Dev lane (`npm run dev`).** The backend listens on `127.0.0.1:3457`; the UI
+you must browse is Vite on `127.0.0.1:5173`, which proxies the REST routes and
+`/ws` back to 3457. Frontend edits are live over HMR, no build step. Both
+processes bind `127.0.0.1` only — use that literal, not `localhost`.
+
+1. Start: `npm run dev`
+2. Verify: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/` returns `200`
+3. Browse `http://127.0.0.1:5173`
+
+**Package lane (built assets).** Browse 3457 directly, but only after a build —
+the server serves `dist/frontend` and returns early the moment `index.html`
+exists, so it never rebuilds an edited TSX/CSS change for you.
+
+1. Start: `npm run build && node dist/bin/relay-ide.js --port 3457 --config ~/.config/relay-ide/qa/config.json`
+2. Verify: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3457/` returns `200`
+3. Browse `http://127.0.0.1:3457`
+
+Then authenticate against whichever URL you started with:
 
 ```bash
 B=~/.claude/skills/gstack/browse/dist/browse
-$B goto "http://localhost:3457"
+$B goto "http://127.0.0.1:5173"   # package lane: http://127.0.0.1:3457
 $B fill @e1 "<pin>"     # PIN input (first textbox on the login page)
 $B click @e2            # Unlock button
 ```
@@ -160,6 +177,9 @@ The cookie persists for the session.
 
 ### Common gotchas
 
+- **Reviewing stale assets** — on the package lane, an unbuilt frontend change
+  is invisible: `ensureFrontendBuilt` returns early when
+  `dist/frontend/index.html` already exists. Rebuild, or use the dev lane.
 - **Port 3456 in use** — that is the default install. Use 3457 for QA.
 - **PIN hash mismatch** — generate at runtime; the scrypt salt is per-run.
 - **Multiple dialog instances** — `document.querySelector('.dialog-shell')` may

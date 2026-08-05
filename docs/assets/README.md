@@ -38,6 +38,8 @@ by construction.
 
 - Dark theme only — Relay is dark-only (#1174).
 - PNG, 2x device pixel ratio, then compress.
-- Keep each file under ~400 KB; these ship in the npm tarball.
+- Keep each file under ~400 KB — they live in git and are fetched from GitHub
+  when npm renders the README; they are not packed into the tarball
+  (`files` is `dist/` + `scripts/`).
 - No annotations, arrows, or drop shadows. The UI is the screenshot.
 - Recapture when the channel surface changes shape, not on every release.
