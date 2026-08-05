@@ -172,7 +172,7 @@ The installed/global daemon can stay running during normal self-host development
 
 - Do not bind the self-host backend to `3456` unless the global daemon is stopped.
 - Do not reuse `~/.config/relay-ide/config.json` as `RELAY_IDE_CONFIG` for self-host mode.
-- Do not run Playwright e2e against fixed production ports while the global daemon owns them.
+- Do not point `RELAY_IDE_CONFIG` at a hub's config when running Playwright e2e. Since #1214 you cannot: the harness mints a per-run temp config dir, defaults the e2e port to `3466` instead of `3456`, and the fixture server exits 1 if `RELAY_IDE_E2E_FIXTURES=1` resolves a config inside a shared root. See `docs/QUALITY.md` § Config isolation.
 
 Useful checks:
 
@@ -184,7 +184,7 @@ lsof -nP -iTCP:<self-host-backend-port> -sTCP:LISTEN
 
 ## macOS e2e / global daemon caveats
 
-Playwright e2e tests that assume fixed ports or a single daemon can collide with the installed launchd service. On macOS, stop the global service before e2e runs that need exclusive ownership:
+Config state no longer collides (#1214, above), but a *port* still can: anything already listening on the e2e port is reused as the fixture server. On macOS, stop the global service before e2e runs that need exclusive ownership of its port:
 
 ```bash
 launchctl stop com.relay-ide

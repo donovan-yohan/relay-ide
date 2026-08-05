@@ -1,6 +1,23 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const port = Number(process.env.PLAYWRIGHT_PORT ?? 3456);
+import {
+  e2eWebServerEnv,
+  resolveE2eConfigPath,
+} from './test/e2e/isolated-config.js';
+
+// #1214: the fixture server gets a run-scoped config dir, never the shared one
+// a deployed hub owns. Resolved once in the Playwright main process and pushed
+// into `process.env` so re-loads of this config (workers, the webServer child)
+// reuse that dir instead of minting more. `resolveE2eConfigPath` throws rather
+// than honoring an inherited `RELAY_IDE_CONFIG` that points at a shared root,
+// and the server refuses the same paths at boot.
+const configPath = resolveE2eConfigPath();
+process.env.RELAY_IDE_CONFIG = configPath;
+
+// Not 3456: that is the default port of an *installed* hub (`relay-ide hub`),
+// and `reuseExistingServer` would happily point the whole suite at it — the
+// deployed hub, not a fixture build (#1214).
+const port = Number(process.env.PLAYWRIGHT_PORT ?? 3466);
 const baseURL = `http://localhost:${port}`;
 const startCommand =
   process.env.RELAY_IDE_E2E_SKIP_BUILD === '1'
@@ -40,7 +57,10 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `RELAY_IDE_E2E_FIXTURES=1 RELAY_IDE_PORT=${port} ${startCommand}`,
+    command: startCommand,
+    // Env, not a `FOO=1 ... command` prefix: the config path is a temp dir and
+    // a shell prefix loses to quoting. Playwright merges this over process.env.
+    env: e2eWebServerEnv({ port, configPath }),
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,

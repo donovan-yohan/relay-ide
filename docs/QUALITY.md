@@ -99,6 +99,22 @@ That is enforced, not just documented:
 
 Both read `test/e2e/fixture-targets.ts`. The gate is bidirectional: a registered fixture page that no spec navigates to also fails, so dead pages cannot accumulate in the build.
 
+### Config isolation (enforced)
+
+The fixture web-server runs against a **run-scoped temp config dir**, never the shared root a deployed hub owns. `test/e2e/isolated-config.ts` mints `"$TMPDIR"/relay-ide-e2e-*/config.json` per run and `playwright.config.ts` passes it as `RELAY_IDE_CONFIG`; the default e2e port is `3466`, not the installed hub's `3456`, so `reuseExistingServer` cannot silently attach the whole suite to a deployed hub.
+
+There is no fallback, on either side:
+
+| Where                                        | What fails                                                                             |
+| -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `playwright.config.ts` (config load)         | an inherited `RELAY_IDE_CONFIG` pointing inside a shared root — the run aborts          |
+| `server/index.ts` (boot, `RELAY_IDE_E2E_FIXTURES=1`) | a missing, relative, or shared-root config — the server exits 1 before reading anything |
+| `test/e2e-fixture-config-isolation.test.ts`  | `npm test` (required CI job), including the built server's boot refusal                |
+
+Both sides call `findFixtureConfigIsolationViolation` in `server/runtime-state-paths.ts`, which treats the XDG root *and* the hardcoded `~/.config/relay-ide` root as off-limits (`server/service.ts` ignores XDG, so checking one root leaves the other reachable).
+
+This is #1214: before it, the fixture server inherited the default config resolution. Once a deploy put a PIN in the shared config, every smoke test failed on an unlock screen, and runs that "passed" had only recycled a PIN-less server started before the deploy. Never work around it by pointing `RELAY_IDE_CONFIG` at a hub's config; a per-run temp dir is the only supported value.
+
 Adding an e2e spec therefore means adding **three** things: the spec, `frontend/test-<name>.html` + its entry module, and the `buildInputs` line in `frontend/vite.config.ts`.
 
 ### The #1299 audit (2026-08-05)
