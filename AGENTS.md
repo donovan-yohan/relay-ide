@@ -47,8 +47,12 @@ need Vite HMR or a fresh build before package-mode verification.
 | Release notes     | `CHANGELOG.md`                         |
 | Deployment        | `docs/references/deployment.md`        |
 | Devbox hub        | `docs/references/devbox-hub-deploy.md` |
+| Manual QA pass    | `docs/references/qa-guide.md`          |
 | ADRs              | `docs/adrs/`                           |
 | Learnings         | `docs/LEARNINGS.md`                    |
+
+`docs/README.md` splits current docs from historical/reference material. Add a
+row there for any new doc.
 
 ## Product and architecture rules
 

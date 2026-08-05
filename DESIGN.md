@@ -2,10 +2,11 @@
 
 ## Product Context
 
-- **What this is:** Hub/node agentic development environment for managing terminal-native agent tabs across local and remote nodes. Repos and worktrees are the golden-path local Project/Bench case, but the user-facing source of truth is the active tab context: `nodeId`, `cwd`, and `kind`.
-- **Who it's for:** Developers who use CLI agents (Claude Code, Codex, OpenCode, Hermes, and remote node shells) — power users who live in terminals
-- **Space/industry:** Developer tools, CLI companions, terminal multiplexers
-- **Project type:** Web app (mobile-friendly) with terminal-native aesthetic
+- **What this is:** A channel-first workspace for AI coding agents, backed by a hub/node execution model. The primary surface is a conversation: channels and DMs where agents post alongside the operator. Agent identity is a durable **profile actor**, never a terminal tab or provider process. Terminal, file, diff, and artifact views are secondary execution surfaces around the conversation.
+- **Primary rows to design for:** channel/DM sidebar rows, timeline message rows and groups, agent detail cards, the composer (including its steering cluster), roster and status chips.
+- **Who it's for:** Developers who use CLI agents (Claude Code, Codex, OpenCode, Hermes) — power users who live in terminals but want the conversation reachable from a phone.
+- **Space/industry:** Developer tools, CLI companions, agent workbenches
+- **Project type:** Web app (mobile-friendly) with terminal-native aesthetic. Dark-only.
 
 ## Aesthetic Direction
 
@@ -131,7 +132,7 @@ Each color has a muted variant for workspace group backgrounds: `color-mix(in sr
 - **Pattern:** Workspace containers use an outlined border derived from the group's assigned color
 - **Border:** `1px solid color-mix(in srgb, [group-color] 30%, transparent)` — subtle enough to group visually without competing with content
 - **Background:** Pure black (`--bg`) interior — no colored backgrounds
-- **Purpose:** Visual grouping of pinned Projects and active Tabs within a workspace, distinguishable at a glance by border color. In the current local implementation many workspace rows still represent repo/worktree groups; document that as the repo Project/Bench case, not as the universal model.
+- **Purpose:** Visual grouping of a workspace's channels, DMs, and active execution rows, distinguishable at a glance by border color. The sidebar reads the channel-workspace model (`workspace_topics` + `ia_workspaces` + channel summaries), never `config.repos`; a repo is optional context on a channel, not the grouping identity.
 
 ## Alignment Architecture
 
@@ -175,7 +176,7 @@ The terminal identity comes from BEHAVIOR, not just styling. Every animation com
 
 ### 1. ASCII Box-Drawing Buttons
 
-Buttons use Unicode box-drawing corner characters (`┌ ┐ └ ┘`) with CSS border edges between them. On hover, corners upgrade to double-line variants (`╔ ╗ ╚ ╝`) and edges shift to double borders. Implementation: Svelte TuiButton component with corner `<span>` elements and CSS `border-top`/`border-bottom` for edges.
+Buttons use Unicode box-drawing corner characters (`┌ ┐ └ ┘`) with CSS border edges between them. On hover, corners upgrade to double-line variants (`╔ ╗ ╚ ╝`) and edges shift to double borders. Implementation: the React `TuiButton` component with corner `<span>` elements and CSS `border-top`/`border-bottom` for edges.
 
 ### 2. Cipher-Decode Loading
 
@@ -210,7 +211,69 @@ When status text changes (session activates, PR merges, build passes), the old t
 
 A barely-visible (opacity 0.02-0.03) repeating scanline pattern overlays the sidebar. The pattern continuously drifts downward at a slow rate (~8s cycle) creating the optical illusion of a CRT display. On hover over workspace items, a single faint horizontal scanline sweeps down the item (~800ms, ease-in-out). This is the most decorative element — intentionally subtle, an easter egg for close inspection.
 
+## Channel Surface Rules
+
+These are the surfaces most UI work touches today. They post-date the v1/v2
+audit snapshot below and are the live rules.
+
+### Timeline rhythm
+
+- **Consecutive messages from one sender group.** The group carries the avatar,
+  name, and timestamp once; subsequent rows are body-only and hang under the
+  same left gutter. Do not repeat identity chrome per row.
+- **One gutter, everywhere.** Message body, detail card, and image part all
+  align to the same left edge. A card must not inset itself relative to the
+  prose above it.
+- **Rows are edge-to-edge.** Hover and selection states paint the full row
+  width; they do not draw an inset rounded box.
+- **Date and unread markers are full-width rules** with a centered label, not
+  floating pills.
+
+### Agent identity
+
+- Sender identity resolves from the **profile actor id**, not the vendor. Two
+  Claude profiles are two visually distinct participants with their own names
+  and initials avatars. Never label a row with only the provider.
+- Initials avatars use the repo identity color palette, hash-derived from the
+  actor id.
+- Status chips (spawning, thinking, streaming, waiting, idle) are outline-only
+  text with a status dot. No filled badges.
+
+### Detail cards
+
+- Reasoning, tool, code, output, and diff cards are **collapsible and collapsed
+  by default** past a bounded height. The header states kind, title, and status.
+- Card chrome is a single hairline border in `--border`, zero radius, on `--bg`.
+  Cards do not stack shadows or tint their background by kind.
+- Diff cards use the addition/deletion tints defined above; nothing else in a
+  card is colored by semantics.
+- A truncated, interrupted, or failed card says so in the header. Never render a
+  partial result as if it completed.
+
+### Composer
+
+- The composer is a single bordered block pinned to the bottom of the channel.
+- While a bound agent is mid-turn the bar reveals exactly two controls — `queue`
+  and `interrupt & send` — as sibling outline buttons. No menu, no inferred
+  variant, no hidden modifier-only affordance.
+- `interrupt & send` reuses the header interrupt control's black-square
+  vocabulary so the two read as the same action.
+- Queue state is communicated by a dim chip on the sent message and a
+  `(n queued)` suffix on the presence row — both muted, neither alarming.
+
+### Notification stack
+
+- Toasts stack bottom-right, one bordered block each, zero radius, `--surface`
+  background (this is a floating element, so `--surface` is correct here).
+- Every toast is dismissible and states its action in a lowercase verb.
+
 ## Implementation Audit Checklist
+
+> **Historical (2026-03-25 v1/v2 aesthetic audit).** This checklist and the
+> Decisions Log below record the pre-channel terminal-aesthetic overhaul. The
+> ticked rows are still binding as style rules; the checklist itself is not a
+> current status board and has no entries for channel-era surfaces. For those,
+> use "Channel Surface Rules" above.
 
 ### Completed (v1 overhaul)
 
@@ -223,20 +286,26 @@ A barely-visible (opacity 0.02-0.03) repeating scanline pattern overlays the sid
 - [x] Convert PR table pills to outline-only
 - [x] Expand color array in `colors.ts` from 8 to 12 colors
 
-### Pending (v2 micro-interactions + alignment)
+### v2 micro-interactions + alignment
 
-- [ ] Implement TuiButton component with box-drawing corners
-- [ ] Implement cipher-decode loading component
-- [ ] Implement marquee-scroll overflow component
-- [ ] Implement block cursor for focused inputs
-- [ ] Add `>` cursor to ContextMenu and dropdown components
-- [ ] Implement ASCII progress bar and spinner components
-- [ ] Apply cipher-decode to status text transitions
-- [ ] Add scanline CRT overlay to sidebar
+All eight micro-interaction components shipped; the two remaining rows are
+codebase-wide application passes, not components.
+
+- [x] Implement TuiButton component with box-drawing corners — `TuiButton.tsx`
+- [x] Implement cipher-decode loading component — `CipherText.tsx`
+- [x] Implement marquee-scroll overflow component — `MarqueeText.tsx`
+- [x] Implement block cursor for focused inputs — `TuiInput.tsx` (`.tui-cursor`, blinks only when idle)
+- [x] Add `>` cursor to ContextMenu and dropdown components — `TuiMenuItem.tsx` (`.fzf-cursor`)
+- [x] Implement ASCII progress bar and spinner components — `TuiProgress.tsx`
+- [x] Apply cipher-decode to status text transitions — `SessionItem.tsx`, `PrTopBar.tsx`, `BootScreen.tsx`
+- [x] Add scanline CRT overlay to sidebar — `Sidebar.css` (`.sidebar-scanline-overlay`)
 - [ ] Apply alignment architecture tokens and rules across all components
 - [ ] Fix SettingsDialog layout — TOC must attach flush to content, no floating panel
 
 ## Decisions Log
+
+Historical. Every row below is from the 2026-03-25 aesthetic consultation and
+predates the channel product model; the decisions remain binding as style rules.
 
 | Date       | Decision                                      | Rationale                                                                                                                                 |
 | ---------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |

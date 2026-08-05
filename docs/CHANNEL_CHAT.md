@@ -89,9 +89,99 @@ The hub coalesces text deltas and applies socket watermarks. A lagging client
 can reconnect from its last durable sequence instead of requiring an
 unbounded in-memory queue.
 
-Unread position is browser-local. `ChannelView` captures a channel's last-read
-sequence and the activity store mirrors it to local storage; the durable
-channel store does not claim cross-device read receipts.
+### Read state and unread
+
+Unread is derived client-side; the _marker_ it derives from converges through
+the hub. `ChannelView` captures a channel's last-read sequence into
+`frontend/src/lib/stores/channel-activity.ts`, which is the fast path and
+persists to local storage. The same store pushes the mark to
+`PUT /channels/:id/read-state`, seeds from `GET /channels/read-state`, and
+applies `channel-read-state` broadcasts on `/ws/events`.
+
+The hub is a point of convergence, not a source of truth:
+
+- **Monotonic up.** Merges only ever advance a mark. A device that is behind
+  cannot pull another device's channel back to unread.
+- **Clamp-epoch fence.** A recreated DM reuses its deterministic channel id, so
+  stale hub marks are fenced by the same per-channel clamp epoch the
+  channel-list seed uses; a fresh channel does not inherit a dead one's mark.
+- **Forward-only convergence.** Reading on one device settles the badge on the
+  others. Nothing marks a channel unread remotely.
+
+Unread counts themselves are never stored — they are computed from the marker
+against the durable sequence.
+
+## Search
+
+`GET /channels/search` queries an FTS5 virtual table
+(`channel_messages_fts`) that `server/channel-message-store.ts` maintains as an
+external-content mirror of the searchable subset of `channel_messages`, kept in
+sync by insert/update/delete triggers. Operator text is translated into a MATCH
+expression; terms with no letter or digit are dropped.
+
+- **Refused vs. empty are distinguishable.** Blank text, no letter/digit, or a
+  single term under the minimum length returns an explicit `unavailableReason`
+  instead of an empty result set, so the client never prints "no matches" for a
+  query the index never ran.
+- **Visibility is an allowlist pushed into the query.** Archive state and titles
+  live in `workspace_topics`, a separate database from the message log, so the
+  visible-channel set is resolved first and passed into the index query.
+  Filtering after the fact would let archived hits crowd out live ones.
+- **Reach is the corpus, not the rail.** The allowlist is built from
+  `listAllTopicIds()`, not the sidebar read model's capped `list()`. The rail's
+  cap is a rendering budget; using it silently made older channels unreachable.
+- `includeArchived`, `limit`, `channelId`, and `workspaceId` scope the search.
+
+The UI surfaces results in two sidebar sections (channels and messages), as a
+command-palette category, and as jump-to-message navigation into the timeline.
+
+## Message mutation and retry
+
+Edits and deletes are operator-only and durable, and neither can raise an agent
+turn.
+
+- `PATCH /channels/:id/messages/:messageId` rewrites the body in place. Same id,
+  same `seq`, new body, `meta.editedAt` stamped. The seq space stays gap-free.
+- `DELETE /channels/:id/messages/:messageId` stamps `meta.deletedAt`.
+- Both broadcast directly through the hub rather than going through
+  `postToChannel`, so mention-routing handlers never observe them. Editing a
+  message that mentioned an agent does not re-trigger it.
+- Sender attribution is server-derived on both routes: a body carrying `sender`
+  or `source` is rejected outright rather than ignored, and a non-human sender
+  is refused. An agent cannot edit or delete anyone's message, including its
+  own.
+- Archived channels refuse edit, delete, and retry.
+
+`POST /channels/:id/messages/:messageId/retry` re-drives a failed row through
+the binder. It writes a durable `retrying @…` system row and appends a whole new
+agent turn, which is why an archived channel refuses it. A message that is not
+retryable, or a binding that is already mid-turn, returns a typed reason code
+(`CHANNEL_AGENT_BUSY` and friends) rather than silently doing nothing.
+
+### Deep links
+
+`buildChannelMessageLink` in `frontend/src/lib/url-nav.ts` produces
+`/channel/<segment>#msg-<message id>`; `parseMessageAnchor` is its inverse.
+Resolving an anchor that is not in the loaded window walks older history pages,
+bounded by `ANCHOR_WALK_MAX_PAGES` (8) in `ChannelView.tsx`. Unbounded, a link
+to a deleted or foreign message id would walk the channel to `seq` 1 on every
+open; bounded, the worst case is a fixed number of page fetches and one toast.
+
+## Notifications and badges
+
+While the tab is hidden, unread activity raises an OS notification and marks the
+favicon and title. The runtime lives in `frontend/src/lib/notify/`:
+
+- `leader.ts` elects one leader tab, so N open tabs raise one notification
+  rather than N.
+- `os-notification.ts` owns permission state and delivery.
+- `favicon-badge.ts` and `title-badge.ts` own the tab-level count.
+- `signals.ts` and `producers.ts` derive what is worth announcing.
+
+`notify-settings.ts` holds operator preferences (Settings → notifications) and
+`notify-badge.ts` holds the derived count. Notifications read the same
+client-derived unread state described under "Read state and unread" — they do
+not introduce a second source of truth.
 
 ## DMs and profiles
 

@@ -154,6 +154,16 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
 );
 
 /**
+ * How long a live transition stays admissible as evidence that an agent is still
+ * busy (#1307). Deliberately far longer than any plausible round-trip: this is a
+ * last-resort floor under a socket status whose terminal 'idle' was never
+ * delivered, not a turn timeout. It only ever applies while the roster ALSO says
+ * the agent has no runtime bound, so a genuinely long turn — which keeps a live
+ * binding in the roster for its whole duration — is never hidden by it.
+ */
+export const STALE_AGENT_STATUS_MS = 10 * 60 * 1000;
+
+/**
  * Reconcile a live socket status with a freshly-fetched roster snapshot. The
  * socket carries transition-only events (no replay on `/ws/events` reconnect),
  * so a missed terminal 'idle' would otherwise pin the header chip at
@@ -161,6 +171,11 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
  *   • socket wins ONLY when its last transition is at least as new as the roster
  *     snapshot (a genuine live update the roster hasn't observed yet);
  *   • otherwise the roster snapshot is authoritative (fixes the stuck-busy case);
+ *   • a socket-won busy status older than `STALE_AGENT_STATUS_MS` degrades to
+ *     idle when the roster reports no live binding for the agent — the server
+ *     already broadcasts a terminal idle on every runtime teardown, so this is
+ *     the belt for the one case that broadcast cannot cover: a client that was
+ *     not listening when it fired and whose roster snapshot is older still;
  *   • reducer-derived streaming still upgrades a resolved idle (graceful degrade
  *     when the events socket lags), never downgrades.
  */
@@ -170,21 +185,68 @@ export function resolveEffectiveAgentStatus(input: {
   rosterStatus: ChannelAgentStatus | undefined;
   rosterUpdatedAt: number;
   streaming: boolean;
+  /**
+   * Whether the roster snapshot still shows a runtime bound for this agent.
+   * Omitted means "unknown" and is treated as bound — no caller loses its
+   * status to the staleness floor by accident.
+   */
+  rosterHasLiveBinding?: boolean;
+  /** Injectable clock for the staleness floor (tests). */
+  now?: number;
 }): ChannelAgentStatus {
   const { socketStatus, socketUpdatedAt, rosterStatus, rosterUpdatedAt } =
     input;
-  let status: ChannelAgentStatus;
-  if (
+  const socketWins =
     socketStatus !== undefined &&
     socketUpdatedAt !== undefined &&
-    socketUpdatedAt >= rosterUpdatedAt
+    socketUpdatedAt >= rosterUpdatedAt;
+  let status: ChannelAgentStatus = socketWins
+    ? socketStatus
+    : (rosterStatus ?? 'idle');
+  if (
+    socketWins &&
+    status !== 'idle' &&
+    input.rosterHasLiveBinding === false &&
+    (input.now ?? nowMs()) - socketUpdatedAt >= STALE_AGENT_STATUS_MS
   ) {
-    status = socketStatus;
-  } else {
-    status = rosterStatus ?? 'idle';
+    status = 'idle';
   }
   if (status === 'idle' && input.streaming) status = 'streaming';
   return status;
+}
+
+/**
+ * Whether a channel still needs the roster re-fetched to settle its presence
+ * chips (#1307).
+ *
+ * Armed on "the socket can still win", NOT on "the socket says busy": it is the
+ * exact predicate `resolveEffectiveAgentStatus` uses to prefer a socket status
+ * over the roster snapshot (`socketUpdatedAt >= rosterUpdatedAt`, non-idle). So
+ * it self-disarms — the moment a poll lands, every socket transition in the
+ * channel is older than the roster snapshot, the roster becomes authoritative
+ * for all of them, and this returns false. A fresh live transition re-arms it.
+ *
+ * Arming on the raw status alone would poll forever: nothing writes the
+ * reconciled verdict back into the store, so a status the roster has already
+ * superseded stays 'thinking' in `statusByChannelAgent` for the lifetime of the
+ * mounted view.
+ */
+export function shouldPollRosterForPresence(input: {
+  statusByChannelAgent: Record<string, ChannelAgentStatus>;
+  updatedAtByChannelAgent: Record<string, number>;
+  channelId: string;
+  /** The roster query's `dataUpdatedAt` (0 before the first successful fetch). */
+  rosterUpdatedAt: number;
+}): boolean {
+  const prefix = `${input.channelId} `;
+  for (const [key, status] of Object.entries(input.statusByChannelAgent)) {
+    if (!key.startsWith(prefix)) continue;
+    if (status === 'idle') continue;
+    const socketUpdatedAt = input.updatedAtByChannelAgent[key];
+    if (socketUpdatedAt !== undefined && socketUpdatedAt >= input.rosterUpdatedAt)
+      return true;
+  }
+  return false;
 }
 
 /**

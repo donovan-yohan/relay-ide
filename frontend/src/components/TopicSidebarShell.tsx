@@ -59,7 +59,7 @@ import {
 import { AgentAvatar } from './chat/AgentAvatar.js';
 import { leaveChatSurface, openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
-  applyTopicActiveContext,
+  applyCreateRoutingContext,
   openChannelMessageSelection,
   openTopicSelection,
 } from '../lib/topic-selection.js';
@@ -1978,6 +1978,16 @@ function messageEmptyStateText(input: {
   if (input.unavailableReason === 'no_searchable_term') {
     return 'no searchable term to look up';
   }
+  // #1316. Both are cost answers, not corpus answers: the first was refused
+  // before the index was read, the second was cut off part way through it. The
+  // copy therefore asks for a narrower query and never says "no matches" —
+  // whatever the operator is looking for may well be in the transcript.
+  if (input.unavailableReason === 'search_query_too_broad') {
+    return 'too many matches to rank — type more characters';
+  }
+  if (input.unavailableReason === 'search_timeout') {
+    return 'search took too long — type more characters';
+  }
   return `no message matches for “${input.searchQuery.trim()}”`;
 }
 
@@ -3082,6 +3092,8 @@ export function TopicSidebarView({
           rosterStatus: entry?.binding?.status,
           rosterUpdatedAt: query.dataUpdatedAt,
           streaming: false,
+          // #1307 staleness floor — same rule the channel header applies.
+          rosterHasLiveBinding: entry?.binding != null,
         });
         // A fresh unbound roster row supersedes a stale idle socket entry. A
         // newer active socket transition still wins through the resolver.
@@ -3266,53 +3278,25 @@ export function TopicSidebarView({
       setMobileControlTopicId(null);
     }
   }, [mobileControlTopicId, model.byId, selectedId]);
-  // #1287: `activeWorkspaceId` and `activeRepoPath` are two halves of ONE
-  // routing decision — `useTopicRoomCreate` files the channel by the first and
-  // derives `routingDefaults.repoPath`/`cwd` from the second. Moving only the
-  // lane pointer would file the chat in the newly chosen project while still
-  // pointing it at the ABANDONED project's repo: a split across two projects,
-  // strictly worse than the consistent-but-stale state it replaced. The lane
-  // row already carries the anchor (`ensureProjectWorkspace` stamps
-  // `defaultRepoPath` on every add-project lane), so the create paths stamp it
-  // alongside the id.
-  //
-  // Applied on the CREATE paths only, never on a bare lane click:
-  // `resolveAppViewMode` returns 'dashboard' the moment `activeRepoPath` is set
-  // and nothing above it is, so writing the repo pointer outside a create would
-  // silently turn selecting a lane into a navigation off the chat landing onto
-  // RepoDashboard. Here the composer opens immediately after and outranks it.
-  // A lane with no repo of its own leaves the pointer untouched — that is the
-  // documented inheritance fallback (`activeSession ?? activeRepoPath ??
-  // repos[0]`), and only add-project lanes carry an anchor.
-  const applyWorkspaceLaneRouting = useCallback(
-    (workspaceId: string | null) => {
-      if (!workspaceId) return;
-      const laneRepoPath = workspaces.find(
-        (workspace) => workspace.id === workspaceId
-      )?.defaultRepoPath;
-      if (laneRepoPath) useUiStore.getState().setActiveRepoPath(laneRepoPath);
-    },
+  // #1287/#1303: lane-vs-row precedence and the repo anchor a create inherits
+  // live in `applyCreateRoutingContext` — a named seam rather than component
+  // internals, so the decision can be driven by a regression test exactly as the
+  // button drives it, and so the rail header and each lane's start-chat button
+  // keep sharing ONE body. Only the lane→repo lookup is local, because only the
+  // rail holds the workspace rows.
+  const laneRepoPathById = useCallback(
+    (workspaceId: string) =>
+      workspaces.find((workspace) => workspace.id === workspaceId)
+        ?.defaultRepoPath,
     [workspaces]
   );
   const openCreateTaskRoom = useCallback(() => {
-    const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
-    // #1287: the still-highlighted row may belong to a lane the operator has
-    // since navigated away from (select a fresh, empty lane while a channel
-    // from the old workspace stays selected). `applyTopicActiveContext` stamps
-    // `activeWorkspaceId` from the topic, so re-applying it here would file the
-    // new chat back in the OLD lane. An explicit lane selection is the more
-    // recent intent and wins; when the row still lives in the active lane the
-    // context (including repo/worktree inheritance) is applied as before.
-    // Read the live pointer rather than the prop: `selectWorkspaceLane` writes
-    // it straight to the store, so the prop can lag the operator's newest
-    // lane choice within the same interaction.
-    const activeLaneId = useUiStore.getState().activeWorkspaceId;
-    const rowIsInActiveLane =
-      activeLaneId === null || selectedTopic?.workspaceId === activeLaneId;
-    if (rowIsInActiveLane) applyTopicActiveContext(selectedTopic);
-    else applyWorkspaceLaneRouting(activeLaneId);
+    applyCreateRoutingContext({
+      selectedTopic: selectedId ? topicsById.get(selectedId) : undefined,
+      laneRepoPathById,
+    });
     onCreateTaskRoom?.();
-  }, [applyWorkspaceLaneRouting, onCreateTaskRoom, selectedId, topicsById]);
+  }, [laneRepoPathById, onCreateTaskRoom, selectedId, topicsById]);
   // #1287: a workspace lane is selectable in its own right, so a workspace
   // that holds no channels yet can still become the active one. Selecting a
   // channel inside a lane already does this through the topic's context; this

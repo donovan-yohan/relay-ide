@@ -52,10 +52,6 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-customize-session-dialog.html'
   );
-  buildInputs['test-environment-picker'] = resolve(
-    import.meta.dirname,
-    'test-environment-picker.html'
-  );
   buildInputs['test-env-picker-dialog'] = resolve(
     import.meta.dirname,
     'test-env-picker-dialog.html'

@@ -584,6 +584,31 @@ export type ActiveModal =
   | { modal: 'handoff-plan' }
   | null;
 
+/**
+ * #1303: the repo anchor of the routing statement that opened the CURRENT
+ * composer — a lane the operator just selected, or the channel row they just
+ * opened — carried together with the lane it came from.
+ *
+ * Deliberately not another `activeRepoPath`: that pointer is persisted, is
+ * written by repo-dashboard navigation, and cannot say WHO wrote it — so it can
+ * never answer "did the operator just choose a lane?". This one is
+ * session-transient (no localStorage slot) because the intent it records is,
+ * and it is keyed by `workspaceId` so it self-invalidates the moment the active
+ * lane moves somewhere else instead of following the operator into a lane it
+ * was never about.
+ *
+ * SINGLE-USE. It is written immediately before the composer opens and spent
+ * when that composer goes away (`setTopicComposerOpen(false)`, below) or when a
+ * create commits. A stamp that outlived its composer would keep outranking
+ * session context on every later create in the same lane — including creates
+ * the operator reached from the command palette without touching a lane at all
+ * — which is a different, louder bug than the one it fixes.
+ */
+export interface LaneRepoRouting {
+  workspaceId: string;
+  repoPath: string;
+}
+
 // ── State interface ────────────────────────────────────────────────────────
 export interface UiState {
   sidebarOpen: boolean;
@@ -592,6 +617,7 @@ export interface UiState {
   searchQuery: string;
   activeRepoPath: string | null;
   activeWorkspaceId: string | null;
+  laneRepoRouting: LaneRepoRouting | null;
   terminalFontSize: number;
   hasHardwareKeyboard: boolean;
   keyboardOpen: boolean;
@@ -748,6 +774,7 @@ export interface UiState {
   saveTerminalFontSize: () => void;
   setActiveRepoPath: (v: string | null) => void;
   setActiveWorkspaceId: (id: string | null) => void;
+  setLaneRepoRouting: (routing: LaneRepoRouting | null) => void;
   setFileDiffViewMode: (v: DiffViewMode) => void;
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
@@ -811,6 +838,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   searchQuery: '',
   activeRepoPath: ls(ACTIVE_WORKSPACE_KEY),
   activeWorkspaceId: loadPersistedActiveWorkspaceId(),
+  // #1303: no `ls(...)` here on purpose — see `LaneRepoRouting`. A reload has
+  // no "just selected" lane, so a fresh tab starts with session inheritance.
+  laneRepoRouting: null,
   terminalFontSize: loadTerminalFontSize(),
   hasHardwareKeyboard: false,
   keyboardOpen: false,
@@ -872,6 +902,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
     else lsSave(ACTIVE_WORKSPACE_GROUP_KEY, id);
     set({ activeWorkspaceId: id });
   },
+
+  setLaneRepoRouting: (routing) => set({ laneRepoRouting: routing }),
 
   setFileDiffViewMode: (v) => {
     lsSave(DIFF_VIEW_MODE_KEY, v);
@@ -1271,7 +1303,20 @@ export const useUiStore = create<UiState>()((set, get) => ({
     }
   },
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
-  setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
+  // #1303: closing the composer SPENDS the lane stamp. The stamp means "the
+  // routing statement that opened THIS composer", and every way out of the
+  // composer runs through here — Escape, a channel/URL/notification navigation,
+  // a launch that selects a session. Enforced in the setter rather than asked
+  // of each caller because the bug this guards against is precisely a caller
+  // that forgets: the eight existing exits would each have to remember, and the
+  // ninth would not. Opening never clears — `openTopicTaskRoom` runs AFTER the
+  // stamp is written.
+  setTopicComposerOpen: (v) =>
+    set(
+      v
+        ? { topicComposerOpen: true }
+        : { topicComposerOpen: false, laneRepoRouting: null }
+    ),
   setActiveChannelId: (v) =>
     set({
       activeChannelId: v,

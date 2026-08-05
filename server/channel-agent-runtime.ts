@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentPatchV2,
+  AgentSessionLiveStateV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import {
   collaborationPromptAppendix,
   type AgentRole,
@@ -122,6 +125,122 @@ function providerSessionFromPatch(
   return undefined;
 }
 
+type ChannelAgentState = ChannelAgentRuntime['agentState'];
+
+/** A state that owes its answer to a human, not to the model. */
+function parkedOnOperator(state: ChannelAgentState): boolean {
+  return state === 'permission-prompt' || state === 'waiting-for-input';
+}
+
+/**
+ * Map a live state onto a run state.
+ *
+ * `authoritative` marks a COMPLETE live state (the one embedded in
+ * `agent-session-snapshot-v2`), whose `waitingOn` can be trusted. An incremental
+ * `agent-live-state-updated-v2` is a `Partial`, and its `idle` may be a compat
+ * artifact rather than a real one — see `nextAgentState`.
+ */
+function stateFromLive(
+  current: ChannelAgentState,
+  live: Partial<AgentSessionLiveStateV2>,
+  authoritative: boolean
+): ChannelAgentState | undefined {
+  const status = live.status;
+  if (!status) return undefined;
+  switch (status) {
+    case 'working':
+      return 'processing';
+    case 'waiting':
+      switch (live.waitingOn) {
+        case 'approval':
+          return 'permission-prompt';
+        case 'question':
+        case 'plan':
+          return 'waiting-for-input';
+        default:
+          // `tool`/`network` — and a wait that names no counterparty — are the
+          // runtime waiting on itself. The turn is still running and nobody owes
+          // it an answer, so this must NOT park the machine: a system wait that
+          // parked would swallow the real `idle` that ends the turn.
+          return 'processing';
+      }
+    case 'error':
+      return 'error';
+    default:
+      // `idle` and `disconnected` both claim "no turn is running", which is a
+      // lie while a prompt is outstanding.
+      return !authoritative && parkedOnOperator(current) ? undefined : 'idle';
+  }
+}
+
+/**
+ * Derive the next `agentState` from an adapter patch, or `undefined` when the
+ * patch carries no run-state signal at all (#1254).
+ *
+ * `agentState` is internal runtime bookkeeping: the status the channel UI
+ * renders is `ChannelAgentBinder`'s separate `binding.status`. This reducer
+ * exists so the field stops contradicting itself, not to move a rendered
+ * surface.
+ *
+ * Three rules keep the machine honest:
+ *
+ *  - `agent-live-state-updated-v2` carries a PARTIAL live state: every field is
+ *    optional and a patch may narrow to a single key. `rejectQueued` emits a
+ *    bare `{ queueLength: 0 }`, and in `claude-adapter` that fires MID-TURN when
+ *    a runtime-env refresh boundary fails. A statusless patch says nothing about
+ *    the run state, so it must not be read as "idle" — the previous mapping
+ *    collapsed every statusless patch to `idle` while forcing `runtime.idle` to
+ *    `false`, so the two fields disagreed.
+ *  - A bare `idle` cannot clear a prompt the operator still owes an answer to.
+ *    `hermes-adapter` fires `chat:session-status {status:'idle',
+ *    waitingOn:'approval'}` next to a permission prompt, and
+ *    `shared/agent-chat-v1-compat.ts` maps every `idle` to `{status:'idle',
+ *    waitingOn:null}` — so a bare mid-approval idle is indistinguishable from a
+ *    real one. Ignore it while parked, the same rule `ChannelAgentBinder`
+ *    applies (#1181 defect 3). Only waits a HUMAN owes an answer to park the
+ *    machine; a `tool`/`network` wait keeps running. The exits from a parked
+ *    state are a turn terminal (it ends the turn that owned the prompt), the
+ *    next live state that names a status, and a complete snapshot.
+ *  - Turn lifecycle is a run-state signal in its own right. Nothing in the
+ *    protocol requires an adapter to pair a full live state with every turn, so
+ *    a started turn — or the first output item of one — moves a fresh runtime
+ *    off `initializing`, and a completed turn lands it on `idle`.
+ *    `agent-session-snapshot-v2` carries a complete live state for the same
+ *    reason: a resume that delivers only a snapshot still has to leave
+ *    `initializing`.
+ *
+ * `agent-error-v2` is deliberately NOT a run-state signal: adapters also use it
+ * for input-validation complaints that leave the run untouched (codex answers a
+ * malformed `/resume` or `/goal` with one). The run state comes from the turn
+ * terminal or live `status:'error'` that follows a real failure.
+ */
+function nextAgentState(
+  current: ChannelAgentState,
+  patch: AgentPatchV2
+): ChannelAgentState | undefined {
+  switch (patch.type) {
+    case 'agent-live-state-updated-v2':
+      return stateFromLive(current, patch.live, false);
+    case 'agent-session-snapshot-v2':
+      return stateFromLive(current, patch.session.live, true);
+    case 'agent-turn-started-v2':
+      return 'processing';
+    case 'agent-turn-completed-v2':
+      return 'idle';
+    case 'agent-item-started-v2':
+      // An approval item IS the prompt, whatever live state the adapter pairs
+      // with it (codex pairs `waiting`/`approval`; not every adapter does).
+      if (patch.item.type === 'approval') return 'permission-prompt';
+      return current === 'initializing' ? 'processing' : undefined;
+    case 'agent-item-delta-v2':
+      // First output of the first turn. Only promote out of `initializing`:
+      // mid-turn items must never clobber an outstanding prompt.
+      return current === 'initializing' ? 'processing' : undefined;
+    default:
+      return undefined;
+  }
+}
+
 export class ChannelAgentRuntimeManager {
   private readonly runtimes = new Map<string, ChannelAgentRuntime>();
   private readonly endHandlers = new Set<RuntimeEndHandler>();
@@ -226,18 +345,35 @@ export class ChannelAgentRuntimeManager {
         };
       }
       runtime.lastActivity = new Date().toISOString();
-      if (patch.type === 'agent-live-state-updated-v2') {
-        runtime.idle = patch.live.status === 'idle';
-        runtime.agentState =
-          patch.live.status === 'working'
-            ? 'processing'
-            : patch.live.status === 'waiting'
-              ? patch.live.waitingOn === 'approval'
-                ? 'permission-prompt'
-                : 'waiting-for-input'
-              : patch.live.status === 'error'
-                ? 'error'
-                : 'idle';
+      if (
+        patch.type === 'agent-live-state-updated-v2' &&
+        patch.live.status === 'disconnected'
+      ) {
+        // Unexpected process/transport death (#1307). Adapters emit this only
+        // when the child went away on its own — a deliberate `disconnect()`
+        // detaches first — and none of them respawn on the next send, so the
+        // runtime is dead, not resting. Ending it here is what turns a silent
+        // death into the terminal `onRuntimeEnd` notification the channel binder
+        // needs to release its binding and broadcast idle presence; without it
+        // the runtime stays 'active' in this registry forever.
+        //
+        // This runs BEFORE `nextAgentState` (#1254) deliberately: that reducer
+        // maps `disconnected` onto `idle` — and drops it entirely while the
+        // machine is parked on an operator prompt — which is the right reading
+        // for a live runtime but would leave a dead one wedged.
+        logger.warn('channel runtime reported disconnected; ending it', {
+          runtimeId: id,
+          providerId: runtime.providerId,
+        });
+        runtime.agentState = 'error';
+        runtime.idle = true;
+        void this.destroy(id);
+        return;
+      }
+      const next = nextAgentState(runtime.agentState, patch);
+      if (next) {
+        runtime.agentState = next;
+        runtime.idle = next === 'idle';
       }
     });
     this.patchUnlisteners.set(id, unlisten);
@@ -274,8 +410,25 @@ export class ChannelAgentRuntimeManager {
       if (savedResumeId && adapter.capabilities.resume) {
         await adapter.resumeSession(savedResumeId);
       }
-      runtime.agentState = 'idle';
-      runtime.idle = true;
+      // The child can die INSIDE those awaits (#1307). Adapters flip to
+      // 'connected' partway through connect/resume, so the disconnect listener
+      // above is live and may already have ended this runtime — dropping it from
+      // the registry and disconnecting its adapter. Returning it anyway would
+      // hand the caller a corpse: the channel binder would attach a bridge to a
+      // dead adapter and persist `runtimeId` durably for a runtime that no
+      // longer exists. Fail instead, so the caller's normal spawn-failure path
+      // runs.
+      if (this.runtimes.get(id) !== runtime) {
+        throw new Error('Channel agent runtime died during connect');
+      }
+      // Promote out of `initializing` only (#1254). Adapters emit patches from
+      // inside `connect()`/`resumeSession()` (codex emits its snapshot and live
+      // state before `connect` resolves), so the listener above can already have
+      // recorded a live turn — stamping `idle` unconditionally here erased it.
+      if (runtime.agentState === 'initializing') {
+        runtime.agentState = 'idle';
+        runtime.idle = true;
+      }
       return runtime;
     } catch (error) {
       this.runtimes.delete(id);

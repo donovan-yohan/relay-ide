@@ -41,6 +41,7 @@ import {
   channelAgentStatusKey,
   resolveEffectiveAgentStatus,
   resolveEffectiveQueuedCount,
+  shouldPollRosterForPresence,
   useChannelAgentStatusStore,
 } from '../../lib/stores/channel-agent-status.js';
 import {
@@ -67,6 +68,17 @@ const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
  * number of page fetches and one toast.
  */
 const ANCHOR_WALK_MAX_PAGES = 8;
+/**
+ * #1307: how often the roster snapshot is re-fetched while a busy socket status
+ * in this channel is still newer than that snapshot. `staleTime` alone never
+ * refetches on its own, so a terminal 'idle' that never reached this client
+ * (socket down when the runtime died, tab asleep) had nothing to reconcile it —
+ * the chip and the presence row stayed busy for as long as the view stayed
+ * mounted. See `shouldPollRosterForPresence`: one poll is normally enough, since
+ * the snapshot it lands then outranks every socket transition and disarms the
+ * interval until the next live transition arrives.
+ */
+const PRESENCE_ROSTER_POLL_MS = 30_000;
 
 interface ChannelViewProps {
   channelId: string;
@@ -488,12 +500,6 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   // binding) OR currently non-idle in the live status store, with a `streaming`
   // fallback derived from the timeline reducer so the header degrades gracefully
   // if the events socket lags.
-  const rosterChipsQuery = useQuery({
-    queryKey: ['channel-roster', channelId],
-    queryFn: () => fetchChannelRoster(channelId),
-    staleTime: 30_000,
-    retry: false,
-  });
   const statusMap = useChannelAgentStatusStore((s) => s.statusByChannelAgent);
   const statusUpdatedAtMap = useChannelAgentStatusStore(
     (s) => s.updatedAtByChannelAgent
@@ -501,6 +507,32 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const queuedCountMap = useChannelAgentStatusStore(
     (s) => s.queuedCountByChannelAgent
   );
+  // #1307: a busy socket status the roster has not yet superseded is exactly the
+  // state that can go stale, so it is what arms the roster poll — and because the
+  // predicate is the same tie-break the resolver uses, the poll self-disarms: the
+  // first snapshot that lands is newer than every socket transition here, so the
+  // roster becomes authoritative and this returns false. `refetchInterval` is a
+  // function so TanStack re-evaluates it against the CURRENT `dataUpdatedAt`
+  // after each fetch settles, not just on re-render.
+  const rosterPollInterval = useCallback(
+    (query: { state: { dataUpdatedAt: number } }): number | false =>
+      shouldPollRosterForPresence({
+        statusByChannelAgent: statusMap,
+        updatedAtByChannelAgent: statusUpdatedAtMap,
+        channelId,
+        rosterUpdatedAt: query.state.dataUpdatedAt,
+      })
+        ? PRESENCE_ROSTER_POLL_MS
+        : false,
+    [statusMap, statusUpdatedAtMap, channelId]
+  );
+  const rosterChipsQuery = useQuery({
+    queryKey: ['channel-roster', channelId],
+    queryFn: () => fetchChannelRoster(channelId),
+    staleTime: 30_000,
+    retry: false,
+    refetchInterval: rosterPollInterval,
+  });
 
   // On channel switch, drop this channel's per-agent socket statuses so the
   // freshly-fetched roster is authoritative on open; live transitions repopulate
@@ -581,6 +613,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         rosterStatus: entry?.binding?.status,
         rosterUpdatedAt,
         streaming,
+        // Staleness floor (#1307): only a roster that says "nothing is bound"
+        // may retire a busy socket status, so a long live turn keeps its chip.
+        rosterHasLiveBinding: entry?.binding != null,
       });
       // Same lane the status came from (#1308 slice 4 item 2c), so the presence
       // row can never pair a live status with a stale count or the reverse.

@@ -1,22 +1,29 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { format } from 'node:util';
 
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildChannelMessageSearchSql,
   buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
   buildChannelThreadSummarySql,
+  channelSearchPrefixRange,
   channelSearchUnavailableReason,
   createChannelMessageStore,
+  registerChannelSearchTick,
   ChannelMessageStoreError,
+  ChannelSearchRefusedError,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+  CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
+  CHANNEL_SEARCH_TIME_BUDGET_MS,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
@@ -33,8 +40,14 @@ function dbPath(): string {
   return path.join(dir, 'channel-chat.db');
 }
 
-function store(pathOverride?: string): ChannelMessageStore {
-  const s = createChannelMessageStore(pathOverride ?? dbPath());
+function store(
+  pathOverride?: string,
+  options?: {
+    searchTimeBudgetMs?: number;
+    searchCostPreflight?: 'auto' | 'unavailable';
+  }
+): ChannelMessageStore {
+  const s = createChannelMessageStore(pathOverride ?? dbPath(), options ?? {});
   cleanup.push(() => s.close());
   return s;
 }
@@ -361,6 +374,378 @@ describe('channel-message-store schema migration', () => {
           '{"claudeSessionId":"session-live","lastDeliveredSeq":2}',
       },
     ]);
+
+    // The repair is recorded as a marker ROW, not as a schema version. That is
+    // what keeps an older hub able to open this db (a version bump would make
+    // `current > SCHEMA_VERSION` throw) and makes re-arming a DELETE instead of
+    // a schema-version rewind. Two pairs matched the SQL predicate; only the
+    // one carrying the bounded echo signature was removed.
+    expect(
+      inspect
+        .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
+        .all()
+    ).toEqual([{ heal_id: 'claude-echo-alias-v1', candidates: 2, healed: 1 }]);
+  });
+
+  // #1209: the dogfood hub migrated a live db to the v2 schema and healed ZERO
+  // rows, while the identical predicate healed correctly when the same db was
+  // re-run offline. The reported suspect was WAL state; it is refuted by the
+  // `hot, uncheckpointed WAL` case below. The real defect is structural — the
+  // heal was welded to the one-shot v2 rebuild, so a db that arrived at v2 or
+  // later without that exact lane running its heal could never heal again, and
+  // said nothing about it. The repair is now gated on a marker ROW, so it runs
+  // whenever it has not run, whatever the schema version says.
+  it('heals a head-schema db that never ran the repair, and translates its cursors', () => {
+    const file = dbPath();
+    // Build a REAL head-schema db (search table + triggers included), clear the
+    // heal marker, and plant the un-healed rows: exactly the shape #1209 found
+    // in dogfood — modern schema, version stamped past the v2 heal, duplicates
+    // still present.
+    store(file).close();
+    const seeded = new Database(file);
+    seeded.exec(`
+      DELETE FROM channel_heal_state;
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-keeper', 'topic:stranded-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'unhealed echo body', 'markdown', '{"providerId":"claude"}',
+        'runtime-stranded', 'turn-stranded', 'msg-turn-stranded-provider-1', NULL,
+        '2026-07-19T09:00:00.100Z', '2026-07-19T09:00:00.100Z',
+        '2026-07-19T09:00:00.100Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-duplicate', 'topic:stranded-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'unhealed echo body', 'markdown', '{"providerId":"claude"}',
+        'runtime-stranded', 'turn-stranded', 'msg-turn-stranded-provider-0', NULL,
+        '2026-07-19T09:00:00.180Z', '2026-07-19T09:00:00.180Z',
+        '2026-07-19T09:00:00.102Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-reply', 'topic:stranded-heal', 3, 'message', 'complete',
+        'human', 'human:operator', 'operator', 'chm:stranded-duplicate',
+        'chm:stranded-duplicate', 'reply to the echo', 'markdown', NULL,
+        NULL, NULL, NULL, NULL,
+        '2026-07-19T09:00:01.000Z', '2026-07-19T09:00:01.000Z',
+        '2026-07-19T09:00:01.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-tail', 'topic:stranded-heal', 4, 'message', 'complete',
+        'human', 'human:operator', 'operator', NULL, NULL, 'tail', 'markdown',
+        NULL, NULL, NULL, NULL, NULL,
+        '2026-07-19T09:00:02.000Z', '2026-07-19T09:00:02.000Z',
+        '2026-07-19T09:00:02.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-legit-0', 'topic:stranded-no-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'legitimate repeated body', 'markdown', '{"providerId":"claude"}',
+        'runtime-legit', 'turn-legit', 'msg-turn-legit-provider-0', NULL,
+        '2026-07-19T09:10:00.000Z', '2026-07-19T09:10:00.000Z',
+        '2026-07-19T09:10:00.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:stranded-legit-1', 'topic:stranded-no-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'legitimate repeated body', 'markdown', '{"providerId":"claude"}',
+        'runtime-legit', 'turn-legit', 'msg-turn-legit-provider-1', NULL,
+        '2026-07-19T09:10:00.001Z', '2026-07-19T09:10:00.001Z',
+        '2026-07-19T09:10:00.001Z'
+      );
+      INSERT INTO channel_agent_bindings VALUES (
+        'topic:stranded-heal', 'agent-profile:claude:default', 'claude',
+        'runtime-stranded',
+        '{"claudeSessionId":"runtime-stranded","lastDeliveredSeq":4}',
+        '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
+      );
+      INSERT INTO channel_agent_bindings VALUES (
+        'topic:stranded-heal', 'agent-profile:claude:reviewer', 'claude',
+        'runtime-b',
+        '{"claudeSessionId":"runtime-b","lastDeliveredSeq":2}',
+        '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
+      );
+      INSERT INTO channel_read_state VALUES (
+        'topic:stranded-heal', 3, '2026-07-19T09:00:05.000Z'
+      );
+    `);
+    seeded.close();
+
+    const healed = store(file);
+    // The echo alias is collapsed onto the earliest durable id, its references
+    // are repointed, and the channel is left gap-free.
+    expect(
+      healed
+        .history('topic:stranded-heal', { limit: 20 })
+        .map((m) => [m.id, m.seq])
+    ).toEqual([
+      ['chm:stranded-keeper', 1],
+      ['chm:stranded-reply', 2],
+      ['chm:stranded-tail', 3],
+    ]);
+    expect(healed.getMessage('chm:stranded-duplicate')).toBeNull();
+    expect(healed.getMessage('chm:stranded-reply')).toMatchObject({
+      threadId: 'chm:stranded-keeper',
+      parentMessageId: 'chm:stranded-keeper',
+    });
+    expect(healed.getMessage('chm:stranded-keeper')?.replyCount).toBe(1);
+    // A same-turn pair that does NOT carry the bounded echo signature is a
+    // legitimate multi-item turn and must survive untouched.
+    expect(
+      healed.history('topic:stranded-no-heal', { limit: 20 }).map((m) => m.id)
+    ).toEqual(['chm:stranded-legit-0', 'chm:stranded-legit-1']);
+    // The removed row leaves the search index with it: the heal tears the index
+    // down and `ensureChannelSearchIndex` rebuilds it from the healed rows.
+    expect(
+      healed.searchMessages({ query: 'unhealed' }).map((hit) => hit.messageId)
+    ).toEqual(['chm:stranded-keeper']);
+    // Each binding's own delivery cursor is translated: 4 -> 3 and 2 -> 1. Two
+    // profiles of one provider share a channel and a framework, so a cursor
+    // keyed by framework would overwrite its sibling.
+    expect(
+      healed.getBinding('topic:stranded-heal', 'agent-profile:claude:default')
+        ?.providerSession['lastDeliveredSeq']
+    ).toBe(3);
+    expect(
+      healed.getBinding('topic:stranded-heal', 'agent-profile:claude:reviewer')
+        ?.providerSession['lastDeliveredSeq']
+    ).toBe(1);
+    // The operator's durable read mark is translated with the rows: it pointed
+    // at `chm:stranded-reply` (seq 3 of 4) with `chm:stranded-tail` unread, and
+    // it still does (seq 2 of 3). Left untranslated it would read 3 — the head —
+    // and swallow the unread tail, which the head clamp in `listReadState`
+    // cannot detect because the mark moved DOWN with the log, not above it.
+    expect(healed.listReadState()).toEqual([
+      {
+        channelId: 'topic:stranded-heal',
+        lastReadSeq: 2,
+        updatedAt: '2026-07-19T09:00:05.000Z',
+      },
+    ]);
+
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    // No schema bump: the repair records a marker row, so a db healed by this
+    // hub still opens on one built before the repair existed.
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(6);
+    expect(
+      inspect
+        .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
+        .all()
+    ).toEqual([{ heal_id: 'claude-echo-alias-v1', candidates: 1, healed: 1 }]);
+
+    // Reopening is a no-op: the pass is idempotent and cannot re-collapse the
+    // rows it already healed.
+    const reopened = store(file);
+    expect(
+      reopened
+        .history('topic:stranded-heal', { limit: 20 })
+        .map((m) => [m.id, m.seq])
+    ).toEqual([
+      ['chm:stranded-keeper', 1],
+      ['chm:stranded-reply', 2],
+      ['chm:stranded-tail', 3],
+    ]);
+    expect(
+      reopened.getBinding('topic:stranded-heal', 'agent-profile:claude:default')
+        ?.providerSession['lastDeliveredSeq']
+    ).toBe(3);
+  });
+
+  // The other half of #1209: the v2 pass logged only when it removed rows, so a
+  // pass that healed nothing was indistinguishable from a pass that never ran.
+  it('logs a zero heal pass so a silent no-op is visible in the hub log', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.appendComplete({
+      channelId: 'topic:nothing-to-heal',
+      sender: HUMAN,
+      text: 'no duplicates here',
+    });
+    seeded.close();
+    // Re-arming is a DELETE against the marker ledger — the operator recovery
+    // #1209 asked for, instead of rewinding `schema_version` past migrations
+    // that must not replay.
+    const rearm = new Database(file);
+    rearm.exec('DELETE FROM channel_heal_state');
+    rearm.close();
+
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    cleanup.push(() => infoSpy.mockRestore());
+    store(file);
+    const healLine = infoSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('Claude echo alias heal')
+    );
+    expect(healLine).toBeDefined();
+    expect(format(...(healLine as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] channel Claude echo alias heal: 0 candidate pair(s) matched, 0 duplicate row(s) removed'
+    );
+  });
+
+  // A db that has already run the repair does not scan for it again: the marker
+  // row is the gate, so an unrelated later boot cannot pay for the self-join or
+  // print a second line about it.
+  it('does not re-run or re-log the repair once the marker row exists', () => {
+    const file = dbPath();
+    store(file).close();
+
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    cleanup.push(() => infoSpy.mockRestore());
+    store(file).close();
+    expect(
+      infoSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('Claude echo alias heal')
+      )
+    ).toHaveLength(0);
+  });
+
+  // The repair renumbers `seq` for every row of an affected channel. With the
+  // FTS sync triggers live that is one index delete + re-insert per row inside
+  // the boot transaction — and on a db whose FTS TABLE was dropped while its
+  // triggers survived (an operator poking at the db, a backup restored
+  // mid-migration) the very first write raises `no such table:
+  // channel_messages_fts` and the hub cannot boot at all. The heal therefore
+  // drops the index itself and lets `ensureChannelSearchIndex` rebuild it.
+  it('heals a db whose FTS table was dropped while its triggers survived', () => {
+    const file = dbPath();
+    store(file).close();
+    const seeded = new Database(file);
+    seeded.exec(`
+      DELETE FROM channel_heal_state;
+      INSERT INTO channel_messages VALUES (
+        'chm:fts-keeper', 'topic:fts-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'orphan trigger echo body', 'markdown', '{"providerId":"claude"}',
+        'runtime-fts', 'turn-fts', 'msg-turn-fts-provider-1', NULL,
+        '2026-07-19T11:00:00.100Z', '2026-07-19T11:00:00.100Z',
+        '2026-07-19T11:00:00.100Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:fts-duplicate', 'topic:fts-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'orphan trigger echo body', 'markdown', '{"providerId":"claude"}',
+        'runtime-fts', 'turn-fts', 'msg-turn-fts-provider-0', NULL,
+        '2026-07-19T11:00:00.180Z', '2026-07-19T11:00:00.180Z',
+        '2026-07-19T11:00:00.102Z'
+      );
+    `);
+    // Drop the index table only. All three sync triggers survive, so any write
+    // to `channel_messages` now references a table that no longer exists.
+    seeded.exec('DROP TABLE channel_messages_fts');
+    expect(
+      seeded
+        .prepare(
+          `SELECT COUNT(*) AS count FROM sqlite_master
+            WHERE type = 'trigger' AND name LIKE 'channel_messages_fts%'`
+        )
+        .get()
+    ).toEqual({ count: 3 });
+    seeded.close();
+
+    const healed = store(file);
+    expect(
+      healed.history('topic:fts-heal', { limit: 20 }).map((m) => [m.id, m.seq])
+    ).toEqual([['chm:fts-keeper', 1]]);
+    // The index is back, rebuilt over the healed rows.
+    expect(
+      healed.searchMessages({ query: 'orphan' }).map((hit) => hit.messageId)
+    ).toEqual(['chm:fts-keeper']);
+  });
+
+  // #1209 refutation evidence for the FIRST of the issue's two suspects: that
+  // the boot-time connection read a pre-checkpoint WAL snapshot in which the
+  // duplicate rows were not yet visible. It cannot work that way — the old v2
+  // lane copied every row through
+  // `INSERT INTO channel_messages_v2 SELECT ... FROM channel_messages` and then
+  // healed the renamed table inside the SAME transaction on the SAME
+  // connection, so a row that survived the rebuild was by definition visible to
+  // the heal. This pins that behaviour against a db carrying a hot,
+  // uncheckpointed WAL written by a still-open connection.
+  //
+  // The issue's second suspect (another connection holding the db) is NOT
+  // exercised here. It cannot produce the reported outcome either — rows a
+  // read snapshot hid from the heal would equally have been hidden from the
+  // rebuild's own SELECT, so they would not be in the table afterwards, and the
+  // dogfood db still had them — but that is an argument, not a fixture. It is
+  // also moot for recovery now: the repair is gated on a marker row, so a pass
+  // that saw nothing is re-armed with a DELETE rather than stranded forever.
+  it('heals a v1 db copied with a hot, uncheckpointed WAL', () => {
+    const sourceFile = dbPath();
+    const source = new Database(sourceFile);
+    source.pragma('journal_mode = WAL');
+    source.pragma('synchronous = NORMAL');
+    source.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (1);
+      CREATE TABLE channel_messages (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, seq INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message','system')),
+        status TEXT NOT NULL DEFAULT 'complete'
+          CHECK (status IN ('streaming','complete','interrupted','failed')),
+        sender_kind TEXT NOT NULL CHECK (sender_kind IN ('human','agent','system')),
+        sender_id TEXT NOT NULL, sender_display TEXT, thread_id TEXT,
+        parent_message_id TEXT, body_text TEXT NOT NULL DEFAULT '',
+        body_format TEXT NOT NULL DEFAULT 'markdown', meta_json TEXT,
+        source_session_id TEXT, source_turn_id TEXT, source_item_id TEXT,
+        client_message_id TEXT, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, completed_at TEXT,
+        UNIQUE (channel_id, seq)
+      );
+      CREATE TABLE channel_members (
+        channel_id TEXT NOT NULL, member_kind TEXT NOT NULL,
+        member_id TEXT NOT NULL, joined_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (channel_id, member_kind, member_id)
+      );
+      CREATE TABLE channel_agent_bindings (
+        channel_id TEXT NOT NULL, agent_framework TEXT NOT NULL,
+        session_id TEXT, provider_session_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (channel_id, agent_framework)
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:wal-keeper', 'topic:wal-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'hot wal echo body', 'markdown', '{"providerId":"claude"}',
+        'session-wal', 'turn-wal', 'msg-turn-wal-provider-1', NULL,
+        '2026-07-19T10:00:00.100Z', '2026-07-19T10:00:00.100Z',
+        '2026-07-19T10:00:00.100Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:wal-duplicate', 'topic:wal-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'hot wal echo body', 'markdown', '{"providerId":"claude"}',
+        'session-wal', 'turn-wal', 'msg-turn-wal-provider-0', NULL,
+        '2026-07-19T10:00:00.180Z', '2026-07-19T10:00:00.180Z',
+        '2026-07-19T10:00:00.102Z'
+      );
+    `);
+    // The source hub is STILL RUNNING: nothing has checkpointed, so the main db
+    // file holds only its header page and every row lives in the -wal.
+    const walSize = fs.statSync(`${sourceFile}-wal`).size;
+    expect(walSize).toBeGreaterThan(0);
+    const copyFile = dbPath();
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (fs.existsSync(`${sourceFile}${suffix}`)) {
+        fs.copyFileSync(`${sourceFile}${suffix}`, `${copyFile}${suffix}`);
+      }
+    }
+    source.close();
+
+    const migrated = store(copyFile);
+    expect(
+      migrated.history('topic:wal-heal', { limit: 20 }).map((m) => m.id)
+    ).toEqual(['chm:wal-keeper']);
+    expect(migrated.getMessage('chm:wal-duplicate')).toBeNull();
   });
 });
 
@@ -1983,6 +2368,159 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     expect(s.searchMessages({ query: 'note' })).toHaveLength(1);
   });
 
+  it('bounds the prefix range the way the FTS5 tokenizer stored the terms', () => {
+    // Only the FINAL term takes `*`, and only at the minimum length — the range
+    // must agree with `buildChannelSearchMatchQuery` or the gate would cost a
+    // prefix the query never runs.
+    expect(channelSearchPrefixRange('')).toBeNull();
+    expect(channelSearchPrefixRange('ab')).toBeNull();
+    expect(channelSearchPrefixRange('deploy a')).toBeNull();
+    expect(channelSearchPrefixRange('deploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    expect(channelSearchPrefixRange('a deploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    // Folded the way `unicode61 remove_diacritics 2` folds: case and combining
+    // marks are gone before the range is computed, so an operator typing
+    // `Déploy` probes the same terms the query will actually match.
+    expect(channelSearchPrefixRange('Déploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    // `"foo-bar" *` is the two-token phrase `foo bar` with the prefix on the
+    // LAST token, so that is the token the range has to cover.
+    expect(channelSearchPrefixRange('foo-bar')).toEqual({
+      low: 'bar',
+      high: 'bas',
+    });
+    // Pinned because it is the documented LIMIT of the fold, not a success case.
+    // Two divergences compound on this input: `remove_diacritics 2` KEEPS the
+    // Greek tonos (FTS5 stores `ΣΊΣΥΦΟΣ` as `σίσυφοσ`, U+03AF intact) where NFD
+    // mark-stripping removes it, and `String.toLowerCase` maps a trailing Σ to
+    // FINAL sigma U+03C2 where unicode61 always folds to U+03C3. The probe range
+    // is therefore [σις, σισ) while the stored term begins `σί` — U+03AF sorts
+    // below U+03B9, so the term is outside the range entirely and the walk counts
+    // ZERO. Disjoint, not a conservative subset, which is exactly what the
+    // `channelSearchPrefixRange` docblock now says instead of claiming the gate
+    // always fails open. Asserted so a tokenizer or fold change surfaces here
+    // rather than as a silently mis-costed gate.
+    expect(channelSearchPrefixRange('ΣΊΣ')).toEqual({
+      low: 'σις',
+      high: 'σισ',
+    });
+  });
+
+  it('refuses a prefix this corpus cannot afford, before reading the index', () => {
+    const file = dbPath();
+    const s = store(file);
+    // Every row contributes one term under the shared `zzq` prefix, so the
+    // prefix expansion is exactly the row count — the pathological shape #1316
+    // measured, reproduced at a size a test can afford.
+    const overBudget = CHANNEL_SEARCH_PREFIX_TERM_BUDGET + 8;
+    for (let i = 0; i < overBudget; i += 1) {
+      seq(s, 'topic:alpha', `broadcast zzq${i.toString(36)} payload`);
+    }
+    expect(() => s.searchMessages({ query: 'zzq' })).toThrow(
+      ChannelSearchRefusedError
+    );
+    try {
+      s.searchMessages({ query: 'zzq' });
+      expect.unreachable('over-broad prefix must be refused');
+    } catch (error) {
+      expect((error as ChannelSearchRefusedError).reason).toBe(
+        'search_query_too_broad'
+      );
+    }
+    // The gate is on the PREFIX expansion, not on the corpus: an exact term in
+    // the same store still answers, and a longer prefix over the same rows
+    // narrows back under the budget instead of staying refused.
+    expect(s.searchMessages({ query: 'broadcast' })).toHaveLength(50);
+    expect(s.searchMessages({ query: 'zzq1' }).length).toBeGreaterThan(0);
+    // A trailing term below the minimum never gets `*`, so it is never costed —
+    // it is refused by the older, cheaper guard instead.
+    expect(s.searchMessages({ query: 'zz' })).toEqual([]);
+
+    // DEGRADED CONTRACT. The pre-flight fails OPEN when the `fts5vocab` view
+    // cannot be built, which is right for the mid-rebuild window it was written
+    // for and a real loss of coverage if it becomes permanent — so what the
+    // fallback actually does is asserted here rather than left an untested
+    // branch. Same file, same corpus, second connection (the view is `temp.`,
+    // so it is genuinely per-connection): the store still ANSWERS, and the
+    // prefix the gate would have refused now runs under the wall-clock ceiling
+    // alone. That ceiling is a per-ROW hook, so this is strictly weaker than the
+    // guarded path, not equivalent to it.
+    const degraded = store(file, { searchCostPreflight: 'unavailable' });
+    expect(() => degraded.searchMessages({ query: 'zzq' })).not.toThrow();
+    expect(degraded.searchMessages({ query: 'broadcast' })).toHaveLength(50);
+  });
+
+  it('pins the search cost budgets to the band they were measured against', () => {
+    // Mirrors of the measurements recorded in the CHANNEL_SEARCH_PREFIX_*
+    // docblocks (shared/channel-chat-protocol.ts). Re-measuring the corpus means
+    // updating BOTH — this test is what makes moving a budget out of the
+    // measured band fail here instead of on a production hub, which the store
+    // tests above cannot do because they seed relative to the constant and stay
+    // green at any value.
+    const heaviestLegitimatePrefixTerms = 973; // `"con" *`, 108ms
+    const pathologicalPrefixTerms = 4281; // `"a" *`, 1086ms — must stay refused
+    const docsRankedPerMs = 4300;
+    const measuredLegitimateWorstMs = 158; // #1316, three-char prefix at 50k
+
+    // Headroom over the heaviest LEGITIMATE prefix, because prefix expansion
+    // grows with vocabulary while this budget is an absolute count: too tight
+    // and ordinary words start answering `search_query_too_broad` on every
+    // keystroke as the transcript grows, with nothing saying the guard is why.
+    expect(CHANNEL_SEARCH_PREFIX_TERM_BUDGET).toBeGreaterThanOrEqual(
+      heaviestLegitimatePrefixTerms * 2
+    );
+    expect(CHANNEL_SEARCH_PREFIX_TERM_BUDGET).toBeLessThan(
+      pathologicalPrefixTerms
+    );
+
+    // The doc budget is the ONLY bound on a query that emits no rows — an AND
+    // whose intersection is empty never reaches the per-row ceiling at all — so
+    // what it permits IS an un-interruptible synchronous window. Keeping that
+    // window inside the interruptible ceiling is the invariant; ten times this
+    // budget is ~2.3s of frozen event loop, which is the defect #1316 was filed
+    // for.
+    expect(
+      CHANNEL_SEARCH_PREFIX_DOC_BUDGET / docsRankedPerMs
+    ).toBeLessThanOrEqual(CHANNEL_SEARCH_TIME_BUDGET_MS);
+
+    // And the ceiling has to stay clear of the legitimate band it backstops, or
+    // it stops being a backstop and becomes a second gate on honest queries.
+    expect(CHANNEL_SEARCH_TIME_BUDGET_MS).toBeGreaterThan(
+      measuredLegitimateWorstMs * 2
+    );
+  });
+
+  it('abandons a read that outruns its wall-clock budget', () => {
+    // Budget 0 makes the ceiling fire on the FIRST matched row, which is what
+    // keeps this a contract test rather than a latency test: a faster CI box
+    // cannot quietly turn it green, and it needs no pathological corpus.
+    const s = store(undefined, { searchTimeBudgetMs: 0 });
+    seq(s, 'topic:alpha', 'the deployment pipeline is wedged');
+    try {
+      s.searchMessages({ query: 'deployment' });
+      expect.unreachable('an exhausted budget must abandon the read');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelSearchRefusedError);
+      expect((error as ChannelSearchRefusedError).reason).toBe(
+        'search_timeout'
+      );
+    }
+    // The ceiling is armed per call and disarmed afterwards, so it can only
+    // ever abort the read it was armed for — a store on the shipped budget
+    // answers the same query normally.
+    const normal = store();
+    seq(normal, 'topic:alpha', 'the deployment pipeline is wedged');
+    expect(normal.searchMessages({ query: 'deployment' })).toHaveLength(1);
+    expect(CHANNEL_SEARCH_TIME_BUDGET_MS).toBeGreaterThan(0);
+  });
+
   it('backfills an existing db idempotently and rebuilds a dropped index', () => {
     const file = dbPath();
     const seeded = createChannelMessageStore(file);
@@ -2258,6 +2796,11 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       text: 'query plan subject',
     });
     const raw = new Database(file);
+    // The production SQL carries the #1316 wall-clock hook, and SQLite resolves
+    // function names at PREPARE time, so a second handle has to install it too.
+    // A no-op is the right stub: the assertion is about the plan, and the whole
+    // point of putting the hook in the WHERE clause is that it never adds to one.
+    registerChannelSearchTick(raw, () => false);
     const plan = raw
       .prepare(`EXPLAIN QUERY PLAN ${buildChannelMessageSearchSql(1)}`)
       .all('', '', '…', '"plan"', 'topic:alpha', 10) as Array<{

@@ -16,8 +16,11 @@ import {
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+  CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
   CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
+  CHANNEL_SEARCH_TIME_BUDGET_MS,
   isChannelMessagePart,
   isChannelAgentDetail,
   parseMentions,
@@ -183,6 +186,146 @@ const CHANNEL_SEARCH_TRIGGERS = [
 
 /** Terms accepted from one query; a longer query is a paste, not a search. */
 const CHANNEL_SEARCH_MAX_TERMS = 12;
+
+/**
+ * Per-connection view of the FTS5 TERM index, used only by the pre-flight cost
+ * gate (#1316). `fts5vocab` in `row` mode yields one row per distinct term with
+ * its document and occurrence counts, and its `xBestIndex` accepts range
+ * constraints on `term`, so `term >= p AND term < p⁺` is a b-tree SEEK over the
+ * prefix rather than a scan of the dictionary.
+ *
+ * Declared in `temp.` deliberately. It is a pure read-through onto the index
+ * that already exists, so persisting it would add a schema object (and a
+ * migration, and a rebuild hazard) for something every connection can derive in
+ * microseconds. Being per-connection also means it survives the drop/recreate
+ * that `rebuildChannelSearchIndex` performs — fts5vocab resolves its target at
+ * query time, not at CREATE time.
+ */
+const CHANNEL_SEARCH_VOCAB_TABLE = 'temp.relay_channel_search_vocab';
+
+/**
+ * Name of the per-row user function that enforces the wall-clock ceiling.
+ *
+ * Module-local: the name is an implementation detail shared between
+ * `registerChannelSearchTick` and the SQL builder, and nothing outside this file
+ * should be spelling it. A caller preparing the production SQL on its OWN
+ * `better-sqlite3` handle (the query-plan test does) must still install the
+ * function first, because SQLite resolves function names at prepare time — but
+ * it does that through `registerChannelSearchTick`, which is the exported seam.
+ */
+const CHANNEL_SEARCH_TICK_FUNCTION = 'relay_channel_search_tick';
+
+/**
+ * Thrown out of `searchMessages` when the store refuses or abandons a read.
+ *
+ * A separate class rather than `ChannelMessageStoreError` because this is not a
+ * caller error: the route answers HTTP 200 with the structured
+ * `unavailableReason`, exactly as it already does for `query_too_short`. The
+ * distinction the client needs is "the index did not (fully) answer", not a
+ * failure — printing "no matches" for either of these would assert something
+ * about the transcript that was never checked.
+ */
+export class ChannelSearchRefusedError extends Error {
+  readonly reason: 'search_query_too_broad' | 'search_timeout';
+
+  constructor(reason: 'search_query_too_broad' | 'search_timeout') {
+    super(`channel search refused: ${reason}`);
+    this.name = 'ChannelSearchRefusedError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Install the wall-clock tick on one connection.
+ *
+ * `deterministic: false` is the LOAD-BEARING option, not documentation: SQLite
+ * hoists constant subexpressions out of the row loop, and only the
+ * non-deterministic flag keeps this one inside it. The row id is passed as an
+ * argument for the same reason belt goes with braces — an expression that reads
+ * a column of the driving table cannot be evaluated anywhere but per row, on
+ * any SQLite version.
+ *
+ * `isExpired` is a callback rather than a deadline value because one connection
+ * serves every search: better-sqlite3 is synchronous, so no second read can
+ * begin while one is inside `.all()`, and the store simply moves the deadline
+ * before each call.
+ */
+export function registerChannelSearchTick(
+  db: Database.Database,
+  isExpired: () => boolean
+): void {
+  db.function(
+    CHANNEL_SEARCH_TICK_FUNCTION,
+    { deterministic: false },
+    (_rowid: unknown) => {
+      if (isExpired()) throw new ChannelSearchRefusedError('search_timeout');
+      return 1;
+    }
+  );
+}
+
+/**
+ * The half-open term range the trailing `*` of `raw` will expand over, or null
+ * when the query has no prefix term to bound.
+ *
+ * Mirrors `buildChannelSearchMatchQuery`: only the FINAL term takes `*`, and
+ * only once it is at least `CHANNEL_SEARCH_MIN_QUERY_CHARS` code points. The
+ * returned bounds are compared against terms as FTS5 STORED them, so the text
+ * is folded the way `unicode61 remove_diacritics 2` folds it — lowercased, with
+ * combining marks stripped — and reduced to its LAST tokenizer token, because
+ * `"foo-bar" *` is the two-token phrase `foo bar` with the prefix on `bar`.
+ *
+ * The folding is an APPROXIMATION of unicode61's table, and where it diverges
+ * the probe costs a DIFFERENT term range than the query expands over — not a
+ * conservative subset of it. Measured, on Greek, where two divergences compound:
+ * `remove_diacritics 2` KEEPS the tonos (FTS5 stores `ΣΊΣΥΦΟΣ` as `σίσυφοσ`,
+ * U+03C3 U+03AF …) while NFD mark-stripping removes it, and `toLowerCase` maps a
+ * trailing Σ to FINAL sigma U+03C2 while unicode61 always folds to U+03C3. So
+ * `ΣΊΣ` probes `[σις, σισ)` — and the stored term begins `σί`, which sorts BELOW
+ * that range (U+03AF < U+03B9). The probe counts zero terms for a prefix that
+ * does match. Turkish dotless i and ß are in the same family.
+ *
+ * Do not read that as a safety guarantee. Disjoint ranges carry no ordering, so
+ * a divergence can under-count (measured above) or over-count; what is bounded
+ * is the CONSEQUENCE in each direction. Under-counting leaves the read to the
+ * doc budget and the wall-clock ceiling, which is the pre-#1316 position for
+ * that query and no worse. Over-counting refuses a query the operator then
+ * narrows, which is visible and recoverable. Latin-script text — what the
+ * budgets were calibrated on, and what the transcript is overwhelmingly made of
+ * — folds identically, so this is a correctness note about the edges rather
+ * than about the working path.
+ *
+ * Exported for tests: this is the half of the gate that has to agree with a C
+ * tokenizer, so it deserves direct assertions rather than only end-to-end ones.
+ */
+export function channelSearchPrefixRange(
+  raw: string
+): { low: string; high: string } | null {
+  const terms = collectChannelSearchTerms(raw);
+  const last = terms[terms.length - 1];
+  if (last === undefined) return null;
+  if ([...last].length < CHANNEL_SEARCH_MIN_QUERY_CHARS) return null;
+  const folded = last
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase();
+  const tokens = folded.split(/[^\p{L}\p{N}]+/u).filter((part) => part !== '');
+  const low = tokens[tokens.length - 1];
+  if (low === undefined) return null;
+  const points = [...low];
+  const tail = points[points.length - 1]?.codePointAt(0);
+  if (tail === undefined) return null;
+  // Successor of the last code point, skipping the surrogate block (which is
+  // not a scalar value) so `String.fromCodePoint` cannot produce a lone
+  // surrogate that would bind as invalid UTF-8.
+  let next = tail + 1;
+  if (next >= 0xd800 && next <= 0xdfff) next = 0xe000;
+  if (next > 0x10ffff) return null;
+  return {
+    low,
+    high: points.slice(0, -1).join('') + String.fromCodePoint(next),
+  };
+}
 
 /** `snippet()` window, in tokens (FTS5 allows 1..64). */
 const CHANNEL_SEARCH_SNIPPET_TOKENS = 20;
@@ -393,6 +536,15 @@ export function buildChannelSearchMatchQuery(raw: string): string | null {
  * Ranking is bm25 ascending — SQLite returns a more-negative score for a better
  * match — with newest-first as the tiebreak so two equally relevant rows
  * present the recent one first.
+ *
+ * `relay_channel_search_tick(<fts>.rowid)` is the wall-clock ceiling (#1316).
+ * It sits immediately after the MATCH and reads a column of the DRIVING table
+ * on purpose: SQLite evaluates a WHERE term in the loop of the last table it
+ * references, so this one fires once per FTS-matched row — before the rowid
+ * probe into `channel_messages` and before the channel allowlist discards
+ * anything — which is the earliest per-row hook the query has. It never filters
+ * (it returns 1 or throws), so the query plan is unchanged; the plan test
+ * asserts that.
  */
 export function buildChannelMessageSearchSql(channelIdCount: number): string {
   const channelClause =
@@ -413,6 +565,7 @@ export function buildChannelMessageSearchSql(channelIdCount: number): string {
            FROM ${CHANNEL_SEARCH_TABLE}
            CROSS JOIN channel_messages m ON m.rowid = ${CHANNEL_SEARCH_TABLE}.rowid
           WHERE ${CHANNEL_SEARCH_TABLE} MATCH ?
+            AND ${CHANNEL_SEARCH_TICK_FUNCTION}(${CHANNEL_SEARCH_TABLE}.rowid)
             ${channelClause}
           ORDER BY score ASC, m.seq DESC
           LIMIT ?`;
@@ -848,6 +1001,12 @@ export interface ChannelMessageStore {
    * Thread replies ARE included. Returns hits, not `ChannelMessage` rows: a
    * result is a jump target plus an excerpt, and shipping full 256KB bodies for
    * 50 hits would make the response a transcript dump.
+   *
+   * Throws `ChannelSearchRefusedError` when the cost gate refuses the prefix
+   * (`search_query_too_broad`) or the wall-clock ceiling cuts the read off
+   * (`search_timeout`) — see #1316. Both are 200-with-a-reason at the route, not
+   * errors; what they must never become is an empty array, which would claim
+   * the corpus was searched and held nothing.
    */
   searchMessages(input: ChannelMessageSearchQuery): ChannelMessageSearchHit[];
   /** Root-inclusive history for one canonical thread. */
@@ -1171,6 +1330,56 @@ interface LegacyClaudeEchoAliasCandidate {
   duplicate_completed_at: string;
 }
 
+interface LegacyClaudeEchoHealResult {
+  /** Rows the SQL predicate matched, BEFORE the bounded-signature guards. */
+  candidates: number;
+  /** Duplicate rows actually removed. */
+  healed: number;
+}
+
+/**
+ * Candidate pairs for the pre-v2 Claude stream/echo alias, held as ONE SQL
+ * string so the cheap `EXISTS` probe on the boot path and the full pass that
+ * follows it can never drift apart. It reads the head schema
+ * (`source_runtime_id`, post-v5 rename) because the heal now runs after every
+ * numbered migration rather than inside one.
+ */
+const LEGACY_CLAUDE_ECHO_CANDIDATE_SQL = `SELECT keeper.id AS keeper_id,
+        duplicate.id AS duplicate_id,
+        keeper.channel_id AS channel_id,
+        keeper.source_item_id AS keeper_item_id,
+        duplicate.source_item_id AS duplicate_item_id,
+        keeper.created_at AS keeper_created_at,
+        duplicate.created_at AS duplicate_created_at,
+        keeper.completed_at AS keeper_completed_at,
+        duplicate.completed_at AS duplicate_completed_at
+   FROM channel_messages keeper
+   JOIN channel_messages duplicate
+     ON duplicate.channel_id = keeper.channel_id
+    AND duplicate.seq = keeper.seq + 1
+    AND duplicate.source_runtime_id = keeper.source_runtime_id
+    AND duplicate.source_turn_id = keeper.source_turn_id
+    AND duplicate.sender_kind = keeper.sender_kind
+    AND duplicate.sender_id = keeper.sender_id
+    AND duplicate.sender_display IS keeper.sender_display
+    AND duplicate.kind = keeper.kind
+    AND duplicate.status = keeper.status
+    AND duplicate.thread_id IS keeper.thread_id
+    AND duplicate.parent_message_id IS keeper.parent_message_id
+    AND duplicate.body_text = keeper.body_text
+    AND duplicate.body_format = keeper.body_format
+    AND duplicate.meta_json IS keeper.meta_json
+  WHERE keeper.sender_kind = 'agent'
+    AND keeper.sender_id = 'agent:claude'
+    AND keeper.kind = 'message'
+    AND keeper.status = 'complete'
+    AND keeper.completed_at IS NOT NULL
+    AND duplicate.completed_at IS NOT NULL
+    AND keeper.source_runtime_id IS NOT NULL
+    AND keeper.source_turn_id IS NOT NULL
+    AND keeper.source_item_id GLOB '*-1'
+    AND duplicate.source_item_id GLOB '*-0'`;
+
 function legacyClaudeItemBase(
   itemId: string,
   suffix: '-1' | '-0'
@@ -1188,49 +1397,26 @@ function legacyClaudeItemBase(
  *
  * Deleted aliases are migration-only exceptions to the append-only runtime
  * contract. References are repointed to the earliest durable id, affected
- * channels are resequenced in-place, and persisted agent-delivery cursors are
- * translated before resequencing. Browser-local read cursors cannot be
- * translated here; full-snapshot head clamping remains their recovery lane.
+ * channels are resequenced in-place, and every persisted seq cursor is
+ * translated before resequencing: agent delivery cursors AND the operator's
+ * durable last-read marks. A mark left untranslated would slide DOWN with the
+ * rows and silently swallow the unread tail — `listReadState`'s head clamp only
+ * catches a mark stranded ABOVE the head, never one that moved with the log.
+ *
+ * Callers must run this AFTER `CHANNEL_READ_STATE_SCHEMA_SQL` (i.e. from
+ * `runMigrations`, never from inside a numbered `schema_version` lane) so that
+ * table exists to be translated.
+ *
+ * Returns the candidate count alongside the healed count so the caller can log
+ * a ZERO pass. #1209 burned a day of forensics precisely because a pass that
+ * healed nothing printed nothing, leaving "the migration ran" and "the
+ * migration healed" indistinguishable from the log.
  */
-function healLegacyClaudeEchoAliases(db: Database.Database): number {
+function healLegacyClaudeEchoAliases(
+  db: Database.Database
+): LegacyClaudeEchoHealResult {
   const candidates = db
-    .prepare(
-      `SELECT keeper.id AS keeper_id,
-              duplicate.id AS duplicate_id,
-              keeper.channel_id AS channel_id,
-              keeper.source_item_id AS keeper_item_id,
-              duplicate.source_item_id AS duplicate_item_id,
-              keeper.created_at AS keeper_created_at,
-              duplicate.created_at AS duplicate_created_at,
-              keeper.completed_at AS keeper_completed_at,
-              duplicate.completed_at AS duplicate_completed_at
-         FROM channel_messages keeper
-         JOIN channel_messages duplicate
-           ON duplicate.channel_id = keeper.channel_id
-          AND duplicate.seq = keeper.seq + 1
-          AND duplicate.source_session_id = keeper.source_session_id
-          AND duplicate.source_turn_id = keeper.source_turn_id
-          AND duplicate.sender_kind = keeper.sender_kind
-          AND duplicate.sender_id = keeper.sender_id
-          AND duplicate.sender_display IS keeper.sender_display
-          AND duplicate.kind = keeper.kind
-          AND duplicate.status = keeper.status
-          AND duplicate.thread_id IS keeper.thread_id
-          AND duplicate.parent_message_id IS keeper.parent_message_id
-          AND duplicate.body_text = keeper.body_text
-          AND duplicate.body_format = keeper.body_format
-          AND duplicate.meta_json IS keeper.meta_json
-        WHERE keeper.sender_kind = 'agent'
-          AND keeper.sender_id = 'agent:claude'
-          AND keeper.kind = 'message'
-          AND keeper.status = 'complete'
-          AND keeper.completed_at IS NOT NULL
-          AND duplicate.completed_at IS NOT NULL
-          AND keeper.source_session_id IS NOT NULL
-          AND keeper.source_turn_id IS NOT NULL
-          AND keeper.source_item_id GLOB '*-1'
-          AND duplicate.source_item_id GLOB '*-0'`
-    )
+    .prepare(LEGACY_CLAUDE_ECHO_CANDIDATE_SQL)
     .all() as LegacyClaudeEchoAliasCandidate[];
 
   const affectedChannels = new Set<string>();
@@ -1278,8 +1464,13 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
     affectedChannels.add(candidate.channel_id);
   }
 
+  // Selected/updated BY ROWID rather than by (channel_id, agent_framework):
+  // v3 re-keyed the table to (channel_id, profile_actor_id), and two profiles of
+  // one provider can share a framework in one channel. Keying by rowid
+  // translates each binding's own cursor instead of stamping the last computed
+  // cursor onto its siblings.
   const selectBindings = db.prepare(
-    `SELECT channel_id, agent_framework, provider_session_json
+    `SELECT rowid AS binding_rowid, provider_session_json
        FROM channel_agent_bindings WHERE channel_id = ?`
   );
   const translateSeq = db.prepare(
@@ -1288,7 +1479,20 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
   );
   const updateBinding = db.prepare(
     `UPDATE channel_agent_bindings SET provider_session_json = ?
-      WHERE channel_id = ? AND agent_framework = ?`
+      WHERE rowid = ?`
+  );
+  // Same `COUNT(*) WHERE seq <= cursor` translation the delivery cursors get,
+  // applied to the operator's durable last-read mark (#1308 slice 3 item 1).
+  // `updated_at` is deliberately NOT touched: the mark still points at the same
+  // durable message, so nothing about WHEN the operator read it changed.
+  const translateReadMark = db.prepare(
+    `UPDATE ${CHANNEL_READ_STATE_TABLE}
+        SET last_read_seq = (
+              SELECT COUNT(*) FROM channel_messages
+               WHERE channel_messages.channel_id = ?
+                 AND channel_messages.seq <=
+                     ${CHANNEL_READ_STATE_TABLE}.last_read_seq)
+      WHERE ${CHANNEL_READ_STATE_TABLE}.channel_id = ?`
   );
   const selectOrderedIds = db.prepare(
     'SELECT id FROM channel_messages WHERE channel_id = ? ORDER BY seq ASC'
@@ -1299,8 +1503,7 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
 
   for (const channelId of affectedChannels) {
     const bindings = selectBindings.all(channelId) as Array<{
-      channel_id: string;
-      agent_framework: string;
+      binding_rowid: number;
       provider_session_json: string;
     }>;
     for (const binding of bindings) {
@@ -1318,14 +1521,15 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
             ...providerSession,
             lastDeliveredSeq: translated.count,
           }),
-          channelId,
-          binding.agent_framework
+          binding.binding_rowid
         );
       } catch {
         // Invalid legacy provider state is preserved byte-for-byte; migration
         // must not turn an unrelated malformed binding into DB unavailability.
       }
     }
+
+    translateReadMark.run(channelId, channelId);
 
     const ordered = selectOrderedIds.all(channelId) as Array<{ id: string }>;
     // The negative lane avoids transient UNIQUE(channel_id, seq) collisions
@@ -1338,7 +1542,7 @@ function healLegacyClaudeEchoAliases(db: Database.Database): number {
     }
   }
 
-  return duplicateIds.size;
+  return { candidates: candidates.length, healed: duplicateIds.size };
 }
 
 /**
@@ -1378,6 +1582,39 @@ CREATE TABLE IF NOT EXISTS ${CHANNEL_READ_STATE_TABLE} (
   updated_at    TEXT NOT NULL
 );
 `;
+
+const CHANNEL_HEAL_STATE_TABLE = 'channel_heal_state';
+
+/**
+ * Ledger of one-shot historical repairs that have already run on this db
+ * (#1209).
+ *
+ * Auxiliary table, created on EVERY open, for the same reason
+ * `channel_read_state` and `channel_search_state` are: a numbered
+ * `schema_version` step fires exactly once, so a repair welded to one can never
+ * run on a db that reached that version WITHOUT it — restored from a stamped
+ * copy, rolled forward out of order, or hand-stamped. That is precisely what
+ * #1209 hit: the version said the repair had happened and the duplicate rows
+ * were still there, with no way back short of editing `schema_version`.
+ *
+ * A marker row is cheaper than a version bump in both directions. It does not
+ * make the db unopenable by an older hub (a numbered bump does — `current >
+ * SCHEMA_VERSION` throws), and re-arming a pass is
+ * `DELETE FROM channel_heal_state WHERE heal_id = '...'` rather than rewinding
+ * a schema version past migrations that must not replay. The row is also the
+ * diagnostic: it records what the pass saw and what it removed.
+ */
+const CHANNEL_HEAL_STATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS ${CHANNEL_HEAL_STATE_TABLE} (
+  heal_id      TEXT PRIMARY KEY,
+  completed_at TEXT NOT NULL,
+  candidates   INTEGER NOT NULL,
+  healed       INTEGER NOT NULL
+);
+`;
+
+/** Marker id for the pre-v2 Claude stream/echo alias repair (#1207, #1209). */
+const CLAUDE_ECHO_HEAL_ID = 'claude-echo-alias-v1';
 
 /**
  * Durable completeness marker for the index, and the resume cursor for a
@@ -1681,9 +1918,91 @@ function ensureChannelSearchIndex(db: Database.Database): void {
   );
 }
 
+/**
+ * Run the pre-v2 Claude echo alias repair once per database (#1207, #1209).
+ *
+ * Gated on a marker ROW, not on a `schema_version` step. The v2 lane welded the
+ * heal to the CHECK-widening rebuild, so it could only ever fire on the single
+ * boot that carried a db across the 1 -> 2 boundary; a db that arrived at v2 or
+ * later without that exact lane executing its heal could never heal again, and
+ * printed nothing to say so. Version numbers describe SHAPE, and the shape was
+ * already correct — what was missing was a repair, which is state.
+ *
+ * The WAL hypothesis in #1209 is refuted (see the migration tests): the old v2
+ * lane read the duplicate rows itself when it copied them into
+ * `channel_messages_v2`, then healed the renamed table in the SAME transaction
+ * on the SAME connection, so any row that survived the rebuild was by
+ * definition visible to the heal. A hot, uncheckpointed WAL copy heals
+ * normally. (The issue's second suspect — a concurrent writer holding the db —
+ * is untested here, but it cannot produce the reported outcome either: rows the
+ * rebuild did not see would not be in the table afterwards, and the reported
+ * db still had them.)
+ *
+ * This is a bounded historical repair, not an every-boot sweep. On a db that
+ * has already run it the whole cost is one primary-key lookup; on one that has
+ * not, an `EXISTS` probe short-circuits on the first matching pair (or scans
+ * once, ever, and writes the marker).
+ *
+ * When there IS work, the FTS index is torn down first and rebuilt afterwards
+ * by `ensureChannelSearchIndex`. Healing renumbers `seq` for every row of an
+ * affected channel, so leaving the sync triggers live would fire one FTS delete
+ * plus one re-insert per row inside this transaction — the exact unbounded
+ * tokenization stall the batched backfill exists to avoid — and would hard-fail
+ * the boot on a db whose FTS table was dropped while its triggers survived.
+ */
+function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
+  db.exec(CHANNEL_HEAL_STATE_SCHEMA_SQL);
+  const done = db
+    .prepare(`SELECT 1 FROM ${CHANNEL_HEAL_STATE_TABLE} WHERE heal_id = ?`)
+    .get(CLAUDE_ECHO_HEAL_ID);
+  if (done) return;
+  const hasCandidates = db.prepare(
+    `SELECT EXISTS (${LEGACY_CLAUDE_ECHO_CANDIDATE_SQL}) AS present`
+  );
+  const recordPass = db.prepare(
+    `INSERT INTO ${CHANNEL_HEAL_STATE_TABLE}
+       (heal_id, completed_at, candidates, healed)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(heal_id) DO UPDATE SET
+       completed_at = excluded.completed_at,
+       candidates   = excluded.candidates,
+       healed       = excluded.healed`
+  );
+  const result = db.transaction((): LegacyClaudeEchoHealResult => {
+    const pending = (hasCandidates.get() as { present: number }).present === 1;
+    let pass: LegacyClaudeEchoHealResult = { candidates: 0, healed: 0 };
+    if (pending) {
+      for (const trigger of CHANNEL_SEARCH_TRIGGERS) {
+        db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      }
+      db.exec(`DROP TABLE IF EXISTS ${CHANNEL_SEARCH_TABLE}`);
+      pass = healLegacyClaudeEchoAliases(db);
+    }
+    recordPass.run(
+      CLAUDE_ECHO_HEAL_ID,
+      new Date().toISOString(),
+      pass.candidates,
+      pass.healed
+    );
+    return pass;
+  })();
+  // Logged on every path, including a ZERO pass: this runs at most once per db,
+  // so it is one line per db — not boot noise — and it is the difference between
+  // "the repair ran" and "the repair healed", which #1209 could not tell apart.
+  logger.info(
+    'channel Claude echo alias heal: %d candidate pair(s) matched, %d duplicate row(s) removed',
+    result.candidates,
+    result.healed
+  );
+}
+
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
   db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
+  // Order matters both ways: the heal translates `channel_read_state` (created
+  // above) and may drop the search index, which `ensureChannelSearchIndex`
+  // (below) then rebuilds in bounded batches.
+  ensureLegacyClaudeEchoHeal(db);
   ensureChannelSearchIndex(db);
 }
 
@@ -1709,7 +2028,7 @@ function runSchemaMigrations(db: Database.Database): void {
     return;
   }
   if (current < 2) {
-    const healed = db.transaction(() => {
+    db.transaction(() => {
       // SQLite cannot widen a CHECK constraint in place. Rebuild only the
       // message table, preserving every durable row and its sequence/source
       // identity, then recreate its indexes against the replacement table.
@@ -1755,8 +2074,10 @@ function runSchemaMigrations(db: Database.Database): void {
         ALTER TABLE channel_messages_v2 RENAME TO channel_messages;
       `);
 
-      const healedCount = healLegacyClaudeEchoAliases(db);
-
+      // The Claude echo alias heal used to live HERE, inside the rebuild. It
+      // now runs from `runMigrations` behind its own marker row: welding it to
+      // this one-shot lane is what made #1209 unrecoverable, and the rebuild
+      // itself has nothing to do with the duplicates.
       db.exec(`
         CREATE INDEX idx_chm_channel_seq
           ON channel_messages(channel_id, seq);
@@ -1772,14 +2093,7 @@ function runSchemaMigrations(db: Database.Database): void {
           WHERE client_message_id IS NOT NULL;
       `);
       db.prepare('UPDATE schema_version SET version = 2').run();
-      return healedCount;
     })();
-    if (healed > 0) {
-      logger.info(
-        'channel schema v2 healed %d historical Claude echo duplicate row(s)',
-        healed
-      );
-    }
   }
   if (current < 3) {
     db.transaction(() => {
@@ -1862,7 +2176,37 @@ export function initChannelMessageStore(
   return createChannelMessageStore(path.join(configDir, 'channel-chat.db'));
 }
 
-export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
+export interface ChannelMessageStoreOptions {
+  /**
+   * Wall-clock ceiling for one ranked index read, in milliseconds. Defaults to
+   * `CHANNEL_SEARCH_TIME_BUDGET_MS`.
+   *
+   * Overridable because the ceiling is otherwise only provable by a latency
+   * assertion, and a latency assertion is exactly the kind of test a faster CI
+   * box deletes silently — the same reasoning that made the minimum-length
+   * guard assert on the EXPRESSION rather than on milliseconds. A test sets
+   * `0` and gets a deterministic `search_timeout` on the first matched row.
+   */
+  searchTimeBudgetMs?: number;
+  /**
+   * State of the pre-flight cost gate. `'auto'` (default) builds the `fts5vocab`
+   * view and gates on it; `'unavailable'` reproduces the DEGRADED state the
+   * store falls into when that view cannot be built.
+   *
+   * A state rather than an on/off switch, and present for one reason: failing
+   * open is a documented contract, and an undocumented untested fallback is how
+   * a guard quietly stops being one. The degraded path is not equivalent to the
+   * guarded path — the wall-clock ceiling is a per-row hook, so a zero-row query
+   * is unbounded without the pre-flight — so what it actually does deserves an
+   * assertion instead of a comment.
+   */
+  searchCostPreflight?: 'auto' | 'unavailable';
+}
+
+export function createChannelMessageStore(
+  dbPath: string,
+  options: ChannelMessageStoreOptions = {}
+): ChannelMessageStore {
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
@@ -1871,6 +2215,134 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  // ── search cost guards (#1316) ────────────────────────────────────────────
+  const searchTimeBudgetMs =
+    options.searchTimeBudgetMs ?? CHANNEL_SEARCH_TIME_BUDGET_MS;
+  // Deadline for the read currently inside `.all()`. A single mutable value is
+  // safe precisely because better-sqlite3 is synchronous: nothing else on this
+  // thread can start a second read while one is running, which is the same
+  // property that makes the ceiling necessary in the first place.
+  let searchDeadline = Number.POSITIVE_INFINITY;
+  registerChannelSearchTick(db, () => Date.now() >= searchDeadline);
+  // Created AFTER `runMigrations`, so the FTS table it reads through already
+  // exists on a fresh db. Failure is not fatal, but it is not harmless either:
+  // the pre-flight is the ONLY bound on a prefix that emits no rows (see
+  // `CHANNEL_SEARCH_PREFIX_DOC_BUDGET`), so a store running without it is back
+  // to pre-#1316 behaviour for that shape. Degraded, and logged as such.
+  let searchVocab: Database.Statement | null = null;
+  if (options.searchCostPreflight !== 'unavailable') {
+    try {
+      db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS ${CHANNEL_SEARCH_VOCAB_TABLE}
+         USING fts5vocab(main, ${CHANNEL_SEARCH_TABLE}, row)`
+      );
+      searchVocab = db.prepare(
+        `SELECT doc FROM ${CHANNEL_SEARCH_VOCAB_TABLE}
+        WHERE term >= ? AND term < ?`
+      );
+    } catch (error) {
+      logger.warn(
+        'channel search cost pre-flight unavailable (%s); prefix cost is now bounded only by the wall-clock ceiling, which does not cover zero-row queries',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  // Refusal telemetry. `CHANNEL_SEARCH_PREFIX_TERM_BUDGET` is an absolute term
+  // count measured against one corpus, while prefix expansion grows with
+  // vocabulary — so the failure mode of a stale budget is ordinary prefixes
+  // silently refusing, on every keystroke of a live search, with no signal that
+  // the GUARD rather than the corpus is the cause. Counting refusals and
+  // surfacing the rate is what makes that transition visible. Throttled to one
+  // line a minute (carrying the count since the last line) so a debounced live
+  // search cannot turn the signal into a flood.
+  let searchRefusals = 0;
+  let searchRefusalsAtLastLog = 0;
+  let searchRefusalLoggedAt = 0;
+  const SEARCH_REFUSAL_LOG_INTERVAL_MS = 60_000;
+  // Latched so a persistent pre-flight fault (a dropped index, a corrupt
+  // vocabulary) reports once rather than once per keystroke. The condition is a
+  // property of the store, not of the query, so repeating it per call adds
+  // volume without adding information.
+  let searchPreflightFaultLogged = false;
+
+  /**
+   * Refuse a prefix whose expansion this corpus cannot afford, BEFORE reading.
+   *
+   * Walks the term index over the prefix range and stops at the first budget it
+   * blows. Both budgets are also the walk's own bound, so the check costs at
+   * most `CHANNEL_SEARCH_PREFIX_TERM_BUDGET` b-tree steps no matter how large
+   * the transcript grows (measured ≤6ms at 1025 terms).
+   *
+   * Fails OPEN on any error. `fts5vocab` reads the index by name at query time,
+   * so a mid-rebuild window (`rebuildChannelSearchIndex` drops and recreates
+   * the table) surfaces as `no such fts5 table` — and a store that cannot cost
+   * a query must still answer it. Note what "open" costs here: the wall-clock
+   * ceiling is a per-ROW hook, so it does not cover a query that returns no
+   * rows. Failing open is the right call for a transient rebuild window and a
+   * real regression if it becomes permanent, which is why it is logged rather
+   * than swallowed.
+   */
+  function refuseOverBroadPrefix(raw: string): void {
+    if (!searchVocab) return;
+    const range = channelSearchPrefixRange(raw);
+    if (!range) return;
+    let terms = 0;
+    let docs = 0;
+    try {
+      for (const row of searchVocab.iterate(range.low, range.high) as Iterable<{
+        doc: number;
+      }>) {
+        terms += 1;
+        docs += row.doc;
+        if (
+          terms > CHANNEL_SEARCH_PREFIX_TERM_BUDGET ||
+          docs > CHANNEL_SEARCH_PREFIX_DOC_BUDGET
+        ) {
+          noteSearchRefusal(terms, docs);
+          throw new ChannelSearchRefusedError('search_query_too_broad');
+        }
+      }
+    } catch (error) {
+      if (error instanceof ChannelSearchRefusedError) throw error;
+      if (!searchPreflightFaultLogged) {
+        searchPreflightFaultLogged = true;
+        logger.warn(
+          'channel search cost pre-flight failed (%s); running queries under the wall-clock ceiling alone until this clears (logged once)',
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
+  }
+
+  /**
+   * Record an over-broad refusal, logging the SHAPE of the query and never its
+   * text — operator search input can carry pasted secrets or ticket bodies, and
+   * this path is reachable repeatedly by any capability holder.
+   */
+  function noteSearchRefusal(terms: number, docs: number): void {
+    searchRefusals += 1;
+    const now = Date.now();
+    if (
+      searchRefusalLoggedAt !== 0 &&
+      now - searchRefusalLoggedAt < SEARCH_REFUSAL_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+    const sinceLast = searchRefusals - searchRefusalsAtLastLog;
+    searchRefusalsAtLastLog = searchRefusals;
+    searchRefusalLoggedAt = now;
+    logger.warn(
+      'channel search refused an over-broad prefix (%d terms / %d docs vs budgets %d/%d); %d refusal(s) since the last line, %d total. A rising rate means the corpus has outgrown CHANNEL_SEARCH_PREFIX_TERM_BUDGET, not that search is broken.',
+      terms,
+      docs,
+      CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
+      CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+      sinceLast,
+      searchRefusals
+    );
   }
 
   // Point reads can be emitted directly on the WS lane (stream finalization and
@@ -2457,20 +2929,51 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const channelIds =
         input.channelIds === undefined ? null : [...input.channelIds];
       if (channelIds !== null && channelIds.length === 0) return [];
+      // Cost gate BEFORE the read (#1316): the cheapest query is the one that
+      // never starts, and the doclist-merge setup this refuses is the one part
+      // of the read the wall-clock ceiling below cannot interrupt.
+      refuseOverBroadPrefix(input.query);
       // `+ 1` is the LOOKAHEAD allowance, not a wider page: a caller paging at
       // the maximum asks for one row past it purely to learn whether more hits
       // existed. Without it, `truncated` could never be true on a full page.
       const limit = cleanLimit(input.limit, CHANNEL_SEARCH_MAX_RESULTS + 1);
-      const rows = db
-        .prepare(buildChannelMessageSearchSql(channelIds?.length ?? 0))
-        .all(
-          CHANNEL_SEARCH_HIGHLIGHT_OPEN,
-          CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
-          CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
-          match,
-          ...(channelIds ?? []),
-          limit
-        ) as ChannelSearchRow[];
+      // The deadline is armed around THIS call only, and disarmed in `finally`
+      // so a leftover value can never abort an unrelated later read. The
+      // ceiling reaches the query through `relay_channel_search_tick`, which
+      // throws `ChannelSearchRefusedError('search_timeout')` from inside
+      // sqlite; better-sqlite3 propagates the original object, so no error
+      // string has to be pattern-matched here.
+      searchDeadline = Date.now() + searchTimeBudgetMs;
+      let rows: ChannelSearchRow[];
+      try {
+        rows = db
+          .prepare(buildChannelMessageSearchSql(channelIds?.length ?? 0))
+          .all(
+            CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+            CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+            CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
+            match,
+            ...(channelIds ?? []),
+            limit
+          ) as ChannelSearchRow[];
+      } catch (error) {
+        if (error instanceof ChannelSearchRefusedError) {
+          // SHAPE, not text. Operator search input is exactly the place a
+          // pasted secret or a credential someone is hunting for in the
+          // transcript shows up, and this line is reachable repeatedly by any
+          // CONTEXT_READ holder. Term count and the prefix length are what
+          // diagnose a timeout; the words are not.
+          logger.warn(
+            'channel search exceeded its %dms budget (%d term(s), %d-char prefix); answering search_timeout',
+            searchTimeBudgetMs,
+            match.split(' AND ').length,
+            channelSearchPrefixRange(input.query)?.low.length ?? 0
+          );
+        }
+        throw error;
+      } finally {
+        searchDeadline = Number.POSITIVE_INFINITY;
+      }
       return rows.map(searchRowToHit);
     },
 

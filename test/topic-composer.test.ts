@@ -4,6 +4,10 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type {
+  WorkspaceTopic,
+  WorkspaceTopicCreateInput,
+} from '../shared/workspace-topics.js';
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
@@ -41,7 +45,14 @@ import { useConfigStore } from '../frontend/src/lib/stores/config.js';
 import { useToastStore } from '../frontend/src/lib/stores/toasts.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
-import type { FrameworkInfo } from '../frontend/src/lib/types.js';
+import type {
+  FrameworkInfo,
+  SessionSummary,
+} from '../frontend/src/lib/types.js';
+import {
+  applyCreateRoutingContext,
+  openTopicSelection,
+} from '../frontend/src/lib/topic-selection.js';
 import TopicComposer from '../frontend/src/components/TopicComposer.js';
 import ChatHome from '../frontend/src/components/ChatHome.js';
 import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
@@ -310,6 +321,8 @@ describe('TopicComposer', () => {
       // payload, so a case that selects a lane would otherwise file every
       // later case's chat in it.
       activeWorkspaceId: null,
+      // #1303: same hazard for the lane's repo stamp.
+      laneRepoRouting: null,
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -1038,6 +1051,229 @@ describe('TopicComposer', () => {
     // shell it is the composer, not a re-rendered ChannelView, that mounts.
     renderChatHome(vi.fn());
     expect(container.querySelector('.topic-composer__ta')).not.toBeNull();
+  });
+
+  // #1303: #1287 moved `activeRepoPath` with the lane, but the create hook
+  // reads it BELOW the active session — `activeSession?.repoPath ??
+  // activeRepoPath ?? repos[0]` — so a terminal still open in the project the
+  // operator just left outranked the lane they just chose, and the chat was
+  // filed in project B while routed (and started) in project A.
+  describe('workspace-lane routing vs session inheritance (#1303)', () => {
+    const LANE_B = 'ws:project-b';
+    const projectASession = {
+      id: 'sess-project-a',
+      type: 'terminal',
+      mode: 'pty',
+      repoPath: '/repo/project-a',
+      worktreePath: '/repo/project-a/.worktrees/old-task',
+      cwd: '/repo/project-a/.worktrees/old-task',
+      displayName: 'project A terminal',
+      createdAt: '2026-08-04T00:00:00.000Z',
+      lastActivity: '2026-08-04T00:00:00.000Z',
+      idle: false,
+    } as const;
+
+    const LANE_B_REPO = '/repo/project-b';
+    // The rail's own lane→anchor lookup (`workspaces.find(...).defaultRepoPath`),
+    // as `ensureProjectWorkspace` stamps it on every add-project lane.
+    const laneRepoPathById = (workspaceId: string) =>
+      workspaceId === LANE_B ? LANE_B_REPO : undefined;
+
+    /** A DM row exactly as `dmChannelCreateInput` writes one: no repo anywhere. */
+    function dmTopicIn(workspaceId: string): WorkspaceTopic {
+      return {
+        schemaVersion: 1,
+        id: dmChannelTopicId('claude', workspaceId),
+        workspaceId,
+        source: 'persisted',
+        status: 'active',
+        visibility: 'default',
+        display: { title: 'Claude Code' },
+        grouping: {},
+        promptDefaults: {},
+        routingDefaults: { providerId: 'claude' },
+        linkedRefs: {},
+        state: { pinned: false, muted: false },
+        privacy: {
+          classification: 'internal',
+          retention: 'project',
+          redaction: 'summary',
+          rawDefaultsStored: false,
+        },
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      };
+    }
+
+    function seedActiveSession(session: SessionSummary) {
+      useSessionsStore.setState({
+        sessions: [session],
+        repos: [],
+        activeSessionId: scopedSessionKey(session),
+        refreshAll: vi.fn(async () => {}),
+      });
+      vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+        status: 'created',
+        topic: { id: 'topic:lane-routed' },
+        workContext: { id: 'wc:lane-routed' },
+      } as never);
+    }
+
+    function seedActiveProjectASession() {
+      seedActiveSession(projectASession as unknown as SessionSummary);
+    }
+
+    async function createOnlyFromComposer(callIndex = 0) {
+      renderComposer();
+      const ta = container.querySelector(
+        '.topic-composer__ta'
+      ) as HTMLTextAreaElement;
+      const toggle = container.querySelector(
+        '.topic-composer__advanced-toggle'
+      ) as HTMLButtonElement;
+      act(() => {
+        setNativeValue(ta, 'start work in the project I just selected');
+        if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+      });
+      const createOnly = Array.from(
+        container.querySelectorAll<HTMLButtonElement>(
+          '.topic-composer__advanced-actions button'
+        )
+      ).find((button) => button.textContent === 'create only');
+      expect(createOnly).toBeDefined();
+      await act(async () => createOnly?.click());
+      return vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock.calls[
+        callIndex
+      ]?.[0] as { room: { topic: WorkspaceTopicCreateInput } } | undefined;
+    }
+
+    // The canonical reproduction, driven through the REAL rail disposition
+    // rather than a hand-seeded store: the operator opens project B's Claude DM
+    // (`openTopicSelection`, the row's own handler) and presses new chat
+    // (`applyCreateRoutingContext`, the body both new-chat buttons run). The
+    // selected row IS in the active lane, and it names no repo — so nothing but
+    // the lane can answer where this chat runs, and the project-A terminal is
+    // still `activeSessionId` because opening a channel never clears it.
+    it('routes a lane-B chat at the lane repo when the selected row is a DM and a project-A terminal is still active', async () => {
+      seedActiveProjectASession();
+      const dm = dmTopicIn(LANE_B);
+      openTopicSelection(dm);
+      expect(useUiStore.getState().activeWorkspaceId).toBe(LANE_B);
+      applyCreateRoutingContext({ selectedTopic: dm, laneRepoPathById });
+      openTopicTaskRoom();
+
+      const arg = await createOnlyFromComposer();
+
+      expect(arg?.room.topic.workspaceId).toBe(LANE_B);
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
+      expect(arg?.room.topic.routingDefaults?.repoPath).not.toBe(
+        '/repo/project-a'
+      );
+      // `cwd` is what the process would actually start in and `worktreePath`
+      // names a checkout that only exists inside project A — a fix that moved
+      // `repoPath` alone would still land the work in the abandoned project.
+      expect(arg?.room.topic.routingDefaults?.cwd).toBe(LANE_B_REPO);
+      expect(arg?.room.topic.routingDefaults?.worktreePath).toBeUndefined();
+    });
+
+    // The mirror image, and the repo's own dogfood shape: one project lane plus
+    // a terminal open in `<repo>/.worktrees/<issue-slug>`. The lane and the
+    // session agree about the REPO, so the session is the better anchor — it
+    // knows the worktree, the lane knows only the main checkout. Overriding here
+    // would start the agent in the wrong tree of the right repo.
+    it('keeps the session worktree when the lane names the repo that session is already in', async () => {
+      seedActiveSession({
+        ...projectASession,
+        id: 'sess-project-b',
+        repoPath: LANE_B_REPO,
+        worktreePath: `${LANE_B_REPO}/.worktrees/feature`,
+        cwd: `${LANE_B_REPO}/.worktrees/feature`,
+      } as unknown as SessionSummary);
+      // Start-chat on lane B's header with no row of that lane selected.
+      useUiStore.setState({ activeWorkspaceId: LANE_B });
+      applyCreateRoutingContext({
+        selectedTopic: undefined,
+        laneRepoPathById,
+      });
+      openTopicTaskRoom();
+
+      const arg = await createOnlyFromComposer();
+
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
+      expect(arg?.room.topic.routingDefaults?.worktreePath).toBe(
+        `${LANE_B_REPO}/.worktrees/feature`
+      );
+      expect(arg?.room.topic.routingDefaults?.cwd).toBe(
+        `${LANE_B_REPO}/.worktrees/feature`
+      );
+    });
+
+    // The stamp means "the lane click that opened THIS composer". Left standing
+    // it would silently route every later create in the lane — including one the
+    // operator reached from the command palette, which calls `openTopicTaskRoom`
+    // directly and touches no lane at all.
+    it('spends the lane anchor on the create it routed, so the next chat inherits the session again', async () => {
+      seedActiveProjectASession();
+      const dm = dmTopicIn(LANE_B);
+      openTopicSelection(dm);
+      applyCreateRoutingContext({ selectedTopic: dm, laneRepoPathById });
+      openTopicTaskRoom();
+
+      const first = await createOnlyFromComposer();
+      expect(first?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
+      expect(useUiStore.getState().laneRepoRouting).toBeNull();
+
+      // Command-palette "new chat": no lane click, same lane still active.
+      openTopicTaskRoom();
+      const second = await createOnlyFromComposer(1);
+
+      expect(second?.room.topic.workspaceId).toBe(LANE_B);
+      expect(second?.room.topic.routingDefaults?.repoPath).toBe(
+        '/repo/project-a'
+      );
+      expect(second?.room.topic.routingDefaults?.cwd).toBe(
+        '/repo/project-a/.worktrees/old-task'
+      );
+    });
+
+    it('keeps session inheritance when no lane was explicitly selected', async () => {
+      seedActiveProjectASession();
+      // No lane stamp: a reload, or any create the operator reached without
+      // choosing a lane first. The session context is the honest anchor and
+      // must survive the fix intact.
+      useUiStore.setState({
+        activeWorkspaceId: LANE_B,
+        activeRepoPath: '/repo/project-b',
+        laneRepoRouting: null,
+      });
+
+      const arg = await createOnlyFromComposer();
+
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe('/repo/project-a');
+      expect(arg?.room.topic.routingDefaults?.worktreePath).toBe(
+        '/repo/project-a/.worktrees/old-task'
+      );
+      expect(arg?.room.topic.routingDefaults?.cwd).toBe(
+        '/repo/project-a/.worktrees/old-task'
+      );
+    });
+
+    it('ignores a stamp left behind by a lane that is no longer the active one', async () => {
+      seedActiveProjectASession();
+      // The operator picked project B's lane, then moved on to another lane.
+      // The stamp describes a lane this chat is no longer being filed in, so it
+      // has no claim on the routing and ordinary inheritance resumes.
+      useUiStore.setState({
+        activeWorkspaceId: 'ws:project-c',
+        activeRepoPath: '/repo/project-b',
+        laneRepoRouting: { workspaceId: LANE_B, repoPath: '/repo/project-b' },
+      });
+
+      const arg = await createOnlyFromComposer();
+
+      expect(arg?.room.topic.workspaceId).toBe('ws:project-c');
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe('/repo/project-a');
+    });
   });
 
   it('keeps the created room when retrying a terminal launch failure', async () => {

@@ -1,6 +1,10 @@
 # Boo-style terminal substrate audit
 
-Status: current source-of-truth audit for the `coder/boo`-inspired direction. Verify against code/current docs before treating behavior as shipped.
+Status: a **gap audit**, not a feature list. It compares Relay against the
+`coder/boo`-inspired direction and is deliberately weighted toward what is
+missing. The "Philosophy" section states durable rules; everything after it is a
+point-in-time assessment. Verify against code and the current docs before
+treating any row as shipped.
 
 ## Philosophy
 
@@ -40,7 +44,7 @@ evidence projections.
 | `wait --text` / `wait --idle`   | **Partial.** `sessions wait --output-text` and `sessions input --wait-for` do bounded raw output substring waiting; `sessions stream --idle-timeout-ms` detaches a stream after quiet. Missing: rendered-screen/cursor/title/mode wait predicates.                                                                              | `docs/CLI_GATEWAY.md`                                           |
 | `peek --json` / rendered screen | **Partial.** `sessions screen` exposes bounded rendered-screen snapshots for live `relay-pty` sessions. Missing: richer screen wait predicates and direct terminal-model APIs.                                                                                                                                                  | `docs/TERMINAL_BACKENDS.md`, `server/terminal-model-backend.ts` |
 | `attach` / optional UI          | **Partial.** Browser attach and CLI descriptor attach exist; `sessions.stream` attaches to the PTY stream. Missing: power-user CLI/TUI cockpit comparable to `boo ui`; current cockpit is web-first.                                                                                                                            | `docs/CLI_GATEWAY.md`, `docs/WORKBENCH_BOUNDARY.md`             |
-| Session manager cockpit         | **Partial.** Active Work, sidebar attention states, command palette, and Workbench blocks exist, but default desktop chrome is still repo/worktree/session heavy and Workbench canvas is not primary.                                                                                                                           | `docs/FRONTEND.md`, `docs/WORKBENCH_BOUNDARY.md`                |
+| Session manager cockpit         | **Partial.** Default desktop chrome is `TopicSidebarShell`'s channel/DM tree (#1287); Active Work, attention states, and the command palette are the execution/cockpit lane beside it. Missing: a terminal-multiplexer-style power-user session manager. The cockpit is web-first.                                              | `docs/FRONTEND.md`, `docs/WORKBENCH_BOUNDARY.md`                |
 
 ## What is actually built
 
@@ -64,7 +68,7 @@ evidence projections.
 - Direct libghostty terminal-model access is internal. Stable access goes through `sessions.screen`; richer `sessions.peek`/rendered-screen wait commands remain future work.
 - `sessions.input --wait-for` watches raw observed output. It is not a proof that a particular rendered screen/viewport/cursor state exists.
 - `RelayPtySession` exists as a class, but production session creation currently uses the `pty-handler` path with direct `node-pty` spawn plus terminal model. Docs should say `relay-pty` is the default direct PTY/libghostty-backed backend, not that the `RelayPtySession` class owns production sessions.
-- Active Work is strong, but not the default/primary desktop cockpit; the default sidebar still exposes a repo/worktree-first organization.
+- Active Work is strong, but it is not the default desktop surface. The default sidebar is the channel/DM tree (#1287); Active Work is the execution view you navigate to, so operator attention state is split across two surfaces rather than unified in one cockpit.
 
 ### Not built / do not document as shipped
 
@@ -72,7 +76,7 @@ evidence projections.
 - Stable function-key/keymap API beyond the closed `supervisor.sendKey` MVP enum.
 - Durable relay-pty live child-process reattach across server restart. Browser disconnect/live Relay process reattach is fine; server restart is cold resume from saved metadata/scrollback until future daemon/supervisor work lands.
 - A terminal-multiplexer-style power-user CLI/TUI session manager. Relay's richer cockpit is currently web/dashboard oriented.
-- Workbench canvas as the primary integrated cockpit surface.
+- A single unified operator cockpit. Conversation (channel tree) and execution (Active Work) remain separate surfaces. The Workbench canvas/blocks that once aimed at this were removed with the legacy sidebar and pre-channel islands (#1174, #1300) and are not a compatibility target.
 - Public agent sessions, web-mode sessions, agent/co-driven terminal modes, and
   terminal-agent hand-back.
 - Executable handoff launch/resume and workflow-owned planner/worker

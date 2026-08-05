@@ -43,6 +43,11 @@ import type {
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
+import {
+  applyTopicActiveContext,
+  openChannelMessageSelection,
+  openTopicSelection,
+} from '../frontend/src/lib/topic-selection.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 (
@@ -246,6 +251,9 @@ describe('TopicSidebarView', () => {
       // green suite hides a real regression.
       topicComposerOpen: false,
       activeWorkspaceId: null,
+      // #1303: the lane's repo stamp is written by the same cases and outranks
+      // session inheritance in every create — same leak, same reset.
+      laneRepoRouting: null,
       pendingChannelThread: null,
       // #1287 slice 5: rail/lane folds are persisted operator intent now, so
       // they outlive a remount by design — reset them between cases or one
@@ -258,6 +266,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: {},
       lastReadByChannel: {},
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
     container = document.createElement('div');
@@ -276,6 +285,7 @@ describe('TopicSidebarView', () => {
       repoDashboardTabIntent: null,
       activeChannelId: null,
       topicComposerOpen: false,
+      laneRepoRouting: null,
       pendingChannelThread: null,
       ...resetRailFolds(),
     });
@@ -287,6 +297,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: {},
       lastReadByChannel: {},
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
@@ -1156,6 +1167,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: { 'topic:alpha': 9, 'topic:beta': 9 },
       lastReadByChannel: { 'topic:alpha': 3, 'topic:beta': 3 },
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     const longStatus = `${'status update. '.repeat(40)}@operator please confirm`;
     const truncatedPreview = longStatus.slice(0, 200);
@@ -1829,6 +1841,159 @@ describe('TopicSidebarView', () => {
         OLD_LANE_REPO
       );
     }
+  });
+
+  // #1303: the repo POINTER alone could not carry the lane choice — it sits
+  // below the active session in the create hook's inheritance chain, so a
+  // terminal open in the abandoned project outranked it. The lane choice is
+  // recorded as itself, keyed by the lane it came from, and the create hook
+  // ranks it above session context (see `test/topic-composer.test.ts`).
+  it('records the selected lane as the create anchor, not just the repo pointer (#1303)', async () => {
+    useUiStore.setState({
+      activeWorkspaceId: null,
+      activeRepoPath: OLD_LANE_REPO,
+      laneRepoRouting: null,
+    });
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+
+    const start = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} [data-workspace-start-chat="${emptyLaneId}"]`
+    );
+    await act(async () => start?.click());
+
+    expect(useUiStore.getState().laneRepoRouting).toEqual({
+      workspaceId: emptyLaneId,
+      repoPath: FRESH_LANE_REPO,
+    });
+
+    // Selecting a channel is a newer routing statement than the lane click, so
+    // the stamp is spent — otherwise it would outrank the context of the very
+    // row the operator just opened on the next create.
+    openTopicSelection(
+      makeTopic({
+        id: 'topic:a',
+        workspaceId: 'ws:a',
+        display: { title: 'Alpha channel' },
+        linkedRefs: {},
+      })
+    );
+    expect(useUiStore.getState().laneRepoRouting).toBeNull();
+
+    // Same rule for a channel the caller could not resolve to a topic — a
+    // message-search hit routinely has none (`openChannelMessageSelection`), and
+    // the main pane changes all the same, so a stamp minted for some other lane
+    // is just as stale.
+    useUiStore.setState({
+      laneRepoRouting: { workspaceId: emptyLaneId, repoPath: FRESH_LANE_REPO },
+    });
+    openChannelMessageSelection({
+      channelId: 'topic:unresolvable',
+      messageId: 'chm:hit-1' as ChannelMessageId,
+    });
+    expect(useUiStore.getState().laneRepoRouting).toBeNull();
+
+    // And at the seam itself, because the two navigations above spend the stamp
+    // for a SECOND reason (they close the composer): applying an unresolvable
+    // topic's context is itself a routing statement, and `select(id)` with no
+    // resolvable topic reaches this with nothing else to clean up behind it.
+    useUiStore.setState({
+      laneRepoRouting: { workspaceId: emptyLaneId, repoPath: FRESH_LANE_REPO },
+    });
+    applyTopicActiveContext(undefined);
+    expect(useUiStore.getState().laneRepoRouting).toBeNull();
+  });
+
+  // #1303: the canonical reproduction, driven through the DOM. The operator is
+  // IN the fresh lane — they clicked its Claude DM, so that row is the selected
+  // one and `rowIsInActiveLane` is TRUE, which is the branch the first fix
+  // attempt did not cover. A DM's `routingDefaults` carries `providerId` alone
+  // (`dmChannelCreateInput`), so the row answers nothing about where the chat
+  // runs, and without the lane fallback the create inherits whatever terminal is
+  // still open. `test/topic-composer.test.ts` carries the create half.
+  it('anchors a new chat to the active lane when the selected row is a repo-less DM (#1303)', async () => {
+    const dmId = dmChannelTopicId('claude', emptyLaneId);
+    useUiStore.setState({
+      activeWorkspaceId: null,
+      activeRepoPath: OLD_LANE_REPO,
+      laneRepoRouting: null,
+    });
+    await renderWithEmptyLane({
+      onCreateTaskRoom: vi.fn(),
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+        makeTopic({
+          id: dmId,
+          workspaceId: emptyLaneId,
+          display: { title: 'Claude' },
+          routingDefaults: { providerId: 'claude' },
+          linkedRefs: {},
+        }),
+      ],
+    });
+
+    const dmRow = container.querySelector<HTMLButtonElement>(
+      `.topic-workspace-group [data-topic-id="${dmId}"] .topic-row__main`
+    );
+    expect(dmRow).not.toBeNull();
+    await act(async () => dmRow?.click());
+    // Opening the DM moved the lane but could name no repo, and it did NOT
+    // clear the active session — that is the whole trap.
+    expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+    expect(useUiStore.getState().laneRepoRouting).toBeNull();
+
+    const newChat = container.querySelector<HTMLButtonElement>(
+      '.topic-shell__create'
+    );
+    expect(newChat).not.toBeNull();
+    await act(async () => newChat?.click());
+
+    expect(useUiStore.getState().laneRepoRouting).toEqual({
+      workspaceId: emptyLaneId,
+      repoPath: FRESH_LANE_REPO,
+    });
+    expect(useUiStore.getState().activeRepoPath).toBe(FRESH_LANE_REPO);
+  });
+
+  // #1303: a row that names a repo of its own is MORE specific than its lane —
+  // the lane fallback must not overwrite it, or every create in an add-project
+  // lane would collapse onto the main checkout.
+  it('keeps a selected row’s own repo over the lane default (#1303)', async () => {
+    useUiStore.setState({
+      activeWorkspaceId: emptyLaneId,
+      activeRepoPath: null,
+      laneRepoRouting: null,
+    });
+    await renderWithEmptyLane({
+      onCreateTaskRoom: vi.fn(),
+      topics: [
+        makeTopic({
+          id: 'topic:in-fresh-lane',
+          workspaceId: emptyLaneId,
+          display: { title: 'Fresh lane channel' },
+          routingDefaults: { repoPath: '/repo/fresh/nested' },
+          linkedRefs: {},
+        }),
+      ],
+    });
+
+    const row = container.querySelector<HTMLButtonElement>(
+      `[data-topic-id="topic:in-fresh-lane"] .topic-row__main`
+    );
+    await act(async () => row?.click());
+    const newChat = container.querySelector<HTMLButtonElement>(
+      '.topic-shell__create'
+    );
+    await act(async () => newChat?.click());
+
+    expect(useUiStore.getState().laneRepoRouting).toEqual({
+      workspaceId: emptyLaneId,
+      repoPath: '/repo/fresh/nested',
+    });
   });
 
   it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {
@@ -4387,6 +4552,31 @@ describe('TopicSidebarView', () => {
       expect(container.textContent).toContain(
         'no message matches for “apollo”'
       );
+    });
+
+    it('asks for a narrower query when the index refused or abandoned the read (#1316)', async () => {
+      // Both reasons are COST answers, so neither may claim the transcript was
+      // searched. `search_query_too_broad` is refused before the read starts;
+      // `search_timeout` is cut off part way through it. If either printed "no
+      // matches", the operator would read a corpus claim off a query the index
+      // never finished — the same failure the older reasons already avoid.
+      for (const [reason, copy] of [
+        ['search_query_too_broad', 'too many matches to rank'],
+        ['search_timeout', 'search took too long'],
+      ] as const) {
+        await renderView({
+          topics: [],
+          sessions: [],
+          surfaces: [],
+          searchQuery: 'zzq',
+          searchResults: [],
+          messageResults: [],
+          messageSearchUnavailableReason: reason,
+        });
+        expect(container.textContent).toContain(copy);
+        expect(container.textContent).toContain('type more characters');
+        expect(container.textContent).not.toContain('no message matches for');
+      }
     });
 
     it('opens the channel and asks it to jump when a message hit is clicked', async () => {

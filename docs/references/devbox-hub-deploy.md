@@ -185,20 +185,42 @@ the fresh-config-dir workaround: start from a clean config dir carrying only
 `config.json`, `channel-chat.db`, and `workspace-topics.db`, with zero
 serialized sessions.
 
-### Duplicate-row healing (channel-chat v1 → v2)
+### Duplicate-row healing (channel-chat Claude echo aliases)
 
-The v1 → v2 `channel-chat` migration (#1207) heals historical Claude echo duplicates on the first boot at schema v2 (it logs `channel schema v2 healed N historical Claude echo duplicate row(s)`). If it heals 0 rows in-situ but duplicates are still visible (hot-WAL state, #1209), force the heal to re-run against the flushed database:
+The `channel-chat` store repairs historical Claude echo duplicates (#1207) once
+per database, on the first boot that finds no marker row for it in
+`channel_heal_state`. It is not a numbered schema step: #1209 was a database that
+reached the version which first shipped the repair without the repair having
+run, and a numbered step never revisits a version it has passed. The pass logs
+its result on the boot that runs it, including a pass that removes nothing:
+
+```
+channel Claude echo alias heal: 0 candidate pair(s) matched, 0 duplicate row(s) removed
+```
+
+Upgrading is enough — no operator action is needed. Check the log line, or the
+ledger row it wrote:
 
 ```bash
 DAILY_HUB=~/.config/relay-ide/daily-hub
+sqlite3 "$DAILY_HUB/channel-chat.db" "SELECT * FROM channel_heal_state;"
+```
+
+If duplicates are still visible after a boot that logged a pass, re-arm it by
+deleting the marker and restarting:
+
+```bash
 systemctl --user stop relay-daily-hub.service
-sqlite3 "$DAILY_HUB/channel-chat.db" "SELECT version FROM schema_version;"   # confirm it reads 2
-sqlite3 "$DAILY_HUB/channel-chat.db" "UPDATE schema_version SET version = 1;" # reset to 1
-systemctl --user start relay-daily-hub.service   # reopen re-runs the v1 -> v2 heal
+sqlite3 "$DAILY_HUB/channel-chat.db" \
+  "DELETE FROM channel_heal_state WHERE heal_id = 'claude-echo-alias-v1';"
+systemctl --user start relay-daily-hub.service   # reopen re-runs the repair
 systemctl --user status relay-daily-hub.service --no-pager
 ```
 
-`schema_version` is a single-row table in `channel-chat.db`; the heal pass runs whenever the recorded version is below 2, so resetting it to 1 and reopening re-runs the dedupe and lands back at v2.
+Do NOT rewind `schema_version` to force a repair. The v2 lane rebuilds
+`channel_messages` from a column (`source_session_id`) that v5 renamed, so
+replaying it against a modern database throws on open and the hub fails to
+start. The marker row exists precisely so recovery never needs that.
 
 ### npm publish lag (#1215)
 

@@ -37,7 +37,9 @@ ChatHome
 
 - joins REST metadata/history with the channel socket reducer;
 - resolves DM identity from workspace-topic routing;
-- tracks browser-local last-read state;
+- captures last-read position into the activity store, which converges it
+  through the hub (see State ownership below);
+- resolves `#msg-` deep links, walking bounded older-history pages;
 - renders archived, disconnected, resync, and unavailable states;
 - fetches the profile roster and current agent status;
 - posts top-level and threaded messages;
@@ -70,6 +72,46 @@ four bounded native images. The thread panel reuses it with a root message id.
 `ChannelThreadPanel` loads the root plus replies, preserves channel identity,
 and posts through the same message contract as the main composer.
 
+While a bound agent is mid-turn the composer reveals two explicit controls:
+`queue` (plain `enter`) and `interrupt & send` (`cmd/ctrl`+`enter`). Steering is
+never inferred from message text.
+
+### Message toolbar and deep links
+
+`ChannelMessageRow` exposes a hover toolbar: copy link, edit, delete, and retry
+on failed rows. Links are `/channel/<segment>#msg-<message id>`, built and
+parsed by `frontend/src/lib/url-nav.ts`. Opening an anchor that is outside the
+loaded window walks older pages up to `ANCHOR_WALK_MAX_PAGES` before giving up
+with a toast.
+
+## Notifications, badges, and update toast
+
+`NotificationStack.tsx` renders the `notifications.ts` stack. `UpdateToast.tsx`
+checks the server version on mount, and on a one-click update reloads through
+`frontend/src/lib/server-restart.ts` once the server returns.
+
+The notification runtime is `frontend/src/lib/notify/`:
+
+| Module               | Responsibility                                         |
+| -------------------- | ------------------------------------------------------ |
+| `leader.ts`          | Elects one leader tab so N tabs raise one notification |
+| `os-notification.ts` | Permission state and OS notification delivery          |
+| `favicon-badge.ts`   | Favicon count badge                                    |
+| `title-badge.ts`     | Document title count                                   |
+| `signals.ts`         | Derives what is worth announcing                       |
+| `producers.ts`       | Maps channel activity into notification signals        |
+| `summary-watch.ts`   | Watches channel summaries for background activity      |
+
+Notifications fire only while the tab is hidden and read the same client-derived
+unread state as the sidebar; they do not add a second source of truth.
+
+## Search
+
+`TopicSidebarShell` renders search results in two sections — matching channels
+and matching messages — from `GET /channels/search`. The same query is a command
+palette category. Selecting a message result navigates to its channel and jumps
+to the row.
+
 ## Data flow
 
 `useChannelChatSocket(channelId)`:
@@ -93,13 +135,25 @@ state after channel recreation.
 
 ### Zustand
 
-| Store                     | Responsibility                                       |
-| ------------------------- | ---------------------------------------------------- |
-| `ui.ts`                   | Active channel/thread, dialogs, and local navigation |
-| `channel-activity.ts`     | Browser-local last-read sequence and unread badges   |
-| `channel-agent-status.ts` | Live profile status keyed by channel/profile         |
-| `sessions.ts`             | Terminal/process session summaries                   |
-| `toasts.store.ts`         | Transient notifications                              |
+| Store                     | Responsibility                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `ui.ts`                   | Active channel/thread, dialogs, and local navigation                                   |
+| `channel-activity.ts`     | Last-read marks: local fast path, hub push/seed, monotonic-up merge, clamp-epoch fence |
+| `channel-agent-status.ts` | Live profile status keyed by channel/profile                                           |
+| `channel-queued-sends.ts` | Client-side memory of messages sent into a busy agent; drives the `queued` chip        |
+| `unread.ts`               | Unread derivation from marks against durable sequence                                  |
+| `notifications.ts`        | Notification stack entries (including the update toast)                                |
+| `notify-settings.ts`      | Operator notification preferences                                                      |
+| `notify-badge.ts`         | Derived badge count for favicon and title                                              |
+| `sessions.ts`             | Terminal/process session summaries                                                     |
+| `toasts.ts`               | Transient notifications                                                                |
+
+Last-read marks are not browser-local. `channel-activity.ts` persists locally as
+the fast path, then pushes to `PUT /channels/:id/read-state`, seeds from
+`GET /channels/read-state`, and applies `channel-read-state` broadcasts from
+`/ws/events`. Merges are monotonic up and fenced per channel by a clamp epoch,
+so a stale device cannot pull a channel back to unread and a recreated DM does
+not inherit a dead one's mark. Unread counts stay client-derived.
 
 ### TanStack Query
 
@@ -154,7 +208,7 @@ device proof when unit/e2e coverage cannot establish the behavior.
 
 ## Styling
 
-- Global tokens live in `frontend/src/app.css`.
+- Global tokens live in `frontend/src/App.css`.
 - Component styles live beside their TSX files.
 - Channel styles use `ChannelView.css`, `ChannelComposer.css`, and
   `ChannelImagePart.css`.

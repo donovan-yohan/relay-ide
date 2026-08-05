@@ -23,7 +23,11 @@ import {
   normalizeTerminalBackend,
   resolveSessionSettings,
 } from './config.js';
-import { resolveSourceLaunchConfigPath } from './runtime-state-paths.js';
+import {
+  E2E_FIXTURE_ENV_VAR,
+  findFixtureConfigIsolationViolation,
+  resolveSourceLaunchConfigPath,
+} from './runtime-state-paths.js';
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import {
@@ -400,6 +404,21 @@ const sourceLaunchConfig = resolveSourceLaunchConfigPath(
   path.join(__dirname, '..', '..'),
   { fileName: 'config.json', namespace: 'source' }
 );
+// #1214: e2e fixture mode has no default config. Any default is shared with a
+// hub someone deployed on this host, so a fixture boot that resolves one reads
+// that hub's PIN (every smoke test then fails on an auth screen) and writes its
+// own sessions/SQLite back over the hub's state. Refuse to boot instead — the
+// harness must hand over a run-scoped temp dir. This runs before the config is
+// read or any runtime directory is created.
+if (process.env[E2E_FIXTURE_ENV_VAR] === '1') {
+  const isolationViolation = findFixtureConfigIsolationViolation({
+    explicitConfigPath: process.env.RELAY_IDE_CONFIG,
+  });
+  if (isolationViolation) {
+    logger.error(isolationViolation);
+    process.exit(1);
+  }
+}
 const CONFIG_PATH =
   process.env.RELAY_IDE_CONFIG || sourceLaunchConfig.configPath;
 if (!process.env.RELAY_IDE_CONFIG && sourceLaunchConfig.legacyConfigPath) {
@@ -1628,6 +1647,11 @@ async function main(): Promise<void> {
   const healthMonitor = createHealthMonitor({
     disabledStores: persistenceState.disabledStores,
     getResumeReadiness: () => startupResume,
+    // Fixture mode only: lets the Playwright harness tell its own server from a
+    // leftover one before `reuseExistingServer` adopts it (#1214/#1299).
+    ...(process.env[E2E_FIXTURE_ENV_VAR] === '1'
+      ? { fixtureConfigPath: CONFIG_PATH }
+      : {}),
   });
   app.get('/healthz', healthMonitor.handler);
 

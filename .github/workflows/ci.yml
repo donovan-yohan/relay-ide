@@ -86,7 +86,12 @@ jobs:
         env:
           CI: true
           RELAY_IDE_DEV_INSTANCE: '1'
-          RELAY_IDE_PORT: '3456'
+          # No RELAY_IDE_PORT here: the harness owns the fixture port (#1214).
+          # 3456 is the installed hub's default and the exact value this lane
+          # moved away from; leaving it set only worked because
+          # `lazyE2eWebServerEnv` re-set it, and it would come back to life the
+          # moment the server started outside `webServer`. Use PLAYWRIGHT_PORT
+          # if a run ever needs a pinned port.
           RELAY_IDE_E2E_SKIP_BUILD: '1'
           PLAYWRIGHT_CHROME_CHANNEL: chrome
 
