@@ -118,6 +118,23 @@ class TestAdapter implements ProtocolAdapterV2 {
       completedAt: '2026-07-26T00:00:00.000Z',
     });
   }
+  /** Unexpected process/transport death (#1307). */
+  emitDisconnected(): void {
+    for (const handler of [...this.handlers]) {
+      handler({
+        type: 'agent-live-state-updated-v2',
+        sessionId: 'channel-runtime',
+        timestamp: '2026-07-26T00:00:00.000Z',
+        live: {
+          status: 'disconnected',
+          activeTurnId: null,
+          waitingOn: null,
+          activeRequestIds: [],
+          queueLength: 0,
+        },
+      });
+    }
+  }
 }
 
 vi.mock('../server/protocol-adapters/index.js', () => ({
@@ -535,6 +552,32 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(channelAgentRuntimes.get(runtime.id)).toBeUndefined();
     offThrowing();
     offHealthy();
+  });
+
+  it('ends a runtime whose adapter reports an unexpected disconnect (#1307)', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    const runtime = await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const ended: string[] = [];
+    const off = channelAgentRuntimes.onRuntimeEnd((id) => ended.push(id));
+
+    // No `destroy` call anywhere: the child died on its own. Without this the
+    // runtime stays 'active' in the registry forever and the channel binder —
+    // whose ONLY teardown signal is `onRuntimeEnd` — keeps broadcasting the
+    // status the agent had when it died.
+    adapterState.last!.emitDisconnected();
+    await vi.waitFor(() => expect(ended).toEqual([runtime.id]));
+
+    expect(channelAgentRuntimes.get(runtime.id)).toBeUndefined();
+    expect(runtime.status).toBe('disconnected');
+    off();
   });
 
   it('closes every runtime when one adapter disconnect rejects', async () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   channelAgentStatusKey,
   resolveEffectiveAgentStatus,
+  STALE_AGENT_STATUS_MS,
   useChannelAgentStatusStore,
 } from '../frontend/src/lib/stores/channel-agent-status.js';
 
@@ -71,6 +72,57 @@ describe('resolveEffectiveAgentStatus', () => {
         streaming: false,
       })
     ).toBe('idle');
+  });
+
+  // #1307 staleness floor. The server broadcasts a terminal idle on every
+  // runtime teardown, but a client that was not listening when it fired keeps a
+  // busy status the socket will never correct — and while that status stays
+  // newer than the roster snapshot it wins the tie-break forever.
+  it('retires a socket-won busy status older than the floor once the roster shows no live binding', () => {
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'thinking',
+        socketUpdatedAt,
+        rosterStatus: undefined,
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: false,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS,
+      })
+    ).toBe('idle');
+  });
+
+  it('keeps a busy status while the roster still shows a live binding, however old the transition', () => {
+    // The long-turn guard: an agent that has been thinking for an hour is still
+    // bound, and its chip must not blink out from under the operator.
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'thinking',
+        socketUpdatedAt,
+        rosterStatus: 'thinking',
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: true,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS * 6,
+      })
+    ).toBe('thinking');
+  });
+
+  it('keeps a busy status that is younger than the floor even when nothing is bound', () => {
+    const socketUpdatedAt = 1_000_000;
+    expect(
+      resolveEffectiveAgentStatus({
+        socketStatus: 'streaming',
+        socketUpdatedAt,
+        rosterStatus: undefined,
+        rosterUpdatedAt: socketUpdatedAt - 1,
+        streaming: false,
+        rosterHasLiveBinding: false,
+        now: socketUpdatedAt + STALE_AGENT_STATUS_MS - 1,
+      })
+    ).toBe('streaming');
   });
 
   it('reducer-derived streaming upgrades a resolved idle but never downgrades a live status', () => {

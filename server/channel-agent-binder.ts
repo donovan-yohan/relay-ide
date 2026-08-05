@@ -93,6 +93,15 @@ const YOLO_PERMISSION_MODE = 'bypassPermissions';
 const QUEUE_CAP = 8;
 /** Force-drain a genuinely-stuck turn after this long (paused while waitingOn != null). */
 const DEFAULT_WATCHDOG_MS = 5 * 60 * 1000;
+/**
+ * Presence liveness sweep (#1307). The watchdog cannot bound a dead runtime: it
+ * is disarmed for as long as `waitingOn !== null` and is never armed at all once
+ * a turn ends, so a binding whose runtime disappeared through a path that never
+ * reached `onRuntimeEnd` would keep broadcasting its last status forever. The
+ * sweep re-derives liveness from the runtime registry instead of trusting the
+ * teardown event to arrive.
+ */
+const DEFAULT_PRESENCE_SWEEP_MS = 30 * 1000;
 /** Consecutive agent-authored routed turns allowed between human/gateway posts. */
 export const MAX_CONSECUTIVE_AGENT_TURNS = 4;
 /** Dedupe identical unavailable/cross-node system rows per (channel, agent). */
@@ -175,6 +184,8 @@ export interface ChannelAgentBinderDeps {
   configDir: string;
   localNodeId?: string;
   watchdogMs?: number;
+  /** Interval of the dead-runtime presence sweep (#1307); tests shorten it. */
+  presenceSweepMs?: number;
   yolo?: boolean;
   now?: () => number;
 }
@@ -379,6 +390,7 @@ export function createChannelAgentBinder(
   const { store, hub, topicStore } = deps;
   const localNodeId = deps.localNodeId ?? DEFAULT_LOCAL_NODE_ID;
   const watchdogMs = deps.watchdogMs ?? DEFAULT_WATCHDOG_MS;
+  const presenceSweepMs = deps.presenceSweepMs ?? DEFAULT_PRESENCE_SWEEP_MS;
   const yolo = deps.yolo ?? CHANNEL_BINDING_YOLO_DEFAULT;
   const now = deps.now ?? (() => Date.now());
 
@@ -407,6 +419,8 @@ export function createChannelAgentBinder(
   const unsubRuntimeEnd = deps.runtimes.onRuntimeEnd((runtimeId) =>
     handleRuntimeEnd(runtimeId)
   );
+  const presenceSweep = setInterval(sweepDeadBindings, presenceSweepMs);
+  presenceSweep.unref?.();
 
   // ── system-row helpers ──────────────────────────────────────────────────────
 
@@ -1394,6 +1408,24 @@ export function createChannelAgentBinder(
     finishTurn(binding);
   }
 
+  /**
+   * Terminal presence for a runtime that died under an open turn (#1307).
+   * Deliberately NOT `finishTurn`: it must also clear a binding whose turn was
+   * already over but whose status never came back (a spawn that never
+   * completed), and it must not `pump` a queued turn into an adapter that is
+   * known to be gone.
+   */
+  function markDeadRuntimeIdle(binding: LiveBinding): void {
+    binding.activeTurnId = null;
+    binding.activeContent = null;
+    binding.activeAttachments = [];
+    binding.waitingOn = null;
+    binding.sawStream = false;
+    binding.announcedApprovals.clear();
+    disarmWatchdog(binding);
+    setStatus(binding, 'idle');
+  }
+
   function finishTurn(binding: LiveBinding): void {
     if (binding.activeTurnId === null) return;
     binding.activeTurnId = null;
@@ -1452,36 +1484,7 @@ export function createChannelAgentBinder(
         }
         break;
       case 'agent-live-state-updated-v2':
-        if (patch.live.status === 'idle') {
-          // A runtime that reports `idle` has no active turn. Finalize ours even
-          // when a matching `agent-turn-completed-v2` never fired (or arrives
-          // after this idle live-state): hermes can emit `session-status idle`
-          // without a paired turn-completed when its turn id was already
-          // cleared, and the `waitingOn` branch below would otherwise flip the
-          // binding back to 'thinking' and wedge presence forever (#1181 defect
-          // 3).
-          //
-          // BUT while an approval is outstanding (or the binding is otherwise
-          // waiting) the idle is a lie: hermes fires `session-status
-          // {status:'idle', waitingOn:'approval'}` alongside a permission
-          // prompt, and the legacy compat mapping strips the `waitingOn` for the
-          // idle case (agent-chat-v1-compat.ts), so a BARE idle arrives
-          // mid-approval. Ignore it entirely then — finalizing would abandon the
-          // approval and let `pump` dispatch a concurrent turn to the same
-          // runtime, and falling through to `updateWaiting(null)` would clobber
-          // the waiting state and re-arm the watchdog against the parked turn.
-          if (
-            binding.activeTurnId !== null &&
-            binding.announcedApprovals.size === 0 &&
-            binding.waitingOn === null
-          ) {
-            finishTurn(binding);
-          }
-          break;
-        }
-        if (patch.live.waitingOn !== undefined) {
-          updateWaiting(binding, patch.live.waitingOn);
-        }
+        handleLiveState(binding, patch.live);
         break;
       case 'agent-turn-completed-v2': {
         // The bridge listener runs first, so any terminally-opened row has
@@ -1558,6 +1561,57 @@ export function createChannelAgentBinder(
         break;
       default:
         break;
+    }
+  }
+
+  function handleLiveState(
+    binding: LiveBinding,
+    live: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2['live']
+  ): void {
+    if (live.status === 'disconnected') {
+      // The runtime is GONE, not resting (#1307). A `disconnected` live state is
+      // only emitted for an UNEXPECTED transport/process death — every
+      // deliberate teardown detaches its listeners first — so unlike a bare
+      // `idle` this is terminal even mid-approval: a dead process can never
+      // answer the prompt, and leaving the binding parked at 'waiting' pins the
+      // chip and the in-timeline presence row with nothing left to unpin them
+      // (the watchdog is disarmed for exactly that state).
+      //
+      // Presence only. The queue drain, the durable unbind, and the live-map
+      // delete belong to `releaseBinding`, which runs when the runtime's own
+      // teardown lands; pumping a queued turn into a dead adapter here would
+      // just manufacture a send-failure row.
+      markDeadRuntimeIdle(binding);
+      return;
+    }
+    if (live.status === 'idle') {
+      // A runtime that reports `idle` has no active turn. Finalize ours even
+      // when a matching `agent-turn-completed-v2` never fired (or arrives after
+      // this idle live-state): hermes can emit `session-status idle` without a
+      // paired turn-completed when its turn id was already cleared, and the
+      // `waitingOn` branch below would otherwise flip the binding back to
+      // 'thinking' and wedge presence forever (#1181 defect 3).
+      //
+      // BUT while an approval is outstanding (or the binding is otherwise
+      // waiting) the idle is a lie: hermes fires `session-status
+      // {status:'idle', waitingOn:'approval'}` alongside a permission prompt,
+      // and the legacy compat mapping strips the `waitingOn` for the idle case
+      // (agent-chat-v1-compat.ts), so a BARE idle arrives mid-approval. Ignore
+      // it entirely then — finalizing would abandon the approval and let `pump`
+      // dispatch a concurrent turn to the same runtime, and falling through to
+      // `updateWaiting(null)` would clobber the waiting state and re-arm the
+      // watchdog against the parked turn.
+      if (
+        binding.activeTurnId !== null &&
+        binding.announcedApprovals.size === 0 &&
+        binding.waitingOn === null
+      ) {
+        finishTurn(binding);
+      }
+      return;
+    }
+    if (live.waitingOn !== undefined) {
+      updateWaiting(binding, live.waitingOn);
     }
   }
 
@@ -1942,7 +1996,8 @@ export function createChannelAgentBinder(
       // queued behind someone else's live turn) and a no-op once it is being
       // answered.
       if (
-        binding.activeTurnId === channelTurnId(message.id, binding.profileActorId)
+        binding.activeTurnId ===
+        channelTurnId(message.id, binding.profileActorId)
       ) {
         continue;
       }
@@ -1993,44 +2048,93 @@ export function createChannelAgentBinder(
 
   // ── runtime death ───────────────────────────────────────────────────────────
 
+  /**
+   * The ONE teardown for a binding whose runtime is gone (#1307). Every path
+   * that observes a dead runtime — the `onRuntimeEnd` callback and the liveness
+   * sweep — funnels through here, so a runtime can never end without a terminal
+   * `idle` reaching the socket: the header chip and the in-timeline presence row
+   * both render that broadcast, and the watchdog cannot bound them (it is
+   * disarmed while `waitingOn !== null` and unarmed once a turn is over).
+   */
+  function releaseBinding(key: string, binding: LiveBinding): void {
+    binding.unbind?.(); // bridge finalizes any open stream 'interrupted'
+    binding.patchUnlisten?.();
+    disarmWatchdog(binding);
+    for (const queued of binding.queue) {
+      postSystemRow(
+        binding.channelId,
+        `@${binding.displayName} runtime ended before delivering a queued message.`,
+        { parentMessageId: parentForTrigger(queued.trigger) }
+      );
+    }
+    binding.queue = [];
+    binding.adapter = null;
+    binding.unbind = null;
+    binding.patchUnlisten = null;
+    binding.activeTurnId = null;
+    binding.parentMessageIdByTurn.clear();
+    binding.activeContent = null;
+    binding.activeAttachments = [];
+    binding.waitingOn = null;
+    binding.sawStream = false;
+    binding.announcedApprovals.clear();
+    setStatus(binding, 'idle');
+    // The binding may already have BEEN idle, so the dropped queue needs its
+    // own emit — otherwise the chip keeps a count for a dead runtime.
+    emitAgentStatus(binding);
+    live.delete(key);
+    try {
+      store.upsertBinding({
+        channelId: binding.channelId,
+        profileActorId: binding.profileActorId,
+        agentFramework: binding.framework,
+        runtimeId: null,
+      });
+    } catch (err) {
+      logger.warn('channel binder unbind persist failed:', err);
+    }
+  }
+
   function handleRuntimeEnd(runtimeId: string): void {
     for (const [key, binding] of live) {
       if (binding.runtimeId !== runtimeId) continue;
-      binding.unbind?.(); // bridge finalizes any open stream 'interrupted'
-      binding.patchUnlisten?.();
-      disarmWatchdog(binding);
-      for (const queued of binding.queue) {
-        postSystemRow(
-          binding.channelId,
-          `@${binding.displayName} runtime ended before delivering a queued message.`,
-          { parentMessageId: parentForTrigger(queued.trigger) }
-        );
+      releaseBinding(key, binding);
+    }
+  }
+
+  /**
+   * Dead-runtime sweep (#1307). `onRuntimeEnd` fires from exactly one place — an
+   * explicit `runtimes.destroy` — and its handlers are invoked best-effort, so a
+   * runtime that goes away any other way (a release that threw halfway, a
+   * manager shutdown, a teardown path added later) leaves this binding pinned at
+   * whatever it was doing when it died. Liveness is therefore re-derived from
+   * the runtime registry on a timer rather than trusted to an event.
+   */
+  function sweepDeadBindings(): void {
+    if (closed) return;
+    for (const [key, binding] of live) {
+      if (binding.runtimeId === null) continue;
+      // A (re)bind in flight owns this entry: `doEnsureBinding` keeps the old
+      // runtime id on the provisional binding while it awaits a spawn, and
+      // `attachRuntime` is about to overwrite it. Releasing here would delete a
+      // binding that is being rebuilt.
+      if (inflight.has(key)) continue;
+      if (
+        healthyRuntime(
+          binding.runtimeId,
+          binding.framework,
+          binding.profileActorId
+        )
+      ) {
+        continue;
       }
-      binding.queue = [];
-      binding.adapter = null;
-      binding.unbind = null;
-      binding.patchUnlisten = null;
-      binding.activeTurnId = null;
-      binding.parentMessageIdByTurn.clear();
-      binding.activeContent = null;
-      binding.activeAttachments = [];
-      binding.waitingOn = null;
-      binding.announcedApprovals.clear();
-      setStatus(binding, 'idle');
-      // The binding may already have BEEN idle, so the dropped queue needs its
-      // own emit — otherwise the chip keeps a count for a dead runtime.
-      emitAgentStatus(binding);
-      live.delete(key);
-      try {
-        store.upsertBinding({
-          channelId: binding.channelId,
-          profileActorId: binding.profileActorId,
-          agentFramework: binding.framework,
-          runtimeId: null,
-        });
-      } catch (err) {
-        logger.warn('channel binder unbind persist failed:', err);
-      }
+      logger.warn('channel binder released a binding with no live runtime', {
+        channelId: binding.channelId,
+        profileActorId: binding.profileActorId,
+        runtimeId: binding.runtimeId,
+        status: binding.status,
+      });
+      releaseBinding(key, binding);
     }
   }
 
@@ -2256,12 +2360,27 @@ export function createChannelAgentBinder(
     },
     close() {
       closed = true;
+      clearInterval(presenceSweep);
       unsubRuntimeEnd();
       for (const binding of live.values()) {
         disarmWatchdog(binding);
         binding.unbind?.();
         binding.patchUnlisten?.();
         binding.parentMessageIdByTurn.clear();
+        // Terminal presence on shutdown (#1307). The socket carries transitions
+        // only, so a binding torn down mid-turn would leave every attached
+        // client pinned at thinking/streaming/waiting until something else made
+        // it refetch a roster. Broadcast is best-effort: the transport may
+        // already be closing, and that must not abort the rest of shutdown.
+        binding.queue = [];
+        binding.activeTurnId = null;
+        binding.waitingOn = null;
+        binding.status = 'idle';
+        try {
+          emitAgentStatus(binding);
+        } catch (err) {
+          logger.warn('channel binder shutdown status broadcast failed:', err);
+        }
       }
       live.clear();
       inflight.clear();

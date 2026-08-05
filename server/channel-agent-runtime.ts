@@ -345,6 +345,31 @@ export class ChannelAgentRuntimeManager {
         };
       }
       runtime.lastActivity = new Date().toISOString();
+      if (
+        patch.type === 'agent-live-state-updated-v2' &&
+        patch.live.status === 'disconnected'
+      ) {
+        // Unexpected process/transport death (#1307). Adapters emit this only
+        // when the child went away on its own — a deliberate `disconnect()`
+        // detaches first — and none of them respawn on the next send, so the
+        // runtime is dead, not resting. Ending it here is what turns a silent
+        // death into the terminal `onRuntimeEnd` notification the channel binder
+        // needs to release its binding and broadcast idle presence; without it
+        // the runtime stays 'active' in this registry forever.
+        //
+        // This runs BEFORE `nextAgentState` (#1254) deliberately: that reducer
+        // maps `disconnected` onto `idle` — and drops it entirely while the
+        // machine is parked on an operator prompt — which is the right reading
+        // for a live runtime but would leave a dead one wedged.
+        logger.warn('channel runtime reported disconnected; ending it', {
+          runtimeId: id,
+          providerId: runtime.providerId,
+        });
+        runtime.agentState = 'error';
+        runtime.idle = true;
+        void this.destroy(id);
+        return;
+      }
       const next = nextAgentState(runtime.agentState, patch);
       if (next) {
         runtime.agentState = next;

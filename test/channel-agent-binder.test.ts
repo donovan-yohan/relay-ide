@@ -672,6 +672,89 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
+// ── parked-on-approval adapter (#1307) ───────────────────────────────────────
+// Opens a turn and parks it on an approval, which is the ONE state the watchdog
+// deliberately refuses to force-drain (draining it would abandon the approval).
+// Presence therefore has no timer under it: if the runtime dies here without a
+// terminal transition, the header chip and the in-timeline presence row stay
+// busy forever. `die()` models the unexpected process/transport death an adapter
+// reports as a `disconnected` live state; the runtime can also be made to vanish
+// from the registry with no notification at all (`forgetWithoutEnd`).
+class ParkedOnApprovalAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    streaming: true,
+    interrupt: true,
+  };
+  readonly sendCalls: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'parked';
+
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_i: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(_i: AgentApprovalResponseInputV2): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `user-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'waiting',
+        activeTurnId: input.turnId,
+        waitingOn: 'approval',
+        error: null,
+      },
+    });
+  }
+
+  /** Unexpected process death, as codex reports it when its client closes. */
+  die(): void {
+    this._status = 'disconnected';
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'disconnected',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        queueLength: 0,
+      },
+    });
+  }
+}
+
 // ── idle-without-turn-completed adapter (#1181 defect 3) ─────────────────────
 // Emits `working` then a trailing `idle` live-state but NO agent-turn-completed-v2
 // (and no assistant item) — the shape a hermes turn produces when it signals
@@ -1035,6 +1118,7 @@ function makeBinder(cfg: {
   knownProviderIds: string[];
   topicStore?: WorkspaceTopicStore | null;
   watchdogMs?: number;
+  presenceSweepMs?: number;
   throwOnCreate?: boolean;
   yolo?: boolean;
   gate?: Promise<void>;
@@ -1065,6 +1149,9 @@ function makeBinder(cfg: {
     port: 0,
     configDir: '/tmp',
     ...(cfg.watchdogMs !== undefined ? { watchdogMs: cfg.watchdogMs } : {}),
+    ...(cfg.presenceSweepMs !== undefined
+      ? { presenceSweepMs: cfg.presenceSweepMs }
+      : {}),
     ...(cfg.yolo !== undefined ? { yolo: cfg.yolo } : {}),
   });
   cleanup.push(() => binder.close());
@@ -4372,5 +4459,116 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     // thread the operator was actually working in.
     expect(failure.threadId).toBe(root.id);
     expect(failure.parentMessageId).toBe(steer.id);
+  });
+});
+
+// ── presence teardown (#1307) ────────────────────────────────────────────────
+// A runtime that dies without a terminal transition used to pin channel-agent
+// presence at thinking/streaming/waiting: the header chip AND the in-timeline
+// presence row render the same broadcast, and the watchdog cannot bound the
+// worst case (it is disarmed for as long as `waitingOn !== null`). Every
+// teardown path must therefore end in an `idle` broadcast of its own.
+
+const PARKED_TARGETS: MentionTarget[] = [
+  {
+    id: 'parked',
+    displayName: 'Parked',
+    kind: 'framework',
+    available: true,
+    reason: null,
+  },
+];
+
+function makeParkedBinder(cfg: { presenceSweepMs?: number } = {}) {
+  const harness = makeBinder({
+    build: (agentType) => new ParkedOnApprovalAdapter(agentType),
+    targets: PARKED_TARGETS,
+    knownProviderIds: ['parked'],
+    ...(cfg.presenceSweepMs !== undefined
+      ? { presenceSweepMs: cfg.presenceSweepMs }
+      : {}),
+  });
+  const events: Array<Record<string, unknown>> = [];
+  const statuses: string[] = [];
+  harness.binder.setStatusBroadcaster((_type, data) => {
+    if (data['agentId'] === builtInAgentProfileId('parked')) {
+      events.push(data);
+      statuses.push(String(data['status']));
+    }
+  });
+  return { ...harness, events, statuses };
+}
+
+async function parkedOnApproval(
+  harness: ReturnType<typeof makeParkedBinder>
+): Promise<ParkedOnApprovalAdapter> {
+  await waitFor(() => harness.sessions.spawns() === 1);
+  const adapter = harness.sessions.adapterFor(
+    harness.sessions.firstSessionId()
+  ) as ParkedOnApprovalAdapter;
+  await waitFor(() => adapter.sendCalls.length === 1);
+  await waitFor(() => harness.statuses.at(-1) === 'waiting');
+  return adapter;
+}
+
+describe('channel-agent-binder — presence teardown (#1307)', () => {
+  it('broadcasts a terminal idle when the runtime dies under a turn parked on approval', async () => {
+    const harness = makeParkedBinder();
+    const { binder, store, statuses } = harness;
+    post(store, binder, '@parked go', ['parked']);
+    const adapter = await parkedOnApproval(harness);
+
+    // The watchdog is explicitly disarmed in this state, so nothing else can
+    // ever move this binding off 'waiting'.
+    adapter.die();
+    await waitFor(() => statuses.at(-1) === 'idle');
+    expect(statuses).toContain('waiting');
+    expect(statuses.at(-1)).toBe('idle');
+  });
+
+  it('sweeps a binding whose runtime vanished with no end event to idle, drains its queue, and durably unbinds', async () => {
+    const harness = makeParkedBinder({ presenceSweepMs: 10 });
+    const { binder, store, sessions, events, statuses } = harness;
+    post(store, binder, '@parked one', ['parked']);
+    await parkedOnApproval(harness);
+    post(store, binder, '@parked two', ['parked']);
+    await waitFor(() => events.at(-1)?.['queuedCount'] === 1);
+
+    // The runtime disappears WITHOUT `onRuntimeEnd` ever firing — a release that
+    // threw halfway, a manager torn down out from under the binder, any teardown
+    // path that never reaches the one event the binder subscribes to.
+    sessions.forgetWithoutEnd(sessions.firstSessionId());
+
+    await waitFor(() => statuses.at(-1) === 'idle');
+    expect(events.at(-1)?.['queuedCount']).toBe(0);
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('parked'))?.runtimeId
+    ).toBeNull();
+    const ended = systemRows(store).filter((row) =>
+      row.body.text.includes('runtime ended before delivering a queued message')
+    );
+    expect(ended).toHaveLength(1);
+    // Nothing re-routes on its own: a swept binding stays down until the next
+    // mention, so the operator never gets a silent respawn they did not ask for.
+    expect(sessions.spawns()).toBe(1);
+  });
+
+  it('leaves a live runtime alone: the sweep never retires a binding that is genuinely waiting', async () => {
+    const harness = makeParkedBinder({ presenceSweepMs: 5 });
+    const { binder, store, statuses } = harness;
+    post(store, binder, '@parked go', ['parked']);
+    await parkedOnApproval(harness);
+    // Many sweep ticks with the runtime still registered and healthy.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(statuses.at(-1)).toBe('waiting');
+  });
+
+  it('broadcasts a terminal idle for a busy binding on shutdown', async () => {
+    const harness = makeParkedBinder();
+    const { binder, store, statuses } = harness;
+    post(store, binder, '@parked go', ['parked']);
+    await parkedOnApproval(harness);
+    binder.close();
+    expect(statuses.at(-1)).toBe('idle');
   });
 });

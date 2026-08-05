@@ -67,6 +67,15 @@ const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
  * number of page fetches and one toast.
  */
 const ANCHOR_WALK_MAX_PAGES = 8;
+/**
+ * #1307: how often the roster snapshot is re-fetched while the socket believes
+ * an agent in this channel is busy. `staleTime` alone never refetches on its
+ * own, so a terminal 'idle' that never reached this client (socket down when the
+ * runtime died, tab asleep) had nothing to reconcile it — the chip and the
+ * presence row stayed busy for as long as the view stayed mounted. Polling only
+ * while something is busy keeps the idle channel free.
+ */
+const PRESENCE_ROSTER_POLL_MS = 30_000;
 
 interface ChannelViewProps {
   channelId: string;
@@ -488,12 +497,6 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   // binding) OR currently non-idle in the live status store, with a `streaming`
   // fallback derived from the timeline reducer so the header degrades gracefully
   // if the events socket lags.
-  const rosterChipsQuery = useQuery({
-    queryKey: ['channel-roster', channelId],
-    queryFn: () => fetchChannelRoster(channelId),
-    staleTime: 30_000,
-    retry: false,
-  });
   const statusMap = useChannelAgentStatusStore((s) => s.statusByChannelAgent);
   const statusUpdatedAtMap = useChannelAgentStatusStore(
     (s) => s.updatedAtByChannelAgent
@@ -501,6 +504,22 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const queuedCountMap = useChannelAgentStatusStore(
     (s) => s.queuedCountByChannelAgent
   );
+  // #1307: the socket's own claim that something here is busy is exactly the
+  // state that can go stale, so it is what arms the roster poll. Once the roster
+  // (or a live transition) resolves everything back to idle the poll stops.
+  const socketBusyInChannel = useMemo(() => {
+    const prefix = `${channelId} `;
+    return Object.entries(statusMap).some(
+      ([key, status]) => key.startsWith(prefix) && status !== 'idle'
+    );
+  }, [statusMap, channelId]);
+  const rosterChipsQuery = useQuery({
+    queryKey: ['channel-roster', channelId],
+    queryFn: () => fetchChannelRoster(channelId),
+    staleTime: 30_000,
+    retry: false,
+    refetchInterval: socketBusyInChannel ? PRESENCE_ROSTER_POLL_MS : false,
+  });
 
   // On channel switch, drop this channel's per-agent socket statuses so the
   // freshly-fetched roster is authoritative on open; live transitions repopulate
@@ -581,6 +600,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         rosterStatus: entry?.binding?.status,
         rosterUpdatedAt,
         streaming,
+        // Staleness floor (#1307): only a roster that says "nothing is bound"
+        // may retire a busy socket status, so a long live turn keeps its chip.
+        rosterHasLiveBinding: entry?.binding != null,
       });
       // Same lane the status came from (#1308 slice 4 item 2c), so the presence
       // row can never pair a live status with a stale count or the reverse.
