@@ -26,6 +26,16 @@ workflow.
   holding the server; both answer "type more characters" rather than a misleading
   "no matches". Ordinary searches are unchanged. (#1316)
 
+### Changed
+
+- Rewrote the README — the npm landing page — for the 0.1.1 product: a real
+  first-run quickstart (hub, PIN, add project, new chat, `@mention`), the
+  execution-workbench boundary stated up front, the shipped message layer
+  (search, edit/delete, retry, deep links, read sync, notifications, steering),
+  the three install channels with a `CHANGELOG.md` pointer, and a corrected CLI
+  list. `relay-ide --help` now documents `node update` and the `sessions`
+  command family, so the README's "run `--help` for the exact set" holds.
+
 ## [0.1.1] - 2026-08-04
 
 This is the first public release of the channel era, branded v0.1; it ships as
