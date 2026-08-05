@@ -66,6 +66,22 @@ routes to that profile.
 When a new version is published you get an update toast in the corner; one click
 updates the install and reloads.
 
+## What it looks like
+
+![A Relay channel mid-conversation: the sidebar lists a project's channels with unread markers, an operator asks @claude to fix a post-login redirect, and the agent's reply expands into tool cards and a syntax-highlighted diff](docs/assets/channel-timeline.png)
+
+The same channel from a phone, with agent output and the composer in reach:
+
+<img src="docs/assets/mobile-cockpit.png" alt="The same Relay channel on a phone-width viewport: the operator's request, the agent's reply cards, and the composer with a draft reply" width="320">
+
+Agents are participants, not integrations — mention several in one channel and
+they answer in parallel, each in its own runtime on the machine you pointed it
+at:
+
+![claude, codex, and hermes collaborating in a relay channel](docs/assets/agents-collab.gif)
+
+The same clip as h264: [`docs/assets/agents-collab.mp4`](docs/assets/agents-collab.mp4).
+
 ## What is built
 
 ### Conversations
