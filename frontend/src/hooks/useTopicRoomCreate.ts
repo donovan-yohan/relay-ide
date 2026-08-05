@@ -35,6 +35,23 @@ import { useConfigStore } from '../lib/stores/config.js';
 import type { SessionSummary } from '../lib/types.js';
 
 /**
+ * #1303: a COMMITTED create spends the lane stamp along with the draft it
+ * routed. The store spends it on every composer close, which covers the exits
+ * that navigate away (a launch selects the session, the DM path lands on the
+ * channel) — but `create only` deliberately leaves the composer standing, and
+ * an unspent stamp would silently route the next create in that lane too,
+ * including one reached from the command palette with no lane click at all.
+ *
+ * Deliberately NOT called after the create request returns: a `launch_failed`
+ * result keeps the composer open for a retry, and that retry rebuilds its
+ * launch body from the live defaults — dropping the stamp there would launch
+ * the retry in a different repo than the row that was already created.
+ */
+function spendLaneRepoRouting(): void {
+  useUiStore.getState().setLaneRepoRouting(null);
+}
+
+/**
  * #1058: stateful draft + create/launch plumbing for codex-style topic
  * creation. Owns the draft, resolves workspace defaults (provider, node,
  * repo, worktree, cwd) from the active context, and drives the two-step
@@ -96,11 +113,21 @@ export function useTopicRoomCreate({
     laneRepoRouting && laneRepoRouting.workspaceId === activeWorkspaceId
       ? laneRepoRouting.repoPath
       : undefined;
+  // ...and only where it actually DISAGREES with the session. The lane and the
+  // session naming the same repo is the repo's own dogfood shape — a project
+  // lane plus a terminal open in `<repo>/.worktrees/<issue-slug>` — and there
+  // the session is the strictly better anchor: it knows the worktree, the lane
+  // knows only the main checkout. Overriding unconditionally would start the
+  // agent in the wrong tree of the RIGHT repo, which is the same class of bug
+  // pointed the other way.
+  const laneOverridesSession =
+    laneRepoPath !== undefined && activeSession?.repoPath !== laneRepoPath;
+  const laneAnchor = laneOverridesSession ? laneRepoPath : undefined;
   // Prefer repo/worktree context when it exists, but launch only needs a cwd
   // anchor. Fresh dev/self-host sessions can rely on the backend's local cwd
   // fallback when no repo has been configured yet.
   const defaultRepoPath =
-    laneRepoPath ??
+    laneAnchor ??
     activeSession?.repoPath ??
     activeRepoPath ??
     repos[0]?.path ??
@@ -109,12 +136,13 @@ export function useTopicRoomCreate({
   // different field: `buildTopicRoomLaunchBody` copies both, and `cwd` is what
   // the process actually starts in — so a lane-routed create that kept them
   // would claim the new repo and run in the old one. The lane anchor replaces
-  // them wholesale; a lane has no worktree of its own to offer.
-  const defaultWorktreePath = laneRepoPath
+  // them wholesale; a lane has no worktree of its own to offer. A session
+  // inside the lane's own repo keeps both.
+  const defaultWorktreePath = laneOverridesSession
     ? undefined
     : (activeSession?.worktreePath ?? undefined);
   const defaultCwd =
-    laneRepoPath ??
+    laneAnchor ??
     activeSession?.cwd ??
     defaultWorktreePath ??
     defaultRepoPath ??
@@ -302,6 +330,7 @@ export function useTopicRoomCreate({
             queryKey: ['workspace-topics'],
           });
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
+          spendLaneRepoRouting();
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -354,6 +383,7 @@ export function useTopicRoomCreate({
           await selectLaunchedSession(result.session);
           setCreatedRoom(null);
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
+          spendLaneRepoRouting();
           return;
         }
         const result = await createWorkspaceTopicRoomAndMaybeLaunch({
@@ -401,6 +431,7 @@ export function useTopicRoomCreate({
         }
         setCreatedRoom(null);
         setDraft(TOPIC_ROOM_DRAFT_EMPTY);
+        spendLaneRepoRouting();
       } catch (error) {
         const failure = error as WorkspaceTopicLaunchFailure;
         setLaunchFailure({

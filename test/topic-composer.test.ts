@@ -4,7 +4,10 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorkspaceTopicCreateInput } from '../shared/workspace-topics.js';
+import type {
+  WorkspaceTopic,
+  WorkspaceTopicCreateInput,
+} from '../shared/workspace-topics.js';
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
@@ -42,7 +45,14 @@ import { useConfigStore } from '../frontend/src/lib/stores/config.js';
 import { useToastStore } from '../frontend/src/lib/stores/toasts.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
-import type { FrameworkInfo } from '../frontend/src/lib/types.js';
+import type {
+  FrameworkInfo,
+  SessionSummary,
+} from '../frontend/src/lib/types.js';
+import {
+  applyCreateRoutingContext,
+  openTopicSelection,
+} from '../frontend/src/lib/topic-selection.js';
 import TopicComposer from '../frontend/src/components/TopicComposer.js';
 import ChatHome from '../frontend/src/components/ChatHome.js';
 import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
@@ -1063,11 +1073,43 @@ describe('TopicComposer', () => {
       idle: false,
     } as const;
 
-    function seedActiveProjectASession() {
+    const LANE_B_REPO = '/repo/project-b';
+    // The rail's own lane→anchor lookup (`workspaces.find(...).defaultRepoPath`),
+    // as `ensureProjectWorkspace` stamps it on every add-project lane.
+    const laneRepoPathById = (workspaceId: string) =>
+      workspaceId === LANE_B ? LANE_B_REPO : undefined;
+
+    /** A DM row exactly as `dmChannelCreateInput` writes one: no repo anywhere. */
+    function dmTopicIn(workspaceId: string): WorkspaceTopic {
+      return {
+        schemaVersion: 1,
+        id: dmChannelTopicId('claude', workspaceId),
+        workspaceId,
+        source: 'persisted',
+        status: 'active',
+        visibility: 'default',
+        display: { title: 'Claude Code' },
+        grouping: {},
+        promptDefaults: {},
+        routingDefaults: { providerId: 'claude' },
+        linkedRefs: {},
+        state: { pinned: false, muted: false },
+        privacy: {
+          classification: 'internal',
+          retention: 'project',
+          redaction: 'summary',
+          rawDefaultsStored: false,
+        },
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+      };
+    }
+
+    function seedActiveSession(session: SessionSummary) {
       useSessionsStore.setState({
-        sessions: [projectASession],
+        sessions: [session],
         repos: [],
-        activeSessionId: scopedSessionKey(projectASession),
+        activeSessionId: scopedSessionKey(session),
         refreshAll: vi.fn(async () => {}),
       });
       vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
@@ -1077,7 +1119,11 @@ describe('TopicComposer', () => {
       } as never);
     }
 
-    async function createOnlyFromComposer() {
+    function seedActiveProjectASession() {
+      seedActiveSession(projectASession as unknown as SessionSummary);
+    }
+
+    async function createOnlyFromComposer(callIndex = 0) {
       renderComposer();
       const ta = container.querySelector(
         '.topic-composer__ta'
@@ -1087,7 +1133,7 @@ describe('TopicComposer', () => {
       ) as HTMLButtonElement;
       act(() => {
         setNativeValue(ta, 'start work in the project I just selected');
-        toggle.click();
+        if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
       });
       const createOnly = Array.from(
         container.querySelectorAll<HTMLButtonElement>(
@@ -1096,34 +1142,98 @@ describe('TopicComposer', () => {
       ).find((button) => button.textContent === 'create only');
       expect(createOnly).toBeDefined();
       await act(async () => createOnly?.click());
-      return vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
-        .calls[0]?.[0] as
-        | { room: { topic: WorkspaceTopicCreateInput } }
-        | undefined;
+      return vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock.calls[
+        callIndex
+      ]?.[0] as { room: { topic: WorkspaceTopicCreateInput } } | undefined;
     }
 
-    it('routes a lane-selected chat at the lane repo despite an active session in another project', async () => {
+    // The canonical reproduction, driven through the REAL rail disposition
+    // rather than a hand-seeded store: the operator opens project B's Claude DM
+    // (`openTopicSelection`, the row's own handler) and presses new chat
+    // (`applyCreateRoutingContext`, the body both new-chat buttons run). The
+    // selected row IS in the active lane, and it names no repo — so nothing but
+    // the lane can answer where this chat runs, and the project-A terminal is
+    // still `activeSessionId` because opening a channel never clears it.
+    it('routes a lane-B chat at the lane repo when the selected row is a DM and a project-A terminal is still active', async () => {
       seedActiveProjectASession();
-      // Exactly the state `applyWorkspaceLaneRouting` leaves behind when the
-      // operator selects project B's lane and starts a chat from it.
-      useUiStore.setState({
-        activeWorkspaceId: LANE_B,
-        activeRepoPath: '/repo/project-b',
-        laneRepoRouting: { workspaceId: LANE_B, repoPath: '/repo/project-b' },
-      });
+      const dm = dmTopicIn(LANE_B);
+      openTopicSelection(dm);
+      expect(useUiStore.getState().activeWorkspaceId).toBe(LANE_B);
+      applyCreateRoutingContext({ selectedTopic: dm, laneRepoPathById });
+      openTopicTaskRoom();
 
       const arg = await createOnlyFromComposer();
 
       expect(arg?.room.topic.workspaceId).toBe(LANE_B);
-      expect(arg?.room.topic.routingDefaults?.repoPath).toBe('/repo/project-b');
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
       expect(arg?.room.topic.routingDefaults?.repoPath).not.toBe(
         '/repo/project-a'
       );
       // `cwd` is what the process would actually start in and `worktreePath`
       // names a checkout that only exists inside project A — a fix that moved
       // `repoPath` alone would still land the work in the abandoned project.
-      expect(arg?.room.topic.routingDefaults?.cwd).toBe('/repo/project-b');
+      expect(arg?.room.topic.routingDefaults?.cwd).toBe(LANE_B_REPO);
       expect(arg?.room.topic.routingDefaults?.worktreePath).toBeUndefined();
+    });
+
+    // The mirror image, and the repo's own dogfood shape: one project lane plus
+    // a terminal open in `<repo>/.worktrees/<issue-slug>`. The lane and the
+    // session agree about the REPO, so the session is the better anchor — it
+    // knows the worktree, the lane knows only the main checkout. Overriding here
+    // would start the agent in the wrong tree of the right repo.
+    it('keeps the session worktree when the lane names the repo that session is already in', async () => {
+      seedActiveSession({
+        ...projectASession,
+        id: 'sess-project-b',
+        repoPath: LANE_B_REPO,
+        worktreePath: `${LANE_B_REPO}/.worktrees/feature`,
+        cwd: `${LANE_B_REPO}/.worktrees/feature`,
+      } as unknown as SessionSummary);
+      // Start-chat on lane B's header with no row of that lane selected.
+      useUiStore.setState({ activeWorkspaceId: LANE_B });
+      applyCreateRoutingContext({
+        selectedTopic: undefined,
+        laneRepoPathById,
+      });
+      openTopicTaskRoom();
+
+      const arg = await createOnlyFromComposer();
+
+      expect(arg?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
+      expect(arg?.room.topic.routingDefaults?.worktreePath).toBe(
+        `${LANE_B_REPO}/.worktrees/feature`
+      );
+      expect(arg?.room.topic.routingDefaults?.cwd).toBe(
+        `${LANE_B_REPO}/.worktrees/feature`
+      );
+    });
+
+    // The stamp means "the lane click that opened THIS composer". Left standing
+    // it would silently route every later create in the lane — including one the
+    // operator reached from the command palette, which calls `openTopicTaskRoom`
+    // directly and touches no lane at all.
+    it('spends the lane anchor on the create it routed, so the next chat inherits the session again', async () => {
+      seedActiveProjectASession();
+      const dm = dmTopicIn(LANE_B);
+      openTopicSelection(dm);
+      applyCreateRoutingContext({ selectedTopic: dm, laneRepoPathById });
+      openTopicTaskRoom();
+
+      const first = await createOnlyFromComposer();
+      expect(first?.room.topic.routingDefaults?.repoPath).toBe(LANE_B_REPO);
+      expect(useUiStore.getState().laneRepoRouting).toBeNull();
+
+      // Command-palette "new chat": no lane click, same lane still active.
+      openTopicTaskRoom();
+      const second = await createOnlyFromComposer(1);
+
+      expect(second?.room.topic.workspaceId).toBe(LANE_B);
+      expect(second?.room.topic.routingDefaults?.repoPath).toBe(
+        '/repo/project-a'
+      );
+      expect(second?.room.topic.routingDefaults?.cwd).toBe(
+        '/repo/project-a/.worktrees/old-task'
+      );
     });
 
     it('keeps session inheritance when no lane was explicitly selected', async () => {

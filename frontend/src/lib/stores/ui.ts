@@ -585,8 +585,9 @@ export type ActiveModal =
   | null;
 
 /**
- * #1303: the repo anchor of a workspace lane the operator explicitly selected
- * THIS session, carried together with the lane it came from.
+ * #1303: the repo anchor of the routing statement that opened the CURRENT
+ * composer — a lane the operator just selected, or the channel row they just
+ * opened — carried together with the lane it came from.
  *
  * Deliberately not another `activeRepoPath`: that pointer is persisted, is
  * written by repo-dashboard navigation, and cannot say WHO wrote it — so it can
@@ -595,6 +596,13 @@ export type ActiveModal =
  * and it is keyed by `workspaceId` so it self-invalidates the moment the active
  * lane moves somewhere else instead of following the operator into a lane it
  * was never about.
+ *
+ * SINGLE-USE. It is written immediately before the composer opens and spent
+ * when that composer goes away (`setTopicComposerOpen(false)`, below) or when a
+ * create commits. A stamp that outlived its composer would keep outranking
+ * session context on every later create in the same lane — including creates
+ * the operator reached from the command palette without touching a lane at all
+ * — which is a different, louder bug than the one it fixes.
  */
 export interface LaneRepoRouting {
   workspaceId: string;
@@ -1295,7 +1303,20 @@ export const useUiStore = create<UiState>()((set, get) => ({
     }
   },
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
-  setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
+  // #1303: closing the composer SPENDS the lane stamp. The stamp means "the
+  // routing statement that opened THIS composer", and every way out of the
+  // composer runs through here — Escape, a channel/URL/notification navigation,
+  // a launch that selects a session. Enforced in the setter rather than asked
+  // of each caller because the bug this guards against is precisely a caller
+  // that forgets: the eight existing exits would each have to remember, and the
+  // ninth would not. Opening never clears — `openTopicTaskRoom` runs AFTER the
+  // stamp is written.
+  setTopicComposerOpen: (v) =>
+    set(
+      v
+        ? { topicComposerOpen: true }
+        : { topicComposerOpen: false, laneRepoRouting: null }
+    ),
   setActiveChannelId: (v) =>
     set({
       activeChannelId: v,
