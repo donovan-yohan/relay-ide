@@ -18,6 +18,10 @@ workflow.
 
 ## [Unreleased]
 
+### Added
+
+- Create and name new folders directly in the local Add Project browser (#1338)
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as
