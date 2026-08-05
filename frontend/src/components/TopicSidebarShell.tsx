@@ -1978,6 +1978,16 @@ function messageEmptyStateText(input: {
   if (input.unavailableReason === 'no_searchable_term') {
     return 'no searchable term to look up';
   }
+  // #1316. Both are cost answers, not corpus answers: the first was refused
+  // before the index was read, the second was cut off part way through it. The
+  // copy therefore asks for a narrower query and never says "no matches" —
+  // whatever the operator is looking for may well be in the transcript.
+  if (input.unavailableReason === 'search_query_too_broad') {
+    return 'too many matches to rank — type more characters';
+  }
+  if (input.unavailableReason === 'search_timeout') {
+    return 'search took too long — type more characters';
+  }
   return `no message matches for “${input.searchQuery.trim()}”`;
 }
 

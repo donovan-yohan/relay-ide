@@ -14,6 +14,7 @@ import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
   ChannelMessageStoreError,
+  ChannelSearchRefusedError,
   channelSearchUnavailableReason,
   type ChannelHistoryFilter,
   type ChannelMessageStore,
@@ -734,6 +735,21 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const body: ChannelMessageSearchResponse = { query, results, truncated };
       res.json(body);
     } catch (error) {
+      // A cost refusal is an ANSWER, not a failure (#1316): the store either
+      // declined a prefix this corpus cannot afford or abandoned the read at
+      // its wall-clock ceiling. Same 200-with-a-reason shape the static
+      // refusals above use, for the same reason — an error status (or an empty
+      // `results`) would make the client claim the transcript was searched.
+      if (error instanceof ChannelSearchRefusedError) {
+        const refused: ChannelMessageSearchResponse = {
+          query,
+          results: [],
+          truncated: false,
+          unavailableReason: error.reason,
+        };
+        res.json(refused);
+        return;
+      }
       mapStoreError(res, error);
     }
   });

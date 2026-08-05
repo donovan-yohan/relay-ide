@@ -16,8 +16,11 @@ import {
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+  CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
   CHANNEL_SEARCH_QUERY_MAX_CHARS,
   CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
+  CHANNEL_SEARCH_TIME_BUDGET_MS,
   isChannelMessagePart,
   isChannelAgentDetail,
   parseMentions,
@@ -183,6 +186,131 @@ const CHANNEL_SEARCH_TRIGGERS = [
 
 /** Terms accepted from one query; a longer query is a paste, not a search. */
 const CHANNEL_SEARCH_MAX_TERMS = 12;
+
+/**
+ * Per-connection view of the FTS5 TERM index, used only by the pre-flight cost
+ * gate (#1316). `fts5vocab` in `row` mode yields one row per distinct term with
+ * its document and occurrence counts, and its `xBestIndex` accepts range
+ * constraints on `term`, so `term >= p AND term < p⁺` is a b-tree SEEK over the
+ * prefix rather than a scan of the dictionary.
+ *
+ * Declared in `temp.` deliberately. It is a pure read-through onto the index
+ * that already exists, so persisting it would add a schema object (and a
+ * migration, and a rebuild hazard) for something every connection can derive in
+ * microseconds. Being per-connection also means it survives the drop/recreate
+ * that `rebuildChannelSearchIndex` performs — fts5vocab resolves its target at
+ * query time, not at CREATE time.
+ */
+const CHANNEL_SEARCH_VOCAB_TABLE = 'temp.relay_channel_search_vocab';
+
+/**
+ * Name of the per-row user function that enforces the wall-clock ceiling.
+ *
+ * Registered per connection by `registerChannelSearchTick`. Exported so a test
+ * opening its OWN `better-sqlite3` handle against the same file (the query-plan
+ * assertion does) can install a no-op before preparing the production SQL —
+ * SQLite resolves function names at prepare time, so the SQL is unpreparable on
+ * a connection that has not registered it.
+ */
+export const CHANNEL_SEARCH_TICK_FUNCTION = 'relay_channel_search_tick';
+
+/**
+ * Thrown out of `searchMessages` when the store refuses or abandons a read.
+ *
+ * A separate class rather than `ChannelMessageStoreError` because this is not a
+ * caller error: the route answers HTTP 200 with the structured
+ * `unavailableReason`, exactly as it already does for `query_too_short`. The
+ * distinction the client needs is "the index did not (fully) answer", not a
+ * failure — printing "no matches" for either of these would assert something
+ * about the transcript that was never checked.
+ */
+export class ChannelSearchRefusedError extends Error {
+  readonly reason: 'search_query_too_broad' | 'search_timeout';
+
+  constructor(reason: 'search_query_too_broad' | 'search_timeout') {
+    super(`channel search refused: ${reason}`);
+    this.name = 'ChannelSearchRefusedError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Install the wall-clock tick on one connection.
+ *
+ * `deterministic: false` is the LOAD-BEARING option, not documentation: SQLite
+ * hoists constant subexpressions out of the row loop, and only the
+ * non-deterministic flag keeps this one inside it. The row id is passed as an
+ * argument for the same reason belt goes with braces — an expression that reads
+ * a column of the driving table cannot be evaluated anywhere but per row, on
+ * any SQLite version.
+ *
+ * `isExpired` is a callback rather than a deadline value because one connection
+ * serves every search: better-sqlite3 is synchronous, so no second read can
+ * begin while one is inside `.all()`, and the store simply moves the deadline
+ * before each call.
+ */
+export function registerChannelSearchTick(
+  db: Database.Database,
+  isExpired: () => boolean
+): void {
+  db.function(
+    CHANNEL_SEARCH_TICK_FUNCTION,
+    { deterministic: false },
+    (_rowid: unknown) => {
+      if (isExpired()) throw new ChannelSearchRefusedError('search_timeout');
+      return 1;
+    }
+  );
+}
+
+/**
+ * The half-open term range the trailing `*` of `raw` will expand over, or null
+ * when the query has no prefix term to bound.
+ *
+ * Mirrors `buildChannelSearchMatchQuery`: only the FINAL term takes `*`, and
+ * only once it is at least `CHANNEL_SEARCH_MIN_QUERY_CHARS` code points. The
+ * returned bounds are compared against terms as FTS5 STORED them, so the text
+ * is folded the way `unicode61 remove_diacritics 2` folds it — lowercased, with
+ * combining marks stripped — and reduced to its LAST tokenizer token, because
+ * `"foo-bar" *` is the two-token phrase `foo bar` with the prefix on `bar`.
+ *
+ * The folding is an approximation of unicode61's table (Turkish dotless i, ß,
+ * and pre-decomposed exotica diverge). Every divergence lands the probe on a
+ * range that holds FEWER terms than the real query will match, so the gate
+ * fails OPEN — it can under-refuse a hostile query, never over-refuse an honest
+ * one. The wall-clock ceiling is what covers the residue.
+ *
+ * Exported for tests: this is the half of the gate that has to agree with a C
+ * tokenizer, so it deserves direct assertions rather than only end-to-end ones.
+ */
+export function channelSearchPrefixRange(
+  raw: string
+): { low: string; high: string } | null {
+  const terms = collectChannelSearchTerms(raw);
+  const last = terms[terms.length - 1];
+  if (last === undefined) return null;
+  if ([...last].length < CHANNEL_SEARCH_MIN_QUERY_CHARS) return null;
+  const folded = last
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase();
+  const tokens = folded.split(/[^\p{L}\p{N}]+/u).filter((part) => part !== '');
+  const low = tokens[tokens.length - 1];
+  if (low === undefined) return null;
+  const points = [...low];
+  const tail = points[points.length - 1]?.codePointAt(0);
+  if (tail === undefined) return null;
+  // Successor of the last code point, skipping the surrogate block (which is
+  // not a scalar value) so `String.fromCodePoint` cannot produce a lone
+  // surrogate that would bind as invalid UTF-8.
+  let next = tail + 1;
+  if (next >= 0xd800 && next <= 0xdfff) next = 0xe000;
+  if (next > 0x10ffff) return null;
+  return {
+    low,
+    high: points.slice(0, -1).join('') + String.fromCodePoint(next),
+  };
+}
 
 /** `snippet()` window, in tokens (FTS5 allows 1..64). */
 const CHANNEL_SEARCH_SNIPPET_TOKENS = 20;
@@ -393,6 +521,15 @@ export function buildChannelSearchMatchQuery(raw: string): string | null {
  * Ranking is bm25 ascending — SQLite returns a more-negative score for a better
  * match — with newest-first as the tiebreak so two equally relevant rows
  * present the recent one first.
+ *
+ * `relay_channel_search_tick(<fts>.rowid)` is the wall-clock ceiling (#1316).
+ * It sits immediately after the MATCH and reads a column of the DRIVING table
+ * on purpose: SQLite evaluates a WHERE term in the loop of the last table it
+ * references, so this one fires once per FTS-matched row — before the rowid
+ * probe into `channel_messages` and before the channel allowlist discards
+ * anything — which is the earliest per-row hook the query has. It never filters
+ * (it returns 1 or throws), so the query plan is unchanged; the plan test
+ * asserts that.
  */
 export function buildChannelMessageSearchSql(channelIdCount: number): string {
   const channelClause =
@@ -413,6 +550,7 @@ export function buildChannelMessageSearchSql(channelIdCount: number): string {
            FROM ${CHANNEL_SEARCH_TABLE}
            CROSS JOIN channel_messages m ON m.rowid = ${CHANNEL_SEARCH_TABLE}.rowid
           WHERE ${CHANNEL_SEARCH_TABLE} MATCH ?
+            AND ${CHANNEL_SEARCH_TICK_FUNCTION}(${CHANNEL_SEARCH_TABLE}.rowid)
             ${channelClause}
           ORDER BY score ASC, m.seq DESC
           LIMIT ?`;
@@ -848,6 +986,12 @@ export interface ChannelMessageStore {
    * Thread replies ARE included. Returns hits, not `ChannelMessage` rows: a
    * result is a jump target plus an excerpt, and shipping full 256KB bodies for
    * 50 hits would make the response a transcript dump.
+   *
+   * Throws `ChannelSearchRefusedError` when the cost gate refuses the prefix
+   * (`search_query_too_broad`) or the wall-clock ceiling cuts the read off
+   * (`search_timeout`) — see #1316. Both are 200-with-a-reason at the route, not
+   * errors; what they must never become is an empty array, which would claim
+   * the corpus was searched and held nothing.
    */
   searchMessages(input: ChannelMessageSearchQuery): ChannelMessageSearchHit[];
   /** Root-inclusive history for one canonical thread. */
@@ -1862,7 +2006,24 @@ export function initChannelMessageStore(
   return createChannelMessageStore(path.join(configDir, 'channel-chat.db'));
 }
 
-export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
+export interface ChannelMessageStoreOptions {
+  /**
+   * Wall-clock ceiling for one ranked index read, in milliseconds. Defaults to
+   * `CHANNEL_SEARCH_TIME_BUDGET_MS`.
+   *
+   * Overridable because the ceiling is otherwise only provable by a latency
+   * assertion, and a latency assertion is exactly the kind of test a faster CI
+   * box deletes silently — the same reasoning that made the minimum-length
+   * guard assert on the EXPRESSION rather than on milliseconds. A test sets
+   * `0` and gets a deterministic `search_timeout` on the first matched row.
+   */
+  searchTimeBudgetMs?: number;
+}
+
+export function createChannelMessageStore(
+  dbPath: string,
+  options: ChannelMessageStoreOptions = {}
+): ChannelMessageStore {
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
@@ -1871,6 +2032,77 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  // ── search cost guards (#1316) ────────────────────────────────────────────
+  const searchTimeBudgetMs =
+    options.searchTimeBudgetMs ?? CHANNEL_SEARCH_TIME_BUDGET_MS;
+  // Deadline for the read currently inside `.all()`. A single mutable value is
+  // safe precisely because better-sqlite3 is synchronous: nothing else on this
+  // thread can start a second read while one is running, which is the same
+  // property that makes the ceiling necessary in the first place.
+  let searchDeadline = Number.POSITIVE_INFINITY;
+  registerChannelSearchTick(db, () => Date.now() >= searchDeadline);
+  // Created AFTER `runMigrations`, so the FTS table it reads through already
+  // exists on a fresh db. Failure is not fatal: the vocabulary is only used by
+  // the pre-flight gate, and a store that cannot pre-flight still has the
+  // wall-clock ceiling.
+  let searchVocab: Database.Statement | null = null;
+  try {
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ${CHANNEL_SEARCH_VOCAB_TABLE}
+         USING fts5vocab(main, ${CHANNEL_SEARCH_TABLE}, row)`
+    );
+    searchVocab = db.prepare(
+      `SELECT doc FROM ${CHANNEL_SEARCH_VOCAB_TABLE}
+        WHERE term >= ? AND term < ?`
+    );
+  } catch (error) {
+    logger.warn(
+      'channel search cost pre-flight unavailable (%s); falling back to the wall-clock ceiling alone',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  /**
+   * Refuse a prefix whose expansion this corpus cannot afford, BEFORE reading.
+   *
+   * Walks the term index over the prefix range and stops at the first budget it
+   * blows. Both budgets are also the walk's own bound, so the check costs at
+   * most `CHANNEL_SEARCH_PREFIX_TERM_BUDGET` b-tree steps no matter how large
+   * the transcript grows (measured ≤6ms at 1025 terms).
+   *
+   * Fails OPEN on any error. `fts5vocab` reads the index by name at query time,
+   * so a mid-rebuild window (`rebuildChannelSearchIndex` drops and recreates
+   * the table) surfaces as `no such fts5 table` — and a store that cannot cost
+   * a query must still answer it, with the ceiling as the remaining guard.
+   */
+  function refuseOverBroadPrefix(raw: string): void {
+    if (!searchVocab) return;
+    const range = channelSearchPrefixRange(raw);
+    if (!range) return;
+    let terms = 0;
+    let docs = 0;
+    try {
+      for (const row of searchVocab.iterate(range.low, range.high) as Iterable<{
+        doc: number;
+      }>) {
+        terms += 1;
+        docs += row.doc;
+        if (
+          terms > CHANNEL_SEARCH_PREFIX_TERM_BUDGET ||
+          docs > CHANNEL_SEARCH_PREFIX_DOC_BUDGET
+        ) {
+          throw new ChannelSearchRefusedError('search_query_too_broad');
+        }
+      }
+    } catch (error) {
+      if (error instanceof ChannelSearchRefusedError) throw error;
+      logger.warn(
+        'channel search cost pre-flight failed (%s); running the query under the wall-clock ceiling',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
 
   // Point reads can be emitted directly on the WS lane (stream finalization and
@@ -2457,20 +2689,45 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const channelIds =
         input.channelIds === undefined ? null : [...input.channelIds];
       if (channelIds !== null && channelIds.length === 0) return [];
+      // Cost gate BEFORE the read (#1316): the cheapest query is the one that
+      // never starts, and the doclist-merge setup this refuses is the one part
+      // of the read the wall-clock ceiling below cannot interrupt.
+      refuseOverBroadPrefix(input.query);
       // `+ 1` is the LOOKAHEAD allowance, not a wider page: a caller paging at
       // the maximum asks for one row past it purely to learn whether more hits
       // existed. Without it, `truncated` could never be true on a full page.
       const limit = cleanLimit(input.limit, CHANNEL_SEARCH_MAX_RESULTS + 1);
-      const rows = db
-        .prepare(buildChannelMessageSearchSql(channelIds?.length ?? 0))
-        .all(
-          CHANNEL_SEARCH_HIGHLIGHT_OPEN,
-          CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
-          CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
-          match,
-          ...(channelIds ?? []),
-          limit
-        ) as ChannelSearchRow[];
+      // The deadline is armed around THIS call only, and disarmed in `finally`
+      // so a leftover value can never abort an unrelated later read. The
+      // ceiling reaches the query through `relay_channel_search_tick`, which
+      // throws `ChannelSearchRefusedError('search_timeout')` from inside
+      // sqlite; better-sqlite3 propagates the original object, so no error
+      // string has to be pattern-matched here.
+      searchDeadline = Date.now() + searchTimeBudgetMs;
+      let rows: ChannelSearchRow[];
+      try {
+        rows = db
+          .prepare(buildChannelMessageSearchSql(channelIds?.length ?? 0))
+          .all(
+            CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+            CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
+            CHANNEL_SEARCH_SNIPPET_ELLIPSIS,
+            match,
+            ...(channelIds ?? []),
+            limit
+          ) as ChannelSearchRow[];
+      } catch (error) {
+        if (error instanceof ChannelSearchRefusedError) {
+          logger.warn(
+            'channel search exceeded its %dms budget for %j; answering search_timeout',
+            searchTimeBudgetMs,
+            match
+          );
+        }
+        throw error;
+      } finally {
+        searchDeadline = Number.POSITIVE_INFINITY;
+      }
       return rows.map(searchRowToHit);
     },
 
