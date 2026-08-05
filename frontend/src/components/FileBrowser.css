@@ -9,6 +9,10 @@
   gap: 8px;
 }
 
+.new-root-folder-btn {
+  flex-shrink: 0;
+}
+
 .filter-input {
   flex: 1;
   background: var(--bg);
@@ -75,6 +79,24 @@
 
 .tree-row.selected {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.new-folder-btn {
+  flex-shrink: 0;
+  opacity: 0;
+}
+
+.tree-row:hover .new-folder-btn,
+.tree-row.selected .new-folder-btn,
+.tree-row.focused .new-folder-btn,
+.new-folder-btn:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .new-folder-btn {
+    opacity: 1;
+  }
 }
 
 .expand-btn {
@@ -155,4 +177,49 @@
   color: var(--text-muted);
   border-top: 1px solid var(--border);
   text-align: center;
+}
+
+.folder-create-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+  padding: 8px;
+}
+
+.folder-create-label,
+.folder-create-error {
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-create-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.folder-create-input {
+  min-width: 0;
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  outline: none;
+  padding: 4px 8px;
+}
+
+.folder-create-input:focus {
+  border-color: var(--accent);
+}
+
+.folder-create-error {
+  color: var(--status-error);
 }
