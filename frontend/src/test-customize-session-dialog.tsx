@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CustomizeSessionDialog, {
   type CustomizeSessionDialogHandle,
 } from './components/dialogs/CustomizeSessionDialog.js';
@@ -406,6 +407,14 @@ useConfigStore.setState({
   frameworks: [framework('claude'), framework('codex'), framework('hermes')],
 });
 
+// The dialog reads TanStack Query. Without a provider the fixture page threw
+// "No QueryClient set" on load, so every CustomizeSessionDialog spec timed out
+// waiting for a button that never rendered — a resolvable target that still
+// asserted nothing (#1299).
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+
 function Harness() {
   const dialogRef = useRef<CustomizeSessionDialogHandle>(null);
   const [createdSession, setCreatedSession] = useState('');
@@ -485,6 +494,8 @@ function Harness() {
 
 ReactDOM.createRoot(document.getElementById('app')!).render(
   <React.StrictMode>
-    <Harness />
+    <QueryClientProvider client={queryClient}>
+      <Harness />
+    </QueryClientProvider>
   </React.StrictMode>
 );

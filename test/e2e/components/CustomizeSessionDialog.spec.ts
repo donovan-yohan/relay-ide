@@ -17,7 +17,7 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(page.getByLabel('execution node')).toHaveCount(0);
     await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
     await expect(page.getByLabel('cwd on linux lab')).toHaveCount(0);
-    await expect(page.getByLabel('coding agent')).toBeVisible();
+    await expect(page.getByLabel('agent', { exact: true })).toBeVisible();
     await expect(page.getByLabel('interface')).toHaveCount(0);
     await expect(page.getByText('Launch in tmux')).toHaveCount(0);
   });
@@ -44,7 +44,7 @@ test.describe('CustomizeSessionDialog', () => {
     page,
   }) => {
     await page.getByText('open local web-capable customize session').click();
-    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('agent', { exact: true })).toHaveValue('hermes');
     await expect(page.getByLabel('interface')).toHaveCount(0);
     await page.getByRole('button', { name: 'Open Chat' }).click();
     await expect(page.getByTestId('active-channel')).toContainText('hermes');
@@ -84,7 +84,7 @@ test.describe('CustomizeSessionDialog', () => {
   test('remote agent selection still opens a DM channel', async ({ page }) => {
     await page.getByText('open web-capable remote customize session').click();
     await expect(page.getByLabel('execution node')).toHaveCount(0);
-    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('agent', { exact: true })).toHaveValue('hermes');
     await expect(page.getByLabel('interface')).toHaveCount(0);
     await page.getByRole('button', { name: 'Open Chat' }).click();
     await expect(page.getByTestId('active-channel')).toContainText('hermes');
@@ -118,7 +118,12 @@ test.describe('CustomizeSessionDialog', () => {
     );
   });
 
-  test('shows disabled reasons for offline and capability-blocked nodes', async ({
+  // #1299: this test asserted two rules the product dropped — that a node
+  // without the agent installed is unlaunchable, and that a node without
+  // `tmux-compat` is too. `nodeShellBlockReason` blocks on reachability and
+  // shell/`relay-pty` capability only, and `tmux-compat` is unsupported legacy
+  // that must not come back. It now pins the rule that exists.
+  test('disables unreachable nodes and leaves capability-complete ones launchable', async ({
     page,
   }) => {
     await page.getByText('open customize session').click();
@@ -129,16 +134,13 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(nodeOptions.filter({ hasText: 'offline lab' })).toContainText(
       'node is offline'
     );
+    // Chat and terminal launches no longer require the agent binary on the
+    // node, so a missing framework is not a block.
     await expect(
       nodeOptions.filter({ hasText: 'no claude box' })
-    ).toBeDisabled();
-    await expect(
-      nodeOptions.filter({ hasText: 'no claude box' })
-    ).toContainText('claude unavailable on no claude box');
-    await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toBeDisabled();
-    await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toContainText(
-      'terminal backend unavailable on no tmux box (relay-pty unavailable, tmux-compat unavailable)'
-    );
+    ).toBeEnabled();
+    // relay-pty is the only supported backend; having it is enough.
+    await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toBeEnabled();
   });
 
   test('keeps the single-node local path low-friction', async ({ page }) => {
@@ -147,7 +149,7 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(page.getByLabel('repo identity')).toHaveCount(0);
     await expect(page.getByLabel('execution node')).toHaveCount(0);
     await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(page.getByLabel('coding agent')).toBeVisible();
+    await expect(page.getByLabel('agent', { exact: true })).toBeVisible();
   });
 
   test('does not block chat on terminal-node availability', async ({

@@ -56,6 +56,19 @@ export interface HealthMonitorOptions {
   getResumeReadiness?: () => ResumeReadiness;
   /** Overrides the per-process boot id reported by `/healthz` (tests). */
   bootId?: string;
+  /**
+   * Config file this process booted with, reported only in e2e fixture mode.
+   *
+   * `reuseExistingServer` adopts whatever is already listening on the e2e port
+   * without asking what config it holds, so a leftover server from an aborted
+   * run could serve a whole suite off a stale temp dir — the same "a green run
+   * only meant a stale server got recycled" failure #1214 was about. The
+   * harness probes this field and refuses to reuse a mismatch (#1299).
+   *
+   * Fixture mode only: a deployed hub never runs in fixture mode, so this never
+   * discloses a real install's paths on an unauthenticated endpoint.
+   */
+  fixtureConfigPath?: string | undefined;
 }
 
 const healthLogger = createLogger('health');
@@ -117,6 +130,7 @@ export function createHealthMonitor(
   const disabledStores = options.disabledStores ?? [];
 
   const bootId = options.bootId ?? PROCESS_BOOT_ID;
+  const fixtureConfigPath = options.fixtureConfigPath;
 
   const handler: RequestHandler = (_req, res) => {
     const lagMs = Math.round(getLagMs());
@@ -128,6 +142,7 @@ export function createHealthMonitor(
       lagMs,
       rss,
       bootId,
+      ...(fixtureConfigPath ? { fixtureConfigPath } : {}),
       ...(disabledStores.length > 0 ? { disabledStores } : {}),
       ...(resume ? { ready: resume.complete, resume } : {}),
     });
