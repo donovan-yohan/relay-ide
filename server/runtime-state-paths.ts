@@ -112,3 +112,90 @@ export function resolveSourceLaunchConfigPath(
     legacyConfigPath: fs.existsSync(legacyConfigPath) ? legacyConfigPath : null,
   };
 }
+
+/** Env var that puts the server in Playwright fixture mode. */
+export const E2E_FIXTURE_ENV_VAR = 'RELAY_IDE_E2E_FIXTURES';
+/** Env var that pins the config file (and every runtime store beside it). */
+export const CONFIG_PATH_ENV_VAR = 'RELAY_IDE_CONFIG';
+
+/**
+ * Config roots owned by a *hub someone deployed on this machine* (#1214).
+ *
+ * Two roots, because two code paths disagree on purpose:
+ *   - `relayAppDataDir()` honors `$XDG_CONFIG_HOME` (from-source launches), and
+ *   - `server/service.ts` hardcodes `~/.config/relay-ide` (the installed CLI).
+ * A run with XDG set therefore has to treat both as off-limits, or the fixture
+ * server can still land on the installed hub's config while looking isolated.
+ *
+ * Everything under these roots is shared state: the PIN, sessions, and every
+ * runtime SQLite store live beside the config file.
+ */
+export function sharedConfigRoots(
+  env: Record<string, string | undefined> = process.env,
+  homedir: string = os.homedir()
+): string[] {
+  return [
+    ...new Set([
+      relayAppDataDir(env, homedir),
+      path.join(homedir, '.config', 'relay-ide'),
+    ]),
+  ];
+}
+
+/** True when `candidate` is `root` itself or lives underneath it. */
+function isInside(root: string, candidate: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+export interface FixtureConfigIsolationInput {
+  /** Raw `RELAY_IDE_CONFIG` value, exactly as the operator set it (if at all). */
+  explicitConfigPath: string | undefined;
+  env?: Record<string, string | undefined> | undefined;
+  homedir?: string | undefined;
+}
+
+/**
+ * Why an e2e fixture boot must be refused, or `null` when the config is
+ * isolated (#1214).
+ *
+ * The fixture web-server used to inherit the *default* config resolution, so on
+ * any box that also runs a deployed hub it read that hub's config dir: a PIN
+ * set by the deploy turned every smoke test into an auth-screen failure, and
+ * the fixture run wrote its sessions/SQLite back into the deployed hub's state.
+ * Defaulting is the bug, so fixture mode has no default at all — an explicit
+ * per-run path outside every shared root, or no boot.
+ */
+export function findFixtureConfigIsolationViolation(
+  input: FixtureConfigIsolationInput
+): string | null {
+  const env = input.env ?? process.env;
+  const homedir = input.homedir ?? os.homedir();
+  const roots = sharedConfigRoots(env, homedir);
+  const raw = input.explicitConfigPath?.trim();
+
+  if (!raw) {
+    return (
+      `${E2E_FIXTURE_ENV_VAR}=1 requires an explicit isolated ${CONFIG_PATH_ENV_VAR}; ` +
+      `refusing to fall back to the shared config root ${roots[0]}, which a deployed hub owns ` +
+      `(its PIN and SQLite state would poison the run, and the run would poison the hub). ` +
+      `Point ${CONFIG_PATH_ENV_VAR} at a fresh temp dir. (#1214)`
+    );
+  }
+  if (!path.isAbsolute(raw)) {
+    return (
+      `${E2E_FIXTURE_ENV_VAR}=1 requires an absolute ${CONFIG_PATH_ENV_VAR}; got "${raw}". ` +
+      `A relative path resolves against the launching cwd, which is not a run-scoped location. (#1214)`
+    );
+  }
+  const resolved = path.resolve(raw);
+  const sharedRoot = roots.find((root) => isInside(root, resolved));
+  if (sharedRoot) {
+    return (
+      `${CONFIG_PATH_ENV_VAR}=${resolved} is inside the shared Relay config root ${sharedRoot}, ` +
+      `so the fixture run would share a PIN, sessions, and every runtime SQLite store with a ` +
+      `deployed hub. Point ${CONFIG_PATH_ENV_VAR} at a fresh temp dir instead. (#1214)`
+    );
+  }
+  return null;
+}
