@@ -410,9 +410,20 @@ export class ChannelAgentRuntimeManager {
       if (savedResumeId && adapter.capabilities.resume) {
         await adapter.resumeSession(savedResumeId);
       }
-      // Promote out of `initializing` only. Adapters emit patches from inside
-      // `connect()`/`resumeSession()` (codex emits its snapshot and live state
-      // before `connect` resolves), so the listener above can already have
+      // The child can die INSIDE those awaits (#1307). Adapters flip to
+      // 'connected' partway through connect/resume, so the disconnect listener
+      // above is live and may already have ended this runtime — dropping it from
+      // the registry and disconnecting its adapter. Returning it anyway would
+      // hand the caller a corpse: the channel binder would attach a bridge to a
+      // dead adapter and persist `runtimeId` durably for a runtime that no
+      // longer exists. Fail instead, so the caller's normal spawn-failure path
+      // runs.
+      if (this.runtimes.get(id) !== runtime) {
+        throw new Error('Channel agent runtime died during connect');
+      }
+      // Promote out of `initializing` only (#1254). Adapters emit patches from
+      // inside `connect()`/`resumeSession()` (codex emits its snapshot and live
+      // state before `connect` resolves), so the listener above can already have
       // recorded a live turn — stamping `idle` unconditionally here erased it.
       if (runtime.agentState === 'initializing') {
         runtime.agentState = 'idle';

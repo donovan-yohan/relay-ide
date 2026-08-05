@@ -38,7 +38,12 @@ import {
   type ChannelMessage,
   type ChannelPostSteering,
 } from '../shared/channel-chat-protocol.js';
-import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentApprovalDecisionV2,
+  AgentApprovalItemV2,
+  AgentLiveStateUpdatedPatchV2,
+  AgentPatchV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 import { isDmChannel } from '../shared/dm-channels.js';
 import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.js';
@@ -94,12 +99,15 @@ const QUEUE_CAP = 8;
 /** Force-drain a genuinely-stuck turn after this long (paused while waitingOn != null). */
 const DEFAULT_WATCHDOG_MS = 5 * 60 * 1000;
 /**
- * Presence liveness sweep (#1307). The watchdog cannot bound a dead runtime: it
- * is disarmed for as long as `waitingOn !== null` and is never armed at all once
- * a turn ends, so a binding whose runtime disappeared through a path that never
- * reached `onRuntimeEnd` would keep broadcasting its last status forever. The
- * sweep re-derives liveness from the runtime registry instead of trusting the
- * teardown event to arrive.
+ * Presence liveness sweep (#1307). `onRuntimeEnd` is the binder's ONLY teardown
+ * signal and it fires from exactly one place — an explicit `runtimes.destroy` —
+ * with best-effort, individually try/caught handlers. A runtime that leaves the
+ * registry any other way therefore leaves this binding holding a dead adapter:
+ * `healthyRuntime` keeps saying yes, every rebind reuses the corpse, and the
+ * binding never returns to idle. The watchdog cannot bound that (it is disarmed
+ * for as long as `waitingOn !== null` and is never armed at all once a turn
+ * ends), so liveness is re-derived from the runtime registry on a timer rather
+ * than trusted to an event.
  */
 const DEFAULT_PRESENCE_SWEEP_MS = 30 * 1000;
 /** Consecutive agent-authored routed turns allowed between human/gateway posts. */
@@ -1409,11 +1417,32 @@ export function createChannelAgentBinder(
   }
 
   /**
+   * Drop every trigger waiting on a binding whose runtime is gone (#1307), with
+   * one system row each so the operator sees exactly which posts never ran. The
+   * caller broadcasts afterwards: the queue depth rides the same
+   * `channel-agent-status` event as the status, so it must be empty BEFORE the
+   * terminal idle goes out or the queued-send chips stay lit against an agent
+   * that is idle and unbound.
+   */
+  function dropQueuedTurns(binding: LiveBinding): void {
+    for (const queued of binding.queue) {
+      postSystemRow(
+        binding.channelId,
+        `@${binding.displayName} runtime ended before delivering a queued message.`,
+        { parentMessageId: parentForTrigger(queued.trigger) }
+      );
+    }
+    binding.queue = [];
+  }
+
+  /**
    * Terminal presence for a runtime that died under an open turn (#1307).
    * Deliberately NOT `finishTurn`: it must also clear a binding whose turn was
    * already over but whose status never came back (a spawn that never
    * completed), and it must not `pump` a queued turn into an adapter that is
-   * known to be gone.
+   * known to be gone — those triggers are dropped here instead, so the single
+   * idle broadcast carries `queuedCount: 0` and bumps the drain generation the
+   * queued-send chips key off (#1308 slice 4).
    */
   function markDeadRuntimeIdle(binding: LiveBinding): void {
     binding.activeTurnId = null;
@@ -1423,7 +1452,11 @@ export function createChannelAgentBinder(
     binding.sawStream = false;
     binding.announcedApprovals.clear();
     disarmWatchdog(binding);
+    dropQueuedTurns(binding);
     setStatus(binding, 'idle');
+    // The binding may already have BEEN idle (a spawn that never completed), so
+    // the dropped queue needs its own emit — `setStatus` dedupes on status.
+    emitAgentStatus(binding);
   }
 
   function finishTurn(binding: LiveBinding): void {
@@ -1447,7 +1480,7 @@ export function createChannelAgentBinder(
 
   function handleBindingPatch(
     binding: LiveBinding,
-    patch: import('../shared/agent-chat-protocol-v2.js').AgentPatchV2
+    patch: AgentPatchV2
   ): void {
     switch (patch.type) {
       case 'agent-session-updated-v2':
@@ -1566,21 +1599,28 @@ export function createChannelAgentBinder(
 
   function handleLiveState(
     binding: LiveBinding,
-    live: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2['live']
+    live: AgentLiveStateUpdatedPatchV2['live']
   ): void {
     if (live.status === 'disconnected') {
-      // The runtime is GONE, not resting (#1307). A `disconnected` live state is
-      // only emitted for an UNEXPECTED transport/process death — every
-      // deliberate teardown detaches its listeners first — so unlike a bare
-      // `idle` this is terminal even mid-approval: a dead process can never
-      // answer the prompt, and leaving the binding parked at 'waiting' pins the
-      // chip and the in-timeline presence row with nothing left to unpin them
-      // (the watchdog is disarmed for exactly that state).
+      // The runtime is GONE, not resting (#1307). This branch is reached only on
+      // an UNEXPECTED transport/process death: codex-native emits it when its
+      // client closes on its own, a deliberate `disconnect()` tears down state
+      // without re-emitting, and the legacy v1 compat maps its `disconnected`
+      // session-status to `idle` (agent-chat-v1-compat.ts). A dead process can
+      // never answer an approval prompt or finish its turn, so this is terminal
+      // even mid-approval — the one thing a bare `idle` must never be.
       //
-      // Presence only. The queue drain, the durable unbind, and the live-map
-      // delete belong to `releaseBinding`, which runs when the runtime's own
-      // teardown lands; pumping a queued turn into a dead adapter here would
-      // just manufacture a send-failure row.
+      // Before this branch existed the patch fell through to the `waitingOn`
+      // handling below (codex carries an explicit `waitingOn: null`), which was
+      // wrong in both directions: mid-approval it flipped 'waiting' → 'thinking'
+      // and RE-ARMED the watchdog, so five minutes later the watchdog
+      // force-drained the turn — abandoning the approval and pumping a queued
+      // turn into the dead adapter for a guaranteed send-failure row — and with
+      // no active turn it did nothing at all.
+      //
+      // Presence and the queue only. The durable unbind and the live-map delete
+      // belong to `releaseBinding`, which runs when the runtime's own teardown
+      // lands (or when the sweep notices it never did).
       markDeadRuntimeIdle(binding);
       return;
     }
@@ -1629,7 +1669,7 @@ export function createChannelAgentBinder(
 
   function handleApprovalStarted(
     binding: LiveBinding,
-    item: import('../shared/agent-chat-protocol-v2.js').AgentApprovalItemV2
+    item: AgentApprovalItemV2
   ): void {
     if (binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.add(item.requestId);
@@ -1652,7 +1692,7 @@ export function createChannelAgentBinder(
 
   function handleApprovalResolved(
     binding: LiveBinding,
-    item: import('../shared/agent-chat-protocol-v2.js').AgentApprovalItemV2
+    item: AgentApprovalItemV2
   ): void {
     if (!binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.delete(item.requestId);
@@ -2060,14 +2100,9 @@ export function createChannelAgentBinder(
     binding.unbind?.(); // bridge finalizes any open stream 'interrupted'
     binding.patchUnlisten?.();
     disarmWatchdog(binding);
-    for (const queued of binding.queue) {
-      postSystemRow(
-        binding.channelId,
-        `@${binding.displayName} runtime ended before delivering a queued message.`,
-        { parentMessageId: parentForTrigger(queued.trigger) }
-      );
-    }
-    binding.queue = [];
+    // No-op when `markDeadRuntimeIdle` already drained on the `disconnected`
+    // patch, so a death that fires both paths posts one row per trigger.
+    dropQueuedTurns(binding);
     binding.adapter = null;
     binding.unbind = null;
     binding.patchUnlisten = null;

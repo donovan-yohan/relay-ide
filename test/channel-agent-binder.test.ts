@@ -4526,6 +4526,31 @@ describe('channel-agent-binder — presence teardown (#1307)', () => {
     expect(statuses.at(-1)).toBe('idle');
   });
 
+  it('drops the queue on the same broadcast as the terminal idle, so no chip stays lit against a dead runtime', async () => {
+    // `onRuntimeEnd` never fires here (the death is the adapter's own report),
+    // so this covers the window BEFORE `releaseBinding` — up to a whole sweep
+    // interval when the teardown event never arrives at all. An idle broadcast
+    // carrying `queuedCount > 0` would leave the #1308 queued-send chips lit
+    // with nothing left to drain them.
+    const harness = makeParkedBinder();
+    const { binder, store, events, statuses } = harness;
+    post(store, binder, '@parked one', ['parked']);
+    const adapter = await parkedOnApproval(harness);
+    post(store, binder, '@parked two', ['parked']);
+    await waitFor(() => events.at(-1)?.['queuedCount'] === 1);
+
+    adapter.die();
+    await waitFor(() => statuses.at(-1) === 'idle');
+    expect(events.at(-1)?.['queuedCount']).toBe(0);
+    // One row per dropped trigger, and nothing was pumped into the dead adapter.
+    expect(
+      systemRows(store).filter((row) =>
+        row.body.text.includes('runtime ended before delivering a queued message')
+      )
+    ).toHaveLength(1);
+    expect(adapter.sendCalls).toHaveLength(1);
+  });
+
   it('sweeps a binding whose runtime vanished with no end event to idle, drains its queue, and durably unbinds', async () => {
     const harness = makeParkedBinder({ presenceSweepMs: 10 });
     const { binder, store, sessions, events, statuses } = harness;

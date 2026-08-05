@@ -20,6 +20,8 @@ const adapterState = vi.hoisted(() => ({
   all: [] as TestAdapter[],
   /** Runs inside `connect()`, before it resolves. */
   onConnect: null as ((adapter: TestAdapter) => void) | null,
+  /** Make the next adapter report its child dying from inside `connect` (#1307). */
+  dieDuringConnect: false,
 }));
 
 class TestAdapter implements ProtocolAdapterV2 {
@@ -39,9 +41,15 @@ class TestAdapter implements ProtocolAdapterV2 {
   sessionId = 'channel-runtime';
 
   async connect(config: AdapterConfig): Promise<void> {
+    // Real adapters flip to 'connected' partway through their own connect, so
+    // the manager's disconnect listener is already live when the child dies.
     this.status = 'connected';
     this.sessionId = config.sessionId;
     adapterState.onConnect?.(this);
+    if (adapterState.dieDuringConnect) {
+      await Promise.resolve();
+      this.emitDisconnected();
+    }
   }
   async disconnect(): Promise<void> {
     this.status = 'disconnected';
@@ -156,6 +164,7 @@ afterEach(async () => {
   adapterState.last = null;
   adapterState.all.length = 0;
   adapterState.onConnect = null;
+  adapterState.dieDuringConnect = false;
 });
 
 describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
@@ -578,6 +587,30 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(channelAgentRuntimes.get(runtime.id)).toBeUndefined();
     expect(runtime.status).toBe('disconnected');
     off();
+  });
+
+  it('rejects instead of returning a runtime the disconnect listener already ended (#1307)', async () => {
+    // The death lands INSIDE `create`'s own connect await, so the listener
+    // installed above has already destroyed this runtime by the time connect
+    // resolves. Returning it anyway would hand the channel binder a corpse: it
+    // would attach its bridge to the disconnected adapter and persist
+    // `runtimeId` durably for a runtime that is no longer in the registry.
+    const { channelAgentRuntimes } = await runtimeModule();
+    adapterState.dieDuringConnect = true;
+
+    await expect(
+      channelAgentRuntimes.create({
+        id: 'channel-runtime',
+        providerId: 'codex',
+        profileActorId: 'agent-profile:codex:default',
+        cwd: '/tmp',
+        displayName: '#eng · Codex',
+        port: 3456,
+        configDir: '/tmp',
+      })
+    ).rejects.toThrow(/died during connect/);
+
+    expect(channelAgentRuntimes.get('channel-runtime')).toBeUndefined();
   });
 
   it('closes every runtime when one adapter disconnect rejects', async () => {

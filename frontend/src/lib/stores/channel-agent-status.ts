@@ -216,6 +216,40 @@ export function resolveEffectiveAgentStatus(input: {
 }
 
 /**
+ * Whether a channel still needs the roster re-fetched to settle its presence
+ * chips (#1307).
+ *
+ * Armed on "the socket can still win", NOT on "the socket says busy": it is the
+ * exact predicate `resolveEffectiveAgentStatus` uses to prefer a socket status
+ * over the roster snapshot (`socketUpdatedAt >= rosterUpdatedAt`, non-idle). So
+ * it self-disarms — the moment a poll lands, every socket transition in the
+ * channel is older than the roster snapshot, the roster becomes authoritative
+ * for all of them, and this returns false. A fresh live transition re-arms it.
+ *
+ * Arming on the raw status alone would poll forever: nothing writes the
+ * reconciled verdict back into the store, so a status the roster has already
+ * superseded stays 'thinking' in `statusByChannelAgent` for the lifetime of the
+ * mounted view.
+ */
+export function shouldPollRosterForPresence(input: {
+  statusByChannelAgent: Record<string, ChannelAgentStatus>;
+  updatedAtByChannelAgent: Record<string, number>;
+  channelId: string;
+  /** The roster query's `dataUpdatedAt` (0 before the first successful fetch). */
+  rosterUpdatedAt: number;
+}): boolean {
+  const prefix = `${input.channelId} `;
+  for (const [key, status] of Object.entries(input.statusByChannelAgent)) {
+    if (!key.startsWith(prefix)) continue;
+    if (status === 'idle') continue;
+    const socketUpdatedAt = input.updatedAtByChannelAgent[key];
+    if (socketUpdatedAt !== undefined && socketUpdatedAt >= input.rosterUpdatedAt)
+      return true;
+  }
+  return false;
+}
+
+/**
  * Same precedence rule as `resolveEffectiveAgentStatus`, applied to the queue
  * depth (#1308 slice 4). Kept as a sibling rather than folded into the status
  * resolver so every existing caller of that function is untouched; both read the
