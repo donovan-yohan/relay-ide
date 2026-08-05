@@ -18,36 +18,7 @@ workflow.
 
 ## [Unreleased]
 
-### Fixed
-
-- Message search no longer freezes the hub on a broad query. A prefix that would
-  expand across too much of the transcript is now declined before the index is
-  read, and any search that outruns its wall-clock budget is abandoned instead of
-  holding the server; both answer "type more characters" rather than a misleading
-  "no matches". Ordinary searches are unchanged. (#1316)
-- A recreated DM whose stored read marker outlived the old channel now repairs
-  itself from the hub's answer: the unread dot returns with the next message,
-  and later read marks reach your other devices again instead of being swallowed
-  (#1318).
-- A chat you create with an explicit repo or terminal target now runs in the workspace you just selected, instead of in the project of whatever terminal was still open (#1303)
-- Historical duplicated Claude replies are healed on hub start even when the
-  database already passed the schema version that first shipped the repair, the
-  operator's unread mark now follows the messages the repair renumbers instead
-  of skipping the tail of the channel, and every pass logs its result instead of
-  staying silent when it removes nothing (#1209)
-- Agent presence no longer sticks on "thinking"/"streaming"/"waiting" after an agent's runtime dies without a clean finish: every teardown path now ends in a terminal idle for the header chip and the in-timeline presence row, posts still queued behind the dead agent are released with a system row instead of staying counted against it, and a busy status that has gone stale with nothing bound is retired on the client (#1307)
-
-### Changed
-
-- Rewrote the README — the npm landing page — for the 0.1.1 product: a real
-  first-run quickstart (hub, PIN, add project, new chat, `@mention`), the
-  execution-workbench boundary stated up front, the shipped message layer
-  (search, edit/delete, retry, deep links, read sync, notifications, steering),
-  the three install channels with a `CHANGELOG.md` pointer, and a corrected CLI
-  list. `relay-ide --help` now documents `node update` and the `sessions`
-  command family, so the README's "run `--help` for the exact set" holds.
-
-## [0.1.1] - 2026-08-04
+## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as
 `0.1.1` because npm's `0.1.0` was consumed by the 2026-04 package rename.
@@ -95,12 +66,26 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 - Hermes reply finalization, duplicate rows, presence, zero-row logging (#1183)
 - Truthful terminal rows and a duplicate-free channel record (#1207)
 - Channel tree data source unified across desktop and mobile (#1208)
+- Historical duplicated Claude replies are healed on hub start even when the
+  database already passed the schema version that first shipped the repair, the
+  operator's unread mark now follows the messages the repair renumbers instead
+  of skipping the tail of the channel, and every pass logs its result instead of
+  staying silent when it removes nothing (#1209)
 - Agent detail cards render inside channels (#1225)
 - WS catch-up budget prioritizes fresh rows over resync (#1280)
 - Palette channel selection opens the channel (#1289)
 - Unread bootstrapped from `GET /channels` on sidebar mount (#1290)
 - Cockpit escape hatches clear `activeChannelId` (#1291)
 - New-chat button no longer no-ops after adding a project (#1302)
+- A chat you create with an explicit repo or terminal target now runs in the
+  workspace you just selected, instead of in the project of whatever terminal
+  was still open (#1303)
+- Agent presence no longer sticks on "thinking"/"streaming"/"waiting" after an
+  agent's runtime dies without a clean finish: every teardown path now ends in a
+  terminal idle for the header chip and the in-timeline presence row, posts still
+  queued behind the dead agent are released with a system row instead of staying
+  counted against it, and a busy status that has gone stale with nothing bound is
+  retired on the client (#1307)
 
 ### Agent profiles and DM routing
 
@@ -156,6 +141,15 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 #### Fixed
 
 - Archived channels threaded into chat search (#1288)
+- Message search no longer freezes the hub on a broad query. A prefix that would
+  expand across too much of the transcript is now declined before the index is
+  read, and any search that outruns its wall-clock budget is abandoned instead of
+  holding the server; both answer "type more characters" rather than a misleading
+  "no matches". Ordinary searches are unchanged. (#1316)
+- A recreated DM whose stored read marker outlived the old channel now repairs
+  itself from the hub's answer: the unread dot returns with the next message,
+  and later read marks reach your other devices again instead of being swallowed
+  (#1318).
 
 ### Self-update and releases
 
@@ -164,6 +158,16 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 - Auto-restart under generic systemd supervision after a verified update (#1301)
 - Release-candidate install channel: `npm install -g relay-ide@rc` gets a stable-shaped build that is soaking before it becomes the default install. `vX.Y.Z-rc.N` tags publish to the npm `rc` dist-tag and cut a prerelease GitHub Release; the stable lane refuses any prerelease version, so an rc can never land on `@latest`
 - `CHANGELOG.md` as the release-note source of truth. Stable and rc tags cut a GitHub Release whose body is the matching changelog section, and a tag with no matching section fails before anything is published
+
+#### Changed
+
+- Rewrote the README — the npm landing page — for the 0.1.1 product: a real
+  first-run quickstart (hub, PIN, add project, new chat, `@mention`), the
+  execution-workbench boundary stated up front, the shipped message layer
+  (search, edit/delete, retry, deep links, read sync, notifications, steering),
+  the three install channels with a `CHANGELOG.md` pointer, and a corrected CLI
+  list. `relay-ide --help` now documents `node update` and the `sessions`
+  command family, so the README's "run `--help` for the exact set" holds. (#1327)
 
 #### Fixed
 
