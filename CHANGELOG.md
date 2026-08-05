@@ -25,6 +25,10 @@ workflow.
   read, and any search that outruns its wall-clock budget is abandoned instead of
   holding the server; both answer "type more characters" rather than a misleading
   "no matches". Ordinary searches are unchanged. (#1316)
+- A recreated DM whose stored read marker outlived the old channel now repairs
+  itself from the hub's answer: the unread dot returns with the next message,
+  and later read marks reach your other devices again instead of being swallowed
+  (#1318).
 
 ### Changed
 

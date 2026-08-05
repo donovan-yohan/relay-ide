@@ -258,6 +258,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: {},
       lastReadByChannel: {},
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
     container = document.createElement('div');
@@ -287,6 +288,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: {},
       lastReadByChannel: {},
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
@@ -1156,6 +1158,7 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: { 'topic:alpha': 9, 'topic:beta': 9 },
       lastReadByChannel: { 'topic:alpha': 3, 'topic:beta': 3 },
       clampedAtByChannel: {},
+      activityRaisedAtByChannel: {},
     });
     const longStatus = `${'status update. '.repeat(40)}@operator please confirm`;
     const truncatedPreview = longStatus.slice(0, 200);

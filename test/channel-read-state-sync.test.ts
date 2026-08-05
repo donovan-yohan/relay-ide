@@ -71,6 +71,7 @@ beforeEach(() => {
     latestSeqByChannel: {},
     lastReadByChannel: {},
     clampedAtByChannel: {},
+    activityRaisedAtByChannel: {},
   });
   fetchMock = vi.fn(
     async () =>
@@ -400,12 +401,14 @@ describe('read-state push (#1308 slice 3)', () => {
     expect(requests()[1]?.body.lastReadSeq).toBe(13);
   });
 
-  it('lets a deeper clamp win over the head a PUT was still in flight for (#1178)', async () => {
-    // The response-driven clamp needs no epoch fence of its own, and this is
-    // why: it only ever moves the stores DOWN, and only when they sit above the
-    // head it was handed. Here a local clamp to 5 lands BETWEEN the PUT leaving
-    // and the hub answering 12, so the later, higher head must be a no-op
-    // rather than a rollback of the position this device already retracted.
+  it('preserved invariant: a deeper local clamp wins over the head a PUT was still in flight for (#1178)', async () => {
+    // An INVARIANT guard, not a regression test — it passes on both sides of
+    // #1318, and deliberately so. A competing CLAMP is the one competitor the
+    // "only ever moves DOWN" argument really does dispose of: a local clamp to
+    // 5 lands BETWEEN the PUT leaving and the hub answering 12, and the later,
+    // higher head is a no-op against stores already below it rather than a
+    // rollback of the position this device just retracted. The competitor that
+    // argument does NOT cover is a RAISE; that case is the test below.
     let answerPut: (res: Response) => void = () => {};
     fetchMock.mockImplementation(
       () =>
@@ -440,6 +443,55 @@ describe('read-state push (#1308 slice 3)', () => {
     vi.advanceTimersByTime(3_000);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(requests()[0]?.body.lastReadSeq).toBe(9);
+  });
+
+  it('keeps a head this device learned AFTER the PUT was issued, so the repair cannot eat a live message (#1318)', async () => {
+    // The competitor "the clamp only moves DOWN" does not cover: a RAISE. The
+    // head in a PUT response is a snapshot from the hub's transaction, applied
+    // a network hop later, and the clamp lowers `latestSeqByChannel` as well as
+    // the read marker — so a `channel-activity` broadcast that lands mid-flight
+    // would be erased by an answer that predates it, hiding a message the
+    // operator has never seen. Nothing about the clamp epoch stops that: it
+    // fences the two MERGES, not the clamp.
+    localStorage.setItem(channelLastReadKey('topic:dm'), '40');
+    store().seedChannelActivity([{ id: 'topic:dm', latestSeq: 12 }], Date.now());
+    let answerPut: (res: Response) => void = () => {};
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          answerPut = resolve;
+        })
+    );
+
+    // Boot merge finds the hub behind the stranded marker and pushes it.
+    store().mergeReadState(
+      [{ channelId: 'topic:dm', lastReadSeq: 12 }],
+      Date.now()
+    );
+    vi.advanceTimersByTime(3_000);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(requests()[0]?.body.lastReadSeq).toBe(40);
+
+    // A message arrives in the recreated channel while the PUT is still open.
+    vi.advanceTimersByTime(50);
+    store().recordActivity('topic:dm', 13);
+
+    // Only now does the hub answer, with the head as it stood at seq 12.
+    answerPut(readStateResponse('topic:dm', 12));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The read half of the repair still lands — that half only ever ADDS unread,
+    // so it needs no fence and the stranded marker must not survive.
+    expect(store().lastReadByChannel['topic:dm']).toBe(12);
+    expect(localStorage.getItem(channelLastReadKey('topic:dm'))).toBe('12');
+    // The decisive one: the newer head survives, so seq 13 stays unread.
+    expect(store().latestSeqByChannel['topic:dm']).toBe(13);
+    expect(
+      hasUnseenActivity('topic:dm', null, {
+        latestSeq: store().latestSeqByChannel['topic:dm'],
+        lastRead: store().lastReadByChannel['topic:dm'],
+      })
+    ).toBe(true);
   });
 
   it('adopts a HIGHER mark the hub answers a push with, without waiting for the broadcast', async () => {
