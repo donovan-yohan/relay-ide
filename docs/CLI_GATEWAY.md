@@ -124,6 +124,13 @@ a public session id, identifies an agent in a conversation. Public session and
 inbox commands operate on terminal execution records or WorkContexts; they do not
 launch, resume, or address private channel runtimes.
 
+**Gateway channel surface: `channels.post` only.** It is the sole channel verb
+declared in `shared/cli-gateway-contract.ts`. Channel reads — list, get,
+history, threads, roster, search — are authenticated browser routes and are
+**not** gateway verbs today. An adapter that needs to read a channel uses those
+HTTP routes with a scoped actor credential; do not assume `channels.list` or
+`channels.history` exists because the gateway "covers channels".
+
 The former public agent-session and terminal hand-back contracts are
 superseded. Public terminals are always human-driven. `sessions.input` and
 `supervisor.*` control terminal programs; they are not an alternate agent

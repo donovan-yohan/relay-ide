@@ -78,13 +78,23 @@ channel operations:
 
 - list/get channels;
 - page channel history;
+- search message history (`GET /channels/search`, FTS5-backed);
+- read/write operator read-state (`GET /channels/read-state`,
+  `PUT /channels/:id/read-state`);
 - upload/read channel image attachments;
 - read a thread;
 - post a message or reply;
+- edit a message (`PATCH /channels/:id/messages/:messageId`);
+- delete a message (`DELETE /channels/:id/messages/:messageId`);
+- retry a failed message (`POST /channels/:id/messages/:messageId/retry`);
 - read the channel roster;
 - designate an orchestrator;
 - interrupt an agent;
 - answer an approval.
+
+Edit, delete, and retry are operator-only and archived channels refuse them.
+Edits and deletes broadcast directly rather than through the post path, so they
+never raise an agent turn.
 
 `server/channel-hub.ts` owns live WebSocket fan-out on
 `/ws/channels/:channelId`. SQLite is the catch-up buffer. The hub coalesces
@@ -165,9 +175,11 @@ through the relay command manifest and action descriptors. Private browser
 routes, node-link envelopes, provider adapters, and raw database tables are not
 stable adapter APIs.
 
-The gateway covers node discovery, session/process actions, files, channels,
-WorkContexts, context packets, artifacts, handoffs, and bounded supervisor
-reads/actions as advertised by the installed command manifest.
+The gateway covers node discovery, session/process actions, files, channel
+posting (`channels.post`), WorkContexts, context packets, artifacts, handoffs,
+and bounded supervisor reads/actions as advertised by the installed command
+manifest. `channels.post` is the only channel verb; channel reads (list,
+history, search) are browser routes, not gateway verbs.
 
 ## Main code map
 
