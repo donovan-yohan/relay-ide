@@ -6,7 +6,9 @@
 // source of truth: localStorage stays the fast path, every hub-sourced mark is
 // merged monotonic-up, and the one case where "up" is the wrong direction — the
 // #1178 recreated-DM clamp — is fenced by the clamp epoch rather than trusted to
-// the hub. See docs/LEARNINGS.md L-20260729-client-derived-unread.
+// the hub. The single exception is load-bearing (#1318): a PUT answered BELOW
+// what it pushed is provably the channel head, so it drives the clamp instead of
+// a suppression table. See docs/LEARNINGS.md L-20260729-client-derived-unread.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   channelLastReadKey,
@@ -331,50 +333,79 @@ describe('read-state push (#1308 slice 3)', () => {
     expect(requests()).toHaveLength(1);
   });
 
-  it('stops re-pushing a mark the hub has refused, but still sends a higher one', async () => {
-    // A marker stranded above the channel head (a rewound DM) can never be
-    // accepted: the hub clamps to head and answers with what it holds. Without
-    // reading that answer the boot merge re-issues the identical futile PUT
-    // every boot, forever, with nothing able to stop it.
-    localStorage.setItem(channelLastReadKey('topic:alpha'), '40');
-    fetchMock.mockResolvedValue(readStateResponse('topic:alpha', 12));
+  it('clamps the local stores when the hub answers BELOW the pushed mark, which re-lights the dot and closes the re-push loop (#1318)', async () => {
+    // A hub answer under the pushed value is not an opinion — it is the channel
+    // HEAD, because `Math.min(requested, head)` is the only branch of the store
+    // write that can return less than the request. So a "refusal" is really the
+    // hub telling this device its marker belongs to a life the channel no
+    // longer has (#1178: a DM deleted and recreated under the same id), and the
+    // right answer is the repair, not a suppression table.
+    //
+    // Cold-boot shape: the real marker (40) is in localStorage, and the rail
+    // has seeded the recreated channel's actual head (12).
+    localStorage.setItem(channelLastReadKey('topic:dm'), '40');
+    store().seedChannelActivity([{ id: 'topic:dm', latestSeq: 12 }], Date.now());
+    // The bug this repairs: a stale-high marker eats the unread dot outright.
+    expect(
+      hasUnseenActivity('topic:dm', null, {
+        latestSeq: 12,
+        lastRead: store().lastReadByChannel['topic:dm'],
+      })
+    ).toBe(false);
+    fetchMock.mockResolvedValue(readStateResponse('topic:dm', 12));
 
+    // The boot merge sees the hub behind the (stranded) local mark and pushes.
     store().mergeReadState(
-      [{ channelId: 'topic:alpha', lastReadSeq: 12 }],
+      [{ channelId: 'topic:dm', lastReadSeq: 12 }],
       Date.now()
     );
     vi.advanceTimersByTime(3_000);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(requests()[0]?.body.lastReadSeq).toBe(40);
-    // Let the RESPONSE land, not just the request leave: the refusal is learned
-    // from the body. In a real session the next boot merge is a page load away.
+    // Let the RESPONSE land, not just the request leave: the head arrives in
+    // the body. In a real session the next boot merge is a page load away.
     await vi.advanceTimersByTimeAsync(0);
 
-    // The next boot merge sees the hub still behind — and stays quiet, because
-    // this is the exact value it just refused.
+    // Both halves of the marker are rewritten to the authoritative head.
+    expect(store().lastReadByChannel['topic:dm']).toBe(12);
+    expect(localStorage.getItem(channelLastReadKey('topic:dm'))).toBe('12');
+
+    // And that is what closes the loop the old refusal map existed to break:
+    // the next boot merge finds local and hub agreeing, so the futile PUT is
+    // never re-issued — no per-channel suppression table required.
     store().mergeReadState(
-      [{ channelId: 'topic:alpha', lastReadSeq: 12 }],
-      Date.now()
+      [{ channelId: 'topic:dm', lastReadSeq: 12 }],
+      Date.now() + 1_000
     );
     vi.advanceTimersByTime(10_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // A genuinely higher mark is still worth one request: suppression is scoped
-    // to the refused value, not to the channel.
-    store().markChannelRead('topic:alpha', 41);
+    // The dot the stranded marker was swallowing comes back with the next
+    // message. Against a marker of 40 this broadcast was invisible forever.
+    store().recordActivity('topic:dm', 13);
+    expect(
+      hasUnseenActivity('topic:dm', null, {
+        latestSeq: store().latestSeqByChannel['topic:dm'] ?? 0,
+        lastRead: store().lastReadByChannel['topic:dm'],
+      })
+    ).toBe(true);
+
+    // The decisive one: reading the recreated channel publishes normally. This
+    // mark (13) sits BELOW the old stranded value, so a refusal armed at 40
+    // would have swallowed it — and every mark up to 40 after it.
+    fetchMock.mockResolvedValue(readStateResponse('topic:dm', 13));
+    store().markChannelRead('topic:dm', 13);
     vi.advanceTimersByTime(3_000);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(requests()[1]?.body.lastReadSeq).toBe(41);
+    expect(requests()[1]?.body.lastReadSeq).toBe(13);
   });
 
-  it('does not arm suppression from a PUT the clamp overtook while it was in flight (#1178 fence)', async () => {
-    // The refusal map suppresses future pushes, so it obeys the same clamp
-    // epoch the merge does. Here the clamp lands BETWEEN the PUT leaving and
-    // the hub answering: the mark in flight (40) has already been retracted, so
-    // the hub's lower durable value refuses nothing this device still holds.
-    // Arming it anyway would swallow every mark the operator earns up to 40 in
-    // the recreated channel's new life — cross-device convergence silently off
-    // for the whole first stretch of it, self-healing only on reload.
+  it('lets a deeper clamp win over the head a PUT was still in flight for (#1178)', async () => {
+    // The response-driven clamp needs no epoch fence of its own, and this is
+    // why: it only ever moves the stores DOWN, and only when they sit above the
+    // head it was handed. Here a local clamp to 5 lands BETWEEN the PUT leaving
+    // and the hub answering 12, so the later, higher head must be a no-op
+    // rather than a rollback of the position this device already retracted.
     let answerPut: (res: Response) => void = () => {};
     fetchMock.mockImplementation(
       () =>
@@ -396,12 +427,13 @@ describe('read-state push (#1308 slice 3)', () => {
     // Only now does the pre-clamp PUT come back, head-clamped by the hub.
     answerPut(readStateResponse('topic:dm', 12));
     await vi.advanceTimersByTimeAsync(0);
-    // Fenced out of the merge too: the pre-clamp position must not be handed
-    // back to the device that just retracted it.
+    // Neither half moves back up: the pre-clamp head must not be handed back to
+    // the device that just retracted past it.
     expect(store().lastReadByChannel['topic:dm']).toBe(5);
+    expect(localStorage.getItem(channelLastReadKey('topic:dm'))).toBe('5');
+    expect(store().latestSeqByChannel['topic:dm']).toBe(5);
 
-    // The decisive assertion: the operator reads the recreated DM to 9, and
-    // that mark still reaches the hub. A refusal armed at 40 would eat it.
+    // And the operator reading the recreated DM to 9 still reaches the hub.
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(readStateResponse('topic:dm', 9));
     store().markChannelRead('topic:dm', 9);

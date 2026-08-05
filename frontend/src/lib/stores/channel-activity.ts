@@ -83,9 +83,10 @@ interface ChannelActivityState {
    *
    * Where the hub is BEHIND the local mark, the local value is pushed back —
    * that is how a push that failed earlier gets retried on the next boot
-   * without any retry timer. A mark the hub has already refused (it clamps to
-   * the channel head) is not re-sent, so the lane cannot become a per-boot loop
-   * for a marker stranded above head.
+   * without any retry timer. The lane cannot loop on a marker stranded above
+   * head: the hub answers such a push with the channel head, and
+   * `publishReadState` turns that into the #1178 clamp, so the local mark this
+   * lane compares against comes down to the value the hub already holds.
    */
   mergeReadState: (
     rows: { channelId: string; lastReadSeq: number }[],
@@ -131,18 +132,6 @@ const READ_STATE_PUSH_DEBOUNCE_MS = 3_000;
 /** Highest mark per channel not yet published. */
 const pendingReadStatePush = new Map<string, number>();
 const readStatePushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-/**
- * Per channel, the mark the hub last answered with a LOWER durable value.
- *
- * The hub clamps every incoming seq to the channel head, so a marker sitting
- * above head can never be accepted — and `mergeReadState`'s push-back lane
- * would otherwise re-issue the identical refused PUT on every boot, forever,
- * with nothing in the response able to stop it. Remembering the refused value
- * closes that loop without inventing a retry policy: a genuinely higher mark
- * (the operator read further) is still published, and the entry is dropped the
- * moment the hub accepts one or the #1178 clamp lowers the marker.
- */
-const refusedReadStatePush = new Map<string, number>();
 let unloadFlushBound = false;
 
 async function publishReadState(
@@ -160,26 +149,37 @@ async function publishReadState(
       keepalive,
     });
     if (!readState) return;
-    // The refusal map is a SUPPRESSION lane, so it needs the clamp fence at
-    // least as badly as the merge below does. A #1178 clamp that landed while
-    // this PUT was open has already retracted the mark it carries, so the
-    // hub's lower answer is not a refusal of anything this device still holds —
-    // recording it would silence every mark the operator earns up to that seq
-    // in the channel's new life, and `discardReadStatePushAbove`'s deletion at
-    // clamp time cannot help because the response arrives after it.
-    const clampedAt =
-      useChannelActivityStore.getState().clampedAtByChannel[channelId];
-    if (clampedAt === undefined || clampedAt < issuedAt) {
-      if (readState.lastReadSeq < lastReadSeq) {
-        refusedReadStatePush.set(channelId, lastReadSeq);
-      } else {
-        refusedReadStatePush.delete(channelId);
-      }
+    if (readState.lastReadSeq < lastReadSeq) {
+      // An answer BELOW what was pushed is not an opinion — it is the channel
+      // HEAD. The store writes `Math.min(requested, head)` and reports the
+      // stored mark re-clamped the same way, so the only branch that can come
+      // back lower than the request is the one where head itself was the
+      // ceiling. A marker above head means exactly one thing: this device is
+      // holding a position from a life the channel no longer has (#1178, a DM
+      // deleted and recreated under the same deterministic id).
+      //
+      // So run the repair this device already owns, with authoritative data:
+      // `clampChannelStores` rewrites the localStorage marker and the in-memory
+      // head, which un-suppresses the unread dot the stale-high marker was
+      // hiding and lets the next real mark push normally. That also retires the
+      // re-push loop the old refusal map existed to break — after the clamp the
+      // local mark IS the hub's value, so the next boot merge has nothing to
+      // push back and the futile PUT is never issued again.
+      //
+      // Needs no clamp-epoch fence of its own: the clamp only ever moves the
+      // stores DOWN and only when they sit above the given head, so a response
+      // that a deeper clamp overtook while it was in flight is a no-op rather
+      // than a rollback.
+      useChannelActivityStore
+        .getState()
+        .clampChannelStores(channelId, readState.lastReadSeq);
+      return;
     }
-    // Feed the hub's durable value back through the ONE merge path. It is
-    // already head-clamped and the merge is monotonic-up, so this can only
-    // raise the local mark — and it picks up a concurrent higher mark from
-    // another device without waiting for the broadcast.
+    // Otherwise the hub is at or ahead of the pushed mark. Feed its durable
+    // value back through the ONE merge path — the merge is monotonic-up and
+    // clamp-fenced, so this can only raise the local mark, and it picks up a
+    // concurrent higher mark from another device without waiting for the
+    // broadcast.
     useChannelActivityStore
       .getState()
       .mergeReadState(
@@ -249,11 +249,6 @@ function bindUnloadFlush(): void {
 
 function scheduleReadStatePush(channelId: string, seq: number): void {
   if (!(seq > 0)) return;
-  // A value the hub has already refused (it clamps to the channel head) cannot
-  // become acceptable by being sent again, so re-sending it is pure waste. Only
-  // a strictly higher mark is worth another request.
-  const refused = refusedReadStatePush.get(channelId);
-  if (refused !== undefined && seq <= refused) return;
   const pending = pendingReadStatePush.get(channelId);
   // Coalesce: a burst of marks costs one request carrying the highest seq.
   if (pending !== undefined && pending >= seq) return;
@@ -294,11 +289,6 @@ function scheduleReadStatePush(channelId: string, seq: number): void {
  * is not something to leave to the other side's defences.
  */
 function discardReadStatePushAbove(channelId: string, headSeq: number): void {
-  // The clamp rewrites what this device believes it has read, so any refusal
-  // recorded against the OLD marker is stale. Keeping it would suppress the
-  // next legitimate push: after a rewind to head 12 a refusal at 40 would
-  // silence every mark the operator earns up to 40 in the channel's new life.
-  refusedReadStatePush.delete(channelId);
   const pending = pendingReadStatePush.get(channelId);
   if (pending === undefined || pending <= headSeq) return;
   const timer = readStatePushTimers.get(channelId);
@@ -314,7 +304,6 @@ export function clearPendingReadStatePushesForTests(): void {
   for (const timer of readStatePushTimers.values()) clearTimeout(timer);
   readStatePushTimers.clear();
   pendingReadStatePush.clear();
-  refusedReadStatePush.clear();
 }
 
 export const useChannelActivityStore = create<ChannelActivityState>((
