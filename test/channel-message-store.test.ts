@@ -10,13 +10,19 @@ import {
   buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
   buildChannelThreadSummarySql,
+  channelSearchPrefixRange,
   channelSearchUnavailableReason,
   createChannelMessageStore,
+  registerChannelSearchTick,
   ChannelMessageStoreError,
+  ChannelSearchRefusedError,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
+  CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+  CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
+  CHANNEL_SEARCH_TIME_BUDGET_MS,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 import { builtInAgentProfileId } from '../shared/agent-profile.js';
@@ -33,8 +39,14 @@ function dbPath(): string {
   return path.join(dir, 'channel-chat.db');
 }
 
-function store(pathOverride?: string): ChannelMessageStore {
-  const s = createChannelMessageStore(pathOverride ?? dbPath());
+function store(
+  pathOverride?: string,
+  options?: {
+    searchTimeBudgetMs?: number;
+    searchCostPreflight?: 'auto' | 'unavailable';
+  }
+): ChannelMessageStore {
+  const s = createChannelMessageStore(pathOverride ?? dbPath(), options ?? {});
   cleanup.push(() => s.close());
   return s;
 }
@@ -1983,6 +1995,159 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
     expect(s.searchMessages({ query: 'note' })).toHaveLength(1);
   });
 
+  it('bounds the prefix range the way the FTS5 tokenizer stored the terms', () => {
+    // Only the FINAL term takes `*`, and only at the minimum length — the range
+    // must agree with `buildChannelSearchMatchQuery` or the gate would cost a
+    // prefix the query never runs.
+    expect(channelSearchPrefixRange('')).toBeNull();
+    expect(channelSearchPrefixRange('ab')).toBeNull();
+    expect(channelSearchPrefixRange('deploy a')).toBeNull();
+    expect(channelSearchPrefixRange('deploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    expect(channelSearchPrefixRange('a deploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    // Folded the way `unicode61 remove_diacritics 2` folds: case and combining
+    // marks are gone before the range is computed, so an operator typing
+    // `Déploy` probes the same terms the query will actually match.
+    expect(channelSearchPrefixRange('Déploy')).toEqual({
+      low: 'deploy',
+      high: 'deploz',
+    });
+    // `"foo-bar" *` is the two-token phrase `foo bar` with the prefix on the
+    // LAST token, so that is the token the range has to cover.
+    expect(channelSearchPrefixRange('foo-bar')).toEqual({
+      low: 'bar',
+      high: 'bas',
+    });
+    // Pinned because it is the documented LIMIT of the fold, not a success case.
+    // Two divergences compound on this input: `remove_diacritics 2` KEEPS the
+    // Greek tonos (FTS5 stores `ΣΊΣΥΦΟΣ` as `σίσυφοσ`, U+03AF intact) where NFD
+    // mark-stripping removes it, and `String.toLowerCase` maps a trailing Σ to
+    // FINAL sigma U+03C2 where unicode61 always folds to U+03C3. The probe range
+    // is therefore [σις, σισ) while the stored term begins `σί` — U+03AF sorts
+    // below U+03B9, so the term is outside the range entirely and the walk counts
+    // ZERO. Disjoint, not a conservative subset, which is exactly what the
+    // `channelSearchPrefixRange` docblock now says instead of claiming the gate
+    // always fails open. Asserted so a tokenizer or fold change surfaces here
+    // rather than as a silently mis-costed gate.
+    expect(channelSearchPrefixRange('ΣΊΣ')).toEqual({
+      low: 'σις',
+      high: 'σισ',
+    });
+  });
+
+  it('refuses a prefix this corpus cannot afford, before reading the index', () => {
+    const file = dbPath();
+    const s = store(file);
+    // Every row contributes one term under the shared `zzq` prefix, so the
+    // prefix expansion is exactly the row count — the pathological shape #1316
+    // measured, reproduced at a size a test can afford.
+    const overBudget = CHANNEL_SEARCH_PREFIX_TERM_BUDGET + 8;
+    for (let i = 0; i < overBudget; i += 1) {
+      seq(s, 'topic:alpha', `broadcast zzq${i.toString(36)} payload`);
+    }
+    expect(() => s.searchMessages({ query: 'zzq' })).toThrow(
+      ChannelSearchRefusedError
+    );
+    try {
+      s.searchMessages({ query: 'zzq' });
+      expect.unreachable('over-broad prefix must be refused');
+    } catch (error) {
+      expect((error as ChannelSearchRefusedError).reason).toBe(
+        'search_query_too_broad'
+      );
+    }
+    // The gate is on the PREFIX expansion, not on the corpus: an exact term in
+    // the same store still answers, and a longer prefix over the same rows
+    // narrows back under the budget instead of staying refused.
+    expect(s.searchMessages({ query: 'broadcast' })).toHaveLength(50);
+    expect(s.searchMessages({ query: 'zzq1' }).length).toBeGreaterThan(0);
+    // A trailing term below the minimum never gets `*`, so it is never costed —
+    // it is refused by the older, cheaper guard instead.
+    expect(s.searchMessages({ query: 'zz' })).toEqual([]);
+
+    // DEGRADED CONTRACT. The pre-flight fails OPEN when the `fts5vocab` view
+    // cannot be built, which is right for the mid-rebuild window it was written
+    // for and a real loss of coverage if it becomes permanent — so what the
+    // fallback actually does is asserted here rather than left an untested
+    // branch. Same file, same corpus, second connection (the view is `temp.`,
+    // so it is genuinely per-connection): the store still ANSWERS, and the
+    // prefix the gate would have refused now runs under the wall-clock ceiling
+    // alone. That ceiling is a per-ROW hook, so this is strictly weaker than the
+    // guarded path, not equivalent to it.
+    const degraded = store(file, { searchCostPreflight: 'unavailable' });
+    expect(() => degraded.searchMessages({ query: 'zzq' })).not.toThrow();
+    expect(degraded.searchMessages({ query: 'broadcast' })).toHaveLength(50);
+  });
+
+  it('pins the search cost budgets to the band they were measured against', () => {
+    // Mirrors of the measurements recorded in the CHANNEL_SEARCH_PREFIX_*
+    // docblocks (shared/channel-chat-protocol.ts). Re-measuring the corpus means
+    // updating BOTH — this test is what makes moving a budget out of the
+    // measured band fail here instead of on a production hub, which the store
+    // tests above cannot do because they seed relative to the constant and stay
+    // green at any value.
+    const heaviestLegitimatePrefixTerms = 973; // `"con" *`, 108ms
+    const pathologicalPrefixTerms = 4281; // `"a" *`, 1086ms — must stay refused
+    const docsRankedPerMs = 4300;
+    const measuredLegitimateWorstMs = 158; // #1316, three-char prefix at 50k
+
+    // Headroom over the heaviest LEGITIMATE prefix, because prefix expansion
+    // grows with vocabulary while this budget is an absolute count: too tight
+    // and ordinary words start answering `search_query_too_broad` on every
+    // keystroke as the transcript grows, with nothing saying the guard is why.
+    expect(CHANNEL_SEARCH_PREFIX_TERM_BUDGET).toBeGreaterThanOrEqual(
+      heaviestLegitimatePrefixTerms * 2
+    );
+    expect(CHANNEL_SEARCH_PREFIX_TERM_BUDGET).toBeLessThan(
+      pathologicalPrefixTerms
+    );
+
+    // The doc budget is the ONLY bound on a query that emits no rows — an AND
+    // whose intersection is empty never reaches the per-row ceiling at all — so
+    // what it permits IS an un-interruptible synchronous window. Keeping that
+    // window inside the interruptible ceiling is the invariant; ten times this
+    // budget is ~2.3s of frozen event loop, which is the defect #1316 was filed
+    // for.
+    expect(
+      CHANNEL_SEARCH_PREFIX_DOC_BUDGET / docsRankedPerMs
+    ).toBeLessThanOrEqual(CHANNEL_SEARCH_TIME_BUDGET_MS);
+
+    // And the ceiling has to stay clear of the legitimate band it backstops, or
+    // it stops being a backstop and becomes a second gate on honest queries.
+    expect(CHANNEL_SEARCH_TIME_BUDGET_MS).toBeGreaterThan(
+      measuredLegitimateWorstMs * 2
+    );
+  });
+
+  it('abandons a read that outruns its wall-clock budget', () => {
+    // Budget 0 makes the ceiling fire on the FIRST matched row, which is what
+    // keeps this a contract test rather than a latency test: a faster CI box
+    // cannot quietly turn it green, and it needs no pathological corpus.
+    const s = store(undefined, { searchTimeBudgetMs: 0 });
+    seq(s, 'topic:alpha', 'the deployment pipeline is wedged');
+    try {
+      s.searchMessages({ query: 'deployment' });
+      expect.unreachable('an exhausted budget must abandon the read');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelSearchRefusedError);
+      expect((error as ChannelSearchRefusedError).reason).toBe(
+        'search_timeout'
+      );
+    }
+    // The ceiling is armed per call and disarmed afterwards, so it can only
+    // ever abort the read it was armed for — a store on the shipped budget
+    // answers the same query normally.
+    const normal = store();
+    seq(normal, 'topic:alpha', 'the deployment pipeline is wedged');
+    expect(normal.searchMessages({ query: 'deployment' })).toHaveLength(1);
+    expect(CHANNEL_SEARCH_TIME_BUDGET_MS).toBeGreaterThan(0);
+  });
+
   it('backfills an existing db idempotently and rebuilds a dropped index', () => {
     const file = dbPath();
     const seeded = createChannelMessageStore(file);
@@ -2258,6 +2423,11 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       text: 'query plan subject',
     });
     const raw = new Database(file);
+    // The production SQL carries the #1316 wall-clock hook, and SQLite resolves
+    // function names at PREPARE time, so a second handle has to install it too.
+    // A no-op is the right stub: the assertion is about the plan, and the whole
+    // point of putting the hook in the WHERE clause is that it never adds to one.
+    registerChannelSearchTick(raw, () => false);
     const plan = raw
       .prepare(`EXPLAIN QUERY PLAN ${buildChannelMessageSearchSql(1)}`)
       .all('', '', '…', '"plan"', 'topic:alpha', 10) as Array<{

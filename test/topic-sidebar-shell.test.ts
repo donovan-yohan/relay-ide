@@ -4389,6 +4389,31 @@ describe('TopicSidebarView', () => {
       );
     });
 
+    it('asks for a narrower query when the index refused or abandoned the read (#1316)', async () => {
+      // Both reasons are COST answers, so neither may claim the transcript was
+      // searched. `search_query_too_broad` is refused before the read starts;
+      // `search_timeout` is cut off part way through it. If either printed "no
+      // matches", the operator would read a corpus claim off a query the index
+      // never finished — the same failure the older reasons already avoid.
+      for (const [reason, copy] of [
+        ['search_query_too_broad', 'too many matches to rank'],
+        ['search_timeout', 'search took too long'],
+      ] as const) {
+        await renderView({
+          topics: [],
+          sessions: [],
+          surfaces: [],
+          searchQuery: 'zzq',
+          searchResults: [],
+          messageResults: [],
+          messageSearchUnavailableReason: reason,
+        });
+        expect(container.textContent).toContain(copy);
+        expect(container.textContent).toContain('type more characters');
+        expect(container.textContent).not.toContain('no message matches for');
+      }
+    });
+
     it('opens the channel and asks it to jump when a message hit is clicked', async () => {
       useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
       await renderView({

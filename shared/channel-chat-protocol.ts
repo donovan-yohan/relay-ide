@@ -427,25 +427,161 @@ export const CHANNEL_SEARCH_QUERY_MAX_CHARS = 256;
  * 100-200ms band at that size. It BOUNDS the pathological shape; it does not
  * bound the worst case, which still grows with corpus size. Anyone widening the
  * expression (longer prefixes, new operator syntax) is spending that budget and
- * should re-measure — the durable fix is a wall-clock/progress-handler ceiling
- * answering `unavailableReason: 'search_timeout'`, or moving the read off the
- * request thread.
+ * should re-measure. It is the FIRST of three layers now; #1316 added the two
+ * that bound the residual worst case — `CHANNEL_SEARCH_PREFIX_TERM_BUDGET` /
+ * `CHANNEL_SEARCH_PREFIX_DOC_BUDGET` (refuse before reading) and
+ * `CHANNEL_SEARCH_TIME_BUDGET_MS` (stop mid-read).
  */
 export const CHANNEL_SEARCH_MIN_QUERY_CHARS = 3;
 
 /**
- * Why a search request produced no index read.
+ * Pre-flight ceiling on how far the trailing `*` may expand, in DISTINCT TERMS.
+ *
+ * `CHANNEL_SEARCH_MIN_QUERY_CHARS` bounds the pathological SHAPE but not the
+ * worst case: expansion is a property of the corpus, so a three-character
+ * prefix that is cheap on a small transcript is not cheap on a large one. This
+ * is the corpus-aware half — before the ranked read runs, the store walks the
+ * FTS5 term index (`fts5vocab`) over `[prefix, prefix+1)` and refuses with
+ * `search_query_too_broad` if the prefix covers more terms than this.
+ *
+ * Term COUNT specifically, because that is the part of the cost that cannot be
+ * interrupted. FTS5 opens one doclist iterator per matching term and merges
+ * them; that setup happens before the first row is visible, so the wall-clock
+ * ceiling below cannot see it.
+ *
+ * CALIBRATION CORPUS — 50k messages / 163MB / 72,795 distinct terms, which is
+ * daily-driver size as of #1316, NOT a ceiling on what Relay will hold. All of
+ * the numbers below are measurements against that corpus and must be RE-MEASURED
+ * as the transcript grows; this constant is an absolute term count while prefix
+ * expansion grows with vocabulary (roughly Heaps' law, so ~sqrt of corpus size).
+ * Measured: `"a" *` 4281 terms, 475ms before the first row, 1086ms total;
+ * `"con" *` 973 terms, 23ms to first row, 108ms total; `"the" *` 115 terms,
+ * 29ms; `"sear" *` 13 terms, 25ms.
+ *
+ * 2048 is set from the `"con" *` measurement, not from the pathological one:
+ * 973 terms is the heaviest LEGITIMATE three-character prefix recorded, so the
+ * budget carries ~2.1x headroom over it and only crosses into refusing `con` at
+ * roughly a 4x corpus. At 1024 the same query sat 5% under the budget — one
+ * corpus doubling from an ordinary prefix silently answering
+ * `search_query_too_broad` on every keystroke of a live search. `"a" *` (4281)
+ * and every shape the minimum already refuses stay refused at 2048.
+ *
+ * What it costs: the permitted corner of the region (this budget's worth of
+ * terms carrying `CHANNEL_SEARCH_PREFIX_DOC_BUDGET` postings) measures ~262ms of
+ * un-interruptible setup — the two gates land in the same band by construction,
+ * so widening this one alone does not move the composed worst case past what the
+ * doc budget already allows.
+ *
+ * Observability, because an absolute budget against a growing corpus fails
+ * SILENTLY: the store counts refusals and logs a throttled line carrying the
+ * count and which budget blew, so a corpus crossing the threshold shows up as a
+ * rising refusal rate rather than as "search stopped working". `channel-message-
+ * store.test.ts` additionally pins this value to the measured band, so lowering
+ * it under the legitimate query or raising it past the doc budget's window fails
+ * a test rather than a production search.
+ *
+ * The walk itself is bounded by this same number — it stops at the budget
+ * rather than counting the whole range — so the pre-flight cost does NOT grow
+ * with the corpus: measured ≤6ms at 1025 terms.
+ */
+export const CHANNEL_SEARCH_PREFIX_TERM_BUDGET = 2048;
+
+/**
+ * Pre-flight ceiling on the postings behind the trailing `*`, summed over the
+ * terms the vocabulary walk visited.
+ *
+ * Complements the term budget: a prefix can be narrow in terms and enormous in
+ * rows (`"abc" *` was 2 terms / 72,240 documents on the calibration corpus).
+ *
+ * This is LOAD-BEARING, not a courtesy, and the distinction matters to anyone
+ * who touches the number. `CHANNEL_SEARCH_TIME_BUDGET_MS` is enforced by a
+ * per-row hook, so it only bounds rows the query EMITS — a query that emits
+ * zero rows never calls it once. Measured on a 200k-row index with an ALREADY
+ * EXPIRED deadline: `"conf" *` throws on tick 1 as designed, while
+ * `"alpha" AND "conf" *` (both terms ~100k docs, empty intersection) completes
+ * normally in 40ms having called the hook 0 times. `buildChannelSearchMatchQuery`
+ * joins terms with ` AND `, so two typed words are exactly that shape. For any
+ * AND expression that merges a wide prefix doclist and then intersects it away,
+ * THIS budget is the only bound in the system.
+ *
+ * So the threshold is a direct statement about the longest un-interruptible
+ * synchronous window the hub will accept, and widening it widens that window
+ * one-for-one. Measured at exactly this budget (2000 terms / 1,000,000
+ * postings): 262ms for the prefix alone, 40ms for the zero-row AND. Ten million
+ * would be ~2.6s of un-interruptible event-loop block — which is the defect
+ * #1316 was filed for, restored, and invisible to a per-row ceiling. The test
+ * suite pins the relationship (permitted window ≤ the wall-clock ceiling) so
+ * that widening fails a test rather than a production hub.
+ *
+ * The sum is a LOWER bound (the walk stops at the term budget), so the gate can
+ * only fire when the prefix genuinely carries that many postings; it never
+ * refuses a query on an over-estimate.
+ */
+export const CHANNEL_SEARCH_PREFIX_DOC_BUDGET = 1_000_000;
+
+/**
+ * Wall-clock ceiling on a single ranked index read, in milliseconds.
+ *
+ * better-sqlite3 is synchronous and exposes no `sqlite3_progress_handler`, so
+ * the ceiling is built from the one per-row hook it does expose: a
+ * non-deterministic user function in the WHERE clause. SQLite may not hoist a
+ * non-deterministic call out of the loop, so it runs once per FTS-matched row
+ * and throws once the budget is spent; the store answers `search_timeout`.
+ *
+ * What this does and does not bound. It covers rows the query EMITS: everything
+ * after the first row is cut off within one row of the deadline (measured — a
+ * 1086ms query aborts at 478ms, which is exactly when its first row appeared).
+ * It covers nothing else, and there are two such gaps, both owned by the
+ * pre-flight budgets rather than by this one:
+ *  * the doclist-merge setup BEFORE the first row is not interruptible
+ *    (`CHANNEL_SEARCH_PREFIX_TERM_BUDGET`);
+ *  * a query that emits ZERO rows never reaches the hook at all, so it cannot be
+ *    interrupted anywhere (`CHANNEL_SEARCH_PREFIX_DOC_BUDGET` — see the measured
+ *    `"alpha" AND "conf" *` case recorded there). Do not read this constant as
+ *    covering row cost in general; it covers returned rows.
+ * Cost of carrying the hook on ordinary queries is ~0.2µs/row — 103ms → 113ms
+ * on the heaviest measured legitimate query, and unmeasurable on the 25ms band.
+ *
+ * 750ms is ~7x the heaviest legitimate query measured at daily-driver size
+ * (`"con" *`, 108ms) and well under the 2805ms worst case #1316 recorded, so it
+ * is a backstop rather than a second gate. Deliberately not tightened toward
+ * that 108ms band: the legitimate band grows with the corpus (the issue already
+ * measured 158ms for a three-character prefix), so a tight ceiling would convert
+ * corpus growth into timeouts on honest queries.
+ *
+ * RESIDUAL, recorded rather than claimed away: the three layers bound one query,
+ * not the route. Composed worst case is ~262ms of un-interruptible setup plus
+ * this ceiling — roughly 1.0s of synchronous block, versus 2805ms before #1316.
+ * `/channels/search` has no admission control and better-sqlite3 is synchronous
+ * on one shared connection, so concurrent searches serialize and each stall is
+ * also felt by WS catch-up, read-state and presence on that connection.
+ * Single-flight admission or moving the read off-thread is the remaining fix,
+ * tracked in #1330; this constant does not pretend to be it.
+ */
+export const CHANNEL_SEARCH_TIME_BUDGET_MS = 750;
+
+/**
+ * Why a search request produced no index read, or no COMPLETE one.
  *  * `empty_query` — nothing but whitespace was submitted.
  *  * `query_too_short` — one term below CHANNEL_SEARCH_MIN_QUERY_CHARS, which
  *    is refused rather than run (see that constant).
  *  * `no_searchable_term` — text arrived but held no letter or digit (`***`),
  *    so there is no term to look up.
- * Absent means the index WAS consulted, so an empty `results` is a real miss.
+ *  * `search_query_too_broad` — the trailing prefix expands past
+ *    CHANNEL_SEARCH_PREFIX_TERM_BUDGET / CHANNEL_SEARCH_PREFIX_DOC_BUDGET on
+ *    THIS corpus, so the read was refused before it started (#1316).
+ *  * `search_timeout` — the read started and was cut off at
+ *    CHANNEL_SEARCH_TIME_BUDGET_MS (#1316).
+ * Absent means the index WAS consulted to completion, so an empty `results` is
+ * a real miss. The last two are corpus- and timing-dependent, so a client must
+ * treat them as "narrow the query", never as "this text is not in the log".
  */
 export type ChannelSearchUnavailableReason =
   | 'empty_query'
   | 'query_too_short'
-  | 'no_searchable_term';
+  | 'no_searchable_term'
+  | 'search_query_too_broad'
+  | 'search_timeout';
 
 export interface ChannelSearchSnippetSegment {
   text: string;

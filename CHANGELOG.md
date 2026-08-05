@@ -18,6 +18,14 @@ workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- Message search no longer freezes the hub on a broad query. A prefix that would
+  expand across too much of the transcript is now declined before the index is
+  read, and any search that outruns its wall-clock budget is abandoned instead of
+  holding the server; both answer "type more characters" rather than a misleading
+  "no matches". Ordinary searches are unchanged. (#1316)
+
 ### Changed
 
 - Rewrote the README — the npm landing page — for the 0.1.1 product: a real
