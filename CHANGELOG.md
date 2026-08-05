@@ -29,6 +29,7 @@ workflow.
   itself from the hub's answer: the unread dot returns with the next message,
   and later read marks reach your other devices again instead of being swallowed
   (#1318).
+- A chat started from a workspace you just selected runs in that workspace's project instead of the project of whatever terminal was still open (#1303)
 
 ### Changed
 

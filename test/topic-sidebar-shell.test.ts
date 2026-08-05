@@ -43,6 +43,7 @@ import type {
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
+import { openTopicSelection } from '../frontend/src/lib/topic-selection.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 (
@@ -246,6 +247,9 @@ describe('TopicSidebarView', () => {
       // green suite hides a real regression.
       topicComposerOpen: false,
       activeWorkspaceId: null,
+      // #1303: the lane's repo stamp is written by the same cases and outranks
+      // session inheritance in every create — same leak, same reset.
+      laneRepoRouting: null,
       pendingChannelThread: null,
       // #1287 slice 5: rail/lane folds are persisted operator intent now, so
       // they outlive a remount by design — reset them between cases or one
@@ -277,6 +281,7 @@ describe('TopicSidebarView', () => {
       repoDashboardTabIntent: null,
       activeChannelId: null,
       topicComposerOpen: false,
+      laneRepoRouting: null,
       pendingChannelThread: null,
       ...resetRailFolds(),
     });
@@ -1832,6 +1837,43 @@ describe('TopicSidebarView', () => {
         OLD_LANE_REPO
       );
     }
+  });
+
+  // #1303: the repo POINTER alone could not carry the lane choice — it sits
+  // below the active session in the create hook's inheritance chain, so a
+  // terminal open in the abandoned project outranked it. The lane choice is
+  // recorded as itself, keyed by the lane it came from, and the create hook
+  // ranks it above session context (see `test/topic-composer.test.ts`).
+  it('records the selected lane as the create anchor, not just the repo pointer (#1303)', async () => {
+    useUiStore.setState({
+      activeWorkspaceId: null,
+      activeRepoPath: OLD_LANE_REPO,
+      laneRepoRouting: null,
+    });
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+
+    const start = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} [data-workspace-start-chat="${emptyLaneId}"]`
+    );
+    await act(async () => start?.click());
+
+    expect(useUiStore.getState().laneRepoRouting).toEqual({
+      workspaceId: emptyLaneId,
+      repoPath: FRESH_LANE_REPO,
+    });
+
+    // Selecting a channel is a newer routing statement than the lane click, so
+    // the stamp is spent — otherwise it would outrank the context of the very
+    // row the operator just opened on the next create.
+    openTopicSelection(
+      makeTopic({
+        id: 'topic:a',
+        workspaceId: 'ws:a',
+        display: { title: 'Alpha channel' },
+        linkedRefs: {},
+      })
+    );
+    expect(useUiStore.getState().laneRepoRouting).toBeNull();
   });
 
   it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {

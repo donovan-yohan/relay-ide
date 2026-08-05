@@ -3294,13 +3294,29 @@ export function TopicSidebarView({
   // A lane with no repo of its own leaves the pointer untouched — that is the
   // documented inheritance fallback (`activeSession ?? activeRepoPath ??
   // repos[0]`), and only add-project lanes carry an anchor.
+  //
+  // #1303: moving `activeRepoPath` is necessary but NOT sufficient — the repo
+  // pointer sits BELOW the active session in the create hook's inheritance
+  // chain, so a terminal still open in the abandoned project silently outranked
+  // it and the create landed back there anyway. The lane choice is therefore
+  // recorded as itself (`laneRepoRouting`), which the hook ranks above session
+  // context. Only the path anchor moves; the lane carries no node of its own,
+  // so the session's node inheritance is left exactly as it was.
   const applyWorkspaceLaneRouting = useCallback(
     (workspaceId: string | null) => {
       if (!workspaceId) return;
       const laneRepoPath = workspaces.find(
         (workspace) => workspace.id === workspaceId
       )?.defaultRepoPath;
-      if (laneRepoPath) useUiStore.getState().setActiveRepoPath(laneRepoPath);
+      const ui = useUiStore.getState();
+      if (!laneRepoPath) {
+        // An anchorless lane is an explicit choice to inherit: drop any stamp
+        // an earlier lane left, or the create would route at THAT lane's repo.
+        ui.setLaneRepoRouting(null);
+        return;
+      }
+      ui.setActiveRepoPath(laneRepoPath);
+      ui.setLaneRepoRouting({ workspaceId, repoPath: laneRepoPath });
     },
     [workspaces]
   );
