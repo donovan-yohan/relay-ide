@@ -5,6 +5,7 @@ import type { Request, RequestHandler, Response } from 'express';
 import multer from 'multer';
 
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
+import { isDmChannel } from '../shared/dm-channels.js';
 import {
   authenticatedCliGatewayActorCredential,
   type CliGatewayActorReadCommand,
@@ -1445,6 +1446,19 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   router.post('/channels/:id/orchestrator', auth, (req, res) => {
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
+    // A DM already addresses exactly one provider. A persistent orchestrator
+    // would add a second, unrelated participant (and historically defaulted to
+    // Claude when no framework was specified), so this is group-channel only.
+    if (isDmChannel(topic)) {
+      sendGatewayError(
+        res,
+        'UNSUPPORTED',
+        'direct messages cannot designate an orchestrator',
+        false,
+        { channelId: topic.id, reasonCode: 'DM_ORCHESTRATOR_UNSUPPORTED' }
+      );
+      return;
+    }
     const binder = binderOr503(res, deps.binder);
     if (!binder) return;
     const requested = req.query['framework'];

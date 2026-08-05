@@ -37,6 +37,62 @@
   font-size: var(--font-size-sm);
 }
 
+.topic-composer__destination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topic-composer__destination button {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.topic-composer__destination button:hover,
+.topic-composer__destination button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.topic-composer__destination button.is-selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.topic-composer__channel-name {
+  display: grid;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.topic-composer__channel-name input {
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.topic-composer__channel-name input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .topic-composer__ta {
   min-width: 0;
   padding: 8px;
