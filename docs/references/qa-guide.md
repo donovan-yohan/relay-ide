@@ -1,152 +1,191 @@
 # QA Guide
 
-Quick setup for local testing and visual QA of Relay IDE.
+Manual QA pass for the channel product surface. For automated browser checks
+driven by an agent, see
+[`agent-browser-verification.md`](agent-browser-verification.md).
 
-## Local Dev Server
+## Local QA instance
 
-The production instance runs on port 3456. Use a different port for QA:
-
-```bash
-# Build and start on port 3457 (must use CLI entry point for --port flag)
-npm run build && node dist/bin/relay-ide.js --port 3457 --config "$(pwd)/config.json"
-```
-
-**Important:** Use `dist/bin/relay-ide.js` (not `dist/server/index.js`) — only the CLI entry point parses `--port` and `--config` flags.
-
-## Test PIN Setup
-
-To set or reset PIN to `8888` for QA, run this one-liner (generates a fresh scrypt hash):
+Use `npm run dev`. It builds the backend, starts an isolated instance on
+`127.0.0.1:3457`, runs Vite on `127.0.0.1:5173`, and — critically — puts config
+and every runtime SQLite store under `~/.config/relay-ide/dev/<slug>-<hash>/`
+rather than the checkout.
 
 ```bash
-node -e "
-const crypto = require('crypto');
-const { promisify } = require('util');
-const scrypt = promisify(crypto.scrypt);
-async function main() {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = await scrypt('8888', salt, 64);
-  const hash = 'scrypt:' + salt + ':' + derived.toString('hex');
-  const fs = require('fs');
-  const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
-  config.pinHash = hash;
-  fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
-  console.log('PIN set to 8888');
-}
-main();
-"
+npm run dev
 ```
 
-Or delete `pinHash` entirely from `config.json` and restart — you'll be prompted to set a new PIN.
+**Never point `--config` at a path inside the repo.** Runtime SQLite must stay
+out of tracked working trees (#961). If you need a package-mode instance rather
+than a dev instance, give it an explicit config directory outside the checkout:
 
-**Note:** Don't paste a pre-generated hash — the scrypt salt must match the runtime. Always generate fresh.
-
-## Test URL
-
+```bash
+npm run build
+node dist/bin/relay-ide.js --port 3457 --config ~/.config/relay-ide/qa/config.json
 ```
-http://localhost:3457
-```
 
-PIN: `8888`
+Only `dist/bin/relay-ide.js` parses `--port` and `--config`;
+`dist/server/index.js` does not.
 
-## QA Checklist — Settings & Webhooks Feature
+The default install runs on 3456. Always use a different port for QA so you do
+not collide with it.
 
-### Settings Modal
+### PIN
 
-- [ ] Open Settings (gear icon in sidebar footer)
-- [ ] Verify full-screen modal with slide-up animation
-- [ ] Verify 4 sections visible: GENERAL, INTEGRATIONS, ADVANCED, ABOUT
-- [ ] Verify section headings are UPPERCASE with terminal aesthetic
-- [ ] Scroll through all sections
-- [ ] Click hamburger (☰) — verify TOC drawer slides from left
-- [ ] Click a TOC item — verify smooth scroll to section
-- [ ] Verify accent highlight bar moves in TOC as you scroll
-- [ ] Type in search bar — verify sections dim/collapse for non-matches
-- [ ] Clear search — verify all sections restore
-- [ ] Close modal — verify fade-out animation
-- [ ] Cmd+K → type "webhook" — verify settings result appears in Spotlight
-- [ ] Select a Spotlight settings result — verify Settings opens scrolled to section
+Relay refuses browser traffic until a PIN is set. Delete `pinHash` from the QA
+config and restart to get the setup prompt, or run `relay-ide pin reset` against
+that config. Do not paste a pre-generated hash — the scrypt salt is generated at
+runtime.
 
-### Settings — GENERAL Section
+## Checklist
 
-- [ ] Change Default Coding Agent — verify persists on reopen
-- [ ] Toggle Continue/YOLO/Tmux/Notifications — verify each persists
-- [ ] Verify each setting has name + description + right-aligned action
+### First run
 
-### Settings — INTEGRATIONS Section
+- [ ] Fresh config directory → PIN setup appears before any content
+- [ ] Set a PIN → lands in the app, sidebar is empty
+- [ ] Reload → still authenticated
+- [ ] Wrong PIN is rejected and rate-limited
 
-- [ ] GitHub row shows connection status (connected/not connected)
-- [ ] Click GitHub row — verify accordion expands
-- [ ] If connected: verify username shown + Disconnect button
-- [ ] Webhooks row shows configuration status
-- [ ] Click Webhooks row — verify accordion expands with setup/status
-- [ ] Jira row shows CLI status
-- [ ] Click Jira row — verify install instructions shown
+### Projects and channels
 
-### Settings — Webhook Setup Flow (requires GitHub connected)
+- [ ] `+ add project` is visible in the empty sidebar
+- [ ] Add a project → its lane appears and persists across reload
+- [ ] `new chat` creates a channel in the selected lane, not the previous one
+- [ ] `new chat` still works immediately after adding a project (#1302)
+- [ ] Channel rows show title, last activity, and unread state
+- [ ] Collapse/expand state persists across reload
+- [ ] Archive a channel → leaves the active list; restore returns it
 
-- [ ] Click "Setup Webhooks" — verify loading state
-- [ ] Verify smee channel + secret generated
-- [ ] Verify health indicator shows connection status
-- [ ] Verify backfill banner appears if workspaces exist
-- [ ] Click "Test Connection" — verify ping result
-- [ ] Verify auto-provision toggle works
-- [ ] Click "Remove Setup" — verify confirmation dialog
-- [ ] Confirm removal — verify return to unconfigured state
+### Conversation
 
-### Compact Dialogs (verify DialogShell migration)
+- [ ] Post a human message → appears once, no duplicate row
+- [ ] `@claude` / `@codex` → profile spawns, presence row shows status
+- [ ] Reply streams into the timeline and finalizes complete
+- [ ] Reasoning, tool, code, output, and diff cards render and expand
+- [ ] Code cards syntax-highlight; diff cards show addition/deletion tint
+- [ ] Attach an image → renders inline, survives reload
+- [ ] Interrupt an in-flight turn → partial reply finalizes `interrupted`
+- [ ] DM a profile with no mention → routes to that profile
+- [ ] Scroll up to load older history → anchor row does not jump
 
-- [ ] Open Customize Session — verify fade+scale animation, terminal aesthetic
-- [ ] Open Delete Worktree — verify same animation, outlined danger button
-- [ ] Open Add Workspace — verify same animation, file browser works
-- [ ] All dialogs: verify border-radius 0, monospace buttons, backdrop click closes
+### Threads
 
-### Mobile (resize browser to <600px)
+- [ ] Open a thread on a message → panel opens beside the timeline
+- [ ] Reply in thread → agent reply stays in the thread
+- [ ] Thread reply count updates on the root row
+- [ ] Close and reopen the thread → replies persist
 
-- [ ] Settings modal goes full-screen
-- [ ] TOC drawer works as hamburger flyout
-- [ ] Setting rows stack vertically for wide actions
-- [ ] Integration accordions still work
-- [ ] Compact dialogs fill width
+### Search
 
-### Responsive (between 600px–1200px)
+- [ ] Type a query → two sections appear (channels, messages)
+- [ ] Message result shows a snippet with the match
+- [ ] Select a message result → opens that channel and jumps to the row
+- [ ] Query shorter than the minimum says so, rather than "no matches"
+- [ ] Archived channels appear when included
+- [ ] Cmd+K → same query works as a palette category
 
-- [ ] Settings modal fills viewport
-- [ ] Content area centered with max-width 640px
+### Messages
 
-### Large screens (>1200px)
+- [ ] Hover a message → toolbar appears (copy link, edit, delete)
+- [ ] Copy link → pasting the URL opens that channel scrolled to the message
+- [ ] Deep link to an old message → walks history, or toasts if unreachable
+- [ ] Edit a message → body updates in place, no new row, no agent re-trigger
+- [ ] Delete a message → row reflects deletion
+- [ ] Fail a send (stop the server mid-post) → row shows failed, retry works
+- [ ] Archived channel refuses edit/delete/retry
 
-- [ ] Settings modal has 24px inset from edges
+### Read state and notifications
+
+- [ ] Read a channel on one browser → unread clears on a second browser
+- [ ] A channel read on device A never returns to unread from device B
+- [ ] Hide the tab, receive a message → OS notification (once, not per tab)
+- [ ] Favicon badge and title count update while hidden
+- [ ] Focus the tab → badge and title clear
+- [ ] Two tabs open → exactly one notification per event
+- [ ] Notification settings toggle persists across reload
+
+### Steering
+
+- [ ] Send while an agent is mid-turn → `queued` chip on the message
+- [ ] Presence row shows `(n queued)`
+- [ ] Turn completes → queued messages drain into one next turn
+- [ ] `cmd/ctrl`+`enter` mid-turn → live turn finalizes `interrupted`, new message runs
+- [ ] With no live turn, `cmd/ctrl`+`enter` is a plain send
+- [ ] Chip clears when the queue drains
+
+### Settings
+
+- [ ] Sections render: general, notifications, agent profiles, integrations, nodes, advanced, about
+- [ ] Section headings are lowercase (per `DESIGN.md`)
+- [ ] Change default coding agent → persists on reopen
+- [ ] Create an agent profile → appears in the roster and in `@` autocomplete
+- [ ] Two profiles from one vendor are visually distinct participants
+- [ ] `@claude` resolves to the vendor default profile
+- [ ] TOC drawer, search filter, and Cmd+K deep-link into a section still work
+
+### Update toast
+
+- [ ] With an update available → toast appears bottom-right
+- [ ] One click updates and reloads when the server returns
+- [ ] Dismiss → does not reappear that session
+
+### Mobile (narrow viewport or real device)
+
+- [ ] Channel list → channel → back navigation works
+- [ ] Composer stays visible with the virtual keyboard open
+- [ ] Timeline stays anchored when the keyboard opens
+- [ ] Detail cards are readable and expandable at narrow width
+- [ ] Thread panel is usable full-width
+- [ ] Interrupt and steering controls are tappable
+
+Mobile terminal input changes need a fixture under
+`test/fixtures/mobile-input/` and real-device proof.
 
 ## Automated QA with gstack browse
 
-For `/design-review` and `/qa` skills, the browse tool needs a running server.
+For `/design-review` and `/qa`, the browse tool needs a running server. Pick one
+of the two lanes and browse the URL that lane actually serves the UI on —
+mixing them is how a design review silently reviews stale assets.
 
-### Setup steps
+**Dev lane (`npm run dev`).** The backend listens on `127.0.0.1:3457`; the UI
+you must browse is Vite on `127.0.0.1:5173`, which proxies the REST routes and
+`/ws` back to 3457. Frontend edits are live over HMR, no build step. Both
+processes bind `127.0.0.1` only — use that literal, not `localhost`.
 
-1. **Build**: `npm run build`
-2. **Set PIN**: Run the PIN setup script above
-3. **Start server**: `node dist/bin/relay-ide.js --port 3457 --config "$(pwd)/config.json"`
-   - Must use `dist/bin/relay-ide.js` (CLI entry point), NOT `dist/server/index.js`
-   - `dist/server/index.js` does not parse `--port` or `--config` flags
-   - The `&` backgrounding works but the process must stay alive
-4. **Verify**: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3457/` should return `200`
+1. Start: `npm run dev`
+2. Verify: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/` returns `200`
+3. Browse `http://127.0.0.1:5173`
 
-### Browse tool authentication
+**Package lane (built assets).** Browse 3457 directly, but only after a build —
+the server serves `dist/frontend` and returns early the moment `index.html`
+exists, so it never rebuilds an edited TSX/CSS change for you.
 
-The browse tool needs to authenticate with PIN:
+1. Start: `npm run build && node dist/bin/relay-ide.js --port 3457 --config ~/.config/relay-ide/qa/config.json`
+2. Verify: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3457/` returns `200`
+3. Browse `http://127.0.0.1:3457`
+
+Then authenticate against whichever URL you started with:
 
 ```bash
 B=~/.claude/skills/gstack/browse/dist/browse
-$B goto "http://localhost:3457"
-$B fill @e1 "8888"      # PIN input (first textbox on login page)
-$B click @e2             # Unlock button
+$B goto "http://127.0.0.1:5173"   # package lane: http://127.0.0.1:3457
+$B fill @e1 "<pin>"     # PIN input (first textbox on the login page)
+$B click @e2            # Unlock button
 ```
 
-After auth, the cookie persists for the session.
+The cookie persists for the session.
 
 ### Common gotchas
 
-- **Port 3456 in use**: The production instance (installed via `npm install -g relay-ide`) runs on 3456. Always use `--port 3457` for QA.
-- **PIN hash mismatch**: Generate the hash at runtime (not pre-computed). The scrypt salt must be generated on the same machine.
-- **Multiple dialog instances**: `document.querySelector('.dialog-shell')` may return the wrong dialog. Use `.dialog-shell--fullscreen` or `.dialog-shell--compact` to target specific variants. There are 4 DialogShell instances in the DOM (Settings + 3 compact dialogs).
-- **Scroll containers**: The fullscreen settings body is `.dialog-shell--fullscreen .dialog-shell__body`. Scroll via `body.scrollTop = N`.
+- **Reviewing stale assets** — on the package lane, an unbuilt frontend change
+  is invisible: `ensureFrontendBuilt` returns early when
+  `dist/frontend/index.html` already exists. Rebuild, or use the dev lane.
+- **Port 3456 in use** — that is the default install. Use 3457 for QA.
+- **PIN hash mismatch** — generate at runtime; the scrypt salt is per-run.
+- **Multiple dialog instances** — `document.querySelector('.dialog-shell')` may
+  return the wrong one. Target `.dialog-shell--fullscreen` or
+  `.dialog-shell--compact`.
+- **Scroll containers** — the fullscreen settings body is
+  `.dialog-shell--fullscreen .dialog-shell__body`. Scroll via `body.scrollTop = N`.
+- **Channel timeline scrolling** — the timeline is its own scroll container
+  (`role="log"`, `aria-label="channel timeline"`), not the page.
