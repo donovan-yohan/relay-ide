@@ -206,13 +206,14 @@ const CHANNEL_SEARCH_VOCAB_TABLE = 'temp.relay_channel_search_vocab';
 /**
  * Name of the per-row user function that enforces the wall-clock ceiling.
  *
- * Registered per connection by `registerChannelSearchTick`. Exported so a test
- * opening its OWN `better-sqlite3` handle against the same file (the query-plan
- * assertion does) can install a no-op before preparing the production SQL —
- * SQLite resolves function names at prepare time, so the SQL is unpreparable on
- * a connection that has not registered it.
+ * Module-local: the name is an implementation detail shared between
+ * `registerChannelSearchTick` and the SQL builder, and nothing outside this file
+ * should be spelling it. A caller preparing the production SQL on its OWN
+ * `better-sqlite3` handle (the query-plan test does) must still install the
+ * function first, because SQLite resolves function names at prepare time — but
+ * it does that through `registerChannelSearchTick`, which is the exported seam.
  */
-export const CHANNEL_SEARCH_TICK_FUNCTION = 'relay_channel_search_tick';
+const CHANNEL_SEARCH_TICK_FUNCTION = 'relay_channel_search_tick';
 
 /**
  * Thrown out of `searchMessages` when the store refuses or abandons a read.
@@ -274,11 +275,25 @@ export function registerChannelSearchTick(
  * combining marks stripped — and reduced to its LAST tokenizer token, because
  * `"foo-bar" *` is the two-token phrase `foo bar` with the prefix on `bar`.
  *
- * The folding is an approximation of unicode61's table (Turkish dotless i, ß,
- * and pre-decomposed exotica diverge). Every divergence lands the probe on a
- * range that holds FEWER terms than the real query will match, so the gate
- * fails OPEN — it can under-refuse a hostile query, never over-refuse an honest
- * one. The wall-clock ceiling is what covers the residue.
+ * The folding is an APPROXIMATION of unicode61's table, and where it diverges
+ * the probe costs a DIFFERENT term range than the query expands over — not a
+ * conservative subset of it. Measured, on Greek, where two divergences compound:
+ * `remove_diacritics 2` KEEPS the tonos (FTS5 stores `ΣΊΣΥΦΟΣ` as `σίσυφοσ`,
+ * U+03C3 U+03AF …) while NFD mark-stripping removes it, and `toLowerCase` maps a
+ * trailing Σ to FINAL sigma U+03C2 while unicode61 always folds to U+03C3. So
+ * `ΣΊΣ` probes `[σις, σισ)` — and the stored term begins `σί`, which sorts BELOW
+ * that range (U+03AF < U+03B9). The probe counts zero terms for a prefix that
+ * does match. Turkish dotless i and ß are in the same family.
+ *
+ * Do not read that as a safety guarantee. Disjoint ranges carry no ordering, so
+ * a divergence can under-count (measured above) or over-count; what is bounded
+ * is the CONSEQUENCE in each direction. Under-counting leaves the read to the
+ * doc budget and the wall-clock ceiling, which is the pre-#1316 position for
+ * that query and no worse. Over-counting refuses a query the operator then
+ * narrows, which is visible and recoverable. Latin-script text — what the
+ * budgets were calibrated on, and what the transcript is overwhelmingly made of
+ * — folds identically, so this is a correctness note about the edges rather
+ * than about the working path.
  *
  * Exported for tests: this is the half of the gate that has to agree with a C
  * tokenizer, so it deserves direct assertions rather than only end-to-end ones.
@@ -2018,6 +2033,19 @@ export interface ChannelMessageStoreOptions {
    * `0` and gets a deterministic `search_timeout` on the first matched row.
    */
   searchTimeBudgetMs?: number;
+  /**
+   * State of the pre-flight cost gate. `'auto'` (default) builds the `fts5vocab`
+   * view and gates on it; `'unavailable'` reproduces the DEGRADED state the
+   * store falls into when that view cannot be built.
+   *
+   * A state rather than an on/off switch, and present for one reason: failing
+   * open is a documented contract, and an undocumented untested fallback is how
+   * a guard quietly stops being one. The degraded path is not equivalent to the
+   * guarded path — the wall-clock ceiling is a per-row hook, so a zero-row query
+   * is unbounded without the pre-flight — so what it actually does deserves an
+   * assertion instead of a comment.
+   */
+  searchCostPreflight?: 'auto' | 'unavailable';
 }
 
 export function createChannelMessageStore(
@@ -2044,25 +2072,46 @@ export function createChannelMessageStore(
   let searchDeadline = Number.POSITIVE_INFINITY;
   registerChannelSearchTick(db, () => Date.now() >= searchDeadline);
   // Created AFTER `runMigrations`, so the FTS table it reads through already
-  // exists on a fresh db. Failure is not fatal: the vocabulary is only used by
-  // the pre-flight gate, and a store that cannot pre-flight still has the
-  // wall-clock ceiling.
+  // exists on a fresh db. Failure is not fatal, but it is not harmless either:
+  // the pre-flight is the ONLY bound on a prefix that emits no rows (see
+  // `CHANNEL_SEARCH_PREFIX_DOC_BUDGET`), so a store running without it is back
+  // to pre-#1316 behaviour for that shape. Degraded, and logged as such.
   let searchVocab: Database.Statement | null = null;
-  try {
-    db.exec(
-      `CREATE VIRTUAL TABLE IF NOT EXISTS ${CHANNEL_SEARCH_VOCAB_TABLE}
+  if (options.searchCostPreflight !== 'unavailable') {
+    try {
+      db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS ${CHANNEL_SEARCH_VOCAB_TABLE}
          USING fts5vocab(main, ${CHANNEL_SEARCH_TABLE}, row)`
-    );
-    searchVocab = db.prepare(
-      `SELECT doc FROM ${CHANNEL_SEARCH_VOCAB_TABLE}
+      );
+      searchVocab = db.prepare(
+        `SELECT doc FROM ${CHANNEL_SEARCH_VOCAB_TABLE}
         WHERE term >= ? AND term < ?`
-    );
-  } catch (error) {
-    logger.warn(
-      'channel search cost pre-flight unavailable (%s); falling back to the wall-clock ceiling alone',
-      error instanceof Error ? error.message : String(error)
-    );
+      );
+    } catch (error) {
+      logger.warn(
+        'channel search cost pre-flight unavailable (%s); prefix cost is now bounded only by the wall-clock ceiling, which does not cover zero-row queries',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
+
+  // Refusal telemetry. `CHANNEL_SEARCH_PREFIX_TERM_BUDGET` is an absolute term
+  // count measured against one corpus, while prefix expansion grows with
+  // vocabulary — so the failure mode of a stale budget is ordinary prefixes
+  // silently refusing, on every keystroke of a live search, with no signal that
+  // the GUARD rather than the corpus is the cause. Counting refusals and
+  // surfacing the rate is what makes that transition visible. Throttled to one
+  // line a minute (carrying the count since the last line) so a debounced live
+  // search cannot turn the signal into a flood.
+  let searchRefusals = 0;
+  let searchRefusalsAtLastLog = 0;
+  let searchRefusalLoggedAt = 0;
+  const SEARCH_REFUSAL_LOG_INTERVAL_MS = 60_000;
+  // Latched so a persistent pre-flight fault (a dropped index, a corrupt
+  // vocabulary) reports once rather than once per keystroke. The condition is a
+  // property of the store, not of the query, so repeating it per call adds
+  // volume without adding information.
+  let searchPreflightFaultLogged = false;
 
   /**
    * Refuse a prefix whose expansion this corpus cannot afford, BEFORE reading.
@@ -2075,7 +2124,11 @@ export function createChannelMessageStore(
    * Fails OPEN on any error. `fts5vocab` reads the index by name at query time,
    * so a mid-rebuild window (`rebuildChannelSearchIndex` drops and recreates
    * the table) surfaces as `no such fts5 table` — and a store that cannot cost
-   * a query must still answer it, with the ceiling as the remaining guard.
+   * a query must still answer it. Note what "open" costs here: the wall-clock
+   * ceiling is a per-ROW hook, so it does not cover a query that returns no
+   * rows. Failing open is the right call for a transient rebuild window and a
+   * real regression if it becomes permanent, which is why it is logged rather
+   * than swallowed.
    */
   function refuseOverBroadPrefix(raw: string): void {
     if (!searchVocab) return;
@@ -2093,16 +2146,48 @@ export function createChannelMessageStore(
           terms > CHANNEL_SEARCH_PREFIX_TERM_BUDGET ||
           docs > CHANNEL_SEARCH_PREFIX_DOC_BUDGET
         ) {
+          noteSearchRefusal(terms, docs);
           throw new ChannelSearchRefusedError('search_query_too_broad');
         }
       }
     } catch (error) {
       if (error instanceof ChannelSearchRefusedError) throw error;
-      logger.warn(
-        'channel search cost pre-flight failed (%s); running the query under the wall-clock ceiling',
-        error instanceof Error ? error.message : String(error)
-      );
+      if (!searchPreflightFaultLogged) {
+        searchPreflightFaultLogged = true;
+        logger.warn(
+          'channel search cost pre-flight failed (%s); running queries under the wall-clock ceiling alone until this clears (logged once)',
+          error instanceof Error ? error.message : String(error)
+        );
+      }
     }
+  }
+
+  /**
+   * Record an over-broad refusal, logging the SHAPE of the query and never its
+   * text — operator search input can carry pasted secrets or ticket bodies, and
+   * this path is reachable repeatedly by any capability holder.
+   */
+  function noteSearchRefusal(terms: number, docs: number): void {
+    searchRefusals += 1;
+    const now = Date.now();
+    if (
+      searchRefusalLoggedAt !== 0 &&
+      now - searchRefusalLoggedAt < SEARCH_REFUSAL_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+    const sinceLast = searchRefusals - searchRefusalsAtLastLog;
+    searchRefusalsAtLastLog = searchRefusals;
+    searchRefusalLoggedAt = now;
+    logger.warn(
+      'channel search refused an over-broad prefix (%d terms / %d docs vs budgets %d/%d); %d refusal(s) since the last line, %d total. A rising rate means the corpus has outgrown CHANNEL_SEARCH_PREFIX_TERM_BUDGET, not that search is broken.',
+      terms,
+      docs,
+      CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
+      CHANNEL_SEARCH_PREFIX_DOC_BUDGET,
+      sinceLast,
+      searchRefusals
+    );
   }
 
   // Point reads can be emitted directly on the WS lane (stream finalization and
@@ -2718,10 +2803,16 @@ export function createChannelMessageStore(
           ) as ChannelSearchRow[];
       } catch (error) {
         if (error instanceof ChannelSearchRefusedError) {
+          // SHAPE, not text. Operator search input is exactly the place a
+          // pasted secret or a credential someone is hunting for in the
+          // transcript shows up, and this line is reachable repeatedly by any
+          // CONTEXT_READ holder. Term count and the prefix length are what
+          // diagnose a timeout; the words are not.
           logger.warn(
-            'channel search exceeded its %dms budget for %j; answering search_timeout',
+            'channel search exceeded its %dms budget (%d term(s), %d-char prefix); answering search_timeout',
             searchTimeBudgetMs,
-            match
+            match.split(' AND ').length,
+            channelSearchPrefixRange(input.query)?.low.length ?? 0
           );
         }
         throw error;
