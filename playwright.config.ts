@@ -11,6 +11,10 @@ const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: './test/e2e',
+  // #1299: abort before launching a browser if any spec points at a fixture
+  // page that does not exist or is not built. Such a spec reports green while
+  // asserting nothing, which is worse than having no spec at all.
+  globalSetup: './test/e2e/global-setup.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

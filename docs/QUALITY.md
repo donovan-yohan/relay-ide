@@ -8,7 +8,7 @@ Testing patterns and quality standards for Relay IDE.
 - TypeScript test files in `test/`, run directly via vitest (no compilation step)
 - 99 unit/integration test files covering server modules and frontend utilities
 - React 19 frontend with TypeScript strict mode
-- E2E tests (Playwright) in `test/e2e/` are excluded from `npm test` and run separately
+- E2E tests (Playwright) in `test/e2e/` are excluded from `npm test` and run separately; their fixture-page targets are gated (see [Fixture-page contract](#fixture-page-contract-gated))
 - Pre-push hook (`.husky/pre-push`) runs only changed tests via `vitest run --changed`
 - Pre-commit hook: husky + lint-staged (eslint + prettier)
 
@@ -85,6 +85,58 @@ Full suite always runs in CI (`npm test` in `.github/workflows/publish.yml`).
 ## E2E Testing
 
 Playwright component tests live in `test/e2e/`. They are excluded from `npm test` via `vitest.config.ts` (`exclude: ['test/e2e/**']`) and run separately.
+
+### Fixture-page contract (gated)
+
+A spec that navigates to `/test-<name>.html` only executes if `frontend/test-<name>.html` exists **and** is registered as a Rollup input in `frontend/vite.config.ts` (`includeE2eFixtures`). If either is false the navigation 404s, every later assertion is skipped, and the spec reports green while covering nothing.
+
+That is enforced, not just documented:
+
+| Where                                         | What fails                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `test/playwright-fixture-target-gate.test.ts` | `npm test` (required CI job) — any spec target that is missing or unregistered |
+| `test/e2e/global-setup.ts`                    | `npm run test:e2e` aborts before launching a browser                           |
+
+Both read `test/e2e/fixture-targets.ts`. The gate is bidirectional: a registered fixture page that no spec navigates to also fails, so dead pages cannot accumulate in the build.
+
+Adding an e2e spec therefore means adding **three** things: the spec, `frontend/test-<name>.html` + its entry module, and the `buildInputs` line in `frontend/vite.config.ts`.
+
+### The #1299 audit (2026-08-05)
+
+56 of 69 specs pointed at fixture pages that had never existed, so they had never run a single assertion. `test/e2e/` was swept against the live channel-era app: **kept 12 / rewritten 0 / deleted 57.**
+
+Rewrites were deliberately not attempted. Re-pointing a stale component spec at a surface it was not written for produces a test that asserts the wrong thing, and a wrong test is worse than no test — the flows below are recorded as gaps instead.
+
+**Kept (12)** — target resolves and the spec runs:
+
+| Spec                                              | Target                                |
+| ------------------------------------------------- | ------------------------------------- |
+| `basic.spec.ts`, `components/CipherText.spec.tsx` | `/` (the app itself)                  |
+| `channel-thread.spec.ts`                          | `test-channel-thread.html`            |
+| `channel-timeline-scroll.spec.ts`                 | `test-channel-timeline.html`          |
+| `mobile-cockpit.spec.ts`                          | `test-mobile-cockpit.html`            |
+| `sidebar-mechanics.spec.ts`                       | `test-sidebar-mechanics.html`         |
+| `components/CustomizeSessionDialog.spec.ts`       | `test-customize-session-dialog.html`  |
+| `components/EnvPickerDialog.spec.ts`              | `test-env-picker-dialog.html`         |
+| `components/FullPageDiff.spec.ts`                 | `test-full-page-diff.html`            |
+| `components/PrRow.spec.ts`                        | `test-pr-row-long.html`               |
+| `components/Terminal.spec.ts`                     | `test-terminal.html`                  |
+| `components/UtilityRailBranchPanel.spec.ts`       | `test-utility-rail-branch-panel.html` |
+
+**Deleted (57)**, grouped by why:
+
+_(a) Dead surface — the component module has no importer left in the app, or is gone entirely. Nothing to re-cover (11):_
+`ChangedFiles`, `FilterChipBar`, `MobileInput`, `PickerResultRow`, `PrGlyph`, `SessionIndicator`, `SessionItem`, `ShortcutHint`, `StatusMappingModal`, `TuiRow`, `WorkspaceItem` (module deleted from the tree). The mobile-input _pipeline_ keeps its own coverage via `test/mobile-input.test.ts` and `test/fixtures/mobile-input/`.
+
+_(b) Live surface, behaviour already covered by a vitest test that imports the same module (18):_
+`BranchSwitcher`, `PrTopBar`, `RenameWarningModal`, `TargetBranchSwitcher` → `test/pr-top-bar-action.test.ts`; `CommandPalette` → `test/command-palette-*.test.ts`; `DeleteWorktreeDialog` → `test/workspace-lifecycle-registry.test.ts`; `DialogShell` → `test/customize-session-dialog-*.test.ts`; `DiffFileSidebar`, `DiffSourceToggle`, `DiffViewer` → `test/components/UtilityRailReviewPanel.test.ts`; `FilePicker` → `test/components/FilePicker.test.ts`; `FileTreeSidebar` → `test/components/FileTree.test.ts` + `file-tree-remote.test.ts`; `RepoDashboard`, `TicketsPanel`, `TuiProgress` → `test/repo-dashboard-tickets-flow.test.ts`; `SearchableSelect` → `test/components/SettingsAgentProfilesSection.test.ts`; `TuiButton` → `test/components/Tooltip.test.ts`; `WorkspaceEditor` → `test/workspace-editor-validation.test.ts`.
+
+_(c) Live surface with no behavioural coverage — deleted because the spec never ran, and recorded here as a real gap (28):_
+`AgentBadge`, `AnalyticsDashboard`, `BootScreen`, `ContextMenu`, `DataTable`, `GitHubIntegration`, `ImageToast`, `IntegrationRow`, `JiraIntegration`, `MarqueeText`, `MobileHeader`, `OpenPicker`, `OrgDashboard`, `PinGate`, `PinInput`, `SessionDetail`, `SettingRow`, `SettingsDialog`, `SettingsToc`, `Sidebar`, `StatusDot`, `TicketCard`, `Toolbar`, `TuiMenuItem`, `TuiMenuPanel`, `UpdateToast`, `WebhookIntegration`, `WorkspaceSettingsDialog`.
+
+Note that `test/components/leaf-component-migration.test.ts` names several group-(c) components. It asserts the file exists and exports the expected symbols — structural, not behavioural — so it is not counted as coverage here. `AddWorkspaceDialog` is the same class of gap and is tracked separately in #1298.
+
+Also removed in the sweep: `test/e2e/helpers/visual.ts` (no spec imported it), the snapshot directories of the deleted specs, and `frontend/test-environment-picker.html` + `frontend/src/test-environment-picker.tsx` (a built fixture page no spec navigated to — the inverse of the same rot).
 
 For local/devbox smoke runs, prefer a system browser instead of Playwright's
 downloaded browser cache. On Debian-based devboxes install Chromium once, then
