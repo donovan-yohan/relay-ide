@@ -59,7 +59,8 @@ Planned/deferred:
 
 - #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
 - #427 policy schema/default ACLs, policy evaluator gates, two-token confirmation, audit sink/verifier, manual/online credential rotation, and an opt-in scheduled credential rotation loop are implemented. External audit shipping and a default rotation cadence in shipped config remain deferred.
-- #444 six-layer IA is product direction, not the persisted backend model in this doc.
+  (The six-layer IA vocabulary that used to be listed here as product direction is
+  historical — see "Historical vocabulary" below.)
 
 ## Hub/Node/Client Terminology
 
@@ -75,24 +76,28 @@ Planned/deferred:
 | **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`.                                                                                                                                                                                    | `WorktreeInstance`; git-specific Bench compatibility shape.                |
 | **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. | Internal routing identity for a `Session`, not a user-facing work context. |
 
-## Six-Layer Vocabulary Mapping (#444)
+## Historical vocabulary (#444 six-layer IA, closed)
 
-Federated Relay keeps its precise low-level hub/node/repo/session terms, but maps them into the product IA so docs do not imply `repo = Workspace` or `worktree = universal cwd`. The source vocabulary is **View -> Workspace -> Project -> Instance -> Bench -> Tab**.
+> **Historical.** The six-layer product vocabulary — View → Workspace → Project
+> → Instance → Bench → Tab — came from #444, which is closed. It was dropped
+> from `AGENTS.md` and `README.md` in the channel realignment and no current doc
+> uses it. It is recorded here only so older commits and issues remain readable;
+> do not treat it as the live product IA. The current model is in
+> `docs/WORKBENCH_BOUNDARY.md` (canonical nouns) and `docs/CHANNEL_CHAT.md`
+> (conversation model).
 
-| Product term  | Federated meaning                                                               | Low-level term that remains valid                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **View**      | Browser lens over nodes, projects, tabs, workers, or a workspace-scoped subset. | Hub/client filters and future saved views.                                                                                                         |
-| **Workspace** | User grouping/pins across Projects.                                             | Existing workspace/repo-folder APIs are migration compatibility, not the federation identity model.                                                |
-| **Project**   | Canonical “what” being worked on.                                               | `Repo identity` is a repo-kind Project identity derived from git remotes. Node/agent/playbook Projects may not have repo inventory.                |
-| **Instance**  | A Project realized on a node/host.                                              | `Repo instance` `(nodeId, repoPath)` is a git-specific Instance compatibility shape.                                                               |
-| **Bench**     | cwd + env inside an Instance.                                                   | `Worktree instance` `(nodeId, worktreePath)` is a git Bench compatibility shape. Free/non-git remote cwd is also a Bench-like anchor once modeled. |
-| **Tab**       | User-visible terminal/file/diff/channel/preview surface.                        | A hub/node terminal session and PTY stream back a terminal Tab; `globalSessionId` remains internal routing identity.                               |
+The mapping was: **View** = a browser lens over nodes/projects/tabs;
+**Workspace** = user grouping across Projects; **Project** = the canonical
+"what" (repo identity being the repo-kind case); **Instance** = a Project
+realized on a node (`RepoInstance` = `(nodeId, repoPath)`); **Bench** = cwd + env
+inside an Instance (`WorktreeInstance` = `(nodeId, worktreePath)`); **Tab** = a
+user-visible terminal/file/diff/preview surface.
 
-Worker activity may decorate a Bench or terminal Tab, but participant identity
-belongs to the durable profile actor in its channel. Neither is a federated
-tree node. Use node/host labels for where work runs, repo/project labels for
-what is being worked on, channel/profile identity for who is participating,
-and worker badges only for execution activity.
+What survives from it is the labelling discipline, which is still correct: use
+node/host labels for _where_ work runs, repo/project labels for _what_ is being
+worked on, and channel/profile identity for _who_ is participating. Participant
+identity belongs to the durable profile actor in its channel — never to a path,
+a session, or a tree node.
 
 ### Compatibility boundaries
 
@@ -500,7 +505,7 @@ Content-Type: application/json
 }
 ```
 
-The current node-side `sessions.create` parser reads `repoPath`, `worktreePath`, and `cwd`; it does not read `workspacePath`. Send `cwd` explicitly for remote repo/worktree tabs. If `cwd` is omitted, the node defaults to its host home directory until the #473 create-tab/modal split lands. In the six-layer model, `repoPath` and `worktreePath` remain compatibility fields while `cwd` maps toward the Bench anchor.
+The current node-side `sessions.create` parser reads `repoPath`, `worktreePath`, and `cwd`; it does not read `workspacePath`. Send `cwd` explicitly for remote repo/worktree tabs. If `cwd` is omitted, the node defaults to its host home directory. `repoPath` and `worktreePath` remain compatibility fields; `cwd` is the working-directory anchor.
 
 `type: "agent"`, `mode: "web"`, provider/role launch fields, and
 `controlMode: "agent-driven"` are rejected at the routed session boundary.
@@ -629,7 +634,7 @@ GET /hub/repo-inventory
 Cookie: token={browser-session-cookie}
 ```
 
-Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.
+Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. This inventory is deliberately git-specific: it is repo/worktree metadata, not a general inventory of everything a node can work on.
 
 ## File Resource Refs (#616 slice 1)
 
@@ -844,7 +849,7 @@ These were considered during design but are **not implemented** and should not b
 - **Anonymous worker pools** — Every node requires explicit pairing and trust.
 - **Cross-host live process transfer** — Sessions are node-local; re-creating on another node is a cold start.
 - **Real-time workspace state sync** — No conflict-free replicated worktree state.
-- **Full #444 IA migration** — This document maps federation terms to the six-layer vocabulary, but it does not implement Workspace/Project/Instance/Bench CRUD, #473 right-rail migration, #428 file RPC, or a Worker tree node.
+- **Federated Workspace/Project CRUD** — This document describes federation identity (repo identity, repo/worktree instances) but does not implement CRUD over a federated project tree, or a Worker tree node. (Note: file RPC #428 _is_ shipped — see the Implemented list above. The closed #444 six-layer vocabulary this bullet used to reference is recorded under "Historical vocabulary".)
 - **Raw Hermes state sync** — Relay should receive bounded Hermes plugin/integration metadata; it must not scrape or sync raw Hermes profile DBs, memory stores, provider auth, env, or unbounded transcripts/logs.
 - **Hermes/GitHub/Kanban/native-agent replacement** — Relay links and controls existing systems through scoped refs and adapters; it does not clone their dashboards or become their storage/runtime owner.
 - **Phone IDE** — Mobile control prioritizes status, approvals, small input, artifacts, attach, and safe pause/kill/retry. Bulk editing, broad file navigation, and high-risk write flows are out of scope for the v1 workbench loop.
