@@ -2873,6 +2873,173 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
 // ── Relay-control dispatch ────────────────────────────────────────────────────
 
 describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
+  it('uses flat thread/settings/update controls and carries profile effort into turn/start', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect({ ...config, extra: { effort: 'high' } });
+    const client = factory.lastClient!;
+
+    await adapter.sendMessage({ turnId: 'turn-effort-default', content: 'go' });
+    expect(
+      client.calls.find((call) => call.method === 'turn/start')?.params
+    ).toMatchObject({ effort: 'high' });
+
+    await adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' });
+    expect(
+      client.calls.find((call) => call.method === 'thread/settings/update')
+        ?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      effort: 'ultra',
+    });
+    await adapter.disconnect();
+  });
+
+  it('clears into a fresh thread without dropping existing patch subscribers', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    await adapter.executeControlCommand?.({ command: 'clear' });
+    await adapter.sendMessage({
+      turnId: 'after-clear',
+      content: 'still bridged',
+    });
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' &&
+          patch.turn.id === 'after-clear'
+      )
+    ).toBe(true);
+    await adapter.disconnect();
+  });
+
+  it('rejects Fast Mode until model/list has advertised the fast service tier', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          isDefault: true,
+          serviceTiers: [
+            { id: 'fast', name: 'Fast', description: 'Fast tier' },
+          ],
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'low', description: 'Low effort' },
+            { reasoningEffort: 'ultra', description: 'Ultra effort' },
+          ],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+    expect(
+      adapter.getSlashCommands().find((command) => command.name === 'effort')
+        ?.args
+    ).toEqual([{ value: 'low' }, { value: 'ultra' }]);
+    await adapter.executeControlCommand?.({ command: 'fast', args: 'on' });
+    expect(
+      factory.lastClient!.calls.find(
+        (call) => call.method === 'thread/settings/update'
+      )?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      serviceTier: 'fast',
+    });
+    await adapter.disconnect();
+  });
+
+  it('clears Fast Mode atomically when switching to a model without the fast tier', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          serviceTiers: [{ id: 'fast' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        },
+        {
+          id: 'gpt-standard',
+          serviceTiers: [{ id: 'default' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+
+    await adapter.executeControlCommand?.({ command: 'fast', args: 'on' });
+    await adapter.executeControlCommand?.({
+      command: 'model',
+      args: 'gpt-standard',
+    });
+    const updates = factory.lastClient!.calls.filter(
+      (call) => call.method === 'thread/settings/update'
+    );
+    expect(updates.at(-1)?.params).toMatchObject({
+      threadId: 'thread-1',
+      model: 'gpt-standard',
+      serviceTier: null,
+    });
+
+    await adapter.sendMessage({ turnId: 'standard-turn', content: 'go' });
+    const turn = factory.lastClient!.calls.find(
+      (call) => call.method === 'turn/start'
+    );
+    expect(turn?.params).not.toHaveProperty('serviceTier');
+    await adapter.disconnect();
+  });
+
+  it('rejects live-unsupported reasoning effort while retaining static fallback without a catalog', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          serviceTiers: [{ id: 'fast' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+
+    await expect(
+      adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' })
+    ).rejects.toThrow('not supported by the selected model');
+    expect(
+      factory.lastClient!.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
+    await adapter.disconnect();
+  });
+
   it('/compact calls thread/compact/start and emits controlAction extension', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);

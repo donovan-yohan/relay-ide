@@ -1,0 +1,80 @@
+/* Provider command previews share MentionPalette's compact, TUI-native float. */
+.agent-command-palette {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  z-index: 11;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.agent-command-palette__row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 10px 6px 18px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.agent-command-palette__row:hover,
+.agent-command-palette__row--active {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.agent-command-palette__row--active::before {
+  content: '>';
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.agent-command-palette__main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-command-palette__name {
+  color: var(--text);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-command-palette__hint,
+.agent-command-palette__source,
+.agent-command-palette__detail,
+.agent-command-palette__empty {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.agent-command-palette__source {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.agent-command-palette__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-command-palette__empty {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+}

@@ -12,10 +12,17 @@ import {
   CHANNEL_COMPOSER_MAX_IMAGE_BYTES,
   ChannelComposer,
 } from '../../frontend/src/components/chat/ChannelComposer.js';
-import { uploadChannelImages } from '../../frontend/src/lib/api.js';
+import {
+  executeChannelAgentCommand,
+  fetchChannelRoster,
+  uploadChannelImages,
+  type RosterEntry,
+} from '../../frontend/src/lib/api.js';
 
 vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../frontend/src/lib/api.js')>()),
+  executeChannelAgentCommand: vi.fn(),
+  fetchChannelRoster: vi.fn(),
   uploadChannelImages: vi.fn(),
 }));
 
@@ -34,6 +41,52 @@ function setNativeValue(el: HTMLTextAreaElement, value: string): void {
 
 let container: HTMLDivElement;
 let root: Root;
+
+const codexRoster: RosterEntry[] = [
+  {
+    id: 'agent-profile:codex:default',
+    displayName: 'Codex',
+    providerId: 'codex',
+    isDefault: true,
+    isBuiltIn: true,
+    kind: 'framework',
+    available: true,
+    reason: null,
+    binding: null,
+    commands: [
+      {
+        id: 'relay:fast',
+        name: 'fast',
+        description: 'Enable or disable Codex Fast Mode',
+        argumentHint: '<on|off>',
+        args: [
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' },
+        ],
+        source: 'relay',
+        sourceLabel: 'Relay',
+        dispatch: 'relay-control',
+        collisionKey: 'fast',
+      },
+      {
+        id: 'relay:clear',
+        name: 'clear',
+        description: 'Start a fresh session',
+        source: 'relay',
+        sourceLabel: 'Relay',
+        dispatch: 'relay-control',
+        collisionKey: 'clear',
+      },
+      {
+        id: 'native:compact',
+        name: 'compact',
+        description: 'Provider-native command that must not use Relay controls',
+        source: 'sdk',
+        dispatch: 'agent',
+      },
+    ],
+  },
+];
 
 interface RenderOpts {
   onSend?: (
@@ -127,6 +180,48 @@ async function pasteFiles(files: File[]): Promise<Event> {
   return event;
 }
 
+async function settleRoster(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function pressKey(
+  key: string,
+  options: { shiftKey?: boolean } = {}
+): Promise<void> {
+  const ta = container.querySelector('.ch-composer__ta') as HTMLTextAreaElement;
+  await act(async () => {
+    ta.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key,
+        ...options,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function pressMobileSend(): Promise<Event> {
+  const ta = container.querySelector('.ch-composer__ta') as HTMLTextAreaElement;
+  const event = new Event('beforeinput', { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    inputType: { value: 'insertLineBreak' },
+    isComposing: { value: false },
+  });
+  await act(async () => {
+    ta.dispatchEvent(event);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return event;
+}
+
 const imagePart: ChannelImagePart = {
   type: 'image',
   id: 'cha:test-image',
@@ -146,6 +241,9 @@ describe('ChannelComposer (#1178)', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     vi.mocked(uploadChannelImages).mockReset();
+    vi.mocked(fetchChannelRoster).mockResolvedValue(codexRoster);
+    vi.mocked(executeChannelAgentCommand).mockReset();
+    vi.mocked(executeChannelAgentCommand).mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -390,5 +488,223 @@ describe('ChannelComposer (#1178)', () => {
     ) as HTMLButtonElement;
     await act(async () => restore.click());
     expect(onRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns an exact @profile/fast pick into a dedicated fast control, never a channel post', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+    expect(
+      container.querySelector(
+        '[role="listbox"][aria-label="commands for Codex"]'
+      )
+    ).not.toBeNull();
+    expect(ta.getAttribute('aria-controls')).toBe(
+      'channel-agent-command-palette'
+    );
+    expect(ta.getAttribute('aria-activedescendant')).toBe(
+      'channel-agent-command-option-0'
+    );
+
+    // First Enter chooses the command, second chooses the default `on` option.
+    await pressKey('Enter');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'fast',
+      args: 'on',
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('accepts the single space inserted by mention selection before / commands', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+
+    await act(async () => setNativeValue(ta, '@'));
+    await settleRoster();
+    await pressKey('Enter');
+    expect(ta.value).toBe('@codex ');
+
+    await act(async () => setNativeValue(ta, '@codex /'));
+    await settleRoster();
+    expect(
+      container.querySelector(
+        '[role="listbox"][aria-label="commands for Codex"]'
+      )
+    ).not.toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('uses the mobile beforeinput send intent to pick the command and its fast value', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+
+    expect((await pressMobileSend()).defaultPrevented).toBe(true);
+    expect((await pressMobileSend()).defaultPrevented).toBe(true);
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'fast',
+      args: 'on',
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('escapes the command palette without losing the exact draft or posting it', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+
+    await pressKey('Escape');
+    expect(ta.value).toBe('@codex/fast');
+    expect(
+      (
+        container.querySelector(
+          '[role="listbox"][aria-label="commands for Codex"]'
+        ) as HTMLElement
+      ).style.display
+    ).toBe('none');
+    // The next Enter reopens the command preview; it can never route this
+    // command-shaped draft as a normal channel message.
+    await pressKey('Enter');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('requires an explicit confirmation row before a destructive command is sent', async () => {
+    await renderComposer();
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/clear'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('confirm');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'clear',
+      confirmed: true,
+    });
+  });
+
+  it('uses the most recent exact profile command, not an earlier mention', async () => {
+    vi.mocked(fetchChannelRoster).mockResolvedValue([
+      ...codexRoster,
+      {
+        id: 'agent-profile:claude:default',
+        displayName: 'Claude',
+        providerId: 'claude',
+        isDefault: true,
+        isBuiltIn: true,
+        kind: 'framework',
+        available: true,
+        reason: null,
+        binding: null,
+        commands: [
+          {
+            id: 'relay:claude-clear',
+            name: 'clear',
+            dispatch: 'relay-control',
+            destructive: true,
+          },
+        ],
+      },
+    ]);
+    await renderComposer();
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/fast … @claude/clear'));
+    await settleRoster();
+
+    expect(
+      container.querySelector('[role="listbox"]')?.getAttribute('aria-label')
+    ).toBe('commands for Claude');
+    await pressKey('Enter');
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:claude:default',
+      command: 'clear',
+      confirmed: true,
+    });
+  });
+
+  it('keeps collision-token profile identity when selecting a command', async () => {
+    vi.mocked(fetchChannelRoster).mockResolvedValue([
+      ...codexRoster,
+      {
+        id: 'agent-profile:claude:aaaaaa',
+        displayName: 'Reviewer',
+        providerId: 'claude',
+        isDefault: false,
+        isBuiltIn: false,
+        kind: 'framework',
+        available: true,
+        reason: null,
+        binding: null,
+        commands: [
+          { id: 'relay:a-fast', name: 'fast', dispatch: 'relay-control' },
+        ],
+      },
+      {
+        id: 'agent-profile:codex:bbbbbb',
+        displayName: 'Reviewer',
+        providerId: 'codex',
+        isDefault: false,
+        isBuiltIn: false,
+        kind: 'framework',
+        available: true,
+        reason: null,
+        binding: null,
+        commands: [
+          { id: 'relay:b-fast', name: 'fast', dispatch: 'relay-control' },
+        ],
+      },
+    ]);
+    await renderComposer();
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@Reviewer#aaaaaa/fast'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:claude:aaaaaa',
+      command: 'fast',
+    });
+  });
+
+  it('never shows provider-native commands in the Relay control palette', async () => {
+    await renderComposer();
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/'));
+    await settleRoster();
+
+    expect(container.textContent).toContain('/fast');
+    expect(container.textContent).not.toContain('/compact');
   });
 });

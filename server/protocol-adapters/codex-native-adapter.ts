@@ -8,6 +8,7 @@ import type {
   AgentApprovalResponseInputV2,
   AgentInputResponseInputV2,
   AgentInterruptInputV2,
+  AgentControlCommandInputV2,
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
 import type {
@@ -29,6 +30,7 @@ import {
 import { createLogger } from '../logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
 
 const logger = createLogger('codex-native-adapter');
 
@@ -126,7 +128,10 @@ const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {
 
 // ── Relay-owned bake-ins ───────────────────────────────────────────────────
 
-const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
+const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] =
+  relayControlCatalogForProvider('codex');
+/*
+export const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
   {
     id: 'relay:clear',
     name: 'new',
@@ -136,6 +141,7 @@ const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
     sourceLabel: 'Relay',
     dispatch: 'relay-control',
     collisionKey: 'clear',
+    destructive: true,
   },
   {
     id: 'relay:resume',
@@ -159,6 +165,31 @@ const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
     collisionKey: 'model',
   },
   {
+    id: 'relay:effort',
+    name: 'effort',
+    description: 'Set Codex reasoning effort for subsequent responses',
+    argumentHint: '<low|medium|high|xhigh|max|ultra>',
+    args: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((value) => ({ value })),
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'effort',
+  },
+  {
+    id: 'relay:fast',
+    name: 'fast',
+    description: 'Enable or disable Codex Fast Mode for subsequent responses',
+    argumentHint: '<on|off>',
+    args: [
+      { value: 'on', label: 'on', description: 'Use the fast service tier' },
+      { value: 'off', label: 'off', description: 'Use the default service tier' },
+    ],
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'fast',
+  },
+  {
     id: 'relay:compact',
     name: 'compact',
     description: 'Compact the current Codex thread context',
@@ -176,6 +207,7 @@ const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
     sourceLabel: 'Relay',
     dispatch: 'relay-control',
     collisionKey: 'rollback',
+    destructive: true,
   },
   {
     id: 'relay:archive',
@@ -185,6 +217,7 @@ const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
     sourceLabel: 'Relay',
     dispatch: 'relay-control',
     collisionKey: 'archive',
+    destructive: true,
   },
   {
     id: 'relay:unarchive',
@@ -223,7 +256,7 @@ const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
     dispatch: 'relay-control',
     collisionKey: 'fork',
   },
-];
+];*/
 
 // ── Approval support shapes ────────────────────────────────────────────────
 
@@ -511,6 +544,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private activeStartedAt: string | null = null;
   private completedActiveTurn = false;
   private readonly queue: QueuedCodexMessage[] = [];
+  /** Runtime controls survive follow-up turns on this adapter, never raw prompts. */
+  private pendingModelOverride: string | null = null;
+  private pendingEffortOverride: string | null = null;
+  private pendingServiceTier: 'fast' | null = null;
 
   // Pending approvals keyed by relay item id (e.g. "approval-{requestId}")
   private readonly pendingApprovals = new Map<
@@ -536,7 +573,6 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     string,
     Record<string, unknown>
   >();
-  private pendingModelOverride: string | null = null;
 
   // Reasoning streaming buffers, keyed by relayItemId. Used to preserve the
   // accumulated text when item/completed arrives with an empty or
@@ -553,6 +589,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // Slash commands
   private slashCommandsLoaded = false;
+  private commandCatalog: AgentSlashCommandV2[] = [...RELAY_CODEX_COMMANDS];
+  private fastModeAvailable = false;
+  private supportedReasoningEfforts: string[] | null = null;
+  private modelCatalog: Record<string, unknown>[] = [];
+  private skillCommands: AgentSlashCommandV2[] = [];
 
   constructor(clientFactory?: CodexClientFactory) {
     super();
@@ -562,6 +603,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   get status(): AdapterStatus {
     return this._status;
+  }
+
+  getSlashCommands(): AgentSlashCommandV2[] {
+    return this.commandCatalog.filter(
+      (command) => command.collisionKey !== 'fast' || this.fastModeAvailable
+    );
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -586,6 +633,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           persistExtendedHistory: false,
           ...(config.model || this.pendingModelOverride
             ? { model: this.pendingModelOverride ?? config.model }
+            : {}),
+          ...(this.initialServiceTier(config)
+            ? { serviceTier: this.initialServiceTier(config) }
             : {}),
         });
 
@@ -746,6 +796,26 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.releasePendingNativeSteerTerminal(pending);
   }
 
+  async executeControlCommand(
+    input: AgentControlCommandInputV2
+  ): Promise<{ config?: Record<string, unknown> }> {
+    const command = input.command.trim().toLowerCase();
+    const known = RELAY_CODEX_COMMANDS.find(
+      (entry) =>
+        entry.dispatch === 'relay-control' &&
+        (entry.name === command || (entry.aliases ?? []).includes(command))
+    );
+    if (!known) throw new Error('unsupported Codex control command');
+    if (known.collisionKey === 'fast' && !this.fastModeAvailable) {
+      throw new Error('Codex Fast Mode is unavailable for the selected model');
+    }
+    await this.handleControlAction(
+      known.collisionKey ?? known.name,
+      input.args?.trim() ?? ''
+    );
+    return { config: this.currentControlConfig() };
+  }
+
   async interrupt(_input: AgentInterruptInputV2): Promise<void> {
     if (this.nativeActiveTurnId !== null && this.client !== null) {
       try {
@@ -834,6 +904,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         input: buildCodexTurnInput(input.content, input.attachments),
         ...(this.pendingModelOverride
           ? { model: this.pendingModelOverride }
+          : {}),
+        ...(this.initialEffort(this.config)
+          ? { effort: this.initialEffort(this.config) }
+          : {}),
+        ...(this.pendingServiceTier
+          ? { serviceTier: this.pendingServiceTier }
           : {}),
       });
     } catch (err) {
@@ -2640,8 +2716,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       switch (action) {
         case 'clear': {
-          await this.disconnect();
-          await this.connect(this.config!);
+          // Do not call BaseProtocolAdapterV2.disconnect(): it clears the
+          // channel bridge/onPatch subscribers that must survive a fresh thread.
+          const config = this.config;
+          await this.teardownState();
+          await this.connect(config);
           emitControl('success');
           break;
         }
@@ -2663,8 +2742,56 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         }
 
         case 'model': {
-          this.pendingModelOverride = arg || null;
-          this.emitSessionUpdate({ config: arg ? { model: arg } : {} });
+          if (!arg) throw new Error('model requires an argument');
+          const clearFastTier =
+            this.pendingServiceTier === 'fast' &&
+            this.modelCatalog.length > 0 &&
+            !this.modelSupportsFast(arg);
+          await this.updateThreadSettings({
+            model: arg,
+            ...(clearFastTier ? { serviceTier: null } : {}),
+          });
+          this.pendingModelOverride = arg;
+          if (clearFastTier) this.pendingServiceTier = null;
+          this.recomputeModelCommands();
+          this.emitSessionUpdate({ config: { model: arg } });
+          emitControl('success', arg);
+          break;
+        }
+
+        case 'effort': {
+          if (
+            !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arg)
+          ) {
+            throw new Error(
+              'effort requires low, medium, high, xhigh, max, or ultra'
+            );
+          }
+          if (
+            this.supportedReasoningEfforts !== null &&
+            !this.supportedReasoningEfforts.includes(arg)
+          ) {
+            throw new Error(
+              `effort ${arg} is not supported by the selected model`
+            );
+          }
+          await this.updateThreadSettings({ effort: arg });
+          this.pendingEffortOverride = arg;
+          this.emitSessionUpdate({ config: { effort: arg } });
+          emitControl('success', arg);
+          break;
+        }
+
+        case 'fast': {
+          if (arg !== 'on' && arg !== 'off') {
+            throw new Error('fast requires on or off');
+          }
+          const serviceTier = arg === 'on' ? 'fast' : null;
+          await this.updateThreadSettings({ serviceTier });
+          this.pendingServiceTier = serviceTier;
+          this.emitSessionUpdate({
+            config: { providerOptions: { serviceTier } },
+          });
           emitControl('success', arg);
           break;
         }
@@ -2777,7 +2904,113 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       const message = err instanceof Error ? err.message : String(err);
       emitControl('error', message);
       logger.warn(`Codex control action '${action}' failed:`, err);
+      throw err;
     }
+  }
+
+  /** Current public settings only; intentionally excludes app-server config/env. */
+  private currentControlConfig(): Record<string, unknown> {
+    return {
+      ...(this.pendingModelOverride
+        ? { model: this.pendingModelOverride }
+        : {}),
+      ...(this.pendingEffortOverride
+        ? { effort: this.pendingEffortOverride }
+        : {}),
+      providerOptions: { serviceTier: this.pendingServiceTier },
+    };
+  }
+
+  private async updateThreadSettings(
+    settings: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.client || !this.providerSessionId) {
+      throw new Error('Codex thread is not connected');
+    }
+    await this.client.call('thread/settings/update', {
+      threadId: this.providerSessionId,
+      ...settings,
+    });
+  }
+
+  private initialEffort(config: AdapterConfig): string | null {
+    const extra = isRecord(config.extra) ? config.extra : {};
+    return (
+      this.pendingEffortOverride ??
+      (typeof extra.effort === 'string' && extra.effort ? extra.effort : null)
+    );
+  }
+
+  private initialServiceTier(config: AdapterConfig): 'fast' | null {
+    const extra = isRecord(config.extra) ? config.extra : {};
+    return (
+      this.pendingServiceTier ?? (extra.serviceTier === 'fast' ? 'fast' : null)
+    );
+  }
+
+  private recomputeModelCommands(): void {
+    const selected = this.pendingModelOverride ?? this.config?.model;
+    const selectedModel = selected
+      ? this.modelCatalog.find(
+          (model) =>
+            model.id === selected ||
+            model.model === selected ||
+            model.name === selected
+        )
+      : (this.modelCatalog.find((model) => model.isDefault === true) ??
+        this.modelCatalog[0]);
+    this.fastModeAvailable = this.modelSupportsFast(selected);
+    const efforts = selectedModel?.supportedReasoningEfforts;
+    this.supportedReasoningEfforts =
+      this.modelCatalog.length === 0
+        ? null
+        : Array.isArray(efforts)
+          ? efforts.flatMap((effort) =>
+              typeof effort === 'string'
+                ? [effort]
+                : isRecord(effort) && typeof effort.reasoningEffort === 'string'
+                  ? [effort.reasoningEffort]
+                  : []
+            )
+          : [];
+    const controls = RELAY_CODEX_COMMANDS.flatMap((command) => {
+      if (command.collisionKey === 'fast' && !this.fastModeAvailable) return [];
+      if (command.collisionKey === 'effort' && this.supportedReasoningEfforts) {
+        return [
+          {
+            ...command,
+            args: this.supportedReasoningEfforts.map((value) => ({ value })),
+          },
+        ];
+      }
+      return [command];
+    });
+    this.commandCatalog = mergeCodexCommandCatalog(
+      this.skillCommands,
+      controls
+    );
+  }
+
+  private modelSupportsFast(modelId: string | null | undefined): boolean {
+    const model = modelId
+      ? this.modelCatalog.find(
+          (candidate) =>
+            candidate.id === modelId ||
+            candidate.model === modelId ||
+            candidate.name === modelId
+        )
+      : (this.modelCatalog.find((candidate) => candidate.isDefault === true) ??
+        this.modelCatalog[0]);
+    const tiers = model?.serviceTiers;
+    return (
+      (Array.isArray(tiers) &&
+        tiers.some(
+          (tier) =>
+            tier === 'fast' ||
+            (isRecord(tier) && (tier.value === 'fast' || tier.id === 'fast'))
+        )) ||
+      (isRecord(tiers) && tiers.fast !== false && tiers.fast !== undefined)
+    );
   }
 
   // ── Internal: slash commands ──────────────────────────────────────────────
@@ -2786,7 +3019,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (this.slashCommandsLoaded || !this.client) return;
 
     try {
-      const [skillsResult, _modelsResult] = await Promise.all([
+      const [skillsResult, modelsResult] = await Promise.all([
         this.client.call<{ skills: unknown[] }>('skills/list', { cwd: [cwd] }),
         this.client.call('model/list').catch(() => null),
       ]);
@@ -2804,9 +3037,19 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         }
       }
 
-      const catalog = mergeCodexCommandCatalog(skills, RELAY_CODEX_COMMANDS);
+      this.skillCommands = skills;
+      const models = Array.isArray(modelsResult)
+        ? modelsResult
+        : isRecord(modelsResult) && Array.isArray(modelsResult.data)
+          ? modelsResult.data
+          : isRecord(modelsResult) && Array.isArray(modelsResult.models)
+            ? modelsResult.models
+            : [];
+      this.modelCatalog = models.filter(isRecord);
+      this.recomputeModelCommands();
+      this.emitLiveState({ fastModeAvailable: this.fastModeAvailable });
       this.slashCommandsLoaded = true;
-      this.emitSessionUpdate({ slashCommands: catalog });
+      this.emitSessionUpdate({ slashCommands: this.commandCatalog });
     } catch (err) {
       logger.warn('Codex skills/list fetch failed:', err);
     }
@@ -2830,6 +3073,16 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           : {}),
         config: {
           ...(this.config.model ? { model: this.config.model } : {}),
+          ...(this.initialEffort(this.config)
+            ? { effort: this.initialEffort(this.config)! }
+            : {}),
+          ...(this.initialServiceTier(this.config)
+            ? {
+                providerOptions: {
+                  serviceTier: this.initialServiceTier(this.config),
+                },
+              }
+            : {}),
         },
       }),
     });

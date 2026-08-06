@@ -17,7 +17,11 @@ import {
 } from '../server/protocol-adapter-v2.js';
 import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
-import { builtInAgentProfileId } from '../shared/agent-profile.js';
+import {
+  builtInAgentProfileId,
+  computeMentionDisambiguators,
+} from '../shared/agent-profile.js';
+import { relayControlCatalogForProvider } from '../shared/agent-command-catalog.js';
 import {
   dmChannelCreateInput,
   dmChannelTopicId,
@@ -1193,6 +1197,191 @@ function makeBinder(cfg: {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe('channel-agent-binder — lifecycle', () => {
+  it('discovers and executes only confirmed Codex controls without persisting or routing a message', async () => {
+    const calls: Array<{
+      command: string;
+      args?: string;
+      confirmed?: boolean;
+    }> = [];
+    const { binder, store } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            { name: 'model', dispatch: 'relay-control', collisionKey: 'model' },
+            { name: 'deploy', dispatch: 'agent', collisionKey: 'deploy' },
+          ],
+          executeControlCommand: async (input: {
+            command: string;
+            args?: string;
+            confirmed?: boolean;
+          }) => {
+            calls.push(input);
+            return { config: { model: input.args ?? null } };
+          },
+        });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'codex',
+          displayName: 'Codex',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['codex'],
+    });
+    const profileId = builtInAgentProfileId('codex');
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster[0]?.commands?.map((command) => command.name)).toContain(
+      'model'
+    );
+    expect(
+      roster[0]?.commands?.some((command) => command.name === 'deploy')
+    ).toBe(false);
+    await expect(
+      binder.executeCommand(CH, profileId, 'rollback', '1')
+    ).rejects.toMatchObject({
+      reasonCode: 'CONFIRMATION_REQUIRED',
+    });
+    await binder.executeCommand(CH, profileId, 'model', 'gpt-fast', true);
+    expect(calls).toEqual([
+      { command: 'model', args: 'gpt-fast', confirmed: true },
+    ]);
+    expect(rows(store)).toHaveLength(0);
+  });
+
+  it('targets command controls by exact named-profile Actor ID across a display-name collision', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'mock' }]);
+    const backend = profiles.create({
+      id: 'agent-profile:mock:backend-command',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const audit = profiles.create({
+      id: 'agent-profile:mock:audit-command',
+      providerId: 'mock',
+      displayName: 'Reviewer',
+    });
+    const calls: Array<{ profile: string; command: string }> = [];
+    let created = 0;
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const profile = ++created === 1 ? backend.id : audit.id;
+        const command = profile === backend.id ? 'model' : 'compact';
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            { name: command, dispatch: 'relay-control', collisionKey: command },
+          ],
+          executeControlCommand: async (input: { command: string }) => {
+            calls.push({ profile, command: input.command });
+            return { config: { profile } };
+          },
+        });
+        return adapter;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      agentProfileStore: profiles,
+    });
+
+    const tokens = computeMentionDisambiguators(profiles.list());
+    expect(
+      parseMentions(
+        `@Reviewer#${tokens.get(backend.id)}`,
+        ['mock'],
+        profiles.list()
+      )[0]?.profileId
+    ).toBe(backend.id);
+    expect(
+      parseMentions(
+        `@Reviewer#${tokens.get(audit.id)}`,
+        ['mock'],
+        profiles.list()
+      )[0]?.profileId
+    ).toBe(audit.id);
+
+    await binder.executeCommand(CH, backend.id, 'model', 'gpt-test');
+    await binder.executeCommand(CH, audit.id, 'compact');
+    expect(calls).toEqual([
+      { profile: backend.id, command: 'model' },
+      { profile: audit.id, command: 'compact' },
+    ]);
+    const roster = await binder.rosterForChannel(CH);
+    expect(
+      roster
+        .find((entry) => entry.id === backend.id)
+        ?.commands?.map((c) => c.name)
+    ).toEqual(['model']);
+    expect(
+      roster
+        .find((entry) => entry.id === audit.id)
+        ?.commands?.map((c) => c.name)
+    ).toEqual(['compact']);
+  });
+
+  it('uses the same adapter control contract for current providers and leaves unsupported providers empty', async () => {
+    const providerIds = ['claude', 'codex', 'opencode', 'hermes'];
+    const calls: Array<{ providerId: string; command: string }> = [];
+    const targets: MentionTarget[] = [
+      ...providerIds.map((id) => ({
+        id,
+        displayName: id,
+        kind: 'framework' as const,
+        available: true,
+        reason: null,
+      })),
+      {
+        id: 'unsupported',
+        displayName: 'unsupported',
+        kind: 'framework' as const,
+        available: false,
+        reason: 'adapter unavailable',
+      },
+    ];
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            {
+              name: 'compact',
+              dispatch: 'relay-control',
+              collisionKey: 'compact',
+            },
+          ],
+          executeControlCommand: async (input: { command: string }) => {
+            calls.push({ providerId: agentType, command: input.command });
+            return {};
+          },
+        });
+        return adapter;
+      },
+      targets,
+      knownProviderIds: [...providerIds, 'unsupported'],
+    });
+
+    for (const providerId of providerIds) {
+      await binder.executeCommand(
+        CH,
+        builtInAgentProfileId(providerId),
+        'compact'
+      );
+    }
+    expect(calls).toEqual(
+      providerIds.map((providerId) => ({ providerId, command: 'compact' }))
+    );
+    expect(relayControlCatalogForProvider('unsupported')).toEqual([]);
+    await expect(
+      binder.executeCommand(CH, builtInAgentProfileId('unsupported'), 'compact')
+    ).rejects.toMatchObject({ reasonCode: 'UNAVAILABLE' });
+  });
+
   it('keeps same-provider profiles isolated: bindings, sessions, replies, roster, and status all use profile actor ids', async () => {
     const profiles = createAgentProfileStore(':memory:');
     cleanup.push(() => profiles.close());

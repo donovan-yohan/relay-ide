@@ -135,6 +135,31 @@ describe('Agent Chat Protocol v2', () => {
         session: makeSession(),
       })
     ).toBe(true);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        slashCommands: [
+          {
+            name: 'fast',
+            dispatch: 'relay-control',
+            args: [{ value: 'on', label: 'on' }],
+            destructive: false,
+          },
+        ],
+      })
+    ).toBe(true);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        slashCommands: [{ name: 'fast', args: [{ value: 1 }] }],
+      })
+    ).toBe(false);
   });
 
   it('applies the reducer full flow with text deltas and turn completion', () => {

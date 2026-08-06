@@ -72,6 +72,35 @@ Mapping rules:
 `ProtocolAdapterV2` normalizes rich items into `AgentDetailCardV2`. The channel
 bridge bounds and persists those cards beside channel messages.
 
+## Command catalogs and channel control lane
+
+Adapters may expose `getSlashCommands()` and `executeControlCommand()` from
+`ProtocolAdapterV2`. A catalog entry declares its dispatch: `relay-control`
+commands are safe for Relay to execute; `agent` commands remain provider-native
+prompt/skill input. The channel binder never branches on a provider name: it
+uses an adapter's live catalog after connecting, and may use a redaction-safe
+static catalog only for pre-bind previews.
+
+Channel controls are addressed by the exact profile actor ID, never by
+display name. This keeps same-provider named profiles and their mention
+disambiguators isolated. The dedicated `POST /channels/:id/agent-commands`
+lane requires `context:write`, rejects archived channels, requires explicit
+confirmation for destructive catalog entries, and does not persist a channel
+message or create a mention context packet. Normal posts that look like a
+targeted control (`@agent/command` or `@agent /command`) are rejected so they
+cannot accidentally route as prose.
+
+Only advertise controls the live provider can execute. Where provider metadata
+lists models, service tiers, or reasoning efforts, derive command arguments
+from that metadata and refresh the catalog on a model change. A missing catalog
+may use a documented static fallback; an available catalog must reject values
+it does not support. Codex currently implements Relay-owned controls including
+Fast Mode through this contract. Claude, OpenCode, and Hermes must not be
+presented as supporting a channel control until their own adapters expose and
+execute it.
+
+## Provider extension policy
+
 Use:
 
 - `reasoning` for thinking/analysis summaries;
