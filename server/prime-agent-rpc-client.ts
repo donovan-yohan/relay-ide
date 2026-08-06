@@ -14,6 +14,7 @@ export interface PrimeAgentRpcClientOptions {
   readinessTimeoutMs?: number;
   maxBufferBytes?: number;
   maxRecordBytes?: number;
+  stopTimeoutMs?: number;
   spawn?: (
     command: string,
     args: string[],
@@ -31,7 +32,8 @@ interface PendingCall {
 /** Strict-LF JSONL client for `prime-agent --mode rpc`. */
 export class PrimeAgentRpcClient extends EventEmitter {
   private child: ChildProcess | null = null;
-  private buffer = '';
+  private buffer = Buffer.alloc(0);
+  private stopPromise: Promise<void> | null = null;
   private nextId = 1;
   private readonly pending = new Map<string, PendingCall>();
   private readonly writes: string[] = [];
@@ -45,7 +47,8 @@ export class PrimeAgentRpcClient extends EventEmitter {
   }
 
   async start(): Promise<PrimeAgentRpcMessage> {
-    if (this.child) throw new Error('PrimeAgentRpcClient already started');
+    if (this.child || this.stopPromise)
+      throw new Error('PrimeAgentRpcClient already started');
     const spawnFn = this.options.spawn ?? nodeSpawn;
     const child = spawnFn(
       this.options.command ?? 'prime-agent',
@@ -57,9 +60,8 @@ export class PrimeAgentRpcClient extends EventEmitter {
       }
     );
     this.child = child;
-    child.stdout?.on('data', (chunk: Buffer | string) =>
-      this.consume(String(chunk))
-    );
+    this.buffer = Buffer.alloc(0);
+    child.stdout?.on('data', (chunk: Buffer | string) => this.consume(chunk));
     child.stderr?.on('data', (chunk: Buffer | string) =>
       this.emit('stderr', String(chunk))
     );
@@ -71,7 +73,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
       this.emit('error', error);
     });
     child.on('close', (code) => {
-      this.child = null;
+      if (this.child === child) this.child = null;
       const error = new Error(`prime-agent rpc exited (code=${String(code)})`);
       this.rejectPending(error);
       this.emit('close', code);
@@ -120,44 +122,81 @@ export class PrimeAgentRpcClient extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
     const child = this.child;
     if (!child) return;
+
     this.child = null;
     this.rejectPending(new Error('PrimeAgentRpcClient stopped'));
-    child.kill('SIGTERM');
+    this.stopPromise = this.terminate(child).finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
   }
 
-  private consume(chunk: string): void {
-    this.buffer += chunk;
-    const maxBufferBytes = this.options.maxBufferBytes ?? 16 * 1024 * 1024;
-    if (
-      Buffer.byteLength(this.buffer) > maxBufferBytes &&
-      !this.buffer.includes('\n')
-    ) {
-      this.buffer = '';
-      this.emit(
-        'protocolError',
-        new Error(
-          `prime-agent RPC input buffer exceeded ${maxBufferBytes} bytes`
-        )
-      );
-      return;
+  private async terminate(child: ChildProcess): Promise<void> {
+    let closed = false;
+    const onClose = () => {
+      closed = true;
+    };
+    child.once('close', onClose);
+    const waitForClose = (timeoutMs: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        if (closed) {
+          resolve(true);
+          return;
+        }
+        const onWaitClose = () => {
+          clearTimeout(timer);
+          resolve(true);
+        };
+        const timer = setTimeout(() => {
+          child.removeListener('close', onWaitClose);
+          resolve(closed);
+        }, timeoutMs);
+        timer.unref?.();
+        child.once('close', onWaitClose);
+      });
+    const timeoutMs = this.options.stopTimeoutMs ?? 2_000;
+
+    try {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // The process may already have exited.
+      }
+      if (await waitForClose(timeoutMs)) return;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // The process may already have exited.
+      }
+      await waitForClose(timeoutMs);
+    } finally {
+      child.removeListener('close', onClose);
     }
+  }
+
+  private consume(chunk: Buffer | string): void {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    this.buffer = Buffer.concat([this.buffer, bytes]);
+    const maxBufferBytes = this.options.maxBufferBytes ?? 16 * 1024 * 1024;
     let newline: number;
     // Deliberately split only on ASCII LF. U+2028/U+2029 are JSON content.
-    while ((newline = this.buffer.indexOf('\n')) !== -1) {
-      let line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (line.endsWith('\r')) line = line.slice(0, -1);
-      if (line.length === 0) continue;
+    while ((newline = this.buffer.indexOf(0x0a)) !== -1) {
+      let lineBytes = this.buffer.subarray(0, newline);
+      this.buffer = this.buffer.subarray(newline + 1);
+      if (lineBytes.at(-1) === 0x0d) lineBytes = lineBytes.subarray(0, -1);
+      if (lineBytes.length === 0) continue;
       const maxRecordBytes = this.options.maxRecordBytes ?? 8 * 1024 * 1024;
-      if (Buffer.byteLength(line) > maxRecordBytes) {
+      if (lineBytes.length > maxRecordBytes) {
         this.emit(
           'protocolError',
           new Error(`prime-agent RPC record exceeded ${maxRecordBytes} bytes`)
         );
         continue;
       }
+      const line = lineBytes.toString('utf8');
       let value: unknown;
       try {
         value = JSON.parse(line);
@@ -209,6 +248,24 @@ export class PrimeAgentRpcClient extends EventEmitter {
       } else {
         this.emit('event', message);
       }
+    }
+
+    // Check again after consuming complete records: a chunk can contain valid
+    // lines followed by an oversized unterminated tail.
+    if (this.buffer.length > maxBufferBytes) {
+      this.buffer = Buffer.alloc(0);
+      const error = new Error(
+        `prime-agent RPC input buffer exceeded ${maxBufferBytes} bytes`
+      );
+      this.emit('protocolError', error);
+      // Discarding an unterminated record loses framing. Stop rather than risk
+      // interpreting a later suffix as a fresh trusted record.
+      void this.stop().catch((stopError: unknown) =>
+        this.emit(
+          'error',
+          stopError instanceof Error ? stopError : new Error(String(stopError))
+        )
+      );
     }
   }
 

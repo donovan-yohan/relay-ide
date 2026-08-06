@@ -66,6 +66,37 @@ describe('PrimeAgentRpcClient', () => {
     ]);
   });
 
+  it('decodes UTF-8 characters split across stdout chunks', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    child.stdin.once('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string };
+      child.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: 'get_state',
+          success: true,
+        }) + '\n'
+      );
+    });
+    await client.start();
+    const events: unknown[] = [];
+    client.on('event', (event) => events.push(event));
+    const record = Buffer.from(
+      JSON.stringify({ type: 'message_update', text: 'before 😀 after' }) + '\n'
+    );
+    const emoji = Buffer.from('😀');
+    const splitAt = record.indexOf(emoji) + 2;
+    child.stdout.write(record.subarray(0, splitAt));
+    child.stdout.write(record.subarray(splitAt));
+    expect(events).toEqual([
+      { type: 'message_update', text: 'before 😀 after' },
+    ]);
+  });
+
   it('rejects failed and mismatched correlated responses', async () => {
     const child = fakeChild();
     const client = new PrimeAgentRpcClient({
@@ -89,12 +120,13 @@ describe('PrimeAgentRpcClient', () => {
     );
   });
 
-  it('bounds unterminated input and oversized records without killing the transport', async () => {
+  it('bounds oversized records and a trailing unterminated tail', async () => {
     const child = fakeChild();
     const client = new PrimeAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
       maxBufferBytes: 32,
       maxRecordBytes: 100,
+      stopTimeoutMs: 5,
     });
     child.stdin.once('data', (chunk) => {
       const request = JSON.parse(String(chunk)) as { id: string };
@@ -109,15 +141,60 @@ describe('PrimeAgentRpcClient', () => {
     });
     await client.start();
     const errors: Error[] = [];
+    const events: unknown[] = [];
     client.on('protocolError', (error) => errors.push(error));
-    child.stdout.write('x'.repeat(33));
+    client.on('event', (event) => events.push(event));
     child.stdout.write(
       JSON.stringify({ type: 'event', text: 'y'.repeat(120) }) + '\n'
     );
+    child.stdout.write(
+      JSON.stringify({ type: 'event', accepted: true }) + '\n' + 'x'.repeat(33)
+    );
+    expect(events).toEqual([{ type: 'event', accepted: true }]);
     expect(errors.map((error) => error.message)).toEqual([
-      expect.stringContaining('input buffer exceeded'),
       expect.stringContaining('record exceeded'),
+      expect.stringContaining('input buffer exceeded'),
     ]);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', 0);
+  });
+
+  it('awaits close and escalates stop to SIGKILL after a bounded delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const client = new PrimeAgentRpcClient({
+        spawn: () => child as unknown as ChildProcess,
+        stopTimeoutMs: 10,
+      });
+      child.stdin.once('data', (chunk) => {
+        const request = JSON.parse(String(chunk)) as { id: string };
+        child.stdout.write(
+          JSON.stringify({
+            id: request.id,
+            type: 'response',
+            command: 'get_state',
+            success: true,
+          }) + '\n'
+        );
+      });
+      await client.start();
+
+      let stopped = false;
+      const stopping = client.stop().then(() => {
+        stopped = true;
+      });
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(stopped).toBe(false);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(stopped).toBe(false);
+      child.emit('close', 0);
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('times out readiness when get_state never responds', async () => {

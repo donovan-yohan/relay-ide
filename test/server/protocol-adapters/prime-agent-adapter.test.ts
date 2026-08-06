@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { PrimeAgentRpcClient } from '../../../server/prime-agent-rpc-client.js';
 import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
@@ -46,7 +49,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       resume: true,
       approvals: false,
       questions: false,
-      compact: false,
+      compact: true,
       telemetry: true,
     });
     const snapshot = patches.find(
@@ -143,77 +146,82 @@ describe('PrimeAgentProtocolAdapter', () => {
     ).toBe(true);
   });
 
-  it('uses steer while active and abort for interrupt', async () => {
+  it('queues locally while active and uses abort for interrupt', async () => {
     const { adapter, call } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
     await adapter.interrupt({ turnId: 't1' });
-    expect(call.mock.calls.map(([type]) => type)).toEqual([
-      'set_steering_mode',
-      'prompt',
-      'steer',
-      'abort',
-    ]);
+    expect(call.mock.calls.map(([type]) => type)).toEqual(['prompt', 'abort']);
   });
 
-  it('advances multiple accepted steer turns at agent_end boundaries', async () => {
-    const { adapter, client, patches } = harness();
+  it('submits queued Relay turns as fresh prompts after real agent_end boundaries', async () => {
+    const { adapter, client, call, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
     await adapter.sendMessage({ turnId: 't3', content: 'three' });
-    client.emit('event', { type: 'agent_end' });
-    client.emit('event', { type: 'agent_start' });
-    client.emit('event', { type: 'turn_start' });
-    client.emit('event', { type: 'agent_end' });
-    client.emit('event', { type: 'agent_start' });
-    client.emit('event', { type: 'agent_end' });
+
+    client.emit('event', { type: 'turn_end' });
     expect(
-      patches
-        .filter((patch) => patch.type === 'agent-turn-started-v2')
-        .map((patch) => (patch.turn as { id: string }).id)
-    ).toEqual(['t1', 't2', 't3']);
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+
+    client.emit('event', { type: 'agent_end' });
+    await vi.waitFor(() =>
+      expect(
+        patches
+          .filter((patch) => patch.type === 'agent-turn-started-v2')
+          .map((patch) => (patch.turn as { id: string }).id)
+      ).toEqual(['t1', 't2'])
+    );
+    client.emit('event', { type: 'agent_end' });
+    await vi.waitFor(() =>
+      expect(
+        patches
+          .filter((patch) => patch.type === 'agent-turn-started-v2')
+          .map((patch) => (patch.turn as { id: string }).id)
+      ).toEqual(['t1', 't2', 't3'])
+    );
+    client.emit('event', { type: 'agent_end' });
+
     expect(
       patches
         .filter((patch) => patch.type === 'agent-turn-completed-v2')
         .map((patch) => patch.turnId)
     ).toEqual(['t1', 't2', 't3']);
+    expect(
+      call.mock.calls
+        .filter(([type]) => type === 'prompt')
+        .map(([, payload]) => (payload as { message: string }).message)
+    ).toEqual(['one', 'two', 'three']);
   });
 
-  it('does not promote a steer turn before its acknowledgement', async () => {
+  it('fails closed when a queued prompt acknowledgement is ambiguous', async () => {
     const { adapter, client, call, patches } = harness();
-    let rejectSteer: ((error: Error) => void) | undefined;
-    call.mockImplementation(async (type) => {
-      if (type === 'steer') {
-        return new Promise((_, reject) => {
-          rejectSteer = reject;
-        });
-      }
+    call.mockImplementation(async (type, payload) => {
+      if (
+        type === 'prompt' &&
+        (payload as { message?: string }).message === 'two'
+      )
+        throw new Error('prompt timed out');
       return { type: 'response', command: type, success: true };
     });
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    const queued = adapter.sendMessage({ turnId: 't2', content: 'two' });
-    const rejected = expect(queued).rejects.toThrow('steer rejected');
-
+    await adapter.sendMessage({ turnId: 't2', content: 'two' });
     client.emit('event', { type: 'agent_end' });
-    expect(
-      patches
-        .filter((patch) => patch.type === 'agent-turn-started-v2')
-        .map((patch) => (patch.turn as { id: string }).id)
-    ).toEqual(['t1']);
 
-    rejectSteer?.(new Error('steer rejected'));
-    await rejected;
-    expect(adapter.status).toBe('disconnected');
-    expect(
-      patches.some(
-        (patch) =>
-          patch.type === 'agent-turn-started-v2' &&
-          (patch.turn as { id: string }).id === 't2'
-      )
-    ).toBe(false);
+    await vi.waitFor(() => expect(adapter.status).toBe('disconnected'));
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't2',
+          status: 'failed',
+        }),
+      ])
+    );
   });
 
   it('fails closed on protocol corruption and unexpected close', async () => {
@@ -266,9 +274,106 @@ describe('PrimeAgentProtocolAdapter', () => {
         ],
       })
     ).rejects.toThrow('Cannot read Prime Agent image attachment');
-    expect(call.mock.calls.map(([type]) => type)).toEqual([
-      'set_steering_mode',
-    ]);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('bounds image count and rejects MIME-mismatched bytes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'relay-prime-image-'));
+    const path = join(directory, 'image.png');
+    try {
+      writeFileSync(path, 'not an image');
+      const mismatched = harness();
+      await mismatched.adapter.connect(config);
+      await expect(
+        mismatched.adapter.sendMessage({
+          turnId: 'bad-image',
+          content: 'image',
+          attachments: [{ type: 'image', path, mimeType: 'image/png' }],
+        })
+      ).rejects.toThrow('do not match the declared image');
+
+      const excessive = harness();
+      await excessive.adapter.connect(config);
+      await expect(
+        excessive.adapter.sendMessage({
+          turnId: 'many-images',
+          content: 'images',
+          attachments: Array.from({ length: 5 }, () => ({
+            type: 'image' as const,
+            path,
+            mimeType: 'image/png',
+          })),
+        })
+      ).rejects.toThrow('at most 4 images');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on an ambiguous initial prompt acknowledgement', async () => {
+    const { adapter, client, call, patches } = harness();
+    call.mockImplementation(async (type) => {
+      if (type === 'prompt') throw new Error('prompt timed out');
+      return { type: 'response', command: type, success: true };
+    });
+    await adapter.connect(config);
+    await expect(
+      adapter.sendMessage({ turnId: 'timeout', content: 'hello' })
+    ).rejects.toThrow('prompt timed out');
+    expect(adapter.status).toBe('disconnected');
+    expect(client.stop).toHaveBeenCalled();
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' && patch.turnId === 'timeout'
+      )
+    ).toEqual([expect.objectContaining({ status: 'failed' })]);
+  });
+
+  it('maps extension errors to nonfatal debug diagnostics', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'hello' });
+    client.emit('event', { type: 'extension_error', error: 'hook failed' });
+    client.emit('event', { type: 'agent_end' });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-item-started-v2',
+          item: expect.objectContaining({
+            type: 'providerExtension',
+            payload: { kind: 'extensionError', error: 'hook failed' },
+          }),
+        }),
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 't1',
+          status: 'completed',
+        }),
+      ])
+    );
+  });
+
+  it('runs /compact through native RPC and terminalizes the Relay turn', async () => {
+    const { adapter, call, patches } = harness();
+    call.mockImplementation(async (type) => ({
+      type: 'response',
+      command: type,
+      success: true,
+      ...(type === 'compact' ? { data: { tokensBefore: 100 } } : {}),
+    }));
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 'compact', content: '/compact' });
+    expect(call.mock.calls.map(([type]) => type)).toEqual(['compact']);
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 'compact',
+          status: 'completed',
+        }),
+      ])
+    );
   });
 
   it('disables extensions until extension UI requests are mapped', async () => {

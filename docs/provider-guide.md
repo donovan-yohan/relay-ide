@@ -41,10 +41,10 @@ lifecycle, `message_update` text and
 thinking deltas to assistant and reasoning items, and
 `tool_execution_start|update|end` to canonical command, file-change, or dynamic
 tool items. It advertises text, reasoning, tools, command execution, file
-changes, queueing, interrupt, resume, telemetry, and streaming; unsupported
-approval, question, plan, and queue-cancellation operations remain false. Relay
-pins Prime's steering scheduler to one-at-a-time so each queued native action has
-one durable Relay turn. Channel subprocesses currently launch with
+changes, queueing, interrupt, resume, compaction, telemetry, and streaming; unsupported
+approval, question, plan, and queue-cancellation operations remain false. Because Prime steering stays within one native run, Relay queues concurrent
+messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
+one durable Relay turn per message. Channel subprocesses currently launch with
 `--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
 to Relay approvals/questions yet.
 

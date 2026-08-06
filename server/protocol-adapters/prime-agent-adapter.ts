@@ -39,7 +39,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   resume: true,
   fork: false,
   rollback: false,
-  compact: false,
+  compact: true,
   telemetry: true,
   rateLimits: false,
   streaming: true,
@@ -88,6 +88,34 @@ function isFileTool(name: string): boolean {
   return /^(edit|write|patch|apply_patch|create|delete|move)/i.test(name);
 }
 
+const MAX_IMAGE_COUNT = 4;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_TOTAL_BYTES = MAX_IMAGE_COUNT * MAX_IMAGE_BYTES;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
+
+function matchesImageSignature(bytes: Buffer, mimeType: string): boolean {
+  if (mimeType === 'image/png')
+    return bytes
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mimeType === 'image/jpeg')
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mimeType === 'image/gif') {
+    const signature = bytes.subarray(0, 6).toString('ascii');
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  return (
+    mimeType === 'image/webp' &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  );
+}
+
 export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   readonly agentType = 'prime-agent';
   readonly runtimeOwnership = 'spawned' as const;
@@ -107,8 +135,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private turnUsage: AgentUsageV2 | undefined;
   private clientGeneration = 0;
   private readonly queued: AgentSendMessageInputV2[] = [];
-  private readonly acceptedQueued = new Set<AgentSendMessageInputV2>();
-  private queuedAdvancePending = false;
+  private queueAdvanceInFlight = false;
+  private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
 
   constructor(
@@ -163,10 +191,6 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       const response = await client.start();
       this.applyState(record(response.data));
-      // Pin one native scheduler action to one Relay turn. Prime persists this
-      // preference, but setting it on every fresh subprocess keeps attribution
-      // deterministic across upgrades and user configuration changes.
-      await client.call('set_steering_mode', { mode: 'one-at-a-time' });
       this._status = 'connected';
       this.emitSnapshot();
       this.emitLive({
@@ -193,8 +217,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     await this.teardownClient();
     this.activeTurnId = null;
     this.queued.length = 0;
-    this.acceptedQueued.clear();
-    this.queuedAdvancePending = false;
+    this.queueAdvanceInFlight = false;
     this.items.clear();
   }
 
@@ -213,6 +236,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         ? { resumeSessionId: this.providerSessionId }
         : {}),
     };
+    this.resetForTransportSwitch('Prime Agent transport reconnected');
     this._status = 'disconnected';
     await this.teardownClient();
     await this.connect(config);
@@ -221,6 +245,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   async resumeSession(sessionId: string): Promise<void> {
     if (!this.config) throw new Error('Cannot resumeSession before connect');
     const config = { ...this.config, resumeSessionId: sessionId };
+    this.resetForTransportSwitch('Prime Agent session switched');
     this._status = 'disconnected';
     await this.teardownClient();
     await this.connect(config);
@@ -232,42 +257,26 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const images = this.readImages(input.attachments);
     if (images.length) payload.images = images;
     if (this.activeTurnId) {
-      // Enqueue before awaiting the acknowledgement: native events and command
-      // responses share stdout, so a very fast turn may end before the response
-      // promise resumes this continuation. Promotion waits for acceptance.
+      // Prime `steer` stays inside the current native agent run and therefore
+      // has no separate agent_end boundary that Relay can attribute to this
+      // turn. Keep Relay turns local and submit a fresh prompt after agent_end.
       this.queued.push(input);
       this.emitLive({
         status: 'working',
         activeTurnId: this.activeTurnId,
         queueLength: this.queued.length,
       });
-      try {
-        await client.call('steer', payload);
-        this.acceptedQueued.add(input);
-        this.promoteAcceptedQueuedTurn();
-      } catch (error) {
-        const index = this.queued.indexOf(input);
-        if (index !== -1) this.queued.splice(index, 1);
-        this.acceptedQueued.delete(input);
-        // A failed or timed-out acknowledgement is ambiguous once native
-        // lifecycle events may have advanced. Fail closed rather than create a
-        // Relay turn for work Prime may not have accepted.
-        this.handleTransportClose(
-          error instanceof Error ? error : new Error(String(error))
-        );
-        this.emitLive({ queueLength: this.queued.length });
-        throw error;
-      }
       return;
     }
 
     this.startTurn(input);
     try {
-      await client.call('prompt', payload);
+      await this.submitNativeInput(client, input, payload);
     } catch (error) {
-      this.completeTurn(
-        'failed',
-        error instanceof Error ? error.message : String(error)
+      // A timeout is ambiguous: Prime may have accepted the prompt. Stop the
+      // private runtime so late events/tools cannot outlive Relay attribution.
+      this.handleTransportClose(
+        error instanceof Error ? error : new Error(String(error))
       );
       throw error;
     }
@@ -308,8 +317,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
             : 'completed',
         this.turnFailure ?? undefined
       );
-      this.queuedAdvancePending = this.queued.length > 0;
-      this.promoteAcceptedQueuedTurn();
+      void this.advanceQueuedTurn();
       return;
     }
     if (type === 'message_update') {
@@ -354,8 +362,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
     if (type === 'extension_error') {
-      this.turnFailure = string(event.error, 'Prime Agent extension error');
-      this.emitError(this.turnFailure);
+      this.emitProviderExtension(
+        {
+          kind: 'extensionError',
+          error: string(event.error, 'Prime Agent extension error'),
+        },
+        'debug'
+      );
       return;
     }
     if (type === 'auto_retry_end' && event.success === false) {
@@ -435,8 +448,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         status: 'running',
         startedAt: nowIso(),
       };
-    else if (isFileTool(name)) {
-      const path = string(args.path ?? args.file_path, 'unknown');
+    else if (
+      isFileTool(name) &&
+      string(args.path ?? args.file_path).length > 0
+    ) {
+      const path = string(args.path ?? args.file_path);
       item = {
         type: 'fileChange',
         id,
@@ -595,20 +611,50 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     };
   }
 
-  private promoteAcceptedQueuedTurn(): void {
+  private async submitNativeInput(
+    client: PrimeAgentRpcClient,
+    input: AgentSendMessageInputV2,
+    payload: RpcRecord
+  ): Promise<void> {
+    if (input.content.trim() !== '/compact') {
+      await client.call('prompt', payload);
+      return;
+    }
+    const response = await client.call('compact');
+    this.emitProviderExtension({
+      kind: 'contextCompaction',
+      ...record(response.data),
+    });
+    this.completeTurn('completed');
+    void this.advanceQueuedTurn();
+  }
+
+  private async advanceQueuedTurn(): Promise<void> {
     if (
-      !this.queuedAdvancePending ||
+      this.queueAdvanceInFlight ||
       this.activeTurnId ||
-      this.queued.length === 0
+      this.queued.length === 0 ||
+      this._status !== 'connected'
     ) {
       return;
     }
-    const next = this.queued[0];
-    if (!next || !this.acceptedQueued.has(next)) return;
-    this.queued.shift();
-    this.acceptedQueued.delete(next);
-    this.queuedAdvancePending = false;
+    const next = this.queued.shift();
+    if (!next) return;
+    this.queueAdvanceInFlight = true;
     this.startTurn(next);
+    try {
+      const payload: RpcRecord = { message: next.content };
+      const images = this.readImages(next.attachments);
+      if (images.length) payload.images = images;
+      await this.submitNativeInput(this.requireClient(), next, payload);
+    } catch (error) {
+      this.handleTransportClose(
+        error instanceof Error ? error : new Error(String(error))
+      );
+    } finally {
+      this.queueAdvanceInFlight = false;
+      if (!this.activeTurnId) void this.advanceQueuedTurn();
+    }
   }
 
   private startTurn(input: AgentSendMessageInputV2): void {
@@ -751,6 +797,40 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
     });
   }
+  private emitProviderExtension(
+    payload: Record<string, unknown>,
+    visibility: 'normal' | 'debug' = 'normal'
+  ): void {
+    if (!this.activeTurnId) return;
+    const sequence = ++this.providerExtensionSequence;
+    const timestamp = nowIso();
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp,
+      turnId: this.activeTurnId,
+      item: {
+        type: 'providerExtension',
+        id: `ext-prime-agent-${this.activeTurnId}-${sequence}`,
+        namespace: 'prime-agent',
+        payload,
+        ...(visibility === 'debug'
+          ? { metadata: { eventVisibility: 'debug' } }
+          : {}),
+        status: 'completed',
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    });
+  }
+
+  private resetForTransportSwitch(reason: string): void {
+    if (this.activeTurnId) this.completeTurn('failed', reason);
+    this.queued.length = 0;
+    this.queueAdvanceInFlight = false;
+    this.items.clear();
+  }
+
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {
     this.emitPatch({
       type: 'agent-live-state-updated-v2',
@@ -802,9 +882,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (this._status === 'disconnected') return;
     if (this.activeTurnId) this.completeTurn('failed', error.message);
     this.queued.length = 0;
-    this.acceptedQueued.clear();
-    this.queuedAdvancePending = false;
+    this.queueAdvanceInFlight = false;
     this._status = 'disconnected';
+    const client = this.client;
+    this.client = null;
+    this.clientGeneration += 1;
+    void client?.stop().catch(() => undefined);
     this.emitError(error.message);
     this.emitLive({
       status: 'disconnected',
@@ -816,14 +899,43 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private readImages(
     attachments: AgentSendMessageInputV2['attachments'] = []
   ): RpcRecord[] {
+    const imageAttachments = attachments.filter(
+      (attachment) => attachment.type === 'image'
+    );
+    if (imageAttachments.length > MAX_IMAGE_COUNT) {
+      throw new Error(`Prime Agent accepts at most ${MAX_IMAGE_COUNT} images`);
+    }
     const images: RpcRecord[] = [];
-    for (const attachment of attachments) {
-      if (attachment.type !== 'image') continue;
+    let totalBytes = 0;
+    for (const attachment of imageAttachments) {
+      const mimeType = attachment.mimeType ?? '';
+      if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+        throw new Error(
+          `Unsupported Prime Agent image MIME type: ${mimeType || 'missing'}`
+        );
+      }
       try {
+        const stat = fs.lstatSync(attachment.path);
+        if (!stat.isFile() || stat.isSymbolicLink())
+          throw new Error('attachment must be a regular non-symlink file');
+        if (stat.size > MAX_IMAGE_BYTES)
+          throw new Error(`attachment exceeds ${MAX_IMAGE_BYTES} bytes`);
+        totalBytes += stat.size;
+        if (totalBytes > MAX_IMAGE_TOTAL_BYTES)
+          throw new Error(
+            `attachments exceed ${MAX_IMAGE_TOTAL_BYTES} aggregate bytes`
+          );
+        const bytes = fs.readFileSync(attachment.path);
+        if (
+          bytes.length > MAX_IMAGE_BYTES ||
+          !matchesImageSignature(bytes, mimeType)
+        ) {
+          throw new Error('attachment bytes do not match the declared image');
+        }
         images.push({
           type: 'image',
-          data: fs.readFileSync(attachment.path).toString('base64'),
-          mimeType: attachment.mimeType,
+          data: bytes.toString('base64'),
+          mimeType,
         });
       } catch (error) {
         throw new Error(
