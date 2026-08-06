@@ -1291,6 +1291,32 @@
     cursor: default;
   }
 
+  .topic-mobile-group__select {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .topic-mobile-group__select:hover,
+  .topic-mobile-group__select:focus-visible,
+  .topic-mobile-group__toggle:hover,
+  .topic-mobile-group__toggle:focus-visible,
+  .topic-mobile-group__add:hover,
+  .topic-mobile-group__add:focus-visible {
+    color: var(--accent);
+  }
+
   /* #1287: empty-lane affordance at touch scale. Same `new chat` control as
      the rail header, sized to the 44px mobile row rhythm. */
   .topic-mobile-group__empty {
@@ -1310,9 +1336,39 @@
     opacity: 0.6;
   }
 
-  .topic-mobile-group__toggle {
-    margin-left: auto;
+  .topic-mobile-group__toggle,
+  .topic-mobile-group__add {
+    display: grid;
+    flex: 0 0 var(--icon-slot-width);
+    place-items: center;
+    width: var(--icon-slot-width);
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .topic-mobile-group__toggle svg,
+  .topic-mobile-group__add svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1.5;
+  }
+
+  .topic-mobile-group__toggle[aria-expanded='true'] svg {
+    transform: rotate(90deg);
+  }
+
+  .topic-mobile-group__add {
+    margin-left: auto;
+  }
+
+  .topic-mobile-group__add:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .topic-mobile-group__dm-header {
@@ -1562,7 +1618,9 @@
 .topic-workspace-group__select:hover,
 .topic-workspace-group__select:focus-visible,
 .topic-workspace-group__toggle:hover,
-.topic-workspace-group__toggle:focus-visible {
+.topic-workspace-group__toggle:focus-visible,
+.topic-workspace-group__add:hover,
+.topic-workspace-group__add:focus-visible {
   color: var(--accent);
 }
 
@@ -1595,19 +1653,52 @@
   white-space: nowrap;
 }
 
-/* #1287 slice 5: lane fold affordance, pinned hard right exactly as the mobile
-   cockpit's. Color is inherited rather than re-declared so it follows the
-   header's hover/focus accent instead of staying muted under the cursor. */
+/* Project headers use a fixed left icon slot for folding and retain the right
+   action slot for chat creation. Color is inherited so hover/focus follows the
+   TUI accent rather than adding a second button treatment. */
 .topic-workspace-group__toggle {
+  display: grid;
   flex-shrink: 0;
-  margin-left: auto;
-  padding: 0 0 0 6px;
+  place-items: center;
+  width: var(--icon-slot-width);
+  min-height: var(--icon-slot-width);
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   color: inherit;
-  font: inherit;
   cursor: pointer;
+}
+
+.topic-workspace-group__toggle svg,
+.topic-workspace-group__add svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
+}
+
+.topic-workspace-group__toggle[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+
+.topic-workspace-group__add {
+  display: grid;
+  flex-shrink: 0;
+  margin-left: auto;
+  place-items: center;
+  width: var(--icon-slot-width);
+  min-height: var(--icon-slot-width);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.topic-workspace-group__add:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .topic-tree__list {

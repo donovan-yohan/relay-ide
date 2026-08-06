@@ -73,14 +73,19 @@ test.describe('smoke sidebar mechanics demotion (#1194)', () => {
     await expect(page.locator('.topic-shell__advanced-detail')).toHaveCount(0);
     await expect(page.getByText('task room', { exact: true })).toHaveCount(0);
     await expect(page.getByText('raw terminal attach')).toHaveCount(0);
-    await expect(page.locator('.sidebar')).toHaveScreenshot(
-      'sidebar-default-no-mechanics.png',
-      {
-        animations: 'disabled',
-        maxDiffPixels: 120,
-        threshold: 0.2,
-      }
-    );
+    const sidebar = page.locator('.sidebar');
+    // `openFixture` waits for a lower rail row, which Playwright may reveal by
+    // scrolling its nearest overflow ancestor. The visual contract is the
+    // sidebar's canonical top position, where its header and footer stay in
+    // frame, not that incidental wait-state scroll offset.
+    await sidebar.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await expect(sidebar).toHaveScreenshot('sidebar-default-no-mechanics.png', {
+      animations: 'disabled',
+      maxDiffPixels: 120,
+      threshold: 0.2,
+    });
   });
 
   test('existing Settings advanced toggle reveals the relocated mechanics', async ({
@@ -210,7 +215,7 @@ test.describe('sidebar desktop/mobile IA parity (#1205)', () => {
 
     const relayHeader = mobileGroups
       .nth(0)
-      .locator('.topic-mobile-group__header');
+      .locator('.topic-mobile-group__toggle');
     await expect(relayHeader).toHaveAttribute('aria-expanded', 'true');
     await relayHeader.click();
     await expect(relayHeader).toHaveAttribute('aria-expanded', 'false');

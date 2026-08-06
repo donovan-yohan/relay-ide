@@ -134,6 +134,8 @@ export interface TopicNavWorkspace {
    * of its own leaves the existing pointer alone.
    */
   defaultRepoPath?: string | null;
+  /** Default execution node for a project-scoped new chat. */
+  defaultNodeId?: string | null;
 }
 
 /**

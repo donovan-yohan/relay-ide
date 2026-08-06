@@ -51,7 +51,9 @@ import type { SessionSummary } from '../lib/types.js';
  * the retry in a different repo than the row that was already created.
  */
 function spendLaneRepoRouting(): void {
-  useUiStore.getState().setLaneRepoRouting(null);
+  const ui = useUiStore.getState();
+  ui.setLaneRepoRouting(null);
+  ui.setProjectCreateRouting(null);
 }
 
 /**
@@ -62,8 +64,17 @@ function spendLaneRepoRouting(): void {
  */
 export function useTopicRoomCreate({
   onLaunched,
+  workspace,
 }: {
   onLaunched?: ((sessionId: string) => void) | undefined;
+  /** A real IA workspace selected by the composer, when one is available. */
+  workspace?:
+    | {
+        id: string;
+        defaultRepoPath: string | null;
+        defaultNodeId: string | null;
+      }
+    | undefined;
 } = {}) {
   const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
@@ -100,7 +111,9 @@ export function useTopicRoomCreate({
 
   const effectiveTitle = effectiveDraftTitle(draft);
   const taskRef = taskRefFromDraft(draft.taskRef, effectiveTitle);
-  const defaultNodeId = activeSession?.nodeId ?? undefined;
+  const defaultNodeId = workspace
+    ? (workspace.defaultNodeId ?? undefined)
+    : (activeSession?.nodeId ?? undefined);
   // #1303: a workspace lane the operator explicitly selected outranks EVERY
   // inherited anchor below it. The lane click is the newest statement of where
   // this chat belongs, and the create files the channel in that lane
@@ -112,8 +125,14 @@ export function useTopicRoomCreate({
   // Only while the stamp still describes the ACTIVE lane: once the operator
   // moves on, the lane it was about is no longer the one being created in, and
   // the ordinary inheritance chain is the honest answer again.
+  // A composer-selected project is synchronous input to the create itself,
+  // not merely a store side effect from the selector. This closes the small
+  // React-render window where a user could change project and submit before a
+  // stale active session had been displaced by the lane stamp.
+  const workspaceId = workspace?.id ?? activeWorkspaceId;
+  const selectedWorkspaceRepoPath = workspace?.defaultRepoPath ?? undefined;
   const laneRepoPath =
-    laneRepoRouting && laneRepoRouting.workspaceId === activeWorkspaceId
+    laneRepoRouting && laneRepoRouting.workspaceId === workspaceId
       ? laneRepoRouting.repoPath
       : undefined;
   // ...and only where it actually DISAGREES with the session. The lane and the
@@ -123,33 +142,41 @@ export function useTopicRoomCreate({
   // knows only the main checkout. Overriding unconditionally would start the
   // agent in the wrong tree of the RIGHT repo, which is the same class of bug
   // pointed the other way.
+  const selectedWorkspaceWithoutRepo =
+    workspace !== undefined && !selectedWorkspaceRepoPath;
+  const projectRepoPath = workspace ? selectedWorkspaceRepoPath : laneRepoPath;
   const laneOverridesSession =
-    laneRepoPath !== undefined && activeSession?.repoPath !== laneRepoPath;
-  const laneAnchor = laneOverridesSession ? laneRepoPath : undefined;
+    !selectedWorkspaceWithoutRepo &&
+    projectRepoPath !== undefined &&
+    activeSession?.repoPath !== projectRepoPath;
+  const laneAnchor = laneOverridesSession ? projectRepoPath : undefined;
   // Prefer repo/worktree context when it exists, but launch only needs a cwd
   // anchor. Fresh dev/self-host sessions can rely on the backend's local cwd
   // fallback when no repo has been configured yet.
-  const defaultRepoPath =
-    laneAnchor ??
-    activeSession?.repoPath ??
-    activeRepoPath ??
-    repos[0]?.path ??
-    undefined;
+  const defaultRepoPath = selectedWorkspaceWithoutRepo
+    ? undefined
+    : (laneAnchor ??
+      activeSession?.repoPath ??
+      activeRepoPath ??
+      repos[0]?.path ??
+      undefined);
   // A worktree and a cwd from the abandoned project are the SAME bug wearing a
   // different field: `buildTopicRoomLaunchBody` copies both, and `cwd` is what
   // the process actually starts in — so a lane-routed create that kept them
   // would claim the new repo and run in the old one. The lane anchor replaces
   // them wholesale; a lane has no worktree of its own to offer. A session
   // inside the lane's own repo keeps both.
-  const defaultWorktreePath = laneOverridesSession
+  const defaultWorktreePath =
+    selectedWorkspaceWithoutRepo || laneOverridesSession
+      ? undefined
+      : (activeSession?.worktreePath ?? undefined);
+  const defaultCwd = selectedWorkspaceWithoutRepo
     ? undefined
-    : (activeSession?.worktreePath ?? undefined);
-  const defaultCwd =
-    laneAnchor ??
-    activeSession?.cwd ??
-    defaultWorktreePath ??
-    defaultRepoPath ??
-    undefined;
+    : (laneAnchor ??
+      activeSession?.cwd ??
+      defaultWorktreePath ??
+      defaultRepoPath ??
+      undefined);
   const selectedProviderId = draft.providerId.trim() || defaultAgent;
   const nodes = useMemo(
     () =>
@@ -210,7 +237,7 @@ export function useTopicRoomCreate({
     () =>
       buildTopicRoomCreateInput({
         draft: { ...draft, title: effectiveTitle },
-        workspaceId: activeWorkspaceId,
+        workspaceId,
         defaultProviderId: defaultAgent,
         defaultNodeId,
         defaultRepoPath,
@@ -220,7 +247,7 @@ export function useTopicRoomCreate({
       }),
     [
       defaultNodeId,
-      activeWorkspaceId,
+      workspaceId,
       draft,
       defaultAgent,
       defaultCwd,
@@ -309,7 +336,7 @@ export function useTopicRoomCreate({
           const topic = await getOrCreateDmChannel({
             providerId: selectedProviderId,
             providerDisplayName: framework?.displayName ?? selectedProviderId,
-            workspaceId: activeWorkspaceId,
+            workspaceId,
           });
           // #1287 item 8: open the channel BEFORE posting. An archived DM — the
           // plain read hands one back, no race needed — rejects the post with
@@ -454,7 +481,7 @@ export function useTopicRoomCreate({
       }
     },
     [
-      activeWorkspaceId,
+      workspaceId,
       createdRoom,
       draft.prompt,
       draft.templateKind,

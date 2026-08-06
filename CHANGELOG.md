@@ -25,6 +25,8 @@ workflow.
 - Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
 - Control Prime Agent models, reasoning, compaction, and fresh sessions from the `@agent/` command palette (#1345)
 - Create and name new folders directly in the local Add Project browser (#1338)
+- Start project-scoped channels and direct messages from per-project sidebar
+  add controls, with an explicit project selector in New Chat (#1347)
 - `@agent/` opens a provider-aware command palette for channel controls,
   including Codex Fast Mode, model, and reasoning-effort changes (#1344)
 

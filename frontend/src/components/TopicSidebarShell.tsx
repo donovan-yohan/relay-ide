@@ -10,11 +10,13 @@ import {
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import {
+  ChevronRight,
   CircleAlert,
   Folder,
   GitBranch,
   LoaderCircle,
   MessageSquare,
+  Plus,
   TriangleAlert,
 } from 'lucide-react';
 import { builtInAgentProfileId } from '../../../shared/agent-profile.js';
@@ -60,6 +62,7 @@ import { AgentAvatar } from './chat/AgentAvatar.js';
 import { leaveChatSurface, openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
   applyCreateRoutingContext,
+  applyWorkspaceCreateRoutingContext,
   openChannelMessageSelection,
   openTopicSelection,
 } from '../lib/topic-selection.js';
@@ -2296,6 +2299,7 @@ function TopicMobileCockpit({
                 expanded={expanded}
                 onSelectWorkspace={onSelectWorkspace}
                 onToggleCollapsed={toggleGroup}
+                onStartChat={onStartChatInWorkspace}
               />
               {!expanded ? null : group.empty ? (
                 <WorkspaceLaneStartChat
@@ -2643,18 +2647,12 @@ function WorkspaceLaneStartChat({
  * component now owns the whole lane gesture, so the two surfaces cannot drift
  * apart again.
  *
- * The gesture itself is per-breakpoint on purpose. Selecting a lane is how the
- * rail picks the create target for `new chat`, so binding select and fold to
- * one click would collapse the lane the operator just aimed at — two clicks to
- * see the channels they were selecting. Mobile ships that coupling because a
- * tap is the only lane-scale gesture a phone has; desktop has hover, focus and
- * room for a dedicated glyph, so the name selects and the trailing `−`/`+`
- * folds. `aria-expanded` rides whichever control owns the fold.
- *
- * The affordance is text (`−`/`+`), not an icon: it is the same character pair
- * the mobile cockpit shipped with, and it needs no stroke geometry to stay
- * legible at caption size. Deliberately NO channel count — the audit calls the
- * absence intentional.
+ * Selecting a lane is how the rail picks the create target for `new chat`, so
+ * it remains distinct from the leading chevron that folds it. The trailing
+ * plus starts a chat in this exact project. Mobile carries the same three
+ * separate controls: folding or starting a chat never accidentally selects a
+ * lane. `aria-expanded` rides the chevron that owns the fold. Deliberately NO
+ * channel count — the audit calls the absence intentional.
  */
 function WorkspaceLaneHeader({
   block,
@@ -2662,14 +2660,17 @@ function WorkspaceLaneHeader({
   expanded,
   onSelectWorkspace,
   onToggleCollapsed,
+  onStartChat,
 }: {
   block: 'topic-workspace-group' | 'topic-mobile-group';
   group: ChannelRailWorkspaceGroup;
   expanded: boolean;
   onSelectWorkspace: (workspaceId: string) => void;
   onToggleCollapsed: (workspaceId: string) => void;
+  onStartChat?: ((workspaceId: string) => void) | undefined;
 }) {
   const foldLabel = `${expanded ? 'collapse' : 'expand'} ${group.title}`;
+  const startLabel = `start a chat in ${group.title}`;
   const icon = group.icon ? (
     <span className={`${block}__icon`} aria-hidden="true">
       {group.icon}
@@ -2685,32 +2686,18 @@ function WorkspaceLaneHeader({
       />
     ) : null;
 
-  if (block === 'topic-mobile-group') {
-    return (
-      <button
-        type="button"
-        className={`${block}__header ${block}__header--select`}
-        aria-expanded={expanded}
-        title={foldLabel}
-        onClick={() => {
-          // One tap is the only lane-scale gesture at this breakpoint, so it
-          // both selects the lane (it is the create target) and folds it.
-          onSelectWorkspace(group.id);
-          onToggleCollapsed(group.id);
-        }}
-      >
-        {icon}
-        <span className={`${block}__name`}>{group.title}</span>
-        {unreadRollup}
-        <span className={`${block}__toggle`} aria-hidden="true">
-          {expanded ? '−' : '+'}
-        </span>
-      </button>
-    );
-  }
-
   return (
     <div className={`${block}__header ${block}__header--split`}>
+      <button
+        type="button"
+        className={`${block}__toggle`}
+        aria-expanded={expanded}
+        aria-label={foldLabel}
+        title={foldLabel}
+        onClick={() => onToggleCollapsed(group.id)}
+      >
+        <ChevronRight aria-hidden="true" />
+      </button>
       <button
         type="button"
         className={`${block}__select`}
@@ -2723,13 +2710,14 @@ function WorkspaceLaneHeader({
       {unreadRollup}
       <button
         type="button"
-        className={`${block}__toggle`}
-        aria-expanded={expanded}
-        aria-label={foldLabel}
-        title={foldLabel}
-        onClick={() => onToggleCollapsed(group.id)}
+        className={`${block}__add`}
+        data-workspace-start-chat={group.id}
+        disabled={!onStartChat}
+        aria-label={startLabel}
+        title={onStartChat ? startLabel : 'chat creation unavailable'}
+        onClick={onStartChat ? () => onStartChat(group.id) : undefined}
       >
-        {expanded ? '−' : '+'}
+        <Plus aria-hidden="true" />
       </button>
     </div>
   );
@@ -2768,6 +2756,7 @@ function GroupedTopicTree({
               expanded={expanded}
               onSelectWorkspace={onSelectWorkspace}
               onToggleCollapsed={toggleGroup}
+              onStartChat={onStartChatInWorkspace}
             />
             {!expanded ? null : group.empty ? (
               <WorkspaceLaneStartChat
@@ -3301,22 +3290,43 @@ export function TopicSidebarView({
   // that holds no channels yet can still become the active one. Selecting a
   // channel inside a lane already does this through the topic's context; this
   // is the only path for an empty lane.
-  const selectWorkspaceLane = useCallback((workspaceId: string) => {
-    useUiStore.getState().setActiveWorkspaceId(workspaceId);
-  }, []);
-  // Start a chat in a specific lane: stamp the lane's real workspace id first,
-  // because every create path (composer + DM) resolves its workspace from
-  // `activeWorkspaceId`. Without this the chat would land in whatever lane was
-  // selected last, and the empty lane could never fill. Then hand off to the
-  // SAME `openCreateTaskRoom` the rail header uses, so both new-chat buttons
-  // resolve lane-vs-row precedence and repo routing through one body instead of
-  // two that can drift.
+  const selectWorkspaceLane = useCallback(
+    (workspaceId: string) => {
+      const ui = useUiStore.getState();
+      // While the composer is open, a lane name is a new creation target, not
+      // merely sidebar focus. Re-stamp the exact project so an earlier A
+      // selection cannot leave the B composer inheriting A's session context.
+      if (ui.topicComposerOpen) {
+        const workspace = workspaces.find((item) => item.id === workspaceId);
+        if (workspace) {
+          applyWorkspaceCreateRoutingContext({
+            workspaceId,
+            defaultRepoPath: workspace.defaultRepoPath ?? null,
+            defaultNodeId: workspace.defaultNodeId ?? null,
+          });
+          return;
+        }
+      }
+      ui.setActiveWorkspaceId(workspaceId);
+    },
+    [workspaces]
+  );
+  // A project-header add is an explicit create choice, not a lane selection.
+  // Stamp both its real workspace id and default repo before opening the
+  // composer so a highlighted channel cannot override the project the operator
+  // clicked. The global header still uses row-aware inference above.
   const startChatInWorkspace = useCallback(
     (workspaceId: string) => {
-      selectWorkspaceLane(workspaceId);
-      openCreateTaskRoom();
+      const workspace = workspaces.find((item) => item.id === workspaceId);
+      if (!workspace) return;
+      applyWorkspaceCreateRoutingContext({
+        workspaceId,
+        defaultRepoPath: workspace.defaultRepoPath ?? null,
+        defaultNodeId: workspace.defaultNodeId ?? null,
+      });
+      onCreateTaskRoom?.();
     },
-    [openCreateTaskRoom, selectWorkspaceLane]
+    [onCreateTaskRoom, workspaces]
   );
   // #1287 slice 5 item 18: open the channel AND its thread panel. The intent is
   // recorded after `select()` on purpose — opening a channel clears any pending
