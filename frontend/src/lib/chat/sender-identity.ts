@@ -21,7 +21,12 @@ import {
 } from '../../../../shared/agent-profile.js';
 import { deriveColor } from '../colors.js';
 
-export type KnownAgentGlyph = 'claude' | 'codex' | 'hermes' | 'opencode';
+export type KnownAgentGlyph =
+  | 'claude'
+  | 'codex'
+  | 'hermes'
+  | 'opencode'
+  | 'prime-agent';
 
 export interface SenderIdentity {
   /** Display label — human is always 'you'. */
@@ -38,6 +43,7 @@ const KNOWN_AGENT_COLOR_VAR: Record<string, string> = {
   codex: '--sender-codex',
   hermes: '--sender-hermes',
   opencode: '--sender-opencode',
+  'prime-agent': '--sender-prime-agent',
 };
 
 const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
@@ -45,6 +51,7 @@ const KNOWN_AGENT_GLYPHS: readonly KnownAgentGlyph[] = [
   'codex',
   'hermes',
   'opencode',
+  'prime-agent',
 ];
 
 function isKnownGlyph(value: string): value is KnownAgentGlyph {

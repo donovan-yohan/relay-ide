@@ -26,6 +26,9 @@ beforeAll(async () => {
   const fakeHermes = path.join(fakeBinDir, 'hermes');
   fs.writeFileSync(fakeHermes, '#!/bin/sh\nexit 0\n');
   fs.chmodSync(fakeHermes, 0o755);
+  const fakePrimeAgent = path.join(fakeBinDir, 'prime-agent');
+  fs.writeFileSync(fakePrimeAgent, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fakePrimeAgent, 0o755);
 
   const hermesProbeApp = express();
   hermesProbeApp.get('/health', (_req, res) => {
@@ -85,6 +88,7 @@ describe('GET /api/frameworks', () => {
     expect(ids).toContain('codex');
     expect(ids).toContain('opencode');
     expect(ids).toContain('hermes');
+    expect(ids).toContain('prime-agent');
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource, and availability', async () => {
@@ -138,6 +142,31 @@ describe('GET /api/frameworks', () => {
     expect(claude!.eventSource).toBe('hooks');
     expect(claude!.capabilities.supportsHooks).toBe(true);
     expect(claude!.capabilities.supportsTelemetry).toBe(true);
+  });
+
+  it('returns Prime Agent as an installed first-class channel provider', async () => {
+    const res = await fetch(url('/api/frameworks'));
+    const body = (await res.json()) as {
+      frameworks: Array<{
+        id: string;
+        displayName: string;
+        command: string;
+        eventSource: string;
+        capabilities: Record<string, boolean>;
+        availability?: { installed: boolean; path?: string };
+      }>;
+    };
+    const prime = body.frameworks.find((f) => f.id === 'prime-agent');
+    expect(prime).toMatchObject({
+      displayName: 'Prime Agent',
+      command: 'prime-agent',
+      eventSource: 'timer',
+    });
+    expect(prime!.capabilities.supportsChannelAgents).toBe(true);
+    expect(prime!.availability).toEqual({
+      installed: true,
+      path: path.join(fakeBinDir, 'prime-agent'),
+    });
   });
 
   it('opencode framework entry has eventSource=plugin', async () => {

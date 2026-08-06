@@ -26,6 +26,32 @@ Required lifecycle:
 Optional methods cover approval, questions, resume, and runtime environment
 refresh. Capabilities must describe only implemented behavior.
 
+## Built-in native transports
+
+| Provider    | Provider id   | Native channel transport               |
+| ----------- | ------------- | -------------------------------------- |
+| Claude Code | `claude`      | persistent subprocess over stream JSON |
+| Codex       | `codex`       | `codex app-server` JSON-RPC            |
+| OpenCode    | `opencode`    | native SDK/events                      |
+| Hermes      | `hermes`      | Responses API/SSE                      |
+| Prime Agent | `prime-agent` | `prime-agent` RPC                      |
+
+Prime Agent is a first-class channel provider. Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
+lifecycle, `message_update` text and
+thinking deltas to assistant and reasoning items, and
+`tool_execution_start|update|end` to canonical command, file-change, or dynamic
+tool items. It advertises text, reasoning, tools, command execution, file
+changes, queueing, interrupt, resume, telemetry, and streaming; unsupported
+approval, question, plan, and queue-cancellation operations remain false. Relay
+pins Prime's steering scheduler to one-at-a-time so each queued native action has
+one durable Relay turn. Channel subprocesses currently launch with
+`--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
+to Relay approvals/questions yet.
+
+The `prime-agent` executable is also available as a normal terminal launch, but
+that surface stays a generic PTY: Relay does not parse terminal output or infer
+channel capabilities from it.
+
 ## Identity boundary
 
 Keep these identities distinct:

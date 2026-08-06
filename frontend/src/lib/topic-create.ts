@@ -52,7 +52,13 @@ export const TOPIC_ROOM_TEMPLATE_OPTIONS: Array<{
   { value: 'note', label: 'note / room only' },
 ];
 
-export const FALLBACK_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
+export const FALLBACK_PROVIDER_IDS = [
+  'claude',
+  'codex',
+  'opencode',
+  'hermes',
+  'prime-agent',
+];
 
 export type TopicProviderOption = {
   id: string;

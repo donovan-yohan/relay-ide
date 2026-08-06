@@ -517,6 +517,27 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(adapterState.last?.resumed).toEqual([]);
   });
 
+  it('passes Prime Agent provider identity as an atomic resume id', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    adapterState.resumeDuringConnect = true;
+
+    await channelAgentRuntimes.create({
+      id: 'prime-runtime',
+      providerId: 'prime-agent',
+      profileActorId: 'agent-profile:prime-agent:default',
+      cwd: '/tmp',
+      displayName: '#eng · Prime Agent',
+      port: 3456,
+      configDir: '/tmp',
+      providerSession: { primeAgentSessionId: 'prime-session-1' },
+    });
+
+    expect(adapterState.last?.connectConfigs).toEqual([
+      expect.objectContaining({ resumeSessionId: 'prime-session-1' }),
+    ]);
+    expect(adapterState.last?.resumed).toEqual([]);
+  });
+
   it('captures provider identity and rejects duplicate runtime ids', async () => {
     const { channelAgentRuntimes } = await runtimeModule();
     const runtime = await channelAgentRuntimes.create({
