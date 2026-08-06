@@ -22,6 +22,7 @@ workflow.
 
 #### Added
 
+- Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
 - Create and name new folders directly in the local Add Project browser (#1338)
 
 #### Changed
