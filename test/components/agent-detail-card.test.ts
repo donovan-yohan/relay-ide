@@ -92,10 +92,34 @@ describe('AgentDetailCard', () => {
     });
 
     expect(host.querySelector('.ch-agent-card__body')).toBeNull();
+    expect(host.querySelector('.ch-agent-card__chevron')).not.toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('.ch-agent-card__toggle')?.disabled
+    ).toBe(false);
     await toggle();
     expect(host.querySelector('.ch-agent-card__body')?.textContent).toContain(
       'The snapshot may replace the current item.'
     );
+  });
+
+  it('hides the empty-card chevron while preserving its fixed-width slot', async () => {
+    await render({
+      kind: 'thought',
+      title: 'thinking',
+      status: 'completed',
+    });
+
+    const button = host.querySelector<HTMLButtonElement>(
+      '.ch-agent-card__toggle'
+    );
+    const placeholder = host.querySelector<HTMLSpanElement>(
+      '.ch-agent-card__chevron-placeholder'
+    );
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector('.ch-agent-card__chevron')).toBeNull();
+    expect(placeholder?.getAttribute('aria-hidden')).toBe('true');
+    expect(placeholder?.classList.contains('ch-agent-card__chevron-placeholder')).toBe(true);
   });
 
   it('tints only added and removed diff lines and reports their counts', async () => {

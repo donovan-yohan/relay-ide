@@ -225,12 +225,19 @@ export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
           setExpanded((value) => !value);
         }}
       >
-        <ChevronRight
-          className={`ch-agent-card__chevron${expanded ? ' ch-agent-card__chevron--open' : ''}`}
-          size={14}
-          strokeWidth={1.5}
-          aria-hidden="true"
-        />
+        {hasContent ? (
+          <ChevronRight
+            className={`ch-agent-card__chevron${expanded ? ' ch-agent-card__chevron--open' : ''}`}
+            size={14}
+            strokeWidth={1.5}
+            aria-hidden="true"
+          />
+        ) : (
+          <span
+            className="ch-agent-card__chevron-placeholder"
+            aria-hidden="true"
+          />
+        )}
         <span className="ch-agent-card__icon">
           <CardIcon kind={card.kind} />
         </span>

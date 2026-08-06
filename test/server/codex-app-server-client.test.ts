@@ -183,6 +183,54 @@ describe('CodexAppServerClient', () => {
   // ── Initialize handshake ──────────────────────────────────────────────────
 
   describe('initialize handshake', () => {
+    it('spawns Codex with detailed provider reasoning summaries by default', async () => {
+      const spawn = vi.fn().mockReturnValue(mock as unknown as ChildProcess);
+      client = new CodexAppServerClient({
+        clientInfo: DEFAULT_CLIENT_INFO,
+        spawn,
+      });
+
+      const startPromise = client.start();
+      expect(spawn).toHaveBeenCalledWith(
+        'codex',
+        [
+          'app-server',
+          '--listen',
+          'stdio://',
+          '-c',
+          'model_reasoning_summary="detailed"',
+        ],
+        expect.objectContaining({ stdio: 'pipe' })
+      );
+
+      const lines = await mock.waitForStdinLines(1);
+      const request = JSON.parse(lines[0]!) as Record<string, unknown>;
+      mock.serverWrite(makeInitResponse(request['id'] as number));
+      await startPromise;
+    });
+
+    it('preserves explicitly configured app-server args', async () => {
+      const spawn = vi.fn().mockReturnValue(mock as unknown as ChildProcess);
+      const args = ['app-server', '--listen', 'stdio://', '--experimental'];
+      client = new CodexAppServerClient({
+        clientInfo: DEFAULT_CLIENT_INFO,
+        spawn,
+        args,
+      });
+
+      const startPromise = client.start();
+      expect(spawn).toHaveBeenCalledWith(
+        'codex',
+        args,
+        expect.objectContaining({ stdio: 'pipe' })
+      );
+
+      const lines = await mock.waitForStdinLines(1);
+      const request = JSON.parse(lines[0]!) as Record<string, unknown>;
+      mock.serverWrite(makeInitResponse(request['id'] as number));
+      await startPromise;
+    });
+
     it('sends initialize with clientInfo and resolves with server metadata', async () => {
       const startPromise = client.start();
 
