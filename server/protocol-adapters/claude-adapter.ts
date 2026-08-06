@@ -990,7 +990,7 @@ export class ClaudeProtocolAdapter
       throw new Error('Cannot steer Claude without an active turn');
     }
     this.lastActivityAt = Date.now();
-    client.write({
+    await client.writeAccepted({
       type: 'user',
       message: { role: 'user', content: this.buildUserContent(input) },
     });

@@ -294,6 +294,7 @@ export interface LiveBinding {
   emittedStatus: ChannelAgentStatus;
   emittedQueuedCount: number;
   emittedSteeringCount: number;
+  emittedSteerSupported: boolean;
   watchdog: NodeJS.Timeout | null;
   retriedTurns: Set<string>;
   announcedApprovals: Set<string>;
@@ -595,6 +596,13 @@ export function createChannelAgentBinder(
     return profile.displayName || (await senderLabelFor(profile.providerId));
   }
 
+  function supportsSafeBoundarySteer(binding: LiveBinding): boolean {
+    return (
+      binding.adapter?.capabilities.steer === true &&
+      binding.adapter.steerMessage !== undefined
+    );
+  }
+
   // ── status ──────────────────────────────────────────────────────────────────
 
   /**
@@ -609,16 +617,19 @@ export function createChannelAgentBinder(
       binding.steeringAcceptedCount +
       binding.steeringQueue.length +
       (binding.steeringInFlight ? 1 : 0);
+    const steerSupported = supportsSafeBoundarySteer(binding);
     if (
       binding.emittedStatus === binding.status &&
       binding.emittedQueuedCount === queuedCount &&
-      binding.emittedSteeringCount === steeringCount
+      binding.emittedSteeringCount === steeringCount &&
+      binding.emittedSteerSupported === steerSupported
     ) {
       return;
     }
     binding.emittedStatus = binding.status;
     binding.emittedQueuedCount = queuedCount;
     binding.emittedSteeringCount = steeringCount;
+    binding.emittedSteerSupported = steerSupported;
     statusBroadcaster?.('channel-agent-status', {
       channelId: binding.channelId,
       agentId: binding.profileActorId,
@@ -626,9 +637,7 @@ export function createChannelAgentBinder(
       runtimeId: binding.runtimeId ?? null,
       queuedCount,
       steeringCount,
-      steerSupported:
-        binding.adapter?.capabilities.steer === true &&
-        binding.adapter.steerMessage !== undefined,
+      steerSupported,
     });
   }
 
@@ -696,6 +705,7 @@ export function createChannelAgentBinder(
       emittedStatus: 'idle',
       emittedQueuedCount: 0,
       emittedSteeringCount: 0,
+      emittedSteerSupported: false,
       watchdog: null,
       retriedTurns: new Set(),
       announcedApprovals: new Set(),
@@ -1163,6 +1173,13 @@ export function createChannelAgentBinder(
     );
   }
 
+  function isCurrentBinding(binding: LiveBinding): boolean {
+    return (
+      live.get(bindingKey(binding.channelId, binding.profileActorId)) ===
+      binding
+    );
+  }
+
   /**
    * Put a post into the provider-native safe-boundary lane. The call is
    * serialized because Codex's `turn/steer` advances its expected native turn
@@ -1218,6 +1235,7 @@ export function createChannelAgentBinder(
         clientMessageId: `${trigger.id}:${binding.profileActorId}`,
       })
       .then(() => {
+        if (!isCurrentBinding(binding)) return;
         // A terminal patch can win the provider-RPC race. Do not resurrect a
         // cleared steering indicator after finishTurn; replay would be unsafe
         // because a late transport result may already have been accepted.
@@ -1227,7 +1245,7 @@ export function createChannelAgentBinder(
         advanceCursor(binding, trigger);
       })
       .catch((err) => {
-        if (closed) return;
+        if (closed || !isCurrentBinding(binding)) return;
         if (err instanceof AgentSteerRejectedError) {
           // Definite provider rejection is safe to deliver once through the
           // normal next-turn FIFO; ambiguous transport failures stay visible
@@ -1247,6 +1265,7 @@ export function createChannelAgentBinder(
         );
       })
       .finally(() => {
+        if (!isCurrentBinding(binding)) return;
         binding.steeringInFlight = false;
         emitAgentStatus(binding);
         // A terminal patch may have arrived while the provider RPC was in
@@ -1589,6 +1608,7 @@ export function createChannelAgentBinder(
       );
     }
     binding.steeringQueue = [];
+    binding.steeringInFlight = false;
     binding.steeringAcceptedCount = 0;
   }
 
@@ -2544,8 +2564,7 @@ export function createChannelAgentBinder(
                   (binding?.steeringQueue.length ?? 0) +
                   (binding?.steeringInFlight ? 1 : 0),
                 steerSupported:
-                  binding?.adapter?.capabilities.steer === true &&
-                  binding.adapter.steerMessage !== undefined,
+                  binding !== undefined && supportsSafeBoundarySteer(binding),
               }
             : null,
         };
@@ -2580,6 +2599,9 @@ export function createChannelAgentBinder(
         // it refetch a roster. Broadcast is best-effort: the transport may
         // already be closing, and that must not abort the rest of shutdown.
         binding.queue = [];
+        binding.steeringQueue = [];
+        binding.steeringInFlight = false;
+        binding.steeringAcceptedCount = 0;
         binding.activeTurnId = null;
         binding.waitingOn = null;
         binding.status = 'idle';

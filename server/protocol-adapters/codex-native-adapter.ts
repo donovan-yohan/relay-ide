@@ -693,6 +693,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (expectedTurnId === null) {
       throw new Error('Cannot steer Codex without an active native turn');
     }
+    if (this.pendingNativeSteer !== null) {
+      throw new Error(
+        'Cannot steer Codex while a previous steer is unresolved'
+      );
+    }
     const pending: PendingNativeSteer = {
       relayTurnId,
       expectedNativeTurnId: expectedTurnId,

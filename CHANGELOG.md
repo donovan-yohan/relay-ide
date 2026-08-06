@@ -78,8 +78,8 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 
 #### Fixed
 
-- Completed thinking detail cards are expandable again instead of rendering a
-  non-interactive disclosure arrow.
+- Terminal thinking summaries without detail no longer show a non-interactive
+  disclosure arrow; thinking cards with detail remain expandable.
 - Hermes reply finalization, duplicate rows, presence, zero-row logging (#1183)
 - Truthful terminal rows and a duplicate-free channel record (#1207)
 - Channel tree data source unified across desktop and mobile (#1208)

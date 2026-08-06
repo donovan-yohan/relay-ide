@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -752,13 +753,22 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       ),
     [agentChips]
   );
-  steerTargetsRef.current = {
-    agentIds: [...busyAgentIds],
-    labels: busyAgentLabels,
-    queueAgentIds: busyQueueFallback.map((chip) => chip.agentId),
-    queueLabels: busyQueueFallback.map((chip) => chip.identity.label),
-    mode: busyAgentSteeringMode,
-  };
+  const steerTargets = useMemo(
+    () => ({
+      agentIds: [...busyAgentIds],
+      labels: busyAgentLabels,
+      queueAgentIds: busyQueueFallback.map((chip) => chip.agentId),
+      queueLabels: busyQueueFallback.map((chip) => chip.identity.label),
+      mode: busyAgentSteeringMode,
+    }),
+    [busyAgentIds, busyAgentLabels, busyQueueFallback, busyAgentSteeringMode]
+  );
+  // Send handlers must only observe a committed UI state. Updating the ref
+  // during render lets an abandoned concurrent render steer a different set of
+  // agents than the operator could actually see.
+  useLayoutEffect(() => {
+    steerTargetsRef.current = steerTargets;
+  }, [steerTargets]);
 
   // Wired only while the channel is live, exactly like edit/delete below: a
   // retry re-runs a turn against an archived (read-only) channel, so the route

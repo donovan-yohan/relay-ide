@@ -516,6 +516,18 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     await adapter.disconnect();
   });
 
+  it('rejects a steer before any Claude turn is active', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-none', content: 'redirect' })
+    ).rejects.toThrow('Cannot steer Claude without an active turn');
+    expect(harness.spawns).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   it('happy path: init → deltas → assistant echo → result reduces to one user + one assistant message with summed iteration usage', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());

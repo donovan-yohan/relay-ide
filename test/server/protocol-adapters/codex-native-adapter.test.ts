@@ -508,6 +508,64 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     await adapter.disconnect();
   });
 
+  it('releases a held terminal when Codex accepts steer without a successor id', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', {});
+
+    const steer = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'redirect',
+    });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-1', status: 'completed' },
+    });
+    await steer;
+
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('rejects a concurrent Codex steer while the previous provider receipt is unresolved', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    let release!: (value: { turnId: string }) => void;
+    client.serverResponses.set(
+      'turn/steer',
+      new Promise<{ turnId: string }>((resolve) => {
+        release = resolve;
+      })
+    );
+
+    const first = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'first steer',
+    });
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-1', content: 'second steer' })
+    ).rejects.toThrow('previous steer is unresolved');
+    release({ turnId: 'native-2' });
+    await first;
+    await adapter.disconnect();
+  });
+
   it('ignores a superseded native completion after a successful steer replacement', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
