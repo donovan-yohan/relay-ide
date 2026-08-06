@@ -41,6 +41,12 @@ workflow.
   and user message bubbles no longer collapse into character-by-character
   wrapping (#1339)
 
+### Agent runtimes
+
+#### Fixed
+
+- Codex reasoning cards now show expandable provider-generated summaries when available, and no longer show inactive expand chevrons when no summary exists
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as
