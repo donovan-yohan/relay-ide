@@ -252,7 +252,9 @@ export function collectLanguageServerDiagnostics(
     .map((proc) => {
       const ancestors = ancestorsOf(proc, byPid);
       const relayOwnedLikely = [proc, ...ancestors].some((candidate) =>
-        /relay-ide|relayctl|claude|codex|opencode|hermes/i.test(candidate.commandLine)
+        /relay-ide|relayctl|claude|codex|opencode|hermes|pi/i.test(
+        candidate.commandLine
+      )
       );
       return {
         pid: proc.pid,

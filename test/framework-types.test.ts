@@ -10,11 +10,12 @@ import type { AgentFramework, EventSourceType } from '../server/types.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 
-test('BUILTIN_FRAMEWORKS contains claude, codex, opencode, and hermes', () => {
+test('BUILTIN_FRAMEWORKS contains claude, codex, opencode, hermes, and pi', () => {
   expect('claude' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('codex' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('opencode' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('hermes' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('pi' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -95,6 +96,25 @@ test('hermes framework has correct values', () => {
   expect(hermes.capabilities.supportsTelemetry).toBe(true);
   expect(hermes.capabilities.supportsAttachedRuntime).toBe(true);
   expect(hermes.capabilities.supportsChannelAgents).toBe(true);
+});
+
+test('pi framework exposes native channels and a generic PTY', () => {
+  const pi = BUILTIN_FRAMEWORKS['pi'];
+  expect(pi.id).toBe('pi');
+  expect(pi.displayName).toBe('Pi');
+  expect(pi.command).toBe('pi');
+  expect(pi.continueArgs).toEqual(['--continue']);
+  expect(pi.yoloArgs).toEqual([]);
+  expect(pi.parserType).toBe('generic');
+  expect(pi.eventSource).toBe('timer');
+  expect(pi.capabilities).toMatchObject({
+    supportsHooks: false,
+    supportsContinue: true,
+    supportsYolo: false,
+    supportsTelemetry: true,
+    supportsAttachedRuntime: false,
+    supportsChannelAgents: true,
+  });
 });
 
 test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', () => {

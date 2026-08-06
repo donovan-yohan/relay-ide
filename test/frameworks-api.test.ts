@@ -26,6 +26,9 @@ beforeAll(async () => {
   const fakeHermes = path.join(fakeBinDir, 'hermes');
   fs.writeFileSync(fakeHermes, '#!/bin/sh\nexit 0\n');
   fs.chmodSync(fakeHermes, 0o755);
+  const fakePi = path.join(fakeBinDir, 'pi');
+  fs.writeFileSync(fakePi, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fakePi, 0o755);
 
   const hermesProbeApp = express();
   hermesProbeApp.get('/health', (_req, res) => {
@@ -85,6 +88,7 @@ describe('GET /api/frameworks', () => {
     expect(ids).toContain('codex');
     expect(ids).toContain('opencode');
     expect(ids).toContain('hermes');
+    expect(ids).toContain('pi');
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource, and availability', async () => {
@@ -174,6 +178,31 @@ describe('GET /api/frameworks', () => {
     expect(hermes!.channelAvailability?.reason).toContain(
       'Responses API is not enabled'
     );
+  });
+
+  it('returns Pi as an installed first-class channel provider', async () => {
+    const res = await fetch(url('/api/frameworks'));
+    const body = (await res.json()) as {
+      frameworks: Array<{
+        id: string;
+        displayName: string;
+        command: string;
+        eventSource: string;
+        capabilities: Record<string, boolean>;
+        availability?: { installed: boolean; path?: string };
+      }>;
+    };
+    const pi = body.frameworks.find((f) => f.id === 'pi');
+    expect(pi).toMatchObject({
+      displayName: 'Pi',
+      command: 'pi',
+      eventSource: 'timer',
+    });
+    expect(pi!.capabilities.supportsChannelAgents).toBe(true);
+    expect(pi!.availability).toEqual({
+      installed: true,
+      path: path.join(fakeBinDir, 'pi'),
+    });
   });
 
   it('does not include internal fields like parserType or continueArgs', async () => {

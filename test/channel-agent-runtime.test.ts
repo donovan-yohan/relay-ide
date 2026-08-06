@@ -39,6 +39,8 @@ class TestAdapter implements ProtocolAdapterV2 {
   resumed: string[] = [];
   connectConfigs: AdapterConfig[] = [];
   disconnectError: Error | null = null;
+  interruptCalls = 0;
+  interruptReject: Error | null = null;
   private readonly handlers = new Set<AgentPatchHandlerV2>();
 
   get resumesProviderSessionDuringConnect(): boolean {
@@ -68,7 +70,10 @@ class TestAdapter implements ProtocolAdapterV2 {
     this.resumed.push(sessionId);
   }
   async sendMessage(_input: AgentSendMessageInputV2): Promise<void> {}
-  async interrupt(_input: AgentInterruptInputV2): Promise<void> {}
+  async interrupt(_input: AgentInterruptInputV2): Promise<void> {
+    this.interruptCalls += 1;
+    if (this.interruptReject) throw this.interruptReject;
+  }
   async respondToApproval(
     _input: AgentApprovalResponseInputV2
   ): Promise<void> {}
@@ -670,5 +675,661 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(channelAgentRuntimes.get(first.id)).toBeUndefined();
     expect(channelAgentRuntimes.get(second.id)).toBeUndefined();
     expect(adapterState.last?.status).toBe('disconnected');
+  });
+});
+
+describe('ChannelAgentRuntimeManager burn-loop backstop', () => {
+  const itemPatch = (item: object) => ({
+    type: 'agent-item-started-v2' as const,
+    sessionId: 'channel-runtime',
+    timestamp: '2026-07-26T00:00:00.000Z',
+    turnId: 'turn-1',
+    item,
+  });
+  /** Emit a terminal FAILED completion for an item id (advances the burn guard). */
+  const failPatch = (item: object) => ({
+    type: 'agent-item-updated-v2' as const,
+    sessionId: 'channel-runtime',
+    timestamp: '2026-07-26T00:00:00.000Z',
+    turnId: 'turn-1',
+    item,
+  });
+  /** A completed FAILED commandExecution for an id (exitCode 1). */
+  const failCmd = (id: string, command: string) => ({
+    id,
+    type: 'commandExecution' as const,
+    command,
+    output: 'err',
+    status: 'completed',
+    exitCode: 1,
+  });
+
+  it('aborts after the same command tool repeats 3x with no assistant text', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(failPatch(failCmd('cmd-1', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch(failPatch(failCmd('cmd-2', 'ls')));
+    expect(adapter.interruptCalls).toBe(0);
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(failPatch(failCmd('cmd-3', 'ls')));
+
+    // Interrupt is async-fired; flush microtasks.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+  });
+
+  it('resets the loop when assistant text intervenes, so a fresh run must re-arm', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+
+    // Two identical calls before text -> no abort yet.
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch({
+      ...itemPatch({
+        id: 'assistant-1',
+        type: 'assistantMessage' as const,
+        text: 'checking',
+        status: 'streaming',
+      }),
+    });
+    // Assistant text reset the counter; two identical calls after it must NOT
+    // abort (only the third consecutive identical call aborts).
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(itemPatch(cmd(4)));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+  });
+
+  it('resets the loop on a new turn and aborts again within it', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(failPatch(failCmd('cmd-1', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch(failPatch(failCmd('cmd-2', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(failPatch(failCmd('cmd-3', 'ls')));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+
+    // New turn resets the guard; a different tool then repeats with no output.
+    adapter.emitTurnStarted('turn-2');
+    adapter.emitPatch({
+      ...itemPatch(cmd(1)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-1', 'ls')),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...itemPatch(cmd(2)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-2', 'ls')),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...itemPatch(cmd(3)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-3', 'ls')),
+      turnId: 'turn-2',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(2);
+  });
+
+  it('treats a completed tool result as progress and does not abort', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+    const done = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: 'file-a\nfile-b',
+      status: 'completed',
+      exitCode: 0,
+    });
+    const silentDone = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'completed',
+    });
+
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    // A completed result with output resets the counter before the next starts.
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: done(2),
+    });
+    // Only two consecutive identical starts after the reset -> no abort.
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(itemPatch(cmd(4)));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+
+    // A terminal command with empty output and no exitCode is still a result.
+    // Fresh turn resets the guard so the silent sequence starts at zero.
+    adapter.emitTurnStarted('turn-2');
+    adapter.emitPatch({
+      ...itemPatch(cmd(5)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...itemPatch(cmd(6)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-2',
+      item: silentDone(6),
+    });
+    adapter.emitPatch({
+      ...itemPatch(cmd(7)),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({
+      ...itemPatch(cmd(8)),
+      turnId: 'turn-2',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+  });
+
+  it('does not treat repeated error deltas as progress; still aborts the loop', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'flaky',
+      output: '',
+      status: 'running',
+    });
+    const errorDone = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'flaky',
+      output: 'error: boom',
+      status: 'completed',
+      exitCode: 1,
+    });
+    const errorDelta = (i: number) => ({
+      type: 'agent-item-delta-v2' as const,
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      itemId: `cmd-${i}`,
+      delta: { output: 'error: boom' },
+    });
+
+    // Each attempt streams the SAME error and completes with exitCode 1.
+    // Deltas must NOT reset the fingerprint; the non-zero exitCode must not
+    // reset either, so the third start aborts.
+    for (let i = 1; i <= 2; i += 1) {
+      adapter.emitPatch(itemPatch(cmd(i)));
+      adapter.emitPatch(errorDelta(i));
+      adapter.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: 'channel-runtime',
+        timestamp: '2026-07-26T00:00:00.000Z',
+        turnId: 'turn-1',
+        item: errorDone(i),
+      });
+    }
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(errorDelta(3));
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: errorDone(3),
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+  });
+
+  it('does not reset on a failed dynamicToolCall result; still aborts the loop', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const dyn = (i: number) => ({
+      id: `dyn-${i}`,
+      type: 'dynamicToolCall' as const,
+      namespace: 'pi',
+      tool: 'x',
+      arguments: { a: 1 },
+      status: 'running',
+    });
+    const failedDone = (i: number) => ({
+      id: `dyn-${i}`,
+      type: 'dynamicToolCall' as const,
+      namespace: 'pi',
+      tool: 'x',
+      arguments: { a: 1 },
+      status: 'completed',
+      result: { isError: true, error: 'boom' },
+    });
+
+    for (let i = 1; i <= 2; i += 1) {
+      adapter.emitPatch(itemPatch(dyn(i)));
+      adapter.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: 'channel-runtime',
+        timestamp: '2026-07-26T00:00:00.000Z',
+        turnId: 'turn-1',
+        item: failedDone(i),
+      });
+    }
+    adapter.emitPatch(itemPatch(dyn(3)));
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: failedDone(3),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+  });
+
+  it('treats a null exitCode completed command as success (resets the guard)', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+    const nullDone = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'completed',
+      exitCode: null,
+    });
+
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: nullDone(2),
+    });
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(itemPatch(cmd(4)));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+  });
+
+  it('does not treat benign error-like results as failures', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const dyn = (i: number) => ({
+      id: `dyn-${i}`,
+      type: 'dynamicToolCall' as const,
+      namespace: 'pi',
+      tool: 'x',
+      arguments: { a: 1 },
+      status: 'running',
+    });
+    // `{ error: null }` and `{ data: null, error: null }` are success-like results.
+    const okDone = (i: number, result: unknown) => ({
+      id: `dyn-${i}`,
+      type: 'dynamicToolCall' as const,
+      namespace: 'pi',
+      tool: 'x',
+      arguments: { a: 1 },
+      status: 'completed',
+      result,
+    });
+
+    // Two attempts, each completing with a benign result -> each resets.
+    adapter.emitPatch(itemPatch(dyn(1)));
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: okDone(1, { error: null }),
+    });
+    adapter.emitPatch(itemPatch(dyn(2)));
+    adapter.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      item: okDone(2, { data: null, error: null }),
+    });
+    // Only one more identical start after two benign resets -> no abort.
+    adapter.emitPatch(itemPatch(dyn(3)));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+  });
+
+  it('does not track fileChange items, so repeated edits to one path are safe', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const edit = (i: number) => ({
+      id: `edit-${i}`,
+      type: 'fileChange' as const,
+      paths: [{ path: '/tmp/a.ts', status: 'edited' }],
+      applyStatus: 'pending',
+      status: 'running',
+    });
+
+    // Many identical-path edits must never abort (fingerprint excludes fileChange).
+    for (let i = 1; i <= 8; i += 1) adapter.emitPatch(itemPatch(edit(i)));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(0);
+  });
+
+  it('aborts on an alternating two-fingerprint loop (per-fingerprint counts)', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmdA = (i: number) => ({
+      id: `a-${i}`,
+      type: 'commandExecution' as const,
+      command: 'cmd-a',
+      output: '',
+      status: 'running',
+    });
+    const cmdB = (i: number) => ({
+      id: `b-${i}`,
+      type: 'commandExecution' as const,
+      command: 'cmd-b',
+      output: '',
+      status: 'running',
+    });
+
+    // A, B, A, B, A, B: each fingerprint reaches 3 failures without success, so
+    // the per-fingerprint counter aborts (an old single counter would never fire).
+    adapter.emitPatch(itemPatch(cmdA(1)));
+    adapter.emitPatch(failPatch(failCmd('a-1', 'cmd-a')));
+    adapter.emitPatch(itemPatch(cmdB(1)));
+    adapter.emitPatch(failPatch(failCmd('b-1', 'cmd-b')));
+    adapter.emitPatch(itemPatch(cmdA(2)));
+    adapter.emitPatch(failPatch(failCmd('a-2', 'cmd-a')));
+    adapter.emitPatch(itemPatch(cmdB(2)));
+    adapter.emitPatch(failPatch(failCmd('b-2', 'cmd-b')));
+    adapter.emitPatch(itemPatch(cmdA(3)));
+    adapter.emitPatch(failPatch(failCmd('a-3', 'cmd-a')));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+  });
+
+  it('aborts on a distinct-fingerprint loop via the total no-progress cap', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    // Every call has a distinct command, so no single fingerprint reaches 3.
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: `distinct-${i}`,
+      output: '',
+      status: 'running',
+    });
+
+    for (let i = 1; i <= 12; i += 1) {
+      adapter.emitPatch(itemPatch(cmd(i)));
+      adapter.emitPatch(failPatch(failCmd(`cmd-${i}`, `distinct-${i}`)));
+    }
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+  });
+
+  it('does not reset on an empty assistantMessage start, but resets on real text delta', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+
+    // Three identical starts, then an EMPTY assistantMessage start: the empty
+    // start is not progress, so the next identical call still aborts.
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(failPatch(failCmd('cmd-1', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch(failPatch(failCmd('cmd-2', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(failPatch(failCmd('cmd-3', 'ls')));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+
+    // A real assistant text delta breaks the loop; the next three identical
+    // starts re-arm and abort again.
+    adapter.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: 'channel-runtime',
+      timestamp: '2026-07-26T00:00:00.000Z',
+      turnId: 'turn-1',
+      itemId: 'assistant-1',
+      delta: { text: 'real answer' },
+    });
+    adapter.emitPatch(itemPatch(cmd(4)));
+    adapter.emitPatch(failPatch(failCmd('cmd-4', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(5)));
+    adapter.emitPatch(failPatch(failCmd('cmd-5', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(6)));
+    adapter.emitPatch(failPatch(failCmd('cmd-6', 'ls')));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(2);
+  });
+
+  it('re-arms the guard when interrupt delivery fails', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    const adapter = adapterState.last!;
+    const cmd = (i: number) => ({
+      id: `cmd-${i}`,
+      type: 'commandExecution' as const,
+      command: 'ls',
+      output: '',
+      status: 'running',
+    });
+    // First interrupt rejects; the guard re-arms so a later identical loop aborts.
+    adapter.interruptReject = new Error('interrupt failed');
+    adapter.emitPatch(itemPatch(cmd(1)));
+    adapter.emitPatch(failPatch(failCmd('cmd-1', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(2)));
+    adapter.emitPatch(failPatch(failCmd('cmd-2', 'ls')));
+    adapter.emitPatch(itemPatch(cmd(3)));
+    adapter.emitPatch(failPatch(failCmd('cmd-3', 'ls')));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(1);
+
+    // A fresh turn resets the guard; three identical starts abort again.
+    adapter.emitTurnStarted('turn-2');
+    adapter.emitPatch({ ...itemPatch(cmd(4)), turnId: 'turn-2' });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-4', 'ls')),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({ ...itemPatch(cmd(5)), turnId: 'turn-2' });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-5', 'ls')),
+      turnId: 'turn-2',
+    });
+    adapter.emitPatch({ ...itemPatch(cmd(6)), turnId: 'turn-2' });
+    adapter.emitPatch({
+      ...failPatch(failCmd('cmd-6', 'ls')),
+      turnId: 'turn-2',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(adapter.interruptCalls).toBe(2);
   });
 });

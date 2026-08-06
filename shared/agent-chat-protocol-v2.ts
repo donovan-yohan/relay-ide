@@ -5,6 +5,7 @@ export type AgentProviderV2 =
   | 'codex'
   | 'opencode'
   | 'hermes'
+  | 'pi'
   | 'mock'
   | (string & {});
 

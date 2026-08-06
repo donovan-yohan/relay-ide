@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import type {
+  AgentItemV2,
   AgentPatchV2,
   AgentSessionLiveStateV2,
 } from '../shared/agent-chat-protocol-v2.js';
@@ -20,6 +21,10 @@ import { createAdapterV2 } from './protocol-adapters/index.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('channel-agent-runtime');
+
+function isRecordLocal(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export interface CreateChannelAgentRuntimeParams {
   id?: string;
@@ -107,7 +112,9 @@ function providerResumeId(
         ? 'threadId'
         : providerId === 'hermes'
           ? 'hermesResponseId'
-          : undefined;
+          : providerId === 'pi'
+            ? 'piSessionId'
+            : undefined;
   if (!key) return undefined;
   const value = state[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -241,11 +248,29 @@ function nextAgentState(
   }
 }
 
+interface BurnGuardState {
+  failures: Map<string, number>;
+  totalFailures: number;
+  interrupted: boolean;
+  interruptAttempts: number;
+}
+
 export class ChannelAgentRuntimeManager {
   private readonly runtimes = new Map<string, ChannelAgentRuntime>();
   private readonly endHandlers = new Set<RuntimeEndHandler>();
   private readonly leases = new Map<string, OrchestratorCredentialLifecycle>();
   private readonly patchUnlisteners = new Map<string, () => void>();
+  // Burn-loop backstop: an agent that repeats the SAME tool call (identical
+  // args) with no intervening assistant text is stuck — the harness validator
+  // rejects/re-errors it, returns no usable tool result, and the model burns
+  // output tokens retrying until it exhausts its output budget. The pi adapter
+  // guards the empty-args case in-turn; this runtime guard is a provider-
+  // agnostic backstop that aborts any identical-tool-call loop regardless of
+  // harness, so a stuck turn cannot silently burn to max output tokens.
+  private readonly burnGuards = new Map<
+    string,
+    BurnGuardState
+  >();
 
   get(id: string): ChannelAgentRuntime | undefined {
     return this.runtimes.get(id);
@@ -345,6 +370,10 @@ export class ChannelAgentRuntimeManager {
         };
       }
       runtime.lastActivity = new Date().toISOString();
+      // Burn-loop backstop (see `burnGuards`). Reset on turn boundaries and on
+      // intervening assistant text; abort once the same tool repeats with no
+      // output in between, so a stuck harness cannot exhaust its output budget.
+      this.checkBurnLoop(id, runtime, patch);
       if (
         patch.type === 'agent-live-state-updated-v2' &&
         patch.live.status === 'disconnected'
@@ -451,6 +480,190 @@ export class ChannelAgentRuntimeManager {
     }
   }
 
+  /**
+   * Detect an identical-tool-call burn loop from adapter patches and abort it.
+   * Returns without side effects for non-tool patches.
+   */
+  private checkBurnLoop(
+    id: string,
+    runtime: ChannelAgentRuntime,
+    patch: AgentPatchV2
+  ): void {
+    if (patch.type === 'agent-turn-started-v2') {
+      this.burnGuards.set(id, {
+        failures: new Map(),
+        totalFailures: 0,
+        interrupted: false,
+        interruptAttempts: 0,
+      });
+      return;
+    }
+    if (patch.type === 'agent-turn-completed-v2') {
+      this.burnGuards.delete(id);
+      return;
+    }
+    if (patch.type !== 'agent-item-started-v2') {
+      // Assistant TEXT deltas are genuine model output and break the loop; tool
+      // output deltas (`output`/`patch`) are intermediates and are NOT treated
+      // as progress (a stuck loop streaming the SAME error every attempt would
+      // otherwise clear the failure state before the next completion).
+      if (patch.type === 'agent-item-delta-v2' && patch.delta.text) {
+        this.resetBurnGuard(id);
+        return;
+      }
+      // A SUCCESSFUL terminal tool result is progress and clears the guard.
+      if (
+        patch.type === 'agent-item-updated-v2' &&
+        this.isSuccessResult(patch.item)
+      ) {
+        this.resetBurnGuard(id);
+        return;
+      }
+      // A FAILED terminal tool result advances the burn signature. Counting
+      // FAILED COMPLETIONS (not starts) avoids aborting a legitimate parallel
+      // batch of still-running tools: only calls that actually failed accumulate.
+      if (patch.type === 'agent-item-updated-v2') {
+        const fingerprint = this.toolFingerprint(patch.item);
+        if (fingerprint !== null) {
+          const guard = this.burnGuards.get(id);
+          if (guard && !guard.interrupted) {
+            const fail = (guard.failures.get(fingerprint) ?? 0) + 1;
+            guard.failures.set(fingerprint, fail);
+            guard.totalFailures += 1;
+            // Per-fingerprint cap catches repeated identical failures; a bounded
+            // total cap catches a loop whose failures are all distinct. The
+            // total cap also bounds the failures map.
+            if (fail >= 3 || guard.totalFailures >= 10) {
+              this.tryInterrupt(id, runtime, guard, patch.item.type);
+            }
+          }
+        }
+      }
+      return;
+    }
+    const item = patch.item;
+    // Any intervening assistant message with actual text breaks the loop: the
+    // model is producing output, so the identical calls are deliberate. An EMPTY
+    // assistantMessage start is not progress (providers may open an item before
+    // tool-only retries) — real text arrives via deltas.
+    if (item.type === 'assistantMessage' && item.text) {
+      this.resetBurnGuard(id);
+      return;
+    }
+    // Tool starts only create guard context; the burn signal is counted on
+    // FAILED completions, not starts (see the updated-v2 branch above).
+    if (this.toolFingerprint(item) !== null && !this.burnGuards.has(id)) {
+      this.burnGuards.set(id, {
+        failures: new Map(),
+        totalFailures: 0,
+        interrupted: false,
+        interruptAttempts: 0,
+      });
+    }
+  }
+
+  private resetBurnGuard(id: string): void {
+    const guard = this.burnGuards.get(id);
+    if (guard) {
+      guard.failures.clear();
+      guard.totalFailures = 0;
+      guard.interrupted = false;
+      guard.interruptAttempts = 0;
+    }
+  }
+
+  private tryInterrupt(
+    id: string,
+    runtime: ChannelAgentRuntime,
+    guard: BurnGuardState,
+    itemType: string
+  ): void {
+    guard.interrupted = true;
+    guard.interruptAttempts += 1;
+    logger.warn('channel agent failed tool calls without progress; aborting', {
+      runtimeId: id,
+      providerId: runtime.providerId,
+      itemType,
+      fingerprintCount: guard.failures.size,
+      totalFailures: guard.totalFailures,
+    });
+    const currentGuard = guard;
+    void runtime.adapter.interrupt({}).catch((error) => {
+      logger.warn('channel agent burn-loop interrupt failed', {
+        runtimeId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Re-arm only if this is still the current guard (a late rejection must
+      // not mutate a replacement turn's guard). Bound retries so a persistently-
+      // failing adapter cannot storm abort/reject every event and keep growing
+      // the failures map: after the cap, stop retrying for this turn.
+      if (this.burnGuards.get(id) === currentGuard) {
+        if (currentGuard.interruptAttempts >= 3) {
+          currentGuard.interrupted = true;
+        } else {
+          currentGuard.interrupted = false;
+        }
+      }
+    });
+  }
+
+
+  private isSuccessResult(item: AgentItemV2): boolean {
+    switch (item.type) {
+      case 'commandExecution':
+        return (
+          (item.exitCode !== undefined && item.exitCode === 0) ||
+          (item.exitCode === undefined && item.status === 'completed') ||
+          (item.exitCode === null && item.status === 'completed')
+        );
+      case 'fileChange':
+        return item.applyStatus === 'applied';
+      case 'dynamicToolCall':
+        return (
+          item.status === 'completed' && !this.isErrorResult(item.result)
+        );
+      case 'mcpToolCall':
+        return (
+          item.status === 'completed' && !this.isErrorResult(item.result)
+        );
+      default:
+        return false;
+    }
+  }
+
+  private isErrorResult(result: unknown): boolean {
+    // Failed dynamic/MCP calls can carry a defined `result` whose error is
+    // encoded inside it (e.g. `{ isError: true }`, `{ error: "boom" }`, `{ ok: false }`).
+    // Only affirmative, non-empty markers count as failure: a `{ error: null }`
+    // or a string like "0 errors" is NOT a failure, so successful repeated calls
+    // still reset the burn counter instead of being falsely interrupted.
+    if (result === undefined || result === null) return false;
+    if (!isRecordLocal(result)) return false;
+    if (result['isError'] === true || result['is_error'] === true) return true;
+    if (result['ok'] === false) return true;
+    const error = result['error'];
+    if (error !== undefined && error !== null && error !== '' && error !== false) {
+      return true;
+    }
+    return false;
+  }
+
+  private toolFingerprint(item: AgentItemV2): string | null {
+    switch (item.type) {
+      case 'commandExecution':
+        return `cmd:${item.command}|${item.cwd ?? ''}`;
+      case 'dynamicToolCall':
+        return `dyn:${item.namespace}|${item.tool}|${JSON.stringify(item.arguments ?? {})}`;
+      case 'mcpToolCall':
+        return `mcp:${item.server}|${item.tool}|${JSON.stringify(item.arguments ?? {})}`;
+      default:
+        // `fileChange` carries only `paths` at start time — distinct edits to the
+        // same path would be conflated and false-aborted. The pi adapter already
+        // guards empty file paths, so drop it from this call-level detector.
+        return null;
+    }
+  }
+
   async destroy(id: string): Promise<void> {
     const runtime = this.runtimes.get(id);
     if (!runtime) return;
@@ -459,6 +672,7 @@ export class ChannelAgentRuntimeManager {
     this.patchUnlisteners.delete(id);
     this.leases.get(id)?.stop();
     this.leases.delete(id);
+    this.burnGuards.delete(id);
     runtime.status = 'disconnected';
     runtime.hooksActive = false;
     await runtime.adapter.disconnect().catch(() => {});
@@ -479,6 +693,7 @@ export class ChannelAgentRuntimeManager {
       [...this.runtimes.keys()].map((id) => this.destroy(id))
     );
     this.endHandlers.clear();
+    this.burnGuards.clear();
   }
 }
 
