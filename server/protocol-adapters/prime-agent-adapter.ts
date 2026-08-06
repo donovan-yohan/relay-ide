@@ -8,14 +8,17 @@ import type {
   AgentInputResponseInputV2,
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
+  AgentControlCommandInputV2,
 } from '../protocol-adapter-v2.js';
 import type {
   AgentCapabilitySetV2,
   AgentItemV2,
   AgentSessionLiveStateV2,
+  AgentSlashCommandV2,
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
+import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
 import { cleanEnv } from '../utils.js';
 import {
   PrimeAgentRpcClient,
@@ -32,7 +35,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   approvals: false,
   questions: false,
   plans: false,
-  slashCommands: false,
+  slashCommands: true,
   queue: true,
   cancelQueued: false,
   interrupt: true,
@@ -138,6 +141,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
+  private commandCatalog = relayControlCatalogForProvider('prime-agent');
+  private modelCatalog: RpcRecord[] = [];
+  private currentModel: RpcRecord | null = null;
+  private thinkingLevel: string | null = null;
+  private controlInFlight = false;
 
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
@@ -147,6 +155,16 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
   get status(): AdapterStatus {
     return this._status;
+  }
+
+  getSlashCommands(): AgentSlashCommandV2[] {
+    return this.commandCatalog.map((command) => ({
+      ...command,
+      ...(command.aliases ? { aliases: [...command.aliases] } : {}),
+      ...(command.args
+        ? { args: command.args.map((arg) => ({ ...arg })) }
+        : {}),
+    }));
   }
 
   async connect(config: AdapterConfig): Promise<void> {
@@ -192,7 +210,9 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const response = await client.start();
       this.applyState(record(response.data));
       this._status = 'connected';
+      await this.refreshControlCommands();
       this.emitSnapshot();
+      this.emitSessionUpdate();
       this.emitLive({
         status: record(response.data).isStreaming === true ? 'working' : 'idle',
         activeTurnId: null,
@@ -252,6 +272,9 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    if (this.controlInFlight) {
+      throw new Error('Prime Agent control command is in progress');
+    }
     const client = this.requireClient();
     const payload: RpcRecord = { message: input.content };
     const images = this.readImages(input.attachments);
@@ -279,6 +302,86 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         error instanceof Error ? error : new Error(String(error))
       );
       throw error;
+    }
+  }
+
+  async executeControlCommand(
+    input: AgentControlCommandInputV2
+  ): Promise<{ config?: Record<string, unknown> }> {
+    const client = this.requireClient();
+    if (this.activeTurnId || this.queued.length > 0) {
+      throw new Error(
+        'Prime Agent controls are unavailable while a turn is active'
+      );
+    }
+    if (this.controlInFlight) {
+      throw new Error('another Prime Agent control command is in progress');
+    }
+    this.controlInFlight = true;
+    try {
+      const command = input.command.trim().toLowerCase();
+      const known = this.commandCatalog.find(
+        (entry) =>
+          entry.dispatch === 'relay-control' &&
+          (entry.name === command || (entry.aliases ?? []).includes(command))
+      );
+      if (!known) throw new Error('unsupported Prime Agent control command');
+      if (known.destructive && input.confirmed !== true) {
+        throw new Error('Prime Agent control command requires confirmation');
+      }
+      const action = known.collisionKey ?? known.name;
+      const args = input.args?.trim() ?? '';
+
+      switch (action) {
+        case 'clear': {
+          const response = await client.call('new_session');
+          if (record(response.data).cancelled === true) {
+            throw new Error('Prime Agent cancelled the new session request');
+          }
+          this.providerSessionId = null;
+          this.providerSessionFile = null;
+          this.items.clear();
+          break;
+        }
+        case 'model': {
+          const selected = this.modelCatalog.find(
+            (model) => this.modelValue(model) === args
+          );
+          if (!selected) {
+            throw new Error(
+              'model must be selected from the live Prime Agent catalog'
+            );
+          }
+          await client.call('set_model', {
+            provider: string(selected.provider),
+            modelId: string(selected.id),
+          });
+          break;
+        }
+        case 'thinking': {
+          const allowed = this.availableThinkingLevels(this.currentModel);
+          if (!allowed.includes(args)) {
+            throw new Error(
+              `thinking must be one of: ${allowed.join(', ') || 'none available'}`
+            );
+          }
+          await client.call('set_thinking_level', { level: args });
+          break;
+        }
+        case 'compact':
+          await client.call('compact');
+          break;
+        default:
+          throw new Error('unsupported Prime Agent control command');
+      }
+
+      const state = await client.call('get_state');
+      this.applyState(record(state.data));
+      this.recomputeControlCommands();
+      this.emitSessionUpdate();
+      return { config: this.currentControlConfig() };
+    } finally {
+      this.controlInFlight = false;
     }
   }
 
@@ -840,10 +943,113 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
+  private async refreshControlCommands(): Promise<void> {
+    const client = this.requireClient();
+    try {
+      const response = await client.call('get_available_models');
+      const models = record(response.data).models;
+      this.modelCatalog = Array.isArray(models)
+        ? models.map(record).filter((model) => this.modelValue(model) !== '')
+        : [];
+      if (this.modelCatalog.length === 0) {
+        this.commandCatalog = [];
+        return;
+      }
+    } catch {
+      // Older or malformed Prime Agent runtimes must not receive guessed
+      // controls: an advertised command is an executable capability promise.
+      this.modelCatalog = [];
+      this.commandCatalog = [];
+      return;
+    }
+    this.recomputeControlCommands();
+  }
+
+  private modelValue(model: RpcRecord): string {
+    const provider = string(model.provider);
+    const id = string(model.id);
+    return provider && id
+      ? `${encodeURIComponent(provider)}/${encodeURIComponent(id)}`
+      : '';
+  }
+
+  private availableThinkingLevels(model: RpcRecord | null): string[] {
+    if (!model) return [];
+    if (model.reasoning !== true) return ['off'];
+    const levelMap = record(model.thinkingLevelMap);
+    const levels = ['off', 'minimal', 'low', 'medium', 'high'].filter(
+      (level) => levelMap[level] !== null
+    );
+    for (const level of ['xhigh', 'max']) {
+      if (level in levelMap && levelMap[level] !== null) levels.push(level);
+    }
+    return levels;
+  }
+
+  private recomputeControlCommands(): void {
+    const controls = relayControlCatalogForProvider('prime-agent');
+    const thinkingLevels = this.availableThinkingLevels(this.currentModel);
+    this.commandCatalog = controls.flatMap((command) => {
+      if (command.collisionKey === 'model') {
+        if (this.modelCatalog.length === 0) return [];
+        return [
+          {
+            ...command,
+            args: this.modelCatalog.flatMap((model) => {
+              const value = this.modelValue(model);
+              if (!value) return [];
+              return [
+                {
+                  value,
+                  label: string(model.name) || string(model.id),
+                  description: string(model.provider),
+                },
+              ];
+            }),
+          },
+        ];
+      }
+      if (command.collisionKey === 'thinking') {
+        if (thinkingLevels.length === 0) return [];
+        return [
+          {
+            ...command,
+            args: thinkingLevels.map((value) => ({ value })),
+          },
+        ];
+      }
+      return [command];
+    });
+  }
+
+  private currentControlConfig(): Record<string, unknown> {
+    const model = this.currentModel ? this.modelValue(this.currentModel) : '';
+    return {
+      ...(model ? { model } : {}),
+      ...(this.thinkingLevel ? { effort: this.thinkingLevel } : {}),
+      ...(this.currentModel
+        ? { providerOptions: { provider: string(this.currentModel.provider) } }
+        : {}),
+    };
+  }
+
+  private emitSessionUpdate(): void {
+    this.emitPatch({
+      type: 'agent-session-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: nowIso(),
+      providerSession: this.providerSession,
+      config: this.currentControlConfig(),
+      slashCommands: this.getSlashCommands(),
+    });
+  }
+
   private applyState(data: RpcRecord): void {
-    this.providerSessionId = string(data.sessionId) || this.providerSessionId;
-    this.providerSessionFile =
-      string(data.sessionFile) || this.providerSessionFile;
+    this.providerSessionId = string(data.sessionId) || null;
+    this.providerSessionFile = string(data.sessionFile) || null;
+    const model = record(data.model);
+    this.currentModel = string(model.id) ? model : null;
+    this.thinkingLevel = string(data.thinkingLevel) || null;
   }
   private emitSnapshot(): void {
     if (!this.config) return;
@@ -857,6 +1063,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         cwd: this.config.cwd,
         capabilities: this.capabilities,
         providerSession: this.providerSession,
+        config: this.currentControlConfig(),
       }),
     });
   }
