@@ -107,7 +107,9 @@ function providerResumeId(
         ? 'threadId'
         : providerId === 'hermes'
           ? 'hermesResponseId'
-          : undefined;
+          : providerId === 'prime-agent'
+            ? 'primeAgentSessionId'
+            : undefined;
   if (!key) return undefined;
   const value = state[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;

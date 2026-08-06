@@ -89,7 +89,9 @@ const LANGUAGE_SERVER_MATCHERS: Array<{
 
 const DEFAULT_CLOCK_TICK_HZ = 100;
 
-export function readProcessTable(options: ProcessTableOptions = {}): ProcessInfo[] {
+export function readProcessTable(
+  options: ProcessTableOptions = {}
+): ProcessInfo[] {
   if (process.platform !== 'linux' && options.procRoot === undefined) return [];
 
   const procRoot = options.procRoot ?? '/proc';
@@ -137,7 +139,10 @@ export function readProcessTable(options: ProcessTableOptions = {}): ProcessInfo
   return processes.sort((a, b) => a.pid - b.pid);
 }
 
-export function descendantsOf(rootPid: number, table: ProcessInfo[]): ProcessInfo[] {
+export function descendantsOf(
+  rootPid: number,
+  table: ProcessInfo[]
+): ProcessInfo[] {
   const children = new Map<number, ProcessInfo[]>();
   for (const proc of table) {
     const bucket = children.get(proc.ppid) ?? [];
@@ -205,7 +210,8 @@ export function scheduleRelayProcessTreeReap(
   const summary = summarizeProcessReap(options.rootPids, table);
   const knownPids = new Set([...summary.rootPids, ...summary.descendantPids]);
   const processGroupIds = new Set(summary.processGroupIds);
-  const killProcess = options.killProcess ?? ((pid, signal) => process.kill(pid, signal));
+  const killProcess =
+    options.killProcess ?? ((pid, signal) => process.kill(pid, signal));
   const logger = options.logger;
 
   if (knownPids.size === 0 && processGroupIds.size === 0) return summary;
@@ -252,7 +258,9 @@ export function collectLanguageServerDiagnostics(
     .map((proc) => {
       const ancestors = ancestorsOf(proc, byPid);
       const relayOwnedLikely = [proc, ...ancestors].some((candidate) =>
-        /relay-ide|relayctl|claude|codex|opencode|hermes/i.test(candidate.commandLine)
+        /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent/i.test(
+          candidate.commandLine
+        )
       );
       return {
         pid: proc.pid,
@@ -284,14 +292,19 @@ export function collectLanguageServerDiagnostics(
   };
 }
 
-function parseProcStat(stat: string):
+function parseProcStat(
+  stat: string
+):
   | { command: string; ppid: number; pgid: number; startTicks: number }
   | undefined {
   const open = stat.indexOf('(');
   const close = stat.lastIndexOf(')');
   if (open < 0 || close <= open) return undefined;
   const command = stat.slice(open + 1, close);
-  const rest = stat.slice(close + 2).trim().split(/\s+/);
+  const rest = stat
+    .slice(close + 2)
+    .trim()
+    .split(/\s+/);
   const ppid = Number(rest[1]);
   const pgid = Number(rest[2]);
   const startTicks = Number(rest[19]);
@@ -363,7 +376,9 @@ export function redactCommandLine(commandLine: string): string {
   );
 }
 
-function collectCommandLineRedactions(tokens: CommandToken[]): RedactionRange[] {
+function collectCommandLineRedactions(
+  tokens: CommandToken[]
+): RedactionRange[] {
   const redactions: RedactionRange[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
@@ -391,7 +406,9 @@ function secretOptionRedaction(
   if (!token.text.includes('=')) return nextToken;
 
   const valueStart = token.start + token.text.indexOf('=') + 1;
-  return valueStart < token.end ? { start: valueStart, end: token.end } : undefined;
+  return valueStart < token.end
+    ? { start: valueStart, end: token.end }
+    : undefined;
 }
 
 function envAssignmentRedaction(
@@ -415,7 +432,9 @@ function envAssignmentRedaction(
   } else {
     valueEnd = consumeFollowingQuotedFragments(tokens, index) ?? valueEnd;
   }
-  return valueStart < valueEnd ? { start: valueStart, end: valueEnd } : undefined;
+  return valueStart < valueEnd
+    ? { start: valueStart, end: valueEnd }
+    : undefined;
 }
 
 function credentialSchemeRedaction(
@@ -425,12 +444,15 @@ function credentialSchemeRedaction(
   return /^(?:bearer|basic)$/i.test(token.text) ? nextToken : undefined;
 }
 
-function tokenizeCommandLine(commandLine: string): Array<{ start: number; end: number; text: string }> {
+function tokenizeCommandLine(
+  commandLine: string
+): Array<{ start: number; end: number; text: string }> {
   const tokens: Array<{ start: number; end: number; text: string }> = [];
   let index = 0;
 
   while (index < commandLine.length) {
-    while (index < commandLine.length && /\s/.test(commandLine[index]!)) index += 1;
+    while (index < commandLine.length && /\s/.test(commandLine[index]!))
+      index += 1;
     if (index >= commandLine.length) break;
 
     const start = index;
@@ -460,7 +482,8 @@ function consumeUntilQuote(
 ): number {
   for (let index = startIndex; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (token.text.endsWith(quote) && !token.text.endsWith(`\\${quote}`)) return token.end;
+    if (token.text.endsWith(quote) && !token.text.endsWith(`\\${quote}`))
+      return token.end;
   }
   return tokens[startIndex]!.end;
 }
@@ -471,8 +494,12 @@ function consumeFollowingQuotedFragments(
 ): number | undefined {
   for (let index = startIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (/^--?\w/.test(token.text) || /^[A-Z0-9_]+=/.test(token.text)) return undefined;
-    const quoteOffset = Math.max(token.text.indexOf('"'), token.text.indexOf("'"));
+    if (/^--?\w/.test(token.text) || /^[A-Z0-9_]+=/.test(token.text))
+      return undefined;
+    const quoteOffset = Math.max(
+      token.text.indexOf('"'),
+      token.text.indexOf("'")
+    );
     if (quoteOffset >= 0) return token.start + quoteOffset + 1;
     if (token.text.endsWith('"') || token.text.endsWith("'")) return token.end;
   }
@@ -515,14 +542,19 @@ function safeUptimeSeconds(procRoot: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function classifyLanguageServer(commandLine: string): LanguageServerKind | undefined {
+function classifyLanguageServer(
+  commandLine: string
+): LanguageServerKind | undefined {
   for (const matcher of LANGUAGE_SERVER_MATCHERS) {
     if (matcher.pattern.test(commandLine)) return matcher.kind;
   }
   return undefined;
 }
 
-function ancestorsOf(proc: ProcessInfo, byPid: Map<number, ProcessInfo>): ProcessInfo[] {
+function ancestorsOf(
+  proc: ProcessInfo,
+  byPid: Map<number, ProcessInfo>
+): ProcessInfo[] {
   const ancestors: ProcessInfo[] = [];
   const seen = new Set<number>([proc.pid]);
   let current = proc;
@@ -539,8 +571,7 @@ function ancestorsOf(proc: ProcessInfo, byPid: Map<number, ProcessInfo>): Proces
 function uniqueSafePids(pids: number[]): number[] {
   return Array.from(new Set(pids))
     .filter(
-      (pid) =>
-        Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid
+      (pid) => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid
     )
     .sort((a, b) => a - b);
 }

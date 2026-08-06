@@ -59,7 +59,13 @@ import {
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
 
-const DEFAULT_KNOWN_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
+const DEFAULT_KNOWN_PROVIDER_IDS = [
+  'claude',
+  'codex',
+  'opencode',
+  'hermes',
+  'prime-agent',
+];
 
 /**
  * Byte budget for one REST history response. Rows are row-bounded (max 200) but

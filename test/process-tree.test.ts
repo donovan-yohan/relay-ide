@@ -12,7 +12,9 @@ import {
   type ProcessInfo,
 } from '../server/process-tree.js';
 
-function proc(overrides: Partial<ProcessInfo> & Pick<ProcessInfo, 'pid' | 'ppid' | 'pgid'>): ProcessInfo {
+function proc(
+  overrides: Partial<ProcessInfo> & Pick<ProcessInfo, 'pid' | 'ppid' | 'pgid'>
+): ProcessInfo {
   return {
     command: 'node',
     commandLine: 'node',
@@ -39,10 +41,16 @@ function writeFakeProc(
     `${options.pid} (${options.command}) S ${options.ppid} ${options.pgid} 1 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 100`
   );
   writeFileSync(`${procDir}/cmdline`, `${options.cmdlineArgs.join('\0')}\0`);
-  writeFileSync(`${procDir}/status`, `Name:\t${options.command}\nVmRSS:\t${options.rssKb ?? 0} kB\n`);
+  writeFileSync(
+    `${procDir}/status`,
+    `Name:\t${options.command}\nVmRSS:\t${options.rssKb ?? 0} kB\n`
+  );
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 4_000
+): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (predicate()) return;
@@ -54,7 +62,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<voi
 describe('process-tree session runtime reaping', () => {
   it('summarizes descendant language servers before session kill', () => {
     const table: ProcessInfo[] = [
-      proc({ pid: 100, ppid: 1, pgid: 100, commandLine: 'node relay-ide workspace host' }),
+      proc({
+        pid: 100,
+        ppid: 1,
+        pgid: 100,
+        commandLine: 'node relay-ide workspace host',
+      }),
       proc({
         pid: 101,
         ppid: 100,
@@ -84,8 +97,18 @@ describe('process-tree session runtime reaping', () => {
   it('signals process group and descendants for explicit session teardown', () => {
     const calls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     const table: ProcessInfo[] = [
-      proc({ pid: 200, ppid: 1, pgid: 200, commandLine: 'node relay-ide workspace host' }),
-      proc({ pid: 201, ppid: 200, pgid: 200, commandLine: 'typescript-language-server --stdio' }),
+      proc({
+        pid: 200,
+        ppid: 1,
+        pgid: 200,
+        commandLine: 'node relay-ide workspace host',
+      }),
+      proc({
+        pid: 201,
+        ppid: 200,
+        pgid: 200,
+        commandLine: 'typescript-language-server --stdio',
+      }),
     ];
 
     scheduleRelayProcessTreeReap({
@@ -102,6 +125,40 @@ describe('process-tree session runtime reaping', () => {
       { pid: 201, signal: 'SIGTERM' },
       { pid: 200, signal: 'SIGTERM' },
     ]);
+  });
+
+  it('recognizes Prime Agent ancestors as Relay-owned language-server runtimes', () => {
+    const procRoot = mkdtempSync(`${tmpdir()}/relay-proc-`);
+    try {
+      writeFileSync(`${procRoot}/uptime`, '1000 0');
+      writeFakeProc(procRoot, {
+        pid: 250,
+        ppid: 1,
+        pgid: 250,
+        command: 'prime-agent',
+        cmdlineArgs: ['prime-agent'],
+      });
+      writeFakeProc(procRoot, {
+        pid: 251,
+        ppid: 250,
+        pgid: 250,
+        command: 'node',
+        cmdlineArgs: ['node', '/typescript/lib/tsserver.js'],
+      });
+
+      const diagnostics = collectLanguageServerDiagnostics({
+        procRoot,
+        uptimeSeconds: 1000,
+        clockTickHz: 100,
+      });
+
+      expect(diagnostics.processes[0]?.relayOwnedLikely).toBe(true);
+      expect(diagnostics.processes[0]?.ancestors[0]?.commandLine).toBe(
+        'prime-agent'
+      );
+    } finally {
+      rmSync(procRoot, { recursive: true, force: true });
+    }
   });
 
   it('redacts likely secrets from language-server diagnostics', () => {
@@ -122,10 +179,14 @@ describe('process-tree session runtime reaping', () => {
       redactCommandLine('node relay-ide --token="my secret value" --safe flag')
     ).toBe('node relay-ide --token=[REDACTED] --safe flag');
     expect(
-      redactCommandLine("node relay-ide GITHUB_TOKEN='ghp secret value' --safe flag")
+      redactCommandLine(
+        "node relay-ide GITHUB_TOKEN='ghp secret value' --safe flag"
+      )
     ).toBe('node relay-ide GITHUB_TOKEN=[REDACTED] --safe flag');
     expect(
-      redactCommandLine("node relay-ide GITHUB_TOKEN=*** secret value' --safe flag")
+      redactCommandLine(
+        "node relay-ide GITHUB_TOKEN=*** secret value' --safe flag"
+      )
     ).toBe('node relay-ide GITHUB_TOKEN=[REDACTED] --safe flag');
     expect(redactCommandLine('Authorization Bearer "abc 123" next')).toBe(
       'Authorization Bearer [REDACTED] next'
@@ -246,18 +307,28 @@ describe('process-tree session runtime reaping', () => {
 
     try {
       await waitFor(() => childPid !== undefined);
-      const baseline = readProcessTable().filter((p) => p.languageServerKind).length;
+      const baseline = readProcessTable().filter(
+        (p) => p.languageServerKind
+      ).length;
       await waitFor(() =>
-        readProcessTable().some((p) => p.pid === childPid && p.languageServerKind === 'tsserver')
+        readProcessTable().some(
+          (p) => p.pid === childPid && p.languageServerKind === 'tsserver'
+        )
       );
 
-      scheduleRelayProcessTreeReap({ rootPids: [parentPid], killDelayMs: 50, logger: {} });
+      scheduleRelayProcessTreeReap({
+        rootPids: [parentPid],
+        killDelayMs: 50,
+        logger: {},
+      });
 
       await waitFor(() => {
         const table = readProcessTable();
         return !table.some((p) => p.pid === parentPid || p.pid === childPid);
       });
-      const after = readProcessTable().filter((p) => p.languageServerKind).length;
+      const after = readProcessTable().filter(
+        (p) => p.languageServerKind
+      ).length;
       expect(after).toBeLessThanOrEqual(baseline);
     } finally {
       try {

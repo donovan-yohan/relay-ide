@@ -10,11 +10,12 @@ import type { AgentFramework, EventSourceType } from '../server/types.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 
-test('BUILTIN_FRAMEWORKS contains claude, codex, opencode, and hermes', () => {
+test('BUILTIN_FRAMEWORKS contains all first-class providers', () => {
   expect('claude' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('codex' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('opencode' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('hermes' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('prime-agent' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -95,6 +96,25 @@ test('hermes framework has correct values', () => {
   expect(hermes.capabilities.supportsTelemetry).toBe(true);
   expect(hermes.capabilities.supportsAttachedRuntime).toBe(true);
   expect(hermes.capabilities.supportsChannelAgents).toBe(true);
+});
+
+test('prime-agent framework exposes native channels and a generic PTY', () => {
+  const prime = BUILTIN_FRAMEWORKS['prime-agent'];
+  expect(prime.id).toBe('prime-agent');
+  expect(prime.displayName).toBe('Prime Agent');
+  expect(prime.command).toBe('prime-agent');
+  expect(prime.continueArgs).toEqual(['--continue']);
+  expect(prime.yoloArgs).toEqual([]);
+  expect(prime.parserType).toBe('generic');
+  expect(prime.eventSource).toBe('timer');
+  expect(prime.capabilities).toMatchObject({
+    supportsHooks: false,
+    supportsContinue: true,
+    supportsYolo: false,
+    supportsTelemetry: true,
+    supportsAttachedRuntime: false,
+    supportsChannelAgents: true,
+  });
 });
 
 test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', () => {
