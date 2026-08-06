@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import {
+  AgentSteerRejectedError,
   BaseProtocolAdapterV2,
   type AdapterConfig,
   type AdapterStatus,
@@ -469,15 +470,11 @@ class ApprovalAdapter extends BaseProtocolAdapterV2 {
 // OBSERVED (concurrentPeak > 1) rather than inferred from send counts.
 class SteerableAdapter extends BaseProtocolAdapterV2 {
   readonly runtimeOwnership = 'spawned' as const;
-  readonly capabilities: AgentCapabilitySetV2 = {
-    text: true,
-    queue: false,
-    interrupt: true,
-    approvals: false,
-    streaming: true,
-  };
+  readonly capabilities: AgentCapabilitySetV2;
   readonly sendCalls: string[] = [];
   readonly sendInputs: AgentSendMessageInputV2[] = [];
+  readonly steerAttempts: AgentSendMessageInputV2[] = [];
+  readonly steerInputs: AgentSendMessageInputV2[] = [];
   readonly interruptCalls: string[] = [];
   /** Peak simultaneously-open turns; the binder must never let this exceed 1. */
   concurrentPeak = 0;
@@ -485,8 +482,22 @@ class SteerableAdapter extends BaseProtocolAdapterV2 {
   private _status: AdapterStatus = 'disconnected';
   private sid = 'steerable';
 
-  constructor(readonly agentType: string) {
+  constructor(
+    readonly agentType: string,
+    private readonly supportsSafeBoundarySteer = false,
+    private readonly rejectsSafeBoundarySteer = false,
+    private readonly failsSafeBoundarySteer = false,
+    private readonly hangsSafeBoundarySteer = false
+  ) {
     super();
+    this.capabilities = {
+      text: true,
+      queue: false,
+      steer: supportsSafeBoundarySteer,
+      interrupt: true,
+      approvals: false,
+      streaming: true,
+    };
   }
   get status(): AdapterStatus {
     return this._status;
@@ -540,6 +551,23 @@ class SteerableAdapter extends BaseProtocolAdapterV2 {
       delta: { text: 'partial…' },
     });
     // No terminal patch: the turn stays live until interrupt() or complete().
+  }
+
+  async steerMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.steerAttempts.push(input);
+    if (!this.supportsSafeBoundarySteer) {
+      throw new Error('safe-boundary steering unavailable');
+    }
+    if (this.rejectsSafeBoundarySteer) {
+      throw new AgentSteerRejectedError('activeTurnNotSteerable');
+    }
+    if (this.failsSafeBoundarySteer) {
+      throw new Error('steer transport reset');
+    }
+    if (this.hangsSafeBoundarySteer) {
+      return new Promise<void>(() => {});
+    }
+    this.steerInputs.push(input);
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
@@ -1926,7 +1954,7 @@ describe('channel-agent-binder — lifecycle', () => {
       m.body.text.includes('message dropped')
     );
     expect(dropped).toHaveLength(1);
-    expect(dropped[0]!.body.text).toContain('has 8 turns queued');
+    expect(dropped[0]!.body.text).toContain('has 8 messages pending');
     expect(dropped[0]!.threadId).toBe(rootB.id);
     expect(dropped[0]!.parentMessageId).toBe(overflow.id);
   });
@@ -4052,9 +4080,10 @@ function postSteerImage(
   return message;
 }
 
-function makeSteerBinder() {
+function makeSteerBinder(supportsSafeBoundarySteer = false) {
   const harness = makeBinder({
-    build: (agentType) => new SteerableAdapter(agentType),
+    build: (agentType) =>
+      new SteerableAdapter(agentType, supportsSafeBoundarySteer),
     targets: STEER_TARGETS,
     knownProviderIds: ['steer'],
   });
@@ -4071,6 +4100,152 @@ async function steerAdapter(
 }
 
 describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
+  it('bounds accepted native steers at the aggregate queue cap', async () => {
+    const { binder, store, sessions } = makeSteerBinder(true);
+    postSteering(store, binder, '@steer opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    for (let i = 0; i < 8; i++) {
+      postSteering(store, binder, `@steer ${i}`, ['steer'], undefined);
+    }
+    await waitFor(() => adapter.steerInputs.length === 8);
+    postSteering(store, binder, '@steer overflow', ['steer'], undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(adapter.steerInputs).toHaveLength(8);
+    expect(
+      rows(store).some((row) => row.body.text.includes('8 messages pending'))
+    ).toBe(true);
+  });
+
+  it('falls back to one ordinary FIFO turn after a definite native steer rejection', async () => {
+    const harness = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer opener',
+      ['steer'],
+      undefined
+    );
+    const adapter = await steerAdapter(harness.sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer fallback',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerAttempts.length === 1);
+    adapter.completeLatest();
+    await waitFor(() => adapter.sendCalls.length === 2);
+    expect(adapter.sendInputs[1]!.content).toContain('@steer fallback');
+  });
+
+  it('does not replay a steer after an ambiguous transport failure', async () => {
+    const harness = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true, false, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer opener',
+      ['steer'],
+      undefined
+    );
+    const adapter = await steerAdapter(harness.sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer uncertain',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerAttempts.length === 1);
+    await waitFor(() =>
+      systemRows(harness.store).some((row) =>
+        row.body.text.includes('could not accept the steering message')
+      )
+    );
+
+    adapter.completeLatest();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(adapter.sendCalls).toHaveLength(1);
+    expect(adapter.steerInputs).toHaveLength(0);
+  });
+
+  it('uses a native safe-boundary steer by default and preserves FIFO without a concurrent turn', async () => {
+    const { binder, store, sessions, events } = makeSteerBinder(true);
+    postSteering(store, binder, '@steer long task', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+
+    // No explicit field: a harness that advertises a native steer primitive
+    // receives the operator's next instruction at that provider boundary.
+    postSteering(
+      store,
+      binder,
+      '@steer instead inspect the conflict',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerInputs.length === 1);
+    expect(adapter.sendCalls).toHaveLength(1);
+    expect(adapter.concurrentPeak).toBe(1);
+    expect(adapter.steerInputs[0]!.content).toContain(
+      '@steer instead inspect the conflict'
+    );
+    // Status is deliberately not the old queued lane: the UI can say
+    // "steering pending" rather than falsely claiming a future turn.
+    expect(events.some((event) => event['steeringCount'] === 1)).toBe(true);
+    expect(events.at(-1)?.['queuedCount']).toBe(0);
+
+    adapter.completeLatest('redirected reply');
+    await waitFor(() => events.at(-1)?.['steeringCount'] === 0);
+  });
+
+  it('clears pending native steer status when its runtime dies', async () => {
+    const harness = makeBinder({
+      build: (agentType) =>
+        new SteerableAdapter(agentType, true, false, false, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    harness.binder.setStatusBroadcaster((_type, data) => events.push(data));
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer long task',
+      ['steer'],
+      undefined
+    );
+    const adapter = await steerAdapter(harness.sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer redirect',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerAttempts.length === 1);
+    await waitFor(() => events.at(-1)?.['steeringCount'] === 1);
+
+    harness.sessions.fireEnd(harness.sessions.firstSessionId());
+    await waitFor(() => events.at(-1)?.['status'] === 'idle');
+    expect(events.at(-1)).toMatchObject({
+      queuedCount: 0,
+      steeringCount: 0,
+    });
+  });
+
   it('queues posts that land mid-turn and drains them all into ONE next turn', async () => {
     const { binder, store, sessions, events } = makeSteerBinder();
     postSteering(store, binder, '@steer one', ['steer'], undefined);
@@ -4125,8 +4300,8 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     expect(adapter.sendInputs[2]!.content).toContain('@steer third');
   });
 
-  it('steering:"interrupt" cancels the live turn and dispatches the new message', async () => {
-    const { binder, store, sessions } = makeSteerBinder();
+  it('steering:"interrupt" overrides native steer and cancels the live turn', async () => {
+    const { binder, store, sessions } = makeSteerBinder(true);
     postSteering(store, binder, '@steer long task', ['steer'], undefined);
     const adapter = await steerAdapter(sessions);
     await waitFor(() => adapter.sendCalls.length === 1);
@@ -4147,6 +4322,7 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
 
     await waitFor(() => adapter.interruptCalls.length === 1);
     expect(adapter.interruptCalls[0]).toBe(firstTurn);
+    expect(adapter.steerAttempts).toHaveLength(0);
     // Existing interrupt semantics: the partial row finalizes `interrupted`.
     await waitFor(() =>
       rows(store).some(
@@ -4585,7 +4761,9 @@ describe('channel-agent-binder — presence teardown (#1307)', () => {
     // One row per dropped trigger, and nothing was pumped into the dead adapter.
     expect(
       systemRows(store).filter((row) =>
-        row.body.text.includes('runtime ended before delivering a queued message')
+        row.body.text.includes(
+          'runtime ended before delivering a queued message'
+        )
       )
     ).toHaveLength(1);
     expect(adapter.sendCalls).toHaveLength(1);

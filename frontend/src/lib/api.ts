@@ -2024,8 +2024,8 @@ export async function postChannelMessage(
     parentMessageId?: string;
     clientMessageId: string;
     /**
-     * Explicit mid-turn steering (#1308 slice 4). Omitted queues the post behind
-     * the agent's live turn; `'interrupt'` cancels that turn and sends now.
+     * Explicit mid-turn steering. Omitted prefers a harness's native safe-boundary
+     * steer and otherwise queues behind the live turn; `'interrupt'` cancels it.
      */
     steering?: 'interrupt';
   }
@@ -2122,6 +2122,10 @@ export interface RosterEntry {
      * Optional so an older hub's roster still parses; absent means zero.
      */
     queuedCount?: number;
+    /** Safe-boundary steer requests currently attached to the active turn. */
+    steeringCount?: number;
+    /** Whether the live harness accepts the default native steer action. */
+    steerSupported?: boolean;
   } | null;
 }
 

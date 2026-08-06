@@ -45,6 +45,12 @@ export interface ClaudeStreamCloseEvent {
   signal: NodeJS.Signals | null;
 }
 
+interface PendingClaudeWrite {
+  line: string;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 const DEFAULT_MAX_LINE_CHARS = 32 * 1024 * 1024;
 const DEFAULT_STDERR_RING = 50;
 const DEFAULT_AFTER_STDIN_MS = 3000;
@@ -84,7 +90,8 @@ export class ClaudeStreamClient extends EventEmitter {
   private skipping = false;
 
   private readonly stderrRing: string[] = [];
-  private writeQueue: string[] = [];
+  private writeQueue: PendingClaudeWrite[] = [];
+  private readonly writesInFlight = new Set<PendingClaudeWrite>();
   private draining = false;
   private stopPromise: Promise<void> | null = null;
 
@@ -160,6 +167,9 @@ export class ClaudeStreamClient extends EventEmitter {
     child.on('close', (code, signal) => {
       if (this.closed) return;
       this.closed = true;
+      this.rejectPendingWrites(
+        new Error('Claude subprocess closed before stdin write was accepted')
+      );
       this.emit('close', {
         code: code ?? null,
         signal: (signal as NodeJS.Signals | null) ?? null,
@@ -167,18 +177,37 @@ export class ClaudeStreamClient extends EventEmitter {
     });
   }
 
-  /** Serialize one JSON frame + `\n` onto the drain-honoring stdin queue. */
+  /** Queue a best-effort frame; transport errors are handled on the client. */
   write(msg: unknown): void {
-    if (this.closed || !this.child) return;
+    void this.writeAccepted(msg).catch(() => {
+      // `onStdinError`/`close` already emits the durable adapter failure. This
+      // convenience method is intentionally fire-and-forget for controls.
+    });
+  }
+
+  /**
+   * Resolve only after Node has accepted the frame into stdin's write buffer.
+   * Claude stream-json exposes no per-frame application acknowledgement, so
+   * this is the strongest non-terminal receipt available: callback success
+   * plus drain/backpressure/error handling. It does NOT wait for turn output.
+   */
+  writeAccepted(msg: unknown): Promise<void> {
+    if (this.closed || !this.child) {
+      return Promise.reject(new Error('Claude stdin is unavailable'));
+    }
     let line: string;
     try {
       line = JSON.stringify(msg) + '\n';
     } catch (err) {
       logger.warn('failed to serialize claude stdin frame: %s', String(err));
-      return;
+      return Promise.reject(
+        err instanceof Error ? err : new Error(String(err))
+      );
     }
-    this.writeQueue.push(line);
-    this.flush();
+    return new Promise<void>((resolve, reject) => {
+      this.writeQueue.push({ line, resolve, reject });
+      this.flush();
+    });
   }
 
   /** Flush the outbound queue respecting stdin backpressure (drain gating). */
@@ -188,17 +217,28 @@ export class ClaudeStreamClient extends EventEmitter {
     if (!stdin) return;
 
     while (this.writeQueue.length > 0) {
-      const line = this.writeQueue.shift()!;
+      const pending = this.writeQueue.shift()!;
+      this.writesInFlight.add(pending);
       let ok: boolean;
       try {
         // The write callback catches asynchronous stream errors (e.g. a late
         // EPIPE) that would otherwise land on the stdin 'error' listener; the
         // try/catch catches a synchronous throw on an already-destroyed stream.
-        ok = stdin.write(line, (err) => {
-          if (err) this.onStdinError(err as NodeJS.ErrnoException);
+        ok = stdin.write(pending.line, (err) => {
+          this.writesInFlight.delete(pending);
+          if (err) {
+            const error = err as NodeJS.ErrnoException;
+            pending.reject(error);
+            this.onStdinError(error);
+            return;
+          }
+          pending.resolve();
         });
       } catch (err) {
-        this.onStdinError(err as NodeJS.ErrnoException);
+        this.writesInFlight.delete(pending);
+        const error = err instanceof Error ? err : new Error(String(err));
+        pending.reject(error);
+        this.onStdinError(error as NodeJS.ErrnoException);
         return;
       }
       if (this.closed) return;
@@ -227,13 +267,20 @@ export class ClaudeStreamClient extends EventEmitter {
       err?.code ?? 'unknown',
       err?.message ?? String(err)
     );
-    this.writeQueue = [];
+    this.rejectPendingWrites(err);
     this.draining = false;
     this.closed = true;
     this.emit('close', {
       code: null,
       signal: null,
     } satisfies ClaudeStreamCloseEvent);
+  }
+
+  private rejectPendingWrites(error: Error): void {
+    for (const pending of this.writeQueue) pending.reject(error);
+    this.writeQueue = [];
+    for (const pending of this.writesInFlight) pending.reject(error);
+    this.writesInFlight.clear();
   }
 
   private onStdout(chunk: Buffer): void {

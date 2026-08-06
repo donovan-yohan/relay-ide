@@ -125,6 +125,33 @@ describe('ChannelMessageRow truncation fidelity', () => {
     ).toContain('reasoning content survives channel persistence');
   });
 
+  it('does not advertise a disclosure for a terminal reasoning summary without detail', async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(ChannelMessageRow, {
+          message: agentMessage({
+            agentDetail: {
+              itemId: 'reason-summary-only',
+              card: {
+                kind: 'thought',
+                title: 'thinking',
+                status: 'completed',
+                content: '   ',
+              },
+            },
+          }),
+          channelId: 'topic:eng-threads',
+        })
+      );
+    });
+
+    const card = container.querySelector('.ch-agent-card');
+    expect(card?.getAttribute('data-agent-card-expandable')).toBe('false');
+    expect(card?.querySelector('.ch-agent-card__toggle')).toBeNull();
+    expect(card?.querySelector('.ch-agent-card__chevron')).toBeNull();
+    expect(card?.textContent).toContain('thinking');
+  });
+
   it('rerenders authoritative streaming card rows without overriding persisted status', async () => {
     const row = (status: 'pending' | 'running', content: string) =>
       agentMessage({

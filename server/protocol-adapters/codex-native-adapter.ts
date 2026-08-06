@@ -1,4 +1,7 @@
-import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
+import {
+  AgentSteerRejectedError,
+  BaseProtocolAdapterV2,
+} from '../protocol-adapter-v2.js';
 import type {
   AdapterConfig,
   AdapterStatus,
@@ -109,6 +112,7 @@ const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {
   plans: true,
   slashCommands: true,
   queue: true,
+  steer: true,
   cancelQueued: true,
   interrupt: true,
   resume: true,
@@ -470,6 +474,13 @@ interface DeferredTurnCompletion {
   timer: NodeJS.Timeout;
 }
 
+/** A live steer RPC that may still replace its expected native turn. */
+interface PendingNativeSteer {
+  relayTurnId: string | null;
+  expectedNativeTurnId: string;
+  terminalNotification: Record<string, unknown> | null;
+}
+
 // ── Main adapter class ─────────────────────────────────────────────────────
 
 export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
@@ -494,6 +505,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   // Turn management
   private activeTurnId: string | null = null;
   private nativeActiveTurnId: string | null = null;
+  /** Native turns superseded by a successful `turn/steer` replacement. */
+  private readonly supersededNativeTurnIds = new Set<string>();
+  private pendingNativeSteer: PendingNativeSteer | null = null;
   private activeStartedAt: string | null = null;
   private completedActiveTurn = false;
   private readonly queue: QueuedCodexMessage[] = [];
@@ -659,6 +673,79 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     await this.startTurn(rewrittenInput);
   }
 
+  /**
+   * Codex app-server owns the safe-boundary behavior: `turn/steer` accepts the
+   * new input against the currently active native turn and applies it only when
+   * the provider can safely leave the in-flight operation. Keep the Relay turn
+   * identity intact — this is steering the existing reply, not opening a
+   * concurrent channel turn.
+   */
+  async steerMessage(input: AgentSendMessageInputV2): Promise<void> {
+    if (
+      this._status !== 'connected' ||
+      !this.client ||
+      !this.providerSessionId
+    ) {
+      throw new Error('Cannot steer a Codex message before connect');
+    }
+    const expectedTurnId = this.nativeActiveTurnId;
+    const relayTurnId = this.activeTurnId;
+    if (expectedTurnId === null) {
+      throw new Error('Cannot steer Codex without an active native turn');
+    }
+    if (this.pendingNativeSteer !== null) {
+      throw new Error(
+        'Cannot steer Codex while a previous steer is unresolved'
+      );
+    }
+    const pending: PendingNativeSteer = {
+      relayTurnId,
+      expectedNativeTurnId: expectedTurnId,
+      terminalNotification: null,
+    };
+    this.pendingNativeSteer = pending;
+    const rewritten = this.rewriteContent(input.content);
+    let result: { turnId?: unknown };
+    try {
+      result = await this.client.call<{ turnId?: unknown }>('turn/steer', {
+        threadId: this.providerSessionId,
+        expectedTurnId,
+        input: buildCodexTurnInput(rewritten, input.attachments),
+      });
+    } catch (err) {
+      this.releasePendingNativeSteerTerminal(pending);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('activeTurnNotSteerable')) {
+        throw new AgentSteerRejectedError(message);
+      }
+      throw err;
+    }
+    // Newer app servers return the successor turn id in the response before
+    // their turn/started notification. Recording it closes the race for a
+    // second FIFO steering request; the notification remains authoritative.
+    const successorId = isRecord(result) ? stringField(result['turnId']) : '';
+    if (
+      successorId &&
+      this.pendingNativeSteer === pending &&
+      this.activeTurnId === relayTurnId
+    ) {
+      this.pendingNativeSteer = null;
+      // Some app-server versions continue the same native turn. Only a new
+      // id proves that the old terminal is a replacement artifact; marking an
+      // unchanged id superseded would suppress its real final completion.
+      if (successorId !== expectedTurnId) {
+        this.supersededNativeTurnIds.add(expectedTurnId);
+      }
+      this.nativeActiveTurnId = successorId;
+      return;
+    }
+    // No replacement id (or an independently-terminal relay turn) leaves the
+    // held completion authoritative. Release it before the caller observes the
+    // resolved steer, so the binder can never advance its delivery cursor past
+    // a message whose original turn was already terminal.
+    this.releasePendingNativeSteerTerminal(pending);
+  }
+
   async interrupt(_input: AgentInterruptInputV2): Promise<void> {
     if (this.nativeActiveTurnId !== null && this.client !== null) {
       try {
@@ -809,6 +896,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     this.activeTurnId = null;
     this.nativeActiveTurnId = null;
+    this.supersededNativeTurnIds.clear();
+    this.pendingNativeSteer = null;
     this.activeStartedAt = null;
 
     this.emitLiveState({
@@ -1209,6 +1298,27 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const nativeDurationMs =
       typeof turn['durationMs'] === 'number' ? turn['durationMs'] : undefined;
 
+    const pendingSteer = this.pendingNativeSteer;
+    if (
+      pendingSteer !== null &&
+      nativeTurnId === pendingSteer.expectedNativeTurnId
+    ) {
+      // Do not terminalize Relay while the provider can still confirm that
+      // this native turn was replaced. `steerMessage` either consumes this on
+      // a successful replacement or replays it before rejecting.
+      pendingSteer.terminalNotification = p;
+      return;
+    }
+
+    // `turn/steer` can replace the provider turn at a safe boundary. In that
+    // handoff the old turn's terminal notification can arrive after the steer
+    // reply announces its successor. Only suppress an id we explicitly marked
+    // as superseded: normal app-server fixtures and older versions are allowed
+    // to use a terminal id that differs from the most recent `turn/started`.
+    if (nativeTurnId && this.supersededNativeTurnIds.delete(nativeTurnId)) {
+      return;
+    }
+
     // Map native status → V2 status
     let status: 'completed' | 'interrupted' | 'failed';
     if (nativeStatus === 'interrupted') {
@@ -1272,6 +1382,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
     this.completeActiveTurn(status, usage, error, nativeDurationMs);
     this.drainQueue();
+  }
+
+  private releasePendingNativeSteerTerminal(pending: PendingNativeSteer): void {
+    if (this.pendingNativeSteer !== pending) return;
+    this.pendingNativeSteer = null;
+    if (pending.terminalNotification) {
+      this.handleTurnCompleted(pending.terminalNotification);
+    }
   }
 
   private handleTurnDiffUpdated(p: Record<string, unknown>): void {

@@ -60,7 +60,15 @@ test.describe('smoke channel timeline scroll UX (#1193)', () => {
 
     await expect(thought).toHaveAttribute('data-agent-card-kind', 'thought');
     await expect(thought.locator('.ch-agent-card__body')).toHaveCount(0);
-    await thought.locator('.ch-agent-card__toggle').click();
+    const thoughtToggle = thought.locator('.ch-agent-card__toggle');
+    await expect(thoughtToggle).toHaveAttribute('aria-expanded', 'false');
+    await thoughtToggle.click();
+    await expect(thoughtToggle).toHaveAttribute('aria-expanded', 'true');
+    await thoughtToggle.press('Space');
+    await expect(thoughtToggle).toHaveAttribute('aria-expanded', 'false');
+    await thoughtToggle.focus();
+    await thoughtToggle.press('Enter');
+    await expect(thoughtToggle).toHaveAttribute('aria-expanded', 'true');
     await expect(thought.locator('.ch-agent-card__body')).toContainText(
       'reasoning content persisted on the durable channel row'
     );
@@ -277,8 +285,9 @@ test.describe('smoke channel timeline scroll UX (#1193)', () => {
       return {
         lines: range.getClientRects().length,
         bubbleWidth: bubble.getBoundingClientRect().width,
-        rowWidth: bubble.closest<HTMLElement>('.ch-msg')!.getBoundingClientRect()
-          .width,
+        rowWidth: bubble
+          .closest<HTMLElement>('.ch-msg')!
+          .getBoundingClientRect().width,
       };
     });
     // The phrase is short enough for one desktop line and the bubble now gets

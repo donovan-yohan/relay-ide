@@ -34,12 +34,31 @@ const ALLOWED_IMAGE_MIMES = new Set([
 export const CHANNEL_COMPOSER_MAX_IMAGES = 4;
 export const CHANNEL_COMPOSER_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-/** Tooltip for the queueing default — names who the message is waiting on. */
-function queuedSendHint(busyAgentLabels: readonly string[]): string {
+type BusyAgentSteeringMode = 'all' | 'some' | 'none';
+
+/** Tooltip for the default delivery path — names who receives the message. */
+function defaultSendHint(
+  busyAgentLabels: readonly string[],
+  steeringMode: BusyAgentSteeringMode
+): string {
   const first = busyAgentLabels[0];
+  if (steeringMode === 'all') {
+    return busyAgentLabels.length === 1 && first
+      ? `steer ${first} after its next safe tool boundary`
+      : 'steer agents after their next safe tool boundary';
+  }
+  if (steeringMode === 'some') {
+    return 'steer supported agents at a safe boundary; queue the rest';
+  }
   return busyAgentLabels.length === 1 && first
     ? `queue behind ${first}'s turn`
     : 'queue behind the current turn';
+}
+
+function defaultSendLabel(steeringMode: BusyAgentSteeringMode): string {
+  if (steeringMode === 'all') return 'steer';
+  if (steeringMode === 'some') return 'steer / queue';
+  return 'queue';
 }
 
 interface PendingImage {
@@ -66,12 +85,12 @@ interface ChannelComposerProps {
     steering?: ChannelPostSteering
   ) => Promise<void>;
   /**
-   * Labels of the bound agents that are mid-turn right now (#1308 slice 4).
-   * Non-empty reveals the steering cluster: the default send QUEUES behind the
-   * live turn, and an explicit second control interrupts it first. Omitted on
-   * surfaces with no status signal, which simply keeps the plain composer.
+   * Labels of the bound agents that are mid-turn right now. Non-empty reveals
+   * the steering cluster; ordinary Enter follows native safe-boundary steering
+   * when available and otherwise retains the queue fallback.
    */
   busyAgentLabels?: readonly string[];
+  busyAgentSteeringMode?: BusyAgentSteeringMode;
   postPending: boolean;
   /** 503 CHANNEL_STORE_UNAVAILABLE — persistent inline banner, input stays live. */
   storeDown: boolean;
@@ -88,6 +107,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   members,
   onSend,
   busyAgentLabels,
+  busyAgentSteeringMode = 'none',
   postPending,
   storeDown,
   archived,
@@ -596,10 +616,9 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           +img
         </button>
         {busy ? (
-          // Mid-turn steering cluster (#1308 slice 4 item 2b). Two EXPLICIT
-          // actions, no menu and no inference: the default send queues behind
-          // the live turn (the operator's row grows a "queued" chip), and the
-          // second one cancels that turn first. It reuses the header chip's
+          // Mid-turn steering cluster. The default follows the harness's own
+          // safe-boundary primitive when supported; legacy harnesses keep the
+          // FIFO queue. The second action cancels the live turn first. It reuses the header chip's
           // interrupt glyph — the black square is already the one interrupt
           // vocabulary in the product — with danger-tinted chrome so the
           // destructive member of the pair reads differently at rest.
@@ -612,9 +631,12 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
               type="button"
               className="ch-composer__steer-btn"
               onClick={() => submit()}
-              title={queuedSendHint(busyAgentLabels ?? [])}
+              title={defaultSendHint(
+                busyAgentLabels ?? [],
+                busyAgentSteeringMode
+              )}
             >
-              queue
+              {defaultSendLabel(busyAgentSteeringMode)}
             </button>
             <button
               type="button"
@@ -630,7 +652,13 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         <span className="ch-composer__hint">
           {busy ? (
             <>
-              <kbd>↵</kbd>queue <kbd>⌘↵</kbd>interrupt <kbd>⇧↵</kbd>newline
+              <kbd>↵</kbd>
+              {busyAgentSteeringMode === 'all'
+                ? 'steer after tool'
+                : busyAgentSteeringMode === 'some'
+                  ? 'steer / queue'
+                  : 'queue'}{' '}
+              <kbd>⌘↵</kbd>interrupt <kbd>⇧↵</kbd>newline
             </>
           ) : (
             <>

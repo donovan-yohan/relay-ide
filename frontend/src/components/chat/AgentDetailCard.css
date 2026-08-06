@@ -7,7 +7,8 @@
   font-size: var(--font-size-sm);
 }
 
-.ch-agent-card__toggle {
+.ch-agent-card__toggle,
+.ch-agent-card__summary {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -20,15 +21,14 @@
   color: var(--text);
   font: inherit;
   text-align: left;
+}
+
+.ch-agent-card__toggle {
   cursor: pointer;
 }
 
 .ch-agent-card__toggle:hover:not(:disabled) {
   background: var(--surface-hover);
-}
-
-.ch-agent-card__toggle:disabled {
-  cursor: default;
 }
 
 .ch-agent-card__chevron,

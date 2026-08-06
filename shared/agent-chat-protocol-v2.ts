@@ -19,6 +19,11 @@ export interface AgentCapabilitySetV2 {
   plans?: boolean;
   slashCommands?: boolean;
   queue?: boolean;
+  /**
+   * Accept an operator message into the active turn at the provider's own safe
+   * boundary. Unlike `interrupt`, this must not abort an in-flight tool call.
+   */
+  steer?: boolean;
   interrupt?: boolean;
   cancelQueued?: boolean;
   resume?: boolean;

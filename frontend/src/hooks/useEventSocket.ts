@@ -652,7 +652,9 @@ export function useEventSocket({
           msg.runtimeId,
           // A hub that predates #1308 slice 4 omits the field; absent means
           // "nothing queued", which is also what an unqueued binding reports.
-          msg.queuedCount ?? 0
+          msg.queuedCount ?? 0,
+          msg.steeringCount ?? 0,
+          msg.steerSupported ?? false
         );
         // #1308 slice 5: the ONE trigger the socket carries end to end. Default
         // OFF, so this is inert until the operator opts in from Settings.
