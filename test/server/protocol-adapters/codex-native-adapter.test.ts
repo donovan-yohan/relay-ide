@@ -11,6 +11,7 @@ import {
   CODEX_TERMINAL_ITEM_GRACE_MS,
   CodexNativeProtocolAdapter,
 } from '../../../server/protocol-adapters/codex-native-adapter.js';
+import { AgentSteerRejectedError } from '../../../server/protocol-adapter-v2.js';
 import type { CodexClientFactory } from '../../../server/protocol-adapters/codex-native-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type {
@@ -62,7 +63,9 @@ class StubCodexClient extends EventEmitter {
     this.calls.push({ method, params: params ?? null });
     // Check for a pre-configured response
     if (this.serverResponses.has(method)) {
-      return this.serverResponses.get(method) as T;
+      const response = this.serverResponses.get(method);
+      if (response instanceof Error) throw response;
+      return response as T;
     }
     return {} as T;
   }
@@ -208,6 +211,7 @@ describe('CodexNativeProtocolAdapter — capability set', () => {
       plans: true,
       slashCommands: true,
       queue: true,
+      steer: true,
       cancelQueued: true,
       interrupt: true,
       resume: true,
@@ -387,6 +391,174 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
       input: [{ type: 'text', text: 'hello codex' }],
     });
 
+    await adapter.disconnect();
+  });
+
+  it('uses turn/steer against the active native turn without opening a second Relay turn', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient!;
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'keep going' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-2' });
+
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'instead, inspect the conflict',
+    });
+
+    expect(
+      client.calls.filter((call) => call.method === 'turn/start')
+    ).toHaveLength(1);
+    expect(
+      client.calls.find((call) => call.method === 'turn/steer')?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      expectedTurnId: 'native-1',
+      input: [{ type: 'text', text: 'instead, inspect the conflict' }],
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-started-v2')
+    ).toHaveLength(1);
+
+    await adapter.disconnect();
+  });
+
+  it('classifies activeTurnNotSteerable as a definite safe FIFO fallback', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'keep going' });
+    factory.lastClient.feedNotification('turn/started', {
+      turn: { id: 'native-1' },
+    });
+    factory.lastClient.serverResponses.set(
+      'turn/steer',
+      new Error('activeTurnNotSteerable')
+    );
+
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-1', content: 'redirect' })
+    ).rejects.toBeInstanceOf(AgentSteerRejectedError);
+    await adapter.disconnect();
+  });
+
+  it('holds an old terminal until a delayed steer reply confirms its successor', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-old' } });
+    let release!: (value: { turnId: string }) => void;
+    client.serverResponses.set(
+      'turn/steer',
+      new Promise<{ turnId: string }>((resolve) => {
+        release = resolve;
+      })
+    );
+    const staleSteer = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'stale redirect',
+    });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-old', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+
+    release({ turnId: 'native-new' });
+    await staleSteer;
+    client.serverResponses.set('turn/steer', { turnId: 'native-after' });
+
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'current redirect',
+    });
+
+    const steerCalls = client.calls.filter(
+      (call) => call.method === 'turn/steer'
+    );
+    expect(steerCalls[1]?.params).toMatchObject({
+      expectedTurnId: 'native-new',
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-after', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('ignores a superseded native completion after a successful steer replacement', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-old' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-new' });
+
+    await adapter.steerMessage({ turnId: 'turn-1', content: 'redirect' });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-old', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-new', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('keeps a same-id steer as one continuing native turn and accepts its final completion', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-1' });
+
+    await adapter.steerMessage({ turnId: 'turn-1', content: 'continue' });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-1', status: 'completed' },
+    });
+
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
     await adapter.disconnect();
   });
 

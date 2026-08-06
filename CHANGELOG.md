@@ -23,6 +23,9 @@ workflow.
 #### Changed
 
 - The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
+- Mid-turn channel sends now steer Codex and Claude at their native safe tool
+  boundary by default, while harnesses without that primitive retain a clearly
+  labelled FIFO queue fallback
 
 #### Fixed
 
@@ -75,6 +78,8 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 
 #### Fixed
 
+- Completed thinking detail cards are expandable again instead of rendering a
+  non-interactive disclosure arrow.
 - Hermes reply finalization, duplicate rows, presence, zero-row logging (#1183)
 - Truthful terminal rows and a duplicate-free channel record (#1207)
 - Channel tree data source unified across desktop and mobile (#1208)

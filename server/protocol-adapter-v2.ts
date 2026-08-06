@@ -35,6 +35,14 @@ export interface AgentInterruptInputV2 {
   turnId?: string;
 }
 
+/** A provider explicitly declined a steer before accepting its input. */
+export class AgentSteerRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgentSteerRejectedError';
+  }
+}
+
 export interface AgentApprovalResponseInputV2 {
   requestId: string;
   decision: AgentApprovalDecisionV2;
@@ -76,6 +84,11 @@ export interface ProtocolAdapterV2 {
    */
   resumeSession(sessionId: string): Promise<void>;
   sendMessage(input: AgentSendMessageInputV2): Promise<void>;
+  /**
+   * Add an operator message to the active provider turn at its native safe
+   * boundary. Optional because legacy harnesses can only queue a follow-up.
+   */
+  steerMessage?(input: AgentSendMessageInputV2): Promise<void>;
   interrupt(input: AgentInterruptInputV2): Promise<void>;
   respondToApproval(input: AgentApprovalResponseInputV2): Promise<void>;
   respondToInput(input: AgentInputResponseInputV2): Promise<void>;

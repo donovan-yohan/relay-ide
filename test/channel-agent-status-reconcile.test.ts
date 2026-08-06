@@ -154,6 +154,8 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
       statusByChannelAgent: {},
       runtimeByChannelAgent: {},
       queuedCountByChannelAgent: {},
+      steeringCountByChannelAgent: {},
+      steerSupportedByChannelAgent: {},
       queueDrainSeqByChannelAgent: {},
       updatedAtByChannelAgent: {},
     });

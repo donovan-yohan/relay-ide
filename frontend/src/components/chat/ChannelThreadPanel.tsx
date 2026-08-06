@@ -51,6 +51,8 @@ interface ChannelThreadPanelProps {
    * a reply into a busy agent queues exactly like a top-level message.
    */
   busyAgentLabels?: readonly string[];
+  /** Whether busy harnesses use native steer or the legacy queue fallback. */
+  busyAgentSteeringMode?: 'all' | 'some' | 'none';
   postPending: boolean;
   storeDown: boolean;
   archived: boolean;
@@ -68,6 +70,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   onClose,
   onSend,
   busyAgentLabels,
+  busyAgentSteeringMode,
   postPending,
   storeDown,
   archived,
@@ -248,6 +251,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
         placeholder={isDm ? DM_THREAD_PLACEHOLDER : THREAD_PLACEHOLDER}
         onSend={onSend}
         {...(busyAgentLabels ? { busyAgentLabels } : {})}
+        {...(busyAgentSteeringMode ? { busyAgentSteeringMode } : {})}
         postPending={postPending}
         storeDown={storeDown}
         archived={archived}

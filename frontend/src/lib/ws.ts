@@ -145,6 +145,10 @@ export type EventMessage =
        * absent value as zero.
        */
       queuedCount?: number;
+      /** Posts held by a native safe-boundary steer on the current turn. */
+      steeringCount?: number;
+      /** This harness uses native safe-boundary steering for ordinary sends. */
+      steerSupported?: boolean;
     }
   | ({
       type: 'session-durability-changed';

@@ -218,9 +218,18 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
    * the current set without being rebuilt on every status transition. Assigned
    * further down, once `agentChips` exists.
    */
-  const steerTargetsRef = useRef<{ agentIds: string[]; labels: string[] }>({
+  const steerTargetsRef = useRef<{
+    agentIds: string[];
+    labels: string[];
+    queueAgentIds: string[];
+    queueLabels: string[];
+    mode: 'all' | 'some' | 'none';
+  }>({
     agentIds: [],
     labels: [],
+    queueAgentIds: [],
+    queueLabels: [],
+    mode: 'none',
   });
 
   /**
@@ -243,7 +252,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       // flight must not leave a chip behind on a message it already consumed.
       const drainSeqs = snapshotQueueDrainSeqs(
         channelId,
-        targets.agentIds,
+        targets.queueAgentIds,
         statusStore.queueDrainSeqByChannelAgent
       );
       const message = await post(text, {
@@ -256,7 +265,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       // a wait either: the operator asked for the live turn to be cancelled, so
       // announcing the message as "queued" would describe the opposite of what
       // they chose.
-      if (targets.agentIds.length === 0 || steering === 'interrupt') return;
+      if (
+        targets.agentIds.length === 0 ||
+        steering === 'interrupt' ||
+        // The native lane is not a future queued turn. Avoid a row chip that
+        // says otherwise; its presence/status copy says "steering pending".
+        targets.queueAgentIds.length === 0
+      ) {
+        return;
+      }
       const current =
         useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent;
       for (const [key, seq] of Object.entries(drainSeqs)) {
@@ -264,8 +281,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       }
       useChannelQueuedSendsStore.getState().markQueuedSend(message.id, {
         channelId,
-        agentIds: targets.agentIds,
-        label: queuedSendCopy(targets.labels),
+        agentIds: targets.queueAgentIds,
+        label: queuedSendCopy(targets.queueLabels),
         drainSeqs,
       });
     },
@@ -507,6 +524,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const queuedCountMap = useChannelAgentStatusStore(
     (s) => s.queuedCountByChannelAgent
   );
+  const steeringCountMap = useChannelAgentStatusStore(
+    (s) => s.steeringCountByChannelAgent
+  );
+  const steerSupportedMap = useChannelAgentStatusStore(
+    (s) => s.steerSupportedByChannelAgent
+  );
   // #1307: a busy socket status the roster has not yet superseded is exactly the
   // state that can go stale, so it is what arms the roster poll — and because the
   // predicate is the same tie-break the resolver uses, the poll self-disarms: the
@@ -601,6 +624,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       status: ChannelAgentStatus;
       role?: AgentRole;
       queuedCount: number;
+      steeringCount: number;
+      steerSupported: boolean;
       identity: ReturnType<typeof resolveSenderIdentity>;
     }> = [];
     for (const agentId of candidateIds) {
@@ -625,6 +650,24 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         rosterQueuedCount: entry?.binding?.queuedCount,
         rosterUpdatedAt,
       });
+      const steeringCount = resolveEffectiveQueuedCount({
+        socketQueuedCount: steeringCountMap[key],
+        socketUpdatedAt: statusUpdatedAtMap[key],
+        rosterQueuedCount: entry?.binding?.steeringCount,
+        rosterUpdatedAt,
+      });
+      const socketSteerSupported = Object.hasOwn(steerSupportedMap, key)
+        ? steerSupportedMap[key]
+          ? 1
+          : 0
+        : undefined;
+      const steerSupported =
+        resolveEffectiveQueuedCount({
+          socketQueuedCount: socketSteerSupported,
+          socketUpdatedAt: statusUpdatedAtMap[key],
+          rosterQueuedCount: entry?.binding?.steerSupported ? 1 : 0,
+          rosterUpdatedAt,
+        }) > 0;
       // Show a chip for a bound agent (even when idle) or one that is currently
       // active/streaming — but drop an unbound agent whose only signal is a stale
       // socket status the roster has since superseded to idle.
@@ -641,6 +684,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         agentId,
         status,
         queuedCount,
+        steeringCount,
+        steerSupported,
         ...(entry?.role ? { role: entry.role } : {}),
         identity,
       });
@@ -652,6 +697,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     statusMap,
     statusUpdatedAtMap,
     queuedCountMap,
+    steeringCountMap,
+    steerSupportedMap,
     streamingProfileProviders,
     channelId,
   ]);
@@ -691,9 +738,26 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         .map((chip) => chip.identity.label),
     [agentChips]
   );
+  const busyAgentSteeringMode = useMemo((): 'all' | 'some' | 'none' => {
+    const busy = agentChips.filter((chip) => chip.status !== 'idle');
+    if (busy.length === 0 || busy.every((chip) => !chip.steerSupported)) {
+      return 'none';
+    }
+    return busy.every((chip) => chip.steerSupported) ? 'all' : 'some';
+  }, [agentChips]);
+  const busyQueueFallback = useMemo(
+    () =>
+      agentChips.filter(
+        (chip) => chip.status !== 'idle' && !chip.steerSupported
+      ),
+    [agentChips]
+  );
   steerTargetsRef.current = {
     agentIds: [...busyAgentIds],
     labels: busyAgentLabels,
+    queueAgentIds: busyQueueFallback.map((chip) => chip.agentId),
+    queueLabels: busyQueueFallback.map((chip) => chip.identity.label),
+    mode: busyAgentSteeringMode,
   };
 
   // Wired only while the channel is live, exactly like edit/delete below: a
@@ -996,6 +1060,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             {...(channel?.members ? { members: channel.members } : {})}
             onSend={handleSend}
             busyAgentLabels={busyAgentLabels}
+            busyAgentSteeringMode={busyAgentSteeringMode}
             postPending={postPending}
             storeDown={storeDown}
             archived={archived}
@@ -1015,6 +1080,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             onClose={() => setActiveThreadRootId(null)}
             onSend={handleThreadSend}
             busyAgentLabels={busyAgentLabels}
+            busyAgentSteeringMode={busyAgentSteeringMode}
             postPending={postPending}
             storeDown={storeDown}
             archived={archived}

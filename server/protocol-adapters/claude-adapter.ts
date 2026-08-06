@@ -45,6 +45,7 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   // init line advertises) is emitted, so the slash-command menu stays off.
   slashCommands: false,
   queue: true,
+  steer: true,
   interrupt: true,
   cancelQueued: false,
   resume: true,
@@ -966,6 +967,33 @@ export class ClaudeProtocolAdapter
     }
 
     this.startTurn(input);
+  }
+
+  /**
+   * Claude's persistent `--input-format stream-json` transport accepts user
+   * frames while output is active (its documented realtime streaming-input
+   * mode). The CLI itself holds the frame until its next safe tool boundary;
+   * Relay must not synthesize an interrupt or timer around that primitive.
+   *
+   * This deliberately does not create a second Relay turn: it changes the
+   * active provider turn's direction and its eventual terminal patch still
+   * completes the original channel binding turn.
+   */
+  async steerMessage(input: AgentSendMessageInputV2): Promise<void> {
+    const client = this.client;
+    if (
+      this._status !== 'connected' ||
+      this.activeTurnId === null ||
+      client === null ||
+      !client.running
+    ) {
+      throw new Error('Cannot steer Claude without an active turn');
+    }
+    this.lastActivityAt = Date.now();
+    client.write({
+      type: 'user',
+      message: { role: 'user', content: this.buildUserContent(input) },
+    });
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
