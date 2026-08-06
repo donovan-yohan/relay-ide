@@ -1770,6 +1770,112 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     res.json({ resolved, entries, truncated, total });
   });
 
+  // POST /workspaces/folders — create one local directory for Add Project.
+  // This deliberately stays alongside the local browse API. Remote hosts do
+  // not expose a mkdir file-RPC capability, so they must not silently use this
+  // host's filesystem.
+  router.post('/folders', async (req: Request, res: Response) => {
+    const parentPath = req.body?.parentPath;
+    const rawName = req.body?.name;
+
+    if (typeof parentPath !== 'string' || !parentPath.trim()) {
+      res.status(400).json({ error: 'parentPath must be a directory path' });
+      return;
+    }
+    if (typeof rawName !== 'string') {
+      res.status(400).json({ error: 'folder name must be a string' });
+      return;
+    }
+
+    const name = rawName.trim();
+    if (
+      !name ||
+      name === '.' ||
+      name === '..' ||
+      name.includes('\0') ||
+      path.isAbsolute(name) ||
+      name.includes('/') ||
+      name.includes('\\')
+    ) {
+      res.status(400).json({ error: 'folder name must be one safe path component' });
+      return;
+    }
+
+    let realParent: string;
+    try {
+      realParent = await fs.promises.realpath(
+        path.resolve(expandTilde(parentPath.trim()))
+      );
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') {
+        res.status(403).json({ error: 'Permission denied' });
+      } else if (code === 'ENOENT') {
+        res.status(404).json({ error: 'Parent folder does not exist' });
+      } else {
+        res.status(400).json({ error: 'Could not resolve parent folder' });
+      }
+      return;
+    }
+
+    try {
+      const parentStat = await fs.promises.stat(realParent);
+      if (!parentStat.isDirectory()) {
+        res.status(400).json({ error: 'Parent path is not a directory' });
+        return;
+      }
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') {
+        res.status(403).json({ error: 'Permission denied' });
+      } else if (code === 'ENOENT') {
+        res.status(404).json({ error: 'Parent folder does not exist' });
+      } else {
+        res.status(400).json({ error: 'Could not inspect parent folder' });
+      }
+      return;
+    }
+
+    const folderPath = path.join(realParent, name);
+    const relative = path.relative(realParent, folderPath);
+    if (
+      !relative ||
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      res.status(400).json({ error: 'folder path must stay inside its parent' });
+      return;
+    }
+
+    try {
+      // Non-recursive by design: a typo cannot create a hierarchy outside the
+      // single direct child the operator named.
+      await fs.promises.mkdir(folderPath);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        res.status(409).json({ error: 'Folder already exists' });
+      } else if (code === 'EACCES' || code === 'EPERM') {
+        res.status(403).json({ error: 'Permission denied' });
+      } else if (code === 'ENOENT') {
+        res.status(404).json({ error: 'Parent folder does not exist' });
+      } else {
+        logger.error('Failed to create workspace folder:', err);
+        res.status(500).json({ error: 'Could not create folder' });
+      }
+      return;
+    }
+
+    res.status(201).json({
+      name,
+      path: folderPath,
+      isGitRepo: false,
+      hasChildren: false,
+      isDirectory: true,
+    });
+  });
+
   // GET /workspaces/autocomplete — path prefix autocomplete
   router.get('/autocomplete', async (req: Request, res: Response) => {
     const prefix = typeof req.query.prefix === 'string' ? req.query.prefix : '';

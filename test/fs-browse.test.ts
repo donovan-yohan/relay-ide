@@ -252,6 +252,70 @@ describe('GET /workspaces/browse', () => {
   });
 });
 
+describe('POST /workspaces/folders', () => {
+  async function createFolder(parentPath: unknown, name: unknown): Promise<Response> {
+    return fetch(`${baseUrl}/workspaces/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentPath, name }),
+    });
+  }
+
+  test('creates one direct child and returns a browse-shaped entry', async () => {
+    const parentPath = path.join(tmpDir, 'browsable', 'empty-dir');
+    const res = await createFolder(parentPath, 'new-project');
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({
+      name: 'new-project',
+      path: path.join(parentPath, 'new-project'),
+      isGitRepo: false,
+      hasChildren: false,
+      isDirectory: true,
+    });
+    expect(
+      fs.statSync(path.join(parentPath, 'new-project')).isDirectory()
+    ).toBe(true);
+  });
+
+  test('returns 409 when the direct child already exists', async () => {
+    const parentPath = path.join(tmpDir, 'browsable', 'empty-dir');
+    const res = await createFolder(parentPath, 'new-project');
+
+    expect(res.status).toBe(409);
+    expect((await res.json() as { error: string }).error).toContain('exists');
+  });
+
+  test.each([
+    '',
+    '   ',
+    '.',
+    '..',
+    'child/grandchild',
+    'child\\grandchild',
+    '/absolute',
+    '\\absolute',
+    'nul\0name',
+  ])('rejects unsafe folder name %j', async (name) => {
+    const parentPath = path.join(tmpDir, 'browsable', 'empty-dir');
+    const res = await createFolder(parentPath, name);
+
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(parentPath, 'child'))).toBe(false);
+  });
+
+  test('rejects a missing or file parent clearly and never creates recursively', async () => {
+    const missingParent = path.join(tmpDir, 'browsable', 'does-not-exist');
+    const missing = await createFolder(missingParent, 'nested');
+    expect(missing.status).toBe(404);
+    expect(fs.existsSync(missingParent)).toBe(false);
+
+    const fileParent = path.join(tmpDir, 'browsable', 'file.txt');
+    const file = await createFolder(fileParent, 'nested');
+    expect(file.status).toBe(400);
+  });
+});
+
 describe('POST /workspaces/bulk', () => {
   test('adds multiple workspaces', async () => {
     const dir1 = path.join(tmpDir, 'browsable', 'visible-dir');

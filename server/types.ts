@@ -49,7 +49,12 @@ export type BackendDisplayState =
  */
 export type SessionType = 'terminal';
 export type AgentType = string;
-export type BuiltinFrameworkId = 'claude' | 'codex' | 'opencode' | 'hermes';
+export type BuiltinFrameworkId =
+  | 'claude'
+  | 'codex'
+  | 'opencode'
+  | 'hermes'
+  | 'prime-agent';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
@@ -179,6 +184,25 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
+      supportsChannelAgents: true,
+    },
+  },
+  'prime-agent': {
+    id: 'prime-agent',
+    displayName: 'Prime Agent',
+    command: 'prime-agent',
+    // The terminal surface remains a generic PTY. Channel conversations use
+    // Prime Agent's native RPC adapter rather than terminal-output parsing.
+    continueArgs: ['--continue'],
+    yoloArgs: [],
+    parserType: 'generic',
+    eventSource: 'timer',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: false,
+      supportsTelemetry: true,
+      supportsAttachedRuntime: false,
       supportsChannelAgents: true,
     },
   },

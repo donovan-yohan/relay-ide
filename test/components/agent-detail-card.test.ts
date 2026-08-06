@@ -102,24 +102,18 @@ describe('AgentDetailCard', () => {
     );
   });
 
-  it('hides the empty-card chevron while preserving its fixed-width slot', async () => {
+  it('does not advertise a disclosure for an empty terminal thought', async () => {
     await render({
       kind: 'thought',
       title: 'thinking',
       status: 'completed',
     });
 
-    const button = host.querySelector<HTMLButtonElement>(
-      '.ch-agent-card__toggle'
-    );
-    const placeholder = host.querySelector<HTMLSpanElement>(
-      '.ch-agent-card__chevron-placeholder'
-    );
-    expect(button?.disabled).toBe(true);
-    expect(button?.getAttribute('aria-expanded')).toBe('false');
+    const card = host.querySelector('.ch-agent-card');
+    expect(card?.getAttribute('data-agent-card-expandable')).toBe('false');
+    expect(card?.querySelector('.ch-agent-card__toggle')).toBeNull();
     expect(host.querySelector('.ch-agent-card__chevron')).toBeNull();
-    expect(placeholder?.getAttribute('aria-hidden')).toBe('true');
-    expect(placeholder?.classList.contains('ch-agent-card__chevron-placeholder')).toBe(true);
+    expect(card?.textContent).toContain('thinking');
   });
 
   it('tints only added and removed diff lines and reports their counts', async () => {

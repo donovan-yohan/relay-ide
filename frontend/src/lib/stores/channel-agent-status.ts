@@ -25,6 +25,10 @@ interface ChannelAgentStatusState {
    * NOT zero, so the roster snapshot can still win the reconciliation.
    */
   queuedCountByChannelAgent: Record<string, number>;
+  /** Native safe-boundary requests still attached to the active turn. */
+  steeringCountByChannelAgent: Record<string, number>;
+  /** Whether a live harness accepts the ordinary native steer action. */
+  steerSupportedByChannelAgent: Record<string, boolean>;
   /**
    * Monotonic "this agent's trigger queue was observed empty" generation, per
    * `${channelId} ${agentId}` (#1308 slice 4).
@@ -52,7 +56,9 @@ interface ChannelAgentStatusState {
     agentId: string,
     status: ChannelAgentStatus,
     runtimeId: string | null,
-    queuedCount?: number
+    queuedCount?: number,
+    steeringCount?: number,
+    steerSupported?: boolean
   ) => void;
   /** Drop every agent status/runtime entry for a channel. */
   clearChannel: (channelId: string) => void;
@@ -67,15 +73,27 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
     statusByChannelAgent: {},
     runtimeByChannelAgent: {},
     queuedCountByChannelAgent: {},
+    steeringCountByChannelAgent: {},
+    steerSupportedByChannelAgent: {},
     queueDrainSeqByChannelAgent: {},
     updatedAtByChannelAgent: {},
-    recordStatus: (channelId, agentId, status, runtimeId, queuedCount = 0) =>
+    recordStatus: (
+      channelId,
+      agentId,
+      status,
+      runtimeId,
+      queuedCount = 0,
+      steeringCount = 0,
+      steerSupported = false
+    ) =>
       set((state) => {
         const key = channelAgentStatusKey(channelId, agentId);
         if (
           state.statusByChannelAgent[key] === status &&
           state.runtimeByChannelAgent[key] === runtimeId &&
-          state.queuedCountByChannelAgent[key] === queuedCount
+          state.queuedCountByChannelAgent[key] === queuedCount &&
+          state.steeringCountByChannelAgent[key] === steeringCount &&
+          state.steerSupportedByChannelAgent[key] === steerSupported
         ) {
           return state;
         }
@@ -91,6 +109,14 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
           queuedCountByChannelAgent: {
             ...state.queuedCountByChannelAgent,
             [key]: queuedCount,
+          },
+          steeringCountByChannelAgent: {
+            ...state.steeringCountByChannelAgent,
+            [key]: steeringCount,
+          },
+          steerSupportedByChannelAgent: {
+            ...state.steerSupportedByChannelAgent,
+            [key]: steerSupported,
           },
           // Bumped on the transition itself, not on a later read: an empty queue
           // reported by ANY transition retires every send that was waiting for
@@ -114,6 +140,8 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
         const status: Record<string, ChannelAgentStatus> = {};
         const runtime: Record<string, string | null> = {};
         const queued: Record<string, number> = {};
+        const steering: Record<string, number> = {};
+        const steerSupported: Record<string, boolean> = {};
         const drainSeq: Record<string, number> = {};
         const updatedAt: Record<string, number> = {};
         let changed = false;
@@ -132,6 +160,16 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
           if (!key.startsWith(prefix)) queued[key] = value;
         }
         for (const [key, value] of Object.entries(
+          state.steeringCountByChannelAgent
+        )) {
+          if (!key.startsWith(prefix)) steering[key] = value;
+        }
+        for (const [key, value] of Object.entries(
+          state.steerSupportedByChannelAgent
+        )) {
+          if (!key.startsWith(prefix)) steerSupported[key] = value;
+        }
+        for (const [key, value] of Object.entries(
           state.queueDrainSeqByChannelAgent
         )) {
           if (!key.startsWith(prefix)) drainSeq[key] = value;
@@ -146,6 +184,8 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
           statusByChannelAgent: status,
           runtimeByChannelAgent: runtime,
           queuedCountByChannelAgent: queued,
+          steeringCountByChannelAgent: steering,
+          steerSupportedByChannelAgent: steerSupported,
           queueDrainSeqByChannelAgent: drainSeq,
           updatedAtByChannelAgent: updatedAt,
         };
@@ -243,7 +283,10 @@ export function shouldPollRosterForPresence(input: {
     if (!key.startsWith(prefix)) continue;
     if (status === 'idle') continue;
     const socketUpdatedAt = input.updatedAtByChannelAgent[key];
-    if (socketUpdatedAt !== undefined && socketUpdatedAt >= input.rosterUpdatedAt)
+    if (
+      socketUpdatedAt !== undefined &&
+      socketUpdatedAt >= input.rosterUpdatedAt
+    )
       return true;
   }
   return false;

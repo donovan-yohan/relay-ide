@@ -31,6 +31,7 @@ import type { HubNodeSummary } from '../../shared/relay-node-protocol.js';
 const mocks = vi.hoisted(() => ({
   addWorkspacesBulk: vi.fn(),
   browseFsDirectory: vi.fn(),
+  createWorkspaceFolder: vi.fn(),
   fetchHubNodes: vi.fn(),
   createTerminalSession: vi.fn(),
 }));
@@ -42,6 +43,7 @@ vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
     ...actual,
     addWorkspacesBulk: mocks.addWorkspacesBulk,
     browseFsDirectory: mocks.browseFsDirectory,
+    createWorkspaceFolder: mocks.createWorkspaceFolder,
     fetchHubNodes: mocks.fetchHubNodes,
   };
 });
@@ -188,14 +190,19 @@ function text(selector: string): string {
     .join(' | ');
 }
 
-/** Click the browser row whose `.node-name` matches. Rows with no children
- *  select on click (see `FileBrowser`'s `TreeRow`), which is the real user
- *  gesture that populates `selectedPaths`. */
-async function selectPath(name: string): Promise<void> {
+function treeRow(name: string): HTMLElement {
   const row = Array.from(container.querySelectorAll('.tree-row')).find(
     (el) => el.querySelector('.node-name')?.textContent === name
   );
   if (!row) throw new Error(`no browser row named ${name}`);
+  return row as HTMLElement;
+}
+
+/** Click the browser row whose `.node-name` matches. Rows with no children
+ *  select on click (see `FileBrowser`'s `TreeRow`), which is the real user
+ *  gesture that populates `selectedPaths`. */
+async function selectPath(name: string): Promise<void> {
+  const row = treeRow(name);
   await act(async () => {
     row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
@@ -229,6 +236,24 @@ async function typeRemoteCwd(cwd: string): Promise<void> {
   await flush();
 }
 
+async function typeFolderName(name: string): Promise<HTMLInputElement> {
+  const input = container.querySelector(
+    '#new-folder-name'
+  ) as HTMLInputElement;
+  if (!input) throw new Error('new folder editor not rendered');
+  const setValue = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  if (!setValue) throw new Error('no native value setter');
+  await act(async () => {
+    setValue.call(input, name);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await flush();
+  return input;
+}
+
 function submitButton(): HTMLButtonElement {
   const btn = container.querySelector(
     '.add-workspace-footer-actions .tui-btn--primary'
@@ -247,6 +272,7 @@ async function submit(): Promise<void> {
 beforeEach(() => {
   mocks.addWorkspacesBulk.mockReset();
   mocks.browseFsDirectory.mockReset();
+  mocks.createWorkspaceFolder.mockReset();
   mocks.fetchHubNodes.mockReset();
   mocks.createTerminalSession.mockReset();
   mocks.browseFsDirectory.mockResolvedValue(browseResponse());
@@ -293,6 +319,217 @@ describe('<AddWorkspaceDialog /> render (#1298)', () => {
     expect(submitButton().disabled).toBe(true);
     expect(submitButton().textContent).toContain('add project');
     expect(text('.add-workspace-selected-count').trim()).toBe('');
+  });
+
+  it('creates a root folder inline, refreshes it, and selects it on Enter', async () => {
+    const NEW_PROJECT = '/home/me/code/new-project';
+    mocks.browseFsDirectory
+      .mockResolvedValueOnce(browseResponse())
+      .mockResolvedValueOnce({
+        ...browseResponse(),
+        entries: [
+          ...browseResponse().entries,
+          {
+            name: 'new-project',
+            path: NEW_PROJECT,
+            isGitRepo: false,
+            hasChildren: false,
+          },
+        ],
+        total: 3,
+      });
+    mocks.createWorkspaceFolder.mockResolvedValue({
+      name: 'new-project',
+      path: NEW_PROJECT,
+      isGitRepo: false,
+      hasChildren: false,
+      isDirectory: true,
+    });
+    await mountAndOpen();
+
+    const newFolder = container.querySelector(
+      '.new-root-folder-btn'
+    ) as HTMLButtonElement;
+    expect(newFolder.disabled).toBe(false);
+    await act(async () => {
+      newFolder.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = await typeFolderName('  new-project  ');
+    expect(document.activeElement).toBe(input);
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    expect(mocks.createWorkspaceFolder).toHaveBeenCalledWith(
+      '/home/me/code',
+      '  new-project  '
+    );
+    expect(mocks.browseFsDirectory).toHaveBeenCalledTimes(2);
+    expect(text('.tree-row.selected .node-name')).toContain('new-project');
+    expect(text('.add-workspace-selected-count')).toContain('1 selected');
+    expect(container.querySelector('#new-folder-name')).toBeNull();
+  });
+
+  it('targets a directory with its accessible action and Escape cancels the inline editor', async () => {
+    await mountAndOpen();
+
+    const action = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.new-folder-btn')
+    ).find((button) => button.getAttribute('aria-label') === 'new folder in notes');
+    expect(action).toBeTruthy();
+    await act(async () => {
+      action?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = await typeFolderName('scratch');
+    expect(text('.folder-create-label')).toContain(NOTES);
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('#new-folder-name')).toBeNull();
+    expect(mocks.createWorkspaceFolder).not.toHaveBeenCalled();
+  });
+
+  it('keeps a create error in the inline editor for correction', async () => {
+    mocks.createWorkspaceFolder.mockRejectedValue(new Error('Folder already exists'));
+    await mountAndOpen();
+    const newFolder = container.querySelector(
+      '.new-root-folder-btn'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      newFolder.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = await typeFolderName('new-project');
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    expect(text('.folder-create-error')).toContain('Folder already exists');
+    expect((container.querySelector('#new-folder-name') as HTMLInputElement).value).toBe(
+      'new-project'
+    );
+  });
+
+  it('preserves expanded descendants and their selection when a root refresh adds a folder', async () => {
+    const PROJECTS = '/home/me/code/projects';
+    const NESTED = `${PROJECTS}/nested`;
+    const LEAF = `${NESTED}/leaf`;
+    const CREATED = '/home/me/code/new-project';
+    mocks.browseFsDirectory
+      .mockResolvedValueOnce({
+        resolved: '/home/me/code',
+        entries: [
+          { name: 'projects', path: PROJECTS, isGitRepo: false, hasChildren: true },
+        ],
+        truncated: false,
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        resolved: PROJECTS,
+        entries: [
+          { name: 'nested', path: NESTED, isGitRepo: false, hasChildren: true },
+        ],
+        truncated: false,
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        resolved: NESTED,
+        entries: [
+          { name: 'leaf', path: LEAF, isGitRepo: false, hasChildren: false },
+        ],
+        truncated: false,
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        resolved: '/home/me/code',
+        entries: [
+          { name: 'new-project', path: CREATED, isGitRepo: false, hasChildren: false },
+          { name: 'projects', path: PROJECTS, isGitRepo: false, hasChildren: true },
+        ],
+        truncated: false,
+        total: 2,
+      });
+    mocks.createWorkspaceFolder.mockResolvedValue({
+      name: 'new-project',
+      path: CREATED,
+      isGitRepo: false,
+      hasChildren: false,
+      isDirectory: true,
+    });
+    await mountAndOpen();
+    await selectPath('projects');
+    await selectPath('nested');
+    await selectPath('leaf');
+
+    const newFolder = container.querySelector(
+      '.new-root-folder-btn'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      newFolder.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = await typeFolderName('new-project');
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    expect(treeRow('projects').getAttribute('aria-expanded')).toBe('true');
+    expect(treeRow('nested').getAttribute('aria-expanded')).toBe('true');
+    expect(treeRow('leaf').className).toContain('selected');
+    expect(treeRow('new-project').className).toContain('selected');
+    expect(text('.add-workspace-selected-count')).toContain('2 selected');
+  });
+
+  it('merges a created folder omitted by a truncated browse response and keeps the notice accurate', async () => {
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      name: `dir-${String(index).padStart(3, '0')}`,
+      path: `/home/me/code/dir-${String(index).padStart(3, '0')}`,
+      isGitRepo: false,
+      hasChildren: false,
+    }));
+    const CREATED = '/home/me/code/z-project';
+    mocks.browseFsDirectory
+      .mockResolvedValueOnce({
+        resolved: '/home/me/code',
+        entries,
+        truncated: true,
+        total: 101,
+      })
+      .mockResolvedValueOnce({
+        resolved: '/home/me/code',
+        entries,
+        truncated: true,
+        total: 102,
+      });
+    mocks.createWorkspaceFolder.mockResolvedValue({
+      name: 'z-project',
+      path: CREATED,
+      isGitRepo: false,
+      hasChildren: false,
+      isDirectory: true,
+    });
+    await mountAndOpen();
+    const newFolder = container.querySelector(
+      '.new-root-folder-btn'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      newFolder.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = await typeFolderName('z-project');
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelectorAll('.tree-row')).toHaveLength(101);
+    expect(treeRow('z-project').className).toContain('selected');
+    expect(text('.truncated-notice')).toContain('Showing 101 of 102');
+    expect(
+      Array.from(container.querySelectorAll('.node-name')).at(-1)?.textContent
+    ).toBe('z-project');
   });
 
   it('enables submit and counts the selection once a folder is picked', async () => {

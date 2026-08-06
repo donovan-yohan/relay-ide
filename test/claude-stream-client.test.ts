@@ -180,6 +180,19 @@ describe('ClaudeStreamClient', () => {
     expect(lines.map((l) => JSON.parse(l).n)).toEqual([1, 2, 3]);
   });
 
+  it('resolves writeAccepted only after stdin accepts the frame', async () => {
+    const child = makeMockChild();
+    const client = makeClient(child);
+    client.start();
+
+    await expect(
+      client.writeAccepted({ steer: 'next tool boundary' })
+    ).resolves.toBeUndefined();
+    expect(child.readStdin().map((line) => JSON.parse(line))).toEqual([
+      { steer: 'next tool boundary' },
+    ]);
+  });
+
   it('captures stderr into a bounded ring buffer', async () => {
     const child = makeMockChild();
     const client = makeClient(child, { stderrRingSize: 2 });

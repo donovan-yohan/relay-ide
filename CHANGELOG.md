@@ -20,9 +20,20 @@ workflow.
 
 ### Channel workspace and sidebar
 
+#### Added
+
+- Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
+- Control Prime Agent models, reasoning, compaction, and fresh sessions from the `@agent/` command palette (#1345)
+- Create and name new folders directly in the local Add Project browser (#1338)
+- `@agent/` opens a provider-aware command palette for channel controls,
+  including Codex Fast Mode, model, and reasoning-effort changes (#1344)
+
 #### Changed
 
 - The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
+- Mid-turn channel sends now steer Codex and Claude at their native safe tool
+  boundary by default, while harnesses without that primitive retain a clearly
+  labelled FIFO queue fallback
 
 #### Fixed
 
@@ -81,6 +92,8 @@ chat-first pass) also shipped only on `@nightly` and is not itemized here.
 
 #### Fixed
 
+- Terminal thinking summaries without detail no longer show a non-interactive
+  disclosure arrow; thinking cards with detail remain expandable.
 - Hermes reply finalization, duplicate rows, presence, zero-row logging (#1183)
 - Truthful terminal rows and a duplicate-free channel record (#1207)
 - Channel tree data source unified across desktop and mobile (#1208)

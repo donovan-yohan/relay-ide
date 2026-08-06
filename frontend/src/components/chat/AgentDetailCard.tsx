@@ -204,51 +204,62 @@ export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
   onUserToggle,
 }) => {
   const [expanded, setExpanded] = useState(false);
-  const hasContent = Boolean(card.content);
+  // A terminal `thinking` event may intentionally carry only its summary.
+  // Do not render a disabled disclosure in that case: a chevron promises a
+  // detail panel, while whitespace would only expand into an empty panel.
+  const hasContent = Boolean(card.content?.trim());
   const size = contentSize(card);
   const title = card.path ?? card.title;
+  const bodyId = `agent-detail-body-${itemId}`;
 
   return (
     <div
       className="ch-agent-card"
       data-agent-card-kind={card.kind}
+      data-agent-card-expandable={hasContent ? 'true' : 'false'}
       role="article"
       aria-label={`${card.kind.replace('_', ' ')} ${title}`}
     >
-      <button
-        type="button"
-        className="ch-agent-card__toggle"
-        aria-expanded={expanded}
-        disabled={!hasContent}
-        onClick={() => {
-          onUserToggle?.(itemId);
-          setExpanded((value) => !value);
-        }}
-      >
-        {hasContent ? (
+      {hasContent ? (
+        <button
+          type="button"
+          className="ch-agent-card__toggle"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={() => {
+            onUserToggle?.(itemId);
+            setExpanded((value) => !value);
+          }}
+        >
           <ChevronRight
             className={`ch-agent-card__chevron${expanded ? ' ch-agent-card__chevron--open' : ''}`}
             size={14}
             strokeWidth={1.5}
             aria-hidden="true"
           />
-        ) : (
-          <span
-            className="ch-agent-card__chevron-placeholder"
-            aria-hidden="true"
-          />
-        )}
-        <span className="ch-agent-card__icon">
-          <CardIcon kind={card.kind} />
-        </span>
-        <span className="ch-agent-card__title">{title}</span>
-        {size ? <span className="ch-agent-card__size">{size}</span> : null}
-        <span className={`ch-agent-card__status ${statusClass(card.status)}`}>
-          {card.status}
-        </span>
-      </button>
+          <span className="ch-agent-card__icon">
+            <CardIcon kind={card.kind} />
+          </span>
+          <span className="ch-agent-card__title">{title}</span>
+          {size ? <span className="ch-agent-card__size">{size}</span> : null}
+          <span className={`ch-agent-card__status ${statusClass(card.status)}`}>
+            {card.status}
+          </span>
+        </button>
+      ) : (
+        <div className="ch-agent-card__summary">
+          <span className="ch-agent-card__icon">
+            <CardIcon kind={card.kind} />
+          </span>
+          <span className="ch-agent-card__title">{title}</span>
+          {size ? <span className="ch-agent-card__size">{size}</span> : null}
+          <span className={`ch-agent-card__status ${statusClass(card.status)}`}>
+            {card.status}
+          </span>
+        </div>
+      )}
       {expanded && hasContent ? (
-        <div className="ch-agent-card__body">
+        <div id={bodyId} className="ch-agent-card__body">
           <CardContent card={card} itemId={itemId} />
         </div>
       ) : null}

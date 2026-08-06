@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -31,6 +31,7 @@ import {
   ChannelAgentBusyError,
   ChannelAgentRoleConflictError,
   ChannelMessageNotRetryableError,
+  createChannelAgentBinder,
   type ChannelAgentBinder,
 } from '../server/channel-agent-binder.js';
 import {
@@ -95,6 +96,12 @@ async function harness(
      * provable without a pathological corpus or a latency assertion.
      */
     searchTimeBudgetMs?: number;
+    binderFactory?: (deps: {
+      store: ChannelMessageStore;
+      hub: ChannelHub;
+      topicStore: WorkspaceTopicStore;
+    }) => ChannelAgentBinder;
+    requireWriteActorAuth?: (command: string) => RequestHandler;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
@@ -121,6 +128,9 @@ async function harness(
   });
   cleanup.push(() => hub.close());
   const topic = topicStore.create({ workspaceId: 'ws', title: 'General' });
+  const binder =
+    options.binderFactory?.({ store, hub, topicStore }) ?? options.binder;
+  if (options.binderFactory) cleanup.push(() => binder?.close?.());
 
   const app = express();
   app.use(express.json());
@@ -148,9 +158,7 @@ async function harness(
       broadcastEvent: (type, data) => {
         broadcasts.push({ type, ...(data ? { data } : {}) });
       },
-      ...(options.binder
-        ? { binder: options.binder as unknown as ChannelAgentBinder }
-        : {}),
+      ...(binder ? { binder: binder as unknown as ChannelAgentBinder } : {}),
       ...(options.withAuth
         ? {
             requireAuth: (req, res, next) => {
@@ -158,6 +166,9 @@ async function harness(
               res.sendStatus(401);
             },
           }
+        : {}),
+      ...(options.requireWriteActorAuth
+        ? { requireWriteActorAuth: options.requireWriteActorAuth as never }
         : {}),
       ...(options.historyMaxBytes !== undefined
         ? { historyMaxBytes: options.historyMaxBytes }
@@ -1351,6 +1362,9 @@ describe('channel routes — gateway capability mapping', () => {
       'channels.threads.history'
     );
     expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.post');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain(
+      'channels.agent-commands'
+    );
   });
 
   it('maps channels verbs to context read/write capability bits', () => {
@@ -1369,6 +1383,142 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
+    expect(
+      cliGatewayActorCommandCapabilities('channels.agent-commands')
+    ).toEqual(['context:write']);
+  });
+});
+
+describe('channel routes — agent commands', () => {
+  const commandBinder = (
+    calls: unknown[] = []
+  ): Partial<ChannelAgentBinder> => ({
+    isControlMessage: (text: string) => /@codex\s*\/compact/i.test(text),
+    executeCommand: async (...args: unknown[]) => {
+      calls.push(args);
+      return { config: { model: 'gpt-fast' } };
+    },
+  });
+
+  it('uses the command-specific actor auth lane and denies before dispatch', async () => {
+    const commands: string[] = [];
+    const h = await harness({
+      binder: commandBinder(),
+      requireWriteActorAuth: (command) => (req, res, next) => {
+        commands.push(command);
+        if (command === 'channels.agent-commands') {
+          return res.status(403).json({ error: { code: 'FORBIDDEN' } });
+        }
+        next();
+      },
+    });
+    const res = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-commands`,
+      body: {
+        profileId: 'agent-profile:codex:default',
+        command: 'model',
+        args: 'gpt-fast',
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(commands).toEqual(['channels.agent-commands']);
+  });
+
+  it('rejects archived commands and dispatches successful controls without rows', async () => {
+    const calls: unknown[] = [];
+    const h = await harness({ binder: commandBinder(calls) });
+    h.topicStore.archive(h.channelId);
+    const archived = await req<{
+      error: { details?: { reasonCode?: string } };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-commands`,
+      body: {
+        profileId: 'agent-profile:codex:default',
+        command: 'model',
+        args: 'gpt-fast',
+      },
+    });
+    expect(archived.status).toBe(409);
+    expect(calls).toHaveLength(0);
+    h.topicStore.restore(h.channelId);
+    const ok = await req<{ ok: boolean }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-commands`,
+      body: {
+        profileId: 'agent-profile:codex:default',
+        command: 'model',
+        args: 'gpt-fast',
+      },
+    });
+    expect(ok.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(h.store.history(h.channelId, { limit: 10 })).toHaveLength(0);
+  });
+
+  const realControlBinder = ({
+    store,
+    hub,
+    topicStore,
+  }: {
+    store: ChannelMessageStore;
+    hub: ChannelHub;
+    topicStore: WorkspaceTopicStore;
+  }) =>
+    createChannelAgentBinder({
+      store,
+      hub,
+      topicStore,
+      sessions: {
+        createWeb: async () => {
+          throw new Error('control messages must not create a binding');
+        },
+        get: () => undefined,
+        onSessionEnd: () => () => {},
+      },
+      runtimes: {
+        create: async () => {
+          throw new Error('control messages must not create a runtime');
+        },
+        get: () => undefined,
+        destroy: async () => {},
+        onRuntimeEnd: () => () => {},
+      },
+      knownProviderIds: ['codex'],
+      mentionTargets: async () => [
+        {
+          id: 'codex',
+          displayName: 'Codex',
+          kind: 'framework' as const,
+          available: true,
+          reason: null,
+        },
+      ],
+      port: 0,
+      configDir: '/tmp',
+    });
+
+  it.each([
+    '@codex/compact',
+    '@codex /compact',
+    'please @codex/compact',
+    '@codex hello @codex/compact',
+  ])('rejects normal-post control form %s before persistence', async (text) => {
+    const h = await harness({ binderFactory: realControlBinder });
+    const res = await req<{
+      error: { details?: { reasonCode?: string } };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text },
+    });
+    expect(res.status).toBe(400);
+    expect(h.store.history(h.channelId, { limit: 10 })).toHaveLength(0);
   });
 });
 
@@ -1439,7 +1589,11 @@ describe('channel routes — orchestrator designation (#1259)', () => {
     );
 
     const res = await req<{
-      error: { code: string; retryable: boolean; details?: Record<string, unknown> };
+      error: {
+        code: string;
+        retryable: boolean;
+        details?: Record<string, unknown>;
+      };
     }>({
       port: h.port,
       method: 'POST',

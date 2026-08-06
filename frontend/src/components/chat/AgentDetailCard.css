@@ -7,7 +7,8 @@
   font-size: var(--font-size-sm);
 }
 
-.ch-agent-card__toggle {
+.ch-agent-card__toggle,
+.ch-agent-card__summary {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -20,6 +21,9 @@
   color: var(--text);
   font: inherit;
   text-align: left;
+}
+
+.ch-agent-card__toggle {
   cursor: pointer;
 }
 
@@ -27,21 +31,11 @@
   background: var(--surface-hover);
 }
 
-.ch-agent-card__toggle:disabled {
-  cursor: default;
-}
-
 .ch-agent-card__chevron,
-.ch-agent-card__chevron-placeholder,
 .ch-agent-card__icon {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--text-muted);
-}
-
-.ch-agent-card__chevron-placeholder {
-  width: 14px;
-  height: 14px;
 }
 
 .ch-agent-card__chevron {

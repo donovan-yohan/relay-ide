@@ -212,6 +212,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       tools: true,
       approvals: true,
       resume: true,
+      steer: true,
       interrupt: true,
       streaming: true,
       questions: false,
@@ -465,8 +466,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(
       patches.filter(
         (patch) =>
-          patch.type === 'agent-turn-completed-v2' &&
-          patch.turnId === 'turn-A'
+          patch.type === 'agent-turn-completed-v2' && patch.turnId === 'turn-A'
       )
     ).toHaveLength(1);
 
@@ -476,6 +476,55 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       session_id: 'claude-session-refresh-race',
     });
     replacement.child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('writes a realtime stream-json user frame to steer the active turn without queueing or interrupting', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'run the check' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'after this tool, inspect the merge conflict instead',
+    });
+    await child.waitForFrames(2);
+
+    expect(child.frames()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'user',
+          message: expect.objectContaining({
+            role: 'user',
+            content: 'after this tool, inspect the merge conflict instead',
+          }),
+        }),
+      ])
+    );
+    expect(
+      child.frames().some((frame) => frame.type === 'control_request')
+    ).toBe(false);
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-started-v2')
+    ).toHaveLength(1);
+
+    child.serverWrite(successResult());
+    await adapter.disconnect();
+  });
+
+  it('rejects a steer before any Claude turn is active', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-none', content: 'redirect' })
+    ).rejects.toThrow('Cannot steer Claude without an active turn');
+    expect(harness.spawns).toHaveLength(0);
     await adapter.disconnect();
   });
 

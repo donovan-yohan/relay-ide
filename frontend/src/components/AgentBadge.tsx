@@ -73,6 +73,22 @@ export function AgentBadge({ agent }: AgentBadgeProps) {
     );
   }
 
+  if (agent === 'prime-agent') {
+    return (
+      <svg
+        className="agent-badge"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="Prime Agent"
+      >
+        <path
+          fill="currentColor"
+          d="M5 4h8a6 6 0 0 1 0 12H8v4H5V4Zm3 3v6h5a3 3 0 0 0 0-6H8Z"
+        />
+      </svg>
+    );
+  }
+
   const fallbackLetter = agent ? agent[0]!.toUpperCase() : '?';
   return (
     <span className="agent-badge agent-badge--fallback" aria-label={agent}>

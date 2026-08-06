@@ -23,6 +23,8 @@ import type { ChannelAgentStatus } from '../../frontend/src/lib/api.js';
 const CHANNEL_ID = 'topic:ops';
 const CLAUDE_ID = 'agent-profile:claude:default';
 const RUNTIME_ID = 'runtime:claude-1';
+const HERMES_ID = 'agent-profile:hermes:default';
+const HERMES_RUNTIME_ID = 'runtime:hermes-1';
 
 interface PostOpts {
   clientMessageId?: string;
@@ -115,7 +117,12 @@ function topicFixture() {
   };
 }
 
-function rosterEntry(status: ChannelAgentStatus, queuedCount = 0) {
+function rosterEntry(
+  status: ChannelAgentStatus,
+  queuedCount = 0,
+  steerSupported = false,
+  steeringCount = 0
+) {
   return {
     id: CLAUDE_ID,
     displayName: 'claude',
@@ -125,7 +132,13 @@ function rosterEntry(status: ChannelAgentStatus, queuedCount = 0) {
     kind: 'framework' as const,
     available: true,
     reason: null,
-    binding: { runtimeId: RUNTIME_ID, status, queuedCount },
+    binding: {
+      runtimeId: RUNTIME_ID,
+      status,
+      queuedCount,
+      steerSupported,
+      steeringCount,
+    },
   };
 }
 
@@ -250,6 +263,15 @@ beforeEach(() => {
     pendingChannelThread: null,
   });
   useChannelQueuedSendsStore.setState({ marksByMessageId: {} });
+  useChannelAgentStatusStore.setState({
+    statusByChannelAgent: {},
+    runtimeByChannelAgent: {},
+    queuedCountByChannelAgent: {},
+    steeringCountByChannelAgent: {},
+    steerSupportedByChannelAgent: {},
+    queueDrainSeqByChannelAgent: {},
+    updatedAtByChannelAgent: {},
+  });
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   });
@@ -282,7 +304,7 @@ describe('composer steering cluster (#1308 slice 4 item 2b)', () => {
     ).toContain('send');
   });
 
-  it('reveals queue + interrupt&send the moment the bound agent is mid-turn', async () => {
+  it('reveals the queue fallback + interrupt&send for a non-steerable harness', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('streaming')]);
     await render();
 
@@ -300,7 +322,7 @@ describe('composer steering cluster (#1308 slice 4 item 2b)', () => {
     expect(interrupt?.getAttribute('aria-label')).toBe('interrupt and send');
   });
 
-  it('posts with no steering by default — the message queues behind the turn', async () => {
+  it('posts with no steering by default — the backend selects queue or native steer', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('streaming')]);
     await render();
 
@@ -331,7 +353,7 @@ describe('composer steering cluster (#1308 slice 4 item 2b)', () => {
     expect(opts.steering).toBe('interrupt');
   });
 
-  it('maps enter to queue-send and cmd/ctrl+enter to interrupt-send', async () => {
+  it('maps enter to the default delivery lane and cmd/ctrl+enter to interrupt-send', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('streaming')]);
     await render();
 
@@ -343,6 +365,58 @@ describe('composer steering cluster (#1308 slice 4 item 2b)', () => {
       (call) => (call[1] as PostOpts).steering
     );
     expect(steerings).toEqual([undefined, 'interrupt', 'interrupt']);
+  });
+
+  it('labels ordinary Enter as safe-boundary steering for a steer-capable harness', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry('streaming', 0, true),
+    ]);
+    await render();
+
+    const defaultAction = container.querySelector<HTMLButtonElement>(
+      '.ch-composer__steer-btn'
+    );
+    expect(defaultAction?.textContent).toBe('steer');
+    expect(defaultAction?.title).toContain('safe tool boundary');
+    expect(
+      container.querySelector('.ch-composer__hint')?.textContent
+    ).toContain('steer after tool');
+
+    await typeAndPressEnter(composers()[0]!, 'inspect the conflicts next');
+    expect((mocks.post.mock.calls[0]![1] as PostOpts).steering).toBeUndefined();
+  });
+
+  it('reconciles a newer socket steerSupported:false over an older roster true', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry('streaming', 0, true),
+    ]);
+    await render();
+    expect(
+      container.querySelector<HTMLButtonElement>('.ch-composer__steer-btn')
+        ?.textContent
+    ).toBe('steer');
+
+    // A capability downgrade is a real socket value, not an absent field. It
+    // must therefore beat the roster snapshot just like a status transition.
+    await act(async () => {
+      useChannelAgentStatusStore
+        .getState()
+        .recordStatus(
+          CHANNEL_ID,
+          CLAUDE_ID,
+          'streaming',
+          RUNTIME_ID,
+          0,
+          0,
+          false
+        );
+    });
+    await flush();
+
+    expect(
+      container.querySelector<HTMLButtonElement>('.ch-composer__steer-btn')
+        ?.textContent
+    ).toBe('queue');
   });
 
   it('keeps cmd+enter a plain send when nothing is mid-turn', async () => {
@@ -405,6 +479,48 @@ describe('queued chip (#1308 slice 4 item 2a)', () => {
     expect(queuedChips()).toEqual([]);
   });
 
+  it('does not paint a native steer as queued', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry('streaming', 0, true),
+    ]);
+    await render();
+
+    await typeAndPressEnter(composers()[0]!, 'change direction');
+    await render();
+
+    expect(queuedChips()).toEqual([]);
+  });
+
+  it('keeps the queued-row chip scoped to non-steerable agents in mixed mode', async () => {
+    const hermes = {
+      ...rosterEntry('streaming'),
+      id: HERMES_ID,
+      displayName: 'hermes',
+      providerId: 'hermes',
+      binding: {
+        runtimeId: HERMES_RUNTIME_ID,
+        status: 'streaming' as const,
+        queuedCount: 0,
+        steeringCount: 0,
+        steerSupported: false,
+      },
+    };
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry('streaming', 0, true),
+      hermes,
+    ]);
+    await render();
+
+    expect(
+      container.querySelector<HTMLButtonElement>('.ch-composer__steer-btn')
+        ?.textContent
+    ).toBe('steer / queue');
+    await typeAndPressEnter(composers()[0]!, 'coordinate the two agents');
+    await render();
+
+    expect(queuedChips()).toEqual(['queued — hermes is mid-turn']);
+  });
+
   it('drops the mark when a drain lands while the post is still in flight', async () => {
     // Failing toward silence: the message was already consumed by the time the
     // row existed, so a chip naming a wait would be a lie.
@@ -427,6 +543,17 @@ describe('queued chip (#1308 slice 4 item 2a)', () => {
 });
 
 describe('presence queue depth (#1308 slice 4 item 2c)', () => {
+  it('names native safe-boundary work as steering pending, never queued', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([
+      rosterEntry('thinking', 0, true, 1),
+    ]);
+    await render();
+
+    expect(presenceLabels()).toEqual([
+      'claude is thinking… (1 steering pending)',
+    ]);
+  });
+
   it('suffixes the presence row with the queue depth', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('thinking', 2)]);
     await render();

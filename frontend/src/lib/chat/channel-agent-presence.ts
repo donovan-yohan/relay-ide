@@ -41,6 +41,8 @@ export interface ChannelAgentPresence {
   glyph: KnownAgentGlyph | null;
   /** Posts waiting to trigger this agent's NEXT turn (#1308 slice 4). */
   queuedCount: number;
+  /** Posts accepted by this agent's native safe-boundary steering lane. */
+  steeringCount: number;
 }
 
 /** Minimal shape of the header chips this projection consumes. */
@@ -50,6 +52,7 @@ export interface ChannelPresenceChip {
   identity: { label: string; colorVar: string; glyph: KnownAgentGlyph | null };
   /** Absent on surfaces that predate the queue signal — treated as zero. */
   queuedCount?: number;
+  steeringCount?: number;
 }
 
 /** Membership probe — satisfied by both `Set` and `Map` of agent ids. */
@@ -76,6 +79,7 @@ export function selectChannelAgentPresence(
       colorVar: chip.identity.colorVar,
       glyph: chip.identity.glyph,
       queuedCount: chip.queuedCount ?? 0,
+      steeringCount: chip.steeringCount ?? 0,
     });
   }
   return rows;
@@ -147,7 +151,7 @@ export function sameStreamingHold(
 
 /** Lowercase presence copy per DESIGN.md — dim secondary text, no emoji. */
 export function channelPresenceCopy(presence: ChannelAgentPresence): string {
-  return `${presenceActivityCopy(presence)}${queuedSuffix(presence.queuedCount)}`;
+  return `${presenceActivityCopy(presence)}${steeringSuffix(presence.steeringCount)}${queuedSuffix(presence.queuedCount)}`;
 }
 
 function presenceActivityCopy(presence: ChannelAgentPresence): string {
@@ -168,4 +172,8 @@ function presenceActivityCopy(presence: ChannelAgentPresence): string {
  */
 function queuedSuffix(queuedCount: number): string {
   return queuedCount > 0 ? ` (${queuedCount} queued)` : '';
+}
+
+function steeringSuffix(steeringCount: number): string {
+  return steeringCount > 0 ? ` (${steeringCount} steering pending)` : '';
 }

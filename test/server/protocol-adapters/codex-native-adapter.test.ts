@@ -11,6 +11,7 @@ import {
   CODEX_TERMINAL_ITEM_GRACE_MS,
   CodexNativeProtocolAdapter,
 } from '../../../server/protocol-adapters/codex-native-adapter.js';
+import { AgentSteerRejectedError } from '../../../server/protocol-adapter-v2.js';
 import type { CodexClientFactory } from '../../../server/protocol-adapters/codex-native-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type {
@@ -62,7 +63,9 @@ class StubCodexClient extends EventEmitter {
     this.calls.push({ method, params: params ?? null });
     // Check for a pre-configured response
     if (this.serverResponses.has(method)) {
-      return this.serverResponses.get(method) as T;
+      const response = this.serverResponses.get(method);
+      if (response instanceof Error) throw response;
+      return response as T;
     }
     return {} as T;
   }
@@ -208,6 +211,7 @@ describe('CodexNativeProtocolAdapter — capability set', () => {
       plans: true,
       slashCommands: true,
       queue: true,
+      steer: true,
       cancelQueued: true,
       interrupt: true,
       resume: true,
@@ -387,6 +391,232 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
       input: [{ type: 'text', text: 'hello codex' }],
     });
 
+    await adapter.disconnect();
+  });
+
+  it('uses turn/steer against the active native turn without opening a second Relay turn', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient!;
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'keep going' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-2' });
+
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'instead, inspect the conflict',
+    });
+
+    expect(
+      client.calls.filter((call) => call.method === 'turn/start')
+    ).toHaveLength(1);
+    expect(
+      client.calls.find((call) => call.method === 'turn/steer')?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      expectedTurnId: 'native-1',
+      input: [{ type: 'text', text: 'instead, inspect the conflict' }],
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-started-v2')
+    ).toHaveLength(1);
+
+    await adapter.disconnect();
+  });
+
+  it('classifies activeTurnNotSteerable as a definite safe FIFO fallback', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'keep going' });
+    factory.lastClient.feedNotification('turn/started', {
+      turn: { id: 'native-1' },
+    });
+    factory.lastClient.serverResponses.set(
+      'turn/steer',
+      new Error('activeTurnNotSteerable')
+    );
+
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-1', content: 'redirect' })
+    ).rejects.toBeInstanceOf(AgentSteerRejectedError);
+    await adapter.disconnect();
+  });
+
+  it('holds an old terminal until a delayed steer reply confirms its successor', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-old' } });
+    let release!: (value: { turnId: string }) => void;
+    client.serverResponses.set(
+      'turn/steer',
+      new Promise<{ turnId: string }>((resolve) => {
+        release = resolve;
+      })
+    );
+    const staleSteer = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'stale redirect',
+    });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-old', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+
+    release({ turnId: 'native-new' });
+    await staleSteer;
+    client.serverResponses.set('turn/steer', { turnId: 'native-after' });
+
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'current redirect',
+    });
+
+    const steerCalls = client.calls.filter(
+      (call) => call.method === 'turn/steer'
+    );
+    expect(steerCalls[1]?.params).toMatchObject({
+      expectedTurnId: 'native-new',
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-after', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('releases a held terminal when Codex accepts steer without a successor id', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', {});
+
+    const steer = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'redirect',
+    });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-1', status: 'completed' },
+    });
+    await steer;
+
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('rejects a concurrent Codex steer while the previous provider receipt is unresolved', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    let release!: (value: { turnId: string }) => void;
+    client.serverResponses.set(
+      'turn/steer',
+      new Promise<{ turnId: string }>((resolve) => {
+        release = resolve;
+      })
+    );
+
+    const first = adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'first steer',
+    });
+    await expect(
+      adapter.steerMessage({ turnId: 'turn-1', content: 'second steer' })
+    ).rejects.toThrow('previous steer is unresolved');
+    release({ turnId: 'native-2' });
+    await first;
+    await adapter.disconnect();
+  });
+
+  it('ignores a superseded native completion after a successful steer replacement', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-old' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-new' });
+
+    await adapter.steerMessage({ turnId: 'turn-1', content: 'redirect' });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-old', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-new', status: 'completed' },
+    });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('keeps a same-id steer as one continuing native turn and accepts its final completion', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient;
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-1' });
+
+    await adapter.steerMessage({ turnId: 'turn-1', content: 'continue' });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-1', status: 'completed' },
+    });
+
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(1);
     await adapter.disconnect();
   });
 
@@ -2643,6 +2873,173 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
 // ── Relay-control dispatch ────────────────────────────────────────────────────
 
 describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
+  it('uses flat thread/settings/update controls and carries profile effort into turn/start', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect({ ...config, extra: { effort: 'high' } });
+    const client = factory.lastClient!;
+
+    await adapter.sendMessage({ turnId: 'turn-effort-default', content: 'go' });
+    expect(
+      client.calls.find((call) => call.method === 'turn/start')?.params
+    ).toMatchObject({ effort: 'high' });
+
+    await adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' });
+    expect(
+      client.calls.find((call) => call.method === 'thread/settings/update')
+        ?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      effort: 'ultra',
+    });
+    await adapter.disconnect();
+  });
+
+  it('clears into a fresh thread without dropping existing patch subscribers', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    await adapter.connect(config);
+    await adapter.executeControlCommand?.({ command: 'clear' });
+    await adapter.sendMessage({
+      turnId: 'after-clear',
+      content: 'still bridged',
+    });
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' &&
+          patch.turn.id === 'after-clear'
+      )
+    ).toBe(true);
+    await adapter.disconnect();
+  });
+
+  it('rejects Fast Mode until model/list has advertised the fast service tier', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          isDefault: true,
+          serviceTiers: [
+            { id: 'fast', name: 'Fast', description: 'Fast tier' },
+          ],
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'low', description: 'Low effort' },
+            { reasoningEffort: 'ultra', description: 'Ultra effort' },
+          ],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+    expect(
+      adapter.getSlashCommands().find((command) => command.name === 'effort')
+        ?.args
+    ).toEqual([{ value: 'low' }, { value: 'ultra' }]);
+    await adapter.executeControlCommand?.({ command: 'fast', args: 'on' });
+    expect(
+      factory.lastClient!.calls.find(
+        (call) => call.method === 'thread/settings/update'
+      )?.params
+    ).toMatchObject({
+      threadId: 'thread-1',
+      serviceTier: 'fast',
+    });
+    await adapter.disconnect();
+  });
+
+  it('clears Fast Mode atomically when switching to a model without the fast tier', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          serviceTiers: [{ id: 'fast' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        },
+        {
+          id: 'gpt-standard',
+          serviceTiers: [{ id: 'default' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+
+    await adapter.executeControlCommand?.({ command: 'fast', args: 'on' });
+    await adapter.executeControlCommand?.({
+      command: 'model',
+      args: 'gpt-standard',
+    });
+    const updates = factory.lastClient!.calls.filter(
+      (call) => call.method === 'thread/settings/update'
+    );
+    expect(updates.at(-1)?.params).toMatchObject({
+      threadId: 'thread-1',
+      model: 'gpt-standard',
+      serviceTier: null,
+    });
+
+    await adapter.sendMessage({ turnId: 'standard-turn', content: 'go' });
+    const turn = factory.lastClient!.calls.find(
+      (call) => call.method === 'turn/start'
+    );
+    expect(turn?.params).not.toHaveProperty('serviceTier');
+    await adapter.disconnect();
+  });
+
+  it('rejects live-unsupported reasoning effort while retaining static fallback without a catalog', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient?.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-fast',
+          serviceTiers: [{ id: 'fast' }],
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        },
+      ],
+    });
+    await adapter.connect({ ...config, model: 'gpt-fast' });
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'fast')
+    );
+
+    await expect(
+      adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' })
+    ).rejects.toThrow('not supported by the selected model');
+    expect(
+      factory.lastClient!.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
+    await adapter.disconnect();
+  });
+
   it('/compact calls thread/compact/start and emits controlAction extension', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);

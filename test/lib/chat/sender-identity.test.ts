@@ -36,6 +36,7 @@ describe('resolveSenderIdentity', () => {
     ['codex', 'var(--sender-codex)'],
     ['hermes', 'var(--sender-hermes)'],
     ['opencode', 'var(--sender-opencode)'],
+    ['prime-agent', 'var(--sender-prime-agent)'],
   ] as const)(
     'keeps the curated vendor token + glyph for the %s DEFAULT profile',
     (providerId, colorVar) => {
@@ -123,6 +124,7 @@ describe('resolveSenderIdentity', () => {
     ['codex', 'var(--sender-codex)'],
     ['hermes', 'var(--sender-hermes)'],
     ['opencode', 'var(--sender-opencode)'],
+    ['prime-agent', 'var(--sender-prime-agent)'],
   ] as const)(
     'heals a legacy agent:%s row to the curated vendor token + glyph',
     (providerId, colorVar) => {

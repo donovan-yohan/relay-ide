@@ -8,7 +8,12 @@ import React, {
   useState,
 } from 'react';
 import TuiCheckbox from './TuiCheckbox.js';
-import { browseFsDirectory, type BrowseEntry } from '../lib/api.js';
+import TuiButton from './TuiButton.js';
+import {
+  browseFsDirectory,
+  createWorkspaceFolder,
+  type BrowseEntry,
+} from '../lib/api.js';
 import './FileBrowser.css';
 
 export interface FileBrowserHandle {
@@ -57,6 +62,55 @@ function collectSelected(nodes: BrowseNode[]): string[] {
   return result;
 }
 
+function findNode(nodes: BrowseNode[], targetPath: string): BrowseNode | null {
+  for (const node of nodes) {
+    if (node.path === targetPath) return node;
+    if (node.children) {
+      const found = findNode(node.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function mergeCreatedEntry(
+  entries: BrowseEntry[],
+  createdEntry?: BrowseEntry
+): BrowseEntry[] {
+  if (!createdEntry || entries.some((entry) => entry.path === createdEntry.path)) {
+    return entries;
+  }
+  return [...entries, createdEntry].sort((a, b) =>
+    a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+  );
+}
+
+function mergeBrowseNodes(
+  entries: BrowseEntry[],
+  previousNodes: BrowseNode[],
+  depth: number,
+  selectedPath?: string
+): BrowseNode[] {
+  const previousByPath = new Map(
+    previousNodes.map((node) => [node.path, node])
+  );
+  return entries.map((entry) => {
+    const existing = previousByPath.get(entry.path);
+    if (existing) {
+      existing.name = entry.name;
+      existing.isGitRepo = entry.isGitRepo;
+      existing.hasChildren =
+        entry.hasChildren || Boolean(existing.children?.length);
+      existing.depth = depth;
+      if (entry.path === selectedPath) existing.selected = true;
+      return existing;
+    }
+    const node = entryToNode(entry, depth);
+    node.selected = entry.path === selectedPath;
+    return node;
+  });
+}
+
 function flattenVisible(nodes: BrowseNode[], filter: string): BrowseNode[] {
   const result: BrowseNode[] = [];
   for (const node of nodes) {
@@ -78,6 +132,7 @@ interface TreeRowProps {
   focused: boolean;
   onToggleExpand: () => void;
   onToggleSelect: () => void;
+  onCreateFolder: () => void;
 }
 
 function TreeRow({
@@ -85,6 +140,7 @@ function TreeRow({
   focused,
   onToggleExpand,
   onToggleSelect,
+  onCreateFolder,
 }: TreeRowProps) {
   const cls = [
     'tree-row',
@@ -103,7 +159,11 @@ function TreeRow({
       aria-level={node.depth + 1}
       onClick={(e) => {
         const target = e.target as HTMLElement;
-        if (target.closest('.expand-btn') || target.closest('.tui-checkbox'))
+        if (
+          target.closest('.expand-btn') ||
+          target.closest('.tui-checkbox') ||
+          target.closest('.new-folder-btn')
+        )
           return;
         if (node.hasChildren && !node.expanded) onToggleExpand();
         else onToggleSelect();
@@ -138,6 +198,18 @@ function TreeRow({
           git
         </span>
       )}
+      <TuiButton
+        variant="ghost"
+        size="sm"
+        className="new-folder-btn"
+        aria-label={`new folder in ${node.name}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCreateFolder();
+        }}
+      >
+        new folder
+      </TuiButton>
     </div>
   );
 }
@@ -148,6 +220,7 @@ interface TreeViewProps {
   rootTruncated: { shown: number; total: number } | null;
   onToggleExpand: (node: BrowseNode) => void;
   onToggleSelect: (node: BrowseNode) => void;
+  onCreateFolder: (node: BrowseNode) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   filterText: string;
   initialLoading: boolean;
@@ -159,6 +232,7 @@ function TreeView({
   rootTruncated,
   onToggleExpand,
   onToggleSelect,
+  onCreateFolder,
   onKeyDown,
   filterText,
   initialLoading,
@@ -188,6 +262,7 @@ function TreeView({
               focused={i === focusIndex}
               onToggleExpand={() => onToggleExpand(node)}
               onToggleSelect={() => onToggleSelect(node)}
+              onCreateFolder={() => onCreateFolder(node)}
             />
           ))}
           {rootTruncated && (
@@ -214,7 +289,13 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     shown: number;
     total: number;
   } | null>(null);
+  const [rootPath, setRootPath] = useState('');
+  const [folderParentPath, setFolderParentPath] = useState<string | null>(null);
+  const [folderName, setFolderName] = useState('');
+  const [folderError, setFolderError] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const treeRef = useRef<BrowseNode[]>([]);
+  const folderNameInputRef = useRef<HTMLInputElement>(null);
 
   function syncTree(newTree: BrowseNode[]) {
     treeRef.current = newTree;
@@ -222,19 +303,27 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     onSelectedPathsChange(collectSelected(newTree));
   }
 
-  const loadRoot = useCallback(async () => {
+  const loadRoot = useCallback(async (createdEntry?: BrowseEntry) => {
     setInitialLoading(true);
     setRootTruncated(null);
     try {
       const data = await browseFsDirectory();
-      const newTree = data.entries.map((e) => entryToNode(e, 0));
-      treeRef.current = newTree;
-      setTree(newTree);
-      if (data.truncated)
-        setRootTruncated({ shown: data.entries.length, total: data.total });
+      const entries = mergeCreatedEntry(data.entries, createdEntry);
+      const newTree = mergeBrowseNodes(
+        entries,
+        treeRef.current,
+        0,
+        createdEntry?.path
+      );
+      setRootPath(data.resolved);
+      const total = Math.max(data.total, entries.length);
+      if (total > entries.length)
+        setRootTruncated({ shown: entries.length, total });
+      syncTree(newTree);
     } catch {
       treeRef.current = [];
       setTree([]);
+      setRootPath('');
     } finally {
       setInitialLoading(false);
     }
@@ -244,10 +333,17 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     void loadRoot();
   }, [loadRoot]);
 
+  useEffect(() => {
+    if (folderParentPath) folderNameInputRef.current?.focus();
+  }, [folderParentPath]);
+
   useImperativeHandle(ref, () => ({
     reset() {
       setFilterText('');
       setFocusIndex(-1);
+      setFolderParentPath(null);
+      setFolderName('');
+      setFolderError('');
       function deselectAll(nodes: BrowseNode[]) {
         for (const n of nodes) {
           n.selected = false;
@@ -284,6 +380,62 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     }
     node.expanded = true;
     setTree([...treeRef.current]);
+  }
+
+  async function refreshNodeChildren(
+    node: BrowseNode,
+    createdEntry?: BrowseEntry
+  ) {
+    const data = await browseFsDirectory(node.path);
+    const entries = mergeCreatedEntry(data.entries, createdEntry);
+    node.children = mergeBrowseNodes(
+      entries,
+      node.children ?? [],
+      node.depth + 1,
+      createdEntry?.path
+    );
+    node.hasChildren = node.children.length > 0;
+    const total = Math.max(data.total, entries.length);
+    node.truncatedInfo = total > entries.length
+      ? { shown: entries.length, total }
+      : null;
+    node.expanded = true;
+    syncTree(treeRef.current);
+  }
+
+  function beginFolderCreate(parentPath: string) {
+    setFolderParentPath(parentPath);
+    setFolderName('');
+    setFolderError('');
+  }
+
+  function cancelFolderCreate() {
+    if (creatingFolder) return;
+    setFolderParentPath(null);
+    setFolderName('');
+    setFolderError('');
+  }
+
+  async function createFolder() {
+    if (!folderParentPath || creatingFolder) return;
+    setCreatingFolder(true);
+    setFolderError('');
+    try {
+      const entry = await createWorkspaceFolder(folderParentPath, folderName);
+      if (folderParentPath === rootPath) {
+        await loadRoot(entry);
+      } else {
+        const parent = findNode(treeRef.current, folderParentPath);
+        if (!parent) throw new Error('parent folder is no longer visible');
+        await refreshNodeChildren(parent, entry);
+      }
+      setFolderParentPath(null);
+      setFolderName('');
+    } catch (err) {
+      setFolderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingFolder(false);
+    }
   }
 
   function toggleSelect(node: BrowseNode) {
@@ -341,13 +493,70 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
           autoComplete="off"
           spellCheck={false}
         />
+        <TuiButton
+          variant="ghost"
+          size="sm"
+          className="new-root-folder-btn"
+          disabled={!rootPath || initialLoading}
+          onClick={() => beginFolderCreate(rootPath)}
+        >
+          new folder
+        </TuiButton>
       </div>
+      {folderParentPath && (
+        <div className="folder-create-editor">
+          <label htmlFor="new-folder-name" className="folder-create-label">
+            new folder in {folderParentPath}
+          </label>
+          <div className="folder-create-controls">
+            <input
+              ref={folderNameInputRef}
+              id="new-folder-name"
+              className="folder-create-input"
+              aria-label={`new folder name in ${folderParentPath}`}
+              value={folderName}
+              onChange={(e) => setFolderName(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void createFolder();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelFolderCreate();
+                }
+              }}
+              placeholder="folder name"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={creatingFolder}
+            />
+            <TuiButton
+              variant="primary"
+              size="sm"
+              disabled={creatingFolder || !folderName.trim()}
+              onClick={() => void createFolder()}
+            >
+              {creatingFolder ? 'creating...' : 'create'}
+            </TuiButton>
+            <TuiButton
+              variant="ghost"
+              size="sm"
+              disabled={creatingFolder}
+              onClick={cancelFolderCreate}
+            >
+              cancel
+            </TuiButton>
+          </div>
+          {folderError && <p className="folder-create-error">{folderError}</p>}
+        </div>
+      )}
       <TreeView
         visibleNodes={visibleNodes}
         focusIndex={focusIndex}
         rootTruncated={rootTruncated}
         onToggleExpand={(n) => void toggleExpand(n)}
         onToggleSelect={toggleSelect}
+        onCreateFolder={(n) => beginFolderCreate(n.path)}
         onKeyDown={handleTreeKeydown}
         filterText={filterText}
         initialLoading={initialLoading}

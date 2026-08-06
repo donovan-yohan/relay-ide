@@ -66,6 +66,8 @@ function presence(
     label,
     colorVar: 'var(--sender-hermes)',
     glyph: 'hermes',
+    queuedCount: 0,
+    steeringCount: 0,
   };
 }
 
@@ -204,9 +206,7 @@ describe('advanceStreamingHold (#1277 intra-turn gap)', () => {
   it('reports the earliest pending deadline and ignores live rows', () => {
     expect(nextStreamingHoldExpiry(new Map())).toBeNull();
     expect(
-      nextStreamingHoldExpiry(
-        new Map([[CLAUDE_ID, Number.POSITIVE_INFINITY]])
-      )
+      nextStreamingHoldExpiry(new Map([[CLAUDE_ID, Number.POSITIVE_INFINITY]]))
     ).toBeNull();
     expect(
       nextStreamingHoldExpiry(
@@ -381,9 +381,7 @@ describe('ChannelTimeline presence row (#1277)', () => {
     const row = host.querySelector('.ch-presence__row');
     expect(row).not.toBeNull();
     expect(row?.hasAttribute('data-channel-message-seq')).toBe(false);
-    expect(
-      host.querySelectorAll('[data-channel-message-seq]')
-    ).toHaveLength(1);
+    expect(host.querySelectorAll('[data-channel-message-seq]')).toHaveLength(1);
   });
 
   it('uses the shared braille spinner as its only motion', async () => {
@@ -463,9 +461,7 @@ describe('ChannelTimeline presence row (#1277)', () => {
     const row = host.querySelector('.ch-presence__row');
     expect(row?.textContent).toContain('hermes is thinking…');
     // TuiProgress freezes on frame 0 rather than disappearing.
-    expect(host.querySelector('.ch-presence__spinner')?.textContent).toBe(
-      '⠋'
-    );
+    expect(host.querySelector('.ch-presence__spinner')?.textContent).toBe('⠋');
   });
 
   it('does not inflate the new-message pill when the row appears or clears', async () => {
@@ -514,11 +510,7 @@ describe('useStreamingPresenceHold (#1277)', () => {
   let hookHost: HTMLDivElement;
   let hookRoot: Root;
 
-  function Probe({
-    live,
-  }: {
-    live: ReadonlySet<string>;
-  }): React.ReactElement {
+  function Probe({ live }: { live: ReadonlySet<string> }): React.ReactElement {
     const membership = useStreamingPresenceHold(live, 200);
     return React.createElement('span', {
       'data-suppressed': membership.has(CLAUDE_ID) ? 'yes' : 'no',
@@ -532,9 +524,9 @@ describe('useStreamingPresenceHold (#1277)', () => {
   }
 
   function suppressed(): string | null {
-    return hookHost
-      .querySelector('span')
-      ?.getAttribute('data-suppressed') ?? null;
+    return (
+      hookHost.querySelector('span')?.getAttribute('data-suppressed') ?? null
+    );
   }
 
   beforeEach(() => {

@@ -14,6 +14,7 @@ const SERIAL_SUBPROCESS_FILES = [
   'test/git-divergence.test.ts',
   'test/git-watcher.test.ts',
   'test/workspace-divergence-api.test.ts',
+  'test/work-context-messages.test.ts',
   'test/worktree-cleanup.test.ts',
   'test/sessions.test.ts',
   // These files execute or rebuild the shared dist/bin/relay-ide.js output.

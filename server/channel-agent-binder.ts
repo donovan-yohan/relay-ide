@@ -15,11 +15,16 @@ import {
   type ChannelMessageStore,
 } from './channel-message-store.js';
 import type { ChannelHub, ChannelMessagePostedOptions } from './channel-hub.js';
-import type { Attachment, ProtocolAdapterV2 } from './protocol-adapter-v2.js';
+import {
+  AgentSteerRejectedError,
+  type Attachment,
+  type ProtocolAdapterV2,
+} from './protocol-adapter-v2.js';
 import type {
   ChannelAgentRuntime,
   CreateChannelAgentRuntimeParams,
 } from './channel-agent-runtime.js';
+import { relayControlCatalogForProvider } from '../shared/agent-command-catalog.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { AgentProfileStore } from './agent-profile-store.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
@@ -43,6 +48,7 @@ import type {
   AgentApprovalItemV2,
   AgentLiveStateUpdatedPatchV2,
   AgentPatchV2,
+  AgentSlashCommandV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 import { isDmChannel } from '../shared/dm-channels.js';
@@ -59,13 +65,10 @@ import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.
 // items so it can drive the queue, status, watchdog, and approval rows.
 //
 // ── mid-turn steering (#1308 slice 4) ────────────────────────────────────────
-// A post addressed to a binding that is already mid-turn does NOT open a second
-// concurrent turn and is never dropped: `enqueueTurn` appends to the binding's
-// FIFO queue and `pump` refuses to dispatch while `activeTurnId !== null`. On
-// `finishTurn` the queue drains into ONE next turn — every human post that
-// arrived while the agent was busy is coalesced (§`pump`), and all of them ride
-// that turn's context packet for free, because `buildPacket` reads them back out
-// of the durable store (`seq > lastDeliveredSeq`, `seq < trigger.seq`).
+// A post addressed to a binding that is already mid-turn never opens a second
+// concurrent turn and is never dropped. Providers exposing `capabilities.steer`
+// receive the post through their own safe-boundary primitive; every other
+// provider uses the existing FIFO queue, which `pump` drains after completion.
 //
 // `steering: 'interrupt'` is the operator's explicit "interrupt and send": the
 // live turn is cancelled through the SAME `adapter.interrupt` path the header
@@ -159,7 +162,13 @@ export interface ChannelAgentRosterEntry {
      * live binding), so the chip renders from one number on both lanes.
      */
     queuedCount: number;
+    /** Posts accepted by a native safe-boundary steering primitive. */
+    steeringCount: number;
+    /** Whether this live harness accepts the default safe-boundary steer. */
+    steerSupported: boolean;
   } | null;
+  /** Provider previews are safe to show before a binding exists. */
+  commands?: AgentSlashCommandV2[];
 }
 
 export type ChannelAgentStatusBroadcaster = (
@@ -236,6 +245,14 @@ export interface ChannelAgentBinder {
     decision: AgentApprovalDecisionV2
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
+  executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }>;
+  isControlMessage(text: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
   close(): void;
 }
@@ -279,9 +296,17 @@ export interface LiveBinding {
   sawStream: boolean;
   waitingOn: string | null;
   queue: QueuedTurn[];
+  /** FIFO of native safe-boundary requests not yet handed to the adapter. */
+  steeringQueue: QueuedTurn[];
+  /** One provider call at a time preserves original operator order. */
+  steeringInFlight: boolean;
+  /** Requests accepted into the active provider turn, cleared when it ends. */
+  steeringAcceptedCount: number;
   /** Last `(status, queuedCount)` pair broadcast; suppresses duplicate events. */
   emittedStatus: ChannelAgentStatus;
   emittedQueuedCount: number;
+  emittedSteeringCount: number;
+  emittedSteerSupported: boolean;
   watchdog: NodeJS.Timeout | null;
   retriedTurns: Set<string>;
   announcedApprovals: Set<string>;
@@ -357,6 +382,23 @@ export interface ChannelRetryResult {
   /** The ORIGINAL trigger that was re-routed — never a new timeline row. */
   triggerMessageId: string;
   profileActorId: string;
+}
+
+/** A command lane rejection is deliberately not a channel-message failure. */
+export class ChannelAgentCommandError extends Error {
+  constructor(
+    message: string,
+    readonly reasonCode:
+      | 'UNKNOWN_PROFILE'
+      | 'UNAVAILABLE'
+      | 'UNKNOWN_COMMAND'
+      | 'UNSUPPORTED_DISPATCH'
+      | 'UNSUPPORTED_PROVIDER'
+      | 'CONFIRMATION_REQUIRED'
+  ) {
+    super(message);
+    this.name = 'ChannelAgentCommandError';
+  }
 }
 
 export class ChannelAgentRoleConflictError extends Error {
@@ -583,32 +625,48 @@ export function createChannelAgentBinder(
     return profile.displayName || (await senderLabelFor(profile.providerId));
   }
 
+  function supportsSafeBoundarySteer(binding: LiveBinding): boolean {
+    return (
+      binding.adapter?.capabilities.steer === true &&
+      binding.adapter.steerMessage !== undefined
+    );
+  }
+
   // ── status ──────────────────────────────────────────────────────────────────
 
   /**
-   * Broadcast the binding's observable presence: its status AND how many posts
-   * are waiting to trigger its next turn (#1308 slice 4). Deduped on the PAIR,
-   * not on status alone — a second message arriving while an agent is already
-   * `streaming` moves no status but must still light the queued chip, and the
-   * drain that empties the queue must clear it even though the binding was
-   * already `thinking`.
+   * Broadcast the binding's observable presence plus both delivery lanes.
+   * `queuedCount` waits for a future turn; `steeringCount` has been accepted
+   * into a native provider's safe-boundary lane. They must remain separate so
+   * the client never calls a steering request "queued".
    */
   function emitAgentStatus(binding: LiveBinding): void {
     const queuedCount = binding.queue.length;
+    const steeringCount =
+      binding.steeringAcceptedCount +
+      binding.steeringQueue.length +
+      (binding.steeringInFlight ? 1 : 0);
+    const steerSupported = supportsSafeBoundarySteer(binding);
     if (
       binding.emittedStatus === binding.status &&
-      binding.emittedQueuedCount === queuedCount
+      binding.emittedQueuedCount === queuedCount &&
+      binding.emittedSteeringCount === steeringCount &&
+      binding.emittedSteerSupported === steerSupported
     ) {
       return;
     }
     binding.emittedStatus = binding.status;
     binding.emittedQueuedCount = queuedCount;
+    binding.emittedSteeringCount = steeringCount;
+    binding.emittedSteerSupported = steerSupported;
     statusBroadcaster?.('channel-agent-status', {
       channelId: binding.channelId,
       agentId: binding.profileActorId,
       status: binding.status,
       runtimeId: binding.runtimeId ?? null,
       queuedCount,
+      steeringCount,
+      steerSupported,
     });
   }
 
@@ -670,8 +728,13 @@ export function createChannelAgentBinder(
       sawStream: false,
       waitingOn: null,
       queue: [],
+      steeringQueue: [],
+      steeringInFlight: false,
+      steeringAcceptedCount: 0,
       emittedStatus: 'idle',
       emittedQueuedCount: 0,
+      emittedSteeringCount: 0,
+      emittedSteerSupported: false,
       watchdog: null,
       retriedTurns: new Set(),
       announcedApprovals: new Set(),
@@ -1062,10 +1125,32 @@ export function createChannelAgentBinder(
     steering?: ChannelPostSteering,
     reEnqueued = false
   ): void {
+    // Native harnesses get the user's next instruction at their own tool-safe
+    // boundary. Keep this ahead of the queue branch: while a turn is live the
+    // regular pump cannot dispatch, whereas a provider steer is explicitly
+    // designed to alter that live turn without interrupting its current tool.
+    if (
+      !reEnqueued &&
+      steering !== 'interrupt' &&
+      binding.activeTurnId !== null &&
+      binding.adapter?.capabilities.steer === true &&
+      binding.adapter.steerMessage !== undefined
+    ) {
+      if (occupiedTurnSlots(binding) >= QUEUE_CAP) {
+        postSystemRow(
+          binding.channelId,
+          `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
+          { parentMessageId: parentForTrigger(trigger) }
+        );
+        return;
+      }
+      enqueueSteering(binding, trigger);
+      return;
+    }
     const entry: QueuedTurn = reEnqueued
       ? { trigger, reEnqueued: true }
       : { trigger };
-    if (binding.queue.length >= QUEUE_CAP) {
+    if (occupiedTurnSlots(binding) >= QUEUE_CAP) {
       const tailIndex = binding.queue.length - 1;
       const tail = binding.queue[tailIndex];
       // Neither side may be a re-enqueued trigger: superseding one silently
@@ -1092,7 +1177,7 @@ export function createChannelAgentBinder(
       }
       postSystemRow(
         binding.channelId,
-        `@${binding.displayName} has ${QUEUE_CAP} turns queued — message dropped`,
+        `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
         { parentMessageId: parentForTrigger(trigger) }
       );
       return;
@@ -1106,6 +1191,117 @@ export function createChannelAgentBinder(
     // send" degrades cleanly to plain "send".
     if (steering === 'interrupt') steerInterrupt(binding, trigger);
     pump(binding);
+  }
+
+  function occupiedTurnSlots(binding: LiveBinding): number {
+    return (
+      binding.queue.length +
+      binding.steeringQueue.length +
+      binding.steeringAcceptedCount +
+      (binding.steeringInFlight ? 1 : 0)
+    );
+  }
+
+  function isCurrentBinding(binding: LiveBinding): boolean {
+    return (
+      live.get(bindingKey(binding.channelId, binding.profileActorId)) ===
+      binding
+    );
+  }
+
+  /**
+   * Put a post into the provider-native safe-boundary lane. The call is
+   * serialized because Codex's `turn/steer` advances its expected native turn
+   * id, while Claude's persistent stream-json input is ordered on stdin. No
+   * retry occurs after a provider error: a transport failure can be ambiguous,
+   * and retrying would violate at-most-once delivery.
+   */
+  function enqueueSteering(
+    binding: LiveBinding,
+    trigger: ChannelMessage
+  ): void {
+    binding.steeringQueue.push({ trigger });
+    emitAgentStatus(binding);
+    drainSteering(binding);
+  }
+
+  function drainSteering(binding: LiveBinding): void {
+    if (closed || binding.steeringInFlight || binding.activeTurnId === null) {
+      return;
+    }
+    const adapter = binding.adapter;
+    const steerMessage = adapter?.steerMessage;
+    if (adapter?.capabilities.steer !== true || !steerMessage) return;
+    const entry = binding.steeringQueue.shift();
+    if (!entry) return;
+    const { trigger } = entry;
+    const activeTurnId = binding.activeTurnId;
+    let packet: ResolvedMentionContextPacket;
+    try {
+      packet = buildPacket(binding, trigger);
+    } catch (err) {
+      logger.warn('channel binder steering packet build failed:', err);
+      postSystemRow(
+        binding.channelId,
+        `@${binding.displayName} could not build the steering context: ${errText(err)}`,
+        { parentMessageId: parentForTrigger(trigger) }
+      );
+      emitAgentStatus(binding);
+      drainSteering(binding);
+      return;
+    }
+    binding.steeringInFlight = true;
+    emitAgentStatus(binding);
+    steerMessage
+      .call(adapter, {
+        // The adapter preserves the live provider/Relay turn identity; this id
+        // is retained only for provider implementations that annotate input.
+        turnId: activeTurnId,
+        content: packet.content,
+        ...(packet.attachments.length > 0
+          ? { attachments: packet.attachments }
+          : {}),
+        clientMessageId: `${trigger.id}:${binding.profileActorId}`,
+      })
+      .then(() => {
+        if (!isCurrentBinding(binding)) return;
+        // A terminal patch can win the provider-RPC race. Do not resurrect a
+        // cleared steering indicator after finishTurn; replay would be unsafe
+        // because a late transport result may already have been accepted.
+        if (binding.activeTurnId === activeTurnId) {
+          binding.steeringAcceptedCount += 1;
+        }
+        advanceCursor(binding, trigger);
+      })
+      .catch((err) => {
+        if (closed || !isCurrentBinding(binding)) return;
+        if (err instanceof AgentSteerRejectedError) {
+          // Definite provider rejection is safe to deliver once through the
+          // normal next-turn FIFO; ambiguous transport failures stay visible
+          // errors and are never replayed.
+          // This request is no longer in flight, so do not make it consume the
+          // final aggregate slot while we move it to the ordinary queue. The
+          // finally below is deliberately idempotent.
+          binding.steeringInFlight = false;
+          enqueueTurn(binding, trigger, undefined, true);
+          return;
+        }
+        logger.warn('channel binder native steering failed:', err);
+        postSystemRow(
+          binding.channelId,
+          `@${binding.displayName} could not accept the steering message: ${errText(err)}`,
+          { parentMessageId: parentForTrigger(trigger) }
+        );
+      })
+      .finally(() => {
+        if (!isCurrentBinding(binding)) return;
+        binding.steeringInFlight = false;
+        emitAgentStatus(binding);
+        // A terminal patch may have arrived while the provider RPC was in
+        // flight. In that case finishTurn moves later entries to the ordinary
+        // FIFO; never issue a stale steer against a completed turn.
+        drainSteering(binding);
+      });
   }
 
   /**
@@ -1433,6 +1629,16 @@ export function createChannelAgentBinder(
       );
     }
     binding.queue = [];
+    for (const steering of binding.steeringQueue) {
+      postSystemRow(
+        binding.channelId,
+        `@${binding.displayName} runtime ended before accepting a steering message.`,
+        { parentMessageId: parentForTrigger(steering.trigger) }
+      );
+    }
+    binding.steeringQueue = [];
+    binding.steeringInFlight = false;
+    binding.steeringAcceptedCount = 0;
   }
 
   /**
@@ -1468,6 +1674,17 @@ export function createChannelAgentBinder(
     binding.sawStream = false;
     disarmWatchdog(binding);
     setStatus(binding, 'idle');
+    // If the provider completed before later safe-boundary requests were
+    // accepted, preserve FIFO by falling back to ordinary next-turn delivery.
+    // The in-flight request is intentionally not replayed: its transport result
+    // may be ambiguous, so re-sending it would break at-most-once semantics.
+    if (binding.steeringQueue.length > 0) {
+      binding.queue.push(...binding.steeringQueue);
+      binding.steeringQueue = [];
+      emitAgentStatus(binding);
+    }
+    binding.steeringAcceptedCount = 0;
+    emitAgentStatus(binding);
     pump(binding);
   }
 
@@ -1478,10 +1695,7 @@ export function createChannelAgentBinder(
     if (binding.waitingOn === null) setStatus(binding, 'streaming');
   }
 
-  function handleBindingPatch(
-    binding: LiveBinding,
-    patch: AgentPatchV2
-  ): void {
+  function handleBindingPatch(binding: LiveBinding, patch: AgentPatchV2): void {
     switch (patch.type) {
       case 'agent-session-updated-v2':
         if (patch.providerSession) {
@@ -2359,6 +2573,13 @@ export function createChannelAgentBinder(
         const row = store.getBinding(channelId, profile.id);
         const runtimeId = binding?.runtimeId ?? row?.runtimeId ?? null;
         const runtime = runtimeId ? deps.runtimes.get(runtimeId) : undefined;
+        const baseCommands = relayControlCatalogForProvider(
+          profile.providerId
+        ).filter((command) => command.collisionKey !== 'fast');
+        const liveCatalog = binding?.adapter?.getSlashCommands;
+        const commands = (
+          liveCatalog ? liveCatalog.call(binding.adapter) : baseCommands
+        ).filter((command) => command.dispatch === 'relay-control');
         return {
           id: profile.id,
           displayName: await rosterDisplayName(profile),
@@ -2374,11 +2595,147 @@ export function createChannelAgentBinder(
                 runtimeId,
                 status: binding?.status ?? 'idle',
                 queuedCount: binding?.queue.length ?? 0,
+                steeringCount:
+                  (binding?.steeringAcceptedCount ?? 0) +
+                  (binding?.steeringQueue.length ?? 0) +
+                  (binding?.steeringInFlight ? 1 : 0),
+                steerSupported:
+                  binding !== undefined && supportsSafeBoundarySteer(binding),
               }
             : null,
+          ...(commands.length > 0 ? { commands } : {}),
         };
       })
     );
+  }
+
+  async function executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }> {
+    // Actor id is the sole authority boundary. Never resolve a display name here.
+    const targets = await getTargets();
+    const stored = deps.agentProfileStore?.list() ?? [];
+    const profiles = [
+      ...stored,
+      ...targets
+        .filter(
+          (target) =>
+            !stored.some((profile) => profile.providerId === target.id)
+        )
+        .map((target) => defaultProfileForProvider(target.id)),
+    ];
+    const profile = profiles.find(
+      (candidate) => candidate.id === profileActorId
+    );
+    if (!profile) {
+      throw new ChannelAgentCommandError(
+        'unknown agent profile',
+        'UNKNOWN_PROFILE'
+      );
+    }
+    const target = targets.find(
+      (candidate) => candidate.id === profile.providerId
+    );
+    if (!target?.available) {
+      throw new ChannelAgentCommandError('agent is unavailable', 'UNAVAILABLE');
+    }
+    let binding = live.get(bindingKey(channelId, profileActorId));
+    let preview =
+      binding?.adapter?.getSlashCommands?.() ??
+      relayControlCatalogForProvider(profile.providerId).filter(
+        (entry) => entry.collisionKey !== 'fast'
+      );
+    const name = command.trim().toLowerCase();
+    let selected = preview.find(
+      (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+    );
+    // Static catalog entries make pre-bind previews possible. Other adapters
+    // may expose their own relay controls only after connect; discover those
+    // through the same adapter contract rather than a provider branch.
+    if (!selected && !binding) {
+      binding = await ensureProfileBinding(channelId, profile);
+      preview = binding.adapter?.getSlashCommands?.() ?? [];
+      selected = preview.find(
+        (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+      );
+    }
+    if (!selected) {
+      throw new ChannelAgentCommandError(
+        'unknown provider command',
+        'UNKNOWN_COMMAND'
+      );
+    }
+    if (selected.dispatch !== 'relay-control') {
+      throw new ChannelAgentCommandError(
+        'agent-dispatch commands are not executable in channels',
+        'UNSUPPORTED_DISPATCH'
+      );
+    }
+    if (selected.destructive && confirmed !== true) {
+      throw new ChannelAgentCommandError(
+        'command confirmation is required',
+        'CONFIRMATION_REQUIRED'
+      );
+    }
+    binding ??= await ensureProfileBinding(channelId, profile);
+    if (!binding.adapter?.executeControlCommand) {
+      throw new ChannelAgentCommandError(
+        'provider command controls are unavailable',
+        'UNSUPPORTED_PROVIDER'
+      );
+    }
+    return binding.adapter.executeControlCommand({
+      command: selected.name,
+      ...(args ? { args } : {}),
+      ...(confirmed !== undefined ? { confirmed } : {}),
+    });
+  }
+
+  function isControlMessage(text: string): boolean {
+    const profiles =
+      deps.agentProfileStore?.list() ??
+      deps.knownProviderIds.map((providerId) =>
+        defaultProfileForProvider(providerId)
+      );
+    let at = 0;
+    while (at < text.length) {
+      at = text.indexOf('@', at);
+      if (at < 0) break;
+      if (at > 0 && /[A-Za-z0-9_.]/.test(text[at - 1]!)) {
+        at += 1;
+        continue;
+      }
+      // Parse each candidate suffix independently: the durable parser dedupes
+      // same-profile mentions for routing, while this admission check must see
+      // every occurrence (for example `@codex hello @codex/compact`).
+      const mention = parseMentions(
+        text.slice(at),
+        deps.knownProviderIds,
+        profiles
+      )[0];
+      if (!mention?.profileId || !mention.providerId) {
+        at += 1;
+        continue;
+      }
+      const suffix = text.slice(at + mention.raw.length);
+      const command = suffix
+        .match(/^\s*\/([^\s]+)(?:\s|$)/)?.[1]
+        ?.toLowerCase();
+      if (
+        command &&
+        relayControlCatalogForProvider(mention.providerId).some(
+          (entry) =>
+            entry.name === command || (entry.aliases ?? []).includes(command)
+        )
+      )
+        return true;
+      at += Math.max(1, mention.raw.length);
+    }
+    return false;
   }
 
   return {
@@ -2390,6 +2747,8 @@ export function createChannelAgentBinder(
     retryMessage,
     respondToApproval,
     rosterForChannel,
+    executeCommand,
+    isControlMessage,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },
@@ -2408,6 +2767,9 @@ export function createChannelAgentBinder(
         // it refetch a roster. Broadcast is best-effort: the transport may
         // already be closing, and that must not abort the rest of shutdown.
         binding.queue = [];
+        binding.steeringQueue = [];
+        binding.steeringInFlight = false;
+        binding.steeringAcceptedCount = 0;
         binding.activeTurnId = null;
         binding.waitingOn = null;
         binding.status = 'idle';

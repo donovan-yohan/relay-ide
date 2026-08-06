@@ -26,6 +26,42 @@ Required lifecycle:
 Optional methods cover approval, questions, resume, and runtime environment
 refresh. Capabilities must describe only implemented behavior.
 
+## Built-in native transports
+
+| Provider    | Provider id   | Native channel transport               |
+| ----------- | ------------- | -------------------------------------- |
+| Claude Code | `claude`      | persistent subprocess over stream JSON |
+| Codex       | `codex`       | `codex app-server` JSON-RPC            |
+| OpenCode    | `opencode`    | native SDK/events                      |
+| Hermes      | `hermes`      | Responses API/SSE                      |
+| Prime Agent | `prime-agent` | `prime-agent` RPC                      |
+
+Prime Agent is a first-class channel provider. Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
+lifecycle, `message_update` text and
+thinking deltas to assistant and reasoning items, and
+`tool_execution_start|update|end` to canonical command, file-change, or dynamic
+tool items. It advertises text, reasoning, tools, command execution, file
+changes, queueing, interrupt, resume, compaction, telemetry, and streaming; unsupported
+approval, question, plan, and queue-cancellation operations remain false. Because Prime steering stays within one native run, Relay queues concurrent
+messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
+one durable Relay turn per message. Channel subprocesses currently launch with
+`--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
+to Relay approvals/questions yet.
+
+The channel command palette discovers Prime models from the connected RPC
+runtime and exposes native `model`, `thinking`/`effort`, `compact`, and confirmed
+`new`/`clear` controls. These execute on Relay's authenticated control lane, not
+as persisted chat messages or token-consuming prompts. Model and thinking
+arguments are validated against live Prime metadata; if discovery is unavailable,
+the adapter fails closed instead of guessing. Prime skills, prompt templates,
+and TUI-only commands are not exposed as channel controls. This control surface
+targets the Prime Agent 0.7 RPC contract; a runtime that cannot return a valid
+live model catalog publishes no connected command catalog.
+
+The `prime-agent` executable is also available as a normal terminal launch, but
+that surface stays a generic PTY: Relay does not parse terminal output or infer
+channel capabilities from it.
+
 ## Identity boundary
 
 Keep these identities distinct:
@@ -71,6 +107,35 @@ Mapping rules:
 
 `ProtocolAdapterV2` normalizes rich items into `AgentDetailCardV2`. The channel
 bridge bounds and persists those cards beside channel messages.
+
+## Command catalogs and channel control lane
+
+Adapters may expose `getSlashCommands()` and `executeControlCommand()` from
+`ProtocolAdapterV2`. A catalog entry declares its dispatch: `relay-control`
+commands are safe for Relay to execute; `agent` commands remain provider-native
+prompt/skill input. The channel binder never branches on a provider name: it
+uses an adapter's live catalog after connecting, and may use a redaction-safe
+static catalog only for pre-bind previews.
+
+Channel controls are addressed by the exact profile actor ID, never by
+display name. This keeps same-provider named profiles and their mention
+disambiguators isolated. The dedicated `POST /channels/:id/agent-commands`
+lane requires `context:write`, rejects archived channels, requires explicit
+confirmation for destructive catalog entries, and does not persist a channel
+message or create a mention context packet. Normal posts that look like a
+targeted control (`@agent/command` or `@agent /command`) are rejected so they
+cannot accidentally route as prose.
+
+Only advertise controls the live provider can execute. Where provider metadata
+lists models, service tiers, or reasoning efforts, derive command arguments
+from that metadata and refresh the catalog on a model change. A missing catalog
+may use a documented static fallback; an available catalog must reject values
+it does not support. Codex currently implements Relay-owned controls including
+Fast Mode through this contract. Claude, OpenCode, and Hermes must not be
+presented as supporting a channel control until their own adapters expose and
+execute it.
+
+## Provider extension policy
 
 Use:
 
