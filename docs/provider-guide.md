@@ -48,6 +48,16 @@ one durable Relay turn per message. Channel subprocesses currently launch with
 `--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
 to Relay approvals/questions yet.
 
+The channel command palette discovers Prime models from the connected RPC
+runtime and exposes native `model`, `thinking`/`effort`, `compact`, and confirmed
+`new`/`clear` controls. These execute on Relay's authenticated control lane, not
+as persisted chat messages or token-consuming prompts. Model and thinking
+arguments are validated against live Prime metadata; if discovery is unavailable,
+the adapter fails closed instead of guessing. Prime skills, prompt templates,
+and TUI-only commands are not exposed as channel controls. This control surface
+targets the Prime Agent 0.7 RPC contract; a runtime that cannot return a valid
+live model catalog publishes no connected command catalog.
+
 The `prime-agent` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.

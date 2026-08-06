@@ -1208,7 +1208,12 @@ describe('channel-agent-binder — lifecycle', () => {
         const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
         Object.assign(adapter, {
           getSlashCommands: () => [
-            { name: 'model', dispatch: 'relay-control', collisionKey: 'model' },
+            {
+              name: 'model',
+              dispatch: 'relay-control',
+              collisionKey: 'model',
+              args: [{ value: 'gpt-fast', label: 'GPT Fast' }],
+            },
             { name: 'deploy', dispatch: 'agent', collisionKey: 'deploy' },
           ],
           executeControlCommand: async (input: {
@@ -1250,7 +1255,42 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(calls).toEqual([
       { command: 'model', args: 'gpt-fast', confirmed: true },
     ]);
+    const liveRoster = await binder.rosterForChannel(CH);
+    expect(
+      liveRoster[0]?.commands?.find((command) => command.name === 'model')?.args
+    ).toEqual([{ value: 'gpt-fast', label: 'GPT Fast' }]);
     expect(rows(store)).toHaveLength(0);
+  });
+
+  it('treats a connected adapter command catalog as authoritative, including empty', async () => {
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, { getSlashCommands: () => [] });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+    });
+
+    const preview = await binder.rosterForChannel(CH);
+    expect(preview[0]?.commands?.map((command) => command.name)).toEqual([
+      'new',
+      'model',
+      'thinking',
+      'compact',
+    ]);
+    await binder.ensureBinding(CH, 'prime-agent');
+    const connected = await binder.rosterForChannel(CH);
+    expect(connected[0]?.commands).toBeUndefined();
   });
 
   it('targets command controls by exact named-profile Actor ID across a display-name collision', async () => {

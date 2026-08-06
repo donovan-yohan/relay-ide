@@ -23,11 +23,75 @@ function harness() {
       sessionId: 'prime-1',
       sessionFile: '/tmp/prime-1.jsonl',
       isStreaming: false,
+      thinkingLevel: 'medium',
+      model: {
+        id: 'gpt-prime',
+        name: 'GPT Prime',
+        provider: 'prime-inference',
+        reasoning: true,
+        thinkingLevelMap: { xhigh: 'xhigh' },
+      },
     },
   });
-  const call = vi
-    .spyOn(client, 'call')
-    .mockResolvedValue({ type: 'response', command: 'prompt', success: true });
+  let activeSession = {
+    id: 'prime-1',
+    file: '/tmp/prime-1.jsonl',
+  };
+  const call = vi.spyOn(client, 'call').mockImplementation(async (type) => {
+    if (type === 'new_session') {
+      activeSession = { id: 'prime-2', file: '/tmp/prime-2.jsonl' };
+      return {
+        type: 'response',
+        command: type,
+        success: true,
+        data: { cancelled: false },
+      };
+    }
+    if (type === 'get_available_models') {
+      return {
+        type: 'response',
+        command: type,
+        success: true,
+        data: {
+          models: [
+            {
+              id: 'gpt-prime',
+              name: 'GPT Prime',
+              provider: 'prime-inference',
+              reasoning: true,
+              thinkingLevelMap: { xhigh: 'xhigh' },
+            },
+            {
+              id: 'claude-prime',
+              name: 'Claude Prime',
+              provider: 'prime-inference',
+              reasoning: true,
+            },
+          ],
+        },
+      };
+    }
+    if (type === 'get_state') {
+      return {
+        type: 'response',
+        command: type,
+        success: true,
+        data: {
+          sessionId: activeSession.id,
+          sessionFile: activeSession.file,
+          thinkingLevel: 'medium',
+          model: {
+            id: 'gpt-prime',
+            name: 'GPT Prime',
+            provider: 'prime-inference',
+            reasoning: true,
+            thinkingLevelMap: { xhigh: 'xhigh' },
+          },
+        },
+      };
+    }
+    return { type: 'response', command: type, success: true };
+  });
   vi.spyOn(client, 'stop').mockResolvedValue();
   const adapter = new PrimeAgentProtocolAdapter(() => client);
   const patches: Array<Record<string, unknown>> = [];
@@ -62,6 +126,185 @@ describe('PrimeAgentProtocolAdapter', () => {
         primeAgentSessionFile: '/tmp/prime-1.jsonl',
       },
     });
+  });
+
+  it('discovers live Prime controls and executes them on the RPC control lane', async () => {
+    const { adapter, call, patches } = harness();
+    await adapter.connect(config);
+
+    expect(adapter.getSlashCommands()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'new', destructive: true }),
+        expect.objectContaining({
+          name: 'model',
+          args: expect.arrayContaining([
+            expect.objectContaining({
+              value: 'prime-inference/gpt-prime',
+              label: 'GPT Prime',
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          name: 'thinking',
+          args: expect.arrayContaining([{ value: 'xhigh' }]),
+        }),
+        expect.objectContaining({ name: 'compact' }),
+      ])
+    );
+
+    await expect(
+      adapter.executeControlCommand({
+        command: 'model',
+        args: 'other/model',
+      })
+    ).rejects.toThrow('live Prime Agent catalog');
+    await expect(
+      adapter.executeControlCommand({
+        command: 'thinking',
+        args: 'turbo',
+      })
+    ).rejects.toThrow('thinking must be one of');
+
+    await adapter.executeControlCommand({
+      command: 'model',
+      args: 'prime-inference/claude-prime',
+    });
+    await adapter.executeControlCommand({
+      command: 'thinking',
+      args: 'high',
+    });
+    await adapter.executeControlCommand({ command: 'compact' });
+    await expect(
+      adapter.executeControlCommand({ command: 'new' })
+    ).rejects.toThrow('requires confirmation');
+    await adapter.executeControlCommand({ command: 'new', confirmed: true });
+
+    expect(call.mock.calls).toEqual(
+      expect.arrayContaining([
+        ['set_model', { provider: 'prime-inference', modelId: 'claude-prime' }],
+        ['set_thinking_level', { level: 'high' }],
+        ['compact'],
+        ['new_session'],
+      ])
+    );
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-session-updated-v2',
+          slashCommands: expect.any(Array),
+        }),
+        expect.objectContaining({
+          type: 'agent-session-updated-v2',
+          providerSession: {
+            primeAgentSessionId: 'prime-2',
+            primeAgentSessionFile: '/tmp/prime-2.jsonl',
+          },
+        }),
+      ])
+    );
+  });
+
+  it('clears stale optional state after a fresh Prime session', async () => {
+    const { adapter, call, patches } = harness();
+    await adapter.connect(config);
+    call.mockImplementation(async (type) => {
+      if (type === 'new_session') {
+        return {
+          type: 'response',
+          command: type,
+          success: true,
+          data: { cancelled: false },
+        };
+      }
+      if (type === 'get_state') {
+        return {
+          type: 'response',
+          command: type,
+          success: true,
+          data: { sessionId: 'prime-empty' },
+        };
+      }
+      return { type: 'response', command: type, success: true };
+    });
+
+    const result = await adapter.executeControlCommand({
+      command: 'new',
+      confirmed: true,
+    });
+    expect(result.config).toEqual({});
+    expect(patches.at(-1)).toMatchObject({
+      type: 'agent-session-updated-v2',
+      providerSession: { primeAgentSessionId: 'prime-empty' },
+      config: {},
+    });
+    expect(
+      (patches.at(-1)?.providerSession as Record<string, unknown>)?.[
+        'primeAgentSessionFile'
+      ]
+    ).toBeUndefined();
+  });
+
+  it('serializes controls against prompts and other controls', async () => {
+    const { adapter, call } = harness();
+    await adapter.connect(config);
+    let releaseModel!: () => void;
+    const modelGate = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+    call.mockImplementation(async (type) => {
+      if (type === 'set_model') await modelGate;
+      if (type === 'get_state') {
+        return {
+          type: 'response',
+          command: type,
+          success: true,
+          data: {
+            sessionId: 'prime-1',
+            sessionFile: '/tmp/prime-1.jsonl',
+            thinkingLevel: 'medium',
+            model: {
+              id: 'gpt-prime',
+              provider: 'prime-inference',
+              reasoning: true,
+            },
+          },
+        };
+      }
+      return { type: 'response', command: type, success: true };
+    });
+
+    const changingModel = adapter.executeControlCommand({
+      command: 'model',
+      args: 'prime-inference/gpt-prime',
+    });
+    await vi.waitFor(() =>
+      expect(call).toHaveBeenCalledWith('set_model', {
+        provider: 'prime-inference',
+        modelId: 'gpt-prime',
+      })
+    );
+    await expect(
+      adapter.sendMessage({ turnId: 'racing-turn', content: 'hello' })
+    ).rejects.toThrow('control command is in progress');
+    await expect(
+      adapter.executeControlCommand({ command: 'compact' })
+    ).rejects.toThrow('another Prime Agent control command is in progress');
+
+    releaseModel();
+    await changingModel;
+  });
+
+  it('fails closed when live model discovery is unavailable', async () => {
+    const { adapter, call } = harness();
+    call.mockRejectedValueOnce(new Error('unknown command'));
+    await adapter.connect(config);
+    expect(adapter.getSlashCommands()).toEqual([]);
+    await expect(
+      adapter.executeControlCommand({
+        command: 'model',
+        args: 'guessed/model',
+      })
+    ).rejects.toThrow('unsupported Prime Agent control command');
   });
 
   it('maps streaming text, thinking, and command tools to V2 patches', async () => {
@@ -152,7 +395,11 @@ describe('PrimeAgentProtocolAdapter', () => {
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
     await adapter.interrupt({ turnId: 't1' });
-    expect(call.mock.calls.map(([type]) => type)).toEqual(['prompt', 'abort']);
+    expect(call.mock.calls.map(([type]) => type)).toEqual([
+      'get_available_models',
+      'prompt',
+      'abort',
+    ]);
   });
 
   it('submits queued Relay turns as fresh prompts after real agent_end boundaries', async () => {
@@ -274,7 +521,9 @@ describe('PrimeAgentProtocolAdapter', () => {
         ],
       })
     ).rejects.toThrow('Cannot read Prime Agent image attachment');
-    expect(call).not.toHaveBeenCalled();
+    expect(call.mock.calls.map(([type]) => type)).toEqual([
+      'get_available_models',
+    ]);
   });
 
   it('bounds image count and rejects MIME-mismatched bytes', async () => {
@@ -364,7 +613,10 @@ describe('PrimeAgentProtocolAdapter', () => {
     }));
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 'compact', content: '/compact' });
-    expect(call.mock.calls.map(([type]) => type)).toEqual(['compact']);
+    expect(call.mock.calls.map(([type]) => type)).toEqual([
+      'get_available_models',
+      'compact',
+    ]);
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

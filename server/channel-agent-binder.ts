@@ -2576,20 +2576,10 @@ export function createChannelAgentBinder(
         const baseCommands = relayControlCatalogForProvider(
           profile.providerId
         ).filter((command) => command.collisionKey !== 'fast');
-        const liveCommands = (
-          binding?.adapter?.getSlashCommands?.() ?? []
+        const liveCatalog = binding?.adapter?.getSlashCommands;
+        const commands = (
+          liveCatalog ? liveCatalog.call(binding.adapter) : baseCommands
         ).filter((command) => command.dispatch === 'relay-control');
-        const commands = [...baseCommands, ...liveCommands].reduce<
-          AgentSlashCommandV2[]
-        >((merged, command) => {
-          const key = command.collisionKey ?? command.name;
-          if (
-            !merged.some((entry) => (entry.collisionKey ?? entry.name) === key)
-          ) {
-            merged.push(command);
-          }
-          return merged;
-        }, []);
         return {
           id: profile.id,
           displayName: await rosterDisplayName(profile),

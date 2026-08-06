@@ -134,10 +134,65 @@ const CODEX_CONTROLS: AgentSlashCommandV2[] = [
   },
 ];
 
+const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
+  {
+    id: 'relay:prime-agent:new',
+    name: 'new',
+    aliases: ['clear', 'reset'],
+    description: 'Start a fresh Prime Agent session',
+    source: 'builtin',
+    sourceLabel: 'Prime Agent',
+    dispatch: 'relay-control',
+    collisionKey: 'clear',
+    destructive: true,
+  },
+  {
+    id: 'relay:prime-agent:model',
+    name: 'model',
+    description: 'Switch the model for subsequent Prime Agent responses',
+    argumentHint: '<provider/model>',
+    source: 'builtin',
+    sourceLabel: 'Prime Agent',
+    dispatch: 'relay-control',
+    collisionKey: 'model',
+  },
+  {
+    id: 'relay:prime-agent:thinking',
+    name: 'thinking',
+    aliases: ['effort'],
+    description: 'Set Prime Agent reasoning depth',
+    argumentHint: '<off|minimal|low|medium|high|xhigh|max>',
+    args: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(
+      (value) => ({ value })
+    ),
+    source: 'builtin',
+    sourceLabel: 'Prime Agent',
+    dispatch: 'relay-control',
+    collisionKey: 'thinking',
+  },
+  {
+    id: 'relay:prime-agent:compact',
+    name: 'compact',
+    description: 'Compact the current Prime Agent session context',
+    source: 'builtin',
+    sourceLabel: 'Prime Agent',
+    dispatch: 'relay-control',
+    collisionKey: 'compact',
+  },
+];
+
 export function relayControlCatalogForProvider(
   providerId: string
 ): AgentSlashCommandV2[] {
-  return providerId === 'codex'
-    ? CODEX_CONTROLS.map((command) => ({ ...command }))
-    : [];
+  const controls =
+    providerId === 'codex'
+      ? CODEX_CONTROLS
+      : providerId === 'prime-agent'
+        ? PRIME_AGENT_CONTROLS
+        : [];
+  return controls.map((command) => ({
+    ...command,
+    ...(command.aliases ? { aliases: [...command.aliases] } : {}),
+    ...(command.args ? { args: command.args.map((arg) => ({ ...arg })) } : {}),
+  }));
 }
