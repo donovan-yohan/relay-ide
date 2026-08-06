@@ -281,6 +281,39 @@ describe('CodexNativeProtocolAdapter — connect', () => {
 
     await adapter.disconnect();
   });
+
+  it('resumes a saved thread directly instead of creating a throwaway thread', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+
+    factory.lastClient?.serverResponses.set('thread/resume', {
+      thread: { id: 'thread-existing' },
+    });
+    factory.lastClient?.serverResponses.set('skills/list', { skills: [] });
+    factory.lastClient?.serverResponses.set('model/list', []);
+
+    await adapter.connect({ ...config, resumeSessionId: 'thread-existing' });
+
+    expect(factory.lastClient?.calls.map((call) => call.method)).toContain(
+      'thread/resume'
+    );
+    expect(factory.lastClient?.calls.map((call) => call.method)).not.toContain(
+      'thread/start'
+    );
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-session-snapshot-v2',
+          session: expect.objectContaining({
+            providerSession: { threadId: 'thread-existing' },
+          }),
+        }),
+      ])
+    );
+
+    await adapter.disconnect();
+  });
 });
 
 // ── Resume ────────────────────────────────────────────────────────────────────
@@ -320,6 +353,13 @@ describe('CodexNativeProtocolAdapter — resumeSession', () => {
         providerSession: { threadId: 'thread-resume-1' },
       }),
     });
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.status === 'disconnected'
+      )
+    ).toHaveLength(0);
 
     await adapter.disconnect();
   });

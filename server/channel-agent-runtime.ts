@@ -378,12 +378,20 @@ export class ChannelAgentRuntimeManager {
     });
     this.patchUnlisteners.set(id, unlisten);
 
+    const savedResumeId = providerResumeId(
+      params.providerId,
+      params.providerSession
+    );
+
     const config: AdapterConfig = {
       cwd: params.cwd,
       port: params.port,
       sessionId: id,
       hookToken,
       configDir: params.configDir,
+      ...(savedResumeId && adapter.resumesProviderSessionDuringConnect
+        ? { resumeSessionId: savedResumeId }
+        : {}),
       systemPromptAppendix: [
         collaborationPromptAppendix({
           provider: params.providerId,
@@ -401,13 +409,13 @@ export class ChannelAgentRuntimeManager {
       ...(params.extra ? { extra: params.extra } : {}),
     };
 
-    const savedResumeId = providerResumeId(
-      params.providerId,
-      params.providerSession
-    );
     try {
       await adapter.connect(config);
-      if (savedResumeId && adapter.capabilities.resume) {
+      if (
+        savedResumeId &&
+        adapter.capabilities.resume &&
+        !adapter.resumesProviderSessionDuringConnect
+      ) {
         await adapter.resumeSession(savedResumeId);
       }
       // The child can die INSIDE those awaits (#1307). Adapters flip to

@@ -259,6 +259,65 @@ test.describe('smoke channel timeline scroll UX (#1193)', () => {
     await expect(page.locator('.ch-new-messages')).toHaveCount(0);
   });
 
+  test('keeps user markdown bubbles readable without mobile overflow', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    await page.getByTestId('append-own').click();
+
+    const shortBubble = timeline.locator(
+      '[data-channel-message-seq="71"].ch-msg--user .ch-msg__body'
+    );
+    await expect(shortBubble).toHaveText('did we open a PR?');
+    const shortMetrics = await shortBubble.evaluate((bubble) => {
+      const text = bubble.querySelector('p')?.firstChild;
+      if (!text) throw new Error('missing markdown text node');
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      return {
+        lines: range.getClientRects().length,
+        bubbleWidth: bubble.getBoundingClientRect().width,
+        rowWidth: bubble.closest<HTMLElement>('.ch-msg')!.getBoundingClientRect()
+          .width,
+      };
+    });
+    // The phrase is short enough for one desktop line and the bubble now gets
+    // its available width from the actual ChannelTimeline row, not min-content.
+    expect(shortMetrics.lines).toBe(1);
+    expect(shortMetrics.bubbleWidth).toBeGreaterThan(100);
+    expect(shortMetrics.bubbleWidth).toBeLessThan(shortMetrics.rowWidth);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTestId('append-own-long-token').click();
+    const longBubble = timeline.locator(
+      '[data-channel-message-seq="72"].ch-msg--user .ch-msg__body'
+    );
+    await expect(longBubble).toBeVisible();
+    const mobileMetrics = await longBubble.evaluate((bubble) => {
+      const row = bubble.closest<HTMLElement>('.ch-msg');
+      if (!row) throw new Error('missing message row');
+      const bubbleRect = bubble.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      return {
+        scrollWidth: bubble.scrollWidth,
+        clientWidth: bubble.clientWidth,
+        bubbleLeft: bubbleRect.left,
+        bubbleRight: bubbleRect.right,
+        rowLeft: rowRect.left,
+        rowRight: rowRect.right,
+      };
+    });
+    expect(mobileMetrics.scrollWidth).toBeLessThanOrEqual(
+      mobileMetrics.clientWidth
+    );
+    expect(mobileMetrics.bubbleLeft).toBeGreaterThanOrEqual(
+      mobileMetrics.rowLeft
+    );
+    expect(mobileMetrics.bubbleRight).toBeLessThanOrEqual(
+      mobileMetrics.rowRight
+    );
+  });
+
   test('full snapshots preserve a surviving row and fall back to the unread divider across a gap', async ({
     page,
   }) => {

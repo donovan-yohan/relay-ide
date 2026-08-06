@@ -539,6 +539,14 @@
   line-height: 1.6;
 }
 
+/* Markdown prose gets this wrapper so a streaming cursor can sit after it.
+   Keep it shrink-safe for agent rows; human rows below deliberately stretch it
+   before sizing the bubble, otherwise a right-aligned flex item resolves from
+   its min-content width and can split ordinary words one character at a time. */
+.ch-msg__body-wrap {
+  min-width: 0;
+}
+
 /* human message bubble — reuses .tl-text--user treatment (right-aligned) */
 .ch-msg--user .ch-msg__body {
   color: var(--text);
@@ -546,9 +554,23 @@
   border: 1px solid var(--border);
   padding: 8px 12px;
   margin: 0 0 0 auto;
+  box-sizing: border-box;
+  min-width: min(100%, 8ch);
   max-width: 75%;
   width: fit-content;
   align-self: flex-end;
+  /* Preserve ordinary word boundaries; only an unbroken URL/hash may split. */
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* `align-items: flex-end` makes an auto-sized markdown wrapper shrink-wrap.
+   Give it the lane width first, then let the nested bubble use its intrinsic
+   size against that stable available width. */
+.ch-msg--user .ch-msg__body-wrap {
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
 }
 
 .ch-msg--user {
