@@ -609,6 +609,17 @@ export interface LaneRepoRouting {
   repoPath: string;
 }
 
+/**
+ * One-use project choice made by a creation affordance. Unlike a lane repo
+ * anchor, this stays meaningful when the project deliberately has no repo and
+ * carries the node default that must outrank an unrelated active terminal.
+ */
+export interface ProjectCreateRouting {
+  workspaceId: string;
+  repoPath: string | null;
+  nodeId: string | null;
+}
+
 // ── State interface ────────────────────────────────────────────────────────
 export interface UiState {
   sidebarOpen: boolean;
@@ -618,6 +629,7 @@ export interface UiState {
   activeRepoPath: string | null;
   activeWorkspaceId: string | null;
   laneRepoRouting: LaneRepoRouting | null;
+  projectCreateRouting: ProjectCreateRouting | null;
   terminalFontSize: number;
   hasHardwareKeyboard: boolean;
   keyboardOpen: boolean;
@@ -775,6 +787,7 @@ export interface UiState {
   setActiveRepoPath: (v: string | null) => void;
   setActiveWorkspaceId: (id: string | null) => void;
   setLaneRepoRouting: (routing: LaneRepoRouting | null) => void;
+  setProjectCreateRouting: (routing: ProjectCreateRouting | null) => void;
   setFileDiffViewMode: (v: DiffViewMode) => void;
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
@@ -841,6 +854,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   // #1303: no `ls(...)` here on purpose — see `LaneRepoRouting`. A reload has
   // no "just selected" lane, so a fresh tab starts with session inheritance.
   laneRepoRouting: null,
+  projectCreateRouting: null,
   terminalFontSize: loadTerminalFontSize(),
   hasHardwareKeyboard: false,
   keyboardOpen: false,
@@ -904,6 +918,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   setLaneRepoRouting: (routing) => set({ laneRepoRouting: routing }),
+  setProjectCreateRouting: (routing) => set({ projectCreateRouting: routing }),
 
   setFileDiffViewMode: (v) => {
     lsSave(DIFF_VIEW_MODE_KEY, v);
@@ -1315,7 +1330,11 @@ export const useUiStore = create<UiState>()((set, get) => ({
     set(
       v
         ? { topicComposerOpen: true }
-        : { topicComposerOpen: false, laneRepoRouting: null }
+        : {
+            topicComposerOpen: false,
+            laneRepoRouting: null,
+            projectCreateRouting: null,
+          }
     ),
   setActiveChannelId: (v) =>
     set({

@@ -11,6 +11,8 @@ import {
   type WorkspaceTopicTemplateKind,
 } from '../../../shared/workspace-topics.js';
 import { useTopicRoomCreate } from '../hooks/useTopicRoomCreate.js';
+import { useIaWorkspacesQuery } from '../lib/hooks/use-ia-workspaces.js';
+import type { IaWorkspace } from '../lib/api.js';
 import {
   launchSubmitLabel,
   launchTypeForTemplate,
@@ -19,6 +21,7 @@ import {
   type TopicProviderOption,
 } from '../lib/topic-create.js';
 import { TOPIC_COMPOSER_FOCUS_EVENT } from '../lib/topic-task-room.js';
+import { applyWorkspaceCreateRoutingContext } from '../lib/topic-selection.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { isMobileDevice } from '../lib/utils.js';
 import TuiButton from './TuiButton.js';
@@ -81,6 +84,64 @@ function TopicComposerProviderRow({
   );
 }
 
+/** Project selection stays outside the composer body so the creation flow can
+ * focus on chat type and submission, while this control owns its async states. */
+function TopicComposerProjectSelector({
+  workspaces,
+  selectedWorkspace,
+  loading,
+  error,
+}: {
+  workspaces: IaWorkspace[];
+  selectedWorkspace: IaWorkspace | undefined;
+  loading: boolean;
+  error: boolean;
+}) {
+  return (
+    <label className="topic-composer__project">
+      <span>project</span>
+      <select
+        aria-label="project"
+        value={selectedWorkspace?.id ?? ''}
+        disabled={loading || error}
+        onChange={(event) => {
+          const workspace = workspaces.find(
+            (candidate) => candidate.id === event.currentTarget.value
+          );
+          if (!workspace) return;
+          applyWorkspaceCreateRoutingContext({
+            workspaceId: workspace.id,
+            defaultRepoPath: workspace.defaultRepoPath,
+            defaultNodeId: workspace.defaultNodeId,
+          });
+        }}
+      >
+        <option value="">
+          {loading
+            ? 'loading projects…'
+            : error
+              ? 'projects unavailable'
+              : 'choose a project'}
+        </option>
+        {workspaces.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.name}
+          </option>
+        ))}
+      </select>
+      {error ? (
+        <span className="topic-composer__project-status" role="alert">
+          could not load projects
+        </span>
+      ) : !loading && !selectedWorkspace ? (
+        <span className="topic-composer__project-status">
+          choose a project before creating a chat
+        </span>
+      ) : null}
+    </label>
+  );
+}
+
 function primaryIntentForTemplate(templateKind: WorkspaceTopicTemplateKind) {
   return templateKind === 'note' ? 'create-only' : 'create-and-launch';
 }
@@ -125,6 +186,14 @@ export default function TopicComposer({
   resume?: { label: string; onResume: () => void } | undefined;
 }) {
   const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
+  const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
+  const projectCreateRouting = useUiStore((s) => s.projectCreateRouting);
+  const workspacesQuery = useIaWorkspacesQuery();
+  const workspaces = workspacesQuery.data ?? [];
+  const selectedWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === activeWorkspaceId),
+    [activeWorkspaceId, workspaces]
+  );
   const {
     draft,
     updateDraft,
@@ -142,7 +211,22 @@ export default function TopicComposer({
     repoPathOptions,
     worktreePathOptions,
     cwdOptions,
-  } = useTopicRoomCreate({ onLaunched: onSelectSession });
+  } = useTopicRoomCreate({
+    onLaunched: onSelectSession,
+    // A project selected here (or the sidebar's project-scoped add button)
+    // leaves a one-use routing stamp. Only that explicit choice outranks an
+    // inherited session; merely remembering an active project preserves the
+    // established lane/session fallback.
+    workspace:
+      selectedWorkspace &&
+      projectCreateRouting?.workspaceId === selectedWorkspace.id
+        ? {
+            id: selectedWorkspace.id,
+            defaultRepoPath: projectCreateRouting.repoPath,
+            defaultNodeId: projectCreateRouting.nodeId,
+          }
+        : undefined,
+  });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [destination, setDestination] =
     useState<ComposerDestination>('direct-message');
@@ -203,7 +287,13 @@ export default function TopicComposer({
   });
   const creatingChannel = destination === 'channel';
   const channelDisabled = !channelName.trim() || Boolean(submittingIntent);
-  const submitDisabled = creatingChannel ? channelDisabled : disabled;
+  // A channel (including deterministic direct messages) belongs to a real
+  // project. Do not submit against an old synthetic/stale workspace id while
+  // the authoritative project list is unavailable or does not contain it.
+  const projectUnavailable =
+    workspacesQuery.isLoading || workspacesQuery.isError || !selectedWorkspace;
+  const submitDisabled =
+    (creatingChannel ? channelDisabled : disabled) || projectUnavailable;
   // #1103: never render a raw node id — resolve through the roster or fall
   // back to a generic label.
   const routedNodeId = previewCreate.routingDefaults?.nodeId;
@@ -255,6 +345,12 @@ export default function TopicComposer({
               channel
             </button>
           </div>
+          <TopicComposerProjectSelector
+            workspaces={workspaces}
+            selectedWorkspace={selectedWorkspace}
+            loading={workspacesQuery.isLoading}
+            error={workspacesQuery.isError}
+          />
           {creatingChannel ? (
             <label className="topic-composer__channel-name">
               <span>channel name</span>

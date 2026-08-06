@@ -31,6 +31,9 @@ export function applyTopicActiveContext(
       ? { workspaceId: context.workspaceId, repoPath: context.repoPath }
       : null
   );
+  // An opened topic is a newer routing statement than a project add/selector
+  // choice. Do not leave its one-use creation defaults armed behind it.
+  ui.setProjectCreateRouting(null);
   if (!context) return;
   ui.setActiveWorkspaceId(context.workspaceId);
   if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
@@ -76,6 +79,37 @@ export function applyLaneRepoRouting(
   }
   ui.setActiveRepoPath(laneRepoPath);
   ui.setLaneRepoRouting({ workspaceId, repoPath: laneRepoPath });
+}
+
+/**
+ * Apply the project choice from the global new-chat composer. Unlike a bare
+ * workspace-lane selection, this happens only while the composer is already
+ * open, so it is safe to move the repo pointer as well as the lane id. Keeping
+ * those two values together is important: the channel POST needs the real
+ * workspace id while the launch/agent path needs this project's repo anchor.
+ *
+ * The caller supplies a row returned by `GET /hub/ia/workspaces`, rather than
+ * accepting an arbitrary id from the select element. That keeps direct-message
+ * identity and normal-channel filing in the same real project namespace.
+ */
+export function applyWorkspaceCreateRoutingContext(input: {
+  workspaceId: string;
+  defaultRepoPath: string | null;
+  defaultNodeId: string | null;
+}): void {
+  const ui = useUiStore.getState();
+  ui.setActiveWorkspaceId(input.workspaceId);
+  if (input.defaultRepoPath) ui.setActiveRepoPath(input.defaultRepoPath);
+  // This marker deliberately survives an anchorless project. Its `null` repo
+  // means "the operator explicitly chose this project, but it offers no repo",
+  // not "fall through to the last session's repo". The composer spends it
+  // after one committed create just like a normal lane stamp.
+  ui.setLaneRepoRouting(null);
+  ui.setProjectCreateRouting({
+    workspaceId: input.workspaceId,
+    repoPath: input.defaultRepoPath,
+    nodeId: input.defaultNodeId,
+  });
 }
 
 /**

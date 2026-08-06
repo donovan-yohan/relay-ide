@@ -254,6 +254,7 @@ describe('TopicSidebarView', () => {
       // #1303: the lane's repo stamp is written by the same cases and outranks
       // session inheritance in every create — same leak, same reset.
       laneRepoRouting: null,
+      projectCreateRouting: null,
       pendingChannelThread: null,
       // #1287 slice 5: rail/lane folds are persisted operator intent now, so
       // they outlive a remount by design — reset them between cases or one
@@ -286,6 +287,7 @@ describe('TopicSidebarView', () => {
       activeChannelId: null,
       topicComposerOpen: false,
       laneRepoRouting: null,
+      projectCreateRouting: null,
       pendingChannelThread: null,
       ...resetRailFolds(),
     });
@@ -1654,6 +1656,7 @@ describe('TopicSidebarView', () => {
           color: null,
           icon: null,
           defaultRepoPath: OLD_LANE_REPO,
+          defaultNodeId: 'node-old',
         },
         {
           id: emptyLaneId,
@@ -1663,6 +1666,7 @@ describe('TopicSidebarView', () => {
           color: null,
           icon: null,
           defaultRepoPath: FRESH_LANE_REPO,
+          defaultNodeId: 'node-fresh',
         },
       ],
       ...extra,
@@ -1861,9 +1865,10 @@ describe('TopicSidebarView', () => {
     );
     await act(async () => start?.click());
 
-    expect(useUiStore.getState().laneRepoRouting).toEqual({
+    expect(useUiStore.getState().projectCreateRouting).toEqual({
       workspaceId: emptyLaneId,
       repoPath: FRESH_LANE_REPO,
+      nodeId: 'node-fresh',
     });
 
     // Selecting a channel is a newer routing statement than the lane click, so
@@ -1878,6 +1883,7 @@ describe('TopicSidebarView', () => {
       })
     );
     expect(useUiStore.getState().laneRepoRouting).toBeNull();
+    expect(useUiStore.getState().projectCreateRouting).toBeNull();
 
     // Same rule for a channel the caller could not resolve to a topic — a
     // message-search hit routinely has none (`openChannelMessageSelection`), and
@@ -1996,15 +2002,46 @@ describe('TopicSidebarView', () => {
     });
   });
 
-  it('selects the workspace when its mobile lane header is tapped (#1287)', async () => {
+  it('selects the workspace when its mobile project name is tapped', async () => {
     await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
 
     const mobileHeader = container.querySelector<HTMLButtonElement>(
-      `.topic-mobile-group[data-workspace-id="${emptyLaneId}"] .topic-mobile-group__header`
+      `.topic-mobile-group[data-workspace-id="${emptyLaneId}"] .topic-mobile-group__select`
     );
     await act(async () => mobileHeader?.click());
 
     expect(useUiStore.getState().activeWorkspaceId).toBe(emptyLaneId);
+  });
+
+  it('re-stamps the project when its name is selected over an open composer', async () => {
+    useUiStore.setState({
+      topicComposerOpen: true,
+      activeWorkspaceId: 'ws:a',
+      projectCreateRouting: {
+        workspaceId: 'ws:a',
+        repoPath: OLD_LANE_REPO,
+        nodeId: 'node-old',
+      },
+    });
+    await renderWithEmptyLane({ onCreateTaskRoom: vi.fn() });
+
+    const projectB = container.querySelector<HTMLButtonElement>(
+      `${emptyLaneSelector} .topic-workspace-group__select`
+    );
+    await act(async () => projectB?.click());
+
+    const ui = useUiStore.getState();
+    expect(ui.activeWorkspaceId).toBe(emptyLaneId);
+    expect(ui.projectCreateRouting).toEqual({
+      workspaceId: emptyLaneId,
+      repoPath: FRESH_LANE_REPO,
+      nodeId: 'node-fresh',
+    });
+    // The composer receives this stamp as its create defaults; it is the
+    // complete replacement for A, so stale A repo/worktree/cwd/node cannot
+    // survive the B selection.
+    expect(ui.projectCreateRouting?.repoPath).not.toBe(OLD_LANE_REPO);
+    expect(ui.projectCreateRouting?.nodeId).not.toBe('node-old');
   });
 
   it('keeps mobile workspace headers natural-case without uppercase styling', () => {
@@ -2136,7 +2173,7 @@ describe('TopicSidebarView', () => {
       '.topic-mobile-group[data-workspace-id="ws:a"]'
     ) as HTMLElement;
     const header = group.querySelector(
-      '.topic-mobile-group__header'
+      '.topic-mobile-group__toggle'
     ) as HTMLButtonElement;
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
@@ -2181,9 +2218,8 @@ describe('TopicSidebarView', () => {
       root = createRoot(container);
     }
 
-    // #1287 slice 5 item 17: the desktop lane header. Two controls, not one:
-    // the name selects the lane (the rail's create target) and the trailing
-    // −/+ folds it, so selecting a workspace never hides its channels.
+    // The project header splits folding, selection, and creation: the leading
+    // chevron folds, the name selects the lane, and the right plus creates.
     function desktopLaneHeader(workspaceId = 'ws:a'): HTMLElement {
       const header = container.querySelector(
         `.topic-workspace-group[data-workspace-id="${workspaceId}"] .topic-workspace-group__header--split`
@@ -2208,28 +2244,40 @@ describe('TopicSidebarView', () => {
       return select as HTMLButtonElement;
     }
 
+    function desktopLaneAdd(workspaceId = 'ws:a'): HTMLButtonElement {
+      const add = desktopLaneHeader(workspaceId).querySelector(
+        '.topic-workspace-group__add'
+      );
+      expect(add).not.toBeNull();
+      return add as HTMLButtonElement;
+    }
+
     function desktopLaneRow(topicId: string, workspaceId = 'ws:a') {
       return container.querySelector(
         `.topic-workspace-group[data-workspace-id="${workspaceId}"] [data-topic-id="${topicId}"]`
       );
     }
 
-    async function renderRailLane() {
+    async function renderRailLane(
+      props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
+    ) {
       await renderView({
         topics: [RAIL_TOPIC],
         sessions: [],
         surfaces: [],
         workspaces: [RAIL_WORKSPACE],
+        ...props,
       });
     }
 
     it('collapses and expands a desktop workspace lane from its header', async () => {
       // Desktop rendered this lane as a select-only header, so the whole
       // breakpoint had no way to fold a workspace at all.
-      await renderRailLane();
+      const onCreateTaskRoom = vi.fn();
+      await renderRailLane({ onCreateTaskRoom });
 
       expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
-      expect(desktopLaneFold().textContent).toContain('−');
+      expect(desktopLaneFold().querySelector('svg')).not.toBeNull();
       expect(desktopLaneFold().getAttribute('aria-label')).toBe(
         'collapse engineering'
       );
@@ -2237,8 +2285,9 @@ describe('TopicSidebarView', () => {
 
       await act(async () => desktopLaneFold().click());
       expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('false');
-      expect(desktopLaneFold().textContent).toContain('+');
       expect(desktopLaneRow('topic:alpha')).toBeNull();
+      expect(useUiStore.getState().activeWorkspaceId).toBeNull();
+      expect(onCreateTaskRoom).not.toHaveBeenCalled();
 
       await act(async () => desktopLaneFold().click());
       expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
@@ -2246,11 +2295,8 @@ describe('TopicSidebarView', () => {
     });
 
     it('keeps desktop lane select and fold as separate gestures', async () => {
-      // Selecting a lane is how the rail picks the create target for
-      // `new chat`. Binding select and fold to one click made the desktop
-      // operator collapse the very lane they had just aimed at — two clicks to
-      // select a lane and still see its channels. Mobile keeps the combined tap
-      // because a tap is the only lane-scale gesture a phone has.
+      // Selecting a lane is how the rail picks the create target for `new
+      // chat`; it must stay separate from both the fold chevron and add plus.
       await renderRailLane();
 
       await act(async () => desktopLaneSelect().click());
@@ -2263,13 +2309,39 @@ describe('TopicSidebarView', () => {
       expect(desktopLaneRow('topic:alpha')).toBeNull();
       expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
 
-      // Mobile keeps one combined lane-scale tap.
-      const mobileHeader = container.querySelector(
-        '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+      const mobileSelect = container.querySelector(
+        '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__select'
       ) as HTMLButtonElement;
-      await act(async () => mobileHeader.click());
-      expect(mobileHeader.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => mobileSelect.click());
       expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+    });
+
+    it('starts a populated project chat through its right-side plus without folding', async () => {
+      const onCreateTaskRoom = vi.fn();
+      await renderRailLane({
+        onCreateTaskRoom,
+        workspaces: [
+          { ...RAIL_WORKSPACE, defaultRepoPath: '/repo/engineering' },
+        ],
+      });
+
+      const add = desktopLaneAdd();
+      expect(add.getAttribute('aria-label')).toBe(
+        'start a chat in engineering'
+      );
+      expect(add.disabled).toBe(false);
+
+      await act(async () => add.click());
+
+      expect(onCreateTaskRoom).toHaveBeenCalledTimes(1);
+      expect(useUiStore.getState().activeWorkspaceId).toBe('ws:a');
+      expect(useUiStore.getState().projectCreateRouting).toEqual({
+        workspaceId: 'ws:a',
+        repoPath: '/repo/engineering',
+        nodeId: null,
+      });
+      expect(desktopLaneFold().getAttribute('aria-expanded')).toBe('true');
+      expect(desktopLaneRow('topic:alpha')).not.toBeNull();
     });
 
     it('rolls unread up onto a collapsed desktop lane header only while folded', async () => {
@@ -2301,15 +2373,15 @@ describe('TopicSidebarView', () => {
 
     it('folds a lane once for both breakpoints and persists the decision', async () => {
       await renderRailLane();
-      const mobileHeader = () =>
+      const mobileFold = () =>
         container.querySelector(
-          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__toggle'
         ) as HTMLButtonElement;
 
       await act(async () => desktopLaneFold().click());
 
       // One operator decision per workspace, not one per breakpoint.
-      expect(mobileHeader().getAttribute('aria-expanded')).toBe('false');
+      expect(mobileFold().getAttribute('aria-expanded')).toBe('false');
       expect(
         JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
       ).toEqual(['ws:a']);
@@ -2437,13 +2509,13 @@ describe('TopicSidebarView', () => {
         surfaces: [],
         workspaces: [RAIL_WORKSPACE],
       });
-      const header = () =>
+      const fold = () =>
         container.querySelector(
-          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__header'
+          '.topic-mobile-group[data-workspace-id="ws:a"] .topic-mobile-group__toggle'
         ) as HTMLButtonElement;
 
-      await act(async () => header().click());
-      expect(header().getAttribute('aria-expanded')).toBe('false');
+      await act(async () => fold().click());
+      expect(fold().getAttribute('aria-expanded')).toBe('false');
       expect(
         JSON.parse(localStorage.getItem(COLLAPSED_TOPIC_GROUPS_KEY) ?? '[]')
       ).toEqual(['ws:a']);
@@ -2456,7 +2528,7 @@ describe('TopicSidebarView', () => {
         workspaces: [RAIL_WORKSPACE],
       });
 
-      expect(header().getAttribute('aria-expanded')).toBe('false');
+      expect(fold().getAttribute('aria-expanded')).toBe('false');
       expect(
         container.querySelector(
           '.topic-mobile-group[data-workspace-id="ws:a"] [data-topic-id="topic:alpha"]'
@@ -2491,8 +2563,11 @@ describe('TopicSidebarView', () => {
 
     const header = container.querySelector(
       '.topic-mobile-group__header'
+    ) as HTMLElement;
+    const fold = header.querySelector(
+      '.topic-mobile-group__toggle'
     ) as HTMLButtonElement;
-    await act(async () => header.click());
+    await act(async () => fold.click());
     expect(header.querySelector('[aria-label="unread activity"]')).toBeNull();
 
     await act(async () => {

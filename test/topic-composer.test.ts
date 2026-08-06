@@ -23,6 +23,7 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
   return {
     ...original,
     fetchHubNodes: vi.fn().mockResolvedValue([]),
+    fetchIaWorkspaces: vi.fn(),
     createWorkspaceTopicRoomAndMaybeLaunch: vi.fn(),
     launchWorkspaceTopicRoom: vi.fn(),
     // Channel-native agent entry point.
@@ -110,6 +111,69 @@ function framework(
     ...overrides,
   };
 }
+
+const PROJECTS = [
+  {
+    id: 'ws:local',
+    name: 'relay ide',
+    status: 'active' as const,
+    order: 0,
+    projectIds: [],
+    pinned: false,
+    color: null,
+    icon: null,
+    defaultRepoPath: '/repo/relay',
+    defaultNodeId: null,
+    defaultProvider: null,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    updatedAt: '2026-08-06T00:00:00.000Z',
+  },
+  {
+    id: 'ws:project-b',
+    name: 'project b',
+    status: 'active' as const,
+    order: 1,
+    projectIds: [],
+    pinned: false,
+    color: null,
+    icon: null,
+    defaultRepoPath: '/repo/project-b',
+    defaultNodeId: 'node-project-b',
+    defaultProvider: null,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    updatedAt: '2026-08-06T00:00:00.000Z',
+  },
+  {
+    id: 'ws:project-c',
+    name: 'project c',
+    status: 'active' as const,
+    order: 2,
+    projectIds: [],
+    pinned: false,
+    color: null,
+    icon: null,
+    defaultRepoPath: '/repo/project-c',
+    defaultNodeId: null,
+    defaultProvider: null,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    updatedAt: '2026-08-06T00:00:00.000Z',
+  },
+  {
+    id: 'ws:unanchored',
+    name: 'unanchored project',
+    status: 'active' as const,
+    order: 3,
+    projectIds: [],
+    pinned: false,
+    color: null,
+    icon: null,
+    defaultRepoPath: null,
+    defaultNodeId: null,
+    defaultProvider: null,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    updatedAt: '2026-08-06T00:00:00.000Z',
+  },
+];
 
 describe('topic title derivation', () => {
   it('derives the title from the first message line, code-point capped', () => {
@@ -329,7 +393,7 @@ describe('TopicComposer', () => {
       // #1287: `useTopicRoomCreate` reads the lane pointer into EVERY create
       // payload, so a case that selects a lane would otherwise file every
       // later case's chat in it.
-      activeWorkspaceId: null,
+      activeWorkspaceId: 'ws:local',
       // #1303: same hazard for the lane's repo stamp.
       laneRepoRouting: null,
     });
@@ -339,6 +403,7 @@ describe('TopicComposer', () => {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    queryClient.setQueryData(['ia-workspaces'], PROJECTS);
   });
 
   afterEach(() => {
@@ -662,7 +727,7 @@ describe('TopicComposer', () => {
   });
 
   it('opens the default agent channel and posts the first message', async () => {
-    const dmId = dmChannelTopicId('claude', null);
+    const dmId = dmChannelTopicId('claude', 'ws:local');
     vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
       id: dmId,
       workspaceId: 'workspace:local',
@@ -741,7 +806,7 @@ describe('TopicComposer', () => {
       })
     );
     const createInput = vi.mocked(createWorkspaceTopic).mock.calls[0]?.[0];
-    expect(createInput?.id).not.toBe(dmChannelTopicId('claude', null));
+    expect(createInput?.id).not.toBe(dmChannelTopicId('claude', 'ws:local'));
     expect(createInput?.routingDefaults).toEqual({
       repoPath: '/repo/relay',
       cwd: '/repo/relay',
@@ -757,6 +822,222 @@ describe('TopicComposer', () => {
       'topic:release-coordination'
     );
     expect(useSessionsStore.getState().activeSessionId).toBeNull();
+  });
+
+  it('files a normal channel in the project chosen from global new chat', async () => {
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: 'topic:project-b-channel',
+      workspaceId: 'ws:project-b',
+      routingDefaults: {},
+      display: { title: 'project b coordination' },
+    } as never);
+    renderComposer();
+
+    const project = container.querySelector(
+      'select[aria-label="project"]'
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(project, 'ws:project-b'));
+
+    expect(project.value).toBe('ws:project-b');
+    expect(useUiStore.getState().activeWorkspaceId).toBe('ws:project-b');
+    expect(useUiStore.getState().projectCreateRouting).toEqual({
+      workspaceId: 'ws:project-b',
+      repoPath: '/repo/project-b',
+      nodeId: 'node-project-b',
+    });
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    act(() => setNativeInputValue(name!, 'project b coordination'));
+    await act(async () => {
+      (
+        container.querySelector('.topic-composer__form') as HTMLFormElement
+      ).dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(createWorkspaceTopic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws:project-b',
+        title: 'project b coordination',
+        routingDefaults: {
+          nodeId: 'node-project-b',
+          repoPath: '/repo/project-b',
+          cwd: '/repo/project-b',
+        },
+      })
+    );
+  });
+
+  it('uses the selected project in deterministic direct-message identity', async () => {
+    const dmId = dmChannelTopicId('claude', 'ws:project-b');
+    vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
+      id: dmId,
+      workspaceId: 'ws:project-b',
+      routingDefaults: { providerId: 'claude' },
+      display: { title: 'Claude Code' },
+    } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
+    renderComposer();
+
+    const project = container.querySelector(
+      'select[aria-label="project"]'
+    ) as HTMLSelectElement;
+    const prompt = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    act(() => {
+      setSelectValue(project, 'ws:project-b');
+      setNativeValue(prompt, 'review this project');
+    });
+    await act(async () => {
+      (
+        container.querySelector('.topic-composer__form') as HTMLFormElement
+      ).dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(fetchWorkspaceTopic).toHaveBeenCalledWith(dmId);
+    expect(useUiStore.getState().activeWorkspaceId).toBe('ws:project-b');
+    expect(useUiStore.getState().activeChannelId).toBe(dmId);
+  });
+
+  it('does not inherit a stale session repo into an explicitly unanchored project', async () => {
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: 'topic:unanchored',
+      workspaceId: 'ws:unanchored',
+      routingDefaults: {},
+      display: { title: 'coordination' },
+    } as never);
+    const staleSession = {
+      id: 'session-old-project',
+      type: 'terminal',
+      mode: 'pty',
+      nodeId: 'node-old-project',
+      repoPath: '/repo/old-project',
+      worktreePath: '/repo/old-project/.worktrees/in-flight',
+      cwd: '/repo/old-project/.worktrees/in-flight',
+      displayName: 'old project terminal',
+      createdAt: '2026-08-06T00:00:00.000Z',
+      lastActivity: '2026-08-06T00:00:00.000Z',
+      idle: false,
+    } as unknown as SessionSummary;
+    useSessionsStore.setState({
+      sessions: [staleSession],
+      repos: [],
+      activeSessionId: scopedSessionKey(staleSession),
+    });
+    renderComposer();
+
+    const project = container.querySelector(
+      'select[aria-label="project"]'
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(project, 'ws:unanchored'));
+    expect(useUiStore.getState().projectCreateRouting).toEqual({
+      workspaceId: 'ws:unanchored',
+      repoPath: null,
+      nodeId: null,
+    });
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    act(() => setNativeInputValue(name!, 'coordination'));
+    await act(async () => {
+      (
+        container.querySelector('.topic-composer__form') as HTMLFormElement
+      ).dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    const input = vi.mocked(createWorkspaceTopic).mock.calls[0]?.[0];
+    expect(input?.workspaceId).toBe('ws:unanchored');
+    expect(input?.routingDefaults).toBeUndefined();
+  });
+
+  it('uses the selected project node instead of a stale active-session node', async () => {
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: 'topic:project-b-node',
+      workspaceId: 'ws:project-b',
+      routingDefaults: {},
+      display: { title: 'node routing' },
+    } as never);
+    const staleSession = {
+      id: 'session-old-node',
+      type: 'terminal',
+      mode: 'pty',
+      nodeId: 'node-old-project',
+      repoPath: '/repo/old-project',
+      cwd: '/repo/old-project',
+      displayName: 'old project terminal',
+      createdAt: '2026-08-06T00:00:00.000Z',
+      lastActivity: '2026-08-06T00:00:00.000Z',
+      idle: false,
+    } as unknown as SessionSummary;
+    useSessionsStore.setState({
+      sessions: [staleSession],
+      repos: [],
+      activeSessionId: scopedSessionKey(staleSession),
+    });
+    renderComposer();
+
+    const project = container.querySelector(
+      'select[aria-label="project"]'
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(project, 'ws:project-b'));
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    act(() => setNativeInputValue(name!, 'node routing'));
+    await act(async () => {
+      (
+        container.querySelector('.topic-composer__form') as HTMLFormElement
+      ).dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(createWorkspaceTopic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws:project-b',
+        routingDefaults: expect.objectContaining({
+          nodeId: 'node-project-b',
+          repoPath: '/repo/project-b',
+          cwd: '/repo/project-b',
+        }),
+      })
+    );
+    expect(
+      vi.mocked(createWorkspaceTopic).mock.calls[0]?.[0]?.routingDefaults
+        ?.nodeId
+    ).not.toBe('node-old-project');
+  });
+
+  it('shows the sidebar-scoped project as the composer default', () => {
+    useUiStore.setState({
+      activeWorkspaceId: 'ws:project-b',
+      laneRepoRouting: {
+        workspaceId: 'ws:project-b',
+        repoPath: '/repo/project-b',
+      },
+    });
+    renderComposer();
+
+    expect(
+      (
+        container.querySelector(
+          'select[aria-label="project"]'
+        ) as HTMLSelectElement
+      ).value
+    ).toBe('ws:project-b');
   });
 
   it('keeps a failed channel create inline when another channel is open', async () => {
@@ -784,9 +1065,9 @@ describe('TopicComposer', () => {
     });
 
     expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
-    expect(container.querySelector('.topic-composer__failure')?.textContent).toContain(
-      'hub unreachable'
-    );
+    expect(
+      container.querySelector('.topic-composer__failure')?.textContent
+    ).toContain('hub unreachable');
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
@@ -838,7 +1119,7 @@ describe('TopicComposer', () => {
   });
 
   it('routes a one-off provider override to its DM channel', async () => {
-    const dmId = dmChannelTopicId('hermes', null);
+    const dmId = dmChannelTopicId('hermes', 'ws:local');
     vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
       id: dmId,
       workspaceId: 'workspace:local',
@@ -882,7 +1163,7 @@ describe('TopicComposer', () => {
   });
 
   it('creates the DM channel when it does not exist yet, reusing its id (#1166)', async () => {
-    const dmId = dmChannelTopicId('hermes', null);
+    const dmId = dmChannelTopicId('hermes', 'ws:local');
     const { HttpError } = await import('../frontend/src/lib/api.js');
     vi.mocked(fetchWorkspaceTopic).mockRejectedValue(new HttpError(404));
     vi.mocked(createWorkspaceTopic).mockResolvedValue({
@@ -921,7 +1202,7 @@ describe('TopicComposer', () => {
     // onSelectSession (→ handleSelectSession → setActiveSessionId in the app)
     // triggers the channel↔session mutual-exclusion effect, which clears the
     // channel we just opened AND persists a bogus 'topic:...' active-session key.
-    const dmId = dmChannelTopicId('hermes', null);
+    const dmId = dmChannelTopicId('hermes', 'ws:local');
     vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
       id: dmId,
       workspaceId: 'workspace:local',
@@ -959,7 +1240,7 @@ describe('TopicComposer', () => {
   // `launchFailure` banner has nowhere to render. A toast is the only
   // operator-visible signal left — without it the failure was silent.
   describe('a failed opening post stays visible (#1287)', () => {
-    const dmId = dmChannelTopicId('claude', null);
+    const dmId = dmChannelTopicId('claude', 'ws:local');
 
     function stubDm(): void {
       vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
