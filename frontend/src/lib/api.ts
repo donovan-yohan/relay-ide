@@ -313,6 +313,20 @@ export interface BrowseResponse {
   total: number;
 }
 
+/** Create one direct child directory for the local Add Project browser. */
+export async function createWorkspaceFolder(
+  parentPath: string,
+  name: string
+): Promise<BrowseEntry> {
+  return json<BrowseEntry>(
+    await fetch('/workspaces/folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentPath, name }),
+    })
+  );
+}
+
 export async function resolveCommandCenterAssistantIntent(
   query: string
 ): Promise<CommandCenterAssistantResult> {

@@ -20,6 +20,10 @@ workflow.
 
 ### Channel workspace and sidebar
 
+#### Added
+
+- Create and name new folders directly in the local Add Project browser (#1338)
+
 #### Changed
 
 - The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
