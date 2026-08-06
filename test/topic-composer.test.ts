@@ -72,6 +72,15 @@ function setNativeValue(el: HTMLTextAreaElement, value: string) {
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function setNativeInputValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  setter?.call(el, value);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function setSelectValue(el: HTMLSelectElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     HTMLSelectElement.prototype,
@@ -678,6 +687,154 @@ describe('TopicComposer', () => {
       expect.objectContaining({ text: 'triage the reconnect flake' })
     );
     expect(useUiStore.getState().activeChannelId).toBe(dmId);
+  });
+
+  it('creates and opens a named channel without looking up a DM', async () => {
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: 'topic:release-coordination',
+      workspaceId: 'ws:local',
+      routingDefaults: {},
+      display: { title: 'release coordination' },
+    } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
+    useUiStore.setState({ activeRepoPath: '/repo/relay' });
+    renderComposer();
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    expect(channelChoice).toBeDefined();
+    act(() => channelChoice?.click());
+
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    const create = container.querySelector<HTMLButtonElement>(
+      '.topic-composer__bar button[type="submit"]'
+    );
+    expect(name).not.toBeNull();
+    expect(create.disabled).toBe(true);
+    expect(container.querySelector('.topic-composer__provider-row')).toBeNull();
+
+    const opening = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    act(() => {
+      setNativeInputValue(name!, 'release coordination');
+      setNativeValue(opening, 'coordinate the release train');
+    });
+    expect(create.disabled).toBe(false);
+
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(fetchWorkspaceTopic).not.toHaveBeenCalled();
+    expect(createWorkspaceTopic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws:local',
+        title: 'release coordination',
+        description: 'coordinate the release train',
+      })
+    );
+    const createInput = vi.mocked(createWorkspaceTopic).mock.calls[0]?.[0];
+    expect(createInput?.id).not.toBe(dmChannelTopicId('claude', null));
+    expect(createInput?.routingDefaults).toEqual({
+      repoPath: '/repo/relay',
+      cwd: '/repo/relay',
+    });
+    expect(createInput?.routingDefaults).not.toHaveProperty('providerId');
+    expect(createInput?.routingDefaults).not.toHaveProperty('agentId');
+    expect(createWorkspaceTopicRoomAndMaybeLaunch).not.toHaveBeenCalled();
+    expect(postChannelMessage).toHaveBeenCalledWith(
+      'topic:release-coordination',
+      expect.objectContaining({ text: 'coordinate the release train' })
+    );
+    expect(useUiStore.getState().activeChannelId).toBe(
+      'topic:release-coordination'
+    );
+    expect(useSessionsStore.getState().activeSessionId).toBeNull();
+  });
+
+  it('keeps a failed channel create inline when another channel is open', async () => {
+    const { HttpError } = await import('../frontend/src/lib/api.js');
+    vi.mocked(createWorkspaceTopic).mockRejectedValue(
+      new HttpError(503, 'hub unreachable')
+    );
+    useUiStore.setState({ activeChannelId: 'topic:already-open' });
+    useToastStore.setState({ toasts: [] });
+    renderComposer();
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    act(() => setNativeInputValue(name!, 'release coordination'));
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
+    expect(container.querySelector('.topic-composer__failure')?.textContent).toContain(
+      'hub unreachable'
+    );
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('keeps a created channel out of creation-failure state when its opening message fails', async () => {
+    const { HttpError } = await import('../frontend/src/lib/api.js');
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: 'topic:release-coordination',
+      workspaceId: 'ws:local',
+      routingDefaults: {},
+      display: { title: 'release coordination' },
+    } as never);
+    vi.mocked(postChannelMessage).mockRejectedValue(
+      new HttpError(503, 'hub unreachable')
+    );
+    useToastStore.setState({ toasts: [] });
+    renderComposer();
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    const opening = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    act(() => {
+      setNativeInputValue(name!, 'release coordination');
+      setNativeValue(opening, 'coordinate the release train');
+    });
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(useUiStore.getState().activeChannelId).toBe(
+      'topic:release-coordination'
+    );
+    expect(container.querySelector('.topic-composer__failure')).toBeNull();
+    const messages = useToastStore
+      .getState()
+      .toasts.map((toast) => toast.message);
+    expect(messages).toEqual([
+      'channel created, but opening message failed — hub unreachable',
+    ]);
   });
 
   it('routes a one-off provider override to its DM channel', async () => {

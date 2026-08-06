@@ -50,6 +50,7 @@ import {
   parseChannelSearchSnippet,
   type ChannelEventV1,
 } from '../shared/channel-chat-protocol.js';
+import { dmChannelCreateInput } from '../shared/dm-channels.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -1417,6 +1418,42 @@ describe('channel routes — orchestrator designation (#1259)', () => {
     });
     expect(res.status).toBe(200);
     expect(seen).toEqual(['claude']);
+  });
+
+  it('refuses DM designation before invoking the binder', async () => {
+    let called = false;
+    const h = await harness({
+      binder: {
+        ensureOrchestrator: async () => {
+          called = true;
+          return { runtimeId: 'orch-dm', status: 'idle' } as never;
+        },
+      },
+    });
+    const dm = h.topicStore.create(
+      dmChannelCreateInput({
+        providerId: 'codex',
+        providerDisplayName: 'Codex',
+        workspaceId: 'ws:local',
+      })
+    );
+
+    const res = await req<{
+      error: { code: string; retryable: boolean; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${dm.id}/orchestrator`,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('UNSUPPORTED');
+    expect(res.body.error.retryable).toBe(false);
+    expect(res.body.error.details).toEqual({
+      channelId: dm.id,
+      reasonCode: 'DM_ORCHESTRATOR_UNSUPPORTED',
+    });
+    expect(called).toBe(false);
   });
 
   it('maps a role conflict to SESSION_CONFLICT', async () => {

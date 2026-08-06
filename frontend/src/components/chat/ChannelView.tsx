@@ -893,7 +893,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             })}
           </span>
         ) : null}
-        {rosterChipsQuery.isSuccess && !hasOrchestrator ? (
+        {topicQuery.isSuccess &&
+        !isDm &&
+        rosterChipsQuery.isSuccess &&
+        !hasOrchestrator ? (
           <button
             type="button"
             className="ch-designate-orchestrator"

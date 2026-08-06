@@ -18,6 +18,12 @@ workflow.
 
 ## [Unreleased]
 
+### Channel workspace and sidebar
+
+#### Changed
+
+- The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as
