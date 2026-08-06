@@ -28,7 +28,7 @@ workflow.
 
 - Existing Codex channel conversations now recover after a hub/runtime restart,
   and user message bubbles no longer collapse into character-by-character
-  wrapping
+  wrapping (#1339)
 
 ## [0.1.1] - 2026-08-05
 
