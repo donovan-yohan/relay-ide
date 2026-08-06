@@ -18,9 +18,21 @@ workflow.
 
 ## [Unreleased]
 
-### Added
+### Channel workspace and sidebar
+
+#### Added
 
 - Create and name new folders directly in the local Add Project browser (#1338)
+
+#### Changed
+
+- The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
+
+#### Fixed
+
+- Existing Codex channel conversations now recover after a hub/runtime restart,
+  and user message bubbles no longer collapse into character-by-character
+  wrapping (#1339)
 
 ## [0.1.1] - 2026-08-05
 

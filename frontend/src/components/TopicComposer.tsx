@@ -85,6 +85,8 @@ function primaryIntentForTemplate(templateKind: WorkspaceTopicTemplateKind) {
   return templateKind === 'note' ? 'create-only' : 'create-and-launch';
 }
 
+type ComposerDestination = 'direct-message' | 'channel';
+
 function composerSubmitDisabled(input: {
   effectiveTitle: string;
   submitting: boolean;
@@ -127,6 +129,7 @@ export default function TopicComposer({
     draft,
     updateDraft,
     submit,
+    createChannel,
     submittingIntent,
     launchFailure,
     effectiveTitle,
@@ -141,6 +144,9 @@ export default function TopicComposer({
     cwdOptions,
   } = useTopicRoomCreate({ onLaunched: onSelectSession });
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [destination, setDestination] =
+    useState<ComposerDestination>('direct-message');
+  const [channelName, setChannelName] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   // #1058: focus on mount (desktop only — see the isMobileDevice guard).
@@ -195,6 +201,9 @@ export default function TopicComposer({
     launchProviderUnavailable:
       primaryIntent === 'create-and-launch' && providerUnavailable,
   });
+  const creatingChannel = destination === 'channel';
+  const channelDisabled = !channelName.trim() || Boolean(submittingIntent);
+  const submitDisabled = creatingChannel ? channelDisabled : disabled;
   // #1103: never render a raw node id — resolve through the roster or fall
   // back to a generic label.
   const routedNodeId = previewCreate.routingDefaults?.nodeId;
@@ -213,9 +222,51 @@ export default function TopicComposer({
           aria-label="new chat"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
-            if (!disabled) void submit(primaryIntent);
+            if (!submitDisabled) {
+              if (creatingChannel) void createChannel(channelName);
+              else void submit(primaryIntent);
+            }
           }}
         >
+          <div
+            className="topic-composer__destination"
+            role="group"
+            aria-label="chat type"
+          >
+            <button
+              type="button"
+              aria-pressed={destination === 'direct-message'}
+              className={
+                destination === 'direct-message' ? 'is-selected' : undefined
+              }
+              onClick={() => setDestination('direct-message')}
+            >
+              direct message
+            </button>
+            <button
+              type="button"
+              aria-pressed={creatingChannel}
+              className={creatingChannel ? 'is-selected' : undefined}
+              onClick={() => {
+                setDestination('channel');
+                setAdvancedOpen(false);
+              }}
+            >
+              channel
+            </button>
+          </div>
+          {creatingChannel ? (
+            <label className="topic-composer__channel-name">
+              <span>channel name</span>
+              <input
+                value={channelName}
+                onChange={(event) => setChannelName(event.target.value)}
+                placeholder="e.g. release coordination"
+                aria-label="channel name"
+                autoComplete="off"
+              />
+            </label>
+          ) : null}
           <textarea
             ref={taRef}
             className="topic-composer__ta"
@@ -226,17 +277,22 @@ export default function TopicComposer({
                 event.key === 'Enter' &&
                 !event.shiftKey &&
                 !event.nativeEvent.isComposing &&
-                !disabled
+                !submitDisabled
               ) {
                 event.preventDefault();
-                void submit(primaryIntent);
+                if (creatingChannel) void createChannel(channelName);
+                else void submit(primaryIntent);
               } else if (event.key === 'Escape') {
                 // Composer opened over an active session — Escape returns to
                 // it. No-op on the bare landing (flag already false).
                 setTopicComposerOpen(false);
               }
             }}
-            placeholder="what should the agent do?"
+            placeholder={
+              creatingChannel
+                ? 'optional opening message'
+                : 'what should the agent do?'
+            }
             rows={4}
             aria-label="first message"
             // Focus is applied imperatively (see the mount effect above) so
@@ -245,37 +301,50 @@ export default function TopicComposer({
             // would pop the software keyboard on every app open, so it's
             // skipped entirely there (not just scroll-suppressed).
           />
-          <TopicComposerProviderRow
-            providerOptions={providerOptions}
-            selectedProviderId={selectedProviderId}
-            selectedProviderOption={selectedProviderOption}
-            providerUnavailable={providerUnavailable}
-            onProviderChange={(providerId) => updateDraft({ providerId })}
-          />
+          {!creatingChannel ? (
+            <TopicComposerProviderRow
+              providerOptions={providerOptions}
+              selectedProviderId={selectedProviderId}
+              selectedProviderOption={selectedProviderOption}
+              providerUnavailable={providerUnavailable}
+              onProviderChange={(providerId) => updateDraft({ providerId })}
+            />
+          ) : null}
           <div className="topic-composer__bar">
             <span className="topic-composer__context">
-              using {selectedProviderOption?.label ?? preview.providerLabel} in{' '}
-              {preview.cwdLabel}
+              {creatingChannel
+                ? 'agents can collaborate here once you mention or invite them'
+                : `using ${selectedProviderOption?.label ?? preview.providerLabel} in ${preview.cwdLabel}`}
             </span>
-            <TuiButton variant="primary" type="submit" disabled={disabled}>
-              {launchSubmitLabel({
-                submittingIntent,
-                launchDisabled,
-                launchFailure,
-              })}
+            <TuiButton
+              variant="primary"
+              type="submit"
+              disabled={submitDisabled}
+            >
+              {creatingChannel
+                ? submittingIntent === 'create-only'
+                  ? 'creating…'
+                  : 'create channel'
+                : launchSubmitLabel({
+                    submittingIntent,
+                    launchDisabled,
+                    launchFailure,
+                  })}
             </TuiButton>
           </div>
-          <button
-            type="button"
-            className="topic-composer__advanced-toggle"
-            aria-expanded={advancedOpen}
-            aria-controls="topic-composer-advanced"
-            onClick={() => setAdvancedOpen((prev) => !prev)}
-          >
-            <span aria-hidden="true">{advancedOpen ? '▾ ' : '▸ '}</span>
-            route/context
-          </button>
-          {advancedOpen ? (
+          {!creatingChannel ? (
+            <button
+              type="button"
+              className="topic-composer__advanced-toggle"
+              aria-expanded={advancedOpen}
+              aria-controls="topic-composer-advanced"
+              onClick={() => setAdvancedOpen((prev) => !prev)}
+            >
+              <span aria-hidden="true">{advancedOpen ? '▾ ' : '▸ '}</span>
+              route/context
+            </button>
+          ) : null}
+          {!creatingChannel && advancedOpen ? (
             <div
               className="topic-composer__advanced"
               id="topic-composer-advanced"

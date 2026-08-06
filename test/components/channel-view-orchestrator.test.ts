@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { dmChannelTopicId } from '../../shared/dm-channels.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -74,6 +75,7 @@ const { ChannelView } =
   await import('../../frontend/src/components/chat/ChannelView.js');
 
 const CHANNEL_ID = 'topic:operator-lane';
+const CODEX_DM_CHANNEL_ID = dmChannelTopicId('codex', 'ws:local');
 
 function topicFixture() {
   return {
@@ -156,6 +158,28 @@ afterEach(async () => {
 });
 
 describe('ChannelView orchestrator control (#1242)', () => {
+  it('waits for confirmed topic identity before offering designation', async () => {
+    let resolveTopic: ((topic: ReturnType<typeof topicFixture>) => void) | null =
+      null;
+    mocks.fetchWorkspaceTopic.mockReturnValue(
+      new Promise<ReturnType<typeof topicFixture>>((resolve) => {
+        resolveTopic = resolve;
+      })
+    );
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+
+    await render();
+
+    expect(container.querySelector('.ch-designate-orchestrator')).toBeNull();
+
+    resolveTopic?.(topicFixture());
+    await flush();
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator')
+    ).not.toBeNull();
+  });
+
   it('waits for the roster before offering designation', async () => {
     let resolveRoster:
       | ((entries: ReturnType<typeof rosterEntry>[]) => void)
@@ -203,6 +227,30 @@ describe('ChannelView orchestrator control (#1242)', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['channel-roster', CHANNEL_ID],
     });
+  });
+
+  it('never offers designation in a confirmed DM', async () => {
+    mocks.fetchWorkspaceTopic.mockResolvedValue({
+      id: CODEX_DM_CHANNEL_ID,
+      workspaceId: 'ws:local',
+      display: { title: 'Codex' },
+      routingDefaults: { providerId: 'codex' },
+    });
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(ChannelView, { channelId: CODEX_DM_CHANNEL_ID })
+        )
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('.ch-designate-orchestrator')).toBeNull();
+    expect(mocks.designateChannelOrchestrator).not.toHaveBeenCalled();
   });
 
   it('uses the braille text-motion state while designation is pending', async () => {

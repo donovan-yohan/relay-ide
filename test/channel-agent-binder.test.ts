@@ -1002,6 +1002,7 @@ interface SessionsHarness {
     profileId?: string
   ) => Promise<void>;
   lastCreateParams: () => CreateChannelAgentRuntimeParams | undefined;
+  createParams: () => CreateChannelAgentRuntimeParams[];
 }
 
 function makeSessions(
@@ -1013,10 +1014,12 @@ function makeSessions(
   const endCbs: Array<(id: string) => void> = [];
   let spawns = 0;
   let lastParams: CreateChannelAgentRuntimeParams | undefined;
+  const createParams: CreateChannelAgentRuntimeParams[] = [];
   const sessions: BinderRuntimes = {
     async create(params) {
       spawns++;
       lastParams = params;
+      createParams.push(params);
       if (opts.throwOnCreate) throw new Error('boom: spawn failed');
       // Optional gate: park the spawn so a test can drive a close()/reorder race
       // between runtime creation being invoked and its continuation resuming.
@@ -1099,6 +1102,7 @@ function makeSessions(
       });
     },
     lastCreateParams: () => lastParams,
+    createParams: () => createParams,
   };
 }
 
@@ -2014,6 +2018,42 @@ describe('channel-agent-binder — lifecycle', () => {
       first.id,
       second.id,
     ]);
+  });
+
+  it('keeps a saved provider conversation intact across failed recovery attempts', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2(),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      throwOnCreate: true,
+    });
+    const profileActorId = builtInAgentProfileId('mock');
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId,
+      agentFramework: 'mock',
+      runtimeId: 'stale-runtime',
+      providerSession: { threadId: 'durable-provider-thread' },
+    });
+
+    await expect(binder.ensureBinding(CH, 'mock')).rejects.toThrow(
+      'spawn failed'
+    );
+    await expect(binder.ensureBinding(CH, 'mock')).rejects.toThrow(
+      'spawn failed'
+    );
+
+    expect(sessions.createParams()).toEqual([
+      expect.objectContaining({
+        providerSession: { threadId: 'durable-provider-thread' },
+      }),
+      expect.objectContaining({
+        providerSession: { threadId: 'durable-provider-thread' },
+      }),
+    ]);
+    expect(store.getBinding(CH, profileActorId)?.providerSession).toEqual({
+      threadId: 'durable-provider-thread',
+    });
   });
 });
 

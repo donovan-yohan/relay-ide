@@ -123,10 +123,35 @@ function Fixture(): React.ReactElement {
       const seq = (current[current.length - 1]?.seq ?? 0) + 1;
       return [
         ...current,
-        message(seq, 'my new message', {
-          kind: 'human',
-          id: 'human:operator',
-        }),
+        {
+          ...message(seq, 'did we open a PR?', {
+            kind: 'human',
+            id: 'human:operator',
+          }),
+          // This is intentionally markdown: MessageBody introduces the
+          // cursor wrapper on this live path, which used to shrink user bubbles
+          // down to their min-content width.
+          body: { text: 'did we open a PR?', format: 'markdown' },
+        },
+      ];
+    });
+  }, []);
+
+  const appendOwnLongToken = useCallback(() => {
+    setMessages((current) => {
+      const seq = (current[current.length - 1]?.seq ?? 0) + 1;
+      return [
+        {
+          ...message(
+            seq,
+            'https://relay.example.dev/recover/conversation/this-token-must-wrap-without-overflowing-the-mobile-timeline',
+            { kind: 'human', id: 'human:operator' }
+          ),
+          body: {
+            text: 'https://relay.example.dev/recover/conversation/this-token-must-wrap-without-overflowing-the-mobile-timeline',
+            format: 'markdown',
+          },
+        },
       ];
     });
   }, []);
@@ -234,6 +259,9 @@ function Fixture(): React.ReactElement {
         </button>
         <button data-testid="append-own" onClick={appendOwn}>
           append own
+        </button>
+        <button data-testid="append-own-long-token" onClick={appendOwnLongToken}>
+          append own long token
         </button>
         <button data-testid="append-truncated" onClick={appendTruncated}>
           append truncated

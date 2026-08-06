@@ -22,6 +22,8 @@ const adapterState = vi.hoisted(() => ({
   onConnect: null as ((adapter: TestAdapter) => void) | null,
   /** Make the next adapter report its child dying from inside `connect` (#1307). */
   dieDuringConnect: false,
+  /** Adapter can atomically restore the provider session from connect config. */
+  resumeDuringConnect: false,
 }));
 
 class TestAdapter implements ProtocolAdapterV2 {
@@ -35,8 +37,13 @@ class TestAdapter implements ProtocolAdapterV2 {
   }).capabilities;
   status = 'disconnected' as const | 'connected';
   resumed: string[] = [];
+  connectConfigs: AdapterConfig[] = [];
   disconnectError: Error | null = null;
   private readonly handlers = new Set<AgentPatchHandlerV2>();
+
+  get resumesProviderSessionDuringConnect(): boolean {
+    return adapterState.resumeDuringConnect;
+  }
 
   sessionId = 'channel-runtime';
 
@@ -44,6 +51,7 @@ class TestAdapter implements ProtocolAdapterV2 {
     // Real adapters flip to 'connected' partway through their own connect, so
     // the manager's disconnect listener is already live when the child dies.
     this.status = 'connected';
+    this.connectConfigs.push(config);
     this.sessionId = config.sessionId;
     adapterState.onConnect?.(this);
     if (adapterState.dieDuringConnect) {
@@ -165,6 +173,7 @@ afterEach(async () => {
   adapterState.all.length = 0;
   adapterState.onConnect = null;
   adapterState.dieDuringConnect = false;
+  adapterState.resumeDuringConnect = false;
 });
 
 describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
@@ -485,6 +494,27 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(sessions.list().some((session) => session.id === runtime.id)).toBe(
       false
     );
+  });
+
+  it('lets an adapter atomically resume a saved provider session during connect', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    adapterState.resumeDuringConnect = true;
+
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+      providerSession: { threadId: 'provider-thread-1' },
+    });
+
+    expect(adapterState.last?.connectConfigs).toEqual([
+      expect.objectContaining({ resumeSessionId: 'provider-thread-1' }),
+    ]);
+    expect(adapterState.last?.resumed).toEqual([]);
   });
 
   it('captures provider identity and rejects duplicate runtime ids', async () => {

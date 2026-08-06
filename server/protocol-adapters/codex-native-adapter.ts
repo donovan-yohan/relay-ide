@@ -476,6 +476,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   readonly agentType = 'codex';
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CODEX_CAPABILITIES;
+  /**
+   * A saved Codex thread can be resumed by the initial app-server connection.
+   * This avoids creating a disposable `thread/start` conversation, then
+   * tearing its transport down to resume the durable one.
+   */
+  readonly resumesProviderSessionDuringConnect = true;
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
@@ -555,19 +561,25 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     await client.start();
 
-    const threadResult = await client.call<{ thread: { id: string } }>(
-      'thread/start',
-      {
-        cwd: config.cwd,
-        experimentalRawEvents: false,
-        persistExtendedHistory: false,
-        ...(config.model || this.pendingModelOverride
-          ? { model: this.pendingModelOverride ?? config.model }
-          : {}),
-      }
-    );
+    const threadResult = config.resumeSessionId
+      ? await client.call<{ thread: { id: string } }>('thread/resume', {
+          threadId: config.resumeSessionId,
+          excludeTurns: false,
+        })
+      : await client.call<{ thread: { id: string } }>('thread/start', {
+          cwd: config.cwd,
+          experimentalRawEvents: false,
+          persistExtendedHistory: false,
+          ...(config.model || this.pendingModelOverride
+            ? { model: this.pendingModelOverride ?? config.model }
+            : {}),
+        });
 
-    this.providerSessionId = threadResult.thread.id;
+    // `thread/resume` normally echoes the durable id. Retain the requested id
+    // defensively if an app-server version omits it, rather than replacing the
+    // binding's only recovery handle with an empty session identity.
+    this.providerSessionId =
+      threadResult.thread.id || config.resumeSessionId || null;
     this._status = 'connected';
     this.slashCommandsLoaded = false;
 
@@ -590,53 +602,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!this.config) throw new Error('Cannot resumeSession before connect');
     const config = this.config;
 
-    // Tear down existing state
+    // This is a deliberate handoff, not an app-server failure. Mark the first
+    // client detached before stopping it so its expected close event cannot be
+    // reported as an unexpected runtime death to ChannelAgentRuntimeManager.
+    // `connect()` then performs `thread/resume` directly, preserving the
+    // durable provider conversation without a throwaway `thread/start`.
+    this._status = 'disconnected';
     await this.teardownState();
-
-    const client = this.createClient(config);
-    this.client = client;
-    this.wireClientEvents(client);
-
-    await client.start();
-
-    const threadResult = await client.call<{
-      thread: { id: string; turns?: unknown[] };
-    }>('thread/resume', { threadId, excludeTurns: false });
-
-    this.providerSessionId = threadResult.thread.id ?? threadId;
-    this._status = 'connected';
-    this.slashCommandsLoaded = false;
-
-    // Emit snapshot reflecting the resumed thread.
-    // We materialize any turns from the response as completed items.
-    this.emitPatch({
-      type: 'agent-session-snapshot-v2',
-      sessionId: config.sessionId,
-      timestamp: nowIso(),
-      session: emptyAgentSessionV2({
-        id: config.sessionId,
-        provider: 'codex',
-        cwd: config.cwd,
-        capabilities: { ...this.capabilities, resume: true },
-        providerSession: { threadId: this.providerSessionId },
-        config: {
-          ...(config.model ? { model: config.model } : {}),
-        },
-      }),
-    });
-
-    this.emitLiveState({
-      status: 'idle',
-      activeTurnId: null,
-      waitingOn: null,
-      activeRequestIds: [],
-      proposedPlanItemId: null,
-      queueLength: 0,
-      fastModeAvailable: false,
-      error: null,
-    });
-
-    void this.refreshSlashCommands(config.cwd);
+    await this.connect({ ...config, resumeSessionId: threadId });
   }
 
   protected async onDisconnect(): Promise<void> {
