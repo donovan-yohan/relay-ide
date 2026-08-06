@@ -23,6 +23,8 @@ workflow.
 #### Added
 
 - Create and name new folders directly in the local Add Project browser (#1338)
+- `@agent/` opens a provider-aware command palette for channel controls,
+  including Codex Fast Mode, model, and reasoning-effort changes (#1344)
 
 #### Changed
 
