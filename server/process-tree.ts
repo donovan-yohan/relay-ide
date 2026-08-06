@@ -258,7 +258,7 @@ export function collectLanguageServerDiagnostics(
     .map((proc) => {
       const ancestors = ancestorsOf(proc, byPid);
       const relayOwnedLikely = [proc, ...ancestors].some((candidate) =>
-        /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent/i.test(
+        /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent|\bpi\b/i.test(
           candidate.commandLine
         )
       );

@@ -35,6 +35,7 @@ refresh. Capabilities must describe only implemented behavior.
 | OpenCode    | `opencode`    | native SDK/events                      |
 | Hermes      | `hermes`      | Responses API/SSE                      |
 | Prime Agent | `prime-agent` | `prime-agent` RPC                      |
+| Pi          | `pi`          | `pi --mode rpc` JSONL                  |
 
 Prime Agent is a first-class channel provider. Its adapter maps accepted prompts and `agent_end` boundaries to Relay turn
 lifecycle, `message_update` text and
@@ -59,6 +60,22 @@ targets the Prime Agent 0.7 RPC contract; a runtime that cannot return a valid
 live model catalog publishes no connected command catalog.
 
 The `prime-agent` executable is also available as a normal terminal launch, but
+that surface stays a generic PTY: Relay does not parse terminal output or infer
+channel capabilities from it.
+
+Pi is a first-class channel provider. Its adapter maps accepted prompts and `agent_settled` boundaries to Relay turn
+lifecycle, `message_update` text and
+thinking deltas to assistant and reasoning items, and
+`tool_execution_start|update|end` to canonical command, file-change, or dynamic
+tool items. It advertises text, reasoning, tools, command execution, file
+changes, queueing, interrupt, resume, compaction, telemetry, and streaming; unsupported
+approval, question, plan, and queue-cancellation operations remain false. Because Pi steering stays within one native run, Relay queues concurrent
+messages locally and sends a fresh RPC prompt after each `agent_settled`, preserving
+one durable Relay turn per message. Channel subprocesses currently launch with
+`--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
+to Relay approvals/questions yet.
+
+The `pi` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.
 

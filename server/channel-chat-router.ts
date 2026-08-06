@@ -65,6 +65,7 @@ const DEFAULT_KNOWN_PROVIDER_IDS = [
   'opencode',
   'hermes',
   'prime-agent',
+  'pi',
 ];
 
 /**

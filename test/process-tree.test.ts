@@ -161,6 +161,40 @@ describe('process-tree session runtime reaping', () => {
     }
   });
 
+  it('recognizes Pi ancestors as Relay-owned language-server runtimes', () => {
+    const procRoot = mkdtempSync(`${tmpdir()}/relay-proc-`);
+    try {
+      writeFileSync(`${procRoot}/uptime`, '1000 0');
+      writeFakeProc(procRoot, {
+        pid: 250,
+        ppid: 1,
+        pgid: 250,
+        command: 'pi',
+        cmdlineArgs: ['pi', '--mode', 'rpc'],
+      });
+      writeFakeProc(procRoot, {
+        pid: 251,
+        ppid: 250,
+        pgid: 250,
+        command: 'node',
+        cmdlineArgs: ['node', '/typescript/lib/tsserver.js'],
+      });
+
+      const diagnostics = collectLanguageServerDiagnostics({
+        procRoot,
+        uptimeSeconds: 1000,
+        clockTickHz: 100,
+      });
+
+      expect(diagnostics.processes[0]?.relayOwnedLikely).toBe(true);
+      expect(diagnostics.processes[0]?.ancestors[0]?.commandLine).toBe(
+        'pi --mode rpc'
+      );
+    } finally {
+      rmSync(procRoot, { recursive: true, force: true });
+    }
+  });
+
   it('redacts likely secrets from language-server diagnostics', () => {
     expect(
       redactCommandLine(

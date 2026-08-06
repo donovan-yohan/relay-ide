@@ -6,6 +6,7 @@ export type AgentProviderV2 =
   | 'opencode'
   | 'hermes'
   | 'prime-agent'
+  | 'pi'
   | 'mock'
   | (string & {});
 
