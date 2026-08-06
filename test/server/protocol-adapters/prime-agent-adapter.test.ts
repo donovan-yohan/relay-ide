@@ -152,6 +152,19 @@ describe('PrimeAgentProtocolAdapter', () => {
       ])
     );
 
+    await expect(
+      adapter.executeControlCommand({
+        command: 'model',
+        args: 'other/model',
+      })
+    ).rejects.toThrow('live Prime Agent catalog');
+    await expect(
+      adapter.executeControlCommand({
+        command: 'thinking',
+        args: 'turbo',
+      })
+    ).rejects.toThrow('thinking must be one of');
+
     await adapter.executeControlCommand({
       command: 'model',
       args: 'prime-inference/claude-prime',
