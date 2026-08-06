@@ -11,6 +11,7 @@ on:
 
 jobs:
   publish:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/nightly'
     runs-on: ubuntu-latest
     environment: release
     permissions:
