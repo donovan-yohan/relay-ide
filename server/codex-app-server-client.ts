@@ -102,7 +102,15 @@ export class CodexAppServerClient extends EventEmitter {
       command: 'codex',
       // Conductor passes --listen stdio:// explicitly. Newer codex
       // versions default to TCP, so stdio must be opted in.
-      args: ['app-server', '--listen', 'stdio://'],
+      // Request Codex's provider-generated reasoning summary. This is a
+      // user-visible summary, not raw/private chain-of-thought.
+      args: [
+        'app-server',
+        '--listen',
+        'stdio://',
+        '-c',
+        'model_reasoning_summary="detailed"',
+      ],
       ...options,
     };
   }

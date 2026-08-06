@@ -92,10 +92,28 @@ describe('AgentDetailCard', () => {
     });
 
     expect(host.querySelector('.ch-agent-card__body')).toBeNull();
+    expect(host.querySelector('.ch-agent-card__chevron')).not.toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('.ch-agent-card__toggle')?.disabled
+    ).toBe(false);
     await toggle();
     expect(host.querySelector('.ch-agent-card__body')?.textContent).toContain(
       'The snapshot may replace the current item.'
     );
+  });
+
+  it('does not advertise a disclosure for an empty terminal thought', async () => {
+    await render({
+      kind: 'thought',
+      title: 'thinking',
+      status: 'completed',
+    });
+
+    const card = host.querySelector('.ch-agent-card');
+    expect(card?.getAttribute('data-agent-card-expandable')).toBe('false');
+    expect(card?.querySelector('.ch-agent-card__toggle')).toBeNull();
+    expect(host.querySelector('.ch-agent-card__chevron')).toBeNull();
+    expect(card?.textContent).toContain('thinking');
   });
 
   it('tints only added and removed diff lines and reports their counts', async () => {
