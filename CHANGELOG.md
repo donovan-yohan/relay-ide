@@ -24,6 +24,12 @@ workflow.
 
 - The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
 
+#### Fixed
+
+- Existing Codex channel conversations now recover after a hub/runtime restart,
+  and user message bubbles no longer collapse into character-by-character
+  wrapping
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as

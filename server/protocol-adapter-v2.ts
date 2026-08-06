@@ -49,6 +49,11 @@ export type AgentPatchHandlerV2 = (patch: AgentPatchV2) => void;
 
 export interface ProtocolAdapterV2 {
   connect(config: AdapterConfig): Promise<void>;
+  /**
+   * When true, `connect()` consumes `AdapterConfig.resumeSessionId` atomically.
+   * The runtime manager must not follow it with a second `resumeSession()`.
+   */
+  readonly resumesProviderSessionDuringConnect?: boolean;
   disconnect(): Promise<void>;
   /**
    * Replace the runtime-only environment used by an owned subprocess.
