@@ -24,6 +24,7 @@ import type {
   ChannelAgentRuntime,
   CreateChannelAgentRuntimeParams,
 } from './channel-agent-runtime.js';
+import { relayControlCatalogForProvider } from '../shared/agent-command-catalog.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { AgentProfileStore } from './agent-profile-store.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
@@ -47,6 +48,7 @@ import type {
   AgentApprovalItemV2,
   AgentLiveStateUpdatedPatchV2,
   AgentPatchV2,
+  AgentSlashCommandV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 import { isDmChannel } from '../shared/dm-channels.js';
@@ -165,6 +167,8 @@ export interface ChannelAgentRosterEntry {
     /** Whether this live harness accepts the default safe-boundary steer. */
     steerSupported: boolean;
   } | null;
+  /** Provider previews are safe to show before a binding exists. */
+  commands?: AgentSlashCommandV2[];
 }
 
 export type ChannelAgentStatusBroadcaster = (
@@ -241,6 +245,14 @@ export interface ChannelAgentBinder {
     decision: AgentApprovalDecisionV2
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
+  executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }>;
+  isControlMessage(text: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
   close(): void;
 }
@@ -370,6 +382,23 @@ export interface ChannelRetryResult {
   /** The ORIGINAL trigger that was re-routed — never a new timeline row. */
   triggerMessageId: string;
   profileActorId: string;
+}
+
+/** A command lane rejection is deliberately not a channel-message failure. */
+export class ChannelAgentCommandError extends Error {
+  constructor(
+    message: string,
+    readonly reasonCode:
+      | 'UNKNOWN_PROFILE'
+      | 'UNAVAILABLE'
+      | 'UNKNOWN_COMMAND'
+      | 'UNSUPPORTED_DISPATCH'
+      | 'UNSUPPORTED_PROVIDER'
+      | 'CONFIRMATION_REQUIRED'
+  ) {
+    super(message);
+    this.name = 'ChannelAgentCommandError';
+  }
 }
 
 export class ChannelAgentRoleConflictError extends Error {
@@ -2544,6 +2573,23 @@ export function createChannelAgentBinder(
         const row = store.getBinding(channelId, profile.id);
         const runtimeId = binding?.runtimeId ?? row?.runtimeId ?? null;
         const runtime = runtimeId ? deps.runtimes.get(runtimeId) : undefined;
+        const baseCommands = relayControlCatalogForProvider(
+          profile.providerId
+        ).filter((command) => command.collisionKey !== 'fast');
+        const liveCommands = (
+          binding?.adapter?.getSlashCommands?.() ?? []
+        ).filter((command) => command.dispatch === 'relay-control');
+        const commands = [...baseCommands, ...liveCommands].reduce<
+          AgentSlashCommandV2[]
+        >((merged, command) => {
+          const key = command.collisionKey ?? command.name;
+          if (
+            !merged.some((entry) => (entry.collisionKey ?? entry.name) === key)
+          ) {
+            merged.push(command);
+          }
+          return merged;
+        }, []);
         return {
           id: profile.id,
           displayName: await rosterDisplayName(profile),
@@ -2567,9 +2613,139 @@ export function createChannelAgentBinder(
                   binding !== undefined && supportsSafeBoundarySteer(binding),
               }
             : null,
+          ...(commands.length > 0 ? { commands } : {}),
         };
       })
     );
+  }
+
+  async function executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }> {
+    // Actor id is the sole authority boundary. Never resolve a display name here.
+    const targets = await getTargets();
+    const stored = deps.agentProfileStore?.list() ?? [];
+    const profiles = [
+      ...stored,
+      ...targets
+        .filter(
+          (target) =>
+            !stored.some((profile) => profile.providerId === target.id)
+        )
+        .map((target) => defaultProfileForProvider(target.id)),
+    ];
+    const profile = profiles.find(
+      (candidate) => candidate.id === profileActorId
+    );
+    if (!profile) {
+      throw new ChannelAgentCommandError(
+        'unknown agent profile',
+        'UNKNOWN_PROFILE'
+      );
+    }
+    const target = targets.find(
+      (candidate) => candidate.id === profile.providerId
+    );
+    if (!target?.available) {
+      throw new ChannelAgentCommandError('agent is unavailable', 'UNAVAILABLE');
+    }
+    let binding = live.get(bindingKey(channelId, profileActorId));
+    let preview =
+      binding?.adapter?.getSlashCommands?.() ??
+      relayControlCatalogForProvider(profile.providerId).filter(
+        (entry) => entry.collisionKey !== 'fast'
+      );
+    const name = command.trim().toLowerCase();
+    let selected = preview.find(
+      (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+    );
+    // Static catalog entries make pre-bind previews possible. Other adapters
+    // may expose their own relay controls only after connect; discover those
+    // through the same adapter contract rather than a provider branch.
+    if (!selected && !binding) {
+      binding = await ensureProfileBinding(channelId, profile);
+      preview = binding.adapter?.getSlashCommands?.() ?? [];
+      selected = preview.find(
+        (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+      );
+    }
+    if (!selected) {
+      throw new ChannelAgentCommandError(
+        'unknown provider command',
+        'UNKNOWN_COMMAND'
+      );
+    }
+    if (selected.dispatch !== 'relay-control') {
+      throw new ChannelAgentCommandError(
+        'agent-dispatch commands are not executable in channels',
+        'UNSUPPORTED_DISPATCH'
+      );
+    }
+    if (selected.destructive && confirmed !== true) {
+      throw new ChannelAgentCommandError(
+        'command confirmation is required',
+        'CONFIRMATION_REQUIRED'
+      );
+    }
+    binding ??= await ensureProfileBinding(channelId, profile);
+    if (!binding.adapter?.executeControlCommand) {
+      throw new ChannelAgentCommandError(
+        'provider command controls are unavailable',
+        'UNSUPPORTED_PROVIDER'
+      );
+    }
+    return binding.adapter.executeControlCommand({
+      command: selected.name,
+      ...(args ? { args } : {}),
+      ...(confirmed !== undefined ? { confirmed } : {}),
+    });
+  }
+
+  function isControlMessage(text: string): boolean {
+    const profiles =
+      deps.agentProfileStore?.list() ??
+      deps.knownProviderIds.map((providerId) =>
+        defaultProfileForProvider(providerId)
+      );
+    let at = 0;
+    while (at < text.length) {
+      at = text.indexOf('@', at);
+      if (at < 0) break;
+      if (at > 0 && /[A-Za-z0-9_.]/.test(text[at - 1]!)) {
+        at += 1;
+        continue;
+      }
+      // Parse each candidate suffix independently: the durable parser dedupes
+      // same-profile mentions for routing, while this admission check must see
+      // every occurrence (for example `@codex hello @codex/compact`).
+      const mention = parseMentions(
+        text.slice(at),
+        deps.knownProviderIds,
+        profiles
+      )[0];
+      if (!mention?.profileId || !mention.providerId) {
+        at += 1;
+        continue;
+      }
+      const suffix = text.slice(at + mention.raw.length);
+      const command = suffix
+        .match(/^\s*\/([^\s]+)(?:\s|$)/)?.[1]
+        ?.toLowerCase();
+      if (
+        command &&
+        relayControlCatalogForProvider(mention.providerId).some(
+          (entry) =>
+            entry.name === command || (entry.aliases ?? []).includes(command)
+        )
+      )
+        return true;
+      at += Math.max(1, mention.raw.length);
+    }
+    return false;
   }
 
   return {
@@ -2581,6 +2757,8 @@ export function createChannelAgentBinder(
     retryMessage,
     respondToApproval,
     rosterForChannel,
+    executeCommand,
+    isControlMessage,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },

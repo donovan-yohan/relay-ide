@@ -90,6 +90,10 @@ export interface AgentSlashCommandV2 {
   collisionKey?: string;
   /** Provider-native trigger prefix the wire expects when dispatch is 'agent'. Adapters set this; UI passes it through unchanged. */
   nativePrefix?: '/' | '$';
+  /** Enumerated safe arguments for a command preview, when the provider exposes them. */
+  args?: Array<{ value: string; label?: string; description?: string }>;
+  /** UI hint only; server-side dispatch remains capability checked. */
+  destructive?: boolean;
 }
 
 export interface AgentSessionV2 {
@@ -1681,6 +1685,22 @@ function isSlashCommand(value: unknown): boolean {
   ) {
     return false;
   }
+  if (
+    value.args !== undefined &&
+    !(
+      Array.isArray(value.args) &&
+      value.args.every(
+        (arg) =>
+          isRecord(arg) &&
+          typeof arg.value === 'string' &&
+          (arg.label === undefined || typeof arg.label === 'string') &&
+          (arg.description === undefined || typeof arg.description === 'string')
+      )
+    )
+  )
+    return false;
+  if (value.destructive !== undefined && typeof value.destructive !== 'boolean')
+    return false;
   return true;
 }
 

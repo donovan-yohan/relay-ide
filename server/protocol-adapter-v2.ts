@@ -31,6 +31,13 @@ export interface AgentSendMessageInputV2 {
   clientMessageId?: string;
 }
 
+/** Explicit Relay control invocation. Never represents a user prompt. */
+export interface AgentControlCommandInputV2 {
+  command: string;
+  args?: string;
+  confirmed?: boolean;
+}
+
 export interface AgentInterruptInputV2 {
   turnId?: string;
 }
@@ -89,6 +96,10 @@ export interface ProtocolAdapterV2 {
    * boundary. Optional because legacy harnesses can only queue a follow-up.
    */
   steerMessage?(input: AgentSendMessageInputV2): Promise<void>;
+  /** Provider-owned Relay control lane; absent means commands are unsupported. */
+  executeControlCommand?(
+    input: AgentControlCommandInputV2
+  ): Promise<{ config?: Record<string, unknown> }>;
   interrupt(input: AgentInterruptInputV2): Promise<void>;
   respondToApproval(input: AgentApprovalResponseInputV2): Promise<void>;
   respondToInput(input: AgentInputResponseInputV2): Promise<void>;
@@ -98,6 +109,8 @@ export interface ProtocolAdapterV2 {
   readonly status: AdapterStatus;
   readonly runtimeOwnership: 'spawned' | 'attached';
   readonly agentType: string;
+  /** Redaction-safe command previews for a currently connected session. */
+  getSlashCommands?(): import('../shared/agent-chat-protocol-v2.js').AgentSlashCommandV2[];
 }
 
 export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {

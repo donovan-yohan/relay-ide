@@ -608,6 +608,7 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
+    'channels.agent-commands',
     'channels.interrupt',
     'channels.respond-approval',
   ]);

@@ -17,12 +17,23 @@ import {
   filterMentionContacts,
   isMentionContactSelectable,
   mentionInsertText,
+  type MentionContact,
 } from '../../../../shared/mention-contacts.js';
+import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { createBrowserId } from '../../lib/browserId.js';
-import { fetchChannelRoster, uploadChannelImages } from '../../lib/api.js';
+import {
+  executeChannelAgentCommand,
+  fetchChannelRoster,
+  uploadChannelImages,
+  type RosterEntry,
+} from '../../lib/api.js';
 import { buildMentionContacts } from '../../lib/chat/mention-contacts.js';
 import { detectTrigger } from './slashTrigger.js';
 import { createLineBreakSubmitGuard } from './composerInput.js';
+import {
+  AgentCommandPalette,
+  type AgentCommandPaletteRow,
+} from './AgentCommandPalette.js';
 import { MentionPalette } from './MentionPalette.js';
 
 const ALLOWED_IMAGE_MIMES = new Set([
@@ -59,6 +70,86 @@ function defaultSendLabel(steeringMode: BusyAgentSteeringMode): string {
   if (steeringMode === 'all') return 'steer';
   if (steeringMode === 'some') return 'steer / queue';
   return 'queue';
+}
+
+type CommandPhase = 'arguments' | 'confirm' | null;
+
+interface MentionCommandTrigger {
+  contact: MentionContact;
+  rosterEntry: RosterEntry | undefined;
+  /** Includes the selected profile mention and immediately-adjacent `/`. */
+  commandStart: number;
+  /** End of the command-name token (before a possible argument). */
+  commandEnd: number;
+  commandQuery: string;
+  argument: string;
+}
+
+function isMentionBoundary(text: string, at: number): boolean {
+  return at === 0 || !/[A-Za-z0-9_.]/.test(text.charAt(at - 1));
+}
+
+/**
+ * Resolve only an EXACT addressable mention immediately followed by `/`.
+ * Comparing against `mentionInsertText` preserves custom-profile collision
+ * tokens (`@Reviewer#abc123/`) instead of guessing identity from display text.
+ */
+function detectMentionCommandTrigger(
+  text: string,
+  caret: number,
+  contacts: readonly MentionContact[],
+  roster: readonly RosterEntry[]
+): MentionCommandTrigger | null {
+  const beforeCaret = text.slice(0, caret);
+  let best:
+    | { contact: MentionContact; index: number; needle: string }
+    | undefined;
+  for (const contact of contacts) {
+    const mention = mentionInsertText(contact);
+    // MentionPalette inserts a single trailing space. Accept that exact bridge
+    // as well as the compact hand-typed `@codex/`, but never arbitrary prose.
+    const candidates = [`${mention}/`, `${mention} /`];
+    for (const needle of candidates) {
+      const index = beforeCaret.toLowerCase().lastIndexOf(needle.toLowerCase());
+      if (index < 0 || !isMentionBoundary(beforeCaret, index)) continue;
+      const rest = beforeCaret.slice(index + needle.length);
+      if (/\n/.test(rest)) continue;
+      if (!best || index > best.index) best = { contact, index, needle };
+    }
+  }
+  if (!best) return null;
+  const rest = beforeCaret.slice(best.index + best.needle.length);
+  const nameMatch = /^(\S*)/.exec(rest);
+  const commandQuery = nameMatch?.[1] ?? '';
+  const commandEnd = best.index + best.needle.length + commandQuery.length;
+  return {
+    contact: best.contact,
+    rosterEntry: roster.find((entry) => entry.id === best.contact.id),
+    commandStart: best.index,
+    commandEnd,
+    commandQuery,
+    argument: rest.slice(commandQuery.length).trim(),
+  };
+}
+
+function commandMatches(command: AgentSlashCommandV2, query: string): boolean {
+  const normalized = query.toLowerCase();
+  return (
+    normalized.length === 0 ||
+    command.name.toLowerCase().startsWith(normalized) ||
+    (command.aliases ?? []).some((alias) =>
+      alias.toLowerCase().startsWith(normalized)
+    )
+  );
+}
+
+function needsConfirmation(command: AgentSlashCommandV2): boolean {
+  return (
+    command.destructive === true ||
+    ['clear', 'new', 'reset', 'rollback', 'archive'].includes(
+      command.collisionKey ?? command.name
+    )
+  );
 }
 
 interface PendingImage {
@@ -126,6 +217,11 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
+  const [commandPhase, setCommandPhase] = useState<CommandPhase>(null);
+  const [selectedCommand, setSelectedCommand] =
+    useState<AgentSlashCommandV2 | null>(null);
+  const [commandStatus, setCommandStatus] = useState<string | null>(null);
+  const [commandPending, setCommandPending] = useState(false);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
@@ -269,8 +365,42 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         : filterMentionContacts(contacts, triggerQuery),
     [triggerQuery, contacts]
   );
+  const commandTrigger = useMemo(
+    () => detectMentionCommandTrigger(draft, caret, contacts, rosterData ?? []),
+    [draft, caret, contacts, rosterData]
+  );
+  const commandEntries = useMemo(
+    () =>
+      (commandTrigger?.rosterEntry?.commands ?? []).filter(
+        (command) =>
+          command.dispatch === 'relay-control' &&
+          commandMatches(command, commandTrigger?.commandQuery ?? '')
+      ),
+    [commandTrigger]
+  );
+  const commandArgumentRows = useMemo<AgentCommandPaletteRow[]>(() => {
+    if (!selectedCommand) return [];
+    return (selectedCommand.args ?? [])
+      .filter((option) =>
+        option.value
+          .toLowerCase()
+          .startsWith((commandTrigger?.argument ?? '').toLowerCase())
+      )
+      .map((option) => ({ kind: 'argument', ...option }));
+  }, [selectedCommand, commandTrigger?.argument]);
+  const commandRows = useMemo<AgentCommandPaletteRow[]>(() => {
+    if (commandPhase === 'confirm') {
+      return [
+        { kind: 'confirm', value: 'confirm' },
+        { kind: 'confirm', value: 'cancel' },
+      ];
+    }
+    if (commandPhase === 'arguments') return commandArgumentRows;
+    return commandEntries.map((command) => ({ kind: 'command', command }));
+  }, [commandArgumentRows, commandEntries, commandPhase]);
   const paletteVisible =
     trigger !== null && !paletteDismissed && entries.length > 0;
+  const commandPaletteVisible = commandTrigger !== null && !paletteDismissed;
 
   const resize = useCallback(() => {
     const el = textareaRef.current;
@@ -291,6 +421,28 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     setActiveIndex(0);
     setPaletteDismissed(false);
   }, [draft]);
+
+  // Command intent only survives edits that keep the same exact addressed
+  // profile and command token. This prevents a stale profile id executing after
+  // a rename, collision-token edit, or moving the caret into ordinary prose.
+  useEffect(() => {
+    if (!commandTrigger) {
+      setCommandPhase(null);
+      setSelectedCommand(null);
+      return;
+    }
+    if (
+      selectedCommand &&
+      commandTrigger.commandQuery &&
+      ![selectedCommand.name, ...(selectedCommand.aliases ?? [])].some(
+        (name) =>
+          name.toLowerCase() === commandTrigger.commandQuery.toLowerCase()
+      )
+    ) {
+      setCommandPhase(null);
+      setSelectedCommand(null);
+    }
+  }, [commandTrigger, selectedCommand]);
 
   const updateCaret = useCallback(() => {
     const el = textareaRef.current;
@@ -377,10 +529,181 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     });
   }, [trigger, entries, activeIndex, draft]);
 
+  const executeCommand = useCallback(
+    (command: AgentSlashCommandV2, args?: string, confirmed = false) => {
+      if (!commandTrigger || commandPending) return;
+      const normalizedArgs = args?.trim();
+      if (command.argumentHint && !normalizedArgs) {
+        setCommandStatus(`/${command.name} requires ${command.argumentHint}`);
+        setCommandPhase('arguments');
+        return;
+      }
+      // The server independently rejects destructive controls without this
+      // acknowledgement. Keep the same invariant in the UI so Enter on a
+      // typed argument cannot skip the visible confirmation row.
+      if (needsConfirmation(command) && !confirmed) {
+        setSelectedCommand(command);
+        setCommandPhase('confirm');
+        setCommandStatus(
+          `confirm /${command.name} for @${commandTrigger.contact.displayName}`
+        );
+        return;
+      }
+      setCommandPending(true);
+      setCommandStatus(
+        `running /${command.name} for @${commandTrigger.contact.displayName}…`
+      );
+      void executeChannelAgentCommand(channelId, {
+        profileId: commandTrigger.contact.id,
+        command: command.name,
+        ...(normalizedArgs ? { args: normalizedArgs } : {}),
+        ...(confirmed ? { confirmed: true } : {}),
+      })
+        .then(() => {
+          setCommandStatus(
+            `/${command.name} applied to @${commandTrigger.contact.displayName}`
+          );
+          setDraft('');
+          setCaret(0);
+          setCommandPhase(null);
+          setSelectedCommand(null);
+          setPaletteDismissed(true);
+        })
+        .catch((error) => {
+          const detail =
+            error instanceof Error ? error.message : 'command failed';
+          setCommandStatus(`/${command.name} failed: ${detail}`);
+        })
+        .finally(() => setCommandPending(false));
+    },
+    [channelId, commandPending, commandTrigger]
+  );
+
+  const selectCommand = useCallback(
+    (command: AgentSlashCommandV2) => {
+      if (!commandTrigger) return;
+      const replacement = `/${command.name}`;
+      const nextDraft =
+        draft.slice(
+          0,
+          commandTrigger.commandStart +
+            mentionInsertText(commandTrigger.contact).length
+        ) +
+        replacement +
+        draft.slice(commandTrigger.commandEnd);
+      const nextCaret =
+        commandTrigger.commandStart +
+        mentionInsertText(commandTrigger.contact).length +
+        replacement.length;
+      setDraft(nextDraft);
+      setCaret(nextCaret);
+      setActiveIndex(0);
+      setSelectedCommand(command);
+      if ((command.args?.length ?? 0) > 0 || command.argumentHint) {
+        setCommandPhase('arguments');
+        setCommandStatus(
+          command.args?.length
+            ? `choose a value for /${command.name}`
+            : `type a value for /${command.name}`
+        );
+      } else {
+        executeCommand(command, commandTrigger.argument);
+      }
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.selectionStart = nextCaret;
+        el.selectionEnd = nextCaret;
+        el.focus();
+      });
+    },
+    [commandTrigger, draft, executeCommand]
+  );
+
+  const activateCommandRow = useCallback(
+    (index: number) => {
+      const row = commandRows[index];
+      if (!row) {
+        // A typed model name has no enumerated row. Enter confirms it only
+        // after the command has already been chosen in the first palette.
+        if (
+          commandPhase === 'arguments' &&
+          selectedCommand &&
+          commandTrigger?.argument
+        ) {
+          executeCommand(selectedCommand, commandTrigger.argument);
+        }
+        return;
+      }
+      if (row.kind === 'command') {
+        selectCommand(row.command);
+        return;
+      }
+      if (row.kind === 'argument') {
+        if (selectedCommand) executeCommand(selectedCommand, row.value);
+        return;
+      }
+      if (row.value === 'cancel') {
+        setCommandPhase(null);
+        setSelectedCommand(null);
+        setCommandStatus('command cancelled');
+        return;
+      }
+      if (selectedCommand) {
+        executeCommand(selectedCommand, commandTrigger?.argument, true);
+      }
+    },
+    [
+      commandPhase,
+      commandRows,
+      commandTrigger?.argument,
+      executeCommand,
+      selectCommand,
+      selectedCommand,
+    ]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       const nativeEvent = e.nativeEvent as KeyboardEvent;
       if (e.key === 'Enter' && nativeEvent.isComposing) return;
+
+      if (commandPaletteVisible) {
+        if (e.key === 'ArrowDown' && commandRows.length > 0) {
+          e.preventDefault();
+          setActiveIndex((i) => Math.min(i + 1, commandRows.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp' && commandRows.length > 0) {
+          e.preventDefault();
+          setActiveIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setPaletteDismissed(true);
+          setCommandPhase(null);
+          setSelectedCommand(null);
+          return;
+        }
+        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+          e.preventDefault();
+          activateCommandRow(activeIndex);
+          return;
+        }
+      }
+
+      // A command-shaped draft is never a channel message. Escape only hides
+      // the preview; pressing Enter again reopens it instead of accidentally
+      // posting `@agent/command` through mention routing.
+      if (
+        commandTrigger !== null &&
+        ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab')
+      ) {
+        e.preventDefault();
+        setPaletteDismissed(false);
+        return;
+      }
 
       if (paletteVisible) {
         if (e.key === 'ArrowDown') {
@@ -425,7 +748,18 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         else submit();
       }
     },
-    [paletteVisible, entries, activeIndex, applyMention, busy, submit]
+    [
+      commandPaletteVisible,
+      commandRows.length,
+      activateCommandRow,
+      commandTrigger,
+      paletteVisible,
+      entries,
+      activeIndex,
+      applyMention,
+      busy,
+      submit,
+    ]
   );
 
   // Mobile IME parity: some IMEs only report a beforeinput line-break intent for
@@ -435,6 +769,14 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     (inputEvent: InputEvent) => {
       if (!lineBreakGuardRef.current.consumesAsSubmit(inputEvent)) return;
       inputEvent.preventDefault();
+      if (commandPaletteVisible) {
+        activateCommandRow(activeIndex);
+        return;
+      }
+      if (commandTrigger !== null) {
+        setPaletteDismissed(false);
+        return;
+      }
       if (paletteVisible) {
         const entry = entries[activeIndex];
         if (entry && isMentionContactSelectable(entry)) applyMention();
@@ -442,7 +784,16 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       }
       submit();
     },
-    [paletteVisible, entries, activeIndex, applyMention, submit]
+    [
+      commandPaletteVisible,
+      activateCommandRow,
+      commandTrigger,
+      paletteVisible,
+      entries,
+      activeIndex,
+      applyMention,
+      submit,
+    ]
   );
 
   useEffect(() => {
@@ -510,6 +861,23 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         </div>
       ) : null}
       <div className="ch-composer__mention-anchor">
+        <AgentCommandPalette
+          rows={commandRows}
+          activeIndex={activeIndex}
+          visible={commandPaletteVisible}
+          disabled={commandPending}
+          label={`commands for ${commandTrigger?.contact.displayName ?? 'agent'}`}
+          emptyMessage={
+            commandPhase === 'arguments' && selectedCommand
+              ? commandTrigger?.argument
+                ? `press enter to use “${commandTrigger.argument}”`
+                : `type ${selectedCommand.argumentHint ?? 'a value'}`
+              : commandPending
+                ? 'applying command…'
+                : 'no commands available for this agent'
+          }
+          onSelect={activateCommandRow}
+        />
         <MentionPalette
           contacts={entries}
           activeIndex={activeIndex}
@@ -526,6 +894,15 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           rows={1}
           enterKeyHint="send"
           aria-label="message input"
+          aria-controls={
+            commandPaletteVisible ? 'channel-agent-command-palette' : undefined
+          }
+          aria-expanded={commandPaletteVisible}
+          aria-activedescendant={
+            commandPaletteVisible && commandRows.length > 0
+              ? `channel-agent-command-option-${activeIndex}`
+              : undefined
+          }
           data-pending={postPending ? 'true' : 'false'}
           onChange={(event) => {
             setDraft(event.currentTarget.value);
@@ -539,6 +916,9 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           onDrop={handleImageDrop}
           onDragOver={(e) => e.preventDefault()}
         />
+      </div>
+      <div className="ch-composer__command-status" aria-live="polite">
+        {commandStatus}
       </div>
       {images.length > 0 ? (
         <div
