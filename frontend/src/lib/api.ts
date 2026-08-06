@@ -47,6 +47,7 @@ import type {
   ChannelMessageId,
   ChannelMessagePart,
 } from '../../../shared/channel-chat-protocol.js';
+import type { AgentSlashCommandV2 } from '../../../shared/agent-chat-protocol-v2.js';
 import type {
   WorkflowRunProjection,
   WorkflowRunState,
@@ -1926,6 +1927,8 @@ export interface RosterEntry {
   role?: AgentRole;
   /** Present when a live session is bound to this agent in the channel. */
   binding: { sessionId: string; status: ChannelAgentStatus } | null;
+  /** Provider-aware control previews. An absent list means discovery is unavailable. */
+  commands?: AgentSlashCommandV2[];
 }
 
 export async function fetchChannelRoster(
@@ -1937,6 +1940,30 @@ export async function fetchChannelRoster(
     })
   );
   return Array.isArray(data.roster) ? data.roster : [];
+}
+
+/** Execute a channel agent control without creating or routing a channel message. */
+export async function executeChannelAgentCommand(
+  channelId: string,
+  input: {
+    profileId: string;
+    command: string;
+    args?: string;
+    /** Required by the server for context-changing/destructive controls. */
+    confirmed?: boolean;
+  }
+): Promise<{ config?: Record<string, unknown> }> {
+  const data = await json<{ config?: Record<string, unknown> }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/agent-commands`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  return data;
 }
 
 /**

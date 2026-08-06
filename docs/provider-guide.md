@@ -63,7 +63,34 @@ Common semantics:
 
 The UI gates affordances from `session.capabilities`. If a capability is false, do not render the control.
 
-## 5. providerExtension policy
+## 5. Command catalogs and channel control lane
+
+Adapters may expose `getSlashCommands()` and `executeControlCommand()` from
+`ProtocolAdapterV2`. A catalog entry declares its dispatch: `relay-control`
+commands are safe for Relay to execute; `agent` commands remain provider-native
+prompt/skill input. The channel binder never branches on a provider name: it
+uses an adapter's live catalog after connecting, and may use a redaction-safe
+static catalog only for pre-bind previews.
+
+Channel controls are addressed by the exact AgentProfile Actor ID, never by
+display name. This keeps same-provider named profiles and their mention
+disambiguators isolated. The dedicated `POST /channels/:id/agent-commands`
+lane requires `context:write`, rejects archived channels, requires explicit
+confirmation for destructive catalog entries, and does not persist a channel
+message or create a mention context packet. Normal posts that look like a
+targeted control (`@agent/command` or `@agent /command`) are rejected so they
+cannot accidentally route as prose.
+
+Only advertise controls the live provider can execute. Where provider metadata
+lists models, service tiers, or reasoning efforts, derive command arguments
+from that metadata and refresh the catalog on a model change. A missing catalog
+may use a documented static fallback; an available catalog must reject values
+it does not support. Codex currently implements Relay-owned controls including
+Fast Mode through this contract. Claude, OpenCode, and Hermes must not be
+presented as supporting a channel control until their own adapters expose and
+execute it.
+
+## 6. providerExtension policy
 
 Map to core V2 when a shape is provider-agnostic and already exists in `AgentItemV2`.
 
@@ -75,7 +102,7 @@ Use `providerExtension` when:
 
 Promotion rule: if two providers need the same extension shape, open a follow-up schema change to promote it into core V2.
 
-## 6. Renderer registration
+## 7. Renderer registration
 
 Provider extension renderers live under:
 
@@ -96,7 +123,7 @@ Requirements:
 - A missing renderer must not break the timeline.
 - Tests should assert both known provider cards and fallback cards.
 
-## 7. Queue and approval pattern
+## 8. Queue and approval pattern
 
 Queue:
 
@@ -119,7 +146,7 @@ Approval:
 6. Emit approval item update and live state back to `working`.
 7. Reject all pending resolvers on disconnect/interrupt.
 
-## 8. Provider-native session state adapters
+## 9. Provider-native session state adapters
 
 Provider-native state adapters are separate from live `ProtocolAdapterV2` runtimes. They read provider-owned stores to produce a bounded Relay read model, but they do not control the native CLI and they must not write provider state.
 
@@ -141,7 +168,7 @@ Read-only-first invariants:
 
 The first implementation is `ClaudeJsonlStateAdapter`, which imports Claude JSONL fixtures and keeps live streaming/approval response disabled.
 
-## 9. Testing pattern
+## 10. Testing pattern
 
 Each provider needs golden trace tests under `test/server/protocol-adapters/<provider>-adapter.test.ts`. Provider-native state adapters use adjacent golden fixture tests under `test/server/provider-state/`.
 

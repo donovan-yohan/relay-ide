@@ -56,6 +56,18 @@
   opacity: 0.85;
 }
 
+.ch-composer__command-status {
+  min-height: 0;
+  padding: 0 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__command-status:empty {
+  display: none;
+}
+
 .ch-composer__bar {
   display: flex;
   align-items: center;

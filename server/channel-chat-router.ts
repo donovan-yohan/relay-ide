@@ -26,6 +26,7 @@ import {
 } from './channel-attachments.js';
 import {
   ChannelAgentNoActiveTurnError,
+  ChannelAgentCommandError,
   ChannelAgentNotFoundError,
   ChannelAgentRoleConflictError,
   type ChannelAgentBinder,
@@ -478,6 +479,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     deps.requireWriteActorAuth?.('channels.interrupt') ?? auth;
   const approvalAuth =
     deps.requireWriteActorAuth?.('channels.respond-approval') ?? auth;
+  const agentCommandsAuth =
+    deps.requireWriteActorAuth?.('channels.agent-commands') ?? auth;
   const uploadImages = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -790,6 +793,18 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       );
       return;
     }
+    // Provider-neutral binder catalog owns the recognition rule, including
+    // exact profile identity and both @profile/command and @profile /command.
+    if (deps.binder?.isControlMessage(text)) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'agent commands must use the channel agent-commands control endpoint',
+        false,
+        { reasonCode: 'CHANNEL_COMMAND_REQUIRES_CONTROL_LANE' }
+      );
+      return;
+    }
     let parts: import('../shared/channel-chat-protocol.js').ChannelMessagePart[] =
       [];
     if (body['parts'] !== undefined) {
@@ -923,6 +938,54 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       .rosterForChannel(topic.id)
       .then((roster) => res.json({ roster }))
       .catch((error) => mapStoreError(res, error));
+  });
+
+  /**
+   * Dedicated provider-control lane. It neither persists a channel row nor
+   * passes through mention context-packet construction.
+   */
+  router.post('/channels/:id/agent-commands', agentCommandsAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    const body = req.body as Record<string, unknown>;
+    const profileId =
+      typeof body['profileId'] === 'string' ? body['profileId'] : '';
+    const command = typeof body['command'] === 'string' ? body['command'] : '';
+    const args = typeof body['args'] === 'string' ? body['args'] : undefined;
+    const confirmed = body['confirmed'] === true;
+    if (!profileId || !command) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'profileId and command are required',
+        false
+      );
+      return;
+    }
+    binder
+      .executeCommand(topic.id, profileId, command, args, confirmed)
+      .then((result) => res.json({ ok: true, ...result }))
+      .catch((error) => {
+        if (error instanceof ChannelAgentCommandError) {
+          sendGatewayError(res, 'INVALID_ARGUMENT', error.message, false, {
+            profileId,
+            command,
+            reasonCode: error.reasonCode,
+          });
+          return;
+        }
+        mapStoreError(res, error);
+      });
   });
 
   // #1259 slice 4: operator designates (spawns / resumes) the persistent

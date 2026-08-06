@@ -112,6 +112,7 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
+  'channels.agent-commands',
   'channels.interrupt',
   'channels.respond-approval',
 ] as const;
@@ -362,6 +363,7 @@ export function cliGatewayActorCommandCapabilities(
     return ['context:read'];
   if (
     command === 'channels.post' ||
+    command === 'channels.agent-commands' ||
     command === 'channels.interrupt' ||
     command === 'channels.respond-approval'
   )

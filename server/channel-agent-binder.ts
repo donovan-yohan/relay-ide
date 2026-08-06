@@ -16,6 +16,7 @@ import {
 } from './channel-message-store.js';
 import type { ChannelHub } from './channel-hub.js';
 import type { Attachment, ProtocolAdapterV2 } from './protocol-adapter-v2.js';
+import { relayControlCatalogForProvider } from '../shared/agent-command-catalog.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { Session, WebSession } from './types.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
@@ -31,7 +32,10 @@ import {
   type ChannelMention,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
-import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentApprovalDecisionV2,
+  AgentSlashCommandV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 
 // @-mention routing binder (#1167, slice 4). One module owns the whole loop:
@@ -104,6 +108,8 @@ export interface ChannelAgentRosterEntry {
   reason: string | null;
   role?: AgentRole;
   binding: { sessionId: string; status: ChannelAgentStatus } | null;
+  /** Provider previews are safe to show before a binding exists. */
+  commands?: AgentSlashCommandV2[];
 }
 
 export type ChannelAgentStatusBroadcaster = (
@@ -161,6 +167,14 @@ export interface ChannelAgentBinder {
     decision: AgentApprovalDecisionV2
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
+  executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }>;
+  isControlMessage(text: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
   close(): void;
 }
@@ -223,6 +237,23 @@ export class ChannelAgentNoActiveTurnError extends Error {
   constructor(message = 'agent has no active turn') {
     super(message);
     this.name = 'ChannelAgentNoActiveTurnError';
+  }
+}
+
+/** A command lane rejection is deliberately not a channel-message failure. */
+export class ChannelAgentCommandError extends Error {
+  constructor(
+    message: string,
+    readonly reasonCode:
+      | 'UNKNOWN_PROFILE'
+      | 'UNAVAILABLE'
+      | 'UNKNOWN_COMMAND'
+      | 'UNSUPPORTED_DISPATCH'
+      | 'UNSUPPORTED_PROVIDER'
+      | 'CONFIRMATION_REQUIRED'
+  ) {
+    super(message);
+    this.name = 'ChannelAgentCommandError';
   }
 }
 
@@ -415,12 +446,12 @@ export function createChannelAgentBinder(
     };
   }
 
-  function resolveProfileMention(
-    mention: ChannelMention
-  ): AgentProfile | null {
+  function resolveProfileMention(mention: ChannelMention): AgentProfile | null {
     const profiles = deps.agentProfileStore?.list() ?? [];
     if (mention.profileId) {
-      const pinned = profiles.find((profile) => profile.id === mention.profileId);
+      const pinned = profiles.find(
+        (profile) => profile.id === mention.profileId
+      );
       if (pinned) return pinned;
       // A persisted, collision-disambiguated profile id must never silently
       // become a different named profile after a catalog edit.
@@ -696,7 +727,9 @@ export function createChannelAgentBinder(
         ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
         ...(yolo ? { permissionMode: YOLO_PERMISSION_MODE } : {}),
         ...(profile.model !== undefined ? { model: profile.model } : {}),
-        ...(profile.envVars !== undefined ? { processEnv: profile.envVars } : {}),
+        ...(profile.envVars !== undefined
+          ? { processEnv: profile.envVars }
+          : {}),
         ...(profile.systemPrompt !== undefined
           ? { systemPrompt: profile.systemPrompt }
           : {}),
@@ -706,7 +739,9 @@ export function createChannelAgentBinder(
                 ...(profile.provider !== undefined
                   ? { provider: profile.provider }
                   : {}),
-                ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+                ...(profile.effort !== undefined
+                  ? { effort: profile.effort }
+                  : {}),
               },
             }
           : {}),
@@ -742,7 +777,10 @@ export function createChannelAgentBinder(
     channelId: string,
     framework: string
   ): Promise<LiveBinding> {
-    return ensureProfileBinding(channelId, defaultProfileForProvider(framework));
+    return ensureProfileBinding(
+      channelId,
+      defaultProfileForProvider(framework)
+    );
   }
 
   function ensureProfileBinding(
@@ -754,9 +792,11 @@ export function createChannelAgentBinder(
     const pending = inflight.get(key);
     if (pending) return pending;
     // Store before awaiting so concurrent mentions of one profile single-flight.
-    const promise = doEnsureBinding(channelId, profile, requiredRole).finally(() => {
-      inflight.delete(key);
-    });
+    const promise = doEnsureBinding(channelId, profile, requiredRole).finally(
+      () => {
+        inflight.delete(key);
+      }
+    );
     inflight.set(key, promise);
     return promise;
   }
@@ -767,7 +807,7 @@ export function createChannelAgentBinder(
     profileActorId?: string
   ): Promise<LiveBinding> {
     const profile = profileActorId
-      ? deps.agentProfileStore?.get(profileActorId) ?? null
+      ? (deps.agentProfileStore?.get(profileActorId) ?? null)
       : defaultProfileForProvider(framework);
     if (!profile) {
       throw new ChannelBindingError(
@@ -792,9 +832,11 @@ export function createChannelAgentBinder(
       }
       return binding;
     }
-    const promise = doEnsureBinding(channelId, profile, 'orchestrator').finally(() => {
-      inflight.delete(key);
-    });
+    const promise = doEnsureBinding(channelId, profile, 'orchestrator').finally(
+      () => {
+        inflight.delete(key);
+      }
+    );
     inflight.set(key, promise);
     return promise;
   }
@@ -1212,12 +1254,16 @@ export function createChannelAgentBinder(
     if (!binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.delete(item.requestId);
     const kind = item.decision?.kind ?? 'resolved';
-    postSystemRow(binding.channelId, `@${binding.displayName} approval ${kind}`, {
-      parentMessageId:
-        binding.activeTurnId === null
-          ? undefined
-          : parentForTurn(binding, binding.activeTurnId),
-    });
+    postSystemRow(
+      binding.channelId,
+      `@${binding.displayName} approval ${kind}`,
+      {
+        parentMessageId:
+          binding.activeTurnId === null
+            ? undefined
+            : parentForTurn(binding, binding.activeTurnId),
+      }
+    );
   }
 
   // ── routing ─────────────────────────────────────────────────────────────────
@@ -1357,7 +1403,10 @@ export function createChannelAgentBinder(
    * AND gateway-agent posts so neither can escape the token-spend guard between
    * human turns.
    */
-  function routeWithBrake(message: ChannelMessage, profiles: AgentProfile[]): void {
+  function routeWithBrake(
+    message: ChannelMessage,
+    profiles: AgentProfile[]
+  ): void {
     if (profiles.length === 0) return;
     const sourceSession = message.source?.sessionId
       ? deps.sessions.get(message.source.sessionId)
@@ -1511,7 +1560,9 @@ export function createChannelAgentBinder(
     channelId: string
   ): Promise<ChannelAgentRosterEntry[]> {
     const targets = await getTargets();
-    const targetByProvider = new Map(targets.map((target) => [target.id, target]));
+    const targetByProvider = new Map(
+      targets.map((target) => [target.id, target])
+    );
     const storedProfiles = deps.agentProfileStore?.list();
     const profiles = storedProfiles
       ? [
@@ -1526,27 +1577,176 @@ export function createChannelAgentBinder(
             .map((target) => defaultProfileForProvider(target.id)),
         ]
       : targets.map((target) => defaultProfileForProvider(target.id));
-    return Promise.all(profiles.map(async (profile) => {
-      const target = targetByProvider.get(profile.providerId);
-      const binding = live.get(bindingKey(channelId, profile.id));
-      const row = store.getBinding(channelId, profile.id);
-      const sessionId = binding?.sessionId ?? row?.sessionId ?? null;
-      const session = sessionId ? deps.sessions.get(sessionId) : undefined;
-      return {
-        id: profile.id,
-        displayName: await rosterDisplayName(profile),
-        providerId: profile.providerId,
-        isDefault: profile.isDefault,
-        isBuiltIn: profile.isBuiltIn,
-        kind: 'framework',
-        available: target?.available ?? false,
-        reason: target?.reason ?? 'framework unavailable',
-        ...(session?.role !== undefined ? { role: session.role } : {}),
-        binding: sessionId
-          ? { sessionId, status: binding?.status ?? 'idle' }
-          : null,
-      };
-    }));
+    return Promise.all(
+      profiles.map(async (profile) => {
+        const target = targetByProvider.get(profile.providerId);
+        const binding = live.get(bindingKey(channelId, profile.id));
+        const row = store.getBinding(channelId, profile.id);
+        const sessionId = binding?.sessionId ?? row?.sessionId ?? null;
+        const session = sessionId ? deps.sessions.get(sessionId) : undefined;
+        const baseCommands = relayControlCatalogForProvider(
+          profile.providerId
+        ).filter((command) => command.collisionKey !== 'fast');
+        const liveCommands = (
+          binding?.adapter?.getSlashCommands?.() ?? []
+        ).filter((command) => command.dispatch === 'relay-control');
+        const commands = [...baseCommands, ...liveCommands].reduce<
+          AgentSlashCommandV2[]
+        >((merged, command) => {
+          const key = command.collisionKey ?? command.name;
+          if (
+            !merged.some((entry) => (entry.collisionKey ?? entry.name) === key)
+          ) {
+            merged.push(command);
+          }
+          return merged;
+        }, []);
+        return {
+          id: profile.id,
+          displayName: await rosterDisplayName(profile),
+          providerId: profile.providerId,
+          isDefault: profile.isDefault,
+          isBuiltIn: profile.isBuiltIn,
+          kind: 'framework',
+          available: target?.available ?? false,
+          reason: target?.reason ?? 'framework unavailable',
+          ...(session?.role !== undefined ? { role: session.role } : {}),
+          binding: sessionId
+            ? { sessionId, status: binding?.status ?? 'idle' }
+            : null,
+          ...(commands.length > 0 ? { commands } : {}),
+        };
+      })
+    );
+  }
+
+  async function executeCommand(
+    channelId: string,
+    profileActorId: string,
+    command: string,
+    args?: string,
+    confirmed?: boolean
+  ): Promise<{ config?: Record<string, unknown> }> {
+    // Actor id is the sole authority boundary. Never resolve a display name here.
+    const targets = await getTargets();
+    const stored = deps.agentProfileStore?.list() ?? [];
+    const profiles = [
+      ...stored,
+      ...targets
+        .filter(
+          (target) =>
+            !stored.some((profile) => profile.providerId === target.id)
+        )
+        .map((target) => defaultProfileForProvider(target.id)),
+    ];
+    const profile = profiles.find(
+      (candidate) => candidate.id === profileActorId
+    );
+    if (!profile) {
+      throw new ChannelAgentCommandError(
+        'unknown agent profile',
+        'UNKNOWN_PROFILE'
+      );
+    }
+    const target = targets.find(
+      (candidate) => candidate.id === profile.providerId
+    );
+    if (!target?.available) {
+      throw new ChannelAgentCommandError('agent is unavailable', 'UNAVAILABLE');
+    }
+    let binding = live.get(bindingKey(channelId, profileActorId));
+    let preview =
+      binding?.adapter?.getSlashCommands?.() ??
+      relayControlCatalogForProvider(profile.providerId).filter(
+        (entry) => entry.collisionKey !== 'fast'
+      );
+    const name = command.trim().toLowerCase();
+    let selected = preview.find(
+      (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+    );
+    // Static catalog entries make pre-bind previews possible. Other adapters
+    // may expose their own relay controls only after connect; discover those
+    // through the same adapter contract rather than a provider branch.
+    if (!selected && !binding) {
+      binding = await ensureProfileBinding(channelId, profile);
+      preview = binding.adapter?.getSlashCommands?.() ?? [];
+      selected = preview.find(
+        (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
+      );
+    }
+    if (!selected) {
+      throw new ChannelAgentCommandError(
+        'unknown provider command',
+        'UNKNOWN_COMMAND'
+      );
+    }
+    if (selected.dispatch !== 'relay-control') {
+      throw new ChannelAgentCommandError(
+        'agent-dispatch commands are not executable in channels',
+        'UNSUPPORTED_DISPATCH'
+      );
+    }
+    if (selected.destructive && confirmed !== true) {
+      throw new ChannelAgentCommandError(
+        'command confirmation is required',
+        'CONFIRMATION_REQUIRED'
+      );
+    }
+    binding ??= await ensureProfileBinding(channelId, profile);
+    if (!binding.adapter?.executeControlCommand) {
+      throw new ChannelAgentCommandError(
+        'provider command controls are unavailable',
+        'UNSUPPORTED_PROVIDER'
+      );
+    }
+    return binding.adapter.executeControlCommand({
+      command: selected.name,
+      ...(args ? { args } : {}),
+      ...(confirmed !== undefined ? { confirmed } : {}),
+    });
+  }
+
+  function isControlMessage(text: string): boolean {
+    const profiles =
+      deps.agentProfileStore?.list() ??
+      deps.knownProviderIds.map((providerId) =>
+        defaultProfileForProvider(providerId)
+      );
+    let at = 0;
+    while (at < text.length) {
+      at = text.indexOf('@', at);
+      if (at < 0) break;
+      if (at > 0 && /[A-Za-z0-9_.]/.test(text[at - 1]!)) {
+        at += 1;
+        continue;
+      }
+      // Parse each candidate suffix independently: the durable parser dedupes
+      // same-profile mentions for routing, while this admission check must see
+      // every occurrence (for example `@codex hello @codex/compact`).
+      const mention = parseMentions(
+        text.slice(at),
+        deps.knownProviderIds,
+        profiles
+      )[0];
+      if (!mention?.profileId || !mention.providerId) {
+        at += 1;
+        continue;
+      }
+      const suffix = text.slice(at + mention.raw.length);
+      const command = suffix
+        .match(/^\s*\/([^\s]+)(?:\s|$)/)?.[1]
+        ?.toLowerCase();
+      if (
+        command &&
+        relayControlCatalogForProvider(mention.providerId).some(
+          (entry) =>
+            entry.name === command || (entry.aliases ?? []).includes(command)
+        )
+      )
+        return true;
+      at += Math.max(1, mention.raw.length);
+    }
+    return false;
   }
 
   return {
@@ -1556,6 +1756,8 @@ export function createChannelAgentBinder(
     interrupt,
     respondToApproval,
     rosterForChannel,
+    executeCommand,
+    isControlMessage,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },
