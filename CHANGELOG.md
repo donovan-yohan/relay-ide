@@ -18,7 +18,21 @@ workflow.
 
 ## [Unreleased]
 
-### Fixed
+### Channel workspace and sidebar
+
+#### Changed
+
+- The new-chat composer now lets operators create normal channels, and DMs cannot be designated as orchestration channels (#1337)
+
+#### Fixed
+
+- Existing Codex channel conversations now recover after a hub/runtime restart,
+  and user message bubbles no longer collapse into character-by-character
+  wrapping (#1339)
+
+### Agent runtimes
+
+#### Fixed
 
 - Codex reasoning cards now show expandable provider-generated summaries when available, and no longer show inactive expand chevrons when no summary exists
 

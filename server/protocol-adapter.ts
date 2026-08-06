@@ -21,6 +21,12 @@ export interface AdapterConfig {
   hookToken: string;
   /** relay-ide config directory path */
   configDir: string;
+  /**
+   * Provider-native conversation to restore while establishing this transport.
+   * Adapters that opt into atomic resume use this instead of creating a fresh
+   * provider conversation and immediately replacing it.
+   */
+  resumeSessionId?: string;
   /** Agent permission mode (e.g. 'default' | 'acceptEdits' | 'bypassPermissions') */
   permissionMode?: string;
   /** Model override (e.g. 'claude-opus-4-6') */

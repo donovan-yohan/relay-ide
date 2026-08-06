@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  WorkspaceTopicCreateInput,
-  WorkspaceTopicLaunchIntent,
+import {
+  parseWorkspaceTopicConflictDetails,
+  type WorkspaceTopicCreateInput,
+  type WorkspaceTopicLaunchIntent,
 } from '../../../shared/workspace-topics.js';
 import {
+  createWorkspaceTopic,
   createWorkspaceTopicRoomAndMaybeLaunch,
   fetchHubNodes,
+  fetchWorkspaceTopic,
   launchWorkspaceTopicRoom,
   HttpError,
   type WorkspaceTopicLaunchFailure,
@@ -465,11 +468,136 @@ export function useTopicRoomCreate({
     ]
   );
 
+  /**
+   * Create a normal multi-party channel. Unlike agent work, this deliberately
+   * carries neither a deterministic DM id nor a provider routing default: the
+   * resulting topic is a channel where the operator can invite/mention agents.
+   */
+  const createChannel = useCallback(
+    async (title: string) => {
+      const channelTitle = title.trim();
+      if (!channelTitle || submittingIntent) return;
+
+      setSubmittingIntent('create-only');
+      setLaunchFailure(null);
+      const prompt = draft.prompt.trim();
+      let navigatedToCreatedChannel = false;
+      try {
+        const channelRoutingDefaults = {
+          ...(previewCreate.routingDefaults?.nodeId
+            ? { nodeId: previewCreate.routingDefaults.nodeId }
+            : {}),
+          ...(previewCreate.routingDefaults?.repoPath
+            ? { repoPath: previewCreate.routingDefaults.repoPath }
+            : {}),
+          ...(previewCreate.routingDefaults?.worktreePath
+            ? { worktreePath: previewCreate.routingDefaults.worktreePath }
+            : {}),
+          ...(previewCreate.routingDefaults?.cwd
+            ? { cwd: previewCreate.routingDefaults.cwd }
+            : {}),
+        };
+        const input: WorkspaceTopicCreateInput = {
+          id: topicIdReservation.current.reserve(),
+          workspaceId: previewCreate.workspaceId,
+          title: channelTitle,
+          ...(prompt ? { description: prompt.slice(0, 240) } : {}),
+          ...(Object.keys(channelRoutingDefaults).length
+            ? { routingDefaults: channelRoutingDefaults }
+            : {}),
+        };
+        let topic;
+        try {
+          topic = await createWorkspaceTopic(input);
+        } catch (error) {
+          // The opaque id is reserved for this attempt, so a retry after a
+          // timeout/double submit may collide with the exact channel it already
+          // created. Adopt that normal channel just as topic-room creation does.
+          const conflict =
+            error instanceof HttpError && error.status === 409
+              ? parseWorkspaceTopicConflictDetails(error.details)
+              : null;
+          if (!conflict) throw error;
+          topic = await fetchWorkspaceTopic(conflict.blockingTopicId);
+        }
+        topicIdReservation.current.release();
+
+        // Navigate before the optional opening post. This makes an archived
+        // adopted channel recoverable through ChannelView's restore control,
+        // and postOpeningPrompt supplies the established archived-channel toast.
+        const ui = useUiStore.getState();
+        ui.setActiveChannelId(topic.id);
+        navigatedToCreatedChannel = true;
+        ui.setTopicComposerOpen(false);
+        ui.setForceOrgCockpit(false);
+        try {
+          await queryClient.invalidateQueries({
+            queryKey: ['workspace-topics'],
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          useToastStore
+            .getState()
+            .showToast(
+              `channel created, but sidebar refresh failed — ${message}`
+            );
+        }
+        setDraft(TOPIC_ROOM_DRAFT_EMPTY);
+        spendLaneRepoRouting();
+        if (!prompt) return;
+        try {
+          await postOpeningPrompt(topic.id, prompt);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          useToastStore
+            .getState()
+            .showToast(
+              `channel created, but opening message failed — ${message}`
+            );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLaunchFailure({
+          stage: 'topic',
+          message,
+          retryable: true,
+          ...(error instanceof HttpError && error.code
+            ? { code: error.code }
+            : {}),
+          ...(error instanceof HttpError ? { status: error.status } : {}),
+        });
+        // Only an error after this attempt landed on its new channel needs a
+        // toast: the Composer is gone. An existing channel must not turn an
+        // inline create failure into a misleading duplicate toast.
+        if (navigatedToCreatedChannel) {
+          useToastStore
+            .getState()
+            .showToast(`could not create channel — ${message}`);
+        }
+      } finally {
+        setSubmittingIntent(null);
+      }
+    },
+    [
+      draft.prompt,
+      previewCreate.routingDefaults?.cwd,
+      previewCreate.routingDefaults?.nodeId,
+      previewCreate.routingDefaults?.repoPath,
+      previewCreate.routingDefaults?.worktreePath,
+      previewCreate.workspaceId,
+      queryClient,
+      submittingIntent,
+    ]
+  );
+
   return {
     draft,
     updateDraft,
     reset,
     submit,
+    createChannel,
     submittingIntent,
     launchFailure,
     effectiveTitle,
