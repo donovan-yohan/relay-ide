@@ -759,6 +759,37 @@ describe('TopicComposer', () => {
     expect(useSessionsStore.getState().activeSessionId).toBeNull();
   });
 
+  it('keeps a failed channel create inline when another channel is open', async () => {
+    const { HttpError } = await import('../frontend/src/lib/api.js');
+    vi.mocked(createWorkspaceTopic).mockRejectedValue(
+      new HttpError(503, 'hub unreachable')
+    );
+    useUiStore.setState({ activeChannelId: 'topic:already-open' });
+    useToastStore.setState({ toasts: [] });
+    renderComposer();
+
+    const channelChoice = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[aria-pressed]')
+    ).find((button) => button.textContent === 'channel');
+    act(() => channelChoice?.click());
+    const name = container.querySelector<HTMLInputElement>(
+      'input[aria-label="channel name"]'
+    );
+    act(() => setNativeInputValue(name!, 'release coordination'));
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(useUiStore.getState().activeChannelId).toBe('topic:already-open');
+    expect(container.querySelector('.topic-composer__failure')?.textContent).toContain(
+      'hub unreachable'
+    );
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
   it('keeps a created channel out of creation-failure state when its opening message fails', async () => {
     const { HttpError } = await import('../frontend/src/lib/api.js');
     vi.mocked(createWorkspaceTopic).mockResolvedValue({

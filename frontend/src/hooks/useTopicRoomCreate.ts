@@ -481,6 +481,7 @@ export function useTopicRoomCreate({
       setSubmittingIntent('create-only');
       setLaunchFailure(null);
       const prompt = draft.prompt.trim();
+      let navigatedToCreatedChannel = false;
       try {
         const channelRoutingDefaults = {
           ...(previewCreate.routingDefaults?.nodeId
@@ -526,6 +527,7 @@ export function useTopicRoomCreate({
         // and postOpeningPrompt supplies the established archived-channel toast.
         const ui = useUiStore.getState();
         ui.setActiveChannelId(topic.id);
+        navigatedToCreatedChannel = true;
         ui.setTopicComposerOpen(false);
         ui.setForceOrgCockpit(false);
         try {
@@ -566,10 +568,10 @@ export function useTopicRoomCreate({
             : {}),
           ...(error instanceof HttpError ? { status: error.status } : {}),
         });
-        // If navigation already occurred, the Composer is gone and the error
-        // must remain visible to the operator. Creation failures stay in the
-        // Composer's inline failure state as well.
-        if (useUiStore.getState().activeChannelId) {
+        // Only an error after this attempt landed on its new channel needs a
+        // toast: the Composer is gone. An existing channel must not turn an
+        // inline create failure into a misleading duplicate toast.
+        if (navigatedToCreatedChannel) {
           useToastStore
             .getState()
             .showToast(`could not create channel — ${message}`);
