@@ -1,6 +1,8 @@
 name: Publish to npm
 
 on:
+  # Incident recovery: manually publish current nightly after a missed push event.
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -9,6 +11,7 @@ on:
 
 jobs:
   publish:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/nightly'
     runs-on: ubuntu-latest
     environment: release
     permissions:
