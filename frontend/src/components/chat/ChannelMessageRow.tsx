@@ -11,6 +11,11 @@ import {
 import type { AgentDetailCardStatusV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
 import { AgentDetailCard } from './AgentDetailCard.js';
+import type { ReasoningDetailStateApi } from './ReasoningDetailState.js';
+import {
+  reasoningTerminalStateForMessage,
+  shouldRenderChannelMessage,
+} from '../../lib/chat/reasoning-detail.js';
 import { ChannelImagePart } from './ChannelImagePart.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import { createLineBreakSubmitGuard } from './composerInput.js';
@@ -707,12 +712,13 @@ const MessageRowTrailer: React.FC<{
   );
 };
 
-const STATUS_ROW_MODIFIERS: Partial<Record<ChannelMessage['status'], string>> = {
-  streaming: 'ch-msg--streaming',
-  truncated: 'ch-msg--truncated',
-  interrupted: 'ch-msg--interrupted',
-  failed: 'ch-msg--failed',
-};
+const STATUS_ROW_MODIFIERS: Partial<Record<ChannelMessage['status'], string>> =
+  {
+    streaming: 'ch-msg--streaming',
+    truncated: 'ch-msg--truncated',
+    interrupted: 'ch-msg--interrupted',
+    failed: 'ch-msg--failed',
+  };
 
 /** Row modifier classes for a prose row — one table lookup plus two flags. */
 function proseRowClassName(
@@ -765,9 +771,11 @@ interface ChannelMessageRowProps {
   retryBusy?: boolean;
   /** A later system row already superseded this one via `meta.retryOfMessageId`. */
   retried?: boolean;
+  /** Timeline-owned disclosure overrides survive grouped-row remounts. */
+  reasoningViewState?: ReasoningDetailStateApi | undefined;
 }
 
-export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
+const ChannelMessageRowContent: React.FC<ChannelMessageRowProps> = ({
   message,
   channelId,
   variant = 'default',
@@ -780,6 +788,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   onDelete,
   retryBusy = false,
   retried = false,
+  reasoningViewState,
 }) => {
   const streaming = message.status === 'streaming';
   const rowRef = useRef<HTMLDivElement>(null);
@@ -866,6 +875,8 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
     );
   }, [message.body.text]);
 
+  const reasoningTerminalState = reasoningTerminalStateForMessage(message);
+
   if (variant === 'system' || message.kind === 'system') {
     return (
       <ChannelSystemMessageRow
@@ -921,6 +932,9 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
         <AgentDetailCard
           card={message.agentDetail.card}
           itemId={message.agentDetail.itemId}
+          reasoningTerminalState={reasoningTerminalState}
+          reasoningViewState={reasoningViewState}
+          reasoningStateKey={`${message.id}:${message.agentDetail.itemId}`}
         />
       ) : null}
       {deleted ? (
@@ -968,6 +982,16 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       />
     </div>
   );
+};
+
+/**
+ * A provider may open and terminalize a reasoning item without exposing any
+ * summary. Suppress the entire durable timeline row, not just its chevron.
+ */
+export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = (props) => {
+  return shouldRenderChannelMessage(props.message) ? (
+    <ChannelMessageRowContent {...props} />
+  ) : null;
 };
 
 export default ChannelMessageRow;

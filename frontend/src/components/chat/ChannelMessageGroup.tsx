@@ -6,11 +6,13 @@ import type {
 } from '../../../../shared/channel-chat-protocol.js';
 import { AgentAvatar } from './AgentAvatar.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+import { shouldRenderChannelMessage } from '../../lib/chat/reasoning-detail.js';
 import {
   displayedReplyCount,
   type DerivedReplyCount,
 } from '../../lib/chat/channel-timeline-layout.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
+import type { ReasoningDetailStateApi } from './ReasoningDetailState.js';
 
 /** Compact wall-clock time, lowercase (DESIGN.md casing law), e.g. `3:42pm`. */
 export function formatGroupTime(iso: string): string {
@@ -43,6 +45,7 @@ interface ChannelMessageGroupProps {
   busyAgentIds?: ReadonlySet<string>;
   /** Rows a later `meta.retryOfMessageId` system row already superseded. */
   retriedMessageIds?: ReadonlySet<ChannelMessageId>;
+  reasoningViewState?: ReasoningDetailStateApi;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
@@ -58,9 +61,12 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   onDeleteMessage,
   busyAgentIds,
   retriedMessageIds,
+  reasoningViewState,
 }) => {
+  const visibleMessages = messages.filter(shouldRenderChannelMessage);
+  if (visibleMessages.length === 0) return null;
   const identity = resolveSenderIdentity(sender);
-  const first = messages[0];
+  const first = visibleMessages[0];
   // Human messages carry no name chrome — they are always "you", right-aligned
   // bubbles in a single-operator system (spec §4). Agent/system get a header.
   const showHeader = identity.kind !== 'human';
@@ -89,13 +95,14 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
         </div>
       ) : null}
       <div className="ch-group__messages">
-        {messages.map((message) => {
+        {visibleMessages.map((message) => {
           const derived = replyCounts?.get(message.id);
           return (
             <ChannelMessageRow
               key={message.id}
               message={message}
               channelId={channelId}
+              reasoningViewState={reasoningViewState}
               highlighted={highlightedMessageId === message.id}
               retryBusy={busyAgentIds?.has(message.sender.id) ?? false}
               retried={retriedMessageIds?.has(message.id) ?? false}

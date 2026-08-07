@@ -18,6 +18,10 @@ const {
   AGENT_DETAIL_RENDER_MAX_CHARS,
   AGENT_DETAIL_RENDER_MAX_LINES,
 } = await import('../../frontend/src/components/chat/AgentDetailCard.js');
+const { useReasoningDetailSettingsStore } =
+  await import('../../frontend/src/lib/stores/reasoning-detail-settings.js');
+const { resetFallbackReasoningDetailStateForTests } =
+  await import('../../frontend/src/components/chat/ReasoningDetailState.js');
 
 let host: HTMLDivElement;
 let root: Root;
@@ -41,6 +45,8 @@ async function toggle(): Promise<void> {
 describe('AgentDetailCard', () => {
   beforeEach(() => {
     shikiMocks.useShikiHighlight.mockClear();
+    useReasoningDetailSettingsStore.getState().reset();
+    resetFallbackReasoningDetailStateForTests();
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -102,18 +108,117 @@ describe('AgentDetailCard', () => {
     );
   });
 
-  it('does not advertise a disclosure for an empty terminal thought', async () => {
+  it('uses the persisted expanded default for each new reasoning block', async () => {
+    useReasoningDetailSettingsStore.getState().setDefaultState('expanded');
+    await render({
+      kind: 'thought',
+      title: 'provider title is not presented as prose',
+      status: 'running',
+      content: 'first retained fragment',
+    });
+
+    const toggle = host.querySelector<HTMLButtonElement>(
+      '.ch-agent-card__toggle'
+    );
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle?.getAttribute('aria-label')).toBe(
+      'Collapse Reasoning summary (reasoning…)'
+    );
+    expect(host.textContent).toContain('Reasoning summary');
+    expect(host.textContent).not.toContain(
+      'provider title is not presented as prose'
+    );
+    expect(host.textContent).toContain('first retained fragment');
+  });
+
+  it('keeps a manual override stable while settings and streaming content change', async () => {
+    useReasoningDetailSettingsStore.getState().setDefaultState('expanded');
+    await render({
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+      content: 'first fragment',
+    });
+
+    // Two manual toggles leave the block expanded but mark its presentation as
+    // user-controlled. A later opposite default must affect only new blocks.
+    await toggle();
+    await toggle();
+    useReasoningDetailSettingsStore.getState().setDefaultState('collapsed');
+    await render({
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+      content: 'first fragment plus streamed delta',
+    });
+
+    expect(
+      host
+        .querySelector('.ch-agent-card__toggle')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+    expect(host.querySelector('.ch-agent-card__body')?.textContent).toContain(
+      'first fragment plus streamed delta'
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(AgentDetailCard, {
+          card: {
+            kind: 'thought',
+            title: 'thinking',
+            status: 'running',
+            content: 'a newly created block',
+          },
+          itemId: 'durable-item-2',
+        })
+      );
+    });
+    expect(
+      host
+        .querySelector('.ch-agent-card__toggle')
+        ?.getAttribute('aria-expanded')
+    ).toBe('false');
+  });
+
+  it.each(['interrupted', 'failed', 'truncated'] as const)(
+    'shows the truthful %s terminal state while expanded',
+    async (reasoningTerminalState) => {
+      useReasoningDetailSettingsStore.getState().setDefaultState('expanded');
+      await act(async () => {
+        root.render(
+          React.createElement(AgentDetailCard, {
+            card: {
+              kind: 'thought',
+              title: 'thinking',
+              status:
+                reasoningTerminalState === 'failed' ? 'failed' : 'cancelled',
+              content: 'retained provider-visible summary',
+            },
+            itemId: `terminal-${reasoningTerminalState}`,
+            reasoningTerminalState,
+          })
+        );
+      });
+
+      expect(host.querySelector('.ch-agent-card__status')?.textContent).toBe(
+        reasoningTerminalState
+      );
+      expect(host.querySelector('.ch-agent-card__body')?.textContent).toContain(
+        'retained provider-visible summary'
+      );
+    }
+  );
+
+  it('removes an empty terminal reasoning detail', async () => {
     await render({
       kind: 'thought',
       title: 'thinking',
       status: 'completed',
     });
 
-    const card = host.querySelector('.ch-agent-card');
-    expect(card?.getAttribute('data-agent-card-expandable')).toBe('false');
-    expect(card?.querySelector('.ch-agent-card__toggle')).toBeNull();
+    expect(host.querySelector('.ch-agent-card')).toBeNull();
     expect(host.querySelector('.ch-agent-card__chevron')).toBeNull();
-    expect(card?.textContent).toContain('thinking');
   });
 
   it('tints only added and removed diff lines and reports their counts', async () => {

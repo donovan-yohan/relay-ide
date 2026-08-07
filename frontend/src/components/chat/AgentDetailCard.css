@@ -130,3 +130,12 @@
     max-height: 240px;
   }
 }
+
+/* Provider-visible reasoning is a turn detail, never assistant prose. */
+.ch-reasoning-detail {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 65%, var(--border));
+}
+
+.ch-reasoning-detail .ch-agent-card__title {
+  color: var(--text-muted);
+}

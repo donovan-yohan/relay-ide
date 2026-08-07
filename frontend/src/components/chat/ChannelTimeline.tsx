@@ -21,10 +21,12 @@ import {
   channelPresenceCopy,
   type ChannelAgentPresence,
 } from '../../lib/chat/channel-agent-presence.js';
+import { shouldRenderChannelMessage } from '../../lib/chat/reasoning-detail.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { TuiProgress } from '../TuiProgress.js';
 import { ChannelMessageGroup } from './ChannelMessageGroup.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
+import { useReasoningDetailStateScope } from './ReasoningDetailState.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
 import { useLiveReplyGrowth } from './useLiveReplyGrowth.js';
 
@@ -161,6 +163,10 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     ReadonlySet<ChannelMessageId>
   >(() => new Set());
 
+  const reasoningViewState = useReasoningDetailStateScope(
+    `timeline:${channelId}`
+  );
+
   const toggleSystemRun = useCallback((runKey: ChannelMessageId): void => {
     setExpandedSystemRuns((current) => {
       const next = new Set(current);
@@ -172,7 +178,14 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   // Replies stay in the reducer for gap/catch-up correctness. Every piece of
   // main-lane geometry consumes this render-only projection so hidden reply seqs
   // cannot trigger a pill, move an anchor, or create an inline timeline row.
-  const topLevelMessages = useMemo(() => selectTopLevel(messages), [messages]);
+  const allTopLevelMessages = useMemo(
+    () => selectTopLevel(messages),
+    [messages]
+  );
+  const topLevelMessages = useMemo(
+    () => allTopLevelMessages.filter(shouldRenderChannelMessage),
+    [allTopLevelMessages]
+  );
   const replyCounts = useMemo(() => deriveReplyCounts(messages), [messages]);
 
   // #1308 item 2: rows a retry already superseded. Derived from the durable
@@ -209,7 +222,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     fullSnapshotRevision,
   });
 
-  const earliestSeq = topLevelMessages[0]?.seq;
+  const earliestSeq = allTopLevelMessages[0]?.seq;
   const reachedBeginning = !hasMoreOlder && earliestSeq === 1;
 
   // Deep-link jump. Keyed on the request token, never on `messageId`, so a
@@ -406,6 +419,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                           key={message.id}
                           message={message}
                           channelId={channelId}
+                          reasoningViewState={reasoningViewState}
                           variant="system"
                           highlighted={highlightedMessageId === message.id}
                         />
@@ -421,6 +435,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 sender={node.sender}
                 messages={node.messages}
                 channelId={channelId}
+                reasoningViewState={reasoningViewState}
                 replyCounts={replyCounts}
                 replyGrowth={replyGrowth}
                 highlightedMessageId={highlightedMessageId}

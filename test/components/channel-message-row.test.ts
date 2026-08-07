@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { ChannelMessageRow } from '../../frontend/src/components/chat/ChannelMessageRow.js';
+import { useReasoningDetailSettingsStore } from '../../frontend/src/lib/stores/reasoning-detail-settings.js';
+import { resetFallbackReasoningDetailStateForTests } from '../../frontend/src/components/chat/ReasoningDetailState.js';
 import type {
   ChannelMessage,
   ChannelMessageId,
@@ -61,6 +63,8 @@ describe('ChannelMessageRow truncation fidelity', () => {
   let root: Root;
 
   beforeEach(() => {
+    useReasoningDetailSettingsStore.getState().reset();
+    resetFallbackReasoningDetailStateForTests();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -125,31 +129,44 @@ describe('ChannelMessageRow truncation fidelity', () => {
     ).toContain('reasoning content survives channel persistence');
   });
 
-  it('does not advertise a disclosure for a terminal reasoning summary without detail', async () => {
+  it('removes the whole durable row when empty reasoning terminalizes', async () => {
+    const detail = (status: 'streaming' | 'complete') =>
+      agentMessage({
+        status,
+        agentDetail: {
+          itemId: 'reason-summary-only',
+          card: {
+            kind: 'thought',
+            title: 'thinking',
+            status: status === 'streaming' ? 'running' : 'completed',
+            content: '   ',
+          },
+        },
+      });
     await act(async () => {
       root.render(
         React.createElement(ChannelMessageRow, {
-          message: agentMessage({
-            agentDetail: {
-              itemId: 'reason-summary-only',
-              card: {
-                kind: 'thought',
-                title: 'thinking',
-                status: 'completed',
-                content: '   ',
-              },
-            },
-          }),
+          message: detail('streaming'),
           channelId: 'topic:eng-threads',
         })
       );
     });
 
-    const card = container.querySelector('.ch-agent-card');
-    expect(card?.getAttribute('data-agent-card-expandable')).toBe('false');
-    expect(card?.querySelector('.ch-agent-card__toggle')).toBeNull();
-    expect(card?.querySelector('.ch-agent-card__chevron')).toBeNull();
-    expect(card?.textContent).toContain('thinking');
+    expect(container.querySelector('.ch-reasoning-detail')).not.toBeNull();
+    expect(container.querySelector('.ch-agent-card__toggle')).toBeNull();
+    expect(container.textContent).toContain('reasoning…');
+
+    await act(async () => {
+      root.render(
+        React.createElement(ChannelMessageRow, {
+          message: detail('complete'),
+          channelId: 'topic:eng-threads',
+        })
+      );
+    });
+
+    expect(container.querySelector('[data-channel-message-id]')).toBeNull();
+    expect(container.querySelector('.ch-agent-card__chevron')).toBeNull();
   });
 
   it('rerenders authoritative streaming card rows without overriding persisted status', async () => {
@@ -194,7 +211,7 @@ describe('ChannelMessageRow truncation fidelity', () => {
       );
     });
     expect(container.querySelector('.ch-agent-card__status')?.textContent).toBe(
-      'running'
+      'reasoning…'
     );
     expect(
       container.querySelector('.ch-agent-card__body')?.textContent

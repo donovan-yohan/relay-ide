@@ -135,18 +135,19 @@ state after channel recreation.
 
 ### Zustand
 
-| Store                     | Responsibility                                                                         |
-| ------------------------- | -------------------------------------------------------------------------------------- |
-| `ui.ts`                   | Active channel/thread, dialogs, and local navigation                                   |
-| `channel-activity.ts`     | Last-read marks: local fast path, hub push/seed, monotonic-up merge, clamp-epoch fence |
-| `channel-agent-status.ts` | Live profile status keyed by channel/profile                                           |
-| `channel-queued-sends.ts` | Client-side memory of messages sent into a busy agent; drives the `queued` chip        |
-| `unread.ts`               | Unread derivation from marks against durable sequence                                  |
-| `notifications.ts`        | Notification stack entries (including the update toast)                                |
-| `notify-settings.ts`      | Operator notification preferences                                                      |
-| `notify-badge.ts`         | Derived badge count for favicon and title                                              |
-| `sessions.ts`             | Terminal/process session summaries                                                     |
-| `toasts.ts`               | Transient notifications                                                                |
+| Store                          | Responsibility                                                                         |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| `ui.ts`                        | Active channel/thread, dialogs, and local navigation                                   |
+| `channel-activity.ts`          | Last-read marks: local fast path, hub push/seed, monotonic-up merge, clamp-epoch fence |
+| `channel-agent-status.ts`      | Live profile status keyed by channel/profile                                           |
+| `channel-queued-sends.ts`      | Client-side memory of messages sent into a busy agent; drives the `queued` chip        |
+| `unread.ts`                    | Unread derivation from marks against durable sequence                                  |
+| `notifications.ts`             | Notification stack entries (including the update toast)                                |
+| `notify-settings.ts`           | Operator notification preferences                                                      |
+| `reasoning-detail-settings.ts` | Client-local collapsed/expanded default for new reasoning details                      |
+| `notify-badge.ts`              | Derived badge count for favicon and title                                              |
+| `sessions.ts`                  | Terminal/process session summaries                                                     |
+| `toasts.ts`                    | Transient notifications                                                                |
 
 Last-read marks are not browser-local. `channel-activity.ts` persists locally as
 the fast path, then pushes to `PUT /channels/:id/read-state`, seeds from

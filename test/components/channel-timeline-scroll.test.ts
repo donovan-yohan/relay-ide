@@ -12,6 +12,7 @@ import {
 } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { ChannelTimeline } from '../../frontend/src/components/chat/ChannelTimeline.js';
+import { useReasoningDetailSettingsStore } from '../../frontend/src/lib/stores/reasoning-detail-settings.js';
 import type {
   ChannelMessage,
   ChannelMessageId,
@@ -55,6 +56,27 @@ function detailMessage(seq: number): ChannelMessage {
         title: 'durable output',
         status: 'completed',
         content: 'expanded durable card content',
+      },
+    },
+  };
+}
+
+function reasoningMessage(
+  seq: number,
+  messageStatus: 'streaming' | 'complete' = 'streaming'
+): ChannelMessage {
+  return {
+    ...message(seq, ''),
+    status: messageStatus,
+    body: { text: '', format: 'markdown' },
+    agentDetail: {
+      itemId: 'reasoning-stable-item',
+      card: {
+        kind: 'thought',
+        title: 'provider summary title',
+        status: messageStatus === 'streaming' ? 'running' : 'completed',
+        content:
+          messageStatus === 'streaming' ? 'retained reasoning content' : '   ',
       },
     },
   };
@@ -167,6 +189,7 @@ async function userScroll(scrollTop: number): Promise<void> {
 
 describe('ChannelTimeline scroll model (#1193)', () => {
   beforeEach(() => {
+    useReasoningDetailSettingsStore.getState().reset();
     timelineScrollHeight = 1_000;
     timelineClientHeight = 300;
     resizeCallback = null;
@@ -342,6 +365,39 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     expect(timeline().scrollTop).toBe(200);
     expect(host.querySelector('.ch-new-messages')?.textContent).toBe(
       '1 new message'
+    );
+  });
+
+  it('removes empty terminal reasoning before timeline grouping', async () => {
+    await render([reasoningMessage(1)]);
+    expect(host.querySelectorAll('.ch-group')).toHaveLength(1);
+    expect(host.querySelector('.ch-group__header')).not.toBeNull();
+
+    await render([reasoningMessage(1, 'complete')]);
+    expect(host.querySelector('.ch-group')).toBeNull();
+    expect(host.querySelector('.ch-group__header')).toBeNull();
+    expect(host.querySelector('.ch-day-divider')).toBeNull();
+  });
+
+  it('preserves a same-item manual override when its message group remounts', async () => {
+    await render([reasoningMessage(2)]);
+    const toggle = host.querySelector<HTMLButtonElement>(
+      '.ch-agent-card__toggle'
+    );
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => toggle?.click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+
+    // Prepending a same-sender row changes the group's React key from the
+    // reasoning message id to the new first id, remounting all grouped rows.
+    await render([message(1, 'earlier agent prose'), reasoningMessage(2)]);
+    const remounted = host.querySelector<HTMLButtonElement>(
+      '.ch-agent-card__toggle'
+    );
+    expect(remounted).not.toBe(toggle);
+    expect(remounted?.getAttribute('aria-expanded')).toBe('true');
+    expect(host.querySelector('.ch-agent-card__body')?.textContent).toContain(
+      'retained reasoning content'
     );
   });
 });

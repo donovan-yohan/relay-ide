@@ -39,6 +39,7 @@ import {
 import { reloadWhenServerReturns } from '../../lib/server-restart.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
+import { useReasoningDetailSettingsStore } from '../../lib/stores/reasoning-detail-settings.js';
 import SettingsNotificationsSection, {
   NOTIFICATIONS_SECTION_KEYWORDS,
 } from './SettingsNotificationsSection.js';
@@ -96,6 +97,9 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'renamer',
     'branch name',
     'session name',
+    'reasoning summary',
+    'collapsed',
+    'expanded',
   ],
   notifications: NOTIFICATIONS_SECTION_KEYWORDS,
   'agent-profiles': ['agents', 'profiles', 'claude', 'codex', 'opencode'],
@@ -518,6 +522,12 @@ function GeneralSection({
     (notifPerm === 'denied' || notifPerm === 'unsupported') &&
     !config.defaultNotifications;
   const frameworks = useConfigStore((state) => state.frameworks);
+  const reasoningDefault = useReasoningDetailSettingsStore(
+    (state) => state.settings.defaultState
+  );
+  const setReasoningDefault = useReasoningDetailSettingsStore(
+    (state) => state.setDefaultState
+  );
   return (
     <section
       id="section-general"
@@ -587,6 +597,24 @@ function GeneralSection({
           onChange={(v) => void handlers.handleNotifChange(v)}
           disabled={notifDisabled}
         />
+      </SettingRow>
+      <SettingRow
+        name="Reasoning summaries"
+        description="Default presentation for newly created reasoning details"
+      >
+        <select
+          className="settings-dialog-select"
+          value={reasoningDefault}
+          aria-label="Default reasoning summary state"
+          onChange={(event) =>
+            setReasoningDefault(
+              event.currentTarget.value as 'collapsed' | 'expanded'
+            )
+          }
+        >
+          <option value="collapsed">Collapsed</option>
+          <option value="expanded">Expanded</option>
+        </select>
       </SettingRow>
     </section>
   );
