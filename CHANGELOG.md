@@ -74,6 +74,9 @@ workflow.
 
 #### Fixed
 
+- Reap owned agent process trees after channel-runtime failure or replacement,
+  report aggregate runtime resource health, and let operators explicitly release
+  idle channel agents (#1019)
 - Agent profiles whose launch command is missing now appear unavailable in channel rosters and mention palettes, and spawn races report an actionable configuration error instead of raw `ENOENT` (#1357)
 - Codex reasoning cards now show expandable provider-generated summaries when available, and no longer show inactive expand chevrons when no summary exists
 

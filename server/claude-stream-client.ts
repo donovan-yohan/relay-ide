@@ -13,7 +13,12 @@ const logger = createLogger('claude-stream-client');
 export type ClaudeSpawnFn = (
   command: string,
   args: string[],
-  options: { cwd: string; env: Record<string, string>; stdio: 'pipe' }
+  options: {
+    cwd: string;
+    env: Record<string, string>;
+    stdio: 'pipe';
+    detached?: boolean;
+  }
 ) => ChildProcess;
 
 export interface ClaudeStreamClientOptions {
@@ -137,6 +142,7 @@ export class ClaudeStreamClient extends EventEmitter {
         cwd: this.cwd,
         env: this.env,
         stdio: 'pipe',
+        ...(process.platform === 'linux' ? { detached: true } : {}),
       });
     } catch (err) {
       this.closed = true;

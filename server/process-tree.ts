@@ -13,6 +13,8 @@ export interface ProcessInfo {
   command: string;
   commandLine: string;
   rssBytes: number;
+  /** Linux `/proc/<pid>/stat` start time, used to reject PID reuse on reap. */
+  startTicks?: number;
   ageMs?: number;
   languageServerKind?: LanguageServerKind;
 }
@@ -61,11 +63,27 @@ export interface ProcessReapSummary {
   }>;
 }
 
+/** Aggregate-only accounting for adapter-owned process roots and descendants. */
+export interface OwnedProcessResourceSummary {
+  rootCount: number;
+  processCount: number;
+  totalRssBytes: number;
+}
+
+export interface OwnedProcessTreeSnapshot {
+  rootPids: number[];
+  processTable: ProcessInfo[];
+}
+
 export interface ProcessReapOptions {
   rootPids: number[];
+  /** Detached Linux process groups known to belong to the captured roots. */
+  processGroupIds?: number[];
   reason?: string;
   procRoot?: string;
   processTable?: ProcessInfo[];
+  /** Fresh table used to validate captured identities immediately before kill. */
+  verifyProcessTable?: () => ProcessInfo[];
   killDelayMs?: number;
   killProcess?: (pid: number, signal: NodeJS.Signals) => void;
   setTimer?: (callback: () => void, delayMs: number) => { unref?: () => void };
@@ -131,6 +149,7 @@ export function readProcessTable(
       command: parsed.command,
       commandLine,
       rssBytes: readRssBytes(processDir),
+      startTicks: parsed.startTicks,
       ...(ageMs !== undefined ? { ageMs } : {}),
       ...(languageServerKind ? { languageServerKind } : {}),
     });
@@ -201,6 +220,54 @@ export function summarizeProcessReap(
   };
 }
 
+export function summarizeOwnedProcessResources(
+  rootPids: number[],
+  table: ProcessInfo[] = readProcessTable()
+): OwnedProcessResourceSummary {
+  const roots = uniqueSafePids(rootPids);
+  const byPid = new Map(table.map((proc) => [proc.pid, proc]));
+  const owned = new Map<number, ProcessInfo>();
+  let rootCount = 0;
+
+  for (const rootPid of roots) {
+    const root = byPid.get(rootPid);
+    if (!root) continue;
+    rootCount += 1;
+    owned.set(root.pid, root);
+    for (const descendant of descendantsOf(rootPid, table)) {
+      owned.set(descendant.pid, descendant);
+    }
+  }
+
+  return {
+    rootCount,
+    processCount: owned.size,
+    totalRssBytes: Array.from(owned.values()).reduce(
+      (sum, proc) => sum + proc.rssBytes,
+      0
+    ),
+  };
+}
+
+export function captureOwnedProcessTree(
+  rootPids: number[],
+  table: ProcessInfo[] = readProcessTable()
+): OwnedProcessTreeSnapshot {
+  return { rootPids: uniqueSafePids(rootPids), processTable: table };
+}
+
+export function reapOwnedProcessTree(
+  snapshot: OwnedProcessTreeSnapshot,
+  reason: string
+): ProcessReapSummary {
+  return scheduleRelayProcessTreeReap({
+    ...snapshot,
+    processGroupIds: process.platform === 'linux' ? snapshot.rootPids : [],
+    reason,
+    verifyProcessTable: readProcessTable,
+  });
+}
+
 export function scheduleRelayProcessTreeReap(
   options: ProcessReapOptions
 ): ProcessReapSummary {
@@ -209,7 +276,10 @@ export function scheduleRelayProcessTreeReap(
   const table = options.processTable ?? readProcessTable(processTableOptions);
   const summary = summarizeProcessReap(options.rootPids, table);
   const knownPids = new Set([...summary.rootPids, ...summary.descendantPids]);
-  const processGroupIds = new Set(summary.processGroupIds);
+  const processGroupIds = new Set([
+    ...summary.processGroupIds,
+    ...uniqueSafePids(options.processGroupIds ?? []),
+  ]);
   const killProcess =
     options.killProcess ?? ((pid, signal) => process.kill(pid, signal));
   const logger = options.logger;
@@ -230,18 +300,31 @@ export function scheduleRelayProcessTreeReap(
     );
   }
 
-  signalProcessGroups(processGroupIds, 'SIGTERM', killProcess);
-  signalPids(knownPids, 'SIGTERM', killProcess);
+  const current = options.verifyProcessTable?.() ?? table;
+  signalProcessGroups(
+    liveProcessGroups(processGroupIds, table, current),
+    'SIGTERM',
+    killProcess
+  );
+  signalPids(
+    liveCapturedPids(knownPids, table, current),
+    'SIGTERM',
+    killProcess
+  );
 
   const timer = (options.setTimer ?? setTimeout)(() => {
-    signalProcessGroups(processGroupIds, 'SIGKILL', killProcess);
-    const refreshed = readProcessTable(processTableOptions);
-    const liveKnown = new Set<number>();
-    const livePids = new Set(refreshed.map((proc) => proc.pid));
-    for (const pid of Array.from(knownPids)) {
-      if (livePids.has(pid)) liveKnown.add(pid);
-    }
-    signalPids(liveKnown, 'SIGKILL', killProcess);
+    const refreshed =
+      options.verifyProcessTable?.() ?? readProcessTable(processTableOptions);
+    signalProcessGroups(
+      liveProcessGroups(processGroupIds, table, refreshed),
+      'SIGKILL',
+      killProcess
+    );
+    signalPids(
+      liveCapturedPids(knownPids, table, refreshed),
+      'SIGKILL',
+      killProcess
+    );
   }, options.killDelayMs ?? 1_000) as { unref?: () => void };
   timer.unref?.();
 
@@ -597,6 +680,49 @@ function signalPids(
     .filter((pid) => pid > 1 && pid !== process.pid)
     .sort((a, b) => b - a);
   for (const pid of ordered) safeSignal(pid, signal, killProcess);
+}
+
+function liveProcessGroups(
+  groupIds: Set<number>,
+  captured: ProcessInfo[],
+  table: ProcessInfo[]
+): Set<number> {
+  const currentByPid = new Map(table.map((proc) => [proc.pid, proc]));
+  return new Set(
+    Array.from(groupIds).filter((pgid) =>
+      captured.some((before) => {
+        if (before.pgid !== pgid) return false;
+        const now = currentByPid.get(before.pid);
+        return (
+          now?.pgid === pgid &&
+          (before.startTicks === undefined ||
+            now.startTicks === undefined ||
+            before.startTicks === now.startTicks)
+        );
+      })
+    )
+  );
+}
+
+function liveCapturedPids(
+  capturedPids: Set<number>,
+  captured: ProcessInfo[],
+  current: ProcessInfo[]
+): Set<number> {
+  const capturedByPid = new Map(captured.map((proc) => [proc.pid, proc]));
+  const currentByPid = new Map(current.map((proc) => [proc.pid, proc]));
+  return new Set(
+    Array.from(capturedPids).filter((pid) => {
+      const before = capturedByPid.get(pid);
+      const now = currentByPid.get(pid);
+      if (!before || !now) return false;
+      return (
+        before.startTicks === undefined ||
+        now.startTicks === undefined ||
+        before.startTicks === now.startTicks
+      );
+    })
+  );
 }
 
 function safeSignal(

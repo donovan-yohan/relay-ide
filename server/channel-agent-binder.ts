@@ -222,6 +222,8 @@ export interface ChannelAgentBinder {
     profileActorId?: string
   ): Promise<LiveBinding>;
   interrupt(channelId: string, agentId: string): Promise<void>;
+  /** Explicit operator release; only an actually idle, unqueued binding may end. */
+  release(channelId: string, agentId: string): Promise<void>;
   /**
    * Apply steering to an ALREADY-persisted row (#1308 slice 4). Used by the post
    * route when `clientMessageId` idempotency returns an existing row: the
@@ -336,6 +338,21 @@ export class ChannelAgentNoActiveTurnError extends Error {
   constructor(message = 'agent has no active turn') {
     super(message);
     this.name = 'ChannelAgentNoActiveTurnError';
+  }
+}
+
+/** Fail closed: releasing a live turn would discard provider work or approval state. */
+export class ChannelAgentReleaseRefusedError extends Error {
+  constructor(
+    readonly channelId: string,
+    readonly profileActorId: string,
+    readonly status: ChannelAgentStatus,
+    readonly reasonCode:
+      | 'CHANNEL_AGENT_NOT_IDLE'
+      | 'CHANNEL_AGENT_QUEUE_NOT_EMPTY'
+      | 'CHANNEL_AGENT_WAITING_ON_OPERATOR'
+  ) {
+    super(`agent ${profileActorId} cannot be released while ${reasonCode}`);
   }
 }
 
@@ -2590,6 +2607,46 @@ export function createChannelAgentBinder(
     await binding.adapter.interrupt({ turnId: binding.activeTurnId });
   }
 
+  async function release(channelId: string, agentId: string): Promise<void> {
+    const key = bindingKey(channelId, agentId);
+    const binding =
+      live.get(key) ??
+      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
+    if (!binding || !binding.runtimeId) throw new ChannelAgentNotFoundError();
+    if (binding.waitingOn !== null) {
+      throw new ChannelAgentReleaseRefusedError(
+        channelId,
+        binding.profileActorId,
+        binding.status,
+        'CHANNEL_AGENT_WAITING_ON_OPERATOR'
+      );
+    }
+    if (binding.queue.length > 0 || binding.steeringQueue.length > 0) {
+      throw new ChannelAgentReleaseRefusedError(
+        channelId,
+        binding.profileActorId,
+        binding.status,
+        'CHANNEL_AGENT_QUEUE_NOT_EMPTY'
+      );
+    }
+    if (
+      binding.status !== 'idle' ||
+      binding.activeTurnId !== null ||
+      inflight.has(bindingKey(channelId, binding.profileActorId))
+    ) {
+      throw new ChannelAgentReleaseRefusedError(
+        channelId,
+        binding.profileActorId,
+        binding.status,
+        'CHANNEL_AGENT_NOT_IDLE'
+      );
+    }
+    // destroy() captures the owned process tree before the adapter's graceful
+    // provider disconnect; the runtime-end path preserves the durable provider
+    // session/evidence and merely clears the live runtime attachment.
+    await deps.runtimes.destroy(binding.runtimeId);
+  }
+
   /**
    * #1308 slice 1 item 2. Retry is a re-route, never a re-post: the failed row's
    * `source.turnId` names the (trigger, profile) pair the turn was raised for,
@@ -2937,6 +2994,7 @@ export function createChannelAgentBinder(
     ensureBinding,
     ensureOrchestrator,
     interrupt,
+    release,
     steerExisting,
     retryMessage,
     respondToApproval,

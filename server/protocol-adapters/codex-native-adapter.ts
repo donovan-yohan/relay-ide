@@ -32,6 +32,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
 import { cleanEnv } from '../utils.js';
+import {
+  captureOwnedProcessTree,
+  reapOwnedProcessTree,
+} from '../process-tree.js';
 
 const logger = createLogger('codex-native-adapter');
 
@@ -528,9 +532,16 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
    */
   readonly resumesProviderSessionDuringConnect = true;
 
+  ownedProcessRootPids(): number[] {
+    const pid = this.client?.pid ?? this.exitedProcessRootPid;
+    return typeof pid === 'number' && pid > 1 ? [pid] : [];
+  }
+
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
   private client: CodexAppServerClient | null = null;
+  /** Detached group leader retained only after an unexpected child exit. */
+  private exitedProcessRootPid: number | null = null;
   private readonly clientFactory: CodexClientFactory;
 
   // Provider session
@@ -618,6 +629,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.config = config;
     const client = this.createClient(config);
     this.client = client;
+    this.exitedProcessRootPid = null;
 
     this.wireClientEvents(client);
 
@@ -1158,6 +1170,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           }
         }
         this._status = 'disconnected';
+        this.exitedProcessRootPid = client.pid ?? null;
         this.client = null;
         this.emitLiveState({
           status: 'disconnected',
@@ -1191,13 +1204,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       this.completeActiveTurn('interrupted');
     }
 
-    if (this.client) {
+    const client = this.client;
+    this.client = null;
+    if (client) {
       try {
-        await this.client.stop('SIGTERM');
+        await this.stopOwnedClient(client, 'adapter teardown');
       } catch (err) {
         logger.warn('Codex client stop error:', err);
       }
-      this.client = null;
     }
 
     this.activeTurnId = null;
@@ -1215,6 +1229,20 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.reasoningSummaryBuffers.clear();
     this.reasoningDetailBuffers.clear();
     this._status = 'disconnected';
+  }
+
+  private async stopOwnedClient(
+    client: CodexAppServerClient,
+    reason: string
+  ): Promise<void> {
+    const snapshot = captureOwnedProcessTree(
+      client.pid === undefined ? [] : [client.pid]
+    );
+    try {
+      await client.stop('SIGTERM');
+    } finally {
+      if (snapshot.rootPids.length > 0) reapOwnedProcessTree(snapshot, reason);
+    }
   }
 
   // ── Internal: notification dispatch ──────────────────────────────────────

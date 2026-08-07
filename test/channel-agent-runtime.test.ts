@@ -15,6 +15,7 @@ import type {
 } from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
+import type { ProcessInfo } from '../server/process-tree.js';
 
 const adapterState = vi.hoisted(() => ({
   last: null as TestAdapter | null,
@@ -47,6 +48,11 @@ class TestAdapter implements ProtocolAdapterV2 {
   }
 
   sessionId = 'channel-runtime';
+  ownedRoots: number[] = [];
+
+  ownedProcessRootPids(): number[] {
+    return this.ownedRoots;
+  }
 
   async connect(config: AdapterConfig): Promise<void> {
     // Real adapters flip to 'connected' partway through their own connect, so
@@ -754,5 +760,209 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(channelAgentRuntimes.get(first.id)).toBeUndefined();
     expect(channelAgentRuntimes.get(second.id)).toBeUndefined();
     expect(adapterState.last?.status).toBe('disconnected');
+  });
+
+  it('captures owned descendants before graceful disconnect then reaps that snapshot', async () => {
+    const { ChannelAgentRuntimeManager } = await runtimeModule();
+    const table: ProcessInfo[] = [
+      {
+        pid: 410,
+        ppid: 1,
+        pgid: 410,
+        command: 'codex',
+        commandLine: 'codex',
+        rssBytes: 10,
+      },
+      {
+        pid: 411,
+        ppid: 410,
+        pgid: 410,
+        command: 'node',
+        commandLine: 'node',
+        rssBytes: 20,
+      },
+    ];
+    const reaps: Array<{ rootPids: number[]; processTable: ProcessInfo[] }> =
+      [];
+    const currentTable = table;
+    const manager = new ChannelAgentRuntimeManager({
+      readProcessTable: () => currentTable,
+      scheduleProcessTreeReap: (input) => reaps.push(input),
+    });
+    const runtime = await manager.create({
+      id: 'owned-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: 'Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    adapterState.last!.ownedRoots = [410];
+
+    expect(manager.resourceSummary()).toEqual({
+      runtimeCount: 1,
+      runtimeWithOwnedProcesses: 1,
+      processCount: 2,
+      totalRssBytes: 30,
+    });
+    await manager.destroy(runtime.id);
+    expect(reaps).toEqual([
+      expect.objectContaining({ rootPids: [410], processTable: table }),
+    ]);
+  });
+
+  it('reaps the last captured tree after an unexpected child exit clears its live root', async () => {
+    const { ChannelAgentRuntimeManager } = await runtimeModule();
+    const table: ProcessInfo[] = [
+      {
+        pid: 50_010,
+        ppid: 1,
+        pgid: 50_010,
+        command: 'claude',
+        commandLine: 'claude',
+        rssBytes: 10,
+        startTicks: 1,
+      },
+      {
+        pid: 50_011,
+        ppid: 50_010,
+        pgid: 50_010,
+        command: 'node',
+        commandLine: 'node',
+        rssBytes: 20,
+        startTicks: 2,
+      },
+    ];
+    const reaps: Array<{ rootPids: number[]; processTable: ProcessInfo[] }> =
+      [];
+    let currentTable = table;
+    const manager = new ChannelAgentRuntimeManager({
+      readProcessTable: () => currentTable,
+      scheduleProcessTreeReap: (input) => reaps.push(input),
+    });
+    const runtime = await manager.create({
+      id: 'unexpected-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: 'Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    adapterState.last!.ownedRoots = [50_010];
+    adapterState.last!.emitLiveState({ status: 'working' });
+    expect(
+      (
+        manager as unknown as {
+          ownedProcessSnapshots: Map<string, { rootPids: number[] }>;
+        }
+      ).ownedProcessSnapshots.get(runtime.id)?.rootPids
+    ).toEqual([50_010]);
+    // The adapter retains the exited leader ID, but `/proc` no longer contains
+    // it. The last useful snapshot must survive this disconnect patch.
+    currentTable = [{ ...table[1]!, ppid: 1 }];
+    adapterState.last!.emitDisconnected();
+
+    await vi.waitFor(() => {
+      expect(manager.get(runtime.id)).toBeUndefined();
+      expect(reaps).toHaveLength(1);
+    });
+    expect(reaps).toEqual([
+      expect.objectContaining({ rootPids: [50_010], processTable: table }),
+    ]);
+  });
+
+  it('captures and reaps a spawned root when connect fails before any patch', async () => {
+    const { ChannelAgentRuntimeManager } = await runtimeModule();
+    const table: ProcessInfo[] = [
+      {
+        pid: 50_020,
+        ppid: 1,
+        pgid: 50_020,
+        command: 'codex',
+        commandLine: 'codex',
+        rssBytes: 1,
+        startTicks: 1,
+      },
+    ];
+    const reaps: Array<{ rootPids: number[]; processTable: ProcessInfo[] }> =
+      [];
+    const manager = new ChannelAgentRuntimeManager({
+      readProcessTable: () => table,
+      scheduleProcessTreeReap: (input) => reaps.push(input),
+    });
+    adapterState.onConnect = (adapter) => {
+      adapter.ownedRoots = [50_020];
+      throw new Error('connect failed');
+    };
+
+    await expect(
+      manager.create({
+        id: 'failed-runtime',
+        providerId: 'codex',
+        profileActorId: 'agent-profile:codex:default',
+        cwd: '/tmp',
+        displayName: 'Codex',
+        port: 3456,
+        configDir: '/tmp',
+      })
+    ).rejects.toThrow('connect failed');
+    expect(reaps).toEqual([
+      expect.objectContaining({ rootPids: [50_020], processTable: table }),
+    ]);
+  });
+
+  it('reaps a reparented detached-group member when connect loses its leader immediately', async () => {
+    const { ChannelAgentRuntimeManager } = await runtimeModule();
+    const table: ProcessInfo[] = [
+      // The detached group leader has already exited, but this former child
+      // remains alive under init in the same group.
+      {
+        pid: 50_031,
+        ppid: 1,
+        pgid: 50_030,
+        command: 'node',
+        commandLine: 'node build',
+        rssBytes: 2,
+        startTicks: 2,
+      },
+      // A process in an unrelated group must not become an ownership witness.
+      {
+        pid: 50_032,
+        ppid: 1,
+        pgid: 50_032,
+        command: 'node',
+        commandLine: 'node unrelated',
+        rssBytes: 3,
+        startTicks: 3,
+      },
+    ];
+    const reaps: Array<{ rootPids: number[]; processTable: ProcessInfo[] }> =
+      [];
+    const manager = new ChannelAgentRuntimeManager({
+      readProcessTable: () => table,
+      scheduleProcessTreeReap: (input) => reaps.push(input),
+    });
+    adapterState.onConnect = (adapter) => {
+      adapter.ownedRoots = [50_030];
+      throw new Error('leader exited during connect');
+    };
+
+    await expect(
+      manager.create({
+        id: 'fast-exit-runtime',
+        providerId: 'codex',
+        profileActorId: 'agent-profile:codex:default',
+        cwd: '/tmp',
+        displayName: 'Codex',
+        port: 3456,
+        configDir: '/tmp',
+      })
+    ).rejects.toThrow('leader exited during connect');
+
+    expect(reaps).toEqual([
+      expect.objectContaining({ rootPids: [50_030], processTable: table }),
+    ]);
   });
 });

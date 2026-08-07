@@ -102,6 +102,27 @@ function tick(ms = 15): Promise<void> {
 }
 
 describe('ClaudeStreamClient', () => {
+  it('launches an owned Linux process group for descendant cleanup', () => {
+    const child = makeMockChild();
+    const spawn = vi.fn().mockReturnValue(child as unknown as ChildProcess);
+    const client = new ClaudeStreamClient({
+      args: ['-p'],
+      cwd: '/tmp/repo',
+      env: { PATH: '/usr/bin' },
+      spawn,
+    });
+    client.start();
+
+    expect(spawn).toHaveBeenCalledWith(
+      'claude',
+      ['-p'],
+      expect.objectContaining({
+        stdio: 'pipe',
+        ...(process.platform === 'linux' ? { detached: true } : {}),
+      })
+    );
+  });
+
   it('reassembles chunk-split lines into parsed messages', async () => {
     const child = makeMockChild();
     const client = makeClient(child);

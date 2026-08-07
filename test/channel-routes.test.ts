@@ -30,6 +30,7 @@ import {
 } from '../server/channel-chat-router.js';
 import {
   ChannelAgentBusyError,
+  ChannelAgentReleaseRefusedError,
   ChannelAgentRoleConflictError,
   ChannelMessageNotRetryableError,
   createChannelAgentBinder,
@@ -1846,6 +1847,75 @@ describe('channel routes — orchestrator designation (#1259)', () => {
       url: `/channels/${h.channelId}/orchestrator`,
     });
     expect(res.status).toBe(503);
+  });
+});
+
+describe('channel routes — explicit idle agent release', () => {
+  it('releases a live idle binding through the binder-owned control lane', async () => {
+    const calls: Array<{ channelId: string; agentId: string }> = [];
+    const h = await harness({
+      binder: {
+        release: async (channelId: string, agentId: string) => {
+          calls.push({ channelId, agentId });
+        },
+      },
+    });
+    const res = await req<{ ok: boolean }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/agent-profile%3Acodex%3Adefault/release`,
+    });
+
+    expect(res).toMatchObject({ status: 200, body: { ok: true } });
+    expect(calls).toEqual([
+      { channelId: h.channelId, agentId: 'agent-profile:codex:default' },
+    ]);
+  });
+
+  it('maps an active, queued, or waiting binding refusal to a retryable conflict', async () => {
+    const h = await harness({
+      binder: {
+        release: async () => {
+          throw new ChannelAgentReleaseRefusedError(
+            'topic:x',
+            'agent-profile:codex:default',
+            'thinking',
+            'CHANNEL_AGENT_NOT_IDLE'
+          );
+        },
+      },
+    });
+    const res = await req<{
+      error: { retryable: boolean; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/codex/release`,
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.retryable).toBe(true);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_AGENT_NOT_IDLE'
+    );
+  });
+
+  it('refuses release by an agent credential before consulting the binding', async () => {
+    const release = async () => {
+      throw new Error('must not be called');
+    };
+    const h = await harness({ binder: { release } });
+    const res = await req<{ error: { details?: Record<string, unknown> } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/codex/release`,
+      headers: { 'x-test-actor-id': 'codex' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_RELEASE_HUMAN_ONLY'
+    );
   });
 });
 
