@@ -121,13 +121,43 @@ export function buildChannelThreadHistorySql(
 
 export type ChannelMentionContextScope = 'channel' | 'thread';
 
+/** Raw candidate window per semantic statement: 16× the packet row budget. */
+export const MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET = 256;
+
+/**
+ * Indexed lookahead that finds the exclusive lower seq bound for a candidate
+ * window. One OFFSET read examines at most budget + 1 index entries; each
+ * subsequent count/row statement is constrained to at most the newest budget
+ * entries (at most `3 * budget + 1` visits across the three statements).
+ */
+export function buildChannelMentionContextBoundarySql(
+  scope: ChannelMentionContextScope
+): string {
+  if (scope === 'thread') {
+    return `SELECT reply.seq
+              FROM channel_messages reply INDEXED BY idx_chm_thread
+             WHERE reply.thread_id = @threadRootId
+               AND reply.seq < @triggerSeq
+             ORDER BY reply.seq DESC
+             LIMIT 1 OFFSET @candidateBudget`;
+  }
+  return `SELECT channel_row.seq
+            FROM channel_messages channel_row INDEXED BY idx_chm_channel_seq
+           WHERE channel_row.channel_id = @channelId
+             AND channel_row.seq > @afterSeq
+             AND channel_row.seq < @triggerSeq
+           ORDER BY channel_row.seq DESC
+           LIMIT 1 OFFSET @candidateBudget`;
+}
+
 /**
  * Exact summary + bounded-row query used by mention delivery (#1358).
  *
  * Both builders deliberately share the same candidate/eligibility predicates.
- * The count query sees the entire seq range, while the rows query sorts that
- * range newest-first before LIMIT. Thus a million activity rows cost no JS
- * allocations and cannot evict older prose from the packet window.
+ * The caller first narrows the range to the newest deterministic candidate
+ * budget; counts are exact within that window and carry an explicit truncation
+ * bit when older candidates exist. Activity rows cost no JS allocations and
+ * cannot make either SQL query scan an unbounded cursor range.
  */
 function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
   if (scope === 'thread') {
@@ -142,13 +172,14 @@ function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
         FROM channel_messages reply
        WHERE reply.thread_id = @threadRootId
          AND reply.channel_id = @channelId
+         AND reply.seq > @candidateAfterSeq
          AND reply.seq < @triggerSeq
     )`;
   }
   return `(SELECT channel_row.*
              FROM channel_messages channel_row
             WHERE channel_row.channel_id = @channelId
-              AND channel_row.seq > @afterSeq
+              AND channel_row.seq > @candidateAfterSeq
               AND channel_row.seq < @triggerSeq)`;
 }
 
@@ -202,7 +233,7 @@ export function buildChannelMentionContextRowsSql(
     return `SELECT m.*
               FROM channel_messages m
              WHERE m.channel_id = @channelId
-               AND m.seq > @afterSeq
+               AND m.seq > @candidateAfterSeq
                AND m.seq < @triggerSeq
                AND ${mentionContextOwnRowSql('channel')}
                AND ${mentionContextEligibleSql('channel')}
@@ -224,6 +255,7 @@ export function buildChannelMentionContextRowsSql(
                 FROM channel_messages reply
                WHERE reply.thread_id = @threadRootId
                  AND reply.channel_id = @channelId
+                 AND reply.seq > @candidateAfterSeq
                  AND reply.seq < @triggerSeq
                  AND ${mentionContextOwnRowSql('channel', 'reply')}
                  AND ${mentionContextEligibleSql('channel', 'reply')}
@@ -1003,8 +1035,18 @@ export interface ChannelMentionContextQuery {
 
 export interface ChannelMentionContextResult {
   rows: ChannelMessage[];
+  /** Exact count inside the bounded candidate window. */
   totalCount: number;
+  /** Exact filtered count inside the bounded candidate window. */
   activityFilteredCount: number;
+  /** Maximum raw candidates examined by each semantic count/row statement. */
+  candidateScanBudget: number;
+  /**
+   * True when older raw index entries exist outside the bounded window. Thread
+   * probes are deliberately conservative and can include corrupt cross-channel
+   * entries sharing the same thread id; no such row enters the semantic result.
+   */
+  candidateScanTruncated: boolean;
   scope: ChannelMentionContextScope;
 }
 
@@ -2140,6 +2182,16 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
 
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
+  // Repair legacy/hand-built schema-version rows that predate index backstops.
+  // Mention-context budgeting is only a work bound when its boundary probe is an
+  // indexed range read, so prepare-time `INDEXED BY` must fail neither open nor
+  // on an otherwise readable older database.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chm_channel_seq
+      ON channel_messages(channel_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_chm_thread
+      ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+  `);
   db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
   // Order matters both ways: the heal translates `channel_read_state` (created
   // above) and may drop the search index, which `ensureChannelSearchIndex`
@@ -2338,6 +2390,12 @@ export function initChannelMessageStore(
 
 export interface ChannelMessageStoreOptions {
   /**
+   * Raw timeline candidates examined by one mention-context query. The default
+   * is `MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET`; tests may lower it to prove the
+   * deterministic degradation path without machine-dependent timing.
+   */
+  mentionContextCandidateScanBudget?: number;
+  /**
    * Wall-clock ceiling for one ranked index read, in milliseconds. Defaults to
    * `CHANNEL_SEARCH_TIME_BUDGET_MS`.
    *
@@ -2375,6 +2433,19 @@ export function createChannelMessageStore(
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  const mentionContextCandidateScanBudget =
+    options.mentionContextCandidateScanBudget ??
+    MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET;
+  if (
+    !Number.isSafeInteger(mentionContextCandidateScanBudget) ||
+    mentionContextCandidateScanBudget < 1 ||
+    mentionContextCandidateScanBudget > MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET
+  ) {
+    throw new RangeError(
+      `mentionContextCandidateScanBudget must be an integer from 1 through ${MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET}`
+    );
   }
 
   // ── search cost guards (#1316) ────────────────────────────────────────────
@@ -2529,10 +2600,12 @@ export function createChannelMessageStore(
   );
   const mentionContextStatements = {
     channel: {
+      boundary: db.prepare(buildChannelMentionContextBoundarySql('channel')),
       count: db.prepare(buildChannelMentionContextCountSql('channel')),
       rows: db.prepare(buildChannelMentionContextRowsSql('channel')),
     },
     thread: {
+      boundary: db.prepare(buildChannelMentionContextBoundarySql('thread')),
       count: db.prepare(buildChannelMentionContextCountSql('thread')),
       rows: db.prepare(buildChannelMentionContextRowsSql('thread')),
     },
@@ -3095,16 +3168,36 @@ export function createChannelMessageStore(
       const scope: ChannelMentionContextScope =
         input.threadRootId === null ? 'channel' : 'thread';
       const limit = cleanLimit(input.limit);
-      const params = {
+      const baseParams = {
         channelId: input.channelId,
         framework: input.framework,
         triggerSeq: input.triggerSeq,
         afterSeq: input.afterSeq,
         threadRootId: input.threadRootId,
+        candidateBudget: mentionContextCandidateScanBudget,
+      };
+      const statements = mentionContextStatements[scope];
+      const boundary = statements.boundary.get(baseParams) as
+        | { seq: number }
+        | undefined;
+      const candidateScanTruncated = boundary !== undefined;
+      const candidateAfterSeq =
+        boundary?.seq ?? (scope === 'channel' ? input.afterSeq : -1);
+      const params = {
+        ...baseParams,
+        candidateAfterSeq,
         limit,
         replyLimit: Math.max(0, limit - 1),
       };
-      const statements = mentionContextStatements[scope];
+      if (candidateScanTruncated) {
+        logger.warn(
+          'mention_context_candidate_budget_truncated channel_id=%s scope=%s raw_index_entries_at_least=%d candidate_budget=%d',
+          input.channelId,
+          scope,
+          mentionContextCandidateScanBudget + 1,
+          mentionContextCandidateScanBudget
+        );
+      }
       const count = statements.count.get(params) as {
         total_count: number;
         activity_filtered_count: number;
@@ -3115,6 +3208,8 @@ export function createChannelMessageStore(
         rows: rows.map(rowToMessage),
         totalCount: count.total_count,
         activityFilteredCount: count.activity_filtered_count,
+        candidateScanBudget: mentionContextCandidateScanBudget,
+        candidateScanTruncated,
         scope,
       };
     },

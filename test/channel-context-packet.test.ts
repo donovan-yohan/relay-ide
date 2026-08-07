@@ -416,6 +416,31 @@ describe('buildMentionContextPacket', () => {
     expect(packet).not.toContain('hermes [agent]:    ');
   });
 
+  it('labels bounded candidate counts as lower bounds', () => {
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [
+        msg(3, OPERATOR, 'recent prose'),
+        msg(4, SYSTEM, 'activity', 'system'),
+      ],
+      trigger: msg(5, OPERATOR, '@claude continue'),
+      lastDeliveredSeq: 0,
+      summary: {
+        totalCount: 2,
+        activityFilteredCount: 1,
+        candidateScanBudget: 3,
+        candidateScanTruncated: true,
+        scope: 'channel',
+      },
+    });
+
+    expect(packet).toContain(
+      'At least 2 messages since your last turn (1 shown; activity rows filtered: at least 1; newest 3 raw candidates scanned).'
+    );
+    expect(packet).toContain('[…earlier messages omitted]');
+  });
+
   it('renders the exact golden packet (own rows skipped, sender labels, footer)', () => {
     const rows = [
       msg(1, OPERATOR, 'hey team, the build is red'),

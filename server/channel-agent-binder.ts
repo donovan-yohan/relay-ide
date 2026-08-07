@@ -1588,6 +1588,8 @@ export function createChannelAgentBinder(
         summary: {
           totalCount: context.totalCount,
           activityFilteredCount: context.activityFilteredCount,
+          candidateScanBudget: context.candidateScanBudget,
+          candidateScanTruncated: context.candidateScanTruncated,
           scope: context.scope,
         },
       }),

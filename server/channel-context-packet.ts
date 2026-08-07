@@ -78,12 +78,17 @@ export interface BuildMentionContextPacketInput {
   /** Cursor: 0 for a first-ever mention (cold session → full orientation window). */
   lastDeliveredSeq: number;
   /**
-   * Exact precomputed counts when the binder paginates a larger raw history.
-   * Unit callers may omit this and let the pure builder derive counts from rows.
+   * Precomputed counts for the scanned candidate window. They are exact unless
+   * `candidateScanTruncated` is true, in which case packet copy labels them as
+   * lower bounds. Unit callers may omit this and derive exact counts from rows.
    */
   summary?: {
     totalCount: number;
     activityFilteredCount: number;
+    /** Maximum raw candidates examined by each semantic count/row statement. */
+    candidateScanBudget?: number;
+    /** Counts cover the newest bounded candidate window, not all older history. */
+    candidateScanTruncated?: boolean;
     scope: 'channel' | 'thread';
   };
 }
@@ -244,6 +249,7 @@ export function buildMentionContextPacketEnvelope(
 
   let contextRows: ChannelMessage[];
   let omittedEarlier =
+    input.summary?.candidateScanTruncated === true ||
     contextTotalCount - activityFilteredCount > eligible.length;
   if (threadRootId !== null) {
     const root = eligible.find((row) => row.id === threadRootId);
@@ -277,11 +283,17 @@ export function buildMentionContextPacketEnvelope(
   ].join('\n');
 
   const assemble = (rows: ChannelMessage[], omitted: boolean): string => {
+    const truncated = input.summary?.candidateScanTruncated === true;
+    const boundedPrefix = truncated ? 'At least ' : '';
+    const scope =
+      input.summary?.scope ?? (threadRootId === null ? 'channel' : 'thread');
+    const boundedDetails = truncated
+      ? `; activity rows filtered: at least ${activityFilteredCount}; newest ${input.summary?.candidateScanBudget ?? 'bounded'} raw ${scope === 'thread' ? 'reply ' : ''}candidates scanned`
+      : `, ${activityFilteredCount} activity rows filtered`;
     const summary =
-      (input.summary?.scope ??
-        (threadRootId === null ? 'channel' : 'thread')) === 'thread'
-        ? `${contextTotalCount} prior thread rows (${rows.length} shown, ${activityFilteredCount} activity rows filtered).`
-        : `${contextTotalCount} messages since your last turn (${rows.length} shown, ${activityFilteredCount} activity rows filtered).`;
+      scope === 'thread'
+        ? `${boundedPrefix}${contextTotalCount} prior thread rows (${rows.length} shown${boundedDetails}).`
+        : `${boundedPrefix}${contextTotalCount} messages since your last turn (${rows.length} shown${boundedDetails}).`;
     const scopeLines = threadRootId !== null ? [THREAD_SCOPE_MARKER] : [];
     if (rows.length === 0) {
       return [header, summary, ...scopeLines, '', footer].join('\n');
