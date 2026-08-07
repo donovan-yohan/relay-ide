@@ -43,6 +43,7 @@ export type ScopedActorCredentialValidationFailureReason =
   | 'wrong_session_scope'
   | 'wrong_global_session_scope'
   | 'wrong_work_context_scope'
+  | 'wrong_channel_scope'
   | 'wrong_repo_scope'
   | 'wrong_path_scope'
   | 'wrong_task_scope'
@@ -71,6 +72,7 @@ export interface ScopedActorCredentialScope {
   sessionIds?: string[];
   globalSessionIds?: string[];
   workContextIds?: string[];
+  channelIds?: string[];
   repoIds?: string[];
   pathPrefixes?: string[];
   taskRefs?: string[];
@@ -83,6 +85,8 @@ export interface ScopedActorCredentialValidationScope {
   workContextId?: string;
   workContextIds?: string[];
   deferWorkContextScope?: boolean;
+  channelId?: string;
+  channelIds?: string[];
   repoId?: string;
   path?: string;
   taskRef?: string;
@@ -676,6 +680,9 @@ function normalizeCredentialScope(
     ...(normalizeStringList(scope.workContextIds).length > 0
       ? { workContextIds: normalizeStringList(scope.workContextIds) }
       : {}),
+    ...(normalizeStringList(scope.channelIds).length > 0
+      ? { channelIds: normalizeStringList(scope.channelIds) }
+      : {}),
     ...(normalizeStringList(scope.repoIds).length > 0
       ? { repoIds: normalizeStringList(scope.repoIds) }
       : {}),
@@ -700,6 +707,8 @@ type ScopeValidationRule = {
   requested: string[] | undefined;
   wrongReason: ScopedActorCredentialValidationFailureReason;
   deferred?: boolean;
+  /** Fail closed: deny when this dimension is requested but the credential holds no values. */
+  requiredWhenRequested?: boolean;
   matches?: (values: string[], requested: string) => boolean;
 };
 
@@ -733,6 +742,18 @@ function validateCredentialScope(
       wrongReason: 'wrong_work_context_scope',
     },
     {
+      values: credentialScope.channelIds,
+      requested: normalizedRequestedScopeValues(
+        expectedScope?.channelIds ??
+          singletonScopeValue(expectedScope?.channelId)
+      ),
+      // Channel scope is load-bearing for the external harness bridge: an actor
+      // with NO channel scope must never be treated as able to read/write any
+      // channel. Deny rather than skip when a channel is requested but absent.
+      requiredWhenRequested: true,
+      wrongReason: 'wrong_channel_scope',
+    },
+    {
       values: credentialScope.repoIds,
       requested: singletonScopeValue(expectedScope?.repoId),
       wrongReason: 'wrong_repo_scope',
@@ -752,10 +773,17 @@ function validateCredentialScope(
   ];
 
   for (const rule of rules) {
-    if (!rule.values || !rule.requested?.length) continue;
+    const hasRequested = Boolean(rule.requested?.length);
+    if (!rule.values?.length) {
+      // Fail-closed: a dimension that must be present when requested is denied
+      // even when the credential holds no values for it.
+      if (hasRequested && rule.requiredWhenRequested) return rule.wrongReason;
+      continue;
+    }
+    if (!hasRequested) continue;
     const matches = rule.matches ?? listIncludesRequestedValue;
     if (
-      !rule.requested.every((requested) => matches(rule.values!, requested))
+      !rule.requested!.every((requested) => matches(rule.values!, requested))
     ) {
       return rule.wrongReason;
     }
@@ -829,6 +857,7 @@ function copyScope(
     ...(scope.workContextIds
       ? { workContextIds: [...scope.workContextIds] }
       : {}),
+    ...(scope.channelIds ? { channelIds: [...scope.channelIds] } : {}),
     ...(scope.repoIds ? { repoIds: [...scope.repoIds] } : {}),
     ...(scope.pathPrefixes ? { pathPrefixes: [...scope.pathPrefixes] } : {}),
     ...(scope.taskRefs ? { taskRefs: [...scope.taskRefs] } : {}),

@@ -170,7 +170,7 @@ export interface ChannelChatRouterDeps {
     options?: {
       scopeForRequest?: (
         req: Request
-      ) => { workContextIds?: string[] } | undefined;
+      ) => { workContextIds?: string[]; channelIds?: string[] } | undefined;
     }
   ) => RequestHandler;
   requireWriteActorAuth?: (
@@ -178,7 +178,7 @@ export interface ChannelChatRouterDeps {
     options?: {
       scopeForRequest?: (
         req: Request
-      ) => { workContextIds?: string[] } | undefined;
+      ) => { workContextIds?: string[]; channelIds?: string[] } | undefined;
     }
   ) => RequestHandler;
 }
@@ -203,6 +203,79 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function bodyRecord(req: Request): Record<string, unknown> {
   return isRecord(req.body) ? req.body : {};
+}
+
+function channelScopeFromQuery(
+  req: Request
+): { channelIds?: string[] } | undefined {
+  const channelId =
+    typeof req.query['channelId'] === 'string' ? req.query['channelId'] : '';
+  return channelId ? { channelIds: [channelId] } : undefined;
+}
+
+/**
+ * Channel-scope enforcement at the ROUTE level (defense in depth alongside the
+ * actor-auth middleware). A scoped actor credential's `channelIds` are the ONLY
+ * channels it may enumerate/read/write. Browser-authenticated (non-actor)
+ * requests have no `channelIds` scope and keep their existing authority.
+ */
+function actorChannelIds(req: Request): readonly string[] | undefined {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  return credential?.scope?.channelIds;
+}
+
+/** Deny (403) when a scoped actor targets a channel outside its channel scope. */
+function denyOutOfScopeChannel(
+  req: Request,
+  res: Response,
+  channelId: string
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return false; // browser/operator lane: existing authority
+  if (credential.scope?.channelIds?.includes(channelId)) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'actor is not scoped to this channel',
+    false,
+    { channelId, reasonCode: 'CHANNEL_OUT_OF_SCOPE' }
+  );
+  return true;
+}
+
+/** Narrow a list of channel summaries to the actor's channel scope (if any). */
+function filterChannelListToScope(
+  req: Request,
+  channels: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const allowed = actorChannelIds(req);
+  if (!allowed) return channels;
+  const allowedSet = new Set(allowed);
+  return channels.filter(
+    (channel) =>
+      typeof channel['id'] === 'string' && allowedSet.has(channel['id'])
+  );
+}
+
+/**
+ * Fail-closed channel read guard for the scope-less channel verbs (`channels.list`
+ * and global `channels/search`): a scoped actor credential that names NO channels
+ * must not enumerate or read every channel. Browser/operator (non-actor) requests
+ * carry no actor `channelIds` scope and keep their existing authority.
+ */
+function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return false; // browser/operator lane: existing authority
+  const allowed = credential.scope?.channelIds;
+  if (allowed && allowed.length > 0) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'actor credential has no channel scope; cannot enumerate or search channels',
+    false,
+    { reasonCode: 'CHANNEL_SCOPE_REQUIRED' }
+  );
+  return true;
 }
 
 function parseCapabilityHeader(value: string | undefined): Set<string> {
@@ -677,8 +750,13 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // Search is a filtered read of the same durable message log `channels.history`
   // already grants, so it rides that verb rather than minting a new gateway
   // command: a credential that may read a channel's transcript may search it,
-  // and one that may not, cannot.
-  const searchAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
+  // and one that may not, cannot. When a scoped actor supplies a `channelId` the
+  // requested scope is that single channel; a scope-less search is denied by the
+  // actor lane (browser searches keep their existing authority).
+  const searchAuth =
+    deps.requireReadActorAuth?.('channels.history', {
+      scopeForRequest: channelScopeFromQuery,
+    }) ?? auth;
   const threadHistoryAuth =
     deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
@@ -719,6 +797,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   router.get('/channels', listAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    if (denyChannelReadWithoutScope(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
@@ -733,7 +812,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           (topic) => topic.status !== 'archived' || summaries.has(topic.id)
         )
         .map((topic) => channelSummaryView(store, topic));
-      res.json({ channels });
+      // A scoped actor enumerates ONLY its allowed channelIds (Slice 0 gate:
+      // an actor scoped to channel A must never see channel B in the list).
+      res.json({ channels: filterChannelListToScope(req, channels) });
     } catch (error) {
       mapStoreError(res, error);
     }
@@ -745,6 +826,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // ordering is about routing, not about a namespace collision.)
   router.get('/channels/search', searchAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    if (denyChannelReadWithoutScope(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
@@ -774,6 +856,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const includeArchived = parseBooleanQuery(req.query['includeArchived']);
     const limit = parseSearchLimit(req.query['limit']);
     const scopeChannelId = parseStringQuery(req.query['channelId']);
+    if (scopeChannelId && denyOutOfScopeChannel(req, res, scopeChannelId))
+      return;
     const scopeWorkspaceId = parseStringQuery(req.query['workspaceId']);
 
     try {
@@ -795,7 +879,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // point reads on a debounced, minimum-length query.
       const candidateIds = scopeChannelId
         ? [scopeChannelId]
-        : topicStore.listAllTopicIds();
+        : (actorChannelIds(req) ?? topicStore.listAllTopicIds());
       const visible = new Map<string, WorkspaceTopic>();
       for (const candidateId of candidateIds) {
         const topic = topicStore.get(candidateId);
@@ -944,6 +1028,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const topicStore = topicStoreOr503(res, deps.topicStore);
     if (!topicStore) return;
     const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = topicStore.get(id);
     if (!topic || topic.source !== 'persisted') {
       sendGatewayError(res, 'NOT_FOUND', 'channel not found', false, {
@@ -963,6 +1048,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const filter: ChannelHistoryFilter = {};
     const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
     if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
@@ -996,6 +1082,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   router.post('/channels/:id/attachments', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     if (topic.status === 'archived') {
@@ -1049,6 +1137,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     historyAuth,
     (req, res) => {
       if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const id = req.params['id'] ?? '';
+      if (denyOutOfScopeChannel(req, res, id)) return;
       if (!requirePersistedChannel(req, res)) return;
       const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
       if (!attachmentStore) return;
@@ -1107,6 +1197,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const store = storeOr503(res, deps.store);
       if (!store) return;
       const id = req.params['id'] ?? '';
+      if (denyOutOfScopeChannel(req, res, id)) return;
       const rootMessageId = req.params['rootMessageId'] ?? '';
       const filter: ChannelHistoryFilter = {};
       const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
@@ -1147,6 +1238,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const topicStore = topicStoreOr503(res, deps.topicStore);
     if (!topicStore) return;
     const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const body = bodyRecord(req);
 
     // [MF] Reject a client-supplied sender field outright — attribution is
@@ -1523,6 +1615,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   router.get('/channels/:id/roster', rosterAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     if (!storeOr503(res, deps.store)) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     const binder = binderOr503(res, deps.binder);

@@ -227,6 +227,11 @@ describe('CLI gateway contract', () => {
       'workspace-topics.create',
       'workspace-topics.update',
       'workspace-topics.archive',
+      'channels.list',
+      'channels.get',
+      'channels.history',
+      'channels.threads.history',
+      'channels.roster',
       'channels.post',
       'cockpit.list',
       'cockpit.get',
@@ -244,6 +249,45 @@ describe('CLI gateway contract', () => {
       expect(spec.outputSchema).toBeDefined();
       expect(spec.errorCodes.length).toBeGreaterThan(0);
     }
+  });
+
+  it('declares the five channel read verbs as stable gateway commands', () => {
+    const readVerbs = [
+      'channels.list',
+      'channels.get',
+      'channels.history',
+      'channels.threads.history',
+      'channels.roster',
+    ] as const;
+    const names = new Set(stableCommandNames());
+    for (const verb of readVerbs) {
+      expect(names.has(verb)).toBe(true);
+      const spec = commandSpec(verb);
+      expect(spec.stable).toBe(true);
+      expect(spec.transport).toBe('hub-http');
+      expect(spec.requiresAuth).toBe(true);
+      expect(spec.capabilityHints).toContain('context:read');
+      expect(spec.cli).toContain('--json');
+      expect(spec.inputSchema).toBeDefined();
+      expect(spec.outputSchema).toBeDefined();
+      expect(spec.errorCodes.length).toBeGreaterThan(0);
+      for (const code of [
+        'UNAUTHORIZED',
+        'FORBIDDEN',
+        'INVALID_ARGUMENT',
+        'SERVER_UNAVAILABLE',
+      ]) {
+        expect(spec.errorCodes).toContain(code);
+      }
+      if (verb === 'channels.history' || verb === 'channels.threads.history') {
+        expect(spec.errorCodes).toContain('NOT_FOUND');
+      }
+    }
+    // Exact command naming: `channels.threads.history`, NOT `channels.threads`.
+    expect(commandSpec('channels.threads.history').name).toBe(
+      'channels.threads.history'
+    );
+    expect(commandSpec('channels.post').name).toBe('channels.post');
   });
 
   it('keeps cockpit limit validation aligned with its schema', () => {

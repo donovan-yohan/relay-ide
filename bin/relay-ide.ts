@@ -1593,6 +1593,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.create',
   'workspace-topics.update',
   'workspace-topics.archive',
+  'channels.list',
+  'channels.get',
+  'channels.history',
+  'channels.threads.history',
+  'channels.roster',
   'channels.post',
   'cockpit.list',
   'cockpit.get',
@@ -5276,11 +5281,96 @@ async function runGatewayWorkspaceTopics(
 }
 
 async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
-  if (gatewayArgs[1] === 'post') {
-    const input = parseGatewayInputObject(
-      'channels.post',
-      gatewayArgs.slice(2)
-    );
+  const subcommand = gatewayArgs[1];
+  const channelArgs = gatewayArgs.slice(2);
+
+  if (subcommand === 'list') {
+    const result = await gatewayHttpJson({
+      commandName: 'channels.list',
+      pathName: '/channels',
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.list', result), 0);
+  }
+
+  const channelIdFor = (commandName: RelayCliGatewayCommand): string => {
+    const channelId = gatewayArg(channelArgs, '--channel-id')?.trim() ?? '';
+    if (!channelId) {
+      gatewayInvalid(commandName, '--channel-id is required', {
+        field: 'channelId',
+      });
+    }
+    return channelId;
+  };
+
+  if (subcommand === 'get') {
+    const channelId = channelIdFor('channels.get');
+    const result = await gatewayHttpJson({
+      commandName: 'channels.get',
+      pathName: `/channels/${encodeURIComponent(channelId)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.get', result), 0);
+  }
+
+  if (subcommand === 'history') {
+    const channelId = channelIdFor('channels.history');
+    const query = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--limit', 'limit'],
+      ['--before-seq', 'beforeSeq'],
+      ['--after-seq', 'afterSeq'],
+    ] as const) {
+      const value = gatewayArg(channelArgs, flag);
+      if (value !== undefined) query.set(key, value);
+    }
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'channels.history',
+      pathName: `/channels/${encodeURIComponent(channelId)}/messages${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.history', result), 0);
+  }
+
+  if (subcommand === 'threads' && channelArgs[0] === 'history') {
+    const threadArgs = channelArgs.slice(1);
+    const channelId = gatewayArg(threadArgs, '--channel-id')?.trim() ?? '';
+    if (!channelId) {
+      gatewayInvalid('channels.threads.history', '--channel-id is required', {
+        field: 'channelId',
+      });
+    }
+    const threadId = gatewayArg(threadArgs, '--thread-id')?.trim() ?? '';
+    if (!threadId) {
+      gatewayInvalid('channels.threads.history', '--thread-id is required', {
+        field: 'threadId',
+      });
+    }
+    const query = new URLSearchParams();
+    const limit = gatewayArg(threadArgs, '--limit');
+    if (limit !== undefined) query.set('limit', limit);
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'channels.threads.history',
+      pathName: `/channels/${encodeURIComponent(channelId)}/threads/${encodeURIComponent(threadId)}${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.threads.history', result), 0);
+  }
+
+  if (subcommand === 'roster') {
+    const channelId = channelIdFor('channels.roster');
+    const result = await gatewayHttpJson({
+      commandName: 'channels.roster',
+      pathName: `/channels/${encodeURIComponent(channelId)}/roster`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.roster', result), 0);
+  }
+
+  if (subcommand === 'post') {
+    const input = parseGatewayInputObject('channels.post', channelArgs);
     const channelId =
       typeof input['channelId'] === 'string' ? input['channelId'].trim() : '';
     if (!channelId) {
@@ -5301,7 +5391,7 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('channels.post', result), 0);
   }
-  gatewayInvalid('channels.post', 'unknown channels command', {
+  gatewayInvalid('channels.list', 'unknown channels command', {
     args: gatewayArgs,
   });
 }

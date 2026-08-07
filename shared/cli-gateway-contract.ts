@@ -95,6 +95,11 @@ export type RelayCliGatewayCommand =
   | 'workspace-topics.create'
   | 'workspace-topics.update'
   | 'workspace-topics.archive'
+  | 'channels.list'
+  | 'channels.get'
+  | 'channels.history'
+  | 'channels.threads.history'
+  | 'channels.roster'
   | 'channels.post'
   | 'cockpit.list'
   | 'cockpit.get'
@@ -3311,6 +3316,117 @@ const channelPostOutputDataSchema: RelayJsonSchema = {
   required: ['message'],
 };
 
+const channelObjectSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: true,
+};
+
+const channelListInputSchema: RelayJsonSchema = {
+  title: 'ChannelsListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {},
+};
+
+const channelGetInputSchema: RelayJsonSchema = {
+  title: 'ChannelsGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+  },
+  required: ['channelId'],
+};
+
+const channelHistoryInputSchema: RelayJsonSchema = {
+  title: 'ChannelsHistoryInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    limit: { type: 'number' },
+    beforeSeq: { type: 'number' },
+    afterSeq: { type: 'number' },
+  },
+  required: ['channelId'],
+};
+
+const channelThreadHistoryInputSchema: RelayJsonSchema = {
+  title: 'ChannelsThreadHistoryInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    threadId: stringSchema,
+    limit: { type: 'number' },
+  },
+  required: ['channelId'],
+};
+
+const channelRosterInputSchema: RelayJsonSchema = {
+  title: 'ChannelsRosterInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+  },
+  required: ['channelId'],
+};
+
+const channelListOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsListData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channels: { type: 'array', items: channelObjectSchema },
+  },
+  required: ['channels'],
+};
+
+const channelGetOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsGetData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channel: channelObjectSchema,
+  },
+  required: ['channel'],
+};
+
+const channelHistoryOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsHistoryData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    messages: { type: 'array', items: channelObjectSchema },
+    hasMore: { type: 'boolean' },
+    nextCursor: { type: 'number' },
+  },
+  required: ['messages'],
+};
+
+const channelThreadHistoryOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsThreadHistoryData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    messages: { type: 'array', items: channelObjectSchema },
+    hasMore: { type: 'boolean' },
+    nextCursor: { type: 'number' },
+  },
+  required: ['messages'],
+};
+
+const channelRosterOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsRosterData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    roster: { type: 'array', items: channelObjectSchema },
+  },
+  required: ['roster'],
+};
+
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
   title,
   type: 'object',
@@ -6268,6 +6384,152 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SESSION_CONFLICT',
       'SERVER_UNAVAILABLE',
       'INTERNAL',
+    ],
+  },
+  {
+    name: 'channels.list',
+    cli: ['relay-ide', 'v1', 'channels', 'list', '--json'],
+    summary:
+      'List product channels the authenticated actor is scoped to; an actor with a channel scope never sees channels outside it.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelListInputSchema,
+    outputSchema: okOutput('ChannelsListOutput', channelListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.get',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'get',
+      '--channel-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Channel details for a single channel the actor is scoped to; out-of-scope channels are denied.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelGetInputSchema,
+    outputSchema: okOutput('ChannelsGetOutput', channelGetOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.history',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'history',
+      '--channel-id',
+      '<id>',
+      '--limit',
+      '<n>',
+      '--before-seq',
+      '<n>',
+      '--after-seq',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Durable message history for a channel the actor is scoped to; out-of-scope channels are denied.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelHistoryInputSchema,
+    outputSchema: okOutput(
+      'ChannelsHistoryOutput',
+      channelHistoryOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.threads.history',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'threads',
+      'history',
+      '--channel-id',
+      '<id>',
+      '--thread-id',
+      '<id>',
+      '--limit',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Thread message history for a channel the actor is scoped to; out-of-scope channels are denied.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelThreadHistoryInputSchema,
+    outputSchema: okOutput(
+      'ChannelsThreadHistoryOutput',
+      channelThreadHistoryOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.roster',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'roster',
+      '--channel-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Channel roster for a channel the actor is scoped to; out-of-scope channels are denied.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelRosterInputSchema,
+    outputSchema: okOutput(
+      'ChannelsRosterOutput',
+      channelRosterOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
     ],
   },
   {

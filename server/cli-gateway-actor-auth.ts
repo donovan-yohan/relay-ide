@@ -688,6 +688,11 @@ function scopeForValidation(
         ? { workContextId: scope.workContextIds[0] }
         : {}),
     ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+    ...(options.multiWorkContext && scope?.channelIds?.length
+      ? { channelIds: scope.channelIds }
+      : scope?.channelIds?.[0]
+        ? { channelId: scope.channelIds[0] }
+        : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
     ...(taskRef ? { taskRef } : {}),
@@ -734,6 +739,10 @@ function scopeIsAuthorizedByRequest(
     scopeDimensionIsAuthorized(
       credentialScope.workContextIds,
       requestScope.workContextIds
+    ) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.channelIds,
+      requestScope.channelIds
     ) &&
     scopeDimensionIsAuthorized(credentialScope.repoIds, requestScope.repoIds) &&
     scopeDimensionIsAuthorized(
@@ -895,6 +904,14 @@ function validateRequestedScopeAgainstGrant(
   grantScope: HandshakeGrantScope,
   requestScope: ScopedActorCredentialScope
 ): HandshakeGrantValidationFailureReason | null {
+  // Slice 0 channel scope: grants carry NO channel dimension
+  // (`HandshakeGrantScope` has no channelIds — operator-handshake-grants is out
+  // of this slice's ownership boundary). Fail closed: a grant-backed lifecycle
+  // request that names channels is never authorized until the grant lane adds
+  // channel scope. Denied as a scope the grant cannot cover.
+  if (requestScope.channelIds?.length) {
+    return 'wrong_work_context_scope';
+  }
   const rules: {
     grantValues: readonly string[] | undefined;
     requestValues: readonly string[] | undefined;
@@ -1092,6 +1109,7 @@ const forbiddenActorReasons =
     'wrong_session_scope',
     'wrong_global_session_scope',
     'wrong_work_context_scope',
+    'wrong_channel_scope',
     'wrong_repo_scope',
     'wrong_path_scope',
     'wrong_task_scope',
@@ -1166,6 +1184,7 @@ function coerceScope(value: unknown): ScopedActorCredentialScope | undefined {
     ['sessionIds', 'sessionIds'],
     ['globalSessionIds', 'globalSessionIds'],
     ['workContextIds', 'workContextIds'],
+    ['channelIds', 'channelIds'],
     ['repoIds', 'repoIds'],
     ['pathPrefixes', 'pathPrefixes'],
     ['taskRefs', 'taskRefs'],

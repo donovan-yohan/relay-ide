@@ -292,9 +292,12 @@ function realActorAuthDeps(registry: ScopedActorCredentialRegistry): {
         sendCliGatewayActorFailure(res, cliGatewayActorFailure({ lane }));
         return;
       }
+      const channelId =
+        typeof req.params['id'] === 'string' ? req.params['id'] : '';
       const validation = validateCliGatewayActorCredential(registry, {
         token: bearerActorToken(req),
         capabilities: cliGatewayActorCommandCapabilities(expectedCommand),
+        ...(channelId ? { scope: { channelIds: [channelId] } } : {}),
       });
       if ('reason' in validation) {
         sendCliGatewayActorFailure(
@@ -365,6 +368,7 @@ async function harness(
           id: 'cred-1',
           actor: { type: 'agent', id: actorId, displayName: actorId },
           capabilities: ['context:read', 'context:write'],
+          scope: { channelIds: [topic.id] },
         } as unknown as ScopedActorCredentialRecord);
       }
       next();
@@ -679,11 +683,12 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
     const registry = createCliGatewayActorRegistry();
     // Mirrors the shipped mail-loop credential: session:read stamps the read
     // task-ref (giving a non-empty scope), context:write authorizes channels.post.
+    const h = await harness(undefined, { actorRegistry: registry });
     const issued = issueCliGatewayActorCredential(registry, {
       actor: { type: 'agent', id: 'orchestrator', displayName: 'orchestrator' },
       capabilities: ['session:read', 'context:read', 'context:write'],
+      scope: { channelIds: [h.channelId] },
     });
-    const h = await harness(undefined, { actorRegistry: registry });
     const actorHeaders = {
       authorization: `Bearer ${issued.token}`,
       'x-relay-cli-actor-token': 'v1',

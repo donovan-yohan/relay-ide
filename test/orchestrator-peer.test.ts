@@ -22,7 +22,7 @@ import {
 
 const CONFIG: PeerConfig = {
   baseUrl: 'http://relay.test/',
-  pin: 'test-pin',
+  actorToken: 'relay-sac-v1.test-lease',
   actorId: 'echo-peer',
   displayName: 'Echo Peer',
   role: 'orchestrator',
@@ -30,7 +30,8 @@ const CONFIG: PeerConfig = {
   implChannelId: 'topic:implementation',
   workerFramework: 'codex',
   capabilities: ['session:read', 'context:read', 'context:write'],
-  renewable: true,
+  scope: { channelIds: ['topic:general', 'topic:implementation'] },
+  renewable: false,
   pollIntervalMs: 10,
 };
 
@@ -68,19 +69,6 @@ function jsonResponse(
     ...init,
     headers: { 'content-type': 'application/json', ...init.headers },
   });
-}
-
-function minted(token: string): Response {
-  return jsonResponse(
-    {
-      token,
-      credential: {
-        issuedAt: '2026-07-24T00:00:00.000Z',
-        expiresAt: '2026-07-24T00:05:00.000Z',
-      },
-    },
-    { status: 201 }
-  );
 }
 
 describe('orchestrator peer pure seams', () => {
@@ -151,7 +139,15 @@ describe('orchestrator peer pure seams', () => {
 
     // 'truncated' (size-capped but final) IS relayed — it carries real content.
     const truncated = selectNewMessages(
-      [message(4, 'agent:worker', 'partial reply', CONFIG.implChannelId, 'truncated')],
+      [
+        message(
+          4,
+          'agent:worker',
+          'partial reply',
+          CONFIG.implChannelId,
+          'truncated'
+        ),
+      ],
       3,
       'agent:echo-peer'
     );
@@ -162,7 +158,15 @@ describe('orchestrator peer pure seams', () => {
 
     // A terminal 'interrupted' reply is advanced past without relay (like failed).
     const interrupted = selectNewMessages(
-      [message(5, 'agent:worker', 'cut off', CONFIG.implChannelId, 'interrupted')],
+      [
+        message(
+          5,
+          'agent:worker',
+          'cut off',
+          CONFIG.implChannelId,
+          'interrupted'
+        ),
+      ],
       4,
       'agent:echo-peer'
     );
@@ -190,28 +194,33 @@ describe('orchestrator peer pure seams', () => {
     ]);
   });
 
-  it('reads channel ids and worker framework from args or environment', () => {
+  it('reads the pre-minted actor lease and channel ids from args or environment', () => {
     const fromEnvironment = readPeerConfig({
-      RELAY_PEER_PIN: 'environment-pin',
+      RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',
       RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
       RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
       RELAY_PEER_WORKER_FRAMEWORK: 'claude',
     });
-    expect(fromEnvironment.productChannelId).toBe(
-      'topic:product-environment'
-    );
+    expect(fromEnvironment.actorToken).toBe('relay-sac-v1.env-lease');
+    expect(fromEnvironment.productChannelId).toBe('topic:product-environment');
     expect(fromEnvironment.implChannelId).toBe('topic:impl-environment');
     expect(fromEnvironment.workerFramework).toBe('claude');
+    // Channel scope is derived from the peer's two channels unless overridden.
+    expect(fromEnvironment.scope).toEqual({
+      channelIds: ['topic:product-environment', 'topic:impl-environment'],
+    });
+    expect(fromEnvironment).not.toHaveProperty('pin');
+    expect(fromEnvironment.renewable).toBe(false);
 
     const fromArgs = readPeerConfig(
       {
-        RELAY_PEER_PIN: 'environment-pin',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',
         RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
         RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
       },
       [
-        '--pin',
-        'argument-pin',
+        '--actor-token',
+        'relay-sac-v1.arg-lease',
         '--channel',
         'topic:product-argument',
         '--impl-channel',
@@ -220,17 +229,33 @@ describe('orchestrator peer pure seams', () => {
         'codex-argument',
       ]
     );
-    expect(fromArgs.pin).toBe('argument-pin');
+    expect(fromArgs.actorToken).toBe('relay-sac-v1.arg-lease');
     expect(fromArgs.productChannelId).toBe('topic:product-argument');
     expect(fromArgs.implChannelId).toBe('topic:impl-argument');
     expect(fromArgs.workerFramework).toBe('codex-argument');
+    expect(fromArgs.scope).toEqual({
+      channelIds: ['topic:product-argument', 'topic:impl-argument'],
+    });
 
     const withDefault = readPeerConfig({
-      RELAY_PEER_PIN: 'environment-pin',
+      RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',
       RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
       RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
     });
     expect(withDefault.workerFramework).toBe('codex');
+
+    // The PIN/cookie harness path is forbidden: it must never appear in config.
+    // Supplying only RELAY_PEER_PIN (no lease, no channels) must fail closed.
+    expect(() => readPeerConfig({ RELAY_PEER_PIN: 'leaked' })).toThrow(
+      /actor token, product channel/
+    );
+    expect(() =>
+      readPeerConfig({
+        RELAY_IDE_ACTOR_TOKEN: 'not-a-lease',
+        RELAY_PEER_CHANNEL_ID: 'topic:general',
+        RELAY_PEER_IMPL_CHANNEL_ID: 'topic:implementation',
+      })
+    ).toThrow(/relay-sac-v1/);
   });
 
   it('needsRemint fires inside the refresh window', () => {
@@ -271,19 +296,8 @@ describe('orchestrator peer gateway cycle', () => {
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
       calls.push({ url, init });
-      if (url.endsWith('/auth')) {
-        return jsonResponse(
-          { ok: true },
-          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
-        );
-      }
-      if (url.endsWith('/cli-gateway/actor-credentials')) {
-        return minted('relay-sac-v1.first');
-      }
       if (
-        url.endsWith(
-          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
-        )
+        url.endsWith('/channels/topic%3Ageneral/messages?afterSeq=0&limit=100')
       ) {
         return jsonResponse({
           messages: [message(1, 'human:operator', 'build feature')],
@@ -322,33 +336,22 @@ describe('orchestrator peer gateway cycle', () => {
       implLastSeq: 0,
     });
 
-    expect(calls).toHaveLength(5);
-    const authBody = JSON.parse(String(calls[0]?.init.body)) as unknown;
-    expect(authBody).toEqual({ pin: 'test-pin' });
-    const mintBody = JSON.parse(String(calls[1]?.init.body)) as Record<
-      string,
-      unknown
-    >;
-    expect(mintBody).toEqual({
-      capabilities: CONFIG.capabilities,
-      actor: {
-        type: 'agent',
-        id: 'echo-peer',
-        displayName: 'Echo Peer',
-      },
-    });
-    expect(mintBody).not.toHaveProperty('scope');
-    expect(new Headers(calls[1]?.init.headers).get('cookie')).toBe(
-      'token=browser-cookie'
-    );
-
-    const gatewayCalls = calls.slice(2);
+    // No /auth, no /cli-gateway/actor-credentials, no PIN, no browser cookie:
+    // the peer uses the pre-minted lease directly.
+    expect(calls).toHaveLength(3);
+    const gatewayCalls = calls;
     expect(gatewayCalls).toHaveLength(3);
     for (const call of gatewayCalls) {
       const headers = new Headers(call.init.headers);
-      expect(headers.get('authorization')).toBe('Bearer relay-sac-v1.first');
+      expect(headers.get('authorization')).toBe(
+        'Bearer relay-sac-v1.test-lease'
+      );
       expect(headers.get('x-relay-cli-gateway')).toBe('v1');
     }
+    expect(calls.some((call) => call.url.endsWith('/auth'))).toBe(false);
+    expect(
+      calls.some((call) => call.url.endsWith('/cli-gateway/actor-credentials'))
+    ).toBe(false);
     expect(gatewayCalls[0]?.url).toBe(
       'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
     );
@@ -362,9 +365,9 @@ describe('orchestrator peer gateway cycle', () => {
     expect(
       new Headers(gatewayCalls[1]?.init.headers).get('x-relay-cli-command')
     ).toBe('channels.post');
-    expect(
-      new Headers(gatewayCalls[1]?.init.headers).get('content-type')
-    ).toBe('application/json');
+    expect(new Headers(gatewayCalls[1]?.init.headers).get('content-type')).toBe(
+      'application/json'
+    );
     expect(JSON.parse(String(gatewayCalls[1]?.init.body))).toEqual({
       text: '@codex build feature',
     });
@@ -381,19 +384,8 @@ describe('orchestrator peer gateway cycle', () => {
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
       calls.push({ url, init });
-      if (url.endsWith('/auth')) {
-        return jsonResponse(
-          { ok: true },
-          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
-        );
-      }
-      if (url.endsWith('/cli-gateway/actor-credentials')) {
-        return minted('relay-sac-v1.first');
-      }
       if (
-        url.endsWith(
-          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
-        )
+        url.endsWith('/channels/topic%3Ageneral/messages?afterSeq=0&limit=100')
       ) {
         return jsonResponse({ messages: [] });
       }
@@ -438,7 +430,7 @@ describe('orchestrator peer gateway cycle', () => {
       implLastSeq: 4,
     });
 
-    const gatewayCalls = calls.slice(2);
+    const gatewayCalls = calls.slice(0);
     expect(gatewayCalls).toHaveLength(3);
     const post = gatewayCalls[2];
     expect(post?.url).toBe(
@@ -446,13 +438,14 @@ describe('orchestrator peer gateway cycle', () => {
     );
     expect(post?.init.method).toBe('POST');
     const headers = new Headers(post?.init.headers);
-    expect(headers.get('authorization')).toBe('Bearer relay-sac-v1.first');
+    expect(headers.get('authorization')).toBe('Bearer relay-sac-v1.test-lease');
     expect(headers.get('x-relay-cli-gateway')).toBe('v1');
     expect(headers.get('x-relay-cli-command')).toBe('channels.post');
     expect(headers.get('content-type')).toBe('application/json');
     expect(JSON.parse(String(post?.init.body))).toEqual({
       text: 'rollup (from impl): implementation complete',
     });
+    expect(calls.some((call) => call.url.endsWith('/auth'))).toBe(false);
   });
 
   it('self-skips its own worker mention in impl without cross-channel ping-pong', async () => {
@@ -460,19 +453,8 @@ describe('orchestrator peer gateway cycle', () => {
     const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
       const url = input.toString();
       calls.push({ url, init });
-      if (url.endsWith('/auth')) {
-        return jsonResponse(
-          { ok: true },
-          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
-        );
-      }
-      if (url.endsWith('/cli-gateway/actor-credentials')) {
-        return minted('relay-sac-v1.first');
-      }
       if (
-        url.endsWith(
-          '/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
-        )
+        url.endsWith('/channels/topic%3Ageneral/messages?afterSeq=0&limit=100')
       ) {
         return jsonResponse({
           messages: [message(3, 'agent:echo-peer', 'own rollup')],
@@ -529,15 +511,6 @@ describe('orchestrator peer gateway cycle', () => {
     let productPoll = 0;
     const fetchMock = vi.fn<FetchLike>(async (input) => {
       const url = input.toString();
-      if (url.endsWith('/auth')) {
-        return jsonResponse(
-          { ok: true },
-          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
-        );
-      }
-      if (url.endsWith('/cli-gateway/actor-credentials')) {
-        return minted('relay-sac-v1.first');
-      }
       historyUrls.push(url);
       if (url.includes('/channels/topic%3Ageneral/')) {
         productPoll += 1;
@@ -584,27 +557,20 @@ describe('orchestrator peer gateway cycle', () => {
     ]);
   });
 
-  it('re-mints once and retries a gateway 401', async () => {
-    let mintCount = 0;
+  it('uses the pre-minted lease directly with no PIN/cookie remint path', async () => {
     let gatewayCount = 0;
     const gatewayHeaders: Headers[] = [];
     const fetchMock = vi.fn<FetchLike>(async (input, init) => {
       const url = input.toString();
-      if (url.endsWith('/auth')) {
-        return jsonResponse(
-          { ok: true },
-          { headers: { 'set-cookie': 'token=browser-cookie; HttpOnly' } }
-        );
-      }
-      if (url.endsWith('/cli-gateway/actor-credentials')) {
-        mintCount += 1;
-        return minted(`relay-sac-v1.token-${mintCount}`);
+      if (
+        url.endsWith('/auth') ||
+        url.endsWith('/cli-gateway/actor-credentials')
+      ) {
+        throw new Error('PIN/cookie harness path must never be used');
       }
       gatewayCount += 1;
       gatewayHeaders.push(new Headers(init?.headers));
-      return gatewayCount === 1
-        ? new Response(null, { status: 401 })
-        : jsonResponse({ messages: [] });
+      return jsonResponse({ messages: [] });
     });
 
     const manager = new TokenManager(CONFIG, fetchMock, () =>
@@ -616,25 +582,20 @@ describe('orchestrator peer gateway cycle', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mintCount).toBe(2);
-    expect(gatewayCount).toBe(2);
-    expect(
-      gatewayHeaders.map((headers) => ({
-        authorization: headers.get('authorization'),
-        gateway: headers.get('x-relay-cli-gateway'),
-        command: headers.get('x-relay-cli-command'),
-      }))
-    ).toEqual([
-      {
-        authorization: 'Bearer relay-sac-v1.token-1',
-        gateway: 'v1',
-        command: 'channels.history',
-      },
-      {
-        authorization: 'Bearer relay-sac-v1.token-2',
-        gateway: 'v1',
-        command: 'channels.history',
-      },
-    ]);
+    expect(gatewayCount).toBe(1);
+    const headers = gatewayHeaders[0];
+    expect(headers?.get('authorization')).toBe(
+      'Bearer relay-sac-v1.test-lease'
+    );
+    expect(headers?.get('x-relay-cli-gateway')).toBe('v1');
+    expect(headers?.get('x-relay-cli-command')).toBe('channels.history');
+    expect(await manager.getToken()).toBe('relay-sac-v1.test-lease');
+  });
+
+  it('rejects a non-lease actor token in TokenManager', () => {
+    const bad = { ...CONFIG, actorToken: 'not-a-lease' };
+    expect(() => new TokenManager(bad, vi.fn<FetchLike>(), () => 0)).toThrow(
+      /relay-sac-v1/
+    );
   });
 });

@@ -13,7 +13,10 @@ import {
   CLI_GATEWAY_ACTOR_READ_COMMANDS,
   CLI_GATEWAY_ACTOR_WRITE_COMMANDS,
 } from '../server/cli-gateway-actor-auth.js';
-import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
+import type {
+  ScopedActorCredentialRecord,
+  ScopedActorCredentialScope,
+} from '../shared/scoped-actor-credentials.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -135,13 +138,20 @@ async function harness(
   const app = express();
   app.use(express.json());
   // Simulate the CLI-gateway actor lane: attach a credential when the test asks.
+  // `x-test-actor-scope` optionally supplies a JSON scope (e.g. `channelIds`) so
+  // channel-scope enforcement can be exercised at the route level.
   app.use((req, _res, next) => {
     const actorId = req.header('x-test-actor-id');
     if (actorId) {
+      const scopeHeader = req.header('x-test-actor-scope');
+      const scope = scopeHeader
+        ? (JSON.parse(scopeHeader) as ScopedActorCredentialScope)
+        : undefined;
       attachAuthenticatedCliGatewayActorCredential(req, {
         id: 'cred-1',
         actor: { type: 'agent', id: actorId, displayName: 'Claude Bot' },
         capabilities: ['context:read', 'context:write'],
+        ...(scope ? { scope } : {}),
       } as unknown as ScopedActorCredentialRecord);
     }
     next();
@@ -518,7 +528,10 @@ describe('channel routes — attribution', () => {
       method: 'POST',
       url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
       body: { text: 'hello from claude' },
-      headers: { 'x-test-actor-id': 'claude' },
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      },
     });
     expect(res.status).toBe(201);
     expect(res.body.message.sender).toMatchObject({
@@ -1389,6 +1402,164 @@ describe('channel routes — gateway capability mapping', () => {
   });
 });
 
+describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
+  function actorHeaders(channelId: string, method: 'GET' | 'POST') {
+    return {
+      'x-test-actor-id': 'claude',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [channelId] }),
+      ...(method === 'GET' ? { 'x-relay-capabilities': 'context:read' } : {}),
+    };
+  }
+
+  it('an actor scoped to channel A can read/write A but never enumerate, read, or write B', async () => {
+    const h = await harness();
+    // The harness default channel is A; create a second persisted channel B.
+    const a = h.channelId;
+    const b = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
+
+    // Positive: the same actor CAN read and write channel A.
+    const postA = await req<{ message: { sender: { kind: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(a)}/messages`,
+      body: { text: 'to A' },
+      headers: actorHeaders(a, 'POST'),
+    });
+    expect(postA.status).toBe(201);
+    const getA = await req<{ channel: { id: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(a)}`,
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(getA.status).toBe(200);
+    expect(getA.body.channel.id).toBe(a);
+    const historyA = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(a)}/messages`,
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(historyA.status).toBe(200);
+
+    // (a) GET /channels returns only channel A (never B).
+    const list = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(list.status).toBe(200);
+    const listedIds = list.body.channels.map((c) => c.id);
+    expect(listedIds).toContain(a);
+    expect(listedIds).not.toContain(b);
+
+    const seededB = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(b)}/messages`,
+      body: { text: 'quarantine leak marker' },
+    });
+    expect(seededB.status).toBe(201);
+    const globalSearch = await req<{ results: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=quarantine',
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(globalSearch.status).toBe(200);
+    expect(globalSearch.body.results).toEqual([]);
+
+    // (b) Every channel-B read/write is 403 FORBIDDEN before touching the store.
+    for (const [method, url] of [
+      ['GET', `/channels/${encodeURIComponent(b)}`],
+      ['GET', `/channels/${encodeURIComponent(b)}/messages`],
+      ['GET', `/channels/${encodeURIComponent(b)}/roster`],
+      ['GET', `/channels/${encodeURIComponent(b)}/threads/root`],
+      ['POST', `/channels/${encodeURIComponent(b)}/messages`],
+    ] as const) {
+      const res = await req<{ error: { code: string } }>({
+        port: h.port,
+        method,
+        url,
+        body: method === 'POST' ? { text: 'to B' } : undefined,
+        headers: actorHeaders(a, method),
+      });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    }
+  });
+
+  it('denies scope-less actors list and global search while preserving browser/operator reads', async () => {
+    const h = await harness();
+    const seeded = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'scope boundary marker' },
+    });
+    expect(seeded.status).toBe(201);
+    const actorHeaders = {
+      'x-test-actor-id': 'claude',
+      'x-relay-capabilities': 'context:read',
+    };
+
+    for (const url of ['/channels', '/channels/search?q=boundary']) {
+      const denied = await req<{
+        error: { code: string; details?: Record<string, unknown> };
+      }>({
+        port: h.port,
+        method: 'GET',
+        url,
+        headers: actorHeaders,
+      });
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe('FORBIDDEN');
+      expect(denied.body.error.details?.['reasonCode']).toBe(
+        'CHANNEL_SCOPE_REQUIRED'
+      );
+    }
+
+    for (const [method, url] of [
+      ['GET', `/channels/${encodeURIComponent(h.channelId)}`],
+      ['GET', `/channels/${encodeURIComponent(h.channelId)}/messages`],
+      ['GET', `/channels/${encodeURIComponent(h.channelId)}/roster`],
+      ['GET', `/channels/${encodeURIComponent(h.channelId)}/threads/root`],
+      ['POST', `/channels/${encodeURIComponent(h.channelId)}/messages`],
+    ] as const) {
+      const denied = await req<{ error: { code: string } }>({
+        port: h.port,
+        method,
+        url,
+        body: method === 'POST' ? { text: 'scope-less write' } : undefined,
+        headers: actorHeaders,
+      });
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe('FORBIDDEN');
+    }
+
+    const browserList = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      capabilities: 'context:read',
+    });
+    expect(browserList.status).toBe(200);
+    expect(browserList.body.channels.map((channel) => channel.id)).toContain(
+      h.channelId
+    );
+
+    const browserSearch = await req<{ results: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=boundary',
+      capabilities: 'context:read',
+    });
+    expect(browserSearch.status).toBe(200);
+    expect(browserSearch.body.results).toHaveLength(1);
+  });
+});
+
 describe('channel routes — agent commands', () => {
   const commandBinder = (
     calls: unknown[] = []
@@ -1809,7 +1980,10 @@ describe('channel routes — retry write fence', () => {
       port: h.port,
       method: 'POST',
       url: `/channels/${h.channelId}/messages/chm%3Afailed/retry`,
-      headers: { 'x-test-actor-id': 'claude' },
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      },
     });
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FORBIDDEN');
@@ -1918,7 +2092,10 @@ describe('channel routes — message edit (#1308 slice 1 item 3)', () => {
       method: 'POST',
       url: messagesUrl(h.channelId),
       body: { text: 'agent says hi' },
-      headers: { 'x-test-actor-id': 'claude' },
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      },
     });
     expect(agentPost.status).toBe(201);
 
@@ -2111,7 +2288,10 @@ describe('channel routes — message delete (#1308 slice 1 item 4)', () => {
       method: 'POST',
       url: messagesUrl(h.channelId),
       body: { text: 'agent says hi' },
-      headers: { 'x-test-actor-id': 'claude' },
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      },
     });
     expect(agentPost.status).toBe(201);
     const agentRow = await req<{

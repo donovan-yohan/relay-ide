@@ -212,6 +212,57 @@ test('validates WorkContext-scoped actor credentials against exact artifact read
   ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
 });
 
+test('accepts and enforces a channelIds scope dimension on actor credentials', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:read'],
+    scope: { channelIds: ['A'] },
+  });
+  expect(issued.credential.scope?.channelIds).toEqual(['A']);
+
+  // In-scope channel A validates.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['A'] },
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['context:read'] });
+
+  // Out-of-scope channel B is denied with wrong_channel_scope.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['B'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+
+  // A request naming no channel is missing_scope (list requires an explicit
+  // channel scope from a scoped actor).
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+    })
+  ).toMatchObject({ ok: false, reason: 'missing_scope' });
+});
+
+test('denies a channel request when the credential has NO channel scope (fail-closed)', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:read'],
+    scope: { workContextIds: ['wc:allowed'] }, // no channelIds dimension
+  });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['B'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+});
+
 test('requires scoped actor credentials to cover every requested WorkContext id', () => {
   const scopedRegistry = registry();
   const issued = issueCliGatewayActorCredential(scopedRegistry, {
@@ -426,6 +477,40 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       command
     ).toBe('scoped-actor-credential');
   }
+  // The five channel read verbs classify into the scoped-actor-credential read
+  // lane (GET), and a read verb on POST is not an actor read route.
+  for (const command of [
+    'channels.list',
+    'channels.get',
+    'channels.history',
+    'channels.threads.history',
+    'channels.roster',
+  ] as const) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('scoped-actor-credential');
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          method: 'POST',
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('unsupported-route');
+  }
+
   // A read verb presented on POST (a write method) is not an actor read route.
   expect(
     classifyCliGatewayCredentialLane(
