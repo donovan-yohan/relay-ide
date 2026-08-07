@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
+import { Worker } from 'node:worker_threads';
 
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -131,6 +133,112 @@ function artifact(
     ],
     ...input,
   };
+}
+
+function appendedArtifact(
+  predecessor: PipelineHandoffArtifact,
+  id: string
+): PipelineHandoffArtifact {
+  return {
+    ...predecessor,
+    id,
+    supersedesArtifactId: predecessor.id,
+    updatedAt: '2026-06-08T12:10:00.000Z',
+    stages: [
+      ...predecessor.stages,
+      {
+        ...predecessor.stages[0],
+        stage: 'qa',
+        addedAt: '2026-06-08T12:10:00.000Z',
+        actorId: 'agent:kani-validator',
+        summary: 'validated the immutable canonical handoff root',
+        decision: 'validated',
+        verdict: 'passed',
+        testedHeadSha: predecessor.head.headSha,
+        findings: [],
+      },
+    ],
+  };
+}
+
+function structuredReviewArtifact(): PipelineHandoffArtifact {
+  const implementation = artifact({
+    id: 'pipeline-handoff:structured-public:aaaaaaaa',
+    head: {
+      ...artifact().head,
+      base: { name: 'nightly', sha: 'c'.repeat(40) },
+    },
+  });
+  const qa = appendedArtifact(
+    implementation,
+    'pipeline-handoff:structured-public:qa'
+  ).stages[1]!;
+  return {
+    ...implementation,
+    stages: [
+      implementation.stages[0]!,
+      qa,
+      {
+        ...implementation.stages[0]!,
+        stage: 'review',
+        actorId: 'agent:structured-reviewer',
+        summary: 'independent review approved the exact head',
+        verdict: 'approved',
+        reviewedHeadSha: implementation.head.headSha,
+        blockers: [],
+        nitsOrFollowUps: [],
+        adversarialReview: {
+          promptVersion: 'adversarial-review-v1',
+          baseSha: 'c'.repeat(40),
+          diffSha256: 'd'.repeat(64),
+          implementation: {
+            actorId: implementation.stages[0]!.actorId,
+            sessionId: 'session:implementation',
+            runId: 'run:implementation',
+            relayGlobalSessionId: 'global:implementation',
+            provider: 'prime-agent',
+            model: 'gpt-5.6',
+          },
+          reviewer: {
+            actorId: 'agent:structured-reviewer',
+            sessionId: 'session:review',
+            runId: 'run:review',
+            relayGlobalSessionId: 'global:review',
+            provider: 'codex',
+            model: 'gpt-5.6',
+            independentFromImplementation: true,
+            conflictOfInterest: 'none',
+          },
+          trustedProvenance: {
+            disposition: 'declared-unverified',
+            summary: 'auditable declaration pending a trusted resolver',
+          },
+          context: {
+            digestSha256: 'e'.repeat(64),
+            refs: ['docs/context-map.md#handoff-evidence'],
+          },
+          findings: [],
+          containsNoRawTranscriptOrSecrets: true,
+        },
+      },
+    ],
+  };
+}
+
+function expectStoreErrorCode(fn: () => unknown, code: string): void {
+  let didThrow = false;
+  let caught: unknown;
+  try {
+    fn();
+  } catch (err) {
+    didThrow = true;
+    caught = err;
+  }
+  if (!didThrow) {
+    throw new Error(`store unexpectedly accepted input; expected ${code}`);
+  }
+  expect(caught).toBeInstanceOf(WorkContextArtifactStoreError);
+  expect((caught as WorkContextArtifactStoreError).code).toBe(code);
 }
 
 function viewArtifact(
@@ -423,6 +531,98 @@ describe('WorkContext artifact store/index', () => {
         .list({ workContextId: 'wc:view-manifest-supersede' })
         .map((entry) => entry.metadata.id)
     ).toEqual([replacement.metadata.id]);
+  });
+
+  it('rejects cross-kind agent view predecessor edges', () => {
+    const { store } = tmpStore();
+    const handoff = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:view-cross-kind',
+      artifact: artifact({ id: 'pipeline-handoff:cross-kind:aaaaaaaa' }),
+    });
+    const pkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        revision: {
+          id: 'agent-view:cross-kind:bbbbbbbb',
+          supersedes: handoff.metadata.id,
+        },
+      },
+    });
+
+    expectStoreErrorCode(
+      () =>
+        store.storeAgentViewArtifact({
+          workContextId: 'wc:view-cross-kind',
+          viewArtifact: pkg,
+        }),
+      'superseded_artifact_payload_kind_mismatch'
+    );
+    expect(
+      store
+        .list({ workContextId: 'wc:view-cross-kind' })
+        .map((entry) => entry.metadata.id)
+    ).toEqual([handoff.metadata.id]);
+  });
+
+  it('maps contended agent view writes to a stable busy store error', async () => {
+    const root = tmpRoot('work-context-artifacts-view-busy-');
+    const store = createWorkContextArtifactStore({
+      dbPath: path.join(root, 'index.db'),
+      payloadRoot: path.join(root, 'payloads'),
+      busyTimeoutMs: 25,
+    });
+    cleanup.push(() => store.close());
+    const worker = new Worker(
+      `
+        const { parentPort, workerData } = require('node:worker_threads');
+        const Database = require(workerData.betterSqlitePath);
+        const db = new Database(workerData.dbPath);
+        db.exec('BEGIN IMMEDIATE');
+        parentPort.postMessage('locked');
+        setTimeout(() => {
+          db.exec('COMMIT');
+          db.close();
+          parentPort.postMessage('released');
+        }, 100);
+      `,
+      {
+        eval: true,
+        workerData: {
+          betterSqlitePath: createRequire(import.meta.url).resolve(
+            'better-sqlite3'
+          ),
+          dbPath: path.join(root, 'index.db'),
+        },
+      }
+    );
+    cleanup.push(() => void worker.terminate());
+    const message = (expected: string) =>
+      new Promise<void>((resolve, reject) => {
+        const onMessage = (value: unknown) => {
+          if (value !== expected) return;
+          worker.off('error', reject);
+          resolve();
+        };
+        worker.once('error', reject);
+        worker.on('message', onMessage);
+      });
+    await message('locked');
+    const released = message('released');
+
+    expectStoreErrorCode(
+      () =>
+        store.storeAgentViewArtifact({
+          workContextId: 'wc:view-busy',
+          viewArtifact: viewArtifact({
+            manifest: {
+              ...viewArtifact().manifest,
+              revision: { id: 'agent-view:busy:aaaaaaaa' },
+            },
+          }),
+        }),
+      'artifact_store_busy'
+    );
+    await released;
   });
 
   it('rejects top-level visibility that disagrees with an agent view export policy', () => {
@@ -768,14 +968,24 @@ describe('WorkContext artifact store/index', () => {
       })
     ).toThrow(WorkContextArtifactStoreError);
 
+    const originalArtifact = artifact();
     const replacementArtifact = artifact({
       id: 'pipeline-handoff:example:bbbbbbbb',
       updatedAt: '2026-06-08T12:10:00.000Z',
-      head: {
-        ...artifact().head,
-        headSha: nextHeadSha,
-        capturedAt: '2026-06-08T12:10:00.000Z',
-      },
+      stages: [
+        ...originalArtifact.stages,
+        {
+          ...originalArtifact.stages[0],
+          stage: 'qa',
+          addedAt: '2026-06-08T12:10:00.000Z',
+          actorId: 'agent:kani-validator',
+          summary: 'validated the immutable canonical handoff root',
+          decision: 'validated',
+          verdict: 'passed',
+          testedHeadSha: originalArtifact.head.headSha,
+          findings: [],
+        },
+      ],
     });
     const replacement = store.storePipelineHandoffArtifact({
       workContextId: 'wc:append-only',
@@ -784,6 +994,9 @@ describe('WorkContext artifact store/index', () => {
     });
 
     expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
+    expect(store.read(replacement.metadata.id)?.payload).toMatchObject({
+      supersedesArtifactId: first.metadata.id,
+    });
     expect(store.get(first.metadata.id)?.metadata.headSha).toBe(headSha);
     expect(
       store
@@ -796,6 +1009,235 @@ describe('WorkContext artifact store/index', () => {
         .map((entry) => entry.metadata.id)
         .sort()
     ).toEqual([first.metadata.id, replacement.metadata.id].sort());
+  });
+
+  it('uses payload supersedes identity as canonical index metadata', () => {
+    const { store } = tmpStore();
+    const predecessor = artifact({ id: 'pipeline-handoff:canonical:aaaaaaaa' });
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:canonical-payload',
+      artifact: predecessor,
+    });
+    const successor = appendedArtifact(
+      predecessor,
+      'pipeline-handoff:canonical:bbbbbbbb'
+    );
+
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:canonical-payload',
+      visibility: 'public',
+      artifact: successor,
+    });
+
+    expect(stored.metadata.supersedesArtifactId).toBe(predecessor.id);
+    expect(store.read(stored.metadata.id)?.payload).toEqual(successor);
+    expect(store.publicSummary(stored.metadata.id)).toMatchObject({
+      metadata: { supersedesArtifactId: predecessor.id },
+      payload: { supersedesArtifactId: predecessor.id },
+    });
+  });
+
+  it('rejects conflicting request and payload predecessor identities', () => {
+    const { store } = tmpStore();
+    const predecessor = artifact({ id: 'pipeline-handoff:mismatch:aaaaaaaa' });
+    const successor = appendedArtifact(
+      predecessor,
+      'pipeline-handoff:mismatch:bbbbbbbb'
+    );
+
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-mismatch',
+          artifact: successor,
+          supersedesArtifactId: 'pipeline-handoff:other:cccccccc',
+        }),
+      'artifact_supersedes_mismatch'
+    );
+  });
+
+  it('enforces same-head immutable-root append-only chains and rejects forks', () => {
+    const { store } = tmpStore();
+    const predecessor = artifact({ id: 'pipeline-handoff:chain:aaaaaaaa' });
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:canonical-chain',
+      artifact: predecessor,
+    });
+    const valid = appendedArtifact(
+      predecessor,
+      'pipeline-handoff:chain:bbbbbbbb'
+    );
+
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-chain',
+          artifact: {
+            ...valid,
+            id: 'pipeline-handoff:chain:stale-head',
+            head: { ...valid.head, headSha: nextHeadSha },
+            stages: [
+              valid.stages[0]!,
+              { ...valid.stages[1]!, testedHeadSha: nextHeadSha },
+            ],
+          },
+        }),
+      'artifact_supersedes_stale_head'
+    );
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-chain',
+          artifact: {
+            ...valid,
+            id: 'pipeline-handoff:chain:changed-root',
+            title: 'Rewritten handoff title',
+          },
+        }),
+      'artifact_supersedes_append_only_violation'
+    );
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-chain',
+          artifact: {
+            ...valid,
+            id: 'pipeline-handoff:chain:changed-stage',
+            stages: [
+              { ...valid.stages[0]!, summary: 'rewritten prior stage' },
+              valid.stages[1]!,
+            ],
+          },
+        }),
+      'artifact_supersedes_append_only_violation'
+    );
+
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:canonical-chain',
+      artifact: valid,
+    });
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-chain',
+          artifact: {
+            ...valid,
+            id: 'pipeline-handoff:chain:cccccccc',
+          },
+        }),
+      'artifact_supersedes_fork'
+    );
+  });
+
+  it('waits across SQLite handles and returns a stable fork conflict', async () => {
+    const { root, store } = tmpStore();
+    const predecessor = artifact({ id: 'pipeline-handoff:race:aaaaaaaa' });
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:canonical-race',
+      artifact: predecessor,
+    });
+    const successor = appendedArtifact(
+      predecessor,
+      'pipeline-handoff:race:bbbbbbbb'
+    );
+    const worker = new Worker(
+      `
+        const { parentPort, workerData } = require('node:worker_threads');
+        const Database = require(workerData.betterSqlitePath);
+        const db = new Database(workerData.dbPath);
+        db.pragma('busy_timeout = 5000');
+        db.exec('BEGIN IMMEDIATE');
+        parentPort.postMessage('locked');
+        setTimeout(() => {
+          db.prepare(\`
+            INSERT INTO work_context_artifacts (
+              id, work_context_id, project_id, task_ref_kind, task_ref_id,
+              stage, provenance_actor_id, kind, title, summary, visibility,
+              created_at, updated_at, captured_at, payload_kind,
+              payload_media_type, payload_path, payload_sha256, payload_bytes,
+              pr_number, head_sha, base_name, branch_name,
+              supersedes_artifact_id, metadata_json
+            )
+            SELECT ?, work_context_id, project_id, task_ref_kind, task_ref_id,
+              stage, provenance_actor_id, kind, title, summary, visibility,
+              created_at, updated_at, captured_at, payload_kind,
+              payload_media_type, payload_path, payload_sha256, payload_bytes,
+              pr_number, head_sha, base_name, branch_name, ?, metadata_json
+            FROM work_context_artifacts WHERE id = ?
+          \`).run(workerData.childId, workerData.predecessorId, workerData.predecessorId);
+          db.exec('COMMIT');
+          db.close();
+          parentPort.postMessage('committed');
+        }, 100);
+      `,
+      {
+        eval: true,
+        workerData: {
+          betterSqlitePath: createRequire(import.meta.url).resolve(
+            'better-sqlite3'
+          ),
+          dbPath: path.join(root, 'index.db'),
+          predecessorId: predecessor.id,
+          childId: 'pipeline-handoff:race:worker-child',
+        },
+      }
+    );
+    cleanup.push(() => void worker.terminate());
+    const message = (expected: string) =>
+      new Promise<void>((resolve, reject) => {
+        const onMessage = (value: unknown) => {
+          if (value !== expected) return;
+          worker.off('error', reject);
+          resolve();
+        };
+        worker.once('error', reject);
+        worker.on('message', onMessage);
+      });
+    await message('locked');
+    const committed = message('committed');
+
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-race',
+          artifact: successor,
+        }),
+      'artifact_supersedes_fork'
+    );
+    await committed;
+
+    const db = new Database(path.join(root, 'index.db'), { readonly: true });
+    const children = db
+      .prepare(
+        'SELECT id FROM work_context_artifacts WHERE supersedes_artifact_id = ?'
+      )
+      .all(predecessor.id) as Array<{ id: string }>;
+    db.close();
+    expect(children.map((row) => row.id)).toEqual([
+      'pipeline-handoff:race:worker-child',
+    ]);
+  });
+
+  it('rejects a pipeline predecessor that names another artifact payload kind', () => {
+    const { store } = tmpStore();
+    const view = store.storeAgentViewArtifact({
+      workContextId: 'wc:canonical-kind',
+      viewArtifact: viewArtifact(),
+    });
+    const predecessor = artifact({ id: view.metadata.id });
+    const successor = appendedArtifact(
+      predecessor,
+      'pipeline-handoff:canonical-kind:bbbbbbbb'
+    );
+
+    expectStoreErrorCode(
+      () =>
+        store.storePipelineHandoffArtifact({
+          workContextId: 'wc:canonical-kind',
+          artifact: successor,
+        }),
+      'superseded_artifact_payload_kind_mismatch'
+    );
   });
 
   it('rejects invalid handoff payloads before indexing metadata', () => {
@@ -863,6 +1305,28 @@ describe('WorkContext artifact store/index', () => {
         publicPayload as PipelineHandoffArtifact
       ).valid
     ).toBe(true);
+  });
+
+  it('keeps structured review identity bindings valid in public summaries', () => {
+    const { store } = tmpStore();
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:structured-public-copy',
+      visibility: 'public',
+      artifact: structuredReviewArtifact(),
+    });
+
+    const publicCopy = store.publicSummary(stored.metadata.id);
+    const payload = publicCopy?.payload as PipelineHandoffArtifact;
+    expect(validatePublicPipelineHandoffArtifact(payload).errors).toEqual([]);
+    const review = payload.stages[2] as Extract<
+      PipelineHandoffArtifact['stages'][number],
+      { stage: 'review' }
+    >;
+    expect(review.adversarialReview?.implementation.actorId).toBe(
+      payload.stages[0]?.actorId
+    );
+    expect(review.adversarialReview?.reviewer.actorId).toBe(review.actorId);
+    expect(review.actorId).not.toBe(payload.stages[0]?.actorId);
   });
 
   it('returns public summaries for agent view artifacts with sanitized manifest only', () => {

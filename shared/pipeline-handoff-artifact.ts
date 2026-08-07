@@ -1,4 +1,8 @@
-import { ARTIFACT_KINDS, type TaskRef, type ArtifactKind } from './work-context.js';
+import {
+  ARTIFACT_KINDS,
+  type TaskRef,
+  type ArtifactKind,
+} from './work-context.js';
 
 export const PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION = 1 as const;
 
@@ -9,8 +13,7 @@ export const PIPELINE_HANDOFF_STAGES = [
   'release',
 ] as const;
 
-export type PipelineHandoffStageName =
-  (typeof PIPELINE_HANDOFF_STAGES)[number];
+export type PipelineHandoffStageName = (typeof PIPELINE_HANDOFF_STAGES)[number];
 
 export const PIPELINE_HANDOFF_EVIDENCE_DISPOSITIONS = [
   'provided',
@@ -70,6 +73,54 @@ export const PIPELINE_HANDOFF_REVIEW_VERDICTS = [
 
 export type PipelineHandoffReviewVerdict =
   (typeof PIPELINE_HANDOFF_REVIEW_VERDICTS)[number];
+
+export const PIPELINE_HANDOFF_REVIEW_FINDING_SEVERITIES = [
+  'P0',
+  'P1',
+  'P2',
+  'P3',
+] as const;
+export type PipelineHandoffReviewFindingSeverity =
+  (typeof PIPELINE_HANDOFF_REVIEW_FINDING_SEVERITIES)[number];
+
+export const PIPELINE_HANDOFF_REVIEW_FINDING_DISPOSITIONS = [
+  'fixed',
+  'follow-up',
+  'refuted',
+  'unresolved',
+] as const;
+export type PipelineHandoffReviewFindingDispositionKind =
+  (typeof PIPELINE_HANDOFF_REVIEW_FINDING_DISPOSITIONS)[number];
+
+export const PIPELINE_HANDOFF_TRUSTED_PROVENANCE_DISPOSITIONS = [
+  'verified',
+  'declared-unverified',
+  'unresolvable',
+  'mismatched',
+] as const;
+export type PipelineHandoffTrustedProvenanceDisposition =
+  (typeof PIPELINE_HANDOFF_TRUSTED_PROVENANCE_DISPOSITIONS)[number];
+
+export const PIPELINE_HANDOFF_REVIEW_CONFLICTS = [
+  'none',
+  'declared',
+  'unknown',
+] as const;
+export type PipelineHandoffReviewConflict =
+  (typeof PIPELINE_HANDOFF_REVIEW_CONFLICTS)[number];
+
+export const PIPELINE_HANDOFF_CONTEXT_MAP_REFS = [
+  'docs/context-map.md#channel-routing',
+  'docs/context-map.md#durable-bindings',
+  'docs/context-map.md#provider-adapters',
+  'docs/context-map.md#message-storage-and-context',
+  'docs/context-map.md#frontend-chat-surfaces',
+  'docs/context-map.md#test-fixtures',
+  'docs/context-map.md#ci-and-release-evidence',
+  'docs/context-map.md#handoff-evidence',
+] as const;
+export type PipelineHandoffContextMapRef =
+  (typeof PIPELINE_HANDOFF_CONTEXT_MAP_REFS)[number];
 
 export const PIPELINE_HANDOFF_RELEASE_VERDICTS = [
   'released',
@@ -163,8 +214,7 @@ export interface PipelineHandoffStageBase {
   nonGoals: string[];
 }
 
-export interface PipelineHandoffImplementationStage
-  extends PipelineHandoffStageBase {
+export interface PipelineHandoffImplementationStage extends PipelineHandoffStageBase {
   stage: 'implementation';
   decision: PipelineHandoffImplementationDecision;
   changedFiles: string[];
@@ -178,12 +228,85 @@ export interface PipelineHandoffQaStage extends PipelineHandoffStageBase {
   findings: string[];
 }
 
+export interface PipelineHandoffReviewParticipant {
+  actorId: string;
+  sessionId: string;
+  runId: string;
+  relayGlobalSessionId: string;
+  /** Informational only; never an independence proof. */
+  provider: string;
+  /** Informational only; never an independence proof. */
+  model: string;
+}
+
+export interface PipelineHandoffReviewLocation {
+  /** Repository-relative path only. */
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
+}
+
+export type PipelineHandoffReviewEvidenceRef =
+  | { kind: 'artifact-id'; artifactId: string }
+  | {
+      kind: 'repository';
+      path: string;
+      lineStart?: number;
+      lineEnd?: number;
+    };
+
+export interface PipelineHandoffReviewFindingFollowUp {
+  owner: string;
+  taskRef: TaskRef;
+  riskAcceptedRationale: string;
+}
+
+export interface PipelineHandoffReviewFindingDisposition {
+  kind: PipelineHandoffReviewFindingDispositionKind;
+  summary: string;
+  evidenceRefs: PipelineHandoffReviewEvidenceRef[];
+  followUp?: PipelineHandoffReviewFindingFollowUp;
+}
+
+export interface PipelineHandoffReviewFinding {
+  id: string;
+  severity: PipelineHandoffReviewFindingSeverity;
+  summary: string;
+  location: PipelineHandoffReviewLocation;
+  evidenceSummary: string;
+  disposition: PipelineHandoffReviewFindingDisposition;
+}
+
+export interface PipelineHandoffAdversarialReviewEvidence {
+  promptVersion: string;
+  baseSha: string;
+  diffSha256: string;
+  implementation: PipelineHandoffReviewParticipant;
+  reviewer: PipelineHandoffReviewParticipant & {
+    independentFromImplementation: boolean;
+    conflictOfInterest: PipelineHandoffReviewConflict;
+    conflictSummary?: string;
+  };
+  trustedProvenance: {
+    disposition: PipelineHandoffTrustedProvenanceDisposition;
+    summary: string;
+  };
+  context: {
+    digestSha256: string;
+    refs: PipelineHandoffContextMapRef[];
+  };
+  findings: PipelineHandoffReviewFinding[];
+  containsNoRawTranscriptOrSecrets: true;
+}
+
 export interface PipelineHandoffReviewStage extends PipelineHandoffStageBase {
   stage: 'review';
   verdict: PipelineHandoffReviewVerdict;
   reviewedHeadSha: string;
   blockers: string[];
   nitsOrFollowUps: string[];
+  /** Optional additive structured evidence; later gates decide when required. */
+  adversarialReview?: PipelineHandoffAdversarialReviewEvidence;
 }
 
 export interface PipelineHandoffReleaseStage extends PipelineHandoffStageBase {
@@ -207,6 +330,8 @@ export interface PipelineHandoffArtifact {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Canonical append-only predecessor; request metadata must agree when given. */
+  supersedesArtifactId?: string;
   scope: PipelineHandoffScope;
   head: PipelineHandoffHeadRef;
   /** Append-only stage layers in implementation -> QA -> review -> release order. */
@@ -233,6 +358,17 @@ const IMPLEMENTATION_DECISION_SET = new Set<string>(
 const QA_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_QA_VERDICTS);
 const REVIEW_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_REVIEW_VERDICTS);
 const RELEASE_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_RELEASE_VERDICTS);
+const REVIEW_FINDING_SEVERITY_SET = new Set<string>(
+  PIPELINE_HANDOFF_REVIEW_FINDING_SEVERITIES
+);
+const REVIEW_FINDING_DISPOSITION_SET = new Set<string>(
+  PIPELINE_HANDOFF_REVIEW_FINDING_DISPOSITIONS
+);
+const TRUSTED_PROVENANCE_DISPOSITION_SET = new Set<string>(
+  PIPELINE_HANDOFF_TRUSTED_PROVENANCE_DISPOSITIONS
+);
+const REVIEW_CONFLICT_SET = new Set<string>(PIPELINE_HANDOFF_REVIEW_CONFLICTS);
+const CONTEXT_MAP_REF_SET = new Set<string>(PIPELINE_HANDOFF_CONTEXT_MAP_REFS);
 const ARTIFACT_KIND_SET = ARTIFACT_KINDS;
 const GIT_SHA_RE = /^[a-f0-9]{40,64}$/i;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
@@ -276,10 +412,21 @@ const FORBIDDEN_FIELD_NAMES = new Set<string>([
   'xRelayNodeCredential',
 ]);
 
+const REVIEW_FORBIDDEN_FIELD_NAMES = new Set<string>([
+  'prompt',
+  'rawPrompt',
+  'providerPayload',
+  'log',
+  'logs',
+  'commandArguments',
+  'arguments',
+  'argv',
+  'args',
+]);
+
 const SECRET_TEXT_RE =
   /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,}|node_[a-z0-9._~+/=-]+\.secret_[a-z0-9._~+/=-]+|secret_[a-z0-9._~+/=-]+)/gi;
-const ABSOLUTE_LOCAL_PATH_RE =
-  /(?:^|[\s:=('"])(?:\/home\/[^\s)'"]+|\/Users\/[^\s)'"]+|\/tmp\/[^\s)'"]+)/g;
+const ABSOLUTE_LOCAL_PATH_RE = /(?<![a-z0-9._:/<-])\/(?!\/)[^\s)\]}'",;<>]+/gi;
 const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
 const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
 const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
@@ -297,7 +444,9 @@ function isOptionalString(value: unknown): boolean {
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
 }
 
 function isEnumValue(value: unknown, values: Set<string>): value is string {
@@ -348,7 +497,7 @@ function isForbiddenFieldName(key: string): boolean {
   return (
     /(?:auth|authorization|bearer|credential|grant|pairtoken|pairingtoken|secret|token)/.test(
       normalized
-    ) && !['taskrefs'].includes(normalized)
+    ) && !['taskrefs', 'containsnorawtranscriptorsecrets'].includes(normalized)
   );
 }
 
@@ -373,6 +522,49 @@ function collectUnsafeFields(
   return errors;
 }
 
+function containsControlText(value: string): boolean {
+  return /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
+}
+
+function collectUnsafeReviewFields(
+  value: unknown,
+  path: string,
+  errors: string[]
+): void {
+  if (typeof value === 'string') {
+    if (containsControlText(value)) {
+      errors.push(`unsafe adversarial review control text rejected: ${path}`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      collectUnsafeReviewFields(item, `${path}[${index}]`, errors)
+    );
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    const normalized = normalizedFieldName(key);
+    if (
+      Array.from(REVIEW_FORBIDDEN_FIELD_NAMES).some(
+        (forbidden) => normalized === normalizedFieldName(forbidden)
+      )
+    ) {
+      errors.push(`unsafe adversarial review field rejected: ${path}.${key}`);
+    }
+    collectUnsafeReviewFields(nested, `${path}.${key}`, errors);
+  }
+}
+
+function isBoundedString(value: unknown, maxLength = 2048): value is string {
+  return hasString(value) && value.length <= maxLength;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
 function collectUnsafePublicText(
   value: unknown,
   path = '$',
@@ -395,7 +587,9 @@ function collectUnsafePublicText(
       errors.push(`local absolute path rejected from public handoff: ${path}`);
     }
     if (KANBAN_TASK_ID_RE.test(value)) {
-      errors.push(`private Kanban task id rejected from public handoff: ${path}`);
+      errors.push(
+        `private Kanban task id rejected from public handoff: ${path}`
+      );
     }
     return errors;
   }
@@ -412,20 +606,29 @@ function collectUnsafePublicText(
   return errors;
 }
 
-function validateTaskRef(value: unknown, errors: string[], path: string): boolean {
+function validateTaskRef(
+  value: unknown,
+  errors: string[],
+  path: string
+): boolean {
   if (!isRecord(value)) {
     errors.push(`${path} must be a task ref object`);
     return false;
   }
   if (!hasString(value.kind)) errors.push(`${path}.kind is required`);
   if (!hasString(value.id)) errors.push(`${path}.id is required`);
-  if (!isOptionalString(value.title)) errors.push(`${path}.title must be a string`);
+  if (!isOptionalString(value.title))
+    errors.push(`${path}.title must be a string`);
   if (!isOptionalString(value.url)) errors.push(`${path}.url must be a string`);
-  if (!isOptionalString(value.status)) errors.push(`${path}.status must be a string`);
+  if (!isOptionalString(value.status))
+    errors.push(`${path}.status must be a string`);
   return true;
 }
 
-function validateHead(value: unknown, errors: string[]): value is PipelineHandoffHeadRef {
+function validateHead(
+  value: unknown,
+  errors: string[]
+): value is PipelineHandoffHeadRef {
   if (!isRecord(value)) {
     errors.push('head is required');
     return false;
@@ -445,7 +648,11 @@ function validateHead(value: unknown, errors: string[]): value is PipelineHandof
   if (!isRecord(value.base) || !hasString(value.base.name)) {
     errors.push('head.base.name is required');
   }
-  if (isRecord(value.base) && value.base.sha !== undefined && !isSha(value.base.sha)) {
+  if (
+    isRecord(value.base) &&
+    value.base.sha !== undefined &&
+    !isSha(value.base.sha)
+  ) {
     errors.push('head.base.sha must be a git sha when present');
   }
   if (value.branch !== undefined) {
@@ -467,10 +674,7 @@ function validateHead(value: unknown, errors: string[]): value is PipelineHandof
     }
   }
   if (!isSha(value.headSha)) errors.push('head.headSha must be a git sha');
-  if (
-    !isRecord(value.staleIf) ||
-    value.staleIf.headShaChanges !== true
-  ) {
+  if (!isRecord(value.staleIf) || value.staleIf.headShaChanges !== true) {
     errors.push('head.staleIf.headShaChanges must be true');
   }
   if (!isIsoTimestamp(value.capturedAt)) {
@@ -479,7 +683,10 @@ function validateHead(value: unknown, errors: string[]): value is PipelineHandof
   return errors.length === 0;
 }
 
-function validateScope(value: unknown, errors: string[]): value is PipelineHandoffScope {
+function validateScope(
+  value: unknown,
+  errors: string[]
+): value is PipelineHandoffScope {
   if (!isRecord(value)) {
     errors.push('scope is required');
     return false;
@@ -494,7 +701,8 @@ function validateScope(value: unknown, errors: string[]): value is PipelineHando
     );
     if (
       !value.taskRefs.some(
-        (taskRef) => isRecord(taskRef) && GITHUB_TASK_KINDS.has(String(taskRef.kind))
+        (taskRef) =>
+          isRecord(taskRef) && GITHUB_TASK_KINDS.has(String(taskRef.kind))
       )
     ) {
       errors.push('scope.taskRefs must include a GitHub issue or PR ref');
@@ -503,7 +711,8 @@ function validateScope(value: unknown, errors: string[]): value is PipelineHando
   if (!isStringArray(value.acceptance) || value.acceptance.length === 0) {
     errors.push('scope.acceptance requires at least one item');
   }
-  if (!isStringArray(value.nonGoals)) errors.push('scope.nonGoals must be strings');
+  if (!isStringArray(value.nonGoals))
+    errors.push('scope.nonGoals must be strings');
   return true;
 }
 
@@ -534,7 +743,8 @@ function validateEvidence(
           errors.push(`${artifactPath} must be an object`);
           return;
         }
-        if (!hasString(artifact.id)) errors.push(`${artifactPath}.id is required`);
+        if (!hasString(artifact.id))
+          errors.push(`${artifactPath}.id is required`);
         if (!isEnumValue(artifact.kind, ARTIFACT_KIND_SET)) {
           errors.push(`${artifactPath}.kind must be a valid artifact kind`);
         }
@@ -547,8 +757,13 @@ function validateEvidence(
         if (!isOptionalString(artifact.summary)) {
           errors.push(`${artifactPath}.summary must be a string`);
         }
-        if (artifact.hashSha256 !== undefined && !isSha256(artifact.hashSha256)) {
-          errors.push(`${artifactPath}.hashSha256 must be a 64-character sha256 when present`);
+        if (
+          artifact.hashSha256 !== undefined &&
+          !isSha256(artifact.hashSha256)
+        ) {
+          errors.push(
+            `${artifactPath}.hashSha256 must be a 64-character sha256 when present`
+          );
         }
       });
     }
@@ -594,13 +809,17 @@ function validateStageBase(
     errors.push(`${path} must be a stage object`);
     return false;
   }
-  if (!isEnumValue(stage.stage, STAGE_SET)) errors.push(`${path}.stage is invalid`);
+  if (!isEnumValue(stage.stage, STAGE_SET))
+    errors.push(`${path}.stage is invalid`);
   if (!isIsoTimestamp(stage.addedAt)) {
     errors.push(`${path}.addedAt must be an ISO timestamp`);
   }
   if (!hasString(stage.actorId)) errors.push(`${path}.actorId is required`);
   if (!hasString(stage.summary)) errors.push(`${path}.summary is required`);
-  if (!Array.isArray(stage.acceptanceEvidence) || stage.acceptanceEvidence.length === 0) {
+  if (
+    !Array.isArray(stage.acceptanceEvidence) ||
+    stage.acceptanceEvidence.length === 0
+  ) {
     errors.push(`${path}.acceptanceEvidence requires at least one item`);
   } else {
     stage.acceptanceEvidence.forEach((item, index) =>
@@ -614,10 +833,14 @@ function validateStageBase(
       validateCommand(item, errors, `${path}.commands[${index}]`)
     );
   }
-  if (!isStringArray(stage.downstreamFocus) || stage.downstreamFocus.length === 0) {
+  if (
+    !isStringArray(stage.downstreamFocus) ||
+    stage.downstreamFocus.length === 0
+  ) {
     errors.push(`${path}.downstreamFocus requires at least one item`);
   }
-  if (!isStringArray(stage.nonGoals)) errors.push(`${path}.nonGoals must be strings`);
+  if (!isStringArray(stage.nonGoals))
+    errors.push(`${path}.nonGoals must be strings`);
   return true;
 }
 
@@ -656,11 +879,377 @@ function validateQaStage(
   }
 }
 
+function validateReviewParticipant(
+  value: unknown,
+  errors: string[],
+  path: string
+): value is PipelineHandoffReviewParticipant {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be a participant object`);
+    return false;
+  }
+  for (const field of [
+    'actorId',
+    'sessionId',
+    'runId',
+    'relayGlobalSessionId',
+    'provider',
+    'model',
+  ] as const) {
+    if (!isBoundedString(value[field], 256)) {
+      errors.push(
+        `${path}.${field} is required and must be at most 256 characters`
+      );
+    }
+  }
+  return true;
+}
+
+function validateReviewLocation(
+  value: unknown,
+  errors: string[],
+  path: string
+): void {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be a location object`);
+    return;
+  }
+  if (
+    !isSafeRelativePath(value.path) ||
+    value.path.length > 512 ||
+    value.path.includes('\\')
+  ) {
+    errors.push(
+      `${path}.path must be a bounded repository-relative public-safe path`
+    );
+  }
+  if (value.lineStart !== undefined && !isPositiveInteger(value.lineStart)) {
+    errors.push(`${path}.lineStart must be a positive integer`);
+  }
+  if (value.lineEnd !== undefined && !isPositiveInteger(value.lineEnd)) {
+    errors.push(`${path}.lineEnd must be a positive integer`);
+  }
+  if (
+    typeof value.lineStart === 'number' &&
+    typeof value.lineEnd === 'number' &&
+    value.lineEnd < value.lineStart
+  ) {
+    errors.push(`${path}.lineEnd must be greater than or equal to lineStart`);
+  }
+}
+
+function validateReviewEvidenceRef(
+  value: unknown,
+  errors: string[],
+  path: string
+): void {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an evidence ref object`);
+    return;
+  }
+  if (value.kind === 'artifact-id') {
+    if (!isBoundedString(value.artifactId, 256)) {
+      errors.push(`${path}.artifactId is required and must be bounded`);
+    }
+    return;
+  }
+  if (value.kind === 'repository') {
+    validateReviewLocation(value, errors, path);
+    return;
+  }
+  errors.push(`${path}.kind must be artifact-id or repository`);
+}
+
+function validateReviewFinding(
+  value: unknown,
+  errors: string[],
+  path: string
+): value is PipelineHandoffReviewFinding {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be a finding object`);
+    return false;
+  }
+  if (!isBoundedString(value.id, 256))
+    errors.push(`${path}.id is required and bounded`);
+  if (!isEnumValue(value.severity, REVIEW_FINDING_SEVERITY_SET)) {
+    errors.push(`${path}.severity is invalid`);
+  }
+  if (!isBoundedString(value.summary))
+    errors.push(`${path}.summary is required and bounded`);
+  if (!isBoundedString(value.evidenceSummary)) {
+    errors.push(`${path}.evidenceSummary is required and bounded`);
+  }
+  validateReviewLocation(value.location, errors, `${path}.location`);
+  if (!isRecord(value.disposition)) {
+    errors.push(`${path}.disposition is required`);
+    return true;
+  }
+  const disposition = value.disposition;
+  if (!isEnumValue(disposition.kind, REVIEW_FINDING_DISPOSITION_SET)) {
+    errors.push(`${path}.disposition.kind is invalid`);
+  }
+  if (!isBoundedString(disposition.summary)) {
+    errors.push(`${path}.disposition.summary is required and bounded`);
+  }
+  if (
+    !Array.isArray(disposition.evidenceRefs) ||
+    disposition.evidenceRefs.length > 8
+  ) {
+    errors.push(`${path}.disposition.evidenceRefs must contain at most 8 refs`);
+  } else {
+    disposition.evidenceRefs.forEach((ref, index) =>
+      validateReviewEvidenceRef(
+        ref,
+        errors,
+        `${path}.disposition.evidenceRefs[${index}]`
+      )
+    );
+    if (
+      (disposition.kind === 'fixed' || disposition.kind === 'refuted') &&
+      disposition.evidenceRefs.length === 0
+    ) {
+      errors.push(`${path}.disposition ${disposition.kind} requires evidence`);
+    }
+  }
+  if (disposition.kind === 'follow-up') {
+    if (value.severity === 'P0' || value.severity === 'P1') {
+      errors.push(`${path}.disposition follow-up is not allowed for P0/P1`);
+    }
+    if (!isRecord(disposition.followUp)) {
+      errors.push(`${path}.disposition.followUp is required`);
+    } else {
+      if (!isBoundedString(disposition.followUp.owner, 256)) {
+        errors.push(
+          `${path}.disposition.followUp.owner is required and bounded`
+        );
+      }
+      validateTaskRef(
+        disposition.followUp.taskRef,
+        errors,
+        `${path}.disposition.followUp.taskRef`
+      );
+      if (
+        !isRecord(disposition.followUp.taskRef) ||
+        disposition.followUp.taskRef.kind !== 'github-issue'
+      ) {
+        errors.push(
+          `${path}.disposition.followUp.taskRef must be a GitHub issue`
+        );
+      } else if (
+        !isBoundedString(disposition.followUp.taskRef.id, 256) ||
+        (disposition.followUp.taskRef.title !== undefined &&
+          !isBoundedString(disposition.followUp.taskRef.title, 512)) ||
+        (disposition.followUp.taskRef.url !== undefined &&
+          !isBoundedString(disposition.followUp.taskRef.url, 2048)) ||
+        (disposition.followUp.taskRef.status !== undefined &&
+          !isBoundedString(disposition.followUp.taskRef.status, 256))
+      ) {
+        errors.push(
+          `${path}.disposition.followUp.taskRef fields must be bounded`
+        );
+      }
+      if (!isBoundedString(disposition.followUp.riskAcceptedRationale)) {
+        errors.push(
+          `${path}.disposition.followUp.riskAcceptedRationale is required and bounded`
+        );
+      }
+    }
+  } else if (disposition.followUp !== undefined) {
+    errors.push(`${path}.disposition.followUp is only valid for follow-up`);
+  }
+  return true;
+}
+
+function validateTrustedReviewProvenance(
+  value: unknown,
+  verdict: unknown,
+  errors: string[],
+  path: string
+): void {
+  if (!isRecord(value)) {
+    errors.push(`${path} is required`);
+    return;
+  }
+  if (!isEnumValue(value.disposition, TRUSTED_PROVENANCE_DISPOSITION_SET)) {
+    errors.push(`${path}.disposition is invalid`);
+  } else if (value.disposition === 'verified') {
+    errors.push(`${path} verified requires a trusted server resolver`);
+  }
+  if (
+    verdict === 'approved' &&
+    (value.disposition === 'unresolvable' || value.disposition === 'mismatched')
+  ) {
+    errors.push(`${path} cannot be ${String(value.disposition)} for approval`);
+  }
+  if (!isBoundedString(value.summary)) {
+    errors.push(`${path}.summary is required and bounded`);
+  }
+}
+
+function validateAdversarialReview(
+  value: unknown,
+  errors: string[],
+  path: string,
+  artifactBaseSha: unknown,
+  implementationActorId: unknown,
+  stageActorId: unknown,
+  verdict: unknown
+): void {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an adversarial review object`);
+    return;
+  }
+  collectUnsafeReviewFields(value, path, errors);
+  // Structured review evidence is durable/exportable by contract, so reject
+  // rather than merely redact unsafe text at this boundary.
+  collectUnsafePublicText(value, path, errors);
+  if (!isBoundedString(value.promptVersion, 256)) {
+    errors.push(`${path}.promptVersion is required and bounded`);
+  }
+  if (!isSha(value.baseSha)) errors.push(`${path}.baseSha must be a git sha`);
+  if (!isSha(artifactBaseSha)) {
+    errors.push(`${path} requires artifact head.base.sha`);
+  } else if (value.baseSha !== artifactBaseSha) {
+    errors.push(`${path}.baseSha must equal artifact head.base.sha`);
+  }
+  if (!isSha256(value.diffSha256)) {
+    errors.push(`${path}.diffSha256 must be a 64-character sha256`);
+  }
+  const implementationValid = validateReviewParticipant(
+    value.implementation,
+    errors,
+    `${path}.implementation`
+  );
+  if (
+    implementationValid &&
+    isRecord(value.implementation) &&
+    value.implementation.actorId !== implementationActorId
+  ) {
+    errors.push(
+      `${path}.implementation.actorId must equal implementation stage actorId`
+    );
+  }
+  const reviewerValid = validateReviewParticipant(
+    value.reviewer,
+    errors,
+    `${path}.reviewer`
+  );
+  if (reviewerValid && isRecord(value.reviewer)) {
+    if (value.reviewer.independentFromImplementation !== true) {
+      errors.push(
+        `${path}.reviewer.independentFromImplementation must be true`
+      );
+    }
+    if (!isEnumValue(value.reviewer.conflictOfInterest, REVIEW_CONFLICT_SET)) {
+      errors.push(`${path}.reviewer.conflictOfInterest is invalid`);
+    }
+    if (
+      value.reviewer.conflictOfInterest !== 'none' &&
+      !isBoundedString(value.reviewer.conflictSummary)
+    ) {
+      errors.push(
+        `${path}.reviewer.conflictSummary is required for a conflict`
+      );
+    }
+    if (
+      value.reviewer.conflictOfInterest === 'none' &&
+      value.reviewer.conflictSummary !== undefined
+    ) {
+      errors.push(
+        `${path}.reviewer.conflictSummary is not allowed when conflictOfInterest is none`
+      );
+    }
+    if (stageActorId !== value.reviewer.actorId) {
+      errors.push(`${path}.reviewer.actorId must equal review stage actorId`);
+    }
+    if (
+      verdict === 'approved' &&
+      value.reviewer.conflictOfInterest !== 'none'
+    ) {
+      errors.push(
+        `${path}.reviewer.conflictOfInterest must be none for approval`
+      );
+    }
+  }
+  if (
+    implementationValid &&
+    reviewerValid &&
+    isRecord(value.implementation) &&
+    isRecord(value.reviewer)
+  ) {
+    for (const field of [
+      'actorId',
+      'sessionId',
+      'runId',
+      'relayGlobalSessionId',
+    ] as const) {
+      if (value.implementation[field] === value.reviewer[field]) {
+        errors.push(`${path} implementation and reviewer ${field} must differ`);
+      }
+    }
+  }
+  validateTrustedReviewProvenance(
+    value.trustedProvenance,
+    verdict,
+    errors,
+    `${path}.trustedProvenance`
+  );
+  if (!isRecord(value.context)) {
+    errors.push(`${path}.context is required`);
+  } else {
+    if (!isSha256(value.context.digestSha256)) {
+      errors.push(`${path}.context.digestSha256 must be a 64-character sha256`);
+    }
+    if (
+      !Array.isArray(value.context.refs) ||
+      value.context.refs.length === 0 ||
+      value.context.refs.length > 16 ||
+      !value.context.refs.every((ref) => isEnumValue(ref, CONTEXT_MAP_REF_SET))
+    ) {
+      errors.push(
+        `${path}.context.refs must contain 1-16 allowlisted context refs`
+      );
+    } else if (new Set(value.context.refs).size !== value.context.refs.length) {
+      errors.push(`${path}.context.refs must be unique`);
+    }
+  }
+  if (!Array.isArray(value.findings) || value.findings.length > 100) {
+    errors.push(`${path}.findings must contain at most 100 findings`);
+  } else {
+    const findingIds = new Set<string>();
+    value.findings.forEach((finding, index) => {
+      if (
+        validateReviewFinding(finding, errors, `${path}.findings[${index}]`) &&
+        isRecord(finding)
+      ) {
+        if (findingIds.has(String(finding.id))) {
+          errors.push(`${path}.findings[${index}].id must be unique`);
+        }
+        findingIds.add(String(finding.id));
+        if (
+          verdict === 'approved' &&
+          isRecord(finding.disposition) &&
+          finding.disposition.kind === 'unresolved'
+        ) {
+          errors.push(
+            `${path}.findings[${index}] cannot be unresolved for approval`
+          );
+        }
+      }
+    });
+  }
+  if (value.containsNoRawTranscriptOrSecrets !== true) {
+    errors.push(`${path}.containsNoRawTranscriptOrSecrets must be true`);
+  }
+}
+
 function validateReviewStage(
   record: Record<string, unknown>,
   errors: string[],
   path: string,
-  headSha: string
+  headSha: string,
+  baseSha: unknown,
+  implementationActorId: unknown
 ): void {
   if (!isEnumValue(record.verdict, REVIEW_VERDICT_SET)) {
     errors.push(`${path}.verdict is invalid`);
@@ -673,6 +1262,17 @@ function validateReviewStage(
   }
   if (!isStringArray(record.nitsOrFollowUps)) {
     errors.push(`${path}.nitsOrFollowUps must be strings`);
+  }
+  if (record.adversarialReview !== undefined) {
+    validateAdversarialReview(
+      record.adversarialReview,
+      errors,
+      `${path}.adversarialReview`,
+      baseSha,
+      implementationActorId,
+      record.actorId,
+      record.verdict
+    );
   }
 }
 
@@ -701,7 +1301,9 @@ function validateStageSpecific(
   stage: PipelineHandoffStageBase,
   errors: string[],
   path: string,
-  headSha: string
+  headSha: string,
+  baseSha: unknown,
+  implementationActorId: unknown
 ): void {
   const record = stage as unknown as Record<string, unknown>;
   switch (stage.stage) {
@@ -712,7 +1314,14 @@ function validateStageSpecific(
       validateQaStage(record, errors, path, headSha);
       break;
     case 'review':
-      validateReviewStage(record, errors, path, headSha);
+      validateReviewStage(
+        record,
+        errors,
+        path,
+        headSha,
+        baseSha,
+        implementationActorId
+      );
       break;
     case 'release':
       validateReleaseStage(record, errors, path, headSha);
@@ -754,6 +1363,12 @@ export function validatePipelineHandoffArtifact(
     errors.push('schemaVersion is unsupported');
   }
   if (!hasString(artifact.id)) errors.push('id is required');
+  if (
+    artifact.supersedesArtifactId !== undefined &&
+    !isBoundedString(artifact.supersedesArtifactId, 256)
+  ) {
+    errors.push('supersedesArtifactId must be a non-empty bounded artifact id');
+  }
   if (!hasString(artifact.title)) errors.push('title is required');
   if (!isIsoTimestamp(artifact.createdAt)) {
     errors.push('createdAt must be an ISO timestamp');
@@ -768,19 +1383,50 @@ export function validatePipelineHandoffArtifact(
     errors.push('stages requires at least an implementation layer');
   } else {
     const stages: PipelineHandoffStage[] = [];
-    const headSha = isRecord(artifact.head) && typeof artifact.head.headSha === 'string'
-      ? artifact.head.headSha
-      : '';
+    const headSha =
+      isRecord(artifact.head) && typeof artifact.head.headSha === 'string'
+        ? artifact.head.headSha
+        : '';
+    const baseSha =
+      isRecord(artifact.head) && isRecord(artifact.head.base)
+        ? artifact.head.base.sha
+        : undefined;
+    const implementationActorId =
+      isRecord(artifact.stages[0]) &&
+      artifact.stages[0].stage === 'implementation'
+        ? artifact.stages[0].actorId
+        : undefined;
     artifact.stages.forEach((stage, index) => {
       const path = `stages[${index}]`;
       if (validateStageBase(stage, errors, path)) {
-        validateStageSpecific(stage, errors, path, headSha);
+        validateStageSpecific(
+          stage,
+          errors,
+          path,
+          headSha,
+          baseSha,
+          implementationActorId
+        );
         stages.push(stage as PipelineHandoffStage);
       }
     });
     validateAppendOnlyStageOrder(stages, errors);
     if (stages[0]?.stage !== 'implementation') {
       errors.push('stages must start with implementation');
+    }
+    const structuredReviewIndex = stages.findIndex(
+      (stage) =>
+        stage.stage === 'review' && stage.adversarialReview !== undefined
+    );
+    if (
+      structuredReviewIndex !== -1 &&
+      (structuredReviewIndex !== 2 ||
+        stages[0]?.stage !== 'implementation' ||
+        stages[1]?.stage !== 'qa')
+    ) {
+      errors.push(
+        'structured adversarial review requires contiguous implementation -> QA -> review stages'
+      );
     }
   }
 
@@ -810,17 +1456,18 @@ function redactPublicText(value: string): string {
   UNC_PATH_RE.lastIndex = 0;
   KANBAN_TASK_ID_RE.lastIndex = 0;
   return value
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
     .replace(SECRET_TEXT_RE, '[redacted-secret]')
     .replace(ABSOLUTE_LOCAL_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(WINDOWS_ABSOLUTE_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(UNC_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(KANBAN_TASK_ID_RE, '[redacted-kanban-task]');
@@ -828,7 +1475,8 @@ function redactPublicText(value: string): string {
 
 function sanitizeTextTree<T>(value: T): T {
   if (typeof value === 'string') return redactPublicText(value) as T;
-  if (Array.isArray(value)) return value.map((item) => sanitizeTextTree(item)) as T;
+  if (Array.isArray(value))
+    return value.map((item) => sanitizeTextTree(item)) as T;
   if (!isRecord(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value)) {
@@ -849,10 +1497,42 @@ export function sanitizePipelineHandoffArtifactForPublic(
   sanitized.scope.nonGoals = sanitized.scope.nonGoals.filter(
     (nonGoal) => !/kanban|internal dispatcher|local worktree/i.test(nonGoal)
   );
-  sanitized.stages = sanitized.stages.map((stage) => ({
-    ...stage,
-    actorId: stage.actorId.startsWith('agent:') ? 'agent' : stage.actorId,
-  })) as PipelineHandoffStage[];
+  const hasStructuredReview = sanitized.stages.some(
+    (stage) => stage.stage === 'review' && stage.adversarialReview !== undefined
+  );
+  const publicActorAliases = new Map<string, string>();
+  const publicActorId = (actorId: string): string => {
+    if (!actorId.startsWith('agent:')) return actorId;
+    if (!hasStructuredReview) return 'agent';
+    const existing = publicActorAliases.get(actorId);
+    if (existing) return existing;
+    const alias = `agent:public-${publicActorAliases.size + 1}`;
+    publicActorAliases.set(actorId, alias);
+    return alias;
+  };
+  sanitized.stages = sanitized.stages.map((stage) => {
+    const actorId = publicActorId(stage.actorId);
+    if (stage.stage !== 'review' || !stage.adversarialReview) {
+      return { ...stage, actorId };
+    }
+    return {
+      ...stage,
+      actorId,
+      adversarialReview: {
+        ...stage.adversarialReview,
+        implementation: {
+          ...stage.adversarialReview.implementation,
+          actorId: publicActorId(
+            stage.adversarialReview.implementation.actorId
+          ),
+        },
+        reviewer: {
+          ...stage.adversarialReview.reviewer,
+          actorId: publicActorId(stage.adversarialReview.reviewer.actorId),
+        },
+      },
+    };
+  }) as PipelineHandoffStage[];
   return sanitized;
 }
 
@@ -874,13 +1554,44 @@ export function validatePublicPipelineHandoffArtifact(
 }
 
 function evidenceLine(evidence: PipelineHandoffEvidence): string {
-  const reason = evidence.reason ? ` (${evidence.reason})` : '';
-  return `- ${evidence.label}: ${evidence.disposition}${reason} — ${evidence.summary}`;
+  const reason = evidence.reason
+    ? ` (${escapeMarkdownInline(evidence.reason)})`
+    : '';
+  return `- ${escapeMarkdownInline(evidence.label)}: ${evidence.disposition}${reason} — ${escapeMarkdownInline(evidence.summary)}`;
+}
+
+function markdownCodeSpan(value: string): string {
+  const normalized = value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ');
+  const longestRun = Math.max(
+    0,
+    ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length)
+  );
+  const fence = '`'.repeat(longestRun + 1);
+  return longestRun === 0
+    ? `${fence}${normalized}${fence}`
+    : `${fence} ${normalized} ${fence}`;
 }
 
 function commandLine(command: PipelineHandoffCommandEvidence): string {
-  const reason = command.reason ? ` (${command.reason})` : '';
-  return `- ${command.label}: ${command.status}${reason} — \`${command.command}\` — ${command.summary}`;
+  const reason = command.reason
+    ? ` (${escapeMarkdownInline(command.reason)})`
+    : '';
+  return `- ${escapeMarkdownInline(command.label)}: ${command.status}${reason} — ${markdownCodeSpan(command.command)} — ${escapeMarkdownInline(command.summary)}`;
+}
+
+function escapeMarkdownInline(value: string): string {
+  return value
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/\\\[(redacted-(?:secret|local-path|kanban-task))\\\]/g, '[$1]');
 }
 
 function stageVerdict(stage: PipelineHandoffStage): string {
@@ -904,22 +1615,31 @@ export function renderPipelineHandoffMarkdown(
     ? sanitizePipelineHandoffArtifactForPublic(artifact)
     : artifact;
   const taskRefs = rendered.scope.taskRefs
-    .map((taskRef) => (taskRef.url ? `${taskRef.kind} ${taskRef.url}` : `${taskRef.kind} ${taskRef.id}`))
+    .map((taskRef) =>
+      taskRef.url
+        ? `${taskRef.kind} ${escapeMarkdownInline(taskRef.url)}`
+        : `${taskRef.kind} ${escapeMarkdownInline(taskRef.id)}`
+    )
     .join(', ');
   const lines = [
-    `# Pipeline handoff artifact: ${rendered.title}`,
+    `# Pipeline handoff artifact: ${escapeMarkdownInline(rendered.title)}`,
     '',
     `schemaVersion: ${rendered.schemaVersion}`,
-    `scope: ${rendered.scope.summary}`,
+    `scope: ${escapeMarkdownInline(rendered.scope.summary)}`,
     `taskRefs: ${taskRefs}`,
     `head: ${rendered.head.headSha}`,
+    ...(rendered.supersedesArtifactId
+      ? [`supersedes: ${escapeMarkdownInline(rendered.supersedesArtifactId)}`]
+      : []),
     `staleIf: headShaChanges=${String(rendered.head.staleIf.headShaChanges)}`,
     '',
     '## Acceptance',
-    ...rendered.scope.acceptance.map((item) => `- ${item}`),
+    ...rendered.scope.acceptance.map(
+      (item) => `- ${escapeMarkdownInline(item)}`
+    ),
     '',
     '## Non-goals',
-    ...rendered.scope.nonGoals.map((item) => `- ${item}`),
+    ...rendered.scope.nonGoals.map((item) => `- ${escapeMarkdownInline(item)}`),
   ];
 
   for (const stage of rendered.stages) {
@@ -927,7 +1647,7 @@ export function renderPipelineHandoffMarkdown(
       '',
       `## ${stage.stage}`,
       `verdict: ${stageVerdict(stage)}`,
-      stage.summary,
+      escapeMarkdownInline(stage.summary),
       '',
       '### Evidence',
       ...stage.acceptanceEvidence.map(evidenceLine),
@@ -938,8 +1658,34 @@ export function renderPipelineHandoffMarkdown(
         : ['- none recorded']),
       '',
       '### Downstream focus',
-      ...stage.downstreamFocus.map((item) => `- ${item}`)
+      ...stage.downstreamFocus.map((item) => `- ${escapeMarkdownInline(item)}`)
     );
+    if (stage.stage === 'review' && stage.adversarialReview) {
+      const review = stage.adversarialReview;
+      const inline = escapeMarkdownInline;
+      lines.push(
+        '',
+        '### Adversarial review',
+        `promptVersion: ${inline(review.promptVersion)}`,
+        `reviewedHead: ${stage.reviewedHeadSha}`,
+        `baseHead: ${review.baseSha}`,
+        `diffSha256: ${review.diffSha256}`,
+        `implementation: ${inline(review.implementation.actorId)} / ${inline(review.implementation.sessionId)} / ${inline(review.implementation.runId)}`,
+        `reviewer: ${inline(review.reviewer.actorId)} / ${inline(review.reviewer.sessionId)} / ${inline(review.reviewer.runId)}`,
+        `conflictOfInterest: ${review.reviewer.conflictOfInterest}`,
+        `trustedProvenanceDeclaration: ${review.trustedProvenance.disposition} — ${inline(review.trustedProvenance.summary)}`,
+        `contextDigestSha256: ${review.context.digestSha256}`,
+        `contextRefs: ${review.context.refs.join(', ')}`,
+        '',
+        '#### Findings',
+        ...(review.findings.length > 0
+          ? review.findings.map(
+              (finding) =>
+                `- ${inline(finding.id)} [${finding.severity}] ${inline(finding.location.path)}:${finding.location.lineStart ?? 1} — ${inline(finding.summary)} — ${finding.disposition.kind}: ${inline(finding.disposition.summary)}`
+            )
+          : ['- none'])
+      );
+    }
   }
   return `${lines.join('\n')}\n`;
 }

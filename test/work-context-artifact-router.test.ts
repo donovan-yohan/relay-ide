@@ -18,6 +18,7 @@ import {
 import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
 import {
   createWorkContextArtifactStore,
+  WorkContextArtifactStoreError,
   type WorkContextArtifactStore,
 } from '../server/work-context-artifacts.js';
 import type {
@@ -981,6 +982,7 @@ describe('WorkContext artifact router', () => {
 
     const appendEquivalentArtifact = artifact({
       id: 'pipeline-handoff:router:handoff-append-reordered',
+      supersedesArtifactId: attachedArtifact.id,
       stages: [
         reorderJsonObjectKeys(
           attachedArtifact.stages[0]
@@ -999,11 +1001,43 @@ describe('WorkContext artifact router', () => {
         body: JSON.stringify({
           workContextId,
           artifact: appendEquivalentArtifact,
-          supersedesArtifactId: attachedArtifact.id,
         }),
       }
     );
     expect(appendEquivalent.status).toBe(201);
+    expect(await json(appendEquivalent)).toMatchObject({
+      artifact: {
+        metadata: { supersedesArtifactId: attachedArtifact.id },
+      },
+    });
+
+    const mismatchedPredecessor = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'artifact:write,context:read',
+        },
+        body: JSON.stringify({
+          workContextId,
+          artifact: {
+            ...appendEquivalentArtifact,
+            id: 'pipeline-handoff:router:handoff-mismatch',
+          },
+          supersedesArtifactId: 'pipeline-handoff:router:other',
+        }),
+      }
+    );
+    expect(mismatchedPredecessor.status).toBe(400);
+    expect(await json(mismatchedPredecessor)).toMatchObject({
+      error: {
+        details: {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+          operation: 'attach',
+        },
+      },
+    });
 
     const appendViolationArtifact = artifact({
       id: 'pipeline-handoff:router:handoff-append-violation',
@@ -1228,6 +1262,43 @@ describe('WorkContext artifact router', () => {
     });
   });
 
+  it('maps agent view store contention to a retryable 503 envelope', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-view-busy';
+    const busyStore: WorkContextArtifactStore = {
+      ...store,
+      storeAgentViewArtifact() {
+        throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+      },
+    };
+    const { baseUrl } = await serve({
+      root,
+      store: busyStore,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+
+    const response = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'artifact:write,context:read',
+      },
+      body: JSON.stringify({ workContextId, viewArtifact: viewArtifact() }),
+    });
+
+    expect(response.status).toBe(503);
+    expect(await json(response)).toMatchObject({
+      error: {
+        code: 'SERVER_UNAVAILABLE',
+        retryable: true,
+        details: {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_STORE_BUSY',
+          storeCode: 'artifact_store_busy',
+        },
+      },
+    });
+  });
+
   it('publishes agent view artifacts and exposes an authenticated package route', async () => {
     const { root, store } = tmpStore();
     const workContextId = 'wc:router-view';
@@ -1329,6 +1400,56 @@ describe('WorkContext artifact router', () => {
           operation: 'attach',
         },
       },
+    });
+  });
+
+  it('rejects cross-kind view supersession without hiding the handoff route', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-cross-kind';
+    const handoff = store.storePipelineHandoffArtifact({
+      workContextId,
+      artifact: artifact({ id: 'pipeline-handoff:router:cross-kind' }),
+    });
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+    const pkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        revision: {
+          id: 'agent-view:router:cross-kind',
+          supersedes: handoff.metadata.id,
+        },
+      },
+    });
+
+    const publish = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'artifact:write,context:read',
+      },
+      body: JSON.stringify({ workContextId, viewArtifact: pkg }),
+    });
+    expect(publish.status).toBe(404);
+    expect(await json(publish)).toMatchObject({
+      error: {
+        details: {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_NOT_FOUND',
+          storeCode: 'superseded_artifact_payload_kind_mismatch',
+        },
+      },
+    });
+
+    const list = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(list.status).toBe(200);
+    expect(await json(list)).toMatchObject({
+      artifacts: [{ metadata: { id: handoff.metadata.id } }],
     });
   });
 
@@ -1505,6 +1626,64 @@ describe('WorkContext artifact router', () => {
     expect(JSON.stringify(publicBody)).toContain('[redacted-kanban-task]');
     expect(JSON.stringify(publicBody)).not.toContain('private raw html');
     expect(JSON.stringify(publicBody)).not.toContain('files');
+  });
+
+  it('size-checks the canonical payload after request-only predecessor normalization', async () => {
+    const fixture = loadLiveWorkerPatternFixture();
+    const successor = appendQaArtifact(fixture);
+    const { root, store } = tmpStore();
+    store.storePipelineHandoffArtifact({
+      workContextId: fixture.workContextId,
+      artifact: fixture.implementationArtifact,
+    });
+    const unnormalizedBytes = Buffer.byteLength(
+      JSON.stringify(successor, null, 2),
+      'utf8'
+    );
+    const canonicalBytes = Buffer.byteLength(
+      JSON.stringify(
+        {
+          ...successor,
+          supersedesArtifactId: fixture.implementationArtifact.id,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    expect(canonicalBytes).toBeGreaterThan(unnormalizedBytes);
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(
+        createWorkContext(fixture.workContextId)
+      ),
+      maxPublishBytes: unnormalizedBytes,
+    });
+
+    const response = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'artifact:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId: fixture.workContextId,
+        artifact: successor,
+        supersedesArtifactId: fixture.implementationArtifact.id,
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await json(response)).toMatchObject({
+      error: {
+        details: {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
+          payloadBytes: canonicalBytes,
+          maxBytes: unnormalizedBytes,
+        },
+      },
+    });
   });
 
   it('enforces publish and export guardrails with persisted public bytes', async () => {

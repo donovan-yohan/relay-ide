@@ -36,6 +36,8 @@ workflow.
   including Codex Fast Mode, model, and reasoning-effort changes (#1344)
 - Inspect provider-visible reasoning in provider-neutral collapsible turn details,
   with a persisted collapsed or expanded default for new summaries (#1361)
+- Publish canonical, exact-head pipeline handoff review evidence through the
+  existing WorkContext artifact and CLI surfaces (#1368)
 
 #### Changed
 
