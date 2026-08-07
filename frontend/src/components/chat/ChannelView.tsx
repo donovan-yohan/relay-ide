@@ -62,6 +62,23 @@ const READ_WRITE_VISIBLE_GRACE_MS = 10_000;
 const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
 const AUTO_BACKFILL_RETRY_BASE_MS = 200;
 const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
+const DESIGNATE_ORCHESTRATOR_ROLE_CONFLICT =
+  'channel already has a non-orchestrator agent bound';
+const DESIGNATE_ORCHESTRATOR_GENERIC_ERROR =
+  'could not designate orchestrator — try again';
+
+function designateOrchestratorErrorCopy(error: unknown): string {
+  if (
+    error instanceof HttpError &&
+    (error.code === 'SESSION_CONFLICT' ||
+      error.details?.['reasonCode'] === 'CHANNEL_ROLE_CONFLICT')
+  ) {
+    return DESIGNATE_ORCHESTRATOR_ROLE_CONFLICT;
+  }
+
+  return DESIGNATE_ORCHESTRATOR_GENERIC_ERROR;
+}
+
 /**
  * #1308 item 1: how many older-history pages a `#msg-…` deep link may pull
  * before it gives up. Unbounded, a link to a deleted/foreign message id would
@@ -212,6 +229,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   }, [channelId, restoreChannel]);
 
   const [designatePending, setDesignatePending] = useState(false);
+  const [designateError, setDesignateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDesignateError(null);
+  }, [channelId]);
 
   /**
    * The busy agents this view would be steering RIGHT NOW, mirrored at render
@@ -844,15 +866,17 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   );
 
   const handleDesignateOrchestrator = useCallback(async () => {
+    setDesignateError(null);
     setDesignatePending(true);
     try {
       await designateChannelOrchestrator(channelId);
       await queryClient.invalidateQueries({
         queryKey: ['channel-roster', channelId],
       });
-    } catch {
-      // Keep the affordance available for a retry; API errors stay local to this
-      // operator control just as interrupt races do.
+    } catch (error) {
+      // Keep the affordance available for a retry, but make the server's stable
+      // role-conflict signal legible beside the operator control.
+      setDesignateError(designateOrchestratorErrorCopy(error));
     } finally {
       setDesignatePending(false);
     }
@@ -989,6 +1013,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               'designate orchestrator'
             )}
           </button>
+        ) : null}
+        {designateError ? (
+          <span className="ch-designate-orchestrator__error" role="alert">
+            {designateError}
+          </span>
         ) : null}
         <span className="ch-header__spacer" />
         {disconnected ? (

@@ -73,6 +73,7 @@ vi.mock('../../frontend/src/components/chat/ChannelThreadPanel.js', () => ({
 
 const { ChannelView } =
   await import('../../frontend/src/components/chat/ChannelView.js');
+const { HttpError } = await import('../../frontend/src/lib/api.js');
 
 const CHANNEL_ID = 'topic:operator-lane';
 const CODEX_DM_CHANNEL_ID = dmChannelTopicId('codex', 'ws:local');
@@ -159,8 +160,9 @@ afterEach(async () => {
 
 describe('ChannelView orchestrator control (#1242)', () => {
   it('waits for confirmed topic identity before offering designation', async () => {
-    let resolveTopic: ((topic: ReturnType<typeof topicFixture>) => void) | null =
-      null;
+    let resolveTopic:
+      | ((topic: ReturnType<typeof topicFixture>) => void)
+      | null = null;
     mocks.fetchWorkspaceTopic.mockReturnValue(
       new Promise<ReturnType<typeof topicFixture>>((resolve) => {
         resolveTopic = resolve;
@@ -273,6 +275,83 @@ describe('ChannelView orchestrator control (#1242)', () => {
     expect(designate?.disabled).toBe(true);
     expect(designate?.textContent).toContain('designating');
     expect(designate?.querySelector('[role="status"]')).not.toBeNull();
+
+    resolveDesignation?.();
+    await flush();
+  });
+
+  it('shows the bound non-orchestrator conflict beside the control', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+    mocks.designateChannelOrchestrator.mockRejectedValue(
+      new HttpError(
+        409,
+        'channel already bound to a non-orchestrator runtime',
+        'SESSION_CONFLICT',
+        false,
+        { reasonCode: 'CHANNEL_ROLE_CONFLICT' }
+      )
+    );
+
+    await render();
+
+    const designate = container.querySelector<HTMLButtonElement>(
+      '.ch-designate-orchestrator'
+    );
+    await act(async () => designate?.click());
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')?.textContent
+    ).toBe('channel already has a non-orchestrator agent bound');
+    expect(designate?.disabled).toBe(false);
+  });
+
+  it('shows the conflict copy for a SESSION_CONFLICT without details', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+    mocks.designateChannelOrchestrator.mockRejectedValue(
+      new HttpError(409, 'session conflict', 'SESSION_CONFLICT')
+    );
+
+    await render();
+
+    const designate = container.querySelector<HTMLButtonElement>(
+      '.ch-designate-orchestrator'
+    );
+    await act(async () => designate?.click());
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')?.textContent
+    ).toBe('channel already has a non-orchestrator agent bound');
+  });
+
+  it('shows a useful generic error and clears it for a retry', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+    mocks.designateChannelOrchestrator.mockRejectedValueOnce(
+      new HttpError(503, 'hub unreachable')
+    );
+
+    await render();
+
+    const designate = container.querySelector<HTMLButtonElement>(
+      '.ch-designate-orchestrator'
+    );
+    await act(async () => designate?.click());
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')?.textContent
+    ).toBe('could not designate orchestrator — try again');
+
+    let resolveDesignation: (() => void) | null = null;
+    mocks.designateChannelOrchestrator.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveDesignation = resolve;
+      })
+    );
+    act(() => designate?.click());
+    await flush();
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')
+    ).toBeNull();
 
     resolveDesignation?.();
     await flush();
