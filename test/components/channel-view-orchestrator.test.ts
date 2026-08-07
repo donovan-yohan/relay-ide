@@ -357,6 +357,41 @@ describe('ChannelView orchestrator control (#1242)', () => {
     await flush();
   });
 
+  it('retires a lost-response failure when the roster confirms the orchestrator', async () => {
+    let roster = [rosterEntry('implementer')];
+    mocks.fetchChannelRoster.mockImplementation(async () => roster);
+    mocks.designateChannelOrchestrator.mockRejectedValue(
+      new HttpError(503, 'designation response was lost')
+    );
+
+    await render();
+
+    const designate = container.querySelector<HTMLButtonElement>(
+      '.ch-designate-orchestrator'
+    );
+    await act(async () => designate?.click());
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')?.textContent
+    ).toBe('could not designate orchestrator — try again');
+
+    roster = [rosterEntry('orchestrator')];
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['channel-roster', CHANNEL_ID],
+      });
+    });
+    await flush();
+
+    expect(container.querySelector('.ch-agent-chip__role')?.textContent).toBe(
+      'orchestrator'
+    );
+    expect(container.querySelector('.ch-designate-orchestrator')).toBeNull();
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')
+    ).toBeNull();
+  });
+
   it('marks a roster orchestrator with the compact lowercase role tag', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('orchestrator')]);
 

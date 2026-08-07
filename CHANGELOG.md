@@ -51,6 +51,8 @@ workflow.
   so real conversation is not displaced by empty activity (#1358)
 - Designate-orchestrator failures now show actionable inline conflict or retry
   feedback instead of failing silently (#1352)
+- Designation errors now retire when the roster confirms an orchestrator and
+  stay bounded without collapsing the mobile channel header (#1352)
 - Long channel drafts now grow to a conversation-pane-relative cap instead of
   inner-scrolling after six lines, while preserving most of short mobile
   timelines (#1355)
