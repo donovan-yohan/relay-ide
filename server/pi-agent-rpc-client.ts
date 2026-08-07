@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 
-export interface PrimeAgentRpcMessage extends Record<string, unknown> {
+export interface PiAgentRpcMessage extends Record<string, unknown> {
   type: string;
 }
 
-export interface PrimeAgentRpcClientOptions {
+export interface PiAgentRpcClientOptions {
   command?: string;
   args?: string[];
   cwd?: string;
@@ -23,14 +23,14 @@ export interface PrimeAgentRpcClientOptions {
 }
 
 interface PendingCall {
-  resolve: (value: PrimeAgentRpcMessage) => void;
+  resolve: (value: PiAgentRpcMessage) => void;
   reject: (error: Error) => void;
   command: string;
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** Strict-LF JSONL client for `prime-agent --mode rpc`. */
-export class PrimeAgentRpcClient extends EventEmitter {
+/** Strict-LF JSONL client for `pi --mode rpc`. */
+export class PiAgentRpcClient extends EventEmitter {
   private child: ChildProcess | null = null;
   private buffer = Buffer.alloc(0);
   private stopPromise: Promise<void> | null = null;
@@ -41,19 +41,19 @@ export class PrimeAgentRpcClient extends EventEmitter {
   private detachChildListeners: (() => void) | null = null;
   private detachDrainListener: (() => void) | null = null;
 
-  constructor(private readonly options: PrimeAgentRpcClientOptions = {}) {
+  constructor(private readonly options: PiAgentRpcClientOptions = {}) {
     super();
     // An EventEmitter `error` without a listener terminates Node. Transport
     // errors are still observable, but are safe during early process startup.
     this.on('error', () => undefined);
   }
 
-  async start(): Promise<PrimeAgentRpcMessage> {
+  async start(): Promise<PiAgentRpcMessage> {
     if (this.child || this.stopPromise)
-      throw new Error('PrimeAgentRpcClient already started');
+      throw new Error('PiAgentRpcClient already started');
     const spawnFn = this.options.spawn ?? nodeSpawn;
     const child = spawnFn(
-      this.options.command ?? 'prime-agent',
+      this.options.command ?? 'pi',
       this.options.args ?? ['--mode', 'rpc'],
       {
         ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
@@ -75,11 +75,11 @@ export class PrimeAgentRpcClient extends EventEmitter {
       if (this.child === child) {
         this.child = null;
         this.resetTransportState(
-          new Error(`prime-agent rpc exited (code=${String(code)})`)
+          new Error(`pi rpc exited (code=${String(code)})`)
         );
         this.removeChildListeners();
       }
-      const error = new Error(`prime-agent rpc exited (code=${String(code)})`);
+      const error = new Error(`pi rpc exited (code=${String(code)})`);
       this.rejectPending(error);
       this.emit('close', code);
     };
@@ -119,7 +119,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
   call(
     type: string,
     fields: Record<string, unknown> = {}
-  ): Promise<PrimeAgentRpcMessage> {
+  ): Promise<PiAgentRpcMessage> {
     return this.callWithTimeout(
       type,
       fields,
@@ -131,16 +131,14 @@ export class PrimeAgentRpcClient extends EventEmitter {
     type: string,
     fields: Record<string, unknown>,
     timeoutMs: number
-  ): Promise<PrimeAgentRpcMessage> {
+  ): Promise<PiAgentRpcMessage> {
     if (!this.child)
-      return Promise.reject(new Error('PrimeAgentRpcClient is not started'));
+      return Promise.reject(new Error('PiAgentRpcClient is not started'));
     const id = `relay-${this.nextId++}`;
-    const promise = new Promise<PrimeAgentRpcMessage>((resolve, reject) => {
+    const promise = new Promise<PiAgentRpcMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new Error(`prime-agent RPC ${type} timed out after ${timeoutMs}ms`)
-        );
+        reject(new Error(`pi RPC ${type} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, command: type, timer });
@@ -153,12 +151,12 @@ export class PrimeAgentRpcClient extends EventEmitter {
     if (this.stopPromise) return this.stopPromise;
     const child = this.child;
     if (!child) {
-      this.resetTransportState(new Error('PrimeAgentRpcClient stopped'));
+      this.resetTransportState(new Error('PiAgentRpcClient stopped'));
       return;
     }
 
     this.child = null;
-    this.resetTransportState(new Error('PrimeAgentRpcClient stopped'));
+    this.resetTransportState(new Error('PiAgentRpcClient stopped'));
     this.removeChildListeners();
     this.stopPromise = this.terminate(child).finally(() => {
       this.stopPromise = null;
@@ -224,7 +222,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
       if (lineBytes.length > maxRecordBytes) {
         this.emit(
           'protocolError',
-          new Error(`prime-agent RPC record exceeded ${maxRecordBytes} bytes`)
+          new Error(`pi RPC record exceeded ${maxRecordBytes} bytes`)
         );
         continue;
       }
@@ -236,7 +234,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
         this.emit(
           'protocolError',
           new Error(
-            `Invalid prime-agent RPC JSON: ${error instanceof Error ? error.message : String(error)}`
+            `Invalid pi RPC JSON: ${error instanceof Error ? error.message : String(error)}`
           )
         );
         continue;
@@ -244,17 +242,17 @@ export class PrimeAgentRpcClient extends EventEmitter {
       if (!value || typeof value !== 'object' || Array.isArray(value)) {
         this.emit(
           'protocolError',
-          new Error('Invalid prime-agent RPC record: expected object')
+          new Error('Invalid pi RPC record: expected object')
         );
         continue;
       }
-      const message = value as PrimeAgentRpcMessage;
+      const message = value as PiAgentRpcMessage;
       if (message.type === 'response' && typeof message.id === 'string') {
         const pending = this.pending.get(message.id);
         if (!pending) {
           this.emit(
             'protocolError',
-            new Error(`Uncorrelated prime-agent RPC response id: ${message.id}`)
+            new Error(`Uncorrelated pi RPC response id: ${message.id}`)
           );
           continue;
         }
@@ -263,7 +261,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
         if (message.command !== pending.command) {
           pending.reject(
             new Error(
-              `prime-agent RPC response command mismatch: expected ${pending.command}, got ${String(message.command)}`
+              `pi RPC response command mismatch: expected ${pending.command}, got ${String(message.command)}`
             )
           );
         } else if (message.success !== true) {
@@ -287,7 +285,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
     if (this.buffer.length > maxBufferBytes) {
       this.buffer = Buffer.alloc(0);
       const error = new Error(
-        `prime-agent RPC input buffer exceeded ${maxBufferBytes} bytes`
+        `pi RPC input buffer exceeded ${maxBufferBytes} bytes`
       );
       this.emit('protocolError', error);
       // Discarding an unterminated record loses framing. Stop rather than risk

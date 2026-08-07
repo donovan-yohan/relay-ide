@@ -31,6 +31,7 @@
     "sandbox:dev": "node dist/scripts/sandbox-cli.js",
     "agent-browser": "node dist/scripts/agent-browser-cli.js",
     "test": "vitest run",
+    "smoke:agent-rpc": "npm run build:server && node dist/scripts/agent-rpc-smoke.js",
     "test:smoke:multi-node": "vitest run test/hub-cross-node-pty.test.ts test/multi-node-smoke.test.ts",
     "diagnose:channel-memory": "npm run build:server && node --expose-gc dist/scripts/channel-memory-load.js",
     "test:e2e": "playwright test",

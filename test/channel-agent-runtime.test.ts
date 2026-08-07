@@ -538,6 +538,27 @@ describe('ChannelAgentRuntimeManager', () => {
     expect(adapterState.last?.resumed).toEqual([]);
   });
 
+  it('passes Pi provider identity as an atomic resume id', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    adapterState.resumeDuringConnect = true;
+
+    await channelAgentRuntimes.create({
+      id: 'pi-runtime',
+      providerId: 'pi',
+      profileActorId: 'agent-profile:pi:default',
+      cwd: '/tmp',
+      displayName: '#eng · Pi',
+      port: 3456,
+      configDir: '/tmp',
+      providerSession: { piSessionId: 'pi-session-1' },
+    });
+
+    expect(adapterState.last?.connectConfigs).toEqual([
+      expect.objectContaining({ resumeSessionId: 'pi-session-1' }),
+    ]);
+    expect(adapterState.last?.resumed).toEqual([]);
+  });
+
   it('captures provider identity and rejects duplicate runtime ids', async () => {
     const { channelAgentRuntimes } = await runtimeModule();
     const runtime = await channelAgentRuntimes.create({

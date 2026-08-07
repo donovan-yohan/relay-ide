@@ -414,6 +414,7 @@ const BUILTIN_PROVIDER_IDS = new Set([
   'opencode',
   'hermes',
   'prime-agent',
+  'pi',
   'terminal',
 ]);
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
-import { PrimeAgentRpcClient } from '../../server/prime-agent-rpc-client.js';
+import { PiAgentRpcClient } from '../../server/pi-agent-rpc-client.js';
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & {
@@ -18,10 +18,10 @@ function fakeChild() {
   return child;
 }
 
-describe('PrimeAgentRpcClient', () => {
+describe('PiAgentRpcClient', () => {
   it('uses get_state as a correlated readiness barrier', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     let outbound = '';
@@ -48,7 +48,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('splits on LF only and preserves Unicode line separators inside JSON', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     child.stdin.once('data', (chunk) => {
@@ -68,7 +68,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('decodes UTF-8 characters split across stdout chunks', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     child.stdin.once('data', (chunk) => {
@@ -99,7 +99,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('rejects failed and mismatched correlated responses', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     child.stdin.on('data', (chunk) => {
@@ -122,7 +122,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('bounds oversized records and a trailing unterminated tail', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
       maxBufferBytes: 32,
       maxRecordBytes: 100,
@@ -163,7 +163,7 @@ describe('PrimeAgentRpcClient', () => {
     vi.useFakeTimers();
     try {
       const child = fakeChild();
-      const client = new PrimeAgentRpcClient({
+      const client = new PiAgentRpcClient({
         spawn: () => child as unknown as ChildProcess,
         stopTimeoutMs: 10,
       });
@@ -199,7 +199,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('times out readiness when get_state never responds', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
       readinessTimeoutMs: 5,
       stopTimeoutMs: 1,
@@ -209,7 +209,7 @@ describe('PrimeAgentRpcClient', () => {
 
   it('rejects calls when stdin.write throws synchronously', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     child.stdin.once('data', (chunk) => {
@@ -255,7 +255,7 @@ describe('PrimeAgentRpcClient', () => {
       .fn()
       .mockReturnValueOnce(failed as unknown as ChildProcess)
       .mockReturnValueOnce(ready as unknown as ChildProcess);
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn,
       readinessTimeoutMs: 1,
       stopTimeoutMs: 1,
@@ -298,7 +298,7 @@ describe('PrimeAgentRpcClient', () => {
         }) + '\n'
       );
     });
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
     });
     await client.start();
@@ -307,15 +307,15 @@ describe('PrimeAgentRpcClient', () => {
 
     await client.stop();
     child.stdin.emit('drain');
-    await expect(first).rejects.toThrow('PrimeAgentRpcClient stopped');
-    await expect(second).rejects.toThrow('PrimeAgentRpcClient stopped');
+    await expect(first).rejects.toThrow('PiAgentRpcClient stopped');
+    await expect(second).rejects.toThrow('PiAgentRpcClient stopped');
     expect(writeCount).toBe(2);
     expect(child.stdin.listenerCount('drain')).toBe(0);
   });
 
   it('times out correlated commands independently', async () => {
     const child = fakeChild();
-    const client = new PrimeAgentRpcClient({
+    const client = new PiAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
       requestTimeoutMs: 5,
     });

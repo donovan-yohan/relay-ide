@@ -109,7 +109,9 @@ function providerResumeId(
           ? 'hermesResponseId'
           : providerId === 'prime-agent'
             ? 'primeAgentSessionId'
-            : undefined;
+            : providerId === 'pi'
+              ? 'piSessionId'
+              : undefined;
   if (!key) return undefined;
   const value = state[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;

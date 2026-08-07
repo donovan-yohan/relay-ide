@@ -7,12 +7,14 @@ import { OpenCodeAttachedAdapter } from './opencode-attached-adapter.js';
 import { HermesProtocolAdapter } from './hermes-adapter.js';
 import { CodexNativeProtocolAdapter } from './codex-native-adapter.js';
 import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
+import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
 
 export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
   mock: () => new MockProtocolAdapterV2(),
   claude: () => new ClaudeProtocolAdapter(),
   codex: () => new CodexNativeProtocolAdapter(),
   'prime-agent': () => new PrimeAgentProtocolAdapter(),
+  pi: () => new PiAgentProtocolAdapter(),
   opencode: () =>
     new LegacyProtocolAdapterV2Bridge(new OpenCodeProtocolAdapter(), {
       text: true,

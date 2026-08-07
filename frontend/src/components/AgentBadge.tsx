@@ -89,6 +89,27 @@ export function AgentBadge({ agent }: AgentBadgeProps) {
     );
   }
 
+  if (agent === 'pi') {
+    return (
+      <svg
+        className="agent-badge"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="Pi"
+      >
+        <text
+          x="1.5"
+          y="16.5"
+          fontFamily="serif"
+          fontSize="18"
+          fill="currentColor"
+        >
+          π
+        </text>
+      </svg>
+    );
+  }
+
   const fallbackLetter = agent ? agent[0]!.toUpperCase() : '?';
   return (
     <span className="agent-badge agent-badge--fallback" aria-label={agent}>

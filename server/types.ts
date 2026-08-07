@@ -54,7 +54,8 @@ export type BuiltinFrameworkId =
   | 'codex'
   | 'opencode'
   | 'hermes'
-  | 'prime-agent';
+  | 'prime-agent'
+  | 'pi';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
@@ -193,6 +194,25 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
     command: 'prime-agent',
     // The terminal surface remains a generic PTY. Channel conversations use
     // Prime Agent's native RPC adapter rather than terminal-output parsing.
+    continueArgs: ['--continue'],
+    yoloArgs: [],
+    parserType: 'generic',
+    eventSource: 'timer',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: false,
+      supportsTelemetry: true,
+      supportsAttachedRuntime: false,
+      supportsChannelAgents: true,
+    },
+  },
+  pi: {
+    id: 'pi',
+    displayName: 'Pi',
+    command: 'pi',
+    // The terminal surface remains a generic PTY. Channel conversations use
+    // Pi's native RPC adapter rather than terminal-output parsing.
     continueArgs: ['--continue'],
     yoloArgs: [],
     parserType: 'generic',

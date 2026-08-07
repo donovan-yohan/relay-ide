@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { PrimeAgentRpcClient } from '../../../server/prime-agent-rpc-client.js';
-import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
+import { PiAgentRpcClient } from '../../../server/pi-agent-rpc-client.js';
+import { PiAgentProtocolAdapter } from '../../../server/protocol-adapters/pi-agent-adapter.js';
 
 const config = {
   cwd: '/tmp',
@@ -14,86 +14,22 @@ const config = {
 };
 
 function harness() {
-  const client = new PrimeAgentRpcClient();
+  const client = new PiAgentRpcClient();
   vi.spyOn(client, 'start').mockResolvedValue({
     type: 'response',
     command: 'get_state',
     success: true,
     data: {
-      sessionId: 'prime-1',
-      sessionFile: '/tmp/prime-1.jsonl',
+      sessionId: 'pi-1',
+      sessionFile: '/tmp/pi-1.jsonl',
       isStreaming: false,
-      thinkingLevel: 'medium',
-      model: {
-        id: 'gpt-prime',
-        name: 'GPT Prime',
-        provider: 'prime-inference',
-        reasoning: true,
-        thinkingLevelMap: { xhigh: 'xhigh' },
-      },
     },
   });
-  let activeSession = {
-    id: 'prime-1',
-    file: '/tmp/prime-1.jsonl',
-  };
-  const call = vi.spyOn(client, 'call').mockImplementation(async (type) => {
-    if (type === 'new_session') {
-      activeSession = { id: 'prime-2', file: '/tmp/prime-2.jsonl' };
-      return {
-        type: 'response',
-        command: type,
-        success: true,
-        data: { cancelled: false },
-      };
-    }
-    if (type === 'get_available_models') {
-      return {
-        type: 'response',
-        command: type,
-        success: true,
-        data: {
-          models: [
-            {
-              id: 'gpt-prime',
-              name: 'GPT Prime',
-              provider: 'prime-inference',
-              reasoning: true,
-              thinkingLevelMap: { xhigh: 'xhigh' },
-            },
-            {
-              id: 'claude-prime',
-              name: 'Claude Prime',
-              provider: 'prime-inference',
-              reasoning: true,
-            },
-          ],
-        },
-      };
-    }
-    if (type === 'get_state') {
-      return {
-        type: 'response',
-        command: type,
-        success: true,
-        data: {
-          sessionId: activeSession.id,
-          sessionFile: activeSession.file,
-          thinkingLevel: 'medium',
-          model: {
-            id: 'gpt-prime',
-            name: 'GPT Prime',
-            provider: 'prime-inference',
-            reasoning: true,
-            thinkingLevelMap: { xhigh: 'xhigh' },
-          },
-        },
-      };
-    }
-    return { type: 'response', command: type, success: true };
-  });
+  const call = vi
+    .spyOn(client, 'call')
+    .mockResolvedValue({ type: 'response', command: 'prompt', success: true });
   vi.spyOn(client, 'stop').mockResolvedValue();
-  const adapter = new PrimeAgentProtocolAdapter(() => client);
+  const adapter = new PiAgentProtocolAdapter(() => client);
   const patches: Array<Record<string, unknown>> = [];
   adapter.onPatch((patch) =>
     patches.push(patch as unknown as Record<string, unknown>)
@@ -101,11 +37,11 @@ function harness() {
   return { adapter, client, call, patches };
 }
 
-describe('PrimeAgentProtocolAdapter', () => {
+describe('PiAgentProtocolAdapter', () => {
   it('publishes honest capabilities and provider session identity after get_state', async () => {
     const { adapter, patches } = harness();
     await adapter.connect(config);
-    expect(adapter.agentType).toBe('prime-agent');
+    expect(adapter.agentType).toBe('pi');
     expect(adapter.capabilities).toMatchObject({
       text: true,
       queue: true,
@@ -120,191 +56,12 @@ describe('PrimeAgentProtocolAdapter', () => {
       (patch) => patch.type === 'agent-session-snapshot-v2'
     );
     expect(snapshot?.session).toMatchObject({
-      provider: 'prime-agent',
+      provider: 'pi',
       providerSession: {
-        primeAgentSessionId: 'prime-1',
-        primeAgentSessionFile: '/tmp/prime-1.jsonl',
+        piSessionId: 'pi-1',
+        piSessionFile: '/tmp/pi-1.jsonl',
       },
     });
-  });
-
-  it('discovers live Prime controls and executes them on the RPC control lane', async () => {
-    const { adapter, call, patches } = harness();
-    await adapter.connect(config);
-
-    expect(adapter.getSlashCommands()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'new', destructive: true }),
-        expect.objectContaining({
-          name: 'model',
-          args: expect.arrayContaining([
-            expect.objectContaining({
-              value: 'prime-inference/gpt-prime',
-              label: 'GPT Prime',
-            }),
-          ]),
-        }),
-        expect.objectContaining({
-          name: 'thinking',
-          args: expect.arrayContaining([{ value: 'xhigh' }]),
-        }),
-        expect.objectContaining({ name: 'compact' }),
-      ])
-    );
-
-    await expect(
-      adapter.executeControlCommand({
-        command: 'model',
-        args: 'other/model',
-      })
-    ).rejects.toThrow('live Prime Agent catalog');
-    await expect(
-      adapter.executeControlCommand({
-        command: 'thinking',
-        args: 'turbo',
-      })
-    ).rejects.toThrow('thinking must be one of');
-
-    await adapter.executeControlCommand({
-      command: 'model',
-      args: 'prime-inference/claude-prime',
-    });
-    await adapter.executeControlCommand({
-      command: 'thinking',
-      args: 'high',
-    });
-    await adapter.executeControlCommand({ command: 'compact' });
-    await expect(
-      adapter.executeControlCommand({ command: 'new' })
-    ).rejects.toThrow('requires confirmation');
-    await adapter.executeControlCommand({ command: 'new', confirmed: true });
-
-    expect(call.mock.calls).toEqual(
-      expect.arrayContaining([
-        ['set_model', { provider: 'prime-inference', modelId: 'claude-prime' }],
-        ['set_thinking_level', { level: 'high' }],
-        ['compact'],
-        ['new_session'],
-      ])
-    );
-    expect(patches).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'agent-session-updated-v2',
-          slashCommands: expect.any(Array),
-        }),
-        expect.objectContaining({
-          type: 'agent-session-updated-v2',
-          providerSession: {
-            primeAgentSessionId: 'prime-2',
-            primeAgentSessionFile: '/tmp/prime-2.jsonl',
-          },
-        }),
-      ])
-    );
-  });
-
-  it('clears stale optional state after a fresh Prime session', async () => {
-    const { adapter, call, patches } = harness();
-    await adapter.connect(config);
-    call.mockImplementation(async (type) => {
-      if (type === 'new_session') {
-        return {
-          type: 'response',
-          command: type,
-          success: true,
-          data: { cancelled: false },
-        };
-      }
-      if (type === 'get_state') {
-        return {
-          type: 'response',
-          command: type,
-          success: true,
-          data: { sessionId: 'prime-empty' },
-        };
-      }
-      return { type: 'response', command: type, success: true };
-    });
-
-    const result = await adapter.executeControlCommand({
-      command: 'new',
-      confirmed: true,
-    });
-    expect(result.config).toEqual({});
-    expect(patches.at(-1)).toMatchObject({
-      type: 'agent-session-updated-v2',
-      providerSession: { primeAgentSessionId: 'prime-empty' },
-      config: {},
-    });
-    expect(
-      (patches.at(-1)?.providerSession as Record<string, unknown>)?.[
-        'primeAgentSessionFile'
-      ]
-    ).toBeUndefined();
-  });
-
-  it('serializes controls against prompts and other controls', async () => {
-    const { adapter, call } = harness();
-    await adapter.connect(config);
-    let releaseModel!: () => void;
-    const modelGate = new Promise<void>((resolve) => {
-      releaseModel = resolve;
-    });
-    call.mockImplementation(async (type) => {
-      if (type === 'set_model') await modelGate;
-      if (type === 'get_state') {
-        return {
-          type: 'response',
-          command: type,
-          success: true,
-          data: {
-            sessionId: 'prime-1',
-            sessionFile: '/tmp/prime-1.jsonl',
-            thinkingLevel: 'medium',
-            model: {
-              id: 'gpt-prime',
-              provider: 'prime-inference',
-              reasoning: true,
-            },
-          },
-        };
-      }
-      return { type: 'response', command: type, success: true };
-    });
-
-    const changingModel = adapter.executeControlCommand({
-      command: 'model',
-      args: 'prime-inference/gpt-prime',
-    });
-    await vi.waitFor(() =>
-      expect(call).toHaveBeenCalledWith('set_model', {
-        provider: 'prime-inference',
-        modelId: 'gpt-prime',
-      })
-    );
-    await expect(
-      adapter.sendMessage({ turnId: 'racing-turn', content: 'hello' })
-    ).rejects.toThrow('control command is in progress');
-    await expect(
-      adapter.executeControlCommand({ command: 'compact' })
-    ).rejects.toThrow('another Prime Agent control command is in progress');
-
-    releaseModel();
-    await changingModel;
-  });
-
-  it('fails closed when live model discovery is unavailable', async () => {
-    const { adapter, call } = harness();
-    call.mockRejectedValueOnce(new Error('unknown command'));
-    await adapter.connect(config);
-    expect(adapter.getSlashCommands()).toEqual([]);
-    await expect(
-      adapter.executeControlCommand({
-        command: 'model',
-        args: 'guessed/model',
-      })
-    ).rejects.toThrow('unsupported Prime Agent control command');
   });
 
   it('maps streaming text, thinking, and command tools to V2 patches', async () => {
@@ -353,7 +110,7 @@ describe('PrimeAgentProtocolAdapter', () => {
         },
       },
     });
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -395,48 +152,43 @@ describe('PrimeAgentProtocolAdapter', () => {
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
     await adapter.interrupt({ turnId: 't1' });
-    expect(call.mock.calls.map(([type]) => type)).toEqual([
-      'get_available_models',
-      'prompt',
-      'abort',
-    ]);
+    expect(call.mock.calls.map(([type]) => type)).toEqual(['prompt', 'abort']);
   });
 
-  it('validates Prime native queue counts and preserves local queued work', async () => {
+  it('combines Relay and native Pi queues in its live queue count', async () => {
     const { adapter, client, patches } = harness();
-    vi.spyOn(client, 'start').mockResolvedValue({
-      type: 'response',
-      command: 'get_state',
-      success: true,
-      data: { sessionActions: { queuedCount: Number.POSITIVE_INFINITY } },
-    });
     await adapter.connect(config);
-    expect(patches.at(-1)).toMatchObject({
-      type: 'agent-live-state-updated-v2',
-      live: { queueLength: 0 },
-    });
-
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
+
     client.emit('event', {
-      type: 'session_action_update',
-      actions: { queuedCount: 'not-a-number' },
+      type: 'queue_update',
+      steering: ['native steer'],
+      followUp: ['native follow-up'],
     });
-    expect(patches.at(-1)).toMatchObject({
-      type: 'agent-live-state-updated-v2',
-      live: { queueLength: 1 },
-    });
-    client.emit('event', {
-      type: 'session_action_update',
-      actions: { queuedCount: 2 },
-    });
+
     expect(patches.at(-1)).toMatchObject({
       type: 'agent-live-state-updated-v2',
       live: { queueLength: 3 },
     });
   });
 
-  it('submits queued Relay turns as fresh prompts after real agent_end boundaries', async () => {
+  it('publishes only a finite non-negative Pi pending count at connect', async () => {
+    const { adapter, client, patches } = harness();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { pendingMessageCount: Number.NaN },
+    });
+    await adapter.connect(config);
+    expect(patches.at(-1)).toMatchObject({
+      type: 'agent-live-state-updated-v2',
+      live: { queueLength: 0 },
+    });
+  });
+
+  it('submits queued Relay turns as fresh prompts after real agent_settled boundaries', async () => {
     const { adapter, client, call, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
@@ -448,7 +200,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
     ).toHaveLength(0);
 
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
     await vi.waitFor(() =>
       expect(
         patches
@@ -456,7 +208,7 @@ describe('PrimeAgentProtocolAdapter', () => {
           .map((patch) => (patch.turn as { id: string }).id)
       ).toEqual(['t1', 't2'])
     );
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
     await vi.waitFor(() =>
       expect(
         patches
@@ -464,7 +216,7 @@ describe('PrimeAgentProtocolAdapter', () => {
           .map((patch) => (patch.turn as { id: string }).id)
       ).toEqual(['t1', 't2', 't3'])
     );
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
 
     expect(
       patches
@@ -491,7 +243,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
     await adapter.sendMessage({ turnId: 't2', content: 'two' });
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
 
     await vi.waitFor(() => expect(adapter.status).toBe('disconnected'));
     expect(patches).toEqual(
@@ -554,14 +306,12 @@ describe('PrimeAgentProtocolAdapter', () => {
           },
         ],
       })
-    ).rejects.toThrow('Cannot read Prime Agent image attachment');
-    expect(call.mock.calls.map(([type]) => type)).toEqual([
-      'get_available_models',
-    ]);
+    ).rejects.toThrow('Cannot read Pi image attachment');
+    expect(call).not.toHaveBeenCalled();
   });
 
   it('fails an invalidated queued attachment locally and advances later turns', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'relay-prime-queued-image-'));
+    const directory = mkdtempSync(join(tmpdir(), 'relay-pi-queued-image-'));
     const path = join(directory, 'image.png');
     writeFileSync(
       path,
@@ -579,7 +329,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       await adapter.sendMessage({ turnId: 't3', content: 'three' });
       rmSync(path);
 
-      client.emit('event', { type: 'agent_end' });
+      client.emit('event', { type: 'agent_settled' });
       await vi.waitFor(() =>
         expect(
           call.mock.calls
@@ -593,9 +343,7 @@ describe('PrimeAgentProtocolAdapter', () => {
           expect.objectContaining({
             type: 'agent-error-v2',
             turnId: 't2',
-            message: expect.stringContaining(
-              'Cannot read Prime Agent image attachment'
-            ),
+            message: expect.stringContaining('Cannot read Pi image attachment'),
           }),
           expect.objectContaining({
             type: 'agent-turn-completed-v2',
@@ -609,7 +357,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     }
   });
 
-  it('assigns unique item ids when Prime omits tool call ids', async () => {
+  it('assigns unique item ids when Pi omits tool call ids', async () => {
     const { adapter, client, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'tools' });
@@ -634,7 +382,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     expect(new Set(ids).size).toBe(2);
   });
 
-  it('reuses an anonymous streamed tool id through Prime execution completion', async () => {
+  it('reuses an anonymous streamed tool id through Pi execution completion', async () => {
     const { adapter, client, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'tool' });
@@ -691,7 +439,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     );
   });
 
-  it('routes interleaved anonymous Prime tools by name and args', async () => {
+  it('routes interleaved anonymous Pi tools by name and args', async () => {
     const { adapter, client, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'tools' });
@@ -738,7 +486,7 @@ describe('PrimeAgentProtocolAdapter', () => {
   });
 
   it('bounds image count and rejects MIME-mismatched bytes', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'relay-prime-image-'));
+    const directory = mkdtempSync(join(tmpdir(), 'relay-pi-image-'));
     const path = join(directory, 'image.png');
     try {
       writeFileSync(path, 'not an image');
@@ -795,7 +543,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'hello' });
     client.emit('event', { type: 'extension_error', error: 'hook failed' });
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -824,10 +572,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     }));
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 'compact', content: '/compact' });
-    expect(call.mock.calls.map(([type]) => type)).toEqual([
-      'get_available_models',
-      'compact',
-    ]);
+    expect(call.mock.calls.map(([type]) => type)).toEqual(['compact']);
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -840,7 +585,7 @@ describe('PrimeAgentProtocolAdapter', () => {
   });
 
   it('disables extensions until extension UI requests are mapped', async () => {
-    const client = new PrimeAgentRpcClient();
+    const client = new PiAgentRpcClient();
     vi.spyOn(client, 'start').mockResolvedValue({
       type: 'response',
       command: 'get_state',
@@ -854,7 +599,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     });
     vi.spyOn(client, 'stop').mockResolvedValue();
     let args: string[] | undefined;
-    const adapter = new PrimeAgentProtocolAdapter((options) => {
+    const adapter = new PiAgentProtocolAdapter((options) => {
       args = options.args;
       return client;
     });
@@ -874,6 +619,46 @@ describe('PrimeAgentProtocolAdapter', () => {
       '--thinking',
       'high',
     ]);
+  });
+
+  it('resumes a durable session by exact pi project session id', async () => {
+    const client = new PiAgentRpcClient();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionId: 'pi-session-1', sessionFile: '/tmp/s.jsonl' },
+    });
+    vi.spyOn(client, 'stop').mockResolvedValue();
+    let args: string[] | undefined;
+    const adapter = new PiAgentProtocolAdapter((options) => {
+      args = options.args;
+      return client;
+    });
+    await adapter.connect({ ...config, resumeSessionId: 'pi-session-1' });
+    expect(args).toEqual([
+      '--mode',
+      'rpc',
+      '--no-extensions',
+      '--session-id',
+      'pi-session-1',
+    ]);
+  });
+
+  it('completes a turn only on agent_settled, not on the earlier agent_end', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'one' });
+    client.emit('event', { type: 'agent_end', messages: [] });
+    expect(
+      patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toHaveLength(0);
+    client.emit('event', { type: 'agent_settled' });
+    expect(
+      patches
+        .filter((patch) => patch.type === 'agent-turn-completed-v2')
+        .map((patch) => patch.turnId)
+    ).toEqual(['t1']);
   });
 
   it('uses unique assistant ids across a tool-loop second assistant message', async () => {
@@ -917,7 +702,7 @@ describe('PrimeAgentProtocolAdapter', () => {
         delta: 'second',
       },
     });
-    client.emit('event', { type: 'agent_end' });
+    client.emit('event', { type: 'agent_settled' });
     const assistantIds = patches
       .filter(
         (patch) =>
@@ -943,7 +728,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       success: false,
       finalError: 'quota exhausted',
     });
-    failed.client.emit('event', { type: 'agent_end' });
+    failed.client.emit('event', { type: 'agent_settled' });
     expect(failed.patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -972,7 +757,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       args: { command: 'sleep 1' },
     });
     await aborted.adapter.interrupt({ turnId: 'aborted' });
-    aborted.client.emit('event', { type: 'agent_end' });
+    aborted.client.emit('event', { type: 'agent_settled' });
     expect(aborted.patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -992,13 +777,13 @@ describe('PrimeAgentProtocolAdapter', () => {
   });
 
   it('ignores stale old-client close after reconnect and keeps patch listeners', async () => {
-    const clients = [new PrimeAgentRpcClient(), new PrimeAgentRpcClient()];
+    const clients = [new PiAgentRpcClient(), new PiAgentRpcClient()];
     for (const client of clients) {
       vi.spyOn(client, 'start').mockResolvedValue({
         type: 'response',
         command: 'get_state',
         success: true,
-        data: { sessionId: 'prime' },
+        data: { sessionId: 'pi' },
       });
       vi.spyOn(client, 'stop').mockResolvedValue();
       vi.spyOn(client, 'call').mockResolvedValue({
@@ -1008,7 +793,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       });
     }
     let index = 0;
-    const adapter = new PrimeAgentProtocolAdapter(() => clients[index++]!);
+    const adapter = new PiAgentProtocolAdapter(() => clients[index++]!);
     const patches: Array<Record<string, unknown>> = [];
     adapter.onPatch((patch) =>
       patches.push(patch as unknown as Record<string, unknown>)
@@ -1018,7 +803,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     clients[0]!.emit('close', 1);
     expect(adapter.status).toBe('connected');
     await adapter.sendMessage({ turnId: 'after-reconnect', content: 'alive' });
-    clients[1]!.emit('event', { type: 'agent_end' });
+    clients[1]!.emit('event', { type: 'agent_settled' });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1027,5 +812,206 @@ describe('PrimeAgentProtocolAdapter', () => {
         }),
       ])
     );
+  });
+
+  it('guards empty-args command calls and steers after repeated empty calls', async () => {
+    const { adapter, client, call, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-empty', content: 'do it' });
+
+    // Empty bash call: no command.
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'empty-1',
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'empty-2',
+      toolName: 'bash',
+      args: {},
+    });
+    // Only the third consecutive empty call injects a corrective steer.
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'empty-3',
+      toolName: 'bash',
+      args: {},
+    });
+
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-error-v2',
+          message: expect.stringContaining('empty arguments'),
+        }),
+      ])
+    );
+    // Corrective is a `steer` (pi rejects `prompt` during streaming), not a bare
+    // `prompt`, so the first two empty calls must not have called anything.
+    const steerCalls = call.mock.calls.filter(([type]) => type === 'steer');
+    expect(steerCalls.length).toBe(1);
+    expect(steerCalls[0]?.[1]).toMatchObject({
+      message: expect.stringContaining('bash'),
+    });
+    expect(call.mock.calls.filter(([type]) => type === 'prompt').length).toBe(
+      1
+    ); // the initial sendMessage
+  });
+
+  it('does not recreate a suppressed empty tool when its end event arrives', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-empty-end', content: 'go' });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'empty-end',
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolCallId: 'empty-end',
+      toolName: 'bash',
+      args: {},
+      result: { content: [{ type: 'text', text: 'invalid' }] },
+      isError: true,
+    });
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-started-v2' &&
+          (patch.item as { id?: string }).id === 'empty-end'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('does not throw when corrective steering loses its client', async () => {
+    const { adapter } = harness();
+    await adapter.connect(config);
+    await adapter.disconnect();
+    expect(() =>
+      (
+        adapter as unknown as {
+          injectCorrectivePrompt(name: string): void;
+        }
+      ).injectCorrectivePrompt('bash')
+    ).not.toThrow();
+  });
+
+  it('does not inject after interleaved empty calls from different tools', async () => {
+    const { adapter, client, call } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-mixed', content: 'go' });
+
+    // bash, then edit, then edit: the edit counter is per-tool, so only two
+    // consecutive empty `edit` calls do not yet trigger a steer.
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'b1',
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'e1',
+      toolName: 'edit',
+      args: {},
+    });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'e2',
+      toolName: 'edit',
+      args: {},
+    });
+
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(0);
+
+    // A third consecutive empty `edit` now injects.
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'e3',
+      toolName: 'edit',
+      args: {},
+    });
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(1);
+  });
+
+  it('keeps an empty-bash streak despite interleaved valid calls of other tools', async () => {
+    const { adapter, client, call } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-interleave', content: 'go' });
+
+    // Empty bash, then a VALID edit, then empty bash, then empty bash: the valid
+    // edit clears only the edit tool's streak, so the bash count still reaches 3
+    // and steers despite the interleaved valid call.
+    const emptyBash = (i: string) => ({
+      type: 'tool_execution_start',
+      toolCallId: i,
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', emptyBash('e1'));
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'v1',
+      toolName: 'edit',
+      args: { path: '/tmp/a.ts' },
+    });
+    client.emit('event', emptyBash('e2'));
+    client.emit('event', emptyBash('e3'));
+
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(1);
+  });
+
+  it('clears only the matching tool streak on a valid invocation', async () => {
+    const { adapter, client, call } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-valid', content: 'go' });
+
+    // Two empty bash calls, then a valid bash call: the valid call clears only
+    // bash's streak, so the next empty bash is back to count 1 (no steer yet).
+    const emptyBash = (i: string) => ({
+      type: 'tool_execution_start',
+      toolCallId: i,
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', emptyBash('e1'));
+    client.emit('event', emptyBash('e2'));
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'v1',
+      toolName: 'bash',
+      args: { command: 'pwd' },
+    });
+    client.emit('event', emptyBash('e3'));
+    client.emit('event', emptyBash('e4'));
+
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(0);
+
+    // A third consecutive empty bash call after the valid reset triggers.
+    client.emit('event', emptyBash('e5'));
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(1);
+  });
+
+  it('queues only one corrective steer per empty-call burst', async () => {
+    const { adapter, client, call } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-burst', content: 'go' });
+
+    // A burst of five empty bash calls triggers a steer at count 3 only — counts
+    // 4 and 5 must not queue additional steers.
+    for (let i = 1; i <= 5; i += 1) {
+      client.emit('event', {
+        type: 'tool_execution_start',
+        toolCallId: `b${i}`,
+        toolName: 'bash',
+        args: {},
+      });
+    }
+
+    expect(call.mock.calls.filter(([type]) => type === 'steer').length).toBe(1);
   });
 });

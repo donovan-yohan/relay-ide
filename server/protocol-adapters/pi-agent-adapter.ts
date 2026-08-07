@@ -8,23 +8,20 @@ import type {
   AgentInputResponseInputV2,
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
-  AgentControlCommandInputV2,
 } from '../protocol-adapter-v2.js';
 import type {
   AgentCapabilitySetV2,
   AgentItemV2,
   AgentSessionLiveStateV2,
-  AgentSlashCommandV2,
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
-import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
 import { cleanEnv } from '../utils.js';
 import {
-  PrimeAgentRpcClient,
-  type PrimeAgentRpcClientOptions,
-  type PrimeAgentRpcMessage,
-} from '../prime-agent-rpc-client.js';
+  PiAgentRpcClient,
+  type PiAgentRpcClientOptions,
+  type PiAgentRpcMessage,
+} from '../pi-agent-rpc-client.js';
 
 const CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -35,7 +32,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   approvals: false,
   questions: false,
   plans: false,
-  slashCommands: true,
+  slashCommands: false,
   queue: true,
   cancelQueued: false,
   interrupt: true,
@@ -48,9 +45,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   streaming: true,
 };
 
-type ClientFactory = (
-  options: PrimeAgentRpcClientOptions
-) => PrimeAgentRpcClient;
+type ClientFactory = (options: PiAgentRpcClientOptions) => PiAgentRpcClient;
 type RpcRecord = Record<string, unknown>;
 
 function nowIso(): string {
@@ -139,15 +134,15 @@ function matchesImageSignature(bytes: Buffer, mimeType: string): boolean {
   );
 }
 
-export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
-  readonly agentType = 'prime-agent';
+export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
+  readonly agentType = 'pi';
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CAPABILITIES;
   readonly resumesProviderSessionDuringConnect = true;
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
-  private client: PrimeAgentRpcClient | null = null;
+  private client: PiAgentRpcClient | null = null;
   private providerSessionId: string | null = null;
   private providerSessionFile: string | null = null;
   private activeTurnId: string | null = null;
@@ -164,30 +159,23 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
-  private commandCatalog = relayControlCatalogForProvider('prime-agent');
-  private modelCatalog: RpcRecord[] = [];
-  private currentModel: RpcRecord | null = null;
-  private thinkingLevel: string | null = null;
-  private controlInFlight = false;
+  // Empty-args guard state: a command/file tool with missing required fields
+  // is rejected by the harness validator, returns no usable tool result, and the
+  // model burns output tokens retrying the identical empty call. Counts are
+  // tracked PER TOOL NAME so a valid invocation of an unrelated tool cannot
+  // reset a stuck tool's streak (an empty `bash` loop keeps counting regardless
+  // of interleaved `edit` calls).
+  private readonly emptyToolCounts = new Map<string, number>();
+  private readonly suppressedEmptyToolIds = new Set<string>();
 
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
-      new PrimeAgentRpcClient({ ...options, spawn: nodeSpawn })
+      new PiAgentRpcClient({ ...options, spawn: nodeSpawn })
   ) {
     super();
   }
   get status(): AdapterStatus {
     return this._status;
-  }
-
-  getSlashCommands(): AgentSlashCommandV2[] {
-    return this.commandCatalog.map((command) => ({
-      ...command,
-      ...(command.aliases ? { aliases: [...command.aliases] } : {}),
-      ...(command.args
-        ? { args: command.args.map((arg) => ({ ...arg })) }
-        : {}),
-    }));
   }
 
   async connect(config: AdapterConfig): Promise<void> {
@@ -201,11 +189,14 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (thinking) args.push('--thinking', thinking);
     if (config.systemPromptAppendix)
       args.push('--append-system-prompt', config.systemPromptAppendix);
-    if (config.resumeSessionId) args.push('--resume', config.resumeSessionId);
+    // Pi resumes a durable session by exact project session id (`--session-id`),
+    // the analog of Prime Agent's `--resume <sessionId>`.
+    if (config.resumeSessionId)
+      args.push('--session-id', config.resumeSessionId);
     const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
     delete env['CLAUDECODE'];
     const client = this.clientFactory({
-      command: 'prime-agent',
+      command: 'pi',
       args,
       cwd: config.cwd,
       env,
@@ -214,7 +205,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const generation = ++this.clientGeneration;
     const current = (): boolean =>
       this.client === client && this.clientGeneration === generation;
-    client.on('event', (event: PrimeAgentRpcMessage) => {
+    client.on('event', (event: PiAgentRpcMessage) => {
       if (current()) this.handleEvent(event);
     });
     client.on('protocolError', (error: Error) => {
@@ -225,26 +216,20 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
     client.on('close', () => {
       if (current() && this._status !== 'disconnected')
-        this.handleTransportClose(
-          new Error('prime-agent RPC transport closed')
-        );
+        this.handleTransportClose(new Error('pi RPC transport closed'));
     });
     try {
       const response = await client.start();
       this.applyState(record(response.data));
       this._status = 'connected';
-      await this.refreshControlCommands();
       this.emitSnapshot();
-      this.emitSessionUpdate();
       this.emitLive({
         status: record(response.data).isStreaming === true ? 'working' : 'idle',
         activeTurnId: null,
         waitingOn: null,
         activeRequestIds: [],
         proposedPlanItemId: null,
-        queueLength: queueCount(
-          record(record(response.data).sessionActions).queuedCount
-        ),
+        queueLength: queueCount(record(response.data).pendingMessageCount),
         fastModeAvailable: false,
         error: null,
       });
@@ -264,6 +249,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.items.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
   }
 
   private async teardownClient(): Promise<void> {
@@ -281,7 +267,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         ? { resumeSessionId: this.providerSessionId }
         : {}),
     };
-    this.resetForTransportSwitch('Prime Agent transport reconnected');
+    this.resetForTransportSwitch('Pi transport reconnected');
     this._status = 'disconnected';
     await this.teardownClient();
     await this.connect(config);
@@ -290,24 +276,21 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   async resumeSession(sessionId: string): Promise<void> {
     if (!this.config) throw new Error('Cannot resumeSession before connect');
     const config = { ...this.config, resumeSessionId: sessionId };
-    this.resetForTransportSwitch('Prime Agent session switched');
+    this.resetForTransportSwitch('Pi session switched');
     this._status = 'disconnected';
     await this.teardownClient();
     await this.connect(config);
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
-    if (this.controlInFlight) {
-      throw new Error('Prime Agent control command is in progress');
-    }
     const client = this.requireClient();
     const payload: RpcRecord = { message: input.content };
     const images = this.readImages(input.attachments);
     if (images.length) payload.images = images;
     if (this.activeTurnId) {
-      // Prime `steer` stays inside the current native agent run and therefore
-      // has no separate agent_end boundary that Relay can attribute to this
-      // turn. Keep Relay turns local and submit a fresh prompt after agent_end.
+      // Pi `steer`/`follow_up` stay inside the current native run and therefore
+      // have no separate agent_settled boundary that Relay can attribute to this
+      // turn. Keep Relay turns local and submit a fresh prompt after settle.
       this.queued.push(input);
       this.emitLive({
         status: 'working',
@@ -321,92 +304,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       await this.submitNativeInput(client, input, payload);
     } catch (error) {
-      // A timeout is ambiguous: Prime may have accepted the prompt. Stop the
+      // A timeout is ambiguous: Pi may have accepted the prompt. Stop the
       // private runtime so late events/tools cannot outlive Relay attribution.
       this.handleTransportClose(
         error instanceof Error ? error : new Error(String(error))
       );
       throw error;
-    }
-  }
-
-  async executeControlCommand(
-    input: AgentControlCommandInputV2
-  ): Promise<{ config?: Record<string, unknown> }> {
-    const client = this.requireClient();
-    if (this.activeTurnId || this.queued.length > 0) {
-      throw new Error(
-        'Prime Agent controls are unavailable while a turn is active'
-      );
-    }
-    if (this.controlInFlight) {
-      throw new Error('another Prime Agent control command is in progress');
-    }
-    this.controlInFlight = true;
-    try {
-      const command = input.command.trim().toLowerCase();
-      const known = this.commandCatalog.find(
-        (entry) =>
-          entry.dispatch === 'relay-control' &&
-          (entry.name === command || (entry.aliases ?? []).includes(command))
-      );
-      if (!known) throw new Error('unsupported Prime Agent control command');
-      if (known.destructive && input.confirmed !== true) {
-        throw new Error('Prime Agent control command requires confirmation');
-      }
-      const action = known.collisionKey ?? known.name;
-      const args = input.args?.trim() ?? '';
-
-      switch (action) {
-        case 'clear': {
-          const response = await client.call('new_session');
-          if (record(response.data).cancelled === true) {
-            throw new Error('Prime Agent cancelled the new session request');
-          }
-          this.providerSessionId = null;
-          this.providerSessionFile = null;
-          this.items.clear();
-          break;
-        }
-        case 'model': {
-          const selected = this.modelCatalog.find(
-            (model) => this.modelValue(model) === args
-          );
-          if (!selected) {
-            throw new Error(
-              'model must be selected from the live Prime Agent catalog'
-            );
-          }
-          await client.call('set_model', {
-            provider: string(selected.provider),
-            modelId: string(selected.id),
-          });
-          break;
-        }
-        case 'thinking': {
-          const allowed = this.availableThinkingLevels(this.currentModel);
-          if (!allowed.includes(args)) {
-            throw new Error(
-              `thinking must be one of: ${allowed.join(', ') || 'none available'}`
-            );
-          }
-          await client.call('set_thinking_level', { level: args });
-          break;
-        }
-        case 'compact':
-          await client.call('compact');
-          break;
-        default:
-          throw new Error('unsupported Prime Agent control command');
-      }
-
-      const state = await client.call('get_state');
-      this.applyState(record(state.data));
-      this.recomputeControlCommands();
-      this.emitSessionUpdate();
-      return { config: this.currentControlConfig() };
-    } finally {
-      this.controlInFlight = false;
     }
   }
 
@@ -422,21 +325,27 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
   async respondToApproval(_input: AgentApprovalResponseInputV2): Promise<void> {
-    throw new Error('Prime Agent RPC approvals are not mapped');
+    throw new Error('Pi RPC approvals are not mapped');
   }
   async respondToInput(_input: AgentInputResponseInputV2): Promise<void> {
-    throw new Error('Prime Agent RPC questions are not mapped');
+    throw new Error('Pi RPC questions are not mapped');
   }
 
-  private handleEvent(event: PrimeAgentRpcMessage): void {
+  private handleEvent(event: PiAgentRpcMessage): void {
     const type = event.type;
+    // Pi emits `agent_end` before `agent_settled`; `agent_end` may still be
+    // followed by an automatic retry, compaction retry, or queued continuation.
+    // `agent_settled` is the session-level settled boundary (emitted in a
+    // `finally`, so it also fires on error/abort), and is the safe Relay turn
+    // boundary.
     if (type === 'turn_start' || type === 'turn_end') return;
+    if (type === 'agent_end') return;
     if (type === 'message_start') {
       if (record(event.message).role === 'assistant')
         this.assistantMessageSequence += 1;
       return;
     }
-    if (type === 'agent_end') {
+    if (type === 'agent_settled') {
       this.completeTurn(
         this.abortRequested
           ? 'interrupted'
@@ -456,10 +365,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const message = record(event.message);
       if (message.stopReason === 'aborted') this.abortRequested = true;
       if (message.stopReason === 'error')
-        this.turnFailure = string(
-          message.errorMessage,
-          'Prime Agent generation failed'
-        );
+        this.turnFailure = string(message.errorMessage, 'Pi generation failed');
       this.finishMessageItems(
         this.abortRequested
           ? 'cancelled'
@@ -482,10 +388,23 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       this.updateTool(event, event.result, true);
       return;
     }
-    if (type === 'session_action_update') {
-      const actions = record(event.actions);
+    if (type === 'queue_update') {
+      // Pi queues steering/follow-up messages only; Relay submits one prompt per
+      // message. Combine the native count with Relay's pending prompts: the
+      // native event must not hide work already queued by Relay.
+      const nativeQueueLength =
+        (Array.isArray(event.steering) ? event.steering.length : 0) +
+        (Array.isArray(event.followUp) ? event.followUp.length : 0);
       this.emitLive({
-        queueLength: this.queued.length + queueCount(actions.queuedCount),
+        queueLength: this.queued.length + nativeQueueLength,
+      });
+      return;
+    }
+    if (type === 'compaction_end') {
+      this.emitProviderExtension({
+        kind: 'contextCompaction',
+        reason: string(event.reason, 'threshold'),
+        ...(event.result ? { result: record(event.result) } : {}),
       });
       return;
     }
@@ -493,14 +412,14 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       this.emitProviderExtension(
         {
           kind: 'extensionError',
-          error: string(event.error, 'Prime Agent extension error'),
+          error: string(event.error, 'Pi extension error'),
         },
         'debug'
       );
       return;
     }
     if (type === 'auto_retry_end' && event.success === false) {
-      this.turnFailure = string(event.finalError, 'Prime Agent retry failed');
+      this.turnFailure = string(event.finalError, 'Pi retry failed');
       this.emitError(this.turnFailure);
     }
   }
@@ -546,7 +465,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       else {
         this.turnFailure = string(
           delta.error,
-          string(delta.reason, 'Prime Agent generation error')
+          string(delta.reason, 'Pi generation error')
         );
         this.emitError(this.turnFailure);
       }
@@ -556,11 +475,65 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private startTool(event: RpcRecord): void {
     if (!this.activeTurnId) return;
     const id = this.toolIdForStart(event);
-    this.ensureTool(
-      id,
-      string(event.toolName, 'tool'),
-      toolArguments(event.args)
+    const name = string(event.toolName, 'tool');
+    const args = toolArguments(event.args);
+    // Empty-args guard: a command/file tool with missing required fields is
+    // rejected by the harness validator (no usable tool result), which makes the
+    // model retry the identical empty call until it exhausts output tokens.
+    if (this.isEmptyToolCall(name, args)) {
+      this.suppressedEmptyToolIds.add(id);
+      this.handleEmptyToolCall(name);
+      return;
+    }
+    // A non-empty invocation of this tool is legitimate progress — clear only
+    // THIS tool's empty streak (an unrelated tool's valid call must not reset it).
+    this.emptyToolCounts.delete(name);
+    this.ensureTool(id, name, args);
+  }
+
+  private isEmptyToolCall(name: string, args: RpcRecord): boolean {
+    if (isCommandTool(name)) return string(args.command).trim().length === 0;
+    if (isFileTool(name))
+      return string(args.path ?? args.file_path).trim().length === 0;
+    return false;
+  }
+
+  private handleEmptyToolCall(name: string): void {
+    if (!this.activeTurnId) return;
+    // Per-tool consecutive count: `bash, edit, edit` only counts the `edit`
+    // repeats, and an interleaved valid call of another tool never resets `bash`.
+    const count = (this.emptyToolCounts.get(name) ?? 0) + 1;
+    this.emptyToolCounts.set(name, count);
+    this.emitError(
+      `Pi ${name} call received empty arguments (missing required field); the model should re-issue it with a concrete command/path or answer directly`
     );
+    // Once the same empty tool has repeated, inject a corrective prompt into the
+    // harness so it self-corrects instead of burning output tokens on retries.
+    // Trigger exactly at count === 3 so a burst of empty calls (5+) queues only
+    // one corrective steer, not one per extra call.
+    if (count === 3) {
+      this.injectCorrectivePrompt(name);
+    }
+  }
+
+  private injectCorrectivePrompt(name: string): void {
+    const client = this._status === 'connected' ? this.client : null;
+    if (!client) return;
+    const corrective =
+      `Your previous ${name} tool call omitted the required arguments (received empty). ` +
+      `Re-issue the call with a concrete command/path, or if no tool is needed, ` +
+      `answer directly without calling ${name}.`;
+    // Pi is actively streaming when this fires (tool_execution_start). A `prompt`
+    // without `streamingBehavior` is rejected in that state (pi RPC docs), so use
+    // `steer`: it queues while running and is delivered after the current turn's
+    // tool calls finish, before the next LLM call.
+    void client.call('steer', { message: corrective }).catch((error) => {
+      if (this._status === 'connected') {
+        this.emitError(
+          `Failed to send corrective prompt to Pi: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    });
   }
 
   private ensureTool(id: string, name: string, args: RpcRecord): void {
@@ -593,7 +566,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       item = {
         type: 'dynamicToolCall',
         id,
-        namespace: 'prime-agent',
+        namespace: 'pi',
         tool: name,
         arguments: args,
         status: 'running',
@@ -605,6 +578,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
     if (!this.activeTurnId) return;
     const id = this.toolIdForUpdate(event);
+    if (this.suppressedEmptyToolIds.has(id)) {
+      if (done) {
+        this.suppressedEmptyToolIds.delete(id);
+        this.forgetAnonymousToolId(event, id);
+      }
+      return;
+    }
     this.ensureTool(
       id,
       string(event.toolName, 'tool'),
@@ -741,7 +721,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private async submitNativeInput(
-    client: PrimeAgentRpcClient,
+    client: PiAgentRpcClient,
     input: AgentSendMessageInputV2,
     payload: RpcRecord
   ): Promise<void> {
@@ -806,6 +786,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.toolFallbackSequence = 0;
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.emptyToolCounts.clear();
+    this.suppressedEmptyToolIds.clear();
     const timestamp = nowIso();
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -872,8 +854,10 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.abortRequested = false;
     this.turnFailure = null;
     this.turnUsage = undefined;
+    this.emptyToolCounts.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
     this.emitLive({
       status: this.queued.length ? 'working' : 'idle',
       activeTurnId: null,
@@ -1013,8 +997,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId: this.activeTurnId,
       item: {
         type: 'providerExtension',
-        id: `ext-prime-agent-${this.activeTurnId}-${sequence}`,
-        namespace: 'prime-agent',
+        id: `ext-pi-${this.activeTurnId}-${sequence}`,
+        namespace: 'pi',
         payload,
         ...(visibility === 'debug'
           ? { metadata: { eventVisibility: 'debug' } }
@@ -1031,8 +1015,10 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queued.length = 0;
     this.queueAdvanceInFlight = false;
     this.items.clear();
+    this.emptyToolCounts.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
   }
 
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {
@@ -1044,113 +1030,10 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  private async refreshControlCommands(): Promise<void> {
-    const client = this.requireClient();
-    try {
-      const response = await client.call('get_available_models');
-      const models = record(response.data).models;
-      this.modelCatalog = Array.isArray(models)
-        ? models.map(record).filter((model) => this.modelValue(model) !== '')
-        : [];
-      if (this.modelCatalog.length === 0) {
-        this.commandCatalog = [];
-        return;
-      }
-    } catch {
-      // Older or malformed Prime Agent runtimes must not receive guessed
-      // controls: an advertised command is an executable capability promise.
-      this.modelCatalog = [];
-      this.commandCatalog = [];
-      return;
-    }
-    this.recomputeControlCommands();
-  }
-
-  private modelValue(model: RpcRecord): string {
-    const provider = string(model.provider);
-    const id = string(model.id);
-    return provider && id
-      ? `${encodeURIComponent(provider)}/${encodeURIComponent(id)}`
-      : '';
-  }
-
-  private availableThinkingLevels(model: RpcRecord | null): string[] {
-    if (!model) return [];
-    if (model.reasoning !== true) return ['off'];
-    const levelMap = record(model.thinkingLevelMap);
-    const levels = ['off', 'minimal', 'low', 'medium', 'high'].filter(
-      (level) => levelMap[level] !== null
-    );
-    for (const level of ['xhigh', 'max']) {
-      if (level in levelMap && levelMap[level] !== null) levels.push(level);
-    }
-    return levels;
-  }
-
-  private recomputeControlCommands(): void {
-    const controls = relayControlCatalogForProvider('prime-agent');
-    const thinkingLevels = this.availableThinkingLevels(this.currentModel);
-    this.commandCatalog = controls.flatMap((command) => {
-      if (command.collisionKey === 'model') {
-        if (this.modelCatalog.length === 0) return [];
-        return [
-          {
-            ...command,
-            args: this.modelCatalog.flatMap((model) => {
-              const value = this.modelValue(model);
-              if (!value) return [];
-              return [
-                {
-                  value,
-                  label: string(model.name) || string(model.id),
-                  description: string(model.provider),
-                },
-              ];
-            }),
-          },
-        ];
-      }
-      if (command.collisionKey === 'thinking') {
-        if (thinkingLevels.length === 0) return [];
-        return [
-          {
-            ...command,
-            args: thinkingLevels.map((value) => ({ value })),
-          },
-        ];
-      }
-      return [command];
-    });
-  }
-
-  private currentControlConfig(): Record<string, unknown> {
-    const model = this.currentModel ? this.modelValue(this.currentModel) : '';
-    return {
-      ...(model ? { model } : {}),
-      ...(this.thinkingLevel ? { effort: this.thinkingLevel } : {}),
-      ...(this.currentModel
-        ? { providerOptions: { provider: string(this.currentModel.provider) } }
-        : {}),
-    };
-  }
-
-  private emitSessionUpdate(): void {
-    this.emitPatch({
-      type: 'agent-session-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      providerSession: this.providerSession,
-      config: this.currentControlConfig(),
-      slashCommands: this.getSlashCommands(),
-    });
-  }
-
   private applyState(data: RpcRecord): void {
-    this.providerSessionId = string(data.sessionId) || null;
-    this.providerSessionFile = string(data.sessionFile) || null;
-    const model = record(data.model);
-    this.currentModel = string(model.id) ? model : null;
-    this.thinkingLevel = string(data.thinkingLevel) || null;
+    this.providerSessionId = string(data.sessionId) || this.providerSessionId;
+    this.providerSessionFile =
+      string(data.sessionFile) || this.providerSessionFile;
   }
   private emitSnapshot(): void {
     if (!this.config) return;
@@ -1160,30 +1043,29 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       session: emptyAgentSessionV2({
         id: this.sessionId,
-        provider: 'prime-agent',
+        provider: 'pi',
         cwd: this.config.cwd,
         capabilities: this.capabilities,
         providerSession: this.providerSession,
-        config: this.currentControlConfig(),
       }),
     });
   }
   private get providerSession(): Record<string, string> {
     return {
       ...(this.providerSessionId
-        ? { primeAgentSessionId: this.providerSessionId }
+        ? { piSessionId: this.providerSessionId }
         : {}),
       ...(this.providerSessionFile
-        ? { primeAgentSessionFile: this.providerSessionFile }
+        ? { piSessionFile: this.providerSessionFile }
         : {}),
     };
   }
   private get sessionId(): string {
-    return this.config?.sessionId ?? 'prime-agent';
+    return this.config?.sessionId ?? 'pi';
   }
-  private requireClient(): PrimeAgentRpcClient {
+  private requireClient(): PiAgentRpcClient {
     if (this._status !== 'connected' || !this.client)
-      throw new Error('Prime Agent adapter is not connected');
+      throw new Error('Pi adapter is not connected');
     return this.client;
   }
   private handleTransportClose(error: Error): void {
@@ -1211,7 +1093,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       (attachment) => attachment.type === 'image'
     );
     if (imageAttachments.length > MAX_IMAGE_COUNT) {
-      throw new Error(`Prime Agent accepts at most ${MAX_IMAGE_COUNT} images`);
+      throw new Error(`Pi accepts at most ${MAX_IMAGE_COUNT} images`);
     }
     const images: RpcRecord[] = [];
     let totalBytes = 0;
@@ -1219,7 +1101,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const mimeType = attachment.mimeType ?? '';
       if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
         throw new Error(
-          `Unsupported Prime Agent image MIME type: ${mimeType || 'missing'}`
+          `Unsupported Pi image MIME type: ${mimeType || 'missing'}`
         );
       }
       try {
@@ -1247,7 +1129,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         });
       } catch (error) {
         throw new Error(
-          `Cannot read Prime Agent image attachment ${attachment.path}: ${error instanceof Error ? error.message : String(error)}`,
+          `Cannot read Pi image attachment ${attachment.path}: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error }
         );
       }

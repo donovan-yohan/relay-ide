@@ -43,6 +43,7 @@
   --sender-hermes: var(--color-sky);
   --sender-opencode: var(--color-indigo);
   --sender-prime-agent: var(--color-purple);
+  --sender-pi: var(--color-purple);
   --sender-system: var(--text-muted);
 
   /* Typography */

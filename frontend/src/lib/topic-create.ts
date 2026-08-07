@@ -58,6 +58,7 @@ export const FALLBACK_PROVIDER_IDS = [
   'opencode',
   'hermes',
   'prime-agent',
+  'pi',
 ];
 
 export type TopicProviderOption = {
