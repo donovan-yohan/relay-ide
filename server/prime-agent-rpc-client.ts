@@ -38,6 +38,8 @@ export class PrimeAgentRpcClient extends EventEmitter {
   private readonly pending = new Map<string, PendingCall>();
   private readonly writes: string[] = [];
   private draining = false;
+  private detachChildListeners: (() => void) | null = null;
+  private detachDrainListener: (() => void) | null = null;
 
   constructor(private readonly options: PrimeAgentRpcClientOptions = {}) {
     super();
@@ -61,31 +63,57 @@ export class PrimeAgentRpcClient extends EventEmitter {
     );
     this.child = child;
     this.buffer = Buffer.alloc(0);
-    child.stdout?.on('data', (chunk: Buffer | string) => this.consume(chunk));
-    child.stderr?.on('data', (chunk: Buffer | string) =>
-      this.emit('stderr', String(chunk))
-    );
-    child.stdin?.on('error', (error: Error) => this.emit('error', error));
-    child.stdout?.on('error', (error: Error) => this.emit('error', error));
-    child.stderr?.on('error', (error: Error) => this.emit('error', error));
-    child.on('error', (error: Error) => {
+    const onStdoutData = (chunk: Buffer | string) => this.consume(chunk);
+    const onStderrData = (chunk: Buffer | string) =>
+      this.emit('stderr', String(chunk));
+    const onStreamError = (error: Error) => this.emit('error', error);
+    const onChildError = (error: Error) => {
       this.rejectPending(error);
       this.emit('error', error);
-    });
-    child.on('close', (code) => {
-      if (this.child === child) this.child = null;
+    };
+    const onClose = (code: number | null) => {
+      if (this.child === child) {
+        this.child = null;
+        this.resetTransportState(
+          new Error(`prime-agent rpc exited (code=${String(code)})`)
+        );
+        this.removeChildListeners();
+      }
       const error = new Error(`prime-agent rpc exited (code=${String(code)})`);
       this.rejectPending(error);
       this.emit('close', code);
-    });
+    };
+    child.stdout?.on('data', onStdoutData);
+    child.stderr?.on('data', onStderrData);
+    child.stdin?.on('error', onStreamError);
+    child.stdout?.on('error', onStreamError);
+    child.stderr?.on('error', onStreamError);
+    child.on('error', onChildError);
+    child.on('close', onClose);
+    this.detachChildListeners = () => {
+      child.stdout?.removeListener('data', onStdoutData);
+      child.stderr?.removeListener('data', onStderrData);
+      child.stdin?.removeListener('error', onStreamError);
+      child.stdout?.removeListener('error', onStreamError);
+      child.stderr?.removeListener('error', onStreamError);
+      child.removeListener('error', onChildError);
+      child.removeListener('close', onClose);
+    };
 
     // RPC has no initialize handshake. A correlated get_state response is the
     // readiness barrier and supplies durable session identity.
-    return this.callWithTimeout(
-      'get_state',
-      {},
-      this.options.readinessTimeoutMs ?? 10_000
-    );
+    try {
+      return await this.callWithTimeout(
+        'get_state',
+        {},
+        this.options.readinessTimeoutMs ?? 10_000
+      );
+    } catch (error) {
+      // A failed readiness barrier must not leave a live child, drain handler,
+      // or unsent request behind for a later start attempt.
+      await this.stop().catch(() => undefined);
+      throw error;
+    }
   }
 
   call(
@@ -124,10 +152,14 @@ export class PrimeAgentRpcClient extends EventEmitter {
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     const child = this.child;
-    if (!child) return;
+    if (!child) {
+      this.resetTransportState(new Error('PrimeAgentRpcClient stopped'));
+      return;
+    }
 
     this.child = null;
-    this.rejectPending(new Error('PrimeAgentRpcClient stopped'));
+    this.resetTransportState(new Error('PrimeAgentRpcClient stopped'));
+    this.removeChildListeners();
     this.stopPromise = this.terminate(child).finally(() => {
       this.stopPromise = null;
     });
@@ -282,10 +314,13 @@ export class PrimeAgentRpcClient extends EventEmitter {
       const line = this.writes.shift()!;
       if (!stdin.write(line)) {
         this.draining = true;
-        stdin.once('drain', () => {
+        const onDrain = () => {
+          this.detachDrainListener = null;
           this.draining = false;
           this.flush();
-        });
+        };
+        this.detachDrainListener = () => stdin.removeListener('drain', onDrain);
+        stdin.once('drain', onDrain);
         return;
       }
     }
@@ -297,5 +332,20 @@ export class PrimeAgentRpcClient extends EventEmitter {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private resetTransportState(error: Error): void {
+    this.rejectPending(error);
+    this.buffer = Buffer.alloc(0);
+    this.writes.length = 0;
+    this.nextId = 1;
+    this.detachDrainListener?.();
+    this.detachDrainListener = null;
+    this.draining = false;
+  }
+
+  private removeChildListeners(): void {
+    this.detachChildListeners?.();
+    this.detachChildListeners = null;
   }
 }

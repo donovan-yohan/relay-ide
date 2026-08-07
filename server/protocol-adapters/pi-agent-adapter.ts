@@ -59,6 +59,11 @@ function record(value: unknown): RpcRecord {
 function string(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
+function queueCount(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
+}
 function resultText(value: unknown): string {
   const content = record(value).content;
   if (!Array.isArray(content)) return typeof value === 'string' ? value : '';
@@ -133,6 +138,9 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private turnUsage: AgentUsageV2 | undefined;
   private clientGeneration = 0;
   private readonly queued: AgentSendMessageInputV2[] = [];
+  private toolFallbackSequence = 0;
+  private readonly anonymousToolIds = new Map<string, string[]>();
+  private readonly pendingAnonymousToolIds = new Map<string, string[]>();
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
@@ -167,7 +175,8 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       args.push('--append-system-prompt', config.systemPromptAppendix);
     // Pi resumes a durable session by exact project session id (`--session-id`),
     // the analog of Prime Agent's `--resume <sessionId>`.
-    if (config.resumeSessionId) args.push('--session-id', config.resumeSessionId);
+    if (config.resumeSessionId)
+      args.push('--session-id', config.resumeSessionId);
     const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
     delete env['CLAUDECODE'];
     const client = this.clientFactory({
@@ -204,9 +213,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         waitingOn: null,
         activeRequestIds: [],
         proposedPlanItemId: null,
-        queueLength: Number(
-          record(response.data).pendingMessageCount ?? 0
-        ),
+        queueLength: queueCount(record(response.data).pendingMessageCount),
         fastModeAvailable: false,
         error: null,
       });
@@ -224,6 +231,8 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queued.length = 0;
     this.queueAdvanceInFlight = false;
     this.items.clear();
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
   }
 
   private async teardownClient(): Promise<void> {
@@ -339,10 +348,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const message = record(event.message);
       if (message.stopReason === 'aborted') this.abortRequested = true;
       if (message.stopReason === 'error')
-        this.turnFailure = string(
-          message.errorMessage,
-          'Pi generation failed'
-        );
+        this.turnFailure = string(message.errorMessage, 'Pi generation failed');
       this.finishMessageItems(
         this.abortRequested
           ? 'cancelled'
@@ -431,7 +437,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         this.emitDelta(id, { summary: delta.delta });
     } else if (kind === 'toolcall_end') {
       const toolCall = record(delta.toolCall);
-      const id = string(toolCall.id, `${this.activeTurnId}-tool-${index}`);
+      const id = this.toolIdForPreview(toolCall, index);
       this.ensureTool(
         id,
         string(toolCall.name, 'tool'),
@@ -451,7 +457,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private startTool(event: RpcRecord): void {
     if (!this.activeTurnId) return;
-    const id = string(event.toolCallId, `${this.activeTurnId}-tool`);
+    const id = this.toolIdForStart(event);
     const name = string(event.toolName, 'tool');
     const args = toolArguments(event.args);
     // Empty-args guard: a command/file tool with missing required fields is
@@ -468,8 +474,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private isEmptyToolCall(name: string, args: RpcRecord): boolean {
-    if (isCommandTool(name))
-      return string(args.command).trim().length === 0;
+    if (isCommandTool(name)) return string(args.command).trim().length === 0;
     if (isFileTool(name))
       return string(args.path ?? args.file_path).trim().length === 0;
     return false;
@@ -503,15 +508,13 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     // without `streamingBehavior` is rejected in that state (pi RPC docs), so use
     // `steer`: it queues while running and is delivered after the current turn's
     // tool calls finish, before the next LLM call.
-    void client
-      .call('steer', { message: corrective })
-      .catch((error) => {
-        if (this._status === 'connected') {
-          this.emitError(
-            `Failed to send corrective prompt to Pi: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      });
+    void client.call('steer', { message: corrective }).catch((error) => {
+      if (this._status === 'connected') {
+        this.emitError(
+          `Failed to send corrective prompt to Pi: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    });
   }
 
   private ensureTool(id: string, name: string, args: RpcRecord): void {
@@ -555,7 +558,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
     if (!this.activeTurnId) return;
-    const id = string(event.toolCallId, `${this.activeTurnId}-tool`);
+    const id = this.toolIdForUpdate(event);
     this.ensureTool(
       id,
       string(event.toolName, 'tool'),
@@ -597,6 +600,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     else return;
     this.items.set(id, updated);
     this.emitItemUpdated(updated);
+    if (done) this.forgetAnonymousToolId(event, id);
   }
 
   private finishMessageItems(
@@ -725,11 +729,20 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const payload: RpcRecord = { message: next.content };
       const images = this.readImages(next.attachments);
       if (images.length) payload.images = images;
-      await this.submitNativeInput(this.requireClient(), next, payload);
+      try {
+        await this.submitNativeInput(this.requireClient(), next, payload);
+      } catch (error) {
+        this.handleTransportClose(
+          error instanceof Error ? error : new Error(String(error))
+        );
+      }
     } catch (error) {
-      this.handleTransportClose(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      const failure = error instanceof Error ? error : new Error(String(error));
+      // Attachment files are Relay-local input. A file can be removed or
+      // invalidated after enqueue, which must fail only this attributed turn;
+      // the provider transport remains usable for later queued messages.
+      this.emitError(failure.message);
+      this.completeTurn('failed', failure.message);
     } finally {
       this.queueAdvanceInFlight = false;
       if (!this.activeTurnId) void this.advanceQueuedTurn();
@@ -744,6 +757,9 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.assistantMessageSequence = -1;
     this.turnUsage = undefined;
     this.items.clear();
+    this.toolFallbackSequence = 0;
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
     this.emptyToolCounts.clear();
     const timestamp = nowIso();
     this.emitPatch({
@@ -812,6 +828,8 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.turnFailure = null;
     this.turnUsage = undefined;
     this.emptyToolCounts.clear();
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
     this.emitLive({
       status: this.queued.length ? 'working' : 'idle',
       activeTurnId: null,
@@ -830,6 +848,48 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId: this.activeTurnId,
       item,
     });
+  }
+  private fallbackToolId(index?: number): string {
+    return `${this.activeTurnId}-tool-fallback-${this.assistantMessageSequence}-${index ?? 'none'}-${++this.toolFallbackSequence}`;
+  }
+  private toolIdForStart(event: RpcRecord): string {
+    const providerId = string(event.toolCallId).trim();
+    if (providerId) return providerId;
+    const name = string(event.toolName, 'tool');
+    const pending = this.pendingAnonymousToolIds.get(name);
+    const id = pending?.shift() ?? this.fallbackToolId();
+    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(name);
+    this.anonymousToolIds.set(name, [
+      ...(this.anonymousToolIds.get(name) ?? []),
+      id,
+    ]);
+    return id;
+  }
+  private toolIdForUpdate(event: RpcRecord): string {
+    const providerId = string(event.toolCallId).trim();
+    if (providerId) return providerId;
+    const name = string(event.toolName, 'tool');
+    return this.anonymousToolIds.get(name)?.[0] ?? this.toolIdForStart(event);
+  }
+  private toolIdForPreview(toolCall: RpcRecord, index: number): string {
+    const providerId = string(toolCall.id).trim();
+    if (providerId) return providerId;
+    const name = string(toolCall.name, 'tool');
+    const id = this.fallbackToolId(index);
+    this.pendingAnonymousToolIds.set(name, [
+      ...(this.pendingAnonymousToolIds.get(name) ?? []),
+      id,
+    ]);
+    return id;
+  }
+  private forgetAnonymousToolId(event: RpcRecord, id: string): void {
+    if (string(event.toolCallId).trim()) return;
+    const name = string(event.toolName, 'tool');
+    const ids = this.anonymousToolIds.get(name);
+    if (!ids) return;
+    const remaining = ids.filter((candidate) => candidate !== id);
+    if (remaining.length) this.anonymousToolIds.set(name, remaining);
+    else this.anonymousToolIds.delete(name);
   }
   private emitDelta(
     id: string,
@@ -911,6 +971,8 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queueAdvanceInFlight = false;
     this.items.clear();
     this.emptyToolCounts.clear();
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
   }
 
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {
@@ -944,7 +1006,9 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
   private get providerSession(): Record<string, string> {
     return {
-      ...(this.providerSessionId ? { piSessionId: this.providerSessionId } : {}),
+      ...(this.providerSessionId
+        ? { piSessionId: this.providerSessionId }
+        : {}),
       ...(this.providerSessionFile
         ? { piSessionFile: this.providerSessionFile }
         : {}),

@@ -206,6 +206,86 @@ describe('PrimeAgentRpcClient', () => {
     await expect(client.start()).rejects.toThrow('get_state timed out');
   });
 
+  it('cleans a failed readiness attempt before a later start', async () => {
+    const failed = fakeChild();
+    const ready = fakeChild();
+    ready.kill.mockImplementation(() => {
+      ready.emit('close', 0);
+      return true;
+    });
+    ready.stdin.once('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string; type: string };
+      ready.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: request.type,
+          success: true,
+        }) + '\n'
+      );
+    });
+    const spawn = vi
+      .fn()
+      .mockReturnValueOnce(failed as unknown as ChildProcess)
+      .mockReturnValueOnce(ready as unknown as ChildProcess);
+    const client = new PrimeAgentRpcClient({
+      spawn,
+      readinessTimeoutMs: 1,
+      stopTimeoutMs: 1,
+    });
+
+    await expect(client.start()).rejects.toThrow('get_state timed out');
+    expect(failed.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(failed.listenerCount('close')).toBe(0);
+    expect(failed.stdout.listenerCount('data')).toBe(0);
+    await expect(client.start()).resolves.toMatchObject({
+      command: 'get_state',
+      success: true,
+    });
+  });
+
+  it('rejects backpressured calls and removes queued writes on stop', async () => {
+    const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      child.emit('close', 0);
+      return true;
+    });
+    let writeCount = 0;
+    const write = child.stdin.write.bind(child.stdin);
+    vi.spyOn(child.stdin, 'write').mockImplementation((chunk) => {
+      writeCount += 1;
+      if (writeCount === 1) {
+        write(chunk);
+        return true;
+      }
+      return false;
+    });
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string; type: string };
+      child.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: request.type,
+          success: true,
+        }) + '\n'
+      );
+    });
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    await client.start();
+    const first = client.call('prompt', { message: 'one' });
+    const second = client.call('prompt', { message: 'two' });
+
+    await client.stop();
+    child.stdin.emit('drain');
+    await expect(first).rejects.toThrow('PrimeAgentRpcClient stopped');
+    await expect(second).rejects.toThrow('PrimeAgentRpcClient stopped');
+    expect(writeCount).toBe(2);
+    expect(child.stdin.listenerCount('drain')).toBe(0);
+  });
+
   it('times out correlated commands independently', async () => {
     const child = fakeChild();
     const client = new PrimeAgentRpcClient({

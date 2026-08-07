@@ -64,6 +64,11 @@ function record(value: unknown): RpcRecord {
 function string(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
+function queueCount(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
+}
 function resultText(value: unknown): string {
   const content = record(value).content;
   if (!Array.isArray(content)) return typeof value === 'string' ? value : '';
@@ -138,6 +143,9 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private turnUsage: AgentUsageV2 | undefined;
   private clientGeneration = 0;
   private readonly queued: AgentSendMessageInputV2[] = [];
+  private toolFallbackSequence = 0;
+  private readonly anonymousToolIds = new Map<string, string[]>();
+  private readonly pendingAnonymousToolIds = new Map<string, string[]>();
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
@@ -219,8 +227,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         waitingOn: null,
         activeRequestIds: [],
         proposedPlanItemId: null,
-        queueLength: Number(
-          record(record(response.data).sessionActions).queuedCount ?? 0
+        queueLength: queueCount(
+          record(record(response.data).sessionActions).queuedCount
         ),
         fastModeAvailable: false,
         error: null,
@@ -239,6 +247,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queued.length = 0;
     this.queueAdvanceInFlight = false;
     this.items.clear();
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
   }
 
   private async teardownClient(): Promise<void> {
@@ -460,7 +470,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (type === 'session_action_update') {
       const actions = record(event.actions);
       this.emitLive({
-        queueLength: Number(actions.queuedCount ?? this.queued.length),
+        queueLength: this.queued.length + queueCount(actions.queuedCount),
       });
       return;
     }
@@ -510,7 +520,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         this.emitDelta(id, { summary: delta.delta });
     } else if (kind === 'toolcall_end') {
       const toolCall = record(delta.toolCall);
-      const id = string(toolCall.id, `${this.activeTurnId}-tool-${index}`);
+      const id = this.toolIdForPreview(toolCall, index);
       this.ensureTool(
         id,
         string(toolCall.name, 'tool'),
@@ -530,7 +540,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private startTool(event: RpcRecord): void {
     if (!this.activeTurnId) return;
-    const id = string(event.toolCallId, `${this.activeTurnId}-tool`);
+    const id = this.toolIdForStart(event);
     this.ensureTool(
       id,
       string(event.toolName, 'tool'),
@@ -579,7 +589,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
     if (!this.activeTurnId) return;
-    const id = string(event.toolCallId, `${this.activeTurnId}-tool`);
+    const id = this.toolIdForUpdate(event);
     this.ensureTool(
       id,
       string(event.toolName, 'tool'),
@@ -621,6 +631,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     else return;
     this.items.set(id, updated);
     this.emitItemUpdated(updated);
+    if (done) this.forgetAnonymousToolId(event, id);
   }
 
   private finishMessageItems(
@@ -749,11 +760,20 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const payload: RpcRecord = { message: next.content };
       const images = this.readImages(next.attachments);
       if (images.length) payload.images = images;
-      await this.submitNativeInput(this.requireClient(), next, payload);
+      try {
+        await this.submitNativeInput(this.requireClient(), next, payload);
+      } catch (error) {
+        this.handleTransportClose(
+          error instanceof Error ? error : new Error(String(error))
+        );
+      }
     } catch (error) {
-      this.handleTransportClose(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      const failure = error instanceof Error ? error : new Error(String(error));
+      // Attachment files are Relay-local input. A file can be removed or
+      // invalidated after enqueue, which must fail only this attributed turn;
+      // the provider transport remains usable for later queued messages.
+      this.emitError(failure.message);
+      this.completeTurn('failed', failure.message);
     } finally {
       this.queueAdvanceInFlight = false;
       if (!this.activeTurnId) void this.advanceQueuedTurn();
@@ -768,6 +788,9 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.assistantMessageSequence = -1;
     this.turnUsage = undefined;
     this.items.clear();
+    this.toolFallbackSequence = 0;
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
     const timestamp = nowIso();
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -834,6 +857,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.abortRequested = false;
     this.turnFailure = null;
     this.turnUsage = undefined;
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
     this.emitLive({
       status: this.queued.length ? 'working' : 'idle',
       activeTurnId: null,
@@ -852,6 +877,48 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId: this.activeTurnId,
       item,
     });
+  }
+  private fallbackToolId(index?: number): string {
+    return `${this.activeTurnId}-tool-fallback-${this.assistantMessageSequence}-${index ?? 'none'}-${++this.toolFallbackSequence}`;
+  }
+  private toolIdForStart(event: RpcRecord): string {
+    const providerId = string(event.toolCallId).trim();
+    if (providerId) return providerId;
+    const name = string(event.toolName, 'tool');
+    const pending = this.pendingAnonymousToolIds.get(name);
+    const id = pending?.shift() ?? this.fallbackToolId();
+    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(name);
+    this.anonymousToolIds.set(name, [
+      ...(this.anonymousToolIds.get(name) ?? []),
+      id,
+    ]);
+    return id;
+  }
+  private toolIdForUpdate(event: RpcRecord): string {
+    const providerId = string(event.toolCallId).trim();
+    if (providerId) return providerId;
+    const name = string(event.toolName, 'tool');
+    return this.anonymousToolIds.get(name)?.[0] ?? this.toolIdForStart(event);
+  }
+  private toolIdForPreview(toolCall: RpcRecord, index: number): string {
+    const providerId = string(toolCall.id).trim();
+    if (providerId) return providerId;
+    const name = string(toolCall.name, 'tool');
+    const id = this.fallbackToolId(index);
+    this.pendingAnonymousToolIds.set(name, [
+      ...(this.pendingAnonymousToolIds.get(name) ?? []),
+      id,
+    ]);
+    return id;
+  }
+  private forgetAnonymousToolId(event: RpcRecord, id: string): void {
+    if (string(event.toolCallId).trim()) return;
+    const name = string(event.toolName, 'tool');
+    const ids = this.anonymousToolIds.get(name);
+    if (!ids) return;
+    const remaining = ids.filter((candidate) => candidate !== id);
+    if (remaining.length) this.anonymousToolIds.set(name, remaining);
+    else this.anonymousToolIds.delete(name);
   }
   private emitDelta(
     id: string,
@@ -932,6 +999,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.queued.length = 0;
     this.queueAdvanceInFlight = false;
     this.items.clear();
+    this.anonymousToolIds.clear();
+    this.pendingAnonymousToolIds.clear();
   }
 
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {

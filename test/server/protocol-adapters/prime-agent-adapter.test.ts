@@ -402,6 +402,40 @@ describe('PrimeAgentProtocolAdapter', () => {
     ]);
   });
 
+  it('validates Prime native queue counts and preserves local queued work', async () => {
+    const { adapter, client, patches } = harness();
+    vi.spyOn(client, 'start').mockResolvedValue({
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { sessionActions: { queuedCount: Number.POSITIVE_INFINITY } },
+    });
+    await adapter.connect(config);
+    expect(patches.at(-1)).toMatchObject({
+      type: 'agent-live-state-updated-v2',
+      live: { queueLength: 0 },
+    });
+
+    await adapter.sendMessage({ turnId: 't1', content: 'one' });
+    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    client.emit('event', {
+      type: 'session_action_update',
+      actions: { queuedCount: 'not-a-number' },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      type: 'agent-live-state-updated-v2',
+      live: { queueLength: 1 },
+    });
+    client.emit('event', {
+      type: 'session_action_update',
+      actions: { queuedCount: 2 },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      type: 'agent-live-state-updated-v2',
+      live: { queueLength: 3 },
+    });
+  });
+
   it('submits queued Relay turns as fresh prompts after real agent_end boundaries', async () => {
     const { adapter, client, call, patches } = harness();
     await adapter.connect(config);
@@ -524,6 +558,137 @@ describe('PrimeAgentProtocolAdapter', () => {
     expect(call.mock.calls.map(([type]) => type)).toEqual([
       'get_available_models',
     ]);
+  });
+
+  it('fails an invalidated queued attachment locally and advances later turns', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'relay-prime-queued-image-'));
+    const path = join(directory, 'image.png');
+    writeFileSync(
+      path,
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    );
+    try {
+      const { adapter, client, call, patches } = harness();
+      await adapter.connect(config);
+      await adapter.sendMessage({ turnId: 't1', content: 'one' });
+      await adapter.sendMessage({
+        turnId: 't2',
+        content: 'image',
+        attachments: [{ type: 'image', path, mimeType: 'image/png' }],
+      });
+      await adapter.sendMessage({ turnId: 't3', content: 'three' });
+      rmSync(path);
+
+      client.emit('event', { type: 'agent_end' });
+      await vi.waitFor(() =>
+        expect(
+          call.mock.calls
+            .filter(([type]) => type === 'prompt')
+            .map(([, payload]) => (payload as { message: string }).message)
+        ).toEqual(['one', 'three'])
+      );
+      expect(adapter.status).toBe('connected');
+      expect(patches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'agent-error-v2',
+            turnId: 't2',
+            message: expect.stringContaining(
+              'Cannot read Prime Agent image attachment'
+            ),
+          }),
+          expect.objectContaining({
+            type: 'agent-turn-completed-v2',
+            turnId: 't2',
+            status: 'failed',
+          }),
+        ])
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('assigns unique item ids when Prime omits tool call ids', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'tools' });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command: 'one' },
+    });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command: 'two' },
+    });
+    const ids = patches
+      .filter(
+        (patch) =>
+          patch.type === 'agent-item-started-v2' &&
+          (patch.item as { type?: string }).type === 'commandExecution'
+      )
+      .map((patch) => (patch.item as { id: string }).id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('reuses an anonymous streamed tool id through Prime execution completion', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'tool' });
+    client.emit('event', {
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'toolcall_end',
+        contentIndex: 0,
+        toolCall: { name: 'bash', arguments: { command: 'pwd' } },
+      },
+    });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command: 'pwd' },
+    });
+    client.emit('event', {
+      type: 'tool_execution_update',
+      toolName: 'bash',
+      args: { command: 'pwd' },
+      partialResult: { content: [{ type: 'text', text: '/tm' }] },
+    });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      args: { command: 'pwd' },
+      result: { content: [{ type: 'text', text: '/tmp' }] },
+      isError: false,
+    });
+
+    const started = patches.filter(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        (patch.item as { type?: string }).type === 'commandExecution'
+    );
+    expect(started).toHaveLength(1);
+    const id = (started[0]!.item as { id: string }).id;
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-item-delta-v2',
+          itemId: id,
+          delta: { output: '/tm' },
+        }),
+        expect.objectContaining({
+          type: 'agent-item-updated-v2',
+          item: expect.objectContaining({
+            id,
+            output: '/tmp',
+            status: 'completed',
+          }),
+        }),
+      ])
+    );
   });
 
   it('bounds image count and rejects MIME-mismatched bytes', async () => {

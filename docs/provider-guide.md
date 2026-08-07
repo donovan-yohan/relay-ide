@@ -56,8 +56,11 @@ as persisted chat messages or token-consuming prompts. Model and thinking
 arguments are validated against live Prime metadata; if discovery is unavailable,
 the adapter fails closed instead of guessing. Prime skills, prompt templates,
 and TUI-only commands are not exposed as channel controls. This control surface
-targets the Prime Agent 0.7 RPC contract; a runtime that cannot return a valid
-live model catalog publishes no connected command catalog.
+is installed-tested with Prime Agent 0.7.0. It assumes strict-LF JSONL records,
+a correlated `get_state` readiness response, `agent_end` as the settled run
+boundary, and `sessionActions.queuedCount` as a finite non-negative integer; a
+runtime that cannot return a valid live model catalog publishes no connected
+command catalog.
 
 The `prime-agent` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
@@ -75,9 +78,40 @@ one durable Relay turn per message. Channel subprocesses currently launch with
 `--no-extensions` because blocking `extension_ui_request` dialogs are not mapped
 to Relay approvals/questions yet.
 
+The Pi channel transport is installed-tested with Pi 0.83.0. It assumes
+strict-LF JSONL records, a correlated `get_state` readiness response,
+`agent_settled` as the settled run boundary, and a finite non-negative
+`pendingMessageCount`. These are protocol compatibility assumptions rather than
+an assertion that every earlier or later provider version behaves identically.
+
 The `pi` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
 channel capabilities from it.
+
+### Live Pi and Prime RPC smoke
+
+Run the opt-in, model-backed protocol probe with an explicit provider:
+
+```bash
+RELAY_AGENT_RPC_SMOKE_LIVE=1 \
+RELAY_AGENT_RPC_SMOKE_CREDENTIALS=1 \
+RELAY_AGENT_RPC_SMOKE_PI_MODEL=<provider/model> \
+npm run smoke:agent-rpc -- --provider pi
+```
+
+Use `--provider prime-agent` with
+`RELAY_AGENT_RPC_SMOKE_PRIME_MODEL`, or `--provider both` with both model
+variables. `RELAY_AGENT_RPC_SMOKE_MODEL` is the shared model fallback; optional
+command overrides are `RELAY_AGENT_RPC_SMOKE_PI_COMMAND` and
+`RELAY_AGENT_RPC_SMOKE_PRIME_COMMAND`. The harness skips only when an explicit
+live/credential gate, executable, model selection, provider model
+configuration, or credential is missing. Transport, readiness, protocol,
+unsupported-capability, timeout, and temporary-provider failures exit nonzero.
+
+This smoke makes real model calls, but runs each provider in disposable cwd and
+session directories with tools, extensions, skills, templates, themes, context
+files, and Pi telemetry disabled. Cleanup removes those directories, and output
+omits prompts, provider stderr, credentials, and raw session identifiers.
 
 ## Identity boundary
 
