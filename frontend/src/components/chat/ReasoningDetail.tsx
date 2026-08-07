@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { ChevronRight, CircleDot } from 'lucide-react';
-import type { AgentDetailCardV2 } from '../../../../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentDetailCardStatusV2,
+  AgentDetailCardV2,
+} from '../../../../shared/agent-chat-protocol-v2.js';
 import {
   shouldRenderReasoningDetail,
   type ReasoningTerminalState,
@@ -25,10 +28,26 @@ interface ReasoningDetailProps {
   children: React.ReactNode;
 }
 
+type ReasoningStatusLabel =
+  | AgentDetailCardStatusV2
+  | ReasoningTerminalState
+  | 'reasoning…';
+
+export const REASONING_STATUS_CLASS = {
+  pending: 'ch-agent-card__status--pending',
+  running: 'ch-agent-card__status--running',
+  'reasoning…': 'ch-agent-card__status--running',
+  completed: 'ch-agent-card__status--completed',
+  failed: 'ch-agent-card__status--failed',
+  cancelled: 'ch-agent-card__status--cancelled',
+  interrupted: 'ch-agent-card__status--cancelled',
+  truncated: 'ch-agent-card__status--cancelled',
+} satisfies Record<ReasoningStatusLabel, string>;
+
 function reasoningStatusLabel(
   card: AgentDetailCardV2,
   terminalState?: ReasoningTerminalState
-): string {
+): ReasoningStatusLabel {
   if (terminalState === 'interrupted' || terminalState === 'truncated') {
     return terminalState;
   }
@@ -71,14 +90,7 @@ export const ReasoningDetail: React.FC<ReasoningDetailProps> = ({
 
   const bodyId = `reasoning-detail-body-${itemId}`;
   const status = reasoningStatusLabel(card, terminalState);
-  const statusClass =
-    status === 'failed'
-      ? 'ch-agent-card__status--failed'
-      : status === 'reasoning…'
-        ? 'ch-agent-card__status--running'
-        : status === 'completed'
-          ? 'ch-agent-card__status--completed'
-          : 'ch-agent-card__status--cancelled';
+  const statusClass = REASONING_STATUS_CLASS[status];
 
   return (
     <div

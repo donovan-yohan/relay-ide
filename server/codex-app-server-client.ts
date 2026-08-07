@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { createLogger } from './logger.js';
+import { CODEX_CHANNEL_COMMAND } from './protocol-adapters/launch-commands.js';
 
 const logger = createLogger('codex-app-server-client');
 
@@ -23,7 +24,7 @@ export interface CodexAppServerClientOptions {
   spawn?: (
     command: string,
     args: string[],
-    options: { cwd?: string; env?: Record<string, string>; stdio: 'pipe' },
+    options: { cwd?: string; env?: Record<string, string>; stdio: 'pipe' }
   ) => ChildProcess;
 }
 
@@ -99,7 +100,7 @@ export class CodexAppServerClient extends EventEmitter {
   constructor(options: CodexAppServerClientOptions) {
     super();
     this.options = {
-      command: 'codex',
+      command: CODEX_CHANNEL_COMMAND,
       // Conductor passes --listen stdio:// explicitly. Newer codex
       // versions default to TCP, so stdio must be opted in.
       // Request Codex's provider-generated reasoning summary. This is a
@@ -184,7 +185,9 @@ export class CodexAppServerClient extends EventEmitter {
       clientInfo: this.options.clientInfo,
       capabilities: {
         ...(this.options.optOutNotificationMethods?.length
-          ? { optOutNotificationMethods: this.options.optOutNotificationMethods }
+          ? {
+              optOutNotificationMethods: this.options.optOutNotificationMethods,
+            }
           : {}),
       },
     });
@@ -196,9 +199,15 @@ export class CodexAppServerClient extends EventEmitter {
     });
 
     return {
-      ...(initResult.userAgent !== undefined ? { userAgent: initResult.userAgent } : {}),
-      ...(initResult.codexHome !== undefined ? { codexHome: initResult.codexHome } : {}),
-      ...(initResult.platform !== undefined ? { platform: initResult.platform } : {}),
+      ...(initResult.userAgent !== undefined
+        ? { userAgent: initResult.userAgent }
+        : {}),
+      ...(initResult.codexHome !== undefined
+        ? { codexHome: initResult.codexHome }
+        : {}),
+      ...(initResult.platform !== undefined
+        ? { platform: initResult.platform }
+        : {}),
     };
   }
 
@@ -230,7 +239,7 @@ export class CodexAppServerClient extends EventEmitter {
   respondToServerRequestError(
     id: number | string,
     code: number,
-    message: string,
+    message: string
   ): void {
     this.enqueue({ jsonrpc: '2.0', id, error: { code, message } });
   }
@@ -283,10 +292,7 @@ export class CodexAppServerClient extends EventEmitter {
       const id = obj['id'] as number | string;
       const pending = this.pending.get(id);
       if (!pending) {
-        logger.warn(
-          'codex-app-server: response for unknown id %s',
-          String(id),
-        );
+        logger.warn('codex-app-server: response for unknown id %s', String(id));
         return;
       }
       this.pending.delete(id);
@@ -296,8 +302,8 @@ export class CodexAppServerClient extends EventEmitter {
         pending.reject(
           new Error(
             err.message ??
-              `JSON-RPC error (code=${String(err.code ?? 'unknown')})`,
-          ),
+              `JSON-RPC error (code=${String(err.code ?? 'unknown')})`
+          )
         );
       } else {
         pending.resolve(obj['result']);

@@ -14,6 +14,7 @@ import type {
   AgentSessionLiveStateV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
 
 const adapterState = vi.hoisted(() => ({
   last: null as TestAdapter | null,
@@ -153,14 +154,21 @@ class TestAdapter implements ProtocolAdapterV2 {
   }
 }
 
-vi.mock('../server/protocol-adapters/index.js', () => ({
-  createAdapterV2: () => {
-    const adapter = new TestAdapter();
-    adapterState.last = adapter;
-    adapterState.all.push(adapter);
-    return adapter;
-  },
-}));
+vi.mock('../server/protocol-adapters/index.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../server/protocol-adapters/index.js')
+    >();
+  return {
+    ...actual,
+    createAdapterV2: () => {
+      const adapter = new TestAdapter();
+      adapterState.last = adapter;
+      adapterState.all.push(adapter);
+      return adapter;
+    },
+  };
+});
 
 async function runtimeModule() {
   return import('../server/channel-agent-runtime.js');
@@ -474,6 +482,40 @@ describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
 });
 
 describe('ChannelAgentRuntimeManager', () => {
+  it('enforces every command-provider environment denylist after profile merging', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    const commandContracts = Object.entries(
+      CHANNEL_ADAPTER_LAUNCH_CONTRACTS
+    ).filter((entry) => entry[1].requirement.kind === 'command');
+    const deniedKeys = [
+      ...new Set(
+        commandContracts.flatMap((entry) => [...entry[1].processEnvDenylist])
+      ),
+    ];
+
+    for (const [providerId, contract] of commandContracts) {
+      await channelAgentRuntimes.create({
+        id: `channel-runtime-${providerId}`,
+        providerId,
+        profileActorId: `agent-profile:${providerId}:named`,
+        cwd: '/tmp',
+        displayName: `#eng · ${providerId}`,
+        port: 3456,
+        configDir: '/tmp',
+        processEnv: Object.fromEntries([
+          ['RELAY_PROFILE_SAFE', `safe-${providerId}`],
+          ...deniedKeys.map((key) => [key, `denied-${providerId}`]),
+        ]),
+      });
+
+      const connectedEnv = adapterState.last!.connectConfigs[0]!.processEnv;
+      expect(connectedEnv?.RELAY_PROFILE_SAFE).toBe(`safe-${providerId}`);
+      for (const key of contract.processEnvDenylist) {
+        expect(connectedEnv).not.toHaveProperty(key);
+      }
+    }
+  });
+
   it('resumes from the channel binding provider session and remains outside the public session registry', async () => {
     const { channelAgentRuntimes } = await runtimeModule();
     const sessions = await import('../server/sessions.js');

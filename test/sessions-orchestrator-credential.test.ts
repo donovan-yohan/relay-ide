@@ -63,9 +63,16 @@ class OrchestratorTestAdapter implements ProtocolAdapterV2 {
   broadcastPatch(): void {}
 }
 
-vi.mock('../server/protocol-adapters/index.js', () => ({
-  createAdapterV2: () => new OrchestratorTestAdapter(),
-}));
+vi.mock('../server/protocol-adapters/index.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../server/protocol-adapters/index.js')
+    >();
+  return {
+    ...actual,
+    createAdapterV2: () => new OrchestratorTestAdapter(),
+  };
+});
 
 function issuedCredential(
   id: string,

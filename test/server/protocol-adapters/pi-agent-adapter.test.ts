@@ -2,8 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { PiAgentRpcClient } from '../../../server/pi-agent-rpc-client.js';
+import {
+  PiAgentRpcClient,
+  type PiAgentRpcClientOptions,
+} from '../../../server/pi-agent-rpc-client.js';
 import { PiAgentProtocolAdapter } from '../../../server/protocol-adapters/pi-agent-adapter.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
 const config = {
   cwd: '/tmp',
@@ -29,18 +33,38 @@ function harness() {
     .spyOn(client, 'call')
     .mockResolvedValue({ type: 'response', command: 'prompt', success: true });
   vi.spyOn(client, 'stop').mockResolvedValue();
-  const adapter = new PiAgentProtocolAdapter(() => client);
+  const clientFactoryOptions: PiAgentRpcClientOptions[] = [];
+  const adapter = new PiAgentProtocolAdapter((options) => {
+    clientFactoryOptions.push(options);
+    return client;
+  });
   const patches: Array<Record<string, unknown>> = [];
   adapter.onPatch((patch) =>
     patches.push(patch as unknown as Record<string, unknown>)
   );
-  return { adapter, client, call, patches };
+  return { adapter, client, call, patches, clientFactoryOptions };
 }
 
 describe('PiAgentProtocolAdapter', () => {
   it('publishes honest capabilities and provider session identity after get_state', async () => {
-    const { adapter, patches } = harness();
-    await adapter.connect(config);
+    const { adapter, patches, clientFactoryOptions } = harness();
+    await adapter.connect({
+      ...config,
+      processEnv: {
+        CLAUDECODE: 'must-be-stripped',
+        RELAY_PROFILE_SAFE: 'preserved',
+      },
+    });
+    const launchRequirement = CHANNEL_ADAPTER_LAUNCH_CONTRACTS.pi.requirement;
+    expect(launchRequirement.kind).toBe('command');
+    if (launchRequirement.kind !== 'command') {
+      throw new Error('Pi must remain a command-backed channel adapter');
+    }
+    expect(clientFactoryOptions[0]?.command).toBe(launchRequirement.command);
+    expect(clientFactoryOptions[0]?.env?.RELAY_PROFILE_SAFE).toBe('preserved');
+    for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS.pi.processEnvDenylist) {
+      expect(clientFactoryOptions[0]?.env).not.toHaveProperty(key);
+    }
     expect(adapter.agentType).toBe('pi');
     expect(adapter.capabilities).toMatchObject({
       text: true,
