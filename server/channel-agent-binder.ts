@@ -1051,6 +1051,7 @@ export function createChannelAgentBinder(
     let created: ChannelAgentRuntime;
     try {
       created = await deps.runtimes.create({
+        channelId,
         providerId: framework,
         profileActorId,
         cwd,

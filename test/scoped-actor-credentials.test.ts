@@ -95,6 +95,30 @@ describe('scoped actor credential registry', () => {
     }
   });
 
+  it('issues only the canonical input bound by strict preflight', () => {
+    const store = registry();
+    const input = {
+      actor: { type: 'agent', id: 'agent-preflight' },
+      issuer: { id: 'operator-1' },
+      audience: 'relay:registry-test',
+      capabilities: ['session:read'],
+      scope: { nodeIds: ['node-a'] },
+      expiresAt: LATER,
+    };
+    const prepared = store.prepareIssue(input, { requireFutureExpiry: true });
+
+    // A caller cannot swap an expired or broader payload into a prepared
+    // issuance after its future-expiry preflight has completed.
+    input.expiresAt = EXPIRED;
+    input.scope.nodeIds[0] = 'node-b';
+
+    const issued = store.issuePrepared(prepared);
+    expect(issued.credential).toMatchObject({
+      expiresAt: LATER.toISOString(),
+      scope: { nodeIds: ['node-a'] },
+    });
+  });
+
   it('rejects unsupported actor types and unknown issue-time capability grants', () => {
     const store = registry();
 

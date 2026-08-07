@@ -885,6 +885,86 @@ describe('channel routes — read / write contract', () => {
     expect(page.body.messages.map((m) => m.seq)).toEqual([4, 5]);
   });
 
+  it('uses limit plus one lookahead for ordinary history without cursor gaps', async () => {
+    const h = await harness();
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    for (let i = 0; i < 5; i++) {
+      await req({ port: h.port, method: 'POST', url, body: { text: `m${i}` } });
+    }
+    const page1 = await req<{
+      messages: Array<{ seq: number }>;
+      hasMore?: boolean;
+      nextCursor?: { afterSeq?: number };
+    }>({ port: h.port, method: 'GET', url: `${url}?afterSeq=0&limit=2` });
+    expect(page1.body.messages.map((message) => message.seq)).toEqual([1, 2]);
+    expect(page1.body).toMatchObject({
+      hasMore: true,
+      nextCursor: { afterSeq: 2 },
+    });
+
+    const page2 = await req<{
+      messages: Array<{ seq: number }>;
+      hasMore?: boolean;
+      nextCursor?: { afterSeq?: number };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `${url}?afterSeq=${page1.body.nextCursor!.afterSeq}&limit=2`,
+    });
+    expect(page2.body.messages.map((message) => message.seq)).toEqual([3, 4]);
+    expect(page2.body.nextCursor).toEqual({ afterSeq: 4 });
+
+    const terminal = await req<{ messages: Array<{ seq: number }> }>({
+      port: h.port,
+      method: 'GET',
+      url: `${url}?afterSeq=${page2.body.nextCursor!.afterSeq}&limit=2`,
+    });
+    expect(terminal.body.messages.map((message) => message.seq)).toEqual([5]);
+    expect(terminal.body).not.toHaveProperty('hasMore');
+    expect(terminal.body).not.toHaveProperty('nextCursor');
+  });
+
+  it('validates an actor channels.post body before channel lookup or persistence', async () => {
+    const h = await harness();
+    const headers = {
+      'x-test-actor-id': 'scoped-agent',
+      'x-test-actor-scope': JSON.stringify({
+        channelIds: [h.channelId, 'topic:missing'],
+      }),
+    };
+    for (const body of [
+      { text: 'ok', clientMessageId: 7 },
+      { text: 'ok', unexpected: true },
+      { text: '' },
+      { text: 'ok', format: null },
+      { text: 'ok', parentMessageId: null },
+      { text: 'ok', threadId: 7 },
+      [],
+    ]) {
+      const response = await req<{ error: { code: string } }>({
+        port: h.port,
+        method: 'POST',
+        url: '/channels/topic%3Amissing/messages',
+        headers,
+        body,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('INVALID_ARGUMENT');
+    }
+    expect(h.store.history(h.channelId)).toHaveLength(0);
+
+    const valid = await req<{ message: { sender: { id: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers,
+      body: { text: 'valid actor post', threadId: null, clientMessageId: 'c1' },
+    });
+    expect(valid.status).toBe(201);
+    expect(valid.body.message.sender.id).toBe('agent:scoped-agent');
+    expect(h.store.history(h.channelId)).toHaveLength(1);
+  });
+
   it('fails closed for undeclared actor history queries and missing channels', async () => {
     const h = await harness();
     const headers = {

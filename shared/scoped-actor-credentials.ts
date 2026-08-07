@@ -207,6 +207,13 @@ export class ScopedActorCredentialRegistryError extends Error {
   }
 }
 
+const preparedIssuanceToken = Symbol('preparedScopedActorCredentialIssuance');
+
+/** Opaque registry preflight result for immediate, same-clock persistence. */
+export type PreparedScopedActorCredentialIssuance = {
+  readonly [preparedIssuanceToken]: true;
+};
+
 export class ScopedActorCredentialRegistry {
   private readonly credentials = new Map<
     string,
@@ -216,6 +223,10 @@ export class ScopedActorCredentialRegistry {
   private readonly maxTtlMs: number;
   private readonly now: () => Date;
   private readonly secretBytes: () => Buffer;
+  private readonly preparedIssuances = new WeakMap<
+    PreparedScopedActorCredentialIssuance,
+    { input: IssueScopedActorCredentialInput; issuedAt: Date }
+  >();
 
   constructor(
     options: {
@@ -231,13 +242,47 @@ export class ScopedActorCredentialRegistry {
   }
 
   issue(input: IssueScopedActorCredentialInput): IssuedScopedActorCredential {
-    const actorType = normalizeActorType(input.actor.type);
-    const audience = normalizeAudience(input.audience);
-    const capabilities = normalizeCredentialCapabilities(input.capabilities);
-    const scope = normalizeCredentialScope(input.scope);
-    const metadata = normalizeCredentialMetadata(input.metadata);
+    return this.issueAt(input, this.now());
+  }
+
+  /**
+   * Reject a deterministic issuance error without allocating a credential,
+   * secret, or audit event. A prepared issuance captures both the canonical
+   * validated input and its clock, and can be supplied only to this registry's
+   * `issuePrepared`.
+   */
+  prepareIssue(
+    input: IssueScopedActorCredentialInput,
+    options: { requireFutureExpiry?: boolean } = {}
+  ): PreparedScopedActorCredentialIssuance {
     const issuedAt = this.now();
-    const expiresAt = this.resolveExpiry(input, issuedAt);
+    const canonicalInput = structuredClone(input);
+    this.validateIssueAt(canonicalInput, issuedAt, options);
+    const prepared = {
+      [preparedIssuanceToken]: true,
+    } as PreparedScopedActorCredentialIssuance;
+    this.preparedIssuances.set(prepared, { input: canonicalInput, issuedAt });
+    return prepared;
+  }
+
+  issuePrepared(
+    prepared: PreparedScopedActorCredentialIssuance
+  ): IssuedScopedActorCredential {
+    const issuance = this.preparedIssuances.get(prepared);
+    if (!issuance) {
+      throw new Error('prepared scoped actor credential issuance is invalid');
+    }
+    const issued = this.issueAt(issuance.input, issuance.issuedAt);
+    this.preparedIssuances.delete(prepared);
+    return issued;
+  }
+
+  private issueAt(
+    input: IssueScopedActorCredentialInput,
+    issuedAt: Date
+  ): IssuedScopedActorCredential {
+    const { actorType, audience, capabilities, scope, metadata, expiresAt } =
+      this.validateIssueAt(input, issuedAt);
     const id = input.id ?? crypto.randomUUID();
     if (this.credentials.has(id)) {
       throw new ScopedActorCredentialRegistryError(
@@ -499,6 +544,42 @@ export class ScopedActorCredentialRegistry {
       if (expiresAt.getTime() > notAfter.getTime()) expiresAt = notAfter;
     }
     return expiresAt;
+  }
+
+  private validateIssueAt(
+    input: IssueScopedActorCredentialInput,
+    issuedAt: Date,
+    options: { requireFutureExpiry?: boolean } = {}
+  ): {
+    actorType: ScopedActorCredentialType;
+    audience: ScopedActorCredentialAudience;
+    capabilities: RelayCapabilityBit[];
+    scope: ScopedActorCredentialScope;
+    metadata: ScopedActorCredentialMetadata | undefined;
+    expiresAt: Date;
+  } {
+    const actorType = normalizeActorType(input.actor.type);
+    const audience = normalizeAudience(input.audience);
+    const capabilities = normalizeCredentialCapabilities(input.capabilities);
+    const scope = normalizeCredentialScope(input.scope);
+    const metadata = normalizeCredentialMetadata(input.metadata);
+    const expiresAt = this.resolveExpiry(input, issuedAt);
+    if (
+      options.requireFutureExpiry &&
+      expiresAt.getTime() <= issuedAt.getTime()
+    ) {
+      throw new ScopedActorCredentialRegistryError(
+        'EXPIRY_REQUIRED',
+        'scoped actor credential expiry must be in the future'
+      );
+    }
+    if (input.id && this.credentials.has(input.id)) {
+      throw new ScopedActorCredentialRegistryError(
+        'DUPLICATE_CREDENTIAL_ID',
+        `scoped actor credential ${input.id} already exists`
+      );
+    }
+    return { actorType, audience, capabilities, scope, metadata, expiresAt };
   }
 
   private deny(

@@ -10,7 +10,10 @@ import {
   buildWorkerMention,
   needsRemint,
   readPeerConfig,
+  redactPeerText,
+  safePeerErrorMessage,
   selectNewMessages,
+  validatePeerBaseUrl,
   type FetchLike,
   type PeerConfig,
 } from '../scripts/orchestrator-peer.js';
@@ -21,7 +24,7 @@ import {
 } from '../shared/channel-chat-protocol.js';
 
 const CONFIG: PeerConfig = {
-  baseUrl: 'http://relay.test/',
+  baseUrl: 'http://127.0.0.1:3456/',
   actorToken: 'relay-sac-v1.test-lease',
   actorId: 'echo-peer',
   displayName: 'Echo Peer',
@@ -265,6 +268,50 @@ describe('orchestrator peer pure seams', () => {
     ).toThrow(/relay-sac-v1/);
   });
 
+  it('allows HTTPS remotes and loopback HTTP, but rejects unsafe bearer origins', () => {
+    expect(validatePeerBaseUrl('http://127.0.1.1:3456/')).toBe(
+      'http://127.0.1.1:3456'
+    );
+    expect(validatePeerBaseUrl('http://localhost:3456/')).toBe(
+      'http://localhost:3456'
+    );
+    expect(validatePeerBaseUrl('https://relay.example/relay/')).toBe(
+      'https://relay.example/relay'
+    );
+    expect(() => validatePeerBaseUrl('http://relay.example')).toThrow(/HTTPS/);
+    expect(() =>
+      validatePeerBaseUrl('https://user:password@relay.example')
+    ).toThrow(/credentials/);
+    expect(() =>
+      validatePeerBaseUrl('https://relay.example?token=lease')
+    ).toThrow(/query/);
+    expect(() => validatePeerBaseUrl('https://relay.example/#token')).toThrow(
+      /fragment/
+    );
+
+    expect(() =>
+      readPeerConfig({
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',
+        RELAY_PEER_CHANNEL_ID: 'topic:general',
+        RELAY_PEER_IMPL_CHANNEL_ID: 'topic:implementation',
+        RELAY_PEER_BASE_URL: 'http://not-loopback.example',
+      })
+    ).toThrow(/HTTPS/);
+  });
+
+  it('redacts and bounds reflected response and thrown error text', () => {
+    const token = 'relay-sac-v1.actual-lease';
+    const reflected = `Bearer ${token}; ${'x'.repeat(700)}`;
+    const safeResponseText = redactPeerText(reflected, token);
+    const safeErrorText = safePeerErrorMessage(new Error(reflected), token);
+
+    for (const text of [safeResponseText, safeErrorText]) {
+      expect(text).not.toContain(token);
+      expect(text).toContain('…redacted');
+      expect(text.length).toBeLessThanOrEqual(527);
+    }
+  });
+
   it('needsRemint fires inside the refresh window', () => {
     expect(needsRemint(300_000, 199_999, 2 / 3)).toBe(false);
     expect(needsRemint(300_000, 200_000, 2 / 3)).toBe(true);
@@ -360,13 +407,13 @@ describe('orchestrator peer gateway cycle', () => {
       calls.some((call) => call.url.endsWith('/cli-gateway/actor-credentials'))
     ).toBe(false);
     expect(gatewayCalls[0]?.url).toBe(
-      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
+      'http://127.0.0.1:3456/channels/topic%3Ageneral/messages?afterSeq=0&limit=100'
     );
     expect(
       new Headers(gatewayCalls[0]?.init.headers).get('x-relay-cli-command')
     ).toBe('channels.history');
     expect(gatewayCalls[1]?.url).toBe(
-      'http://relay.test/channels/topic%3Aimplementation/messages'
+      'http://127.0.0.1:3456/channels/topic%3Aimplementation/messages'
     );
     expect(gatewayCalls[1]?.init.method).toBe('POST');
     expect(
@@ -379,7 +426,7 @@ describe('orchestrator peer gateway cycle', () => {
       text: '@codex build feature',
     });
     expect(gatewayCalls[2]?.url).toBe(
-      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+      'http://127.0.0.1:3456/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
     );
     expect(
       new Headers(gatewayCalls[2]?.init.headers).get('x-relay-cli-command')
@@ -441,7 +488,7 @@ describe('orchestrator peer gateway cycle', () => {
     expect(gatewayCalls).toHaveLength(3);
     const post = gatewayCalls[2];
     expect(post?.url).toBe(
-      'http://relay.test/channels/topic%3Ageneral/messages'
+      'http://127.0.0.1:3456/channels/topic%3Ageneral/messages'
     );
     expect(post?.init.method).toBe('POST');
     const headers = new Headers(post?.init.headers);
@@ -557,10 +604,10 @@ describe('orchestrator peer gateway cycle', () => {
     expect(peer.productLastSeq).toBe(6);
     expect(peer.implLastSeq).toBe(2);
     expect(historyUrls).toEqual([
-      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=0&limit=100',
-      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100',
-      'http://relay.test/channels/topic%3Ageneral/messages?afterSeq=5&limit=100',
-      'http://relay.test/channels/topic%3Aimplementation/messages?afterSeq=2&limit=100',
+      'http://127.0.0.1:3456/channels/topic%3Ageneral/messages?afterSeq=0&limit=100',
+      'http://127.0.0.1:3456/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100',
+      'http://127.0.0.1:3456/channels/topic%3Ageneral/messages?afterSeq=5&limit=100',
+      'http://127.0.0.1:3456/channels/topic%3Aimplementation/messages?afterSeq=2&limit=100',
     ]);
   });
 
@@ -584,7 +631,7 @@ describe('orchestrator peer gateway cycle', () => {
       Date.parse('2026-07-24T00:00:00.000Z')
     );
     const response = await manager.gatewayFetch(
-      'http://relay.test/channels/topic%3Ageneral/messages',
+      'http://127.0.0.1:3456/channels/topic%3Ageneral/messages',
       'channels.history'
     );
 
@@ -604,5 +651,47 @@ describe('orchestrator peer gateway cycle', () => {
     expect(() => new TokenManager(bad, vi.fn<FetchLike>(), () => 0)).toThrow(
       /relay-sac-v1/
     );
+  });
+
+  it('does not forward its bearer to another origin or credential-bearing URL', async () => {
+    const fetchMock = vi.fn<FetchLike>();
+    const manager = new TokenManager(CONFIG, fetchMock);
+
+    await expect(
+      manager.gatewayFetch(
+        'https://relay.example/channels/topic%3Ageneral/messages',
+        'channels.history'
+      )
+    ).rejects.toThrow(/configured base origin/);
+    await expect(
+      manager.gatewayFetch(
+        'http://user:password@127.0.0.1:3456/channels/topic%3Ageneral/messages',
+        'channels.history'
+      )
+    ).rejects.toThrow(/credentials/);
+    await expect(
+      manager.gatewayFetch(
+        'http://127.0.0.1:3456/channels/topic%3Ageneral/messages?afterSeq=0&token=relay-sac-v1.test-lease',
+        'channels.history'
+      )
+    ).rejects.toThrow(/credential material/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('redacts a server-reflected lease before surfacing a failed channel request', async () => {
+    const reflected = `Bearer ${CONFIG.actorToken} ${'x'.repeat(700)}`;
+    const peer = new OrchestratorPeer(
+      CONFIG,
+      vi.fn<FetchLike>(async () => new Response(reflected, { status: 500 }))
+    );
+
+    await expect(peer.pollOnce()).rejects.toSatisfy((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      return (
+        !message.includes(CONFIG.actorToken) &&
+        message.includes('…redacted') &&
+        message.length <= 570
+      );
+    });
   });
 });

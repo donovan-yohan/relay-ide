@@ -6,6 +6,7 @@ import {
   isChannelMessage,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
+import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3456';
 // Channel-scope is required for the bridge; context:read/write cover the channel
@@ -15,6 +16,10 @@ const DEFAULT_CAPABILITIES = ['session:read', 'context:read', 'context:write'];
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const HISTORY_LIMIT = 100;
 const TOKEN_REFRESH_RATIO = 2 / 3;
+const MAX_SAFE_ERROR_DETAIL_CHARS = 512;
+const MAX_RESPONSE_BODY_CHARS = 2_048;
+const LOOPBACK_HOSTS = new Set(['localhost', '::1', '[::1]']);
+const IPV4_LOOPBACK_HOST = /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 export interface PeerConfig {
   baseUrl: string;
@@ -138,15 +143,108 @@ export function needsRemint(
   return now >= expiresAt * refreshRatio;
 }
 
-function normalizedBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '');
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return LOOPBACK_HOSTS.has(normalized) || IPV4_LOOPBACK_HOST.test(normalized);
+}
+
+/**
+ * This peer sends its bearer lease on every request. Accept only a local HTTP
+ * hub or an HTTPS hub, and reject URL forms that can smuggle credentials into
+ * an error, proxy log, or different authority.
+ */
+export function validatePeerBaseUrl(baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('baseUrl must be an absolute HTTP(S) URL');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('baseUrl must use HTTP(S)');
+  }
+  if (!parsed.hostname) {
+    throw new Error('baseUrl must include a host');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('baseUrl must not include URL credentials');
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error('baseUrl must not include a query or fragment');
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    throw new Error('baseUrl must use HTTPS unless its host is loopback');
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+/** Redact and bound server-controlled text before it reaches stderr. */
+export function redactPeerText(value: unknown, actorToken?: string): string {
+  let text: string;
+  try {
+    text = typeof value === 'string' ? value : String(value);
+  } catch {
+    text = 'unprintable error';
+  }
+  // The shared redactor covers standard bearer/header/JSON forms. The peer
+  // also accepts deliberately short test/migration lease shapes, so scrub any
+  // relay SAC prefix and the exact configured token as backstops.
+  const redacted = redactBootstrapSecrets(text)
+    .replace(/\brelay-sac-v1\.[A-Za-z0-9._~+/=-]+\b/g, 'relay-sac-v1.…redacted')
+    .replace(/(Bearer\s+)[^\s"',;)}\]]+/gi, '$1…redacted');
+  const withConfiguredToken = actorToken
+    ? redacted.replaceAll(actorToken, 'relay-sac-v1.…redacted')
+    : redacted;
+  return withConfiguredToken.length > MAX_SAFE_ERROR_DETAIL_CHARS
+    ? `${withConfiguredToken.slice(0, MAX_SAFE_ERROR_DETAIL_CHARS)}…[truncated]`
+    : withConfiguredToken;
+}
+
+export function safePeerErrorMessage(
+  error: unknown,
+  actorToken?: string
+): string {
+  return redactPeerText(
+    error instanceof Error ? error.message : error,
+    actorToken
+  );
+}
+
+async function readCappedResponseText(response: Response): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let truncated = false;
+  try {
+    while (text.length <= MAX_RESPONSE_BODY_CHARS) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (text.length > MAX_RESPONSE_BODY_CHARS) {
+      text = text.slice(0, MAX_RESPONSE_BODY_CHARS);
+      truncated = true;
+      await reader.cancel();
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return truncated ? `${text}…[response truncated]` : text;
 }
 
 async function responseError(
   label: string,
-  response: Response
+  response: Response,
+  actorToken?: string
 ): Promise<Error> {
-  const detail = (await response.text()).trim();
+  const detail = redactPeerText(
+    (await readCappedResponseText(response)).trim(),
+    actorToken
+  );
   return new Error(
     `${label} failed (${response.status})${detail ? `: ${detail}` : ''}`
   );
@@ -154,6 +252,7 @@ async function responseError(
 
 export class TokenManager {
   private readonly baseUrl: string;
+  private readonly baseOrigin: string;
   private readonly fetchImpl: FetchLike;
 
   constructor(
@@ -167,7 +266,8 @@ export class TokenManager {
     _now: () => number = Date.now,
     _refreshRatio = TOKEN_REFRESH_RATIO
   ) {
-    this.baseUrl = normalizedBaseUrl(config.baseUrl);
+    this.baseUrl = validatePeerBaseUrl(config.baseUrl);
+    this.baseOrigin = new URL(this.baseUrl).origin;
     this.fetchImpl = fetchImpl;
     if (!config.actorToken.startsWith('relay-sac-v1.')) {
       throw new Error('actorToken must be a pre-minted relay-sac-v1 lease');
@@ -189,11 +289,45 @@ export class TokenManager {
     command: string,
     init: RequestInit = {}
   ): Promise<Response> {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      throw new Error('gateway request URL must be absolute');
+    }
+    // Never let this bearer-carrying helper become an open proxy. History does
+    // legitimately use `afterSeq` and `limit`, so reject credential-like query
+    // fields rather than rejecting that required cursor query wholesale.
+    if (target.username || target.password || target.hash) {
+      throw new Error(
+        'gateway request URL must not include credentials or a fragment'
+      );
+    }
+    for (const [name, value] of target.searchParams) {
+      if (
+        /(?:token|secret|password|cookie|authorization|credential|grant|pin|key)/i.test(
+          name
+        ) ||
+        value === this.config.actorToken ||
+        /\brelay-sac-v1\./.test(value)
+      ) {
+        throw new Error(
+          'gateway request URL must not include credential material'
+        );
+      }
+    }
+    if (target.origin !== this.baseOrigin) {
+      throw new Error(
+        'gateway request URL must use the configured base origin'
+      );
+    }
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${this.config.actorToken}`);
     headers.set('x-relay-cli-gateway', 'v1');
     headers.set('x-relay-cli-command', command);
-    return this.fetchImpl(url, { ...init, headers });
+    // A same-origin endpoint must not be able to bounce this bearer to a
+    // different authority through a followed redirect.
+    return this.fetchImpl(url, { ...init, headers, redirect: 'error' });
   }
 }
 
@@ -238,7 +372,7 @@ export class OrchestratorPeer {
     fetchImpl: FetchLike = globalThis.fetch,
     now: () => number = Date.now
   ) {
-    this.baseUrl = normalizedBaseUrl(config.baseUrl);
+    this.baseUrl = validatePeerBaseUrl(config.baseUrl);
     this.productChannelPath = `/channels/${encodeURIComponent(config.productChannelId)}`;
     this.implChannelPath = `/channels/${encodeURIComponent(config.implChannelId)}`;
     this.tokenManager = new TokenManager(config, fetchImpl, now);
@@ -267,7 +401,11 @@ export class OrchestratorPeer {
       'channels.history'
     );
     if (!historyResponse.ok) {
-      throw await responseError('channels.history', historyResponse);
+      throw await responseError(
+        'channels.history',
+        historyResponse,
+        this.config.actorToken
+      );
     }
     const history = parseHistoryResponse(await historyResponse.json());
     const selection = selectNewMessages(
@@ -290,7 +428,8 @@ export class OrchestratorPeer {
       if (!postResponse.ok) {
         throw await responseError(
           `channels.post ${relayKind} for seq ${ack.seq}`,
-          postResponse
+          postResponse,
+          this.config.actorToken
         );
       }
     }
@@ -389,13 +528,15 @@ export function readPeerConfig(
     env['RELAY_PEER_SCOPE'].length > 0
       ? JSON.parse(env['RELAY_PEER_SCOPE'])
       : { channelIds: [productChannelId, implChannelId] };
-
-  return {
-    baseUrl:
-      argValue(argv, '--base-url') ??
+  const baseUrl = validatePeerBaseUrl(
+    argValue(argv, '--base-url') ??
       env['RELAY_PEER_BASE_URL'] ??
       env['RELAY_IDE_URL'] ??
-      DEFAULT_BASE_URL,
+      DEFAULT_BASE_URL
+  );
+
+  return {
+    baseUrl,
     actorToken,
     actorId,
     displayName:
@@ -444,7 +585,7 @@ export async function main(): Promise<void> {
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   void main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(safePeerErrorMessage(error));
     process.exitCode = 1;
   });
 }

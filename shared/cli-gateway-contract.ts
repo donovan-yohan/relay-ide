@@ -185,6 +185,7 @@ export interface RelayJsonSchema {
   items?: RelayJsonSchema;
   anyOf?: readonly RelayJsonSchema[];
   oneOf?: readonly RelayJsonSchema[];
+  not?: RelayJsonSchema;
   format?: string;
   minimum?: number;
   maximum?: number;
@@ -3272,24 +3273,6 @@ const cockpitGetOutputDataSchema: RelayJsonSchema = {
   required: ['generatedAt', 'selector', 'item', 'actionHints', 'readFirst'],
 };
 
-const channelMessagePartSchema: RelayJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    type: { const: 'image' },
-    id: stringSchema,
-    mime: {
-      type: 'string',
-      enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
-    },
-    w: { type: 'number' },
-    h: { type: 'number' },
-    bytes: { type: 'number' },
-    alt: stringSchema,
-  },
-  required: ['type', 'id', 'mime', 'w', 'h', 'bytes'],
-};
-
 const channelPostInputSchema: RelayJsonSchema = {
   title: 'ChannelsPostInput',
   type: 'object',
@@ -3301,7 +3284,6 @@ const channelPostInputSchema: RelayJsonSchema = {
     parentMessageId: stringSchema,
     threadId: nullableStringSchema,
     clientMessageId: stringSchema,
-    parts: { type: 'array', items: channelMessagePartSchema },
   },
   required: ['channelId', 'text'],
 };
@@ -3349,6 +3331,7 @@ const channelHistoryInputSchema: RelayJsonSchema = {
     afterSeq: { type: 'integer', minimum: 0 },
   },
   required: ['channelId'],
+  not: { required: ['beforeSeq', 'afterSeq'] },
 };
 
 const channelThreadHistoryInputSchema: RelayJsonSchema = {
@@ -3363,6 +3346,7 @@ const channelThreadHistoryInputSchema: RelayJsonSchema = {
     afterSeq: { type: 'integer', minimum: 0 },
   },
   required: ['channelId', 'threadId'],
+  not: { required: ['beforeSeq', 'afterSeq'] },
 };
 
 const channelHistoryCursorSchema: RelayJsonSchema = {

@@ -623,6 +623,125 @@ function rejectEmptyChannelPost(
   return true;
 }
 
+/**
+ * The browser post surface intentionally accepts a few legacy conveniences
+ * (attachments and steering included). A scoped actor is a stable gateway
+ * caller, though, so its request body must be the exact public command shape
+ * before this route learns whether a channel exists or touches the transcript.
+ */
+function rejectInvalidActorChannelPostBody(
+  req: Request,
+  res: Response
+): boolean {
+  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  if (!isRecord(req.body)) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'channels.post body must be an object',
+      false,
+      { reasonCode: 'CHANNEL_ACTOR_POST_BODY_INVALID' }
+    );
+    return true;
+  }
+  const body = req.body;
+  // These have dedicated actor denials rather than falling through to an
+  // unknown-field error. They are real browser features, but never actor
+  // authority.
+  if ('parts' in body) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped actors cannot author attachment or image parts',
+      false,
+      { field: 'parts', reasonCode: 'CHANNEL_ACTOR_ATTACHMENT_PARTS_FORBIDDEN' }
+    );
+    return true;
+  }
+  if ('steering' in body) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped actors cannot steer private agent runtime turns',
+      false,
+      { field: 'steering', reasonCode: 'CHANNEL_ACTOR_STEERING_FORBIDDEN' }
+    );
+    return true;
+  }
+  const allowed = new Set([
+    'text',
+    'format',
+    'parentMessageId',
+    'threadId',
+    'clientMessageId',
+  ]);
+  const undeclared = Object.keys(body).find((field) => !allowed.has(field));
+  if (undeclared) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      `${undeclared} is not declared for channels.post`,
+      false,
+      { field: undeclared, reasonCode: 'CHANNEL_ACTOR_POST_UNDECLARED' }
+    );
+    return true;
+  }
+  if (typeof body['text'] !== 'string' || body['text'].trim().length === 0) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'text must be a non-empty string',
+      false,
+      { field: 'text', reasonCode: 'CHANNEL_ACTOR_POST_TEXT_INVALID' }
+    );
+    return true;
+  }
+  if (
+    body['format'] !== undefined &&
+    body['format'] !== 'text' &&
+    body['format'] !== 'markdown'
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'format must be text or markdown',
+      false,
+      { field: 'format', reasonCode: 'CHANNEL_ACTOR_POST_FORMAT_INVALID' }
+    );
+    return true;
+  }
+  for (const field of ['parentMessageId', 'clientMessageId'] as const) {
+    if (
+      body[field] !== undefined &&
+      (typeof body[field] !== 'string' || body[field].length === 0)
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} must be a non-empty string`,
+        false,
+        { field, reasonCode: 'CHANNEL_ACTOR_POST_ALIAS_INVALID' }
+      );
+      return true;
+    }
+  }
+  if (
+    body['threadId'] !== undefined &&
+    body['threadId'] !== null &&
+    (typeof body['threadId'] !== 'string' || body['threadId'].length === 0)
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'threadId must be a non-empty string or null',
+      false,
+      { field: 'threadId', reasonCode: 'CHANNEL_ACTOR_POST_ALIAS_INVALID' }
+    );
+    return true;
+  }
+  return false;
+}
+
 function parseSeqQuery(value: unknown): number | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
   if (typeof raw !== 'string' || !raw.trim()) return undefined;
@@ -1101,8 +1220,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
     const afterSeq = parseSeqQuery(req.query['afterSeq']);
     if (afterSeq !== undefined) filter.afterSeq = afterSeq;
-    const limit = parseSeqQuery(req.query['limit']);
-    if (limit !== undefined) filter.limit = limit;
+    const limit = parseHistoryLimit(req.query['limit']);
+    // One extra row makes a full public page distinguishable from the end of
+    // the log without an expensive COUNT. `budgetHistoryPage` drops it while
+    // retaining the exact exclusive cursor for either direction.
+    filter.limit = limit + 1;
     const threadId =
       typeof req.query['threadId'] === 'string'
         ? req.query['threadId']
@@ -1111,9 +1233,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     try {
       const all = store.history(id, filter);
       const direction = filter.afterSeq !== undefined ? 'forward' : 'backward';
-      const budgeted = budgetHistoryRows(
+      const budgeted = budgetHistoryPage(
         all,
         direction,
+        limit,
         deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
       );
       res.json({
@@ -1290,12 +1413,13 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // eslint-disable-next-line complexity
   router.post('/channels/:id/messages', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (rejectInvalidActorChannelPostBody(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
     if (!topicStore) return;
-    const id = req.params['id'] ?? '';
-    if (denyOutOfScopeChannel(req, res, id)) return;
     const body = bodyRecord(req);
 
     // [MF] Reject a client-supplied sender field outright — attribution is
@@ -1354,16 +1478,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     let parts: import('../shared/channel-chat-protocol.js').ChannelMessagePart[] =
       [];
     if (body['parts'] !== undefined) {
-      if (authenticatedCliGatewayActorCredential(req)) {
-        sendGatewayError(
-          res,
-          'FORBIDDEN',
-          'scoped actors cannot author attachment or image parts',
-          false,
-          { reasonCode: 'CHANNEL_ACTOR_ATTACHMENT_PARTS_FORBIDDEN' }
-        );
-        return;
-      }
       const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
       if (!attachmentStore) return;
       try {
@@ -1433,19 +1547,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     // live turn is allowed to finish first. Omitted (the default) queues; the
     // binder is the sole interpreter and ignores it for non-human senders.
     const suppliedSteering = body['steering'];
-    if (
-      suppliedSteering !== undefined &&
-      authenticatedCliGatewayActorCredential(req)
-    ) {
-      sendGatewayError(
-        res,
-        'FORBIDDEN',
-        'scoped actors cannot steer private agent runtime turns',
-        false,
-        { field: 'steering', reasonCode: 'CHANNEL_ACTOR_STEERING_FORBIDDEN' }
-      );
-      return;
-    }
     if (
       suppliedSteering !== undefined &&
       !isChannelPostSteering(suppliedSteering)

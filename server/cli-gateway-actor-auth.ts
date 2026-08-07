@@ -9,6 +9,7 @@ import {
 } from '../shared/operator-handshake-grants.js';
 import {
   ScopedActorCredentialRegistry,
+  type IssueScopedActorCredentialInput,
   type ScopedActorCredentialRecord,
   type ScopedActorCredentialScope,
   type ScopedActorCredentialValidationFailureReason,
@@ -532,27 +533,26 @@ export function issueCliGatewayActorCredentialWithGrant(
   input: CliGatewayGrantActorLifecycleInput
 ): { token: string; credential: ScopedActorCredentialRecord } {
   const request = strictGrantLifecycleRequest(input);
-  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
   const metadata = credentialIssueMetadata(input.metadata);
-  const issued = registry.issue({
-    actor: request.actor,
-    issuer: {
-      id: grant.id,
-      ...(grant.issuer.displayName
-        ? { displayName: grant.issuer.displayName }
-        : {}),
-    },
-    grantId: grant.id,
-    audience: request.audience,
-    capabilities: request.capabilities,
-    scope: request.scope,
-    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
-    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    notAfter: grant.expiresAt,
-    ...(metadata ? { metadata } : {}),
-    correlationId: request.correlationId,
+  // Validate every deterministic registry invariant before spending the
+  // one-use handle. `issue()` repeats the same validation immediately before
+  // persistence, so the consumed-grant -> issue window has no known reject.
+  const preflightGrant = validateCliGatewayLifecycleGrant(
+    grantRegistry,
+    request,
+    false
+  );
+  const issueInput = grantBackedCredentialIssueInput(
+    request,
+    preflightGrant,
+    request.actor,
+    metadata
+  );
+  const preparedIssue = registry.prepareIssue(issueInput, {
+    requireFutureExpiry: true,
   });
-  return issued;
+  validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  return registry.issuePrepared(preparedIssue);
 }
 
 export function listCliGatewayActorCredentialsWithGrant(
@@ -634,26 +634,25 @@ export function rotateCliGatewayActorCredentialWithGrant(
     scope: existing.scope,
     actor: existing.actor,
   });
-  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
   const metadata = credentialIssueMetadata(input.metadata);
-  const issued = registry.issue({
-    actor: existing.actor,
-    issuer: {
-      id: grant.id,
-      ...(grant.issuer.displayName
-        ? { displayName: grant.issuer.displayName }
-        : {}),
-    },
-    grantId: grant.id,
-    audience: existing.audience,
-    capabilities: existing.capabilities,
-    scope: existing.scope,
-    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
-    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    notAfter: grant.expiresAt,
-    ...(metadata ? { metadata } : {}),
-    correlationId: request.correlationId,
+  const preflightGrant = validateCliGatewayLifecycleGrant(
+    grantRegistry,
+    request,
+    false
+  );
+  const issueInput = grantBackedCredentialIssueInput(
+    request,
+    preflightGrant,
+    existing.actor,
+    metadata,
+    existing.capabilities,
+    existing.scope
+  );
+  const preparedIssue = registry.prepareIssue(issueInput, {
+    requireFutureExpiry: true,
   });
+  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const issued = registry.issuePrepared(preparedIssue);
   const revoked = registry.revoke(credentialId, {
     revokedBy: `grant:${grant.id}`,
     reason: 'rotated by grant-backed lifecycle',
@@ -661,6 +660,34 @@ export function rotateCliGatewayActorCredentialWithGrant(
   });
   if (!revoked) throw new Error('credential disappeared during rotation');
   return { ...issued, revoked };
+}
+
+function grantBackedCredentialIssueInput(
+  request: StrictGrantLifecycleRequest,
+  grant: { id: string; issuer: { displayName?: string }; expiresAt: string },
+  actor: HandshakeGrantActor,
+  metadata: ReturnType<typeof credentialIssueMetadata>,
+  capabilities = request.capabilities,
+  scope = request.scope
+): IssueScopedActorCredentialInput {
+  return {
+    actor,
+    issuer: {
+      id: grant.id,
+      ...(grant.issuer.displayName
+        ? { displayName: grant.issuer.displayName }
+        : {}),
+    },
+    grantId: grant.id,
+    audience: request.audience,
+    capabilities,
+    scope,
+    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
+    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    notAfter: grant.expiresAt,
+    ...(metadata ? { metadata } : {}),
+    correlationId: request.correlationId,
+  };
 }
 
 function scopeForValidation(

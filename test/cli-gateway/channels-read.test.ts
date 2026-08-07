@@ -57,6 +57,36 @@ function runCli(args: string[]): Promise<{
   });
 }
 
+function runCliFailure(args: string[]): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [RELAY_BIN, ...args],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          RELAY_IDE_PORT: '4567',
+          RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+          RELAY_IDE_BROWSER_TOKEN: '',
+        },
+        timeout: 10_000,
+      },
+      (error, stdout, stderr) => {
+        if (!error) {
+          reject(new Error(`CLI unexpectedly succeeded: ${stdout}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout) as Record<string, unknown>);
+        } catch {
+          reject(new Error(`CLI did not emit a gateway envelope: ${stderr}`));
+        }
+      }
+    );
+  });
+}
+
 beforeAll(() => {
   execFileSync('npm', ['run', 'build:server'], {
     cwd: path.resolve('.'),
@@ -80,13 +110,11 @@ describe('channel read CLI gateway runtime wiring', () => {
         'product/main',
         '--limit',
         '25',
-        '--before-seq',
-        '90',
         '--after-seq',
         '10',
       ],
       'channels.history',
-      '/channels/product%2Fmain/messages?limit=25&beforeSeq=90&afterSeq=10',
+      '/channels/product%2Fmain/messages?limit=25&afterSeq=10',
     ],
     [
       [
@@ -98,13 +126,11 @@ describe('channel read CLI gateway runtime wiring', () => {
         'chm/root',
         '--limit',
         '12',
-        '--before-seq',
-        '90',
         '--after-seq',
         '10',
       ],
       'channels.threads.history',
-      '/channels/product%2Fmain/threads/chm%2Froot?limit=12&beforeSeq=90&afterSeq=10',
+      '/channels/product%2Fmain/threads/chm%2Froot?limit=12&afterSeq=10',
     ],
     [
       ['roster', '--channel-id', 'product/main'],
@@ -132,6 +158,46 @@ describe('channel read CLI gateway runtime wiring', () => {
           'x-relay-cli-command': command,
           'x-relay-capabilities': 'context:read',
         },
+      });
+    }
+  );
+
+  it.each([
+    [['list', '--undeclared', '--json'], 'channels.list'],
+    [['get', '--json'], 'channels.get'],
+    [
+      ['history', '--channel-id', 'one', '--channel-id', 'two', '--json'],
+      'channels.history',
+    ],
+    [
+      [
+        'history',
+        '--channel-id',
+        'one',
+        '--before-seq',
+        '1',
+        '--after-seq',
+        '0',
+        '--json',
+      ],
+      'channels.history',
+    ],
+    [
+      ['threads', 'history', '--channel-id', 'one', '--limit', '1.5', '--json'],
+      'channels.threads.history',
+    ],
+    [
+      ['roster', '--channel-id', 'one', '--channel-id', 'two', '--json'],
+      'channels.roster',
+    ],
+  ] as const)(
+    'rejects malformed stable command argv %j',
+    async (channelArgs, command) => {
+      const envelope = await runCliFailure(['v1', 'channels', ...channelArgs]);
+      expect(envelope).toMatchObject({
+        ok: false,
+        command,
+        error: { code: 'INVALID_ARGUMENT' },
       });
     }
   );

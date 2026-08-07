@@ -48,6 +48,7 @@ function approveGrant(
   options: {
     actor?: { type: string; id: string; displayName?: string };
     scope?: typeof GRANT_SCOPE | Record<string, string[]>;
+    expiresAt?: Date | string;
   } = {}
 ): string {
   const grant = grants.request({
@@ -57,7 +58,9 @@ function approveGrant(
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     capabilities: ['session:read'],
     scope: options.scope ?? GRANT_SCOPE,
-    ttlMs: 60_000,
+    ...(options.expiresAt
+      ? { expiresAt: options.expiresAt }
+      : { ttlMs: 60_000 }),
     correlationId: `${id}-request`,
   });
   return grants.approve(grant.id, {
@@ -1084,6 +1087,160 @@ test('caps grant-backed credential expiry and cascades grant revocation', () => 
       scope: { sessionIds: ['session-1'] },
     })
   ).toMatchObject({ ok: false, reason: 'revoked' });
+});
+
+test('does not consume issue or rotation grants before deterministic lease validation', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const invalidInputs = [
+    { ttlMs: 0 },
+    { ttlMs: 15 * 60 * 1000 + 1 },
+    { ttlMs: undefined, expiresAt: 'not-a-date' },
+    { ttlMs: undefined, expiresAt: '2026-05-29T00:00:00.000Z' },
+  ];
+
+  for (const [index, invalid] of invalidInputs.entries()) {
+    const handle = approveGrant(grants, `grant-invalid-issue-${index}`);
+    const beforeCredentials = scopedRegistry.listCredentials();
+    const beforeAudit = scopedRegistry.listAuditEvents();
+    expect(() =>
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(handle, `invalid-issue-${index}`),
+        ...invalid,
+      })
+    ).toThrow();
+    expect(scopedRegistry.listCredentials()).toEqual(beforeCredentials);
+    expect(scopedRegistry.listAuditEvents()).toEqual(beforeAudit);
+    // The same one-use handle remains redeemable after a local validation
+    // error; a valid retry is the proof that it was not consumed.
+    expect(
+      issueCliGatewayActorCredentialWithGrant(
+        scopedRegistry,
+        grants,
+        grantLifecycleInput(handle, `valid-issue-${index}`)
+      ).credential.grantId
+    ).toBe(`grant-invalid-issue-${index}`);
+  }
+
+  const existing = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-rotate-existing'),
+      'rotate-existing'
+    )
+  );
+  const rotateHandle = approveGrant(grants, 'grant-invalid-rotate');
+  const beforeRotateAudit = scopedRegistry.listAuditEvents();
+  expect(() =>
+    rotateCliGatewayActorCredentialWithGrant(
+      scopedRegistry,
+      grants,
+      existing.credential.id,
+      {
+        ...grantLifecycleInput(rotateHandle, 'invalid-rotate'),
+        ttlMs: 0,
+      }
+    )
+  ).toThrow();
+  expect(
+    scopedRegistry.getCredential(existing.credential.id)
+  ).not.toHaveProperty('revokedAt');
+  expect(scopedRegistry.listAuditEvents()).toEqual(beforeRotateAudit);
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    existing.credential.id,
+    grantLifecycleInput(rotateHandle, 'valid-rotate')
+  );
+  expect(rotated.revoked.id).toBe(existing.credential.id);
+  expect(rotated.credential.grantId).toBe('grant-invalid-rotate');
+});
+
+test('shares the grant issuance instant across consume and registry persistence', () => {
+  const beforeNotAfter = new Date('2026-05-29T00:00:00.000Z');
+  const notAfter = new Date('2026-05-29T00:00:00.001Z');
+  const afterNotAfter = new Date('2026-05-29T00:00:00.002Z');
+  const advancingRegistry = (initialNowReads: number) => {
+    let nowReads = 0;
+    const scopedRegistry = new ScopedActorCredentialRegistry({
+      now: () => {
+        nowReads += 1;
+        return nowReads <= initialNowReads ? beforeNotAfter : afterNotAfter;
+      },
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    return { scopedRegistry, nowReads: () => nowReads };
+  };
+  const grants = new HandshakeGrantRegistry({
+    now: () => beforeNotAfter,
+    secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+  });
+
+  const issuing = advancingRegistry(1);
+  const issued = issueCliGatewayActorCredentialWithGrant(
+    issuing.scopedRegistry,
+    grants,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-advancing-issue', { expiresAt: notAfter }),
+      'advancing-issue'
+    )
+  );
+  expect(issued.credential.expiresAt).toBe(notAfter.toISOString());
+  // A second registry clock read would be after the grant ceiling. The issue
+  // therefore proves persistence reused the preflight issuance instant.
+  expect(issuing.nowReads()).toBe(1);
+
+  const rotating = advancingRegistry(2);
+  const existing = issueCliGatewayActorCredential(rotating.scopedRegistry, {
+    actor: GRANT_ACTOR,
+    issuer: { id: 'browser-operator-test' },
+    capabilities: ['session:read'],
+    scope: { sessionIds: ['session-1'] },
+    ttlMs: 60_000,
+  });
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    rotating.scopedRegistry,
+    grants,
+    existing.credential.id,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-advancing-rotate', { expiresAt: notAfter }),
+      'advancing-rotate'
+    )
+  );
+  expect(rotated.credential.expiresAt).toBe(notAfter.toISOString());
+  expect(rotated.revoked.id).toBe(existing.credential.id);
+  // The later clock sample belongs to recording the revocation; issuing the
+  // replacement at that instant would have rejected against `notAfter`.
+  expect(rotating.nowReads()).toBe(3);
+
+  const expiredGrants = new HandshakeGrantRegistry({
+    now: () => afterNotAfter,
+    secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+  });
+  const expiredHandle = approveGrant(
+    expiredGrants,
+    'grant-expired-before-use',
+    {
+      expiresAt: notAfter,
+    }
+  );
+  const beforeExpiredAttempt = issuing.scopedRegistry.listCredentials();
+  expectGrantError(
+    () =>
+      issueCliGatewayActorCredentialWithGrant(
+        issuing.scopedRegistry,
+        expiredGrants,
+        grantLifecycleInput(expiredHandle, 'expired-before-use')
+      ),
+    'expired'
+  );
+  expect(issuing.scopedRegistry.listCredentials()).toEqual(
+    beforeExpiredAttempt
+  );
+  expect(expiredGrants.getGrant('grant-expired-before-use')).toMatchObject({
+    status: 'expired',
+  });
 });
 
 test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts', () => {
