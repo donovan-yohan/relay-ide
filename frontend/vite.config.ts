@@ -64,6 +64,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-channel-timeline.html'
   );
+  buildInputs['test-channel-composer'] = resolve(
+    import.meta.dirname,
+    'test-channel-composer.html'
+  );
   buildInputs['test-channel-thread'] = resolve(
     import.meta.dirname,
     'test-channel-thread.html'

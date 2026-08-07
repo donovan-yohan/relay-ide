@@ -252,6 +252,36 @@ describe('ChannelComposer (#1178)', () => {
     vi.clearAllMocks();
   });
 
+  it('grows long drafts to a pane-relative cap and preserves most of a short timeline', async () => {
+    Object.defineProperty(container, 'clientHeight', {
+      configurable: true,
+      value: 800,
+    });
+    container.className = 'ch-main';
+    await renderComposer();
+
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    Object.defineProperty(ta, 'scrollHeight', {
+      configurable: true,
+      value: 700,
+    });
+    await act(async () => setNativeValue(ta, 'a long draft'));
+
+    // 45% of the conversation pane: much more than the old six-line cap.
+    expect(ta.style.height).toBe('360px');
+
+    Object.defineProperty(container, 'clientHeight', {
+      configurable: true,
+      value: 320,
+    });
+    await act(async () => window.dispatchEvent(new Event('resize')));
+
+    // A short/mobile pane still leaves the timeline as the larger region.
+    expect(ta.style.height).toBe('144px');
+  });
+
   it('reuses the same clientMessageId on retry after a failed send, then rotates on success', async () => {
     const ids: string[] = [];
     let failNext = true;

@@ -10,6 +10,7 @@ import {
   frontendModulesReachedBy,
   KEPT_SPEC_COUNT,
   NEVER_EXISTING_TARGET_SPECS,
+  POST_SWEEP_SPEC_COUNT,
   REPO_ROOT,
   SWEPT_SPECS,
   type SweptSpec,
@@ -47,13 +48,19 @@ describe('#1299 sweep ledger', () => {
   });
 
   it('kept exactly the specs the ledger claims were kept', () => {
-    expect(listSpecFiles()).toHaveLength(KEPT_SPEC_COUNT);
+    expect(listSpecFiles()).toHaveLength(
+      KEPT_SPEC_COUNT + POST_SWEEP_SPEC_COUNT
+    );
   });
 
   it('never re-lists a component that still has a live e2e spec', () => {
     const live = new Set(
       listSpecFiles().map(
-        (spec) => spec.split('/').pop()?.replace(/\.spec\.tsx?$/, '') ?? ''
+        (spec) =>
+          spec
+            .split('/')
+            .pop()
+            ?.replace(/\.spec\.tsx?$/, '') ?? ''
       )
     );
     const overlap = SWEPT_SPECS.map((entry) => entry.component).filter((name) =>

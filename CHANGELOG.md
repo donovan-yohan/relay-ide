@@ -42,6 +42,9 @@ workflow.
 
 - Designate-orchestrator failures now show actionable inline conflict or retry
   feedback instead of failing silently (#1352)
+- Long channel drafts now grow to a conversation-pane-relative cap instead of
+  inner-scrolling after six lines, while preserving most of short mobile
+  timelines (#1355)
 - Existing Codex channel conversations now recover after a hub/runtime restart,
   and user message bubbles no longer collapse into character-by-character
   wrapping (#1339)

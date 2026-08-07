@@ -406,14 +406,58 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const lineHeight = parseInt(getComputedStyle(el).lineHeight, 10) || 20;
-    const maxHeight = lineHeight * 6 + 32;
-    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+
+    const pane = el.closest<HTMLElement>('.ch-main, .ch-thread');
+    const composer = el.closest<HTMLElement>('.ch-composer');
+    const measuredPaneHeight = pane?.clientHeight;
+    const visibleViewportHeight = window.visualViewport?.height;
+    const paneHeight =
+      measuredPaneHeight && visibleViewportHeight
+        ? Math.min(measuredPaneHeight, visibleViewportHeight)
+        : measuredPaneHeight || visibleViewportHeight || window.innerHeight;
+    const composerMaxHeight = Math.floor(paneHeight * 0.45);
+    if (composer) composer.style.maxHeight = `${composerMaxHeight}px`;
+    const naturalHeight = el.getBoundingClientRect().height;
+    const composerChrome = Math.max(
+      0,
+      (composer?.getBoundingClientRect().height ?? naturalHeight) -
+        naturalHeight
+    );
+    // Cap the whole composer, not just its textarea, at 45% of the conversation
+    // pane. Excess attachment/control chrome scrolls within that boundary so the
+    // timeline remains the larger region even on short mobile panes.
+    const maxHeight = Math.max(
+      naturalHeight,
+      composerMaxHeight - composerChrome
+    );
+    const height = Math.max(
+      naturalHeight,
+      Math.min(el.scrollHeight, maxHeight)
+    );
+    el.style.height = `${height}px`;
   }, []);
 
   useEffect(() => {
     resize();
-  }, [draft, resize]);
+  });
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const pane = el.closest<HTMLElement>('.ch-main, .ch-thread');
+    const observer =
+      pane && typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(resize)
+        : null;
+    if (pane) observer?.observe(pane);
+    window.addEventListener('resize', resize);
+    window.visualViewport?.addEventListener('resize', resize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
+    };
+  }, [resize]);
 
   // Reset palette selection + reopen it whenever the draft changes (typing after
   // an Escape dismissal re-surfaces the palette).
@@ -917,135 +961,139 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           onDragOver={(e) => e.preventDefault()}
         />
       </div>
-      <div className="ch-composer__command-status" aria-live="polite">
-        {commandStatus}
-      </div>
-      {images.length > 0 ? (
-        <div
-          className="ch-composer__attachments"
-          aria-label="image attachments"
-        >
-          {images.map((image) => (
-            <span
-              key={image.localId}
-              className={`ch-composer__attachment ch-composer__attachment--${image.status}`}
-              title={image.error ?? image.name}
-            >
-              {image.previewUrl ? (
-                <img
-                  className="ch-composer__attachment-thumb"
-                  src={image.previewUrl}
-                  alt=""
-                />
-              ) : null}
-              <span className="ch-composer__attachment-name">{image.name}</span>
-              <span className="ch-composer__attachment-status" role="status">
-                {image.status === 'uploading'
-                  ? 'uploading…'
-                  : image.status === 'failed'
-                    ? 'failed'
-                    : 'ready'}
-              </span>
-              {image.status === 'failed' ? (
+      <div className="ch-composer__chrome">
+        <div className="ch-composer__command-status" aria-live="polite">
+          {commandStatus}
+        </div>
+        {images.length > 0 ? (
+          <div
+            className="ch-composer__attachments"
+            aria-label="image attachments"
+          >
+            {images.map((image) => (
+              <span
+                key={image.localId}
+                className={`ch-composer__attachment ch-composer__attachment--${image.status}`}
+                title={image.error ?? image.name}
+              >
+                {image.previewUrl ? (
+                  <img
+                    className="ch-composer__attachment-thumb"
+                    src={image.previewUrl}
+                    alt=""
+                  />
+                ) : null}
+                <span className="ch-composer__attachment-name">
+                  {image.name}
+                </span>
+                <span className="ch-composer__attachment-status" role="status">
+                  {image.status === 'uploading'
+                    ? 'uploading…'
+                    : image.status === 'failed'
+                      ? 'failed'
+                      : 'ready'}
+                </span>
+                {image.status === 'failed' ? (
+                  <button
+                    type="button"
+                    className="ch-composer__attachment-retry"
+                    onClick={() => void uploadImage(image)}
+                  >
+                    retry
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  className="ch-composer__attachment-retry"
-                  onClick={() => void uploadImage(image)}
+                  className="ch-composer__attachment-remove"
+                  aria-label={`remove ${image.name}`}
+                  onClick={() => removeImage(image.localId)}
                 >
-                  retry
+                  ×
                 </button>
-              ) : null}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {attachmentError ? (
+          <div className="ch-composer__attachment-error" role="alert">
+            {attachmentError}
+          </div>
+        ) : null}
+        <div className="ch-composer__bar">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            hidden
+            onChange={(event) => {
+              if (event.currentTarget.files)
+                addImageFiles(event.currentTarget.files);
+              event.currentTarget.value = '';
+            }}
+          />
+          <button
+            type="button"
+            className="ch-composer__attach"
+            aria-label="attach image"
+            title="attach image"
+            disabled={images.length >= CHANNEL_COMPOSER_MAX_IMAGES}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            +img
+          </button>
+          {busy ? (
+            // Mid-turn steering cluster. The default follows the harness's own
+            // safe-boundary primitive when supported; legacy harnesses keep the
+            // FIFO queue. The second action cancels the live turn first. It reuses the header chip's
+            // interrupt glyph — the black square is already the one interrupt
+            // vocabulary in the product — with danger-tinted chrome so the
+            // destructive member of the pair reads differently at rest.
+            <span
+              className="ch-composer__steer"
+              role="group"
+              aria-label="mid-turn steering"
+            >
               <button
                 type="button"
-                className="ch-composer__attachment-remove"
-                aria-label={`remove ${image.name}`}
-                onClick={() => removeImage(image.localId)}
+                className="ch-composer__steer-btn"
+                onClick={() => submit()}
+                title={defaultSendHint(
+                  busyAgentLabels ?? [],
+                  busyAgentSteeringMode
+                )}
               >
-                ×
+                {defaultSendLabel(busyAgentSteeringMode)}
+              </button>
+              <button
+                type="button"
+                className="ch-composer__steer-btn ch-composer__steer-btn--interrupt"
+                onClick={() => submit('interrupt')}
+                aria-label="interrupt and send"
+                title="interrupt and send"
+              >
+                <span aria-hidden="true">■</span> interrupt &amp; send
               </button>
             </span>
-          ))}
-        </div>
-      ) : null}
-      {attachmentError ? (
-        <div className="ch-composer__attachment-error" role="alert">
-          {attachmentError}
-        </div>
-      ) : null}
-      <div className="ch-composer__bar">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
-          multiple
-          hidden
-          onChange={(event) => {
-            if (event.currentTarget.files)
-              addImageFiles(event.currentTarget.files);
-            event.currentTarget.value = '';
-          }}
-        />
-        <button
-          type="button"
-          className="ch-composer__attach"
-          aria-label="attach image"
-          title="attach image"
-          disabled={images.length >= CHANNEL_COMPOSER_MAX_IMAGES}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          +img
-        </button>
-        {busy ? (
-          // Mid-turn steering cluster. The default follows the harness's own
-          // safe-boundary primitive when supported; legacy harnesses keep the
-          // FIFO queue. The second action cancels the live turn first. It reuses the header chip's
-          // interrupt glyph — the black square is already the one interrupt
-          // vocabulary in the product — with danger-tinted chrome so the
-          // destructive member of the pair reads differently at rest.
-          <span
-            className="ch-composer__steer"
-            role="group"
-            aria-label="mid-turn steering"
-          >
-            <button
-              type="button"
-              className="ch-composer__steer-btn"
-              onClick={() => submit()}
-              title={defaultSendHint(
-                busyAgentLabels ?? [],
-                busyAgentSteeringMode
-              )}
-            >
-              {defaultSendLabel(busyAgentSteeringMode)}
-            </button>
-            <button
-              type="button"
-              className="ch-composer__steer-btn ch-composer__steer-btn--interrupt"
-              onClick={() => submit('interrupt')}
-              aria-label="interrupt and send"
-              title="interrupt and send"
-            >
-              <span aria-hidden="true">■</span> interrupt &amp; send
-            </button>
+          ) : null}
+          <span className="ch-composer__hint">
+            {busy ? (
+              <>
+                <kbd>↵</kbd>
+                {busyAgentSteeringMode === 'all'
+                  ? 'steer after tool'
+                  : busyAgentSteeringMode === 'some'
+                    ? 'steer / queue'
+                    : 'queue'}{' '}
+                <kbd>⌘↵</kbd>interrupt <kbd>⇧↵</kbd>newline
+              </>
+            ) : (
+              <>
+                <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>@</kbd>mention
+              </>
+            )}
           </span>
-        ) : null}
-        <span className="ch-composer__hint">
-          {busy ? (
-            <>
-              <kbd>↵</kbd>
-              {busyAgentSteeringMode === 'all'
-                ? 'steer after tool'
-                : busyAgentSteeringMode === 'some'
-                  ? 'steer / queue'
-                  : 'queue'}{' '}
-              <kbd>⌘↵</kbd>interrupt <kbd>⇧↵</kbd>newline
-            </>
-          ) : (
-            <>
-              <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>@</kbd>mention
-            </>
-          )}
-        </span>
+        </div>
       </div>
     </div>
   );
