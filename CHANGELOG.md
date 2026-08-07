@@ -22,6 +22,10 @@ workflow.
 
 #### Added
 
+- Route unmentioned human messages in product channels to the durably
+  designated orchestrator, including cold resume after hub restart, through the
+  existing queue and native-steer paths; explicit mentions remain authoritative
+  (#1353)
 - Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
 - Run Pi as a built-in terminal and channel provider through its native JSONL RPC mode (#1349)
 - Control Prime Agent models, reasoning, compaction, and fresh sessions from the `@agent/` command palette (#1345)

@@ -201,27 +201,37 @@ conversation.
 
 ## Mentions and private runtimes
 
-`server/channel-agent-binder.ts` owns mention routing:
+`server/channel-agent-binder.ts` owns message-to-agent routing:
 
 1. subscribe to newly posted channel messages;
-2. resolve mentions against agent profiles;
-3. fall back to implicit DM routing when a human message resolves none;
+2. resolve explicit mentions against agent profiles;
+3. for an unmentioned human message, resolve the DM recipient or the product
+   channel's existing designated orchestrator;
 4. start or reuse one private runtime per `(channel, profileActorId)`;
 5. build a bounded context packet from durable channel history;
-6. queue and deliver the turn to the provider adapter;
+6. queue or steer and deliver the turn through the provider adapter;
 7. mirror the provider response into the originating channel or thread.
 
-Implicit DM routing (step 3) is the routing half of "a DM is a channel with one
-agent". A message with zero resolved mentions is routed as follows:
+Implicit human routing (step 3) follows this matrix:
 
-- DM channel, human sender → the default profile for the DM's provider, exactly
-  as if the provider had been mentioned. Threads included: a thread reply in a
-  DM routes implicitly too. Both DM composers therefore drop the `@ to mention`
-  hint.
-- DM channel, agent sender → nothing. An agent's own DM post cannot re-trigger
-  the DM's agent; the mention self-filter cannot see a message with no mentions.
-- Multi-party channel → nothing, silently (debug log only). Humans chat there
-  without addressing an agent, so a system row would be spam.
+- DM channel → the default profile for the DM's provider, exactly as if the
+  provider had been mentioned. Threads included: a thread reply routes
+  implicitly too. Both DM composers therefore drop the `@ to mention` hint.
+- Non-DM product channel with a durable `role=orchestrator` binding → that
+  designated profile. Delivery uses the exact same FIFO/native-steer path as an
+  explicit mention, including thread placement and queue limits. If the hub
+  restarted and its private runtime is gone, this first turn cold-resumes a new
+  orchestrator-role runtime from the binding's provider session.
+- Non-DM channel without a designated orchestrator → nothing, silently (debug
+  log only). No role is created or upgraded by sending a message.
+- Agent or system sender → no implicit route. Agent-authored explicit mentions
+  keep the existing collaboration/brake behavior, but an unmentioned agent row
+  can never loop back into the orchestrator.
+
+Any explicit agent mention wins over these defaults and routes only to the
+mentioned profile(s). This remains true when a durable pinned mention no longer
+resolves, so Relay never silently substitutes a DM agent or orchestrator for the
+operator's intended recipient.
 
 A DM whose provider cannot be resolved at all posts one `nothing was routed`
 system row per five-minute dedupe window, because in a DM there is nobody else
@@ -269,8 +279,8 @@ placement for cold replay, but they are not counted as conversational replies.
 
 A channel may designate one persistent orchestrator profile. The designation
 route grants the orchestrator role through the operator-authenticated lane,
-starts or reuses its private runtime, and exposes the role in the channel
-roster.
+persists that role independently of the ephemeral runtime id, starts or reuses
+its private runtime, and exposes the role in the channel roster.
 
 Agent runtimes may create or operate public terminal workers through the scoped
 actor gateway when their capability grant permits it. Those workers are
