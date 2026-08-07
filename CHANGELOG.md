@@ -40,6 +40,9 @@ workflow.
 
 #### Fixed
 
+- Channel mention packets now exclude blank tool, reasoning, status, and system
+  activity rows, report shown/filtered counts, and use a smaller prose window
+  so real conversation is not displaced by empty activity (#1358)
 - Designate-orchestrator failures now show actionable inline conflict or retry
   feedback instead of failing silently (#1352)
 - Long channel drafts now grow to a conversation-pane-relative cap instead of

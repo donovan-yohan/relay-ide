@@ -11,7 +11,6 @@ import {
 } from './channel-context-packet.js';
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
-  CHANNEL_HISTORY_MAX_LIMIT,
   type ChannelBinding,
   type ChannelMessageStore,
 } from './channel-message-store.js';
@@ -120,11 +119,6 @@ export const MAX_CONSECUTIVE_AGENT_TURNS = 4;
 const UNAVAILABLE_ROW_TTL_MS = 5 * 60 * 1000;
 /** How long a resolved framework-availability list is reused before re-probing. */
 const TARGETS_TTL_MS = 5 * 1000;
-/** Newest rows fetched before the trigger to build a packet (packet caps to N). */
-const PACKET_FETCH_WINDOW = Math.min(
-  PACKET_MAX_ROWS * 3,
-  CHANNEL_HISTORY_MAX_LIMIT
-);
 
 // ── public types ─────────────────────────────────────────────────────────────
 
@@ -1496,35 +1490,26 @@ export function createChannelAgentBinder(
       typeof row?.providerSession['lastDeliveredSeq'] === 'number'
         ? (row.providerSession['lastDeliveredSeq'] as number)
         : 0;
-    let rows: ChannelMessage[];
-    if (trigger.threadId !== null) {
-      rows = store.threadHistory(binding.channelId, trigger.threadId, {
-        beforeSeq: trigger.seq,
-        limit: PACKET_FETCH_WINDOW,
-      });
-      // A bounded newest-first page may omit the load-bearing root. Reinsert it
-      // through the existing point-read lane; the builder preserves it through
-      // row and byte trimming.
-      const root = store.getMessage(trigger.threadId);
-      if (root) rows.push(root);
-      rows = [...new Map(rows.map((message) => [message.id, message])).values()]
-        .filter((message) => message.seq < trigger.seq)
-        .sort((a, b) => a.seq - b.seq);
-    } else {
-      rows = store
-        .history(binding.channelId, {
-          beforeSeq: trigger.seq,
-          limit: PACKET_FETCH_WINDOW,
-        })
-        .filter((r) => r.seq < trigger.seq);
-    }
+    const context = store.mentionContext({
+      channelId: binding.channelId,
+      framework: binding.framework,
+      triggerSeq: trigger.seq,
+      afterSeq: lastDeliveredSeq,
+      threadRootId: trigger.threadId,
+      limit: PACKET_MAX_ROWS,
+    });
     return resolveMentionContextPacket(
       buildMentionContextPacketEnvelope({
         channelTitle: title,
         framework: binding.framework,
-        rows,
+        rows: context.rows,
         trigger,
         lastDeliveredSeq,
+        summary: {
+          totalCount: context.totalCount,
+          activityFilteredCount: context.activityFilteredCount,
+          scope: context.scope,
+        },
       }),
       deps.attachmentStore
     );
@@ -1535,7 +1520,7 @@ export function createChannelAgentBinder(
     if (!adapter) return;
     const turnId = channelTurnId(trigger.id, binding.profileActorId);
     // Build the packet BEFORE mutating any binding state: buildPacket does
-    // synchronous SQLite work (getBinding/history) that can throw. If it did so
+    // synchronous SQLite work (getBinding/mentionContext) that can throw. If it did so
     // AFTER activeTurnId was set (and before the watchdog armed), the binding
     // wedged 'turn-active' forever with no in-flight turn — the queue filled and
     // every later mention dropped. On a throw we surface a row and keep draining.
