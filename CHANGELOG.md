@@ -53,8 +53,10 @@ workflow.
   activity rows, report shown/filtered counts, and use a smaller prose window
   so real conversation is not displaced by empty activity (#1358)
 - Bound each mention-context SQLite statement to the newest 256 raw candidates
-  and label summaries as lower bounds when older channel or thread history is omitted
-  (#1358, #1368)
+  and label summaries as lower bounds when older channel or thread history is
+  omitted (#1358, #1368)
+- Enforce one durable channel orchestrator with a transactional first-writer
+  conflict and a partial unique index, including safe legacy repair (#1365, #1368)
 - Designate-orchestrator failures now show actionable inline conflict or retry
   feedback instead of failing silently (#1352)
 - Designation errors now retire when the roster confirms an orchestrator and

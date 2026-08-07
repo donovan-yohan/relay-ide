@@ -98,10 +98,17 @@ const CLAUDE_AGENT_SENDER: ChannelSenderRef = {
   displayName: 'Claude',
 };
 
-function makeStore(): { store: ChannelMessageStore; hub: ChannelHub } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-binder-'));
-  cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+function makeStore(dbPathOverride?: string): {
+  store: ChannelMessageStore;
+  hub: ChannelHub;
+} {
+  const dir = dbPathOverride
+    ? null
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'relay-binder-'));
+  if (dir) cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = createChannelMessageStore(
+    dbPathOverride ?? path.join(dir!, 'channel-chat.db')
+  );
   cleanup.push(() => store.close());
   const hub = createChannelHub({ store, channelExists: () => true });
   cleanup.push(() => hub.close());
@@ -1179,13 +1186,14 @@ function makeBinder(cfg: {
   attachmentStore?: ChannelAttachmentStore;
   agentProfileStore?: AgentProfileStore | null;
   processEnv?: NodeJS.ProcessEnv;
+  storePath?: string;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
   hub: ChannelHub;
   sessions: SessionsHarness;
 } {
-  const { store, hub } = makeStore();
+  const { store, hub } = makeStore(cfg.storePath);
   const sessions = makeSessions(cfg.build, {
     ...(cfg.throwOnCreate ? { throwOnCreate: true } : {}),
     ...(cfg.createError !== undefined ? { createError: cfg.createError } : {}),
@@ -1614,6 +1622,80 @@ describe('channel-agent-binder — lifecycle', () => {
       role: 'orchestrator',
     });
     expect(agentReplies(store)).toHaveLength(0);
+  });
+
+  it('serializes competing orchestrator profiles before spawning a loser', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const targets: MentionTarget[] = [
+      ...MOCK_TARGETS,
+      {
+        id: 'codex',
+        displayName: 'Codex',
+        kind: 'framework',
+        available: true,
+        reason: null,
+      },
+    ];
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets,
+      knownProviderIds: ['mock', 'codex'],
+      gate,
+    });
+
+    const first = binder.ensureOrchestrator(CH, 'mock');
+    const competitor = binder.ensureOrchestrator(CH, 'codex');
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.createParams()).toHaveLength(1);
+    releaseGate();
+    const [firstResult, competitorResult] = await Promise.allSettled([
+      first,
+      competitor,
+    ]);
+
+    expect(firstResult.status).toBe('fulfilled');
+    expect(competitorResult).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        status: 409,
+        code: 'channel_orchestrator_conflict',
+        details: expect.objectContaining({
+          designatedProfileActorId: builtInAgentProfileId('mock'),
+          requestedProfileActorId: builtInAgentProfileId('codex'),
+        }),
+      }),
+    });
+    expect(sessions.spawns()).toBe(1);
+    expect(store.getSoleOrchestratorBinding(CH)?.profileActorId).toBe(
+      builtInAgentProfileId('mock')
+    );
+    expect(store.getBinding(CH, builtInAgentProfileId('codex'))).toBeNull();
+  });
+
+  it('coalesces simultaneous idempotent designation requests to one runtime', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      gate,
+    });
+    const first = binder.ensureOrchestrator(CH, 'mock');
+    const repeated = binder.ensureOrchestrator(CH, 'mock');
+    await waitFor(() => sessions.spawns() === 1);
+    releaseGate();
+    const [a, b] = await Promise.all([first, repeated]);
+    expect(a.runtimeId).toBe(b.runtimeId);
+    expect(sessions.spawns()).toBe(1);
+    expect(store.getSoleOrchestratorBinding(CH)?.profileActorId).toBe(
+      builtInAgentProfileId('mock')
+    );
   });
 
   it('reuses a restored orchestrator binding', async () => {
@@ -4430,33 +4512,48 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
     }
   );
 
-  it('cold-resumes a durable orchestrator designation with an empty runtime registry', async () => {
+  it('cold-resumes a durable orchestrator designation after a store and hub restart', async () => {
     const topics = makeProductTopics();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-binder-restart-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const profileActorId = builtInAgentProfileId('orchestrator');
+    const beforeRestart = createChannelMessageStore(storePath);
+    beforeRestart.designateSoleOrchestrator({
+      channelId: CH,
+      profileActorId,
+      agentFramework: 'orchestrator',
+      runtimeId: null,
+    });
+    beforeRestart.close();
+
+    // Fresh store, hub, binder, and runtime registry model a full hub restart.
     const { binder, store, sessions } = makeBinder({
       build: (providerId) =>
         new ScriptedAdapter(providerId, {
           mode: 'reply',
           text: 'cold ack',
         }),
-      targets: [TARGETS[0]!],
-      knownProviderIds: ['orchestrator'],
+      targets: TARGETS,
+      knownProviderIds: ['orchestrator', 'worker'],
       topicStore: topics,
-    });
-    const profileActorId = builtInAgentProfileId('orchestrator');
-    // Production starts with no channel runtimes after a hub restart. The role,
-    // not runtime_id, is the durable designation source of truth.
-    store.upsertBinding({
-      channelId: CH,
-      profileActorId,
-      agentFramework: 'orchestrator',
-      runtimeId: null,
-      role: 'orchestrator',
+      storePath,
     });
     expect((await binder.rosterForChannel(CH))[0]).toMatchObject({
       id: profileActorId,
       role: 'orchestrator',
       binding: null,
     });
+    await expect(binder.ensureOrchestrator(CH, 'worker')).rejects.toMatchObject(
+      {
+        status: 409,
+        code: 'channel_orchestrator_conflict',
+      }
+    );
+    expect(sessions.spawns()).toBe(0);
+    expect(store.getSoleOrchestratorBinding(CH)?.profileActorId).toBe(
+      profileActorId
+    );
 
     post(store, binder, 'resume the plan', ['orchestrator']);
 
@@ -4491,12 +4588,11 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
     await waitFor(() => sessions.spawns() === 1);
     // The ordinary spawn has already captured no role and is parked. Model a
     // concurrent durable designation becoming visible before the bare post.
-    store.upsertBinding({
+    store.designateSoleOrchestrator({
       channelId: CH,
       profileActorId,
       agentFramework: 'orchestrator',
       runtimeId: null,
-      role: 'orchestrator',
     });
     post(store, binder, 'must not enter the collaborator runtime', [
       'orchestrator',

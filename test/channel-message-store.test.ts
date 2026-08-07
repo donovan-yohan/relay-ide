@@ -159,6 +159,155 @@ describe('channel-message-store schema migration', () => {
     expect(indexNames).toEqual(['idx_chm_channel_seq', 'idx_chm_thread']);
   });
 
+  it('clears ambiguous v7 orchestrators, preserves sole rows, and creates the unique index', () => {
+    const file = dbPath();
+    store(file).close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX idx_chab_sole_orchestrator;
+      UPDATE schema_version SET version = 7;
+      DELETE FROM channel_agent_bindings;
+      INSERT INTO channel_agent_bindings VALUES
+        ('topic:ambiguous', 'profile:a', 'claude', 'runtime:a', 'orchestrator', '{"cursor":1}', '2026-08-01', '2026-08-02'),
+        ('topic:ambiguous', 'profile:b', 'codex', 'runtime:b', 'orchestrator', '{"cursor":2}', '2026-08-03', '2026-08-04'),
+        ('topic:valid', 'profile:c', 'claude', 'runtime:c', 'orchestrator', '{"cursor":3}', '2026-08-05', '2026-08-06');
+    `);
+    legacy.close();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+
+    const migrated = store(file);
+    expect(migrated.getBinding('topic:ambiguous', 'profile:a')).toMatchObject({
+      role: null,
+      runtimeId: 'runtime:a',
+      providerSession: { cursor: 1 },
+    });
+    expect(migrated.getBinding('topic:ambiguous', 'profile:b')).toMatchObject({
+      role: null,
+      runtimeId: 'runtime:b',
+      providerSession: { cursor: 2 },
+    });
+    expect(migrated.getSoleOrchestratorBinding('topic:valid')).toMatchObject({
+      profileActorId: 'profile:c',
+      role: 'orchestrator',
+      providerSession: { cursor: 3 },
+    });
+    const warning = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('ambiguous legacy orchestrator')
+    );
+    expect(format(...(warning as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] cleared ambiguous legacy orchestrator designations before sole-role migration: channel_count=1 binding_count=2'
+    );
+    expect(format(...(warning as [string, ...unknown[]]))).not.toContain(
+      'topic:ambiguous'
+    );
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      inspect
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_chab_sole_orchestrator'`
+        )
+        .get()
+    ).toEqual({ name: 'idx_chab_sole_orchestrator' });
+    expect(
+      inspect
+        .prepare(
+          `SELECT channel_id, COUNT(*) AS count
+             FROM channel_agent_bindings
+            WHERE binding_role = 'orchestrator'
+            GROUP BY channel_id
+           HAVING COUNT(*) > 1`
+        )
+        .all()
+    ).toEqual([]);
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
+    'installs the sole-orchestrator invariant from schema version %i',
+    (version) => {
+      const file = dbPath();
+      const seeded = store(file);
+      seeded.upsertBinding({
+        channelId: `topic:upgrade-${version}`,
+        profileActorId: 'profile:keeper',
+        agentFramework: 'claude',
+        runtimeId: 'runtime:keeper',
+        providerSession: { cursor: version },
+      });
+      seeded.close();
+      const legacy = new Database(file);
+      legacy.exec('DROP INDEX idx_chab_sole_orchestrator');
+      // Reconstruct the column names each numbered migration actually expects;
+      // older schemas could not yet carry a binding role.
+      if (version >= 1 && version <= 4) {
+        legacy.exec(
+          'ALTER TABLE channel_messages RENAME COLUMN source_runtime_id TO source_session_id'
+        );
+      }
+      if (version >= 1 && version <= 3) {
+        legacy.exec(
+          'ALTER TABLE channel_agent_bindings RENAME COLUMN runtime_id TO session_id'
+        );
+      }
+      legacy.prepare('UPDATE schema_version SET version = ?').run(version);
+      legacy.close();
+
+      const migrated = store(file);
+      const expectedProfile =
+        version === 1 || version === 2
+          ? builtInAgentProfileId('claude')
+          : 'profile:keeper';
+      expect(
+        migrated.getBinding(`topic:upgrade-${version}`, expectedProfile)
+      ).toMatchObject({
+        profileActorId: expectedProfile,
+        runtimeId: 'runtime:keeper',
+        role: null,
+        providerSession: { cursor: version },
+      });
+      expect(
+        migrated.getSoleOrchestratorBinding(`topic:upgrade-${version}`)
+      ).toBeNull();
+      migrated.designateSoleOrchestrator({
+        channelId: `topic:upgrade-${version}`,
+        profileActorId: expectedProfile,
+        agentFramework: 'claude',
+      });
+      expect(() =>
+        migrated.designateSoleOrchestrator({
+          channelId: `topic:upgrade-${version}`,
+          profileActorId: 'profile:loser',
+          agentFramework: 'codex',
+        })
+      ).toThrowError(expect.objectContaining({ status: 409 }));
+      const inspect = new Database(file, { readonly: true });
+      cleanup.push(() => inspect.close());
+      expect(
+        inspect
+          .prepare(
+            `SELECT name FROM sqlite_master
+              WHERE type = 'index' AND name = 'idx_chab_sole_orchestrator'`
+          )
+          .get()
+      ).toEqual({ name: 'idx_chab_sole_orchestrator' });
+      expect(
+        inspect
+          .prepare(
+            `SELECT channel_id
+               FROM channel_agent_bindings
+              WHERE binding_role = 'orchestrator'
+              GROUP BY channel_id
+             HAVING COUNT(*) > 1`
+          )
+          .all()
+      ).toEqual([]);
+    }
+  );
+
   it('widens v1 status, heals its known aliases, and preserves durable rows through v3', () => {
     const file = dbPath();
     const legacy = new Database(file);
@@ -376,7 +525,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(7);
+    ).toBe(8);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -564,7 +713,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(7);
+    ).toBe(8);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -2432,13 +2581,131 @@ describe('channel-message-store members and bindings', () => {
     expect(s.findDmChannel('human:operator', 'agent:codex')).toBeNull();
   });
 
+  it('enforces one idempotent durable orchestrator and rejects another profile', () => {
+    const s = store();
+    const first = s.designateSoleOrchestrator({
+      channelId: 'topic:sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+      runtimeId: 'runtime:a',
+      providerSession: { cursor: 7 },
+    });
+    const repeated = s.designateSoleOrchestrator({
+      channelId: 'topic:sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+    });
+    expect(repeated).toMatchObject({
+      profileActorId: 'profile:a',
+      runtimeId: 'runtime:a',
+      role: 'orchestrator',
+      providerSession: { cursor: 7 },
+      createdAt: first.createdAt,
+    });
+    expect(s.getSoleOrchestratorBinding('topic:sole')).toEqual(repeated);
+
+    expect(() =>
+      s.designateSoleOrchestrator({
+        channelId: 'topic:sole',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        status: 409,
+        code: 'channel_orchestrator_conflict',
+        details: {
+          channelId: 'topic:sole',
+          designatedProfileActorId: 'profile:a',
+          requestedProfileActorId: 'profile:b',
+        },
+      })
+    );
+    expect(s.getSoleOrchestratorBinding('topic:sole')?.profileActorId).toBe(
+      'profile:a'
+    );
+    expect(s.getBinding('topic:sole', 'profile:b')).toBeNull();
+    expect(() =>
+      s.upsertBinding({
+        channelId: 'topic:other',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+        role: 'orchestrator',
+      } as never)
+    ).toThrowError(
+      expect.objectContaining({
+        status: 400,
+        code: 'orchestrator_requires_sole_designation',
+      })
+    );
+  });
+
+  it('keeps the sole designation across reopen and rejects raw duplicates', () => {
+    const file = dbPath();
+    const initial = store(file);
+    initial.designateSoleOrchestrator({
+      channelId: 'topic:restart-sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+    });
+    initial.close();
+    const malformed = new Database(file);
+    malformed
+      .prepare(
+        `UPDATE channel_agent_bindings
+            SET provider_session_json = '{'
+          WHERE channel_id = 'topic:restart-sole'`
+      )
+      .run();
+    malformed.close();
+
+    const reopened = store(file);
+    expect(
+      reopened.getSoleOrchestratorBinding('topic:restart-sole')?.profileActorId
+    ).toBe('profile:a');
+    expect(
+      reopened.designateSoleOrchestrator({
+        channelId: 'topic:restart-sole',
+        profileActorId: 'profile:a',
+        agentFramework: 'claude',
+      }).providerSession
+    ).toEqual({});
+    expect(() =>
+      reopened.designateSoleOrchestrator({
+        channelId: 'topic:restart-sole',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+      })
+    ).toThrowError(expect.objectContaining({ status: 409 }));
+    expect(() => {
+      const raw = new Database(file);
+      try {
+        raw
+          .prepare(
+            `INSERT INTO channel_agent_bindings
+              (channel_id, profile_actor_id, agent_framework, runtime_id,
+               binding_role, provider_session_json, created_at, updated_at)
+             VALUES (?, ?, ?, NULL, 'orchestrator', '{}', ?, ?)`
+          )
+          .run(
+            'topic:restart-sole',
+            'profile:raw-loser',
+            'codex',
+            '2026-08-07T00:00:00.000Z',
+            '2026-08-07T00:00:00.000Z'
+          );
+      } finally {
+        raw.close();
+      }
+    }).toThrow(/UNIQUE constraint failed/);
+  });
+
   it('stores and reads agent bindings (slice-4 landing pad)', () => {
     const s = store();
-    const created = s.upsertBinding({
+    const created = s.designateSoleOrchestrator({
       channelId: 'topic:c',
       profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
-      role: 'orchestrator',
       providerSession: { claudeSessionId: 'abc' },
     });
     expect(created.runtimeId).toBeNull();
@@ -2942,7 +3209,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(7);
+    expect(version.version).toBe(8);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
