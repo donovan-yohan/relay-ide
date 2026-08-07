@@ -1290,13 +1290,18 @@ function initializeHubPersistence(
 async function channelMentionTargets(config: Config): Promise<MentionTarget[]> {
   const targets: MentionTarget[] = [];
   for (const framework of listConfiguredFrameworks(config.frameworks)) {
-    const channel = await getFrameworkChannelAvailability(framework);
+    const channel = await getFrameworkChannelAvailability(
+      framework,
+      process.env,
+      { probeLaunchCommand: false }
+    );
     targets.push({
       id: framework.id,
       displayName: framework.displayName,
       kind: 'framework',
       available: channel.available,
       reason: channel.available ? null : (channel.reason ?? null),
+      ...(channel.command ? { command: channel.command } : {}),
     });
   }
   if (process.env['RELAY_MOCK_AGENT'] === '1') {

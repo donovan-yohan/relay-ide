@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAdapterV2 } from '../../../server/protocol-adapters/index.js';
 import { LegacyProtocolAdapterV2Bridge } from '../../../server/protocol-adapters/legacy-v2-bridge.js';
 import { OpenCodeProtocolAdapter } from '../../../server/protocol-adapters/opencode-adapter.js';
-import { OpenCodeAttachedAdapter } from '../../../server/protocol-adapters/opencode-attached-adapter.js';
+import {
+  OpenCodeAttachedAdapter,
+  probeOpenCodeAttachedApi,
+} from '../../../server/protocol-adapters/opencode-attached-adapter.js';
 import { mapChatEventToAgentPatchV2 } from '../../../shared/agent-chat-v1-compat.js';
 import type { ChatEvent } from '../../../shared/agent-chat-protocol.js';
 
@@ -44,6 +47,24 @@ describe('OpenCode V2 web adapter registration', () => {
     });
   });
 
+  it('probes the attached adapter default HTTP health endpoint', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+    try {
+      await expect(probeOpenCodeAttachedApi(undefined, 125)).resolves.toEqual({
+        available: true,
+        endpoint: 'http://127.0.0.1:4096',
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:4096/global/health',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('registers opencode-attached as a ProtocolAdapterV2 bridge', () => {
     const adapter = createAdapterV2('opencode-attached');
 
@@ -72,9 +93,7 @@ describe('OpenCode streaming capability is backed by real deltas', () => {
     expect(delta).toMatchObject({ type: 'chat:text-delta', delta: 'hel' });
 
     const patches = mapChatEventToAgentPatchV2(delta!);
-    expect(patches.map((patch) => patch.type)).toContain(
-      'agent-item-delta-v2'
-    );
+    expect(patches.map((patch) => patch.type)).toContain('agent-item-delta-v2');
   });
 
   it('fires chat:text-delta from the attached adapter and maps it to a V2 delta patch', () => {
@@ -88,8 +107,6 @@ describe('OpenCode streaming capability is backed by real deltas', () => {
     expect(delta).toMatchObject({ type: 'chat:text-delta', delta: 'lo world' });
 
     const patches = mapChatEventToAgentPatchV2(delta!);
-    expect(patches.map((patch) => patch.type)).toContain(
-      'agent-item-delta-v2'
-    );
+    expect(patches.map((patch) => patch.type)).toContain('agent-item-delta-v2');
   });
 });
