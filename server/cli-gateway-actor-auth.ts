@@ -9,6 +9,7 @@ import {
 } from '../shared/operator-handshake-grants.js';
 import {
   ScopedActorCredentialRegistry,
+  type IssueScopedActorCredentialInput,
   type ScopedActorCredentialRecord,
   type ScopedActorCredentialScope,
   type ScopedActorCredentialValidationFailureReason,
@@ -109,9 +110,6 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
-  'channels.agent-commands',
-  'channels.interrupt',
-  'channels.respond-approval',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -295,8 +293,7 @@ export function isSupportedCliGatewayActorReadRequest(
       return false;
     }
   }
-  const command = req.header(CLI_GATEWAY_COMMAND_HEADER);
-  return command == null || command === expectedCommand;
+  return req.header(CLI_GATEWAY_COMMAND_HEADER) === expectedCommand;
 }
 
 export function isSupportedCliGatewayActorWriteRequest(
@@ -358,13 +355,7 @@ export function cliGatewayActorCommandCapabilities(
     command === 'channels.roster'
   )
     return ['context:read'];
-  if (
-    command === 'channels.post' ||
-    command === 'channels.agent-commands' ||
-    command === 'channels.interrupt' ||
-    command === 'channels.respond-approval'
-  )
-    return ['context:write'];
+  if (command === 'channels.post') return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||
@@ -542,26 +533,26 @@ export function issueCliGatewayActorCredentialWithGrant(
   input: CliGatewayGrantActorLifecycleInput
 ): { token: string; credential: ScopedActorCredentialRecord } {
   const request = strictGrantLifecycleRequest(input);
-  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
   const metadata = credentialIssueMetadata(input.metadata);
-  const issued = registry.issue({
-    actor: request.actor,
-    issuer: {
-      id: grant.id,
-      ...(grant.issuer.displayName
-        ? { displayName: grant.issuer.displayName }
-        : {}),
-    },
-    grantId: grant.id,
-    audience: request.audience,
-    capabilities: request.capabilities,
-    scope: request.scope,
-    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
-    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    ...(metadata ? { metadata } : {}),
-    correlationId: request.correlationId,
+  // Validate every deterministic registry invariant before spending the
+  // one-use handle. `issue()` repeats the same validation immediately before
+  // persistence, so the consumed-grant -> issue window has no known reject.
+  const preflightGrant = validateCliGatewayLifecycleGrant(
+    grantRegistry,
+    request,
+    false
+  );
+  const issueInput = grantBackedCredentialIssueInput(
+    request,
+    preflightGrant,
+    request.actor,
+    metadata
+  );
+  const preparedIssue = registry.prepareIssue(issueInput, {
+    requireFutureExpiry: true,
   });
-  return issued;
+  validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  return registry.issuePrepared(preparedIssue);
 }
 
 export function listCliGatewayActorCredentialsWithGrant(
@@ -643,25 +634,25 @@ export function rotateCliGatewayActorCredentialWithGrant(
     scope: existing.scope,
     actor: existing.actor,
   });
-  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
   const metadata = credentialIssueMetadata(input.metadata);
-  const issued = registry.issue({
-    actor: existing.actor,
-    issuer: {
-      id: grant.id,
-      ...(grant.issuer.displayName
-        ? { displayName: grant.issuer.displayName }
-        : {}),
-    },
-    grantId: grant.id,
-    audience: existing.audience,
-    capabilities: existing.capabilities,
-    scope: existing.scope,
-    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
-    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
-    ...(metadata ? { metadata } : {}),
-    correlationId: request.correlationId,
+  const preflightGrant = validateCliGatewayLifecycleGrant(
+    grantRegistry,
+    request,
+    false
+  );
+  const issueInput = grantBackedCredentialIssueInput(
+    request,
+    preflightGrant,
+    existing.actor,
+    metadata,
+    existing.capabilities,
+    existing.scope
+  );
+  const preparedIssue = registry.prepareIssue(issueInput, {
+    requireFutureExpiry: true,
   });
+  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const issued = registry.issuePrepared(preparedIssue);
   const revoked = registry.revoke(credentialId, {
     revokedBy: `grant:${grant.id}`,
     reason: 'rotated by grant-backed lifecycle',
@@ -669,6 +660,34 @@ export function rotateCliGatewayActorCredentialWithGrant(
   });
   if (!revoked) throw new Error('credential disappeared during rotation');
   return { ...issued, revoked };
+}
+
+function grantBackedCredentialIssueInput(
+  request: StrictGrantLifecycleRequest,
+  grant: { id: string; issuer: { displayName?: string }; expiresAt: string },
+  actor: HandshakeGrantActor,
+  metadata: ReturnType<typeof credentialIssueMetadata>,
+  capabilities = request.capabilities,
+  scope = request.scope
+): IssueScopedActorCredentialInput {
+  return {
+    actor,
+    issuer: {
+      id: grant.id,
+      ...(grant.issuer.displayName
+        ? { displayName: grant.issuer.displayName }
+        : {}),
+    },
+    grantId: grant.id,
+    audience: request.audience,
+    capabilities,
+    scope,
+    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
+    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    notAfter: grant.expiresAt,
+    ...(metadata ? { metadata } : {}),
+    correlationId: request.correlationId,
+  };
 }
 
 function scopeForValidation(
@@ -688,6 +707,11 @@ function scopeForValidation(
         ? { workContextId: scope.workContextIds[0] }
         : {}),
     ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+    ...(options.multiWorkContext && scope?.channelIds?.length
+      ? { channelIds: scope.channelIds }
+      : scope?.channelIds?.[0]
+        ? { channelId: scope.channelIds[0] }
+        : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
     ...(taskRef ? { taskRef } : {}),
@@ -734,6 +758,10 @@ function scopeIsAuthorizedByRequest(
     scopeDimensionIsAuthorized(
       credentialScope.workContextIds,
       requestScope.workContextIds
+    ) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.channelIds,
+      requestScope.channelIds
     ) &&
     scopeDimensionIsAuthorized(credentialScope.repoIds, requestScope.repoIds) &&
     scopeDimensionIsAuthorized(
@@ -925,6 +953,11 @@ function validateRequestedScopeAgainstGrant(
       wrongReason: 'wrong_work_context_scope',
     },
     {
+      grantValues: grantScope.channelIds,
+      requestValues: requestScope.channelIds,
+      wrongReason: 'wrong_channel_scope',
+    },
+    {
       grantValues: grantScope.repoIds,
       requestValues: requestScope.repoIds,
       wrongReason: 'wrong_repo_scope',
@@ -1092,6 +1125,7 @@ const forbiddenActorReasons =
     'wrong_session_scope',
     'wrong_global_session_scope',
     'wrong_work_context_scope',
+    'wrong_channel_scope',
     'wrong_repo_scope',
     'wrong_path_scope',
     'wrong_task_scope',
@@ -1166,6 +1200,7 @@ function coerceScope(value: unknown): ScopedActorCredentialScope | undefined {
     ['sessionIds', 'sessionIds'],
     ['globalSessionIds', 'globalSessionIds'],
     ['workContextIds', 'workContextIds'],
+    ['channelIds', 'channelIds'],
     ['repoIds', 'repoIds'],
     ['pathPrefixes', 'pathPrefixes'],
     ['taskRefs', 'taskRefs'],

@@ -95,6 +95,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     const lease = startOrchestratorCredentialLifecycle(
       {
         runtimeId: 'runtime-orchestrator',
+        channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
         displayName: 'Product orchestrator',
@@ -110,7 +111,10 @@ describe('OrchestratorCredentialLifecycle', () => {
       },
       issuer: { id: 'relay-ide', displayName: 'Relay' },
       capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
-      scope: { sessionIds: ['runtime-orchestrator'] },
+      scope: {
+        sessionIds: ['runtime-orchestrator'],
+        channelIds: ['channel-A'],
+      },
       ttlMs: 15 * 60 * 1000,
     });
     expect(lease.processEnv).toEqual({
@@ -130,6 +134,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     const lease = startOrchestratorCredentialLifecycle(
       {
         runtimeId: 'runtime-orchestrator',
+        channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
       },
@@ -152,6 +157,16 @@ describe('OrchestratorCredentialLifecycle', () => {
       'apply',
       'revoke:credential-1',
     ]);
+    expect(h.issueCredential.mock.calls.map(([input]) => input.scope)).toEqual([
+      {
+        sessionIds: ['runtime-orchestrator'],
+        channelIds: ['channel-A'],
+      },
+      {
+        sessionIds: ['runtime-orchestrator'],
+        channelIds: ['channel-A'],
+      },
+    ]);
     expect(lease.processEnv).toEqual({
       RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-2.secret-2',
       RELAY_IDE_PORT: '4567',
@@ -168,6 +183,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     const lease = startOrchestratorCredentialLifecycle(
       {
         runtimeId: 'runtime-orchestrator',
+        channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
       },
@@ -198,6 +214,7 @@ describe('OrchestratorCredentialLifecycle', () => {
       startOrchestratorCredentialLifecycle(
         {
           runtimeId: 'runtime-orchestrator',
+          channelId: 'channel-A',
           profileActorId: 'agent-profile:test',
           port: 4567,
         },
@@ -208,6 +225,7 @@ describe('OrchestratorCredentialLifecycle', () => {
       startOrchestratorCredentialLifecycle(
         {
           runtimeId: 'runtime-orchestrator',
+          channelId: 'channel-A',
           profileActorId: 'agent-profile:test',
           port: 4567,
         },
@@ -229,6 +247,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     const lease = startOrchestratorCredentialLifecycle(
       {
         runtimeId: 'runtime-orchestrator',
+        channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
       },
@@ -269,6 +288,7 @@ describe('OrchestratorCredentialLifecycle', () => {
     const lease = startOrchestratorCredentialLifecycle(
       {
         runtimeId: 'runtime-orchestrator',
+        channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
       },

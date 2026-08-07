@@ -6,16 +6,31 @@ import {
   isChannelMessage,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
+import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3456';
+// Context read/write cover the channel verbs the peer drives. Its pre-minted
+// lease may be server-scoped, but this peer does not declare or enforce scope.
 const DEFAULT_CAPABILITIES = ['session:read', 'context:read', 'context:write'];
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const HISTORY_LIMIT = 100;
-const TOKEN_REFRESH_RATIO = 2 / 3;
+const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_SAFE_ERROR_DETAIL_CHARS = 512;
+const MAX_RESPONSE_BODY_CHARS = 2_048;
+const LOOPBACK_HOSTS = new Set(['localhost', '::1', '[::1]']);
+const IPV4_LOOPBACK_HOST = /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 export interface PeerConfig {
   baseUrl: string;
-  pin: string;
+  /**
+   * Pre-minted short-lived scoped-actor lease (`relay-sac-v1.` token).
+   *
+   * The daily-driver PIN/cookie must NEVER be used here: this peer is
+   * migration-only until the operator-handshake-grant redemption path lands
+   * (MCP bridge design). The token is supplied out-of-band via
+   * `RELAY_IDE_ACTOR_TOKEN` and never appears in argv, logs, or artifacts.
+   */
+  actorToken: string;
   actorId: string;
   displayName: string;
   role: string;
@@ -23,7 +38,6 @@ export interface PeerConfig {
   implChannelId: string;
   workerFramework: string;
   capabilities: string[];
-  scope?: unknown;
   renewable: boolean;
   budget?: { maxTurns?: number; maxTokens?: number };
   pollIntervalMs: number;
@@ -42,20 +56,6 @@ export interface PeerAck {
 export interface MessageSelection {
   acks: PeerAck[];
   nextSeq: number;
-}
-
-interface TokenState {
-  token: string;
-  mintedAt: number;
-  expiresAt: number;
-}
-
-interface MintResponse {
-  token: string;
-  credential: {
-    issuedAt: string;
-    expiresAt: string;
-  };
 }
 
 interface HistoryResponse {
@@ -123,103 +123,146 @@ export function selectNewMessages(
   return { acks, nextSeq };
 }
 
-/**
- * Tests a token lifetime on a clock whose zero is the token's issue time.
- * TokenManager shifts its absolute clock to that origin before calling here.
- */
-export function needsRemint(
-  expiresAt: number,
-  now: number,
-  refreshRatio: number
-): boolean {
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0 || !Number.isFinite(now)) {
-    return true;
-  }
-  if (!Number.isFinite(refreshRatio) || refreshRatio <= 0 || refreshRatio > 1) {
-    throw new RangeError('refreshRatio must be greater than 0 and at most 1');
-  }
-  return now >= expiresAt * refreshRatio;
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return LOOPBACK_HOSTS.has(normalized) || IPV4_LOOPBACK_HOST.test(normalized);
 }
 
-function normalizedBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '');
+/**
+ * This peer sends its bearer lease on every request. Accept only a local HTTP
+ * hub or an HTTPS hub, and reject URL forms that can smuggle credentials into
+ * an error, proxy log, or different authority.
+ */
+export function validatePeerBaseUrl(baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('baseUrl must be an absolute HTTP(S) URL');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('baseUrl must use HTTP(S)');
+  }
+  if (!parsed.hostname) {
+    throw new Error('baseUrl must include a host');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('baseUrl must not include URL credentials');
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error('baseUrl must not include a query or fragment');
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    throw new Error('baseUrl must use HTTPS unless its host is loopback');
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+/** Redact and bound server-controlled text before it reaches stderr. */
+export function redactPeerText(value: unknown, actorToken?: string): string {
+  let text: string;
+  try {
+    text = typeof value === 'string' ? value : String(value);
+  } catch {
+    text = 'unprintable error';
+  }
+  // The shared redactor covers standard bearer/header/JSON forms. The peer
+  // also accepts deliberately short test/migration lease shapes, so scrub any
+  // relay SAC prefix and the exact configured token as backstops.
+  const redacted = redactBootstrapSecrets(text)
+    .replace(/\brelay-sac-v1\.[A-Za-z0-9._~+/=-]+\b/g, 'relay-sac-v1.…redacted')
+    .replace(/(Bearer\s+)[^\s"',;)}\]]+/gi, '$1…redacted');
+  const withConfiguredToken = actorToken
+    ? redacted.replaceAll(actorToken, 'relay-sac-v1.…redacted')
+    : redacted;
+  return withConfiguredToken.length > MAX_SAFE_ERROR_DETAIL_CHARS
+    ? `${withConfiguredToken.slice(0, MAX_SAFE_ERROR_DETAIL_CHARS)}…[truncated]`
+    : withConfiguredToken;
+}
+
+export function safePeerErrorMessage(
+  error: unknown,
+  actorToken?: string
+): string {
+  return redactPeerText(
+    error instanceof Error ? error.message : error,
+    actorToken
+  );
+}
+
+async function readCappedResponseText(response: Response): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let truncated = false;
+  try {
+    while (text.length <= MAX_RESPONSE_BODY_CHARS) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (text.length > MAX_RESPONSE_BODY_CHARS) {
+      text = text.slice(0, MAX_RESPONSE_BODY_CHARS);
+      truncated = true;
+      await reader.cancel();
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return truncated ? `${text}…[response truncated]` : text;
 }
 
 async function responseError(
   label: string,
-  response: Response
+  response: Response,
+  actorToken?: string
 ): Promise<Error> {
-  const detail = (await response.text()).trim();
+  const detail = redactPeerText(
+    (await readCappedResponseText(response)).trim(),
+    actorToken
+  );
   return new Error(
     `${label} failed (${response.status})${detail ? `: ${detail}` : ''}`
   );
 }
 
-function cookieFrom(response: Response): string {
-  const raw = response.headers.get('set-cookie');
-  const cookie = raw?.split(';')[0];
-  if (!cookie) throw new Error('POST /auth did not return an auth cookie');
-  return cookie;
-}
-
-function isMintResponse(value: unknown): value is MintResponse {
-  if (typeof value !== 'object' || value === null) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record['token'] !== 'string' ||
-    !record['token'].startsWith('relay-sac-v1.')
-  ) {
-    return false;
-  }
-  const credential = record['credential'];
-  if (typeof credential !== 'object' || credential === null) return false;
-  const credentialRecord = credential as Record<string, unknown>;
-  return (
-    typeof credentialRecord['issuedAt'] === 'string' &&
-    typeof credentialRecord['expiresAt'] === 'string'
-  );
-}
-
 export class TokenManager {
   private readonly baseUrl: string;
+  private readonly baseOrigin: string;
   private readonly fetchImpl: FetchLike;
-  private readonly now: () => number;
-  private readonly refreshRatio: number;
-  private cookie: string | null = null;
-  private state: TokenState | null = null;
+  private readonly responseTimeouts = new WeakMap<Response, () => void>();
 
   constructor(
     private readonly config: Pick<
       PeerConfig,
-      'baseUrl' | 'pin' | 'actorId' | 'displayName' | 'capabilities'
+      'baseUrl' | 'actorToken' | 'actorId' | 'displayName' | 'capabilities'
     >,
-    fetchImpl: FetchLike = globalThis.fetch,
-    now: () => number = Date.now,
-    refreshRatio = TOKEN_REFRESH_RATIO
+    fetchImpl: FetchLike = globalThis.fetch
   ) {
-    this.baseUrl = normalizedBaseUrl(config.baseUrl);
+    this.baseUrl = validatePeerBaseUrl(config.baseUrl);
+    this.baseOrigin = new URL(this.baseUrl).origin;
     this.fetchImpl = fetchImpl;
-    this.now = now;
-    if (
-      !Number.isFinite(refreshRatio) ||
-      refreshRatio <= 0 ||
-      refreshRatio > 1
-    ) {
-      throw new RangeError('refreshRatio must be greater than 0 and at most 1');
+    if (!config.actorToken.startsWith('relay-sac-v1.')) {
+      throw new Error('actorToken must be a pre-minted relay-sac-v1 lease');
     }
-    this.refreshRatio = refreshRatio;
   }
 
-  async getToken(forceRemint = false): Promise<string> {
-    const currentNow = this.now();
-    if (this.state && !forceRemint) {
-      const lifetime = this.state.expiresAt - this.state.mintedAt;
-      const elapsed = Math.max(0, currentNow - this.state.mintedAt);
-      if (!needsRemint(lifetime, elapsed, this.refreshRatio)) {
-        return this.state.token;
-      }
-    }
-    return this.mintToken();
+  /**
+   * The pre-minted scoped-actor lease is used directly. There is deliberately
+   * NO remint path: refreshing would require the daily-driver PIN/cookie, which
+   * must never enter this peer. An expired lease surfaces as gateway 401s and
+   * the operator re-provisions a fresh lease out-of-band.
+   */
+  getToken(): Promise<string> {
+    return Promise.resolve(this.config.actorToken);
+  }
+
+  releaseGatewayResponse(response: Response): void {
+    this.responseTimeouts.get(response)?.();
   }
 
   async gatewayFetch(
@@ -227,81 +270,91 @@ export class TokenManager {
     command: string,
     init: RequestInit = {}
   ): Promise<Response> {
-    const send = async (token: string): Promise<Response> => {
-      const headers = new Headers(init.headers);
-      headers.set('authorization', `Bearer ${token}`);
-      headers.set('x-relay-cli-gateway', 'v1');
-      headers.set('x-relay-cli-command', command);
-      return this.fetchImpl(url, { ...init, headers });
-    };
-
-    let response = await send(await this.getToken());
-    if (response.status === 401) {
-      response = await send(await this.getToken(true));
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      throw new Error('gateway request URL must be absolute');
     }
-    return response;
-  }
-
-  private async authenticate(): Promise<string> {
-    const response = await this.fetchImpl(`${this.baseUrl}/auth`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pin: this.config.pin }),
-    });
-    if (!response.ok) throw await responseError('POST /auth', response);
-    return cookieFrom(response);
-  }
-
-  private async requestMint(cookie: string): Promise<Response> {
-    return this.fetchImpl(`${this.baseUrl}/cli-gateway/actor-credentials`, {
-      method: 'POST',
-      headers: {
-        cookie,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        capabilities: this.config.capabilities,
-        actor: {
-          type: 'agent',
-          id: this.config.actorId,
-          displayName: this.config.displayName,
-        },
-      }),
-    });
-  }
-
-  private async mintToken(): Promise<string> {
-    this.cookie ??= await this.authenticate();
-    let response = await this.requestMint(this.cookie);
-    if (response.status === 401) {
-      this.cookie = await this.authenticate();
-      response = await this.requestMint(this.cookie);
-    }
-    if (!response.ok) {
-      throw await responseError(
-        'POST /cli-gateway/actor-credentials',
-        response
+    // Never let this bearer-carrying helper become an open proxy. History does
+    // legitimately use `afterSeq` and `limit`, so reject credential-like query
+    // fields rather than rejecting that required cursor query wholesale.
+    if (target.username || target.password || target.hash) {
+      throw new Error(
+        'gateway request URL must not include credentials or a fragment'
       );
     }
-
-    const payload: unknown = await response.json();
-    if (!isMintResponse(payload)) {
-      throw new Error('actor credential mint returned an invalid response');
+    for (const [name, value] of target.searchParams) {
+      if (
+        /(?:token|secret|password|cookie|authorization|credential|grant|pin|key)/i.test(
+          name
+        ) ||
+        value === this.config.actorToken ||
+        /\brelay-sac-v1\./.test(value)
+      ) {
+        throw new Error(
+          'gateway request URL must not include credential material'
+        );
+      }
     }
-    const issuedAt = Date.parse(payload.credential.issuedAt);
-    const expiresAt = Date.parse(payload.credential.expiresAt);
-    const lifetime = expiresAt - issuedAt;
-    if (!Number.isFinite(lifetime) || lifetime <= 0) {
-      throw new Error('actor credential mint returned an invalid lifetime');
+    if (target.origin !== this.baseOrigin) {
+      throw new Error(
+        'gateway request URL must use the configured base origin'
+      );
+    }
+    const headers = new Headers(init.headers);
+    headers.set('authorization', `Bearer ${this.config.actorToken}`);
+    headers.set('x-relay-cli-gateway', 'v1');
+    headers.set('x-relay-cli-command', command);
+    // A same-origin endpoint must not be able to bounce this bearer to a
+    // different authority through a followed redirect.
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => {
+      timeoutController.abort(
+        new DOMException('gateway request timed out', 'TimeoutError')
+      );
+    }, GATEWAY_REQUEST_TIMEOUT_MS);
+    timeout.unref();
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, timeoutController.signal])
+      : timeoutController.signal;
+    const abortError = (): unknown =>
+      signal.reason ??
+      new DOMException('gateway request aborted', 'AbortError');
+
+    if (signal.aborted) {
+      clearTimeout(timeout);
+      throw abortError();
     }
 
-    const mintedAt = this.now();
-    this.state = {
-      token: payload.token,
-      mintedAt,
-      expiresAt: mintedAt + lifetime,
-    };
-    return payload.token;
+    let rejectOnAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectOnAbort = () => reject(abortError());
+      signal.addEventListener('abort', rejectOnAbort, { once: true });
+    });
+    try {
+      const response = await Promise.race([
+        this.fetchImpl(url, { ...init, headers, redirect: 'error', signal }),
+        aborted,
+      ]);
+      const release = (): void => {
+        clearTimeout(timeout);
+        this.responseTimeouts.delete(response);
+      };
+      if (response.body) {
+        this.responseTimeouts.set(response, release);
+      } else {
+        release();
+      }
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
+    } finally {
+      if (rejectOnAbort) {
+        signal.removeEventListener('abort', rejectOnAbort);
+      }
+    }
   }
 }
 
@@ -343,15 +396,12 @@ export class OrchestratorPeer {
 
   constructor(
     private readonly config: PeerConfig,
-    fetchImpl: FetchLike = globalThis.fetch,
-    now: () => number = Date.now
+    fetchImpl: FetchLike = globalThis.fetch
   ) {
-    this.baseUrl = normalizedBaseUrl(config.baseUrl);
-    this.productChannelPath =
-      `/channels/${encodeURIComponent(config.productChannelId)}`;
-    this.implChannelPath =
-      `/channels/${encodeURIComponent(config.implChannelId)}`;
-    this.tokenManager = new TokenManager(config, fetchImpl, now);
+    this.baseUrl = validatePeerBaseUrl(config.baseUrl);
+    this.productChannelPath = `/channels/${encodeURIComponent(config.productChannelId)}`;
+    this.implChannelPath = `/channels/${encodeURIComponent(config.implChannelId)}`;
+    this.tokenManager = new TokenManager(config, fetchImpl);
   }
 
   get productLastSeq(): number {
@@ -377,9 +427,23 @@ export class OrchestratorPeer {
       'channels.history'
     );
     if (!historyResponse.ok) {
-      throw await responseError('channels.history', historyResponse);
+      try {
+        throw await responseError(
+          'channels.history',
+          historyResponse,
+          this.config.actorToken
+        );
+      } finally {
+        this.tokenManager.releaseGatewayResponse(historyResponse);
+      }
     }
-    const history = parseHistoryResponse(await historyResponse.json());
+    let historyPayload: unknown;
+    try {
+      historyPayload = await historyResponse.json();
+    } finally {
+      this.tokenManager.releaseGatewayResponse(historyResponse);
+    }
+    const history = parseHistoryResponse(historyPayload);
     const selection = selectNewMessages(
       history.messages,
       cursor,
@@ -398,11 +462,17 @@ export class OrchestratorPeer {
         }
       );
       if (!postResponse.ok) {
-        throw await responseError(
-          `channels.post ${relayKind} for seq ${ack.seq}`,
-          postResponse
-        );
+        try {
+          throw await responseError(
+            `channels.post ${relayKind} for seq ${ack.seq}`,
+            postResponse,
+            this.config.actorToken
+          );
+        } finally {
+          this.tokenManager.releaseGatewayResponse(postResponse);
+        }
       }
+      this.tokenManager.releaseGatewayResponse(postResponse);
     }
 
     return selection;
@@ -466,16 +536,21 @@ export function readPeerConfig(
   env: NodeJS.ProcessEnv = process.env,
   argv: string[] = process.argv.slice(2)
 ): PeerConfig {
-  const pin = argValue(argv, '--pin') ?? env['RELAY_PEER_PIN'];
+  // Pre-minted short-lived scoped-actor lease (see PeerConfig.actorToken).
+  // The daily-driver PIN/cookie is explicitly FORBIDDEN here — this peer is
+  // migration-only until the operator-handshake-grant path lands.
+  const actorToken = env['RELAY_IDE_ACTOR_TOKEN'];
   const productChannelId =
     argValue(argv, '--channel') ?? env['RELAY_PEER_CHANNEL_ID'];
   const implChannelId =
-    argValue(argv, '--impl-channel') ??
-    env['RELAY_PEER_IMPL_CHANNEL_ID'];
-  if (!pin || !productChannelId || !implChannelId) {
+    argValue(argv, '--impl-channel') ?? env['RELAY_PEER_IMPL_CHANNEL_ID'];
+  if (!actorToken || !productChannelId || !implChannelId) {
     throw new Error(
-      'PIN, product channel, and impl channel are required via --pin/--channel/--impl-channel or RELAY_PEER_PIN/RELAY_PEER_CHANNEL_ID/RELAY_PEER_IMPL_CHANNEL_ID'
+      'actor token, product channel, and impl channel are required via RELAY_IDE_ACTOR_TOKEN and --channel/--impl-channel or RELAY_PEER_CHANNEL_ID/RELAY_PEER_IMPL_CHANNEL_ID'
     );
+  }
+  if (!actorToken.startsWith('relay-sac-v1.')) {
+    throw new Error('actorToken must be a pre-minted relay-sac-v1 lease');
   }
 
   const actorId =
@@ -489,13 +564,16 @@ export function readPeerConfig(
     .map((capability) => capability.trim())
     .filter(Boolean);
 
-  return {
-    baseUrl:
-      argValue(argv, '--base-url') ??
+  const baseUrl = validatePeerBaseUrl(
+    argValue(argv, '--base-url') ??
       env['RELAY_PEER_BASE_URL'] ??
       env['RELAY_IDE_URL'] ??
-      DEFAULT_BASE_URL,
-    pin,
+      DEFAULT_BASE_URL
+  );
+
+  return {
+    baseUrl,
+    actorToken,
     actorId,
     displayName:
       argValue(argv, '--display-name') ??
@@ -512,7 +590,7 @@ export function readPeerConfig(
       capabilities && capabilities.length
         ? capabilities
         : [...DEFAULT_CAPABILITIES],
-    renewable: true,
+    renewable: false,
     pollIntervalMs: positiveInteger(
       argValue(argv, '--poll-interval-ms') ??
         env['RELAY_PEER_POLL_INTERVAL_MS'],
@@ -542,7 +620,7 @@ export async function main(): Promise<void> {
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   void main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(safePeerErrorMessage(error));
     process.exitCode = 1;
   });
 }

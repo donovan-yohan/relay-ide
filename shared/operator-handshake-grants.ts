@@ -70,6 +70,7 @@ export type HandshakeGrantValidationFailureReason =
   | 'wrong_session_scope'
   | 'wrong_global_session_scope'
   | 'wrong_work_context_scope'
+  | 'wrong_channel_scope'
   | 'wrong_repo_scope'
   | 'wrong_path_scope'
   | 'wrong_task_scope'
@@ -116,6 +117,7 @@ export interface HandshakeGrantScope {
   sessionIds?: string[];
   globalSessionIds?: string[];
   workContextIds?: string[];
+  channelIds?: string[];
   repoIds?: string[];
   pathPrefixes?: string[];
   taskRefs?: string[];
@@ -126,6 +128,8 @@ export interface HandshakeGrantValidationScope {
   sessionId?: string;
   globalSessionId?: string;
   workContextId?: string;
+  channelId?: string;
+  channelIds?: string[];
   deferWorkContextScope?: boolean;
   repoId?: string;
   path?: string;
@@ -929,6 +933,9 @@ function normalizeGrantScope(scope: HandshakeGrantScope): HandshakeGrantScope {
     ...(normalizeStringList(scope.workContextIds).length > 0
       ? { workContextIds: normalizeStringList(scope.workContextIds) }
       : {}),
+    ...(normalizeStringList(scope.channelIds).length > 0
+      ? { channelIds: normalizeStringList(scope.channelIds) }
+      : {}),
     ...(normalizeStringList(scope.repoIds).length > 0
       ? { repoIds: normalizeStringList(scope.repoIds) }
       : {}),
@@ -951,6 +958,7 @@ function normalizeGrantScope(scope: HandshakeGrantScope): HandshakeGrantScope {
 type ScopeValidationRule = {
   values: string[] | undefined;
   requested: string | undefined;
+  requestedValues?: string[];
   wrongReason: HandshakeGrantValidationFailureReason;
   matches?: (values: string[], requested: string) => boolean;
 };
@@ -981,6 +989,14 @@ function validateGrantScope(
       wrongReason: 'wrong_work_context_scope',
     },
     {
+      values: grantScope.channelIds,
+      requested: expectedScope?.channelId,
+      ...(expectedScope?.channelIds
+        ? { requestedValues: expectedScope.channelIds }
+        : {}),
+      wrongReason: 'wrong_channel_scope',
+    },
+    {
       values: grantScope.repoIds,
       requested: expectedScope?.repoId,
       wrongReason: 'wrong_repo_scope',
@@ -1000,12 +1016,19 @@ function validateGrantScope(
   ];
 
   for (const rule of rules) {
-    if (!rule.values || !rule.requested) continue;
+    if (!rule.values || (!rule.requested && !rule.requestedValues?.length))
+      continue;
+    if (rule.requestedValues?.some((value) => !rule.values?.includes(value))) {
+      return rule.wrongReason;
+    }
+    if (!rule.requested) continue;
     const matches = rule.matches ?? listIncludesRequestedValue;
     if (!matches(rule.values, rule.requested)) return rule.wrongReason;
   }
 
-  return rules.some((rule) => rule.values && !rule.requested)
+  return rules.some(
+    (rule) => rule.values && !rule.requested && !rule.requestedValues?.length
+  )
     ? 'missing_scope'
     : null;
 }
@@ -1182,6 +1205,7 @@ function copyScope(scope: HandshakeGrantScope): HandshakeGrantScope {
     ...(scope.workContextIds
       ? { workContextIds: [...scope.workContextIds] }
       : {}),
+    ...(scope.channelIds ? { channelIds: [...scope.channelIds] } : {}),
     ...(scope.repoIds ? { repoIds: [...scope.repoIds] } : {}),
     ...(scope.pathPrefixes ? { pathPrefixes: [...scope.pathPrefixes] } : {}),
     ...(scope.taskRefs ? { taskRefs: [...scope.taskRefs] } : {}),

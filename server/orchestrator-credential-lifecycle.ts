@@ -41,6 +41,8 @@ export interface OrchestratorCredentialLifecycleDeps {
 
 export interface StartOrchestratorCredentialLifecycleInput {
   runtimeId: string;
+  /** Durable channel this private runtime serves. */
+  channelId: string;
   profileActorId: string;
   port: number;
   displayName?: string;
@@ -161,7 +163,10 @@ export class OrchestratorCredentialLifecycle {
         displayName: 'Relay',
       },
       capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
-      scope: { sessionIds: [this.input.runtimeId] },
+      scope: {
+        sessionIds: [this.input.runtimeId],
+        channelIds: [this.input.channelId],
+      },
       ttlMs: ORCHESTRATOR_ACTOR_CREDENTIAL_TTL_MS,
     });
   }

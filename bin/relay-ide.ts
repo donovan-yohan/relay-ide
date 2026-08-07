@@ -1593,6 +1593,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.create',
   'workspace-topics.update',
   'workspace-topics.archive',
+  'channels.list',
+  'channels.get',
+  'channels.history',
+  'channels.threads.history',
+  'channels.roster',
   'channels.post',
   'cockpit.list',
   'cockpit.get',
@@ -5275,21 +5280,281 @@ async function runGatewayWorkspaceTopics(
   }
 }
 
-async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
-  if (gatewayArgs[1] === 'post') {
-    const input = parseGatewayInputObject(
-      'channels.post',
-      gatewayArgs.slice(2)
-    );
-    const channelId =
-      typeof input['channelId'] === 'string' ? input['channelId'].trim() : '';
-    if (!channelId) {
-      gatewayInvalid(
-        'channels.post',
-        'channelId is required and must be a non-empty string',
-        { field: 'channelId' }
-      );
+type ChannelCliValueFlag =
+  | '--channel-id'
+  | '--thread-id'
+  | '--limit'
+  | '--before-seq'
+  | '--after-seq'
+  | '--input-json';
+
+/** Strict, command-local parser for the six stable channel gateway commands. */
+function parseChannelCliFlags(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: readonly string[],
+  valueFlags: readonly ChannelCliValueFlag[]
+): ReadonlyMap<ChannelCliValueFlag, string> {
+  const allowed = new Set<string>(['--json', ...valueFlags]);
+  const seen = new Set<string>();
+  const values = new Map<ChannelCliValueFlag, string>();
+  for (let index = 0; index < commandArgs.length; index += 1) {
+    const flag = commandArgs[index];
+    if (!flag || !allowed.has(flag)) {
+      gatewayInvalid(commandName, `unsupported ${commandName} argument`, {
+        argument: flag,
+        allowed: [...allowed],
+      });
     }
+    if (seen.has(flag)) {
+      gatewayInvalid(commandName, `duplicate ${flag} is not allowed`, {
+        argument: flag,
+      });
+    }
+    seen.add(flag);
+    if (flag === '--json') continue;
+    const value = commandArgs[index + 1];
+    if (!value || value.startsWith('--')) {
+      gatewayInvalid(commandName, `${flag} requires a value`, {
+        argument: flag,
+      });
+    }
+    values.set(flag as ChannelCliValueFlag, value);
+    index += 1;
+  }
+  return values;
+}
+
+function requiredChannelCliString(
+  commandName: RelayCliGatewayCommand,
+  values: ReadonlyMap<ChannelCliValueFlag, string>,
+  flag: '--channel-id' | '--thread-id'
+): string {
+  const value = values.get(flag)?.trim() ?? '';
+  if (!value) {
+    gatewayInvalid(commandName, `${flag} is required`, {
+      field: flag === '--channel-id' ? 'channelId' : 'threadId',
+    });
+  }
+  return value;
+}
+
+function validateChannelCliPagination(
+  commandName: 'channels.history' | 'channels.threads.history',
+  values: ReadonlyMap<ChannelCliValueFlag, string>
+): void {
+  if (values.has('--before-seq') && values.has('--after-seq')) {
+    gatewayInvalid(commandName, '--before-seq and --after-seq conflict', {
+      fields: ['beforeSeq', 'afterSeq'],
+    });
+  }
+  for (const flag of ['--limit', '--before-seq', '--after-seq'] as const) {
+    const value = values.get(flag);
+    if (value === undefined) continue;
+    const numeric = Number(value);
+    if (
+      !value.trim() ||
+      !Number.isSafeInteger(numeric) ||
+      numeric < (flag === '--limit' ? 1 : 0) ||
+      (flag === '--limit' && numeric > 200)
+    ) {
+      gatewayInvalid(commandName, `${flag} has an invalid value`, {
+        field: flag.slice(2),
+        value,
+      });
+    }
+  }
+}
+
+function validateChannelPostCliInput(input: Record<string, unknown>): void {
+  const allowed = new Set([
+    'channelId',
+    'text',
+    'format',
+    'parentMessageId',
+    'threadId',
+    'clientMessageId',
+  ]);
+  const undeclared = Object.keys(input).find((key) => !allowed.has(key));
+  if (undeclared) {
+    gatewayInvalid('channels.post', `${undeclared} is not declared`, {
+      field: undeclared,
+    });
+  }
+  if (
+    typeof input['channelId'] !== 'string' ||
+    input['channelId'].trim().length === 0
+  ) {
+    gatewayInvalid(
+      'channels.post',
+      'channelId is required and must be a non-empty string',
+      { field: 'channelId' }
+    );
+  }
+  if (typeof input['text'] !== 'string' || input['text'].trim().length === 0) {
+    gatewayInvalid('channels.post', 'text must be a non-empty string', {
+      field: 'text',
+    });
+  }
+  if (
+    input['format'] !== undefined &&
+    input['format'] !== 'text' &&
+    input['format'] !== 'markdown'
+  ) {
+    gatewayInvalid('channels.post', 'format must be text or markdown', {
+      field: 'format',
+    });
+  }
+  for (const field of ['parentMessageId', 'clientMessageId'] as const) {
+    if (
+      input[field] !== undefined &&
+      (typeof input[field] !== 'string' || input[field].length === 0)
+    ) {
+      gatewayInvalid('channels.post', `${field} must be a non-empty string`, {
+        field,
+      });
+    }
+  }
+  if (
+    input['threadId'] !== undefined &&
+    input['threadId'] !== null &&
+    (typeof input['threadId'] !== 'string' || input['threadId'].length === 0)
+  ) {
+    gatewayInvalid(
+      'channels.post',
+      'threadId must be a non-empty string or null',
+      { field: 'threadId' }
+    );
+  }
+}
+
+async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const channelArgs = gatewayArgs.slice(2);
+
+  if (subcommand === 'list') {
+    parseChannelCliFlags('channels.list', channelArgs, []);
+    const result = await gatewayHttpJson({
+      commandName: 'channels.list',
+      pathName: '/channels',
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.list', result), 0);
+  }
+
+  if (subcommand === 'get') {
+    const values = parseChannelCliFlags('channels.get', channelArgs, [
+      '--channel-id',
+    ]);
+    const channelId = requiredChannelCliString(
+      'channels.get',
+      values,
+      '--channel-id'
+    );
+    const result = await gatewayHttpJson({
+      commandName: 'channels.get',
+      pathName: `/channels/${encodeURIComponent(channelId)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.get', result), 0);
+  }
+
+  if (subcommand === 'history') {
+    const values = parseChannelCliFlags('channels.history', channelArgs, [
+      '--channel-id',
+      '--limit',
+      '--before-seq',
+      '--after-seq',
+    ]);
+    const channelId = requiredChannelCliString(
+      'channels.history',
+      values,
+      '--channel-id'
+    );
+    validateChannelCliPagination('channels.history', values);
+    const query = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--limit', 'limit'],
+      ['--before-seq', 'beforeSeq'],
+      ['--after-seq', 'afterSeq'],
+    ] as const) {
+      const value = values.get(flag);
+      if (value !== undefined) query.set(key, value);
+    }
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'channels.history',
+      pathName: `/channels/${encodeURIComponent(channelId)}/messages${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.history', result), 0);
+  }
+
+  if (subcommand === 'threads' && channelArgs[0] === 'history') {
+    const threadArgs = channelArgs.slice(1);
+    const values = parseChannelCliFlags(
+      'channels.threads.history',
+      threadArgs,
+      ['--channel-id', '--thread-id', '--limit', '--before-seq', '--after-seq']
+    );
+    const channelId = requiredChannelCliString(
+      'channels.threads.history',
+      values,
+      '--channel-id'
+    );
+    const threadId = requiredChannelCliString(
+      'channels.threads.history',
+      values,
+      '--thread-id'
+    );
+    validateChannelCliPagination('channels.threads.history', values);
+    const query = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--limit', 'limit'],
+      ['--before-seq', 'beforeSeq'],
+      ['--after-seq', 'afterSeq'],
+    ] as const) {
+      const value = values.get(flag);
+      if (value !== undefined) query.set(key, value);
+    }
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'channels.threads.history',
+      pathName: `/channels/${encodeURIComponent(channelId)}/threads/${encodeURIComponent(threadId)}${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.threads.history', result), 0);
+  }
+
+  if (subcommand === 'roster') {
+    const values = parseChannelCliFlags('channels.roster', channelArgs, [
+      '--channel-id',
+    ]);
+    const channelId = requiredChannelCliString(
+      'channels.roster',
+      values,
+      '--channel-id'
+    );
+    const result = await gatewayHttpJson({
+      commandName: 'channels.roster',
+      pathName: `/channels/${encodeURIComponent(channelId)}/roster`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.roster', result), 0);
+  }
+
+  if (subcommand === 'post') {
+    const values = parseChannelCliFlags('channels.post', channelArgs, [
+      '--input-json',
+    ]);
+    const inputJson = values.get('--input-json');
+    if (inputJson === undefined) {
+      gatewayInvalid('channels.post', '--input-json is required', {
+        field: 'inputJson',
+      });
+    }
+    const input = parseGatewayJson('channels.post', inputJson);
+    validateChannelPostCliInput(input);
+    const channelId = input['channelId'] as string;
     const body = { ...input };
     delete body['channelId'];
     const result = await gatewayHttpJson({
@@ -5301,7 +5566,7 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('channels.post', result), 0);
   }
-  gatewayInvalid('channels.post', 'unknown channels command', {
+  gatewayInvalid('channels.list', 'unknown channels command', {
     args: gatewayArgs,
   });
 }

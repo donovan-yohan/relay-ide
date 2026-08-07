@@ -1872,6 +1872,7 @@ async function main(): Promise<void> {
       repoIds?: string[];
       pathPrefixes?: string[];
       taskRefs?: string[];
+      channelIds?: string[];
     },
     expectedCommand?: CliGatewayActorCommand,
     options: { deferWorkContextScope?: boolean } = {}
@@ -1951,6 +1952,7 @@ async function main(): Promise<void> {
             repoIds?: string[];
             pathPrefixes?: string[];
             taskRefs?: string[];
+            channelIds?: string[];
           }
         | undefined;
       deferWorkContextScope?: boolean;
@@ -2463,6 +2465,15 @@ async function main(): Promise<void> {
       cliGatewayAuth: requireCliGatewayAuth,
       cliGatewayAuthForActorCommand: requireCliGatewayAuthForActorCommand,
       operatorHandshakeGrants: cliGatewayHandshakeGrantRegistry,
+      onOperatorHandshakeGrantRevoked: (input) => {
+        cliGatewayActorRegistry.revokeByGrantId(input.grantId, {
+          revokedBy: `grant:${input.grantId}`,
+          reason: input.reason ?? 'originating operator grant revoked',
+          ...(input.correlationId
+            ? { correlationId: input.correlationId }
+            : {}),
+        });
+      },
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
@@ -2561,6 +2572,35 @@ async function main(): Promise<void> {
   // channel conversation core (#1165): channels.* verbs over channel-chat.db.
   // Topic CRUD stays on the workspace-topics routes above; channels are a read/
   // write conversation surface keyed by workspace_topics id. Single write path.
+  //
+  // Channel-scope enforcement (Slice 0 of the MCP bridge): scoped actor
+  // credentials carry a `channelIds` dimension, and every channel read/write
+  // route derives the requested channel from the request and validates it
+  // against the actor's scope. Browser-authenticated (non-actor) requests keep
+  // their existing authority: `requireCliGatewayAuthForActorCommand` applies the
+  // scope only to actor-token requests.
+  const channelScopeFromParams = (
+    req: express.Request
+  ): { channelIds?: string[] } | undefined => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+    return id ? { channelIds: [id] } : undefined;
+  };
+  // `channels.list` has no channel id in the request, so the requested scope is
+  // the actor's OWN channel scope: validation confirms the credential is
+  // channel-scoped (fail-closed), and the router filters results to it.
+  const channelListScopeFromCredential = (
+    req: express.Request
+  ): { channelIds?: string[] } | undefined => {
+    const token = bearerActorToken(req);
+    if (!token) return undefined;
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return undefined;
+    const credential = cliGatewayActorRegistry.getCredential(
+      parts[1] as string
+    );
+    const channelIds = credential?.scope?.channelIds;
+    return channelIds && channelIds.length > 0 ? { channelIds } : undefined;
+  };
   app.use(
     createChannelChatRouter({
       store: channelMessageStore,
@@ -2587,8 +2627,25 @@ async function main(): Promise<void> {
         broadcastEventDelegate?.(type, data);
       },
       requireAuth: requireCliGatewayAuth,
-      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
-      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      requireReadActorAuth: (command, options) =>
+        requireCliGatewayAuthForActorCommand(command, {
+          ...(command === 'channels.list'
+            ? { scopeForRequest: channelListScopeFromCredential }
+            : command === 'channels.get' ||
+                command === 'channels.history' ||
+                command === 'channels.threads.history' ||
+                command === 'channels.roster'
+              ? { scopeForRequest: channelScopeFromParams }
+              : {}),
+          ...(options ?? {}),
+        }),
+      requireWriteActorAuth: (command, options) =>
+        requireCliGatewayAuthForActorCommand(command, {
+          ...(command === 'channels.post'
+            ? { scopeForRequest: channelScopeFromParams }
+            : {}),
+          ...(options ?? {}),
+        }),
     })
   );
   // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router
