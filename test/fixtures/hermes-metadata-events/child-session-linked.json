@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "eventId": "hmevt_556_child_codex",
+  "timestamp": "2026-05-17T08:03:00.000Z",
+  "source": {
+    "kind": "hermes-agent",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "runId": "run_1009",
+    "sessionId": "hermes_session_556"
+  },
+  "eventKind": "child-session.linked",
+  "status": "spawned",
+  "workContext": {
+    "workContextId": "wc:relay-ide:556",
+    "taskRefs": [
+      { "kind": "github-issue", "id": "556", "parentRef": "552", "status": "in-progress" },
+      { "kind": "kanban-task", "id": "t_5a0c16a8", "status": "running" }
+    ],
+    "anchors": {
+      "node": { "nodeId": "local", "kind": "local", "online": true },
+      "session": {
+        "nodeId": "local",
+        "sessionId": "hermes_session_556",
+        "tabKind": "agent",
+        "cwd": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion"
+      },
+      "repo": { "ownerRepo": "donovan-yohan/relay-ide" },
+      "worktree": { "branchName": "spike/556-hermes-event-ingestion" }
+    }
+  },
+  "actor": {
+    "kind": "agent",
+    "id": "kani-backend",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "sessionId": "hermes_session_556"
+  },
+  "parent": {
+    "sessionId": "hermes_session_556",
+    "runtime": "hermes",
+    "profile": "kani-backend",
+    "runId": "run_1009",
+    "nodeId": "local",
+    "cwd": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion",
+    "status": "started"
+  },
+  "childSessions": [
+    {
+      "sessionId": "codex_child_1",
+      "runtime": "codex",
+      "profile": "kani-backend",
+      "runId": "child_run_1",
+      "parentSessionId": "hermes_session_556",
+      "nodeId": "local",
+      "cwd": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion",
+      "status": "spawned"
+    }
+  ],
+  "artifacts": [],
+  "privacy": {
+    "classification": "internal",
+    "retention": "session",
+    "rawPayloadStored": false,
+    "redaction": { "redacted": true, "strategy": "summary", "classes": ["payload"] }
+  }
+}

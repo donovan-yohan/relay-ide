@@ -1,0 +1,87 @@
+name: Issue State — Commit Message Scanner
+
+on:
+  push:
+    branches-ignore:
+      - master
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  scan-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract issue refs from commits
+        id: refs
+        run: |
+          # Get all commit messages on this branch since the default branch
+          DEFAULT_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo nightly)
+          COMMITS=$(git log --format=%B origin/${DEFAULT_BRANCH}..HEAD 2>/dev/null || git log --format=%B -20)
+          # Extract #NUM references
+          REFS=$(echo "$COMMITS" | grep -oE '#[0-9]+' | sort -u | tr '\n' ' ')
+          echo "refs=$REFS" >> "$GITHUB_OUTPUT"
+          echo "Found refs: $REFS"
+
+      - name: Transition issues to in-progress
+        if: steps.refs.outputs.refs != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const refs = '${{ steps.refs.outputs.refs }}'.trim().split(/\s+/).filter(Boolean);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            for (const ref of refs) {
+              const issueNumber = parseInt(ref.replace('#', ''), 10);
+              if (!issueNumber) continue;
+
+              try {
+                const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+                const currentLabels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+
+                const hasBacklog = currentLabels.includes('backlog');
+                const hasTodo = currentLabels.includes('todo');
+                const hasInProgress = currentLabels.includes('in-progress');
+                const hasDone = currentLabels.includes('done');
+
+                if (hasDone) {
+                  console.log(`Issue #${issueNumber} is already done — skipping`);
+                  continue;
+                }
+
+                if (hasInProgress) {
+                  console.log(`Issue #${issueNumber} already in-progress — no-op`);
+                  continue;
+                }
+
+                const labelsToRemove = [];
+                if (hasBacklog) labelsToRemove.push('backlog');
+                if (hasTodo) labelsToRemove.push('todo');
+
+                if (labelsToRemove.length > 0) {
+                  await github.rest.issues.removeLabels({
+                    owner, repo, issue_number: issueNumber,
+                    names: labelsToRemove
+                  });
+                  console.log(`Removed ${labelsToRemove.join(', ')} from #${issueNumber}`);
+                }
+
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: issueNumber,
+                  labels: ['in-progress']
+                });
+                console.log(`Added in-progress to #${issueNumber}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  console.log(`Issue #${issueNumber} not found — skipping`);
+                } else {
+                  console.error(`Failed to update #${issueNumber}:`, err.message);
+                }
+              }
+            }

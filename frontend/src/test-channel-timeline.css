@@ -1,0 +1,32 @@
+.ch-scroll-fixture {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.ch-scroll-fixture__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: none;
+  padding: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ch-scroll-fixture__controls button {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.ch-scroll-fixture__stage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}

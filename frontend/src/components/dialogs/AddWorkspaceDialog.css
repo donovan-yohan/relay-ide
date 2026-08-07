@@ -1,0 +1,106 @@
+.add-workspace-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.add-workspace-selected-count {
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.add-workspace-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.add-workspace-body-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.add-workspace-dialog-desc {
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.add-workspace-error-msg {
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--status-error);
+  font-family: var(--font-mono, monospace);
+  margin: 0;
+}
+
+.add-workspace-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.add-workspace-dialog-label {
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.add-workspace-dialog-select,
+.add-workspace-dialog-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  font-size: var(--font-size-base);
+  font-family: var(--font-mono);
+  padding: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.add-workspace-dialog-select:disabled,
+.add-workspace-dialog-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.add-workspace-dialog-note {
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  margin: 0;
+}
+
+.add-workspace-partial-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-workspace-partial-errors-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-workspace-save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.add-workspace-checkbox {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.add-workspace-save-label {
+  cursor: help;
+}

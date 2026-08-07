@@ -1,0 +1,17 @@
+{
+  "name": "fallback-unknown-type",
+  "description": "Unrecognized inputType falls back to diff-based processing",
+  "device": "android-chrome-gboard",
+  "events": [
+    {
+      "inputType": "insertFromYank",
+      "data": null,
+      "rangeStart": null,
+      "rangeEnd": null,
+      "valueBefore": "hllo",
+      "cursorBefore": 1,
+      "valueAfter": "hello"
+    }
+  ],
+  "expectedPayload": "\u007f\u007f\u007fello"
+}

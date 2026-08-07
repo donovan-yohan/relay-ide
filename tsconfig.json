@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "outDir": "dist/",
+    "rootDir": "."
+  },
+  "include": ["server/**/*.ts", "bin/**/*.ts", "scripts/**/*.ts", "shared/**/*.ts"],
+  "exclude": ["public/", "frontend/", "test/", "node_modules/", "dist/"]
+}

@@ -1,0 +1,48 @@
+.pin-gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg);
+  padding: 1rem;
+}
+
+.pin-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+
+.pin-container h1 {
+  font-size: var(--font-size-lg);
+  color: var(--text);
+}
+
+.pin-container p {
+  color: var(--text-muted);
+  font-size: var(--font-size-base);
+}
+
+.error {
+  color: var(--accent);
+  font-size: var(--font-size-base);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: -0.25rem;
+}
+
+code {
+  font-family: var(--font-mono, monospace);
+  background: var(--surface);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 0.72rem;
+}

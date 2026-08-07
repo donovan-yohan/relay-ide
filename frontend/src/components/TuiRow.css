@@ -1,0 +1,41 @@
+.tui-row {
+  display: flex;
+  align-items: center;
+  min-height: var(--row-min-height-override, var(--row-min-height, 44px));
+  padding-left: var(--row-padding-x, var(--sidebar-padding-x, 16px));
+  padding-right: var(--row-padding-x, var(--sidebar-padding-x, 16px));
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+.tui-row--interactive {
+  cursor: pointer;
+  transition: background 120ms ease-out;
+}
+
+.tui-row--interactive:hover {
+  background: var(--surface-hover);
+}
+
+.tui-row__icon-slot {
+  flex-shrink: 0;
+  width: var(--icon-slot-width, 24px);
+  display: flex;
+  align-items: center;
+}
+
+.tui-row__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.tui-row__action-slot {
+  flex-shrink: 0;
+  width: var(--action-slot-width, 36px);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}

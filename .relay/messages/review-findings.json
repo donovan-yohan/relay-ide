@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "relay.review.findings",
+  "name": "Review findings",
+  "description": "Repo-local WorkContext message example for recording Relay code review findings; not a universal Relay review schema.",
+  "kind": "review-findings",
+  "payloadSchema": "relay.review.findings.v1",
+  "mediaType": "application/json",
+  "encoding": "json",
+  "bodyGuide": {
+    "required": ["scope", "exactHead", "verdict", "findings", "scopeResult"],
+    "fields": {
+      "scope": "Relay issue, PR, diff, or code area reviewed.",
+      "exactHead": "Branch and commit SHA reviewed so stale-head approvals are obvious.",
+      "verdict": "Reviewer disposition such as approved, blocked, or needs-follow-up.",
+      "findings": "Evidence-backed findings with severity, file/line when available, and recommended fix.",
+      "scopeResult": "Whether the implementation satisfies, partially satisfies, or misses the acceptance scope.",
+      "followUps": "Non-blocking follow-up work that should survive the current PR, if any."
+    }
+  },
+  "example": {
+    "summary": "Review findings for PR #123 at abc1234: blocked on missing QA evidence template",
+    "payload": {
+      "body": {
+        "scope": {
+          "issue": "950",
+          "pr": "123"
+        },
+        "exactHead": {
+          "branch": "issue-950-repo-message-templates",
+          "sha": "abc1234"
+        },
+        "verdict": "blocked",
+        "findings": [
+          {
+            "severity": "blocking",
+            "file": ".relay/messages/qa-evidence.json",
+            "issue": "QA evidence needs its own repo-local template instead of reusing a QA handoff template.",
+            "recommendedChange": "Add a qa-evidence template with exact-head, commands, scenario evidence, status, and blockers fields."
+          }
+        ],
+        "scopeResult": "partial",
+        "followUps": []
+      }
+    },
+    "refs": {
+      "external": [{ "kind": "github-pr", "id": "123" }]
+    }
+  },
+  "tags": ["review", "findings", "relay-repo", "example"]
+}

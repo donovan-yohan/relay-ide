@@ -1,0 +1,211 @@
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { beforeAll, describe, expect, it } from 'vitest';
+
+import { commandSpec } from '../../shared/cli-gateway-contract.js';
+
+const RELAY_BIN = path.resolve('dist/bin/relay-ide.js');
+const FETCH_PRELOAD = pathToFileURL(
+  path.resolve('test/fixtures/cli-gateway/mock-fetch.mjs')
+).href;
+
+function runCli(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{
+  envelope: Record<string, unknown>;
+  request: Record<string, unknown>;
+}> {
+  const captureDir = mkdtempSync(path.join(tmpdir(), 'relay-cli-fetch-'));
+  const capturePath = path.join(captureDir, 'request.json');
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [RELAY_BIN, ...args],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          NODE_OPTIONS: `--import=${FETCH_PRELOAD}`,
+          RELAY_TEST_FETCH_CAPTURE: capturePath,
+        },
+        timeout: 10_000,
+      },
+      (error, stdout, stderr) => {
+        try {
+          if (error) {
+            reject(
+              new Error(
+                `CLI failed (${String(error.code)}): ${stderr || stdout}`
+              )
+            );
+            return;
+          }
+          resolve({
+            envelope: JSON.parse(stdout) as Record<string, unknown>,
+            request: JSON.parse(readFileSync(capturePath, 'utf8')) as Record<
+              string,
+              unknown
+            >,
+          });
+        } finally {
+          rmSync(captureDir, { recursive: true, force: true });
+        }
+      }
+    );
+  });
+}
+
+beforeAll(() => {
+  execFileSync('npm', ['run', 'build:server'], {
+    cwd: path.resolve('.'),
+    env: process.env,
+    stdio: 'inherit',
+  });
+}, 60_000);
+
+describe('channels.post CLI gateway command', () => {
+  it('declares the typed channel message input and context write capability', () => {
+    const spec = commandSpec('channels.post');
+
+    expect(spec.cli).toEqual([
+      'relay-ide',
+      'v1',
+      'channels',
+      'post',
+      '--input-json',
+      '<json>',
+      '--json',
+    ]);
+    expect(spec.capabilityHints).toEqual(['context:write']);
+    expect(spec.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['channelId', 'text'],
+      properties: {
+        channelId: { type: 'string' },
+        text: { type: 'string' },
+        format: { enum: ['markdown', 'text'] },
+        parentMessageId: { type: 'string' },
+        threadId: { type: ['string', 'null'] },
+        clientMessageId: { type: 'string' },
+        parts: { type: 'array' },
+      },
+    });
+    expect(spec.inputSchema.properties).not.toHaveProperty('sender');
+    expect(spec.inputSchema.properties).not.toHaveProperty('source');
+  });
+
+  it('uses the actor token lane and forwards the route body exactly', async () => {
+    const input = {
+      channelId: 'product/main',
+      text: 'Worker one is ready.',
+      format: 'markdown',
+      parentMessageId: 'chm:root',
+      threadId: 'chm:root',
+      clientMessageId: 'orchestrator-update-1',
+      parts: [
+        {
+          type: 'image',
+          id: 'cha:diagram',
+          mime: 'image/png',
+          w: 640,
+          h: 480,
+          bytes: 1024,
+          alt: 'Worker dependency diagram',
+        },
+      ],
+    };
+
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'channels',
+        'post',
+        '--input-json',
+        JSON.stringify(input),
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'channels.post',
+      data: { message: { id: 'chm:test' } },
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/channels/product%2Fmain/messages',
+      body: {
+        text: input.text,
+        format: input.format,
+        parentMessageId: input.parentMessageId,
+        threadId: input.threadId,
+        clientMessageId: input.clientMessageId,
+        parts: input.parts,
+      },
+      headers: {
+        Authorization: 'Bearer relay-sac-v1.test-actor.[REDACTED]',
+        'Content-Type': 'application/json',
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+        'x-relay-capabilities': 'context:write',
+      },
+    });
+    expect(request.body).not.toHaveProperty('channelId');
+  });
+
+  it('allows the actor token lane to create terminal sessions', async () => {
+    const input = {
+      cwd: '/repo',
+      type: 'terminal',
+      mode: 'pty',
+    };
+
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'sessions',
+        'create',
+        '--input-json',
+        JSON.stringify(input),
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'sessions.create',
+      data: { id: 'worker-session' },
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/sessions',
+      body: input,
+      headers: {
+        Authorization: 'Bearer relay-sac-v1.test-actor.[REDACTED]',
+        'Content-Type': 'application/json',
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'sessions.create',
+        'x-relay-capabilities': 'session:create:terminal',
+      },
+    });
+  });
+});

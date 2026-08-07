@@ -1,0 +1,11 @@
+## meta
+rule: cookie-header
+module: diagnostics-bundle
+redactor: redactText
+description: Cookie header values get scrubbed regardless of name
+secrets: relay_sid=FAKE_SESSION_aaaaaaaaaaaa; csrf=FAKE_CSRF_bbbbbbbb
+preserves: GET / HTTP/1.1,host: hub.example.test
+## input
+GET / HTTP/1.1
+host: hub.example.test
+Cookie: relay_sid=FAKE_SESSION_aaaaaaaaaaaa; csrf=FAKE_CSRF_bbbbbbbb

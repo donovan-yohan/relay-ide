@@ -1,0 +1,12 @@
+{
+  "host": "0.0.0.0",
+  "port": 3456,
+  "cookieTTL": "24h",
+  "rootDirs": ["/Users/you/code/work", "/Users/you/code/personal"],
+  "claudeCommand": "claude",
+  "claudeArgs": [],
+  "defaultAgent": "claude",
+  "defaultContinue": true,
+  "defaultYolo": false,
+  "terminalBackend": "relay-pty"
+}

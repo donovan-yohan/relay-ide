@@ -1,0 +1,43 @@
+{
+  "version": "1",
+  "riskTierRules": {
+    "critical": ["server/auth.js", "server/ws.js"],
+    "high": [
+      "server/index.js",
+      "server/sessions.js",
+      "server/config.js",
+      "bin/**"
+    ],
+    "medium": ["public/**"],
+    "low": ["**"]
+  },
+  "mergePolicy": {
+    "critical": {
+      "requiredChecks": ["risk-policy-gate", "code-review-agent"],
+      "requireHumanApproval": true,
+      "maxRemediationAttempts": 1
+    },
+    "high": {
+      "requiredChecks": ["risk-policy-gate", "code-review-agent"],
+      "requireHumanApproval": true,
+      "maxRemediationAttempts": 2
+    },
+    "medium": {
+      "requiredChecks": ["risk-policy-gate", "code-review-agent"],
+      "requireHumanApproval": false,
+      "maxRemediationAttempts": 3
+    },
+    "low": {
+      "requiredChecks": ["risk-policy-gate"],
+      "requireHumanApproval": false,
+      "maxRemediationAttempts": 3
+    }
+  },
+  "reviewAgent": {
+    "provider": "default",
+    "config": {}
+  },
+  "docsDriftRules": {
+    "requireUpdateWith": {}
+  }
+}

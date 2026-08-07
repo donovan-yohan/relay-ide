@@ -1,0 +1,214 @@
+/* Codex-style primary entry point: a single message box floated into the
+   vertical center of the main pane. Panel is centered in the void; content
+   stays left-aligned (TUI-native, not a centered consumer hero — DESIGN.md). */
+.topic-composer {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 44vh;
+  padding: 24px 16px;
+  font-family: var(--font-mono);
+}
+
+.topic-composer__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 620px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.topic-composer__title {
+  color: var(--text);
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.topic-composer__form {
+  display: grid;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.topic-composer__ta {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.topic-composer__ta:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.topic-composer__provider-row {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) minmax(160px, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.topic-composer__provider-label,
+.topic-composer__provider-status {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.topic-composer__provider-select {
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+}
+
+.topic-composer__provider-select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.topic-composer__provider-status {
+  overflow-wrap: anywhere;
+}
+
+.topic-composer__provider-status--error {
+  color: var(--status-error);
+}
+
+.topic-composer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topic-composer__context {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.topic-composer__advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-height: 32px;
+  padding: 4px 8px 4px 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.topic-composer__advanced-toggle:hover {
+  color: var(--accent);
+}
+
+.topic-composer__advanced {
+  display: grid;
+  gap: 8px;
+  font-size: var(--font-size-xs);
+}
+
+.topic-composer__advanced label {
+  display: grid;
+  gap: 3px;
+}
+
+.topic-composer__advanced input,
+.topic-composer__advanced select {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.topic-composer__preview,
+.topic-composer__failure {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  font-size: var(--font-size-xs);
+}
+
+.topic-composer__preview {
+  color: var(--text-muted);
+}
+
+.topic-composer__failure {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.topic-composer__advanced-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.topic-composer__footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.topic-composer__hint {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 640px) {
+  .topic-composer {
+    align-items: stretch;
+    min-height: 0;
+    padding: 8px 4px;
+  }
+
+  .topic-composer__panel {
+    max-width: none;
+    padding: 8px;
+  }
+
+  .topic-composer__ta {
+    padding: 6px 4px;
+  }
+
+  .topic-composer__provider-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .topic-composer__provider-select {
+    width: 100%;
+  }
+}

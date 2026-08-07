@@ -1,0 +1,122 @@
+/* standalone tree rows — duplicated .fb-node tokens from file-tree.css to
+   avoid coupling to the sidebar's surrounding selectors */
+
+.aft {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+}
+
+.aft .fb-node {
+  display: grid;
+  grid-template-columns: 12px 14px 1fr;
+  align-items: center;
+  column-gap: 4px;
+  padding: 1px 8px 1px 0;
+  font-size: 0.72rem;
+  color: var(--text);
+  cursor: pointer;
+  height: 20px;
+  position: relative;
+  user-select: none;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+}
+.aft .fb-node:hover {
+  background: var(--surface-hover);
+}
+.aft .fb-node[aria-selected='true'] {
+  background: var(--surface-hover);
+}
+.aft .fb-node[aria-selected='true'] .fb-node__name {
+  color: var(--accent);
+}
+
+.aft .fb-node .chev {
+  font-size: 0.55rem;
+  color: var(--text-muted);
+  text-align: center;
+  opacity: 0.7;
+  line-height: 1;
+}
+.aft .fb-node .chev.empty {
+  visibility: hidden;
+}
+.aft .fb-node .icon {
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.62rem;
+  text-align: center;
+  line-height: 1;
+}
+.aft .fb-node__name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1;
+}
+
+.aft .fb-node[data-d='0'] {
+  padding-left: 6px;
+}
+.aft .fb-node[data-d='1'] {
+  padding-left: 18px;
+}
+.aft .fb-node[data-d='2'] {
+  padding-left: 30px;
+}
+.aft .fb-node[data-d='3'] {
+  padding-left: 42px;
+}
+.aft .fb-node[data-d='4'] {
+  padding-left: 54px;
+}
+.aft .fb-node[data-d='5'] {
+  padding-left: 66px;
+}
+
+.aft .icon--folder {
+  color: var(--text-muted);
+}
+.aft .icon--folder-open {
+  color: var(--accent);
+}
+.aft .icon--ts {
+  color: #3b82f6;
+}
+.aft .icon--tsx {
+  color: #60a5fa;
+}
+.aft .icon--css {
+  color: #c084fc;
+}
+.aft .icon--md {
+  color: #94a3b8;
+}
+.aft .icon--json {
+  color: #fbbf24;
+}
+.aft .icon--rs {
+  color: #fb923c;
+}
+.aft .icon--lock {
+  color: var(--text-muted);
+}
+.aft .icon--svg {
+  color: #f472b6;
+}
+.aft .icon--yml {
+  color: #94a3b8;
+}
+.aft .icon--toml {
+  color: #94a3b8;
+}
+
+.fb__empty {
+  padding: 12px 10px;
+  color: var(--text-muted);
+  font-size: 0.66rem;
+}

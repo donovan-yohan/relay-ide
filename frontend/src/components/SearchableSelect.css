@@ -1,0 +1,81 @@
+.searchable-select {
+  position: relative;
+}
+
+.ss-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s;
+}
+
+.ss-trigger:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.ss-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.ss-placeholder {
+  color: var(--text-muted);
+}
+
+.ss-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.ss-input {
+  width: 100%;
+  padding: 8px 8px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.ss-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.ss-option--reset {
+  color: var(--text-muted);
+}
+
+.ss-selected {
+  color: var(--accent);
+}
+
+.ss-no-results {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ss-active .fzf-cursor {
+  transform: translateX(0);
+  opacity: 1;
+}

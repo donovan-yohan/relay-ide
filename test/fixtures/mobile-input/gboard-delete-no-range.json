@@ -1,0 +1,17 @@
+{
+  "name": "gboard-delete-no-range",
+  "description": "deleteContentBackward without getTargetRanges — falls back to diff",
+  "device": "android-chrome-gboard",
+  "events": [
+    {
+      "inputType": "deleteContentBackward",
+      "data": null,
+      "rangeStart": null,
+      "rangeEnd": null,
+      "valueBefore": "hello",
+      "cursorBefore": 5,
+      "valueAfter": "hell"
+    }
+  ],
+  "expectedPayload": "\u007f"
+}

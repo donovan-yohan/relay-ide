@@ -1,0 +1,222 @@
+.data-table-wrapper {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+/* --- Column headers --- */
+.data-table-header {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+}
+
+.data-table-th {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 8px 8px;
+  transition: color 0.12s;
+  user-select: none;
+}
+
+.data-table-th:hover {
+  color: var(--text);
+}
+
+.sort-trigger {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: inherit;
+}
+
+.sort-trigger:hover {
+  color: var(--text);
+}
+
+.sort-indicator {
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+}
+
+/* --- Scroll wrapper --- */
+.scroll-wrapper {
+  position: relative;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.scroll-container {
+  overflow-y: auto;
+  height: 100%;
+  outline: none;
+}
+
+.scroll-container:focus-visible {
+  outline: none;
+}
+
+.scroll-fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(transparent, var(--bg));
+  pointer-events: none;
+}
+
+/* --- Rows --- */
+.data-table-row {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+  outline: none;
+}
+
+.data-table-row:last-child {
+  border-bottom: none;
+}
+
+.data-table-row.focused {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-hover);
+}
+
+/* --- Skeleton --- */
+.skeleton-row {
+  display: flex;
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--border);
+  min-height: 40px;
+  align-items: center;
+}
+
+.skeleton-row:last-child {
+  border-bottom: none;
+}
+
+.skeleton-cell {
+  padding: 0 8px;
+}
+
+.skeleton-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+}
+
+/* --- State messages --- */
+.state-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+.state-message--error {
+  color: var(--status-error);
+}
+
+.clear-filters-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.clear-filters-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- Group headers --- */
+.group-header {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+}
+
+.group-header:hover {
+  background: var(--surface-hover);
+}
+
+.group-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.group-chevron {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.group-chevron.collapsed {
+  transform: rotate(0deg);
+}
+
+.group-chevron:not(.collapsed) {
+  transform: rotate(90deg);
+}
+
+.group-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.group-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: var(--border);
+  padding: 2px 4px;
+  border-radius: 0;
+  opacity: 0.8;
+}
+
+.skeleton-line {
+  background: var(--border);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+/* --- Mobile card mode --- */
+@media (max-width: 600px) {
+  .data-table-row {
+    display: block;
+    min-height: 44px;
+  }
+}
