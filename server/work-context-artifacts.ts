@@ -21,6 +21,7 @@ import {
   type AgentViewManifest,
   type ViewArtifactPackage,
 } from '../shared/agent-view-artifact.js';
+import { stableJsonEquals } from '../shared/stable-json.js';
 import {
   ARTIFACT_KINDS,
   type ArtifactKind,
@@ -275,6 +276,12 @@ export class WorkContextArtifactStoreError extends Error {
   }
 }
 
+function isSqliteBusyError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false;
+  const code = String((err as { code?: unknown }).code ?? '');
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
+}
+
 export function initWorkContextArtifactStore(
   configDir: string
 ): WorkContextArtifactStore {
@@ -287,7 +294,31 @@ export function initWorkContextArtifactStore(
 export function createWorkContextArtifactStore(input: {
   dbPath: string;
   payloadRoot?: string;
+  busyTimeoutMs?: number;
 }): WorkContextArtifactStore {
+  try {
+    return createWorkContextArtifactStoreUnsafe(input);
+  } catch (err) {
+    if (isSqliteBusyError(err)) {
+      throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+    }
+    throw err;
+  }
+}
+
+function createWorkContextArtifactStoreUnsafe(input: {
+  dbPath: string;
+  payloadRoot?: string;
+  busyTimeoutMs?: number;
+}): WorkContextArtifactStore {
+  if (
+    input.busyTimeoutMs !== undefined &&
+    (!Number.isInteger(input.busyTimeoutMs) ||
+      input.busyTimeoutMs < 1 ||
+      input.busyTimeoutMs > 5000)
+  ) {
+    throw new WorkContextArtifactStoreError(400, 'invalid_busy_timeout');
+  }
   mkdirSync(path.dirname(input.dbPath), { recursive: true });
   const payloadRoot =
     input.payloadRoot ??
@@ -295,6 +326,7 @@ export function createWorkContextArtifactStore(input: {
   mkdirSync(payloadRoot, { recursive: true });
 
   const db = new Database(input.dbPath);
+  db.pragma(`busy_timeout = ${input.busyTimeoutMs ?? 5000}`);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.exec(
@@ -354,7 +386,8 @@ export function createWorkContextArtifactStore(input: {
 
   function mustValidateSupersedes(
     id: string | undefined,
-    workContextId: WorkContextId
+    workContextId: WorkContextId,
+    expectedPayloadKind?: WorkContextArtifactPayloadKind
   ): void {
     if (!id) return;
     const row = selectById.get(id) as WorkContextArtifactRow | undefined;
@@ -369,6 +402,94 @@ export function createWorkContextArtifactStore(input: {
         400,
         'superseded_artifact_scope_mismatch'
       );
+    }
+    if (expectedPayloadKind && row.payload_kind !== expectedPayloadKind) {
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_payload_kind_mismatch'
+      );
+    }
+  }
+
+  function readStoredPipelineArtifact(
+    row: WorkContextArtifactRow
+  ): PipelineHandoffArtifact {
+    if (row.payload_kind !== 'pipeline-handoff-artifact') {
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_payload_kind_mismatch'
+      );
+    }
+    const raw = readFileSync(row.payload_path, 'utf8');
+    assertPayloadSha256(raw, row);
+    const payload = JSON.parse(raw) as unknown;
+    if (!isPipelineHandoffArtifact(payload)) {
+      throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
+    }
+    return payload;
+  }
+
+  function immutableHandoffRoot(artifact: PipelineHandoffArtifact): unknown {
+    return {
+      schemaVersion: artifact.schemaVersion,
+      title: artifact.title,
+      createdAt: artifact.createdAt,
+      scope: artifact.scope,
+      head: artifact.head,
+    };
+  }
+
+  function mustValidatePipelineSupersedes(
+    id: string | undefined,
+    workContextId: WorkContextId,
+    successor: PipelineHandoffArtifact
+  ): void {
+    if (!id) return;
+    const row = selectById.get(id) as WorkContextArtifactRow | undefined;
+    if (!row) {
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_not_found'
+      );
+    }
+    if (row.work_context_id !== workContextId) {
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_scope_mismatch'
+      );
+    }
+    const predecessor = readStoredPipelineArtifact(row);
+    if (predecessor.head.headSha !== successor.head.headSha) {
+      throw new WorkContextArtifactStoreError(
+        409,
+        'artifact_supersedes_stale_head'
+      );
+    }
+    if (
+      !stableJsonEquals(
+        immutableHandoffRoot(predecessor),
+        immutableHandoffRoot(successor)
+      ) ||
+      successor.stages.length <= predecessor.stages.length ||
+      !predecessor.stages.every((stage, index) =>
+        stableJsonEquals(stage, successor.stages[index])
+      )
+    ) {
+      throw new WorkContextArtifactStoreError(
+        400,
+        'artifact_supersedes_append_only_violation'
+      );
+    }
+    const existingChild = db
+      .prepare(
+        `SELECT id FROM work_context_artifacts
+         WHERE supersedes_artifact_id = ?
+           AND payload_kind = 'pipeline-handoff-artifact'
+         LIMIT 1`
+      )
+      .get(id) as { id: string } | undefined;
+    if (existingChild) {
+      throw new WorkContextArtifactStoreError(409, 'artifact_supersedes_fork');
     }
   }
 
@@ -419,7 +540,27 @@ export function createWorkContextArtifactStore(input: {
         assertNonEmptyString(storeInput.title, 'title');
       if (storeInput.summary !== undefined)
         assertNonEmptyString(storeInput.summary, 'summary');
-      const validation = validatePipelineHandoffArtifact(storeInput.artifact);
+      const payloadSupersedesArtifactId =
+        storeInput.artifact.supersedesArtifactId;
+      if (
+        storeInput.supersedesArtifactId &&
+        payloadSupersedesArtifactId &&
+        storeInput.supersedesArtifactId !== payloadSupersedesArtifactId
+      ) {
+        throw new WorkContextArtifactStoreError(
+          400,
+          'artifact_supersedes_mismatch'
+        );
+      }
+      const supersedesArtifactId =
+        payloadSupersedesArtifactId ?? storeInput.supersedesArtifactId;
+      // Normalize legacy request-only callers so payload and index metadata have
+      // one canonical predecessor identity on every newly stored row.
+      const artifact: PipelineHandoffArtifact =
+        supersedesArtifactId && !payloadSupersedesArtifactId
+          ? { ...storeInput.artifact, supersedesArtifactId }
+          : storeInput.artifact;
+      const validation = validatePipelineHandoffArtifact(artifact);
       if (!validation.valid) {
         throw new WorkContextArtifactStoreError(
           400,
@@ -429,36 +570,23 @@ export function createWorkContextArtifactStore(input: {
       }
       if (storeInput.id !== undefined) {
         assertNonEmptyString(storeInput.id, 'id');
-        if (
-          storeInput.artifact.id !== undefined &&
-          storeInput.id !== storeInput.artifact.id
-        ) {
+        if (artifact.id !== undefined && storeInput.id !== artifact.id) {
           throw new WorkContextArtifactStoreError(400, 'artifact_id_mismatch');
         }
       }
       const artifactId =
-        storeInput.id ?? storeInput.artifact.id ?? `artifact:${randomUUID()}`;
-      mustNotAlreadyExist(artifactId);
-      mustValidateSupersedes(
-        storeInput.supersedesArtifactId,
-        storeInput.workContextId
-      );
-
+        storeInput.id ?? artifact.id ?? `artifact:${randomUUID()}`;
       const taskRef = storeInput.taskRef ?? firstTaskRef(storeInput.artifact);
       if (!taskRef) {
         throw new WorkContextArtifactStoreError(400, 'task_ref_required');
       }
       assertValidTaskRef(taskRef);
-      const taskRefs = dedupeTaskRefs([
-        taskRef,
-        ...storeInput.artifact.scope.taskRefs,
-      ]);
+      const taskRefs = dedupeTaskRefs([taskRef, ...artifact.scope.taskRefs]);
       for (const indexedTaskRef of taskRefs) assertValidTaskRef(indexedTaskRef);
       const now = new Date().toISOString();
-      const capturedAt =
-        storeInput.capturedAt ?? storeInput.artifact.head.capturedAt;
+      const capturedAt = storeInput.capturedAt ?? artifact.head.capturedAt;
       assertIsoTimestamp(capturedAt, 'capturedAt');
-      const payloadJson = JSON.stringify(storeInput.artifact, null, 2);
+      const payloadJson = JSON.stringify(artifact, null, 2);
       const payloadSha256 = sha256Hex(payloadJson);
       const payloadPath = writePayloadFile(payloadJson, payloadSha256);
       const payloadBytes = Buffer.byteLength(payloadJson, 'utf8');
@@ -472,8 +600,8 @@ export function createWorkContextArtifactStore(input: {
           ? { provenanceActorId: storeInput.provenanceActorId }
           : {}),
         kind: storeInput.kind ?? 'report',
-        title: storeInput.title ?? storeInput.artifact.title,
-        summary: storeInput.summary ?? storeInput.artifact.scope.summary,
+        title: storeInput.title ?? artifact.title,
+        summary: storeInput.summary ?? artifact.scope.summary,
         visibility: storeInput.visibility ?? DEFAULT_VISIBILITY,
         createdAt: now,
         updatedAt: now,
@@ -482,19 +610,23 @@ export function createWorkContextArtifactStore(input: {
         payloadMediaType: DEFAULT_PAYLOAD_MEDIA_TYPE,
         payloadSha256,
         payloadBytes,
-        ...(storeInput.artifact.head.pr?.number
-          ? { prNumber: storeInput.artifact.head.pr.number }
+        ...(artifact.head.pr?.number
+          ? { prNumber: artifact.head.pr.number }
           : {}),
-        headSha: storeInput.artifact.head.headSha,
-        baseName: storeInput.artifact.head.base.name,
-        ...(storeInput.artifact.head.branch?.name
-          ? { branchName: storeInput.artifact.head.branch.name }
+        headSha: artifact.head.headSha,
+        baseName: artifact.head.base.name,
+        ...(artifact.head.branch?.name
+          ? { branchName: artifact.head.branch.name }
           : {}),
-        ...(storeInput.supersedesArtifactId
-          ? { supersedesArtifactId: storeInput.supersedesArtifactId }
-          : {}),
+        ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
       };
-      db.transaction(() => {
+      const persist = db.transaction(() => {
+        mustNotAlreadyExist(artifactId);
+        mustValidatePipelineSupersedes(
+          supersedesArtifactId,
+          storeInput.workContextId,
+          artifact
+        );
         insertArtifact.run({
           id: metadata.id,
           workContextId: metadata.workContextId,
@@ -534,7 +666,15 @@ export function createWorkContextArtifactStore(input: {
             taskRefStatus: indexedTaskRef.status ?? null,
           });
         }
-      })();
+      });
+      try {
+        persist.immediate();
+      } catch (err) {
+        if (isSqliteBusyError(err)) {
+          throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+        }
+        throw err;
+      }
       return { metadata, payloadPath };
     },
 
@@ -569,12 +709,10 @@ export function createWorkContextArtifactStore(input: {
       }
       const artifactId =
         storeInput.id ?? storeInput.viewArtifact.manifest.revision.id;
-      mustNotAlreadyExist(artifactId);
       const manifestSupersedesArtifactId =
         storeInput.viewArtifact.manifest.revision.supersedes;
       const supersedesArtifactId =
         storeInput.supersedesArtifactId ?? manifestSupersedesArtifactId;
-      mustValidateSupersedes(supersedesArtifactId, storeInput.workContextId);
       if (
         storeInput.supersedesArtifactId &&
         manifestSupersedesArtifactId &&
@@ -641,7 +779,13 @@ export function createWorkContextArtifactStore(input: {
         payloadBytes,
         ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
       };
-      db.transaction(() => {
+      const persist = db.transaction(() => {
+        mustNotAlreadyExist(artifactId);
+        mustValidateSupersedes(
+          supersedesArtifactId,
+          storeInput.workContextId,
+          'agent-view-artifact'
+        );
         insertArtifact.run({
           id: metadata.id,
           workContextId: metadata.workContextId,
@@ -681,7 +825,15 @@ export function createWorkContextArtifactStore(input: {
             taskRefStatus: indexedTaskRef.status ?? null,
           });
         }
-      })();
+      });
+      try {
+        persist.immediate();
+      } catch (err) {
+        if (isSqliteBusyError(err)) {
+          throw new WorkContextArtifactStoreError(503, 'artifact_store_busy');
+        }
+        throw err;
+      }
       return { metadata, payloadPath };
     },
 
@@ -792,6 +944,7 @@ export function createWorkContextArtifactStore(input: {
           FROM work_context_artifacts newer
           WHERE newer.supersedes_artifact_id = work_context_artifacts.id
             AND newer.work_context_id = work_context_artifacts.work_context_id
+            AND newer.payload_kind = work_context_artifacts.payload_kind
         )`);
       }
       const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';

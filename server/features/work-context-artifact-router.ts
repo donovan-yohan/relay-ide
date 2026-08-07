@@ -447,6 +447,70 @@ function persistedViewArtifactPayloadBytes(
   return Buffer.byteLength(JSON.stringify(viewArtifact, null, 2), 'utf8');
 }
 
+function canonicalPipelineArtifactForPublish(
+  res: Response,
+  input: {
+    artifact: PipelineHandoffArtifact;
+    requestSupersedesArtifactId?: string;
+    workContextId: WorkContextId;
+    operation: string;
+    maxPublishBytes: number;
+  }
+):
+  | {
+      artifact: PipelineHandoffArtifact;
+      supersedesArtifactId?: string;
+    }
+  | undefined {
+  const payloadSupersedesArtifactId = input.artifact.supersedesArtifactId;
+  if (
+    input.requestSupersedesArtifactId &&
+    payloadSupersedesArtifactId &&
+    input.requestSupersedesArtifactId !== payloadSupersedesArtifactId
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'artifact supersedes id does not match request metadata',
+      false,
+      {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+        operation: input.operation,
+        artifactId: input.artifact.id,
+      }
+    );
+    return undefined;
+  }
+  const supersedesArtifactId =
+    payloadSupersedesArtifactId ?? input.requestSupersedesArtifactId;
+  const artifact =
+    supersedesArtifactId && !payloadSupersedesArtifactId
+      ? { ...input.artifact, supersedesArtifactId }
+      : input.artifact;
+  const payloadBytes = persistedArtifactPayloadBytes(artifact);
+  if (payloadBytes > input.maxPublishBytes) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'artifact payload exceeds publish size cap',
+      false,
+      {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
+        operation: input.operation,
+        workContextId: input.workContextId,
+        artifactId: artifact.id,
+        payloadBytes,
+        maxBytes: input.maxPublishBytes,
+      }
+    );
+    return undefined;
+  }
+  return {
+    artifact,
+    ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
+  };
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   return stableJsonEquals(left, right);
 }
@@ -631,6 +695,7 @@ function mapStoreError(
       );
       return;
     case 'superseded_artifact_not_found':
+    case 'superseded_artifact_payload_kind_mismatch':
       sendGatewayError(
         res,
         'NOT_FOUND',
@@ -638,6 +703,66 @@ function mapStoreError(
         false,
         {
           reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_NOT_FOUND',
+          ...details,
+        }
+      );
+      return;
+    case 'superseded_artifact_scope_mismatch':
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'superseded artifact belongs to a different WorkContext',
+        false,
+        {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_SCOPE_MISMATCH',
+          ...details,
+        }
+      );
+      return;
+    case 'artifact_supersedes_stale_head':
+      sendGatewayError(
+        res,
+        'SESSION_CONFLICT',
+        'artifact head is stale for the superseded handoff layer',
+        false,
+        {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_STALE_HEAD',
+          ...details,
+        }
+      );
+      return;
+    case 'artifact_supersedes_append_only_violation':
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'artifact must append without changing canonical root or prior stages',
+        false,
+        {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION',
+          ...details,
+        }
+      );
+      return;
+    case 'artifact_supersedes_fork':
+      sendGatewayError(
+        res,
+        'SESSION_CONFLICT',
+        'artifact predecessor already has a successor',
+        false,
+        {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION',
+          ...details,
+        }
+      );
+      return;
+    case 'artifact_store_busy':
+      sendGatewayError(
+        res,
+        'SERVER_UNAVAILABLE',
+        'artifact store is busy; retry the request',
+        true,
+        {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_STORE_BUSY',
           ...details,
         }
       );
@@ -1134,7 +1259,7 @@ export function createWorkContextArtifactRouter(
         scopeForRequest: writeScopeFromBody,
       })
     ),
-    // eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- publish validates either handoff artifacts or static view artifacts before shared store/pin handling.
+
     (req, res) => {
       const operation = req.path.startsWith('/pipeline-handoff-artifacts')
         ? 'attach'
@@ -1251,26 +1376,23 @@ export function createWorkContextArtifactRouter(
         );
         return;
       }
-      const payloadBytes = persistedArtifactPayloadBytes(artifact);
-      if (payloadBytes > maxPublishBytes) {
-        sendGatewayError(
-          res,
-          'INVALID_ARGUMENT',
-          'artifact payload exceeds publish size cap',
-          false,
-          {
-            reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
-            operation,
-            workContextId,
-            artifactId: artifact.id,
-            payloadBytes,
-            maxBytes: maxPublishBytes,
-          }
-        );
-        return;
-      }
+      const canonical = canonicalPipelineArtifactForPublish(res, {
+        artifact,
+        ...(readString(body['supersedesArtifactId'])
+          ? {
+              requestSupersedesArtifactId: readString(
+                body['supersedesArtifactId']
+              )!,
+            }
+          : {}),
+        workContextId,
+        operation,
+        maxPublishBytes,
+      });
+      if (!canonical) return;
+      const { artifact: canonicalArtifact, supersedesArtifactId } = canonical;
       const current = currentHeadSha(req, body);
-      if (current && artifact.head.headSha !== current) {
+      if (current && canonicalArtifact.head.headSha !== current) {
         sendGatewayError(
           res,
           'SESSION_CONFLICT',
@@ -1280,8 +1402,8 @@ export function createWorkContextArtifactRouter(
             reasonCode: 'WORK_CONTEXT_ARTIFACT_STALE_HEAD',
             operation,
             workContextId,
-            artifactId: artifact.id,
-            artifactHeadSha: artifact.head.headSha,
+            artifactId: canonicalArtifact.id,
+            artifactHeadSha: canonicalArtifact.head.headSha,
             currentHeadSha: current,
           }
         );
@@ -1299,9 +1421,8 @@ export function createWorkContextArtifactRouter(
       const title = readString(body['title']);
       const summary = readString(body['summary']);
       const capturedAt = readString(body['capturedAt']);
-      const supersedesArtifactId = readString(body['supersedesArtifactId']);
       const input: StorePipelineHandoffArtifactInput = {
-        artifact: artifact as PipelineHandoffArtifact,
+        artifact: canonicalArtifact,
         workContextId,
         ...(artifactIdOverride ? { id: artifactIdOverride } : {}),
         ...(projectId ? { projectId } : {}),
@@ -1319,7 +1440,7 @@ export function createWorkContextArtifactRouter(
         if (
           !ensureAppendOnlySupersedes(res, s, {
             workContextId,
-            artifact: artifact as PipelineHandoffArtifact,
+            artifact: canonicalArtifact,
             ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
             operation,
           })
