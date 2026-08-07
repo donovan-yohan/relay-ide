@@ -941,6 +941,82 @@ describe('hub node routes and link', () => {
     });
   });
 
+  it('persists grant revocation with the resolved operator when downstream cleanup fails', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const operatorHandshakeGrants = new HandshakeGrantRegistry();
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    cleanup.push(() => consoleError.mockRestore());
+    const onOperatorHandshakeGrantRevoked = vi.fn(() => {
+      throw new Error('downstream credential teardown unavailable');
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        operatorHandshakeGrants,
+        onOperatorHandshakeGrantRevoked,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const requested = operatorHandshakeGrants.request({
+      actor: { type: 'cli', id: 'grant-revoke-test' },
+      issuer: { id: 'operator-requester' },
+      audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+      capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+      scope: { taskRefs: ['grant-revoke-test'] },
+    });
+    const response = await fetch(
+      `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.id)}/revoke`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          revokedBy: { id: 'operator-actual', displayName: 'Actual Operator' },
+          reason: 'operator ended the handoff',
+          correlationId: 'corr-grant-revoke',
+        }),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      grant: { id: requested.id, status: 'revoked' },
+    });
+    expect(onOperatorHandshakeGrantRevoked).toHaveBeenCalledWith({
+      grantId: requested.id,
+      revokedBy: 'operator-actual',
+      reason: 'operator ended the handoff',
+      correlationId: 'corr-grant-revoke',
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[hub-node-router] operator handshake grant revocation callback failed'
+    );
+    expect(operatorHandshakeGrants.getGrant(requested.id)).toMatchObject({
+      status: 'revoked',
+      revokedByHash: expect.any(String),
+    });
+    expect(operatorHandshakeGrants.listAuditEvents()).toContainEqual(
+      expect.objectContaining({
+        action: 'revoke',
+        decision: 'revoked',
+        grantId: requested.id,
+        correlationId: 'corr-grant-revoke',
+      })
+    );
+  });
+
   it('keeps strict source denial scoped to the node credential lane', async () => {
     const { tmpDir, registry } = tmpRegistry();
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));

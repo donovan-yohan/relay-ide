@@ -794,6 +794,22 @@ function rejectInvalidActorPagination(
       return true;
     }
   }
+  if (
+    req.query['beforeSeq'] !== undefined &&
+    req.query['afterSeq'] !== undefined
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'beforeSeq and afterSeq cannot be used together',
+      false,
+      {
+        fields: ['beforeSeq', 'afterSeq'],
+        reasonCode: 'CHANNEL_PAGINATION_DIRECTION_CONFLICT',
+      }
+    );
+    return true;
+  }
   return false;
 }
 

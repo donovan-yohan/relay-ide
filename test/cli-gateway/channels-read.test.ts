@@ -57,7 +57,14 @@ function runCli(args: string[]): Promise<{
   });
 }
 
-function runCliFailure(args: string[]): Promise<Record<string, unknown>> {
+function runCliFailure(args: string[]): Promise<{
+  envelope: Record<string, unknown>;
+  requested: boolean;
+}> {
+  const captureDir = mkdtempSync(
+    path.join(tmpdir(), 'relay-cli-fetch-failure-')
+  );
+  const capturePath = path.join(captureDir, 'request.json');
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
@@ -66,6 +73,8 @@ function runCliFailure(args: string[]): Promise<Record<string, unknown>> {
         encoding: 'utf8',
         env: {
           ...process.env,
+          NODE_OPTIONS: `--import=${FETCH_PRELOAD}`,
+          RELAY_TEST_FETCH_CAPTURE: capturePath,
           RELAY_IDE_PORT: '4567',
           RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
           RELAY_IDE_BROWSER_TOKEN: '',
@@ -73,14 +82,26 @@ function runCliFailure(args: string[]): Promise<Record<string, unknown>> {
         timeout: 10_000,
       },
       (error, stdout, stderr) => {
-        if (!error) {
-          reject(new Error(`CLI unexpectedly succeeded: ${stdout}`));
-          return;
-        }
         try {
-          resolve(JSON.parse(stdout) as Record<string, unknown>);
+          if (!error) {
+            reject(new Error(`CLI unexpectedly succeeded: ${stdout}`));
+            return;
+          }
+          resolve({
+            envelope: JSON.parse(stdout) as Record<string, unknown>,
+            requested: (() => {
+              try {
+                readFileSync(capturePath, 'utf8');
+                return true;
+              } catch {
+                return false;
+              }
+            })(),
+          });
         } catch {
           reject(new Error(`CLI did not emit a gateway envelope: ${stderr}`));
+        } finally {
+          rmSync(captureDir, { recursive: true, force: true });
         }
       }
     );
@@ -183,7 +204,21 @@ describe('channel read CLI gateway runtime wiring', () => {
       'channels.history',
     ],
     [
-      ['threads', 'history', '--channel-id', 'one', '--limit', '1.5', '--json'],
+      ['history', '--channel-id', 'one', '--after-seq', '   ', '--json'],
+      'channels.history',
+    ],
+    [
+      [
+        'threads',
+        'history',
+        '--channel-id',
+        'one',
+        '--thread-id',
+        'root',
+        '--limit',
+        '1.5',
+        '--json',
+      ],
       'channels.threads.history',
     ],
     [
@@ -193,12 +228,17 @@ describe('channel read CLI gateway runtime wiring', () => {
   ] as const)(
     'rejects malformed stable command argv %j',
     async (channelArgs, command) => {
-      const envelope = await runCliFailure(['v1', 'channels', ...channelArgs]);
+      const { envelope, requested } = await runCliFailure([
+        'v1',
+        'channels',
+        ...channelArgs,
+      ]);
       expect(envelope).toMatchObject({
         ok: false,
         command,
         error: { code: 'INVALID_ARGUMENT' },
       });
+      expect(requested).toBe(false);
     }
   );
 });

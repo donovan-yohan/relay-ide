@@ -9,13 +9,12 @@ import {
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3456';
-// Channel-scope is required for the bridge; context:read/write cover the channel
-// read/write verbs the peer drives. A pre-minted lease must be minted WITH these
-// capabilities and the peer's channel scope — it is never re-minted here.
+// Context read/write cover the channel verbs the peer drives. Its pre-minted
+// lease may be server-scoped, but this peer does not declare or enforce scope.
 const DEFAULT_CAPABILITIES = ['session:read', 'context:read', 'context:write'];
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const HISTORY_LIMIT = 100;
-const TOKEN_REFRESH_RATIO = 2 / 3;
+const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_SAFE_ERROR_DETAIL_CHARS = 512;
 const MAX_RESPONSE_BODY_CHARS = 2_048;
 const LOOPBACK_HOSTS = new Set(['localhost', '::1', '[::1]']);
@@ -39,7 +38,6 @@ export interface PeerConfig {
   implChannelId: string;
   workerFramework: string;
   capabilities: string[];
-  scope?: unknown;
   renewable: boolean;
   budget?: { maxTurns?: number; maxTokens?: number };
   pollIntervalMs: number;
@@ -123,24 +121,6 @@ export function selectNewMessages(
   }
 
   return { acks, nextSeq };
-}
-
-/**
- * Tests a token lifetime on a clock whose zero is the token's issue time.
- * TokenManager shifts its absolute clock to that origin before calling here.
- */
-export function needsRemint(
-  expiresAt: number,
-  now: number,
-  refreshRatio: number
-): boolean {
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0 || !Number.isFinite(now)) {
-    return true;
-  }
-  if (!Number.isFinite(refreshRatio) || refreshRatio <= 0 || refreshRatio > 1) {
-    throw new RangeError('refreshRatio must be greater than 0 and at most 1');
-  }
-  return now >= expiresAt * refreshRatio;
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -254,17 +234,14 @@ export class TokenManager {
   private readonly baseUrl: string;
   private readonly baseOrigin: string;
   private readonly fetchImpl: FetchLike;
+  private readonly responseTimeouts = new WeakMap<Response, () => void>();
 
   constructor(
     private readonly config: Pick<
       PeerConfig,
       'baseUrl' | 'actorToken' | 'actorId' | 'displayName' | 'capabilities'
     >,
-    fetchImpl: FetchLike = globalThis.fetch,
-    // Kept for API compatibility; a pre-minted lease is used as-is and never
-    // re-minted through a PIN/cookie login.
-    _now: () => number = Date.now,
-    _refreshRatio = TOKEN_REFRESH_RATIO
+    fetchImpl: FetchLike = globalThis.fetch
   ) {
     this.baseUrl = validatePeerBaseUrl(config.baseUrl);
     this.baseOrigin = new URL(this.baseUrl).origin;
@@ -282,6 +259,10 @@ export class TokenManager {
    */
   getToken(): Promise<string> {
     return Promise.resolve(this.config.actorToken);
+  }
+
+  releaseGatewayResponse(response: Response): void {
+    this.responseTimeouts.get(response)?.();
   }
 
   async gatewayFetch(
@@ -327,7 +308,53 @@ export class TokenManager {
     headers.set('x-relay-cli-command', command);
     // A same-origin endpoint must not be able to bounce this bearer to a
     // different authority through a followed redirect.
-    return this.fetchImpl(url, { ...init, headers, redirect: 'error' });
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => {
+      timeoutController.abort(
+        new DOMException('gateway request timed out', 'TimeoutError')
+      );
+    }, GATEWAY_REQUEST_TIMEOUT_MS);
+    timeout.unref();
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, timeoutController.signal])
+      : timeoutController.signal;
+    const abortError = (): unknown =>
+      signal.reason ??
+      new DOMException('gateway request aborted', 'AbortError');
+
+    if (signal.aborted) {
+      clearTimeout(timeout);
+      throw abortError();
+    }
+
+    let rejectOnAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectOnAbort = () => reject(abortError());
+      signal.addEventListener('abort', rejectOnAbort, { once: true });
+    });
+    try {
+      const response = await Promise.race([
+        this.fetchImpl(url, { ...init, headers, redirect: 'error', signal }),
+        aborted,
+      ]);
+      const release = (): void => {
+        clearTimeout(timeout);
+        this.responseTimeouts.delete(response);
+      };
+      if (response.body) {
+        this.responseTimeouts.set(response, release);
+      } else {
+        release();
+      }
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
+    } finally {
+      if (rejectOnAbort) {
+        signal.removeEventListener('abort', rejectOnAbort);
+      }
+    }
   }
 }
 
@@ -369,13 +396,12 @@ export class OrchestratorPeer {
 
   constructor(
     private readonly config: PeerConfig,
-    fetchImpl: FetchLike = globalThis.fetch,
-    now: () => number = Date.now
+    fetchImpl: FetchLike = globalThis.fetch
   ) {
     this.baseUrl = validatePeerBaseUrl(config.baseUrl);
     this.productChannelPath = `/channels/${encodeURIComponent(config.productChannelId)}`;
     this.implChannelPath = `/channels/${encodeURIComponent(config.implChannelId)}`;
-    this.tokenManager = new TokenManager(config, fetchImpl, now);
+    this.tokenManager = new TokenManager(config, fetchImpl);
   }
 
   get productLastSeq(): number {
@@ -401,13 +427,23 @@ export class OrchestratorPeer {
       'channels.history'
     );
     if (!historyResponse.ok) {
-      throw await responseError(
-        'channels.history',
-        historyResponse,
-        this.config.actorToken
-      );
+      try {
+        throw await responseError(
+          'channels.history',
+          historyResponse,
+          this.config.actorToken
+        );
+      } finally {
+        this.tokenManager.releaseGatewayResponse(historyResponse);
+      }
     }
-    const history = parseHistoryResponse(await historyResponse.json());
+    let historyPayload: unknown;
+    try {
+      historyPayload = await historyResponse.json();
+    } finally {
+      this.tokenManager.releaseGatewayResponse(historyResponse);
+    }
+    const history = parseHistoryResponse(historyPayload);
     const selection = selectNewMessages(
       history.messages,
       cursor,
@@ -426,12 +462,17 @@ export class OrchestratorPeer {
         }
       );
       if (!postResponse.ok) {
-        throw await responseError(
-          `channels.post ${relayKind} for seq ${ack.seq}`,
-          postResponse,
-          this.config.actorToken
-        );
+        try {
+          throw await responseError(
+            `channels.post ${relayKind} for seq ${ack.seq}`,
+            postResponse,
+            this.config.actorToken
+          );
+        } finally {
+          this.tokenManager.releaseGatewayResponse(postResponse);
+        }
       }
+      this.tokenManager.releaseGatewayResponse(postResponse);
     }
 
     return selection;
@@ -523,11 +564,6 @@ export function readPeerConfig(
     .map((capability) => capability.trim())
     .filter(Boolean);
 
-  const scope =
-    typeof env['RELAY_PEER_SCOPE'] === 'string' &&
-    env['RELAY_PEER_SCOPE'].length > 0
-      ? JSON.parse(env['RELAY_PEER_SCOPE'])
-      : { channelIds: [productChannelId, implChannelId] };
   const baseUrl = validatePeerBaseUrl(
     argValue(argv, '--base-url') ??
       env['RELAY_PEER_BASE_URL'] ??
@@ -554,7 +590,6 @@ export function readPeerConfig(
       capabilities && capabilities.length
         ? capabilities
         : [...DEFAULT_CAPABILITIES],
-    scope,
     renewable: false,
     pollIntervalMs: positiveInteger(
       argValue(argv, '--poll-interval-ms') ??

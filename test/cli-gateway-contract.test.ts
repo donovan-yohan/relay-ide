@@ -106,6 +106,7 @@ function schemaMatches(schema: RelayJsonSchema, value: unknown): boolean {
   if (schema.anyOf?.some((branch) => schemaMatches(branch, value)) === false) {
     return false;
   }
+  if (schema.not && schemaMatches(schema.not, value)) return false;
   if (!schema.oneOf) return true;
   return (
     schema.oneOf.filter((branch) => schemaMatches(branch, value)).length === 1
@@ -318,6 +319,21 @@ describe('CLI gateway contract', () => {
         })
       ).toBe(false);
     }
+    expect(
+      schemaAcceptsCommandInput('channels.history', {
+        channelId: 'channel-1',
+        beforeSeq: 4,
+        afterSeq: 3,
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('channels.threads.history', {
+        channelId: 'channel-1',
+        threadId: 'root-1',
+        beforeSeq: 4,
+        afterSeq: 3,
+      })
+    ).toBe(false);
     const cursorSchema =
       commandSpec('channels.history').outputSchema.properties?.['data']
         ?.properties?.['nextCursor'];

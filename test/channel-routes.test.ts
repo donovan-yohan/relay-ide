@@ -982,6 +982,7 @@ describe('channel routes — read / write contract', () => {
       'limit=1.5',
       'afterSeq=junk',
       'afterSeq=1&afterSeq=2',
+      'beforeSeq=2&afterSeq=4',
     ]) {
       const response = await req<{ error: { code: string } }>({
         port: h.port,
@@ -1000,6 +1001,43 @@ describe('channel routes — read / write contract', () => {
     });
     expect(missing.status).toBe(404);
     expect(missing.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('rejects conflicting actor thread cursors while preserving browser precedence', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'root' },
+    });
+    const threadUrl = `/channels/${encodeURIComponent(h.channelId)}/threads/${encodeURIComponent(root.body.message.id)}`;
+    const headers = {
+      'x-test-actor-id': 'scoped-agent',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      'x-relay-capabilities': 'context:read',
+    };
+    const actor = await req<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `${threadUrl}?beforeSeq=2&afterSeq=4`,
+      headers,
+    });
+    expect(actor.status).toBe(400);
+    expect(actor.body.error).toMatchObject({
+      code: 'INVALID_ARGUMENT',
+      details: { reasonCode: 'CHANNEL_PAGINATION_DIRECTION_CONFLICT' },
+    });
+
+    const browser = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `${threadUrl}?beforeSeq=2&afterSeq=4`,
+    });
+    expect(browser.status).toBe(200);
   });
 
   it('byte-budgets a history response and returns a continuation cursor', async () => {

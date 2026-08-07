@@ -124,20 +124,20 @@ that case retain direct CLI/provider adapters and defer the MCP transport.
 
 ## Current-state audit and root causes
 
-| Observed result                                                                                      | Root cause                                                                                                                            | Required correction                                                                                                                                     |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Raw Bearer yielded `UNAUTHORIZED` / `CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED`                           | Gateway requests additionally require `x-relay-cli-gateway: v1`; the official CLI also supplies actor-token and exact-command headers | Expose one documented MCP authorization lane that creates the canonical gateway request. Do not ask agents to reverse engineer headers.                 |
-| A scoped actor token cannot drive PTY WebSocket control                                              | Actor credentials are intentionally not terminal-control credentials                                                                  | Keep it fail-closed. Use a dev-only test principal plus browser/E2E API path; never extend external bridge authority to arbitrary PTY input.            |
-| Local `POST /sessions` can enter legacy `CONTROL_STATE_UNKNOWN`, while routed creation is fresh      | Creation/control freshness paths are inconsistent                                                                                     | Normalize initialization or return a typed waitable readiness result. Do not make a caller race attach/input.                                           |
-| Direct and supervisor input reject uncertain control state                                           | Correct fail-closed terminal-control boundary                                                                                         | Preserve it. Test harness must await explicit readiness or use a human-driven browser attachment.                                                       |
-| `sessions.wait` was mistaken for reviewer completion                                                 | It is a bounded raw-output text predicate, not semantic lifecycle proof                                                               | Add semantic job/evidence status and a completion predicate over it; retain `sessions.wait` only as terminal diagnostic support.                        |
-| Reviewer output appeared after apparent timeout                                                      | PTY observation is asynchronous/bounded and files were checked too early                                                              | Persist review artifacts and terminal job state before notification; add cursor/polling and final artifact re-read to the harness.                      |
-| Existing CLI contract declares only `channels.post`                                                  | Actor-auth HTTP routes implement channel reads, but those reads are not stable gateway commands                                       | Expand the canonical command manifest first; MCP may expose only declared commands.                                                                     |
-| Actor credential scope has no `channelIds` dimension and channel routes do not enforce it            | A generic scoped actor could potentially escape its intended conversation boundary                                                    | Add/require channel scope or a channel-to-WorkContext binding on list/get/history/threads/roster/post, plus negative escape tests, before MCP exposure. |
-| `scripts/orchestrator-peer.ts` logs in using `--pin` / `RELAY_PEER_PIN` and retains a browser cookie | It is a PIN-carrying prototype/migration target, not a remote-harness design                                                          | Replace with one-time grant redemption or a pre-minted short lease. Daily PIN/cookie never enter agent config, env, logs, or artifacts.                 |
-| `dev:self` did not bypass authentication                                                             | Correct current security posture                                                                                                      | Preserve production auth. Provide explicit isolated test bootstrap instead of weakening `dev:self`.                                                     |
-| Current E2E isolation works                                                                          | Isolated config/path/ports already prevent daily-hub interference                                                                     | Reuse it as the only base for development harnesses; no daily-driver restart/credential reuse.                                                          |
-| No MCP server exists                                                                                 | Relay has a CLI/gateway substrate but no MCP transport facade                                                                         | Add one adapter layer; do not create an alternate evidence or command ledger.                                                                           |
+| Observed result                                                                                 | Root cause                                                                                                                            | Required correction                                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Raw Bearer yielded `UNAUTHORIZED` / `CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED`                      | Gateway requests additionally require `x-relay-cli-gateway: v1`; the official CLI also supplies actor-token and exact-command headers | Expose one documented MCP authorization lane that creates the canonical gateway request. Do not ask agents to reverse engineer headers.                                                                                                           |
+| A scoped actor token cannot drive PTY WebSocket control                                         | Actor credentials are intentionally not terminal-control credentials                                                                  | Keep it fail-closed. Use a dev-only test principal plus browser/E2E API path; never extend external bridge authority to arbitrary PTY input.                                                                                                      |
+| Local `POST /sessions` can enter legacy `CONTROL_STATE_UNKNOWN`, while routed creation is fresh | Creation/control freshness paths are inconsistent                                                                                     | Normalize initialization or return a typed waitable readiness result. Do not make a caller race attach/input.                                                                                                                                     |
+| Direct and supervisor input reject uncertain control state                                      | Correct fail-closed terminal-control boundary                                                                                         | Preserve it. Test harness must await explicit readiness or use a human-driven browser attachment.                                                                                                                                                 |
+| `sessions.wait` was mistaken for reviewer completion                                            | It is a bounded raw-output text predicate, not semantic lifecycle proof                                                               | Add semantic job/evidence status and a completion predicate over it; retain `sessions.wait` only as terminal diagnostic support.                                                                                                                  |
+| Reviewer output appeared after apparent timeout                                                 | PTY observation is asynchronous/bounded and files were checked too early                                                              | Persist review artifacts and terminal job state before notification; add cursor/polling and final artifact re-read to the harness.                                                                                                                |
+| Channel reads previously existed only as actor-auth HTTP routes                                 | The initial CLI contract declared only `channels.post`, so MCP could not truthfully expose reads                                      | **Closed in Slice 0:** list/get/history/thread-history/roster now have stable manifest commands. MCP may expose only those declared commands, never adjacent HTTP routes by implication.                                                          |
+| Actor/grant scope previously had no `channelIds` dimension                                      | A generic scoped actor could escape its intended conversation boundary                                                                | **Closed in Slice 0:** scoped actor credentials and operator handshake grants now carry `channelIds`; list is filtered and get/history/thread/roster/post reject a sibling channel. Keep the negative escape tests mandatory before MCP exposure. |
+| `scripts/orchestrator-peer.ts` previously used a PIN/cookie bootstrap                           | It was a PIN-carrying prototype, not a remote-harness design                                                                          | **Closed in Slice 0:** the peer now requires a pre-minted scoped actor lease and does not redeem or retain a browser PIN/cookie. Future registration remains a separate one-time-grant/OAuth design.                                              |
+| `dev:self` did not bypass authentication                                                        | Correct current security posture                                                                                                      | Preserve production auth. Provide explicit isolated test bootstrap instead of weakening `dev:self`.                                                                                                                                               |
+| Current E2E isolation works                                                                     | Isolated config/path/ports already prevent daily-hub interference                                                                     | Reuse it as the only base for development harnesses; no daily-driver restart/credential reuse.                                                                                                                                                    |
+| No MCP server exists                                                                            | Relay has a CLI/gateway substrate but no MCP transport facade                                                                         | Add one adapter layer; do not create an alternate evidence or command ledger.                                                                                                                                                                     |
 
 ## Domain model for external conversations
 
@@ -199,6 +199,39 @@ Persist only redacted provider references and permitted normalized message
 content. Raw provider transcripts/tokens/cookies are forbidden from diagnostics,
 events, audit, and generic artifacts.
 
+### Registration commit and recovery invariant
+
+`register_external` has one externally visible outcome: either the idempotent
+registration resolves to the same `(registrationId, channelId, workContextId)`
+triple, or it fails without a usable partial conversation. If the registration,
+channel, and WorkContext stores share a transaction boundary, create/link all
+three and the idempotency record in that one transaction. Do not rely on a
+best-effort sequence of independent writes.
+
+If the existing persistence owners cannot share a transaction, implement a
+durable idempotent saga instead: first record a registration operation with its
+canonical request digest and intended identities, then make every child create
+or link step retry-safe under that operation id. A recovery worker resumes or
+compensates incomplete operations before they become visible; a retry returns
+the final triple or the same typed in-progress/recovery state. It must never
+silently create a second channel or rebind a provider reference. The Slice 1
+implementation must choose and test one of these two boundary models rather
+than describing "atomic" as an aspiration.
+
+### Idempotency is authority-bound, not a replay bypass
+
+Every idempotency record is namespaced by the authenticated issuer/subject (or
+Relay actor lease identity), authorized workspace, WorkContext/channel scope,
+canonical operation name, and a digest of the canonical request body. Store an
+authority/scope fingerprint and the request digest with the result, never the
+Bearer token or raw provider reference. A reused key returns the recorded
+result only when all of those bindings match. Reuse under another actor,
+workspace, channel scope, operation, or a different request digest is a typed
+conflict, not a way to discover or replay the first caller's result. Expiry and
+lease revocation must not turn a historical idempotency key into an authority
+grant: authentication and current scope are checked before a recorded result is
+returned.
+
 ### Connector/outbox data plane
 
 MCP registration performs consent and persists an unpaired registration as
@@ -208,11 +241,24 @@ the approved `sourceNodeId` and adapter. The caller cannot invent a node id;
 MCP does not pass every turn through the model. The hub dispatches only through Relay-owned node routing;
 the caller cannot supply a filesystem path or speak private node-link. A selected
 connector holds an exclusive, renewable registration lock and pushes a versioned
-outbox batch to Relay's canonical import command. A batch includes connector
-id/version, schema fingerprint, registration id, checkpoint cursor, source event
-ids, idempotency key, and an explicit `complete|partial|gap|rotated|truncated|
-source-node-lost` source signal. Relay validates the lease, lock, schema
-compatibility, cursor CAS, and redaction before atomically appending it.
+outbox batch to Relay's canonical import command. A batch includes the immutable
+adapter identity (connector id, adapter version, and adapter/schema digest),
+source identity **and generation**, registration id, lease id **and lease
+epoch**, batch id, `fromCursor`/`toCursor`, declared event order, source event
+ids, canonical batch/request digest, and an explicit
+`complete|partial|gap|rotated|truncated|source-node-lost` source signal. Source
+generation changes on a provider restart, file rotation, or any source identity
+reset; an old generation must not resume a newer checkpoint merely because its
+cursor text happens to compare.
+
+Relay accepts a batch only when its adapter identity, source generation, lease
+epoch, lock holder, and `fromCursor` equal the persisted registration fence. It
+validates a deterministic event order and advances the accepted fence to
+`toCursor` in the same append transaction. Duplicate delivery returns the
+recorded result only for the same registration, authority, and batch digest;
+overlap, gap, reordered events, stale lease epoch, or changed adapter/source
+generation produces a typed degraded/reconciliation state rather than an
+implicit merge. Relay then validates redaction before atomically appending it.
 
 Connector recovery is specified, not inferred: persist checkpoints only after
 Relay acceptance; on restart re-read from the accepted cursor; on source-node
@@ -276,23 +322,47 @@ dispatch, and emits cache metadata where required by the selected MCP version.
 The exact host protocol/extension set is feature-detected and recorded in a
 safe connection diagnostic, never guessed from host brand.
 
+#### Modern HTTP header congruence
+
+For the `2026-07-28` HTTP profile, headers are routing/congruence data, never an
+authority source. `Mcp-Method` is required on every request and notification
+and must equal the JSON-RPC `method`. A body-processing endpoint rejects any
+header/body disagreement before executing a Relay command. The required
+`Mcp-Name` mapping is:
+
+| JSON-RPC method                             | Required `Mcp-Name` body match                                                                              |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `tools/call`                                | `params.name`                                                                                               |
+| `resources/read`                            | `params.uri`                                                                                                |
+| `prompts/get`                               | `params.name`                                                                                               |
+| `tasks/get`, `tasks/update`, `tasks/cancel` | `params.taskId`                                                                                             |
+| Other standard requests/notifications       | No `Mcp-Name` mapping unless the applicable extension defines one; do not invent a Relay-specific fallback. |
+
+Every parameter the selected protocol/schema marks for HTTP projection is
+duplicated as its prescribed `Mcp-Param-*` header and must be congruent with the
+body value after the protocol's defined decoding/canonicalization. Unknown or
+ambiguous projection rules fail closed for the selected protocol version. Relay
+must test the matrix above, body/header mismatches, and an extension-negotiation
+fallback using the official MCP SDK; it must not hand-roll a looser header
+parser.
+
 ### First stable tools
 
 Tool names are illustrative; each needs a manifest command and JSON schema
 before it becomes MCP-visible.
 
-| Tool                                               | Input essentials                                                                                            | Result / invariant                                                                                                                        |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `relay.conversations.register_external`            | provider, opaque external ref, workspace, optional project/title, mirror/continuation mode, idempotency key | Registration/channel/WorkContext created or returned atomically as manual/agent-invoked with no connector lease. Never returns secrets.   |
-| `relay.connectors.enroll_source`                   | registration handle, Relay-discovered source node id, source/adapter attestation                            | Separately authorizes provider/protected-ref/registration/source binding before a connector lease exists.                                 |
-| `relay.conversations.append_external_event`        | registration handle, source event id, source cursor, normalized/redacted event, client message id           | Explicit agent fallback only. Exactly once by registration+event; rejects gap/reorder with typed state.                                   |
-| `relay.connectors.status`                          | registration handle                                                                                         | Selected adapter, lease/lock state, schema fingerprint, checkpoint, fullness/gap and degraded reason.                                     |
-| `relay.conversations.get`                          | registration/Relay conversation handle                                                                      | Sync status, safe channel/WorkContext refs, retention and truthful continuation availability.                                             |
-| `relay.conversations.continuation_packet`          | registration handle, bounded packet options                                                                 | Deterministic Relay resume/handoff packet; native ref only when verified.                                                                 |
-| `relay.channels.post`                              | declared canonical channel post input, idempotency key                                                      | Existing channel semantics/capability checks.                                                                                             |
-| `relay.channels.{list,get,history,threads,roster}` | stable command-shaped input with channel/WorkContext scope                                                  | Added to manifest before exposure and channel-scope checked.                                                                              |
-| `relay.jobs.start_review`                          | target/head/diff digest, reviewer profile, exact task specification                                         | Returns Relay `jobId`; admission is explicitly nonterminal.                                                                               |
-| `relay.jobs.get` / `relay.jobs.wait`               | job id, last event cursor, timeout                                                                          | Durable semantic state plus artifact/evidence refs. `wait` returns `timeout`, `gap`, or a terminal state—never raw terminal-text success. |
+| Tool                                                       | Input essentials                                                                                            | Result / invariant                                                                                                                        |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `relay.conversations.register_external`                    | provider, opaque external ref, workspace, optional project/title, mirror/continuation mode, idempotency key | Registration/channel/WorkContext created or returned atomically as manual/agent-invoked with no connector lease. Never returns secrets.   |
+| `relay.connectors.enroll_source`                           | registration handle, Relay-discovered source node id, source/adapter attestation                            | Separately authorizes provider/protected-ref/registration/source binding before a connector lease exists.                                 |
+| `relay.conversations.append_external_event`                | registration handle, source event id, source cursor, normalized/redacted event, client message id           | Explicit agent fallback only. Exactly once by registration+event; rejects gap/reorder with typed state.                                   |
+| `relay.connectors.status`                                  | registration handle                                                                                         | Selected adapter, lease/lock state, schema fingerprint, checkpoint, fullness/gap and degraded reason.                                     |
+| `relay.conversations.get`                                  | registration/Relay conversation handle                                                                      | Sync status, safe channel/WorkContext refs, retention and truthful continuation availability.                                             |
+| `relay.conversations.continuation_packet`                  | registration handle, bounded packet options                                                                 | Deterministic Relay resume/handoff packet; native ref only when verified.                                                                 |
+| `relay.channels.post`                                      | declared canonical channel post input, idempotency key                                                      | Existing channel semantics/capability checks.                                                                                             |
+| `relay.channels.{list,get,history,threads.history,roster}` | stable command-shaped input with channel/WorkContext scope                                                  | Added to manifest before exposure and channel-scope checked.                                                                              |
+| `relay.jobs.start_review`                                  | target/head/diff digest, reviewer profile, exact task specification                                         | Returns Relay `jobId`; admission is explicitly nonterminal.                                                                               |
+| `relay.jobs.get` / `relay.jobs.wait`                       | job id, last event cursor, timeout                                                                          | Durable semantic state plus artifact/evidence refs. `wait` returns `timeout`, `gap`, or a terminal state—never raw terminal-text success. |
 
 Suggested registration schema excerpt:
 
@@ -322,6 +392,26 @@ No external tool can call `sessions.input`, `supervisor.*`, private agent
 runtimes, browser-cookie routes, or node-link APIs. The general facade may
 read/compose declared Relay commands; terminal control remains a separate,
 human-driven and explicitly capability-gated product surface.
+
+#### Channel MCP exposure and scope matrix
+
+Slice 0 makes only the following current manifest commands candidates for MCP
+exposure in Slice 3; the transport must not infer visibility from a similarly
+authenticated HTTP route:
+
+| Surface                                                                                               | MCP status   | Required actor-channel behavior                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channels.list`                                                                                       | Candidate    | Actor requires a non-empty `channelIds` scope; response is filtered to it.                                                                                  |
+| `channels.get`, `channels.history`, `channels.threads.history`, `channels.roster`, `channels.post`    | Candidate    | The requested channel id must be in `channelIds`; otherwise reject before read/write. `post` uses only its declared command body, not browser conveniences. |
+| `channels.search`                                                                                     | **Excluded** | It has no stable command-manifest entry and scoped actors are denied on the private route. Do not expose it merely because transcript read exists.          |
+| Channel attachment upload/download                                                                    | **Excluded** | These are private actor-denied HTTP operations with no stable command contract. A future exposure needs its own bounded content/redaction/scope design.     |
+| Read state, agent commands, approval/interrupt, runtime steering, browser-cookie and node-link routes | **Excluded** | They are operator/private control or browser lanes, not external-harness MCP operations.                                                                    |
+
+This matrix is intentionally stronger than route authentication: every future
+MCP-visible row must have a manifest command, explicit channel/workspace/
+WorkContext authorization, and negative sibling-channel tests. It also rejects
+the stale claim that operator grants cannot carry `channelIds`: Slice 0 grants
+and scoped actor credentials both carry and validate that dimension.
 
 ### Completion and event contract
 
@@ -356,12 +446,15 @@ not an SSE/PTY stream or a compaction summary, decides completion.
 3. The daily-driver PIN, browser session cookie, `RELAY_PEER_PIN`, legacy actor
    token, OAuth refresh token, and grant secret must never be present in an MCP
    config, prompt, tool result, event, log, artifact, or test fixture.
-   `orchestrator-peer.ts` is explicitly migration-only until it stops doing
-   PIN/cookie automation.
-4. A scoped actor credential must include `channelIds` or derive allowed
-   channels from a bound WorkContext. Enforce it at list/get/history/threads/
-   roster/post—not just at tool discovery—and prove forbidden sibling channel
-   reads/writes fail.
+   `orchestrator-peer.ts` now requires a pre-minted scoped actor lease; it must
+   not grow a PIN/cookie, grant-redemption, or browser-login fallback.
+4. A scoped actor credential and any bootstrap handshake grant must include
+   `channelIds` or derive allowed channels from a bound WorkContext. Slice 0
+   implements the explicit `channelIds` grant/credential dimension. Enforce it
+   at list/get/history/thread-history/roster/post—not just at tool discovery—
+   and prove forbidden sibling channel reads/writes fail. Search, attachments,
+   and private operations remain excluded until separately manifested and
+   designed; they are not scope-coverage loopholes.
 5. The bridge's normal scopes exclude terminal input and server lifecycle.
    `clientInfo`, a provider label, and a claimed external session id do not
    elevate authority. Provider-native import/resume must reauthorize against
@@ -444,10 +537,13 @@ or WorkContext semantics.
 - Reuse WCM append-only/redaction and channel `clientMessageId` rules. Store
   only hash/opaque provider refs and bounded normalized events.
 - Tests: idempotent and concurrent registration; exclusive connector lock;
-  duplicate/reordered/gapped source events; restart/rotation/truncation recovery;
+  duplicate/reordered/gapped source events; stale source generation/lease epoch
+  and `fromCursor`/`toCursor` fencing; restart/rotation/truncation recovery;
   retention/redaction; revoked lease; enrollment proof failure; actor-vs-
   connector provenance; provider-import failure; and handoff-only continuation
-  truth.
+  truth. Registration tests prove either one shared transaction or the durable
+  saga's crash/recovery behavior; idempotency tests prove a key cannot cross
+  actor, scope, operation, or request digest.
 
 **Gate:** race/restart/source-node loss cannot create duplicate channels,
 reassign a provider ref, silently reorder an event, accept a changed connector
@@ -523,13 +619,18 @@ registration/polling/handoff without loss of truth or unexpected privilege.
 
 - Registration is idempotent across retries and concurrent callers, atomically
   links the intended channel and WorkContext, and never creates a terminal
-  `Session` surrogate.
+  `Session` surrogate. The implementation proves its shared transaction or
+  durable saga/recovery boundary, including a crash between child writes.
+- An idempotency result is bound to current authenticated authority, workspace/
+  WorkContext/channel scope, operation, and canonical request digest; a reused
+  key with any mismatch fails closed and never returns another actor's result.
 - An unpaired registration returns manual/agent-invoked with no connector lease;
   only later approved enrollment upgrades it. A caller-invented node id is
   rejected rather than selecting or binding a connector.
-- Event import has exactly-once `registrationId + sourceEventId`, source cursor
-  compare-and-swap, explicit gap/reorder state, and server-authoritative channel
-  sequencing.
+- Event import has exactly-once `registrationId + sourceEventId`, adapter/source
+  identity and generation fencing, lease epoch plus batch digest binding,
+  `fromCursor`/`toCursor` compare-and-swap, deterministic order, explicit
+  gap/reorder state, and server-authoritative channel sequencing.
 - Connector tests cover approved-node-only dispatch, exclusive ownership lock,
   version/schema fingerprint drift, restart, source-node loss, rotation,
   truncation, gap/fullness, and revoked lease; none accepts an arbitrary client

@@ -5352,6 +5352,7 @@ function validateChannelCliPagination(
     if (value === undefined) continue;
     const numeric = Number(value);
     if (
+      !value.trim() ||
       !Number.isSafeInteger(numeric) ||
       numeric < (flag === '--limit' ? 1 : 0) ||
       (flag === '--limit' && numeric > 200)

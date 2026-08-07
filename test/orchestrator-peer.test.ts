@@ -8,7 +8,6 @@ import {
   buildInstruction,
   buildRollup,
   buildWorkerMention,
-  needsRemint,
   readPeerConfig,
   redactPeerText,
   safePeerErrorMessage,
@@ -33,7 +32,6 @@ const CONFIG: PeerConfig = {
   implChannelId: 'topic:implementation',
   workerFramework: 'codex',
   capabilities: ['session:read', 'context:read', 'context:write'],
-  scope: { channelIds: ['topic:general', 'topic:implementation'] },
   renewable: false,
   pollIntervalMs: 10,
 };
@@ -203,16 +201,14 @@ describe('orchestrator peer pure seams', () => {
       RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
       RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
       RELAY_PEER_WORKER_FRAMEWORK: 'claude',
+      RELAY_PEER_SCOPE: 'this field is intentionally ignored',
     });
     expect(fromEnvironment.actorToken).toBe('relay-sac-v1.env-lease');
     expect(fromEnvironment.productChannelId).toBe('topic:product-environment');
     expect(fromEnvironment.implChannelId).toBe('topic:impl-environment');
     expect(fromEnvironment.workerFramework).toBe('claude');
-    // Channel scope is derived from the peer's two channels unless overridden.
-    expect(fromEnvironment.scope).toEqual({
-      channelIds: ['topic:product-environment', 'topic:impl-environment'],
-    });
     expect(fromEnvironment).not.toHaveProperty('pin');
+    expect(fromEnvironment).not.toHaveProperty('scope');
     expect(fromEnvironment.renewable).toBe(false);
 
     const fromArgs = readPeerConfig(
@@ -234,9 +230,7 @@ describe('orchestrator peer pure seams', () => {
     expect(fromArgs.productChannelId).toBe('topic:product-argument');
     expect(fromArgs.implChannelId).toBe('topic:impl-argument');
     expect(fromArgs.workerFramework).toBe('codex-argument');
-    expect(fromArgs.scope).toEqual({
-      channelIds: ['topic:product-argument', 'topic:impl-argument'],
-    });
+    expect(fromArgs).not.toHaveProperty('scope');
     expect(() =>
       readPeerConfig(
         {
@@ -312,13 +306,6 @@ describe('orchestrator peer pure seams', () => {
     }
   });
 
-  it('needsRemint fires inside the refresh window', () => {
-    expect(needsRemint(300_000, 199_999, 2 / 3)).toBe(false);
-    expect(needsRemint(300_000, 200_000, 2 / 3)).toBe(true);
-    expect(needsRemint(300_000, 299_999, 1)).toBe(false);
-    expect(needsRemint(300_000, 300_000, 1)).toBe(true);
-  });
-
   it('abortableDelay removes listeners on timeout and clears timers on abort', async () => {
     vi.useFakeTimers();
     try {
@@ -380,9 +367,7 @@ describe('orchestrator peer gateway cycle', () => {
       return new Response(null, { status: 404 });
     });
 
-    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
-      Date.parse('2026-07-24T00:00:00.000Z')
-    );
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
     await expect(peer.pollOnce()).resolves.toEqual({
       instructionCount: 1,
       rollupCount: 0,
@@ -474,9 +459,7 @@ describe('orchestrator peer gateway cycle', () => {
       return new Response(null, { status: 404 });
     });
 
-    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
-      Date.parse('2026-07-24T00:00:00.000Z')
-    );
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
     await expect(peer.pollOnce()).resolves.toEqual({
       instructionCount: 0,
       rollupCount: 1,
@@ -536,9 +519,7 @@ describe('orchestrator peer gateway cycle', () => {
       return new Response(null, { status: 404 });
     });
 
-    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
-      Date.parse('2026-07-24T00:00:00.000Z')
-    );
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
     await expect(peer.pollOnce()).resolves.toEqual({
       instructionCount: 0,
       rollupCount: 0,
@@ -593,9 +574,7 @@ describe('orchestrator peer gateway cycle', () => {
       return new Response(null, { status: 404 });
     });
 
-    const peer = new OrchestratorPeer(CONFIG, fetchMock, () =>
-      Date.parse('2026-07-24T00:00:00.000Z')
-    );
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
     await peer.pollOnce();
     await expect(peer.pollOnce()).resolves.toMatchObject({
       productLastSeq: 6,
@@ -627,9 +606,7 @@ describe('orchestrator peer gateway cycle', () => {
       return jsonResponse({ messages: [] });
     });
 
-    const manager = new TokenManager(CONFIG, fetchMock, () =>
-      Date.parse('2026-07-24T00:00:00.000Z')
-    );
+    const manager = new TokenManager(CONFIG, fetchMock);
     const response = await manager.gatewayFetch(
       'http://127.0.0.1:3456/channels/topic%3Ageneral/messages',
       'channels.history'
@@ -644,11 +621,98 @@ describe('orchestrator peer gateway cycle', () => {
     expect(headers?.get('x-relay-cli-gateway')).toBe('v1');
     expect(headers?.get('x-relay-cli-command')).toBe('channels.history');
     expect(await manager.getToken()).toBe('relay-sac-v1.test-lease');
+    manager.releaseGatewayResponse(response);
+  });
+
+  it('bounds a hung gateway request and honors caller cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      let timedSignal: AbortSignal | null | undefined;
+      const timedManager = new TokenManager(
+        CONFIG,
+        vi.fn<FetchLike>((_input, init) => {
+          timedSignal = init?.signal;
+          return new Promise<Response>(() => {});
+        })
+      );
+      const timedRequest = timedManager.gatewayFetch(
+        'http://127.0.0.1:3456/channels/topic%3Ageneral/messages',
+        'channels.history'
+      );
+      const timedExpectation = expect(timedRequest).rejects.toMatchObject({
+        name: 'TimeoutError',
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await timedExpectation;
+      expect(timedSignal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const caller = new AbortController();
+      let callerSignal: AbortSignal | null | undefined;
+      const callerManager = new TokenManager(
+        CONFIG,
+        vi.fn<FetchLike>((_input, init) => {
+          callerSignal = init?.signal;
+          return new Promise<Response>(() => {});
+        })
+      );
+      const callerRequest = callerManager.gatewayFetch(
+        'http://127.0.0.1:3456/channels/topic%3Ageneral/messages',
+        'channels.history',
+        { signal: caller.signal }
+      );
+      const callerExpectation = expect(callerRequest).rejects.toThrow(
+        'caller canceled gateway request'
+      );
+      caller.abort(new Error('caller canceled gateway request'));
+
+      await callerExpectation;
+      expect(callerSignal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a stalled history response body so pollOnce cannot hang', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn<FetchLike>((_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error('gateway signal was required');
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                signal.addEventListener(
+                  'abort',
+                  () => controller.error(signal.reason),
+                  { once: true }
+                );
+              },
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        );
+      });
+      const peer = new OrchestratorPeer(CONFIG, fetchMock);
+      const poll = peer.pollOnce();
+      const pollExpectation = expect(poll).rejects.toMatchObject({
+        name: 'TimeoutError',
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await pollExpectation;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a non-lease actor token in TokenManager', () => {
     const bad = { ...CONFIG, actorToken: 'not-a-lease' };
-    expect(() => new TokenManager(bad, vi.fn<FetchLike>(), () => 0)).toThrow(
+    expect(() => new TokenManager(bad, vi.fn<FetchLike>())).toThrow(
       /relay-sac-v1/
     );
   });
