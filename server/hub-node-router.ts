@@ -186,6 +186,12 @@ interface HubNodeRouterOptions {
   releaseRoutedPtyControlSessionsForNode?: (nodeId: string) => void;
   confirmations?: ConfirmationChallengeStore;
   operatorHandshakeGrants?: HandshakeGrantRegistry;
+  onOperatorHandshakeGrantRevoked?: (input: {
+    grantId: string;
+    revokedBy: string;
+    reason?: string;
+    correlationId?: string;
+  }) => void;
   auditSink?: RoutedSessionAuditSink;
   workContextStore?: WorkContextStore;
   readModelCache?: RoutedSessionReadModelCache;
@@ -2799,6 +2805,12 @@ export function createHubNodeRouter(
         );
         return;
       }
+      options.onOperatorHandshakeGrantRevoked?.({
+        grantId,
+        revokedBy: 'browser-operator',
+        ...(reason ? { reason } : {}),
+        ...(correlationId ? { correlationId } : {}),
+      });
       res.json({ grant });
     }
   );

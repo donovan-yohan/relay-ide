@@ -611,7 +611,7 @@ test('real channel middleware enforces registry-issued channel leases and preser
           issuer: { id: 'browser-operator-test' },
           audience: CLI_GATEWAY_ACTOR_AUDIENCE,
           capabilities: ['context:read', 'context:write'],
-          scope: { channelIds: [channelA] },
+          scope: { channelIds: [channelA, 'missing'] },
           ttlMs: 60_000,
         }),
       }),
@@ -630,7 +630,10 @@ test('real channel middleware enforces registry-issued channel leases and preser
       200,
       'channel grant approval'
     );
-    const issued = await expectJsonStatus<{ token: string }>(
+    const issued = await expectJsonStatus<{
+      token: string;
+      credential: { id: string; grantId: string; expiresAt: string };
+    }>(
       await fetch(`${base}/cli-gateway/actor-credentials`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -639,7 +642,7 @@ test('real channel middleware enforces registry-issued channel leases and preser
           audience: CLI_GATEWAY_ACTOR_AUDIENCE,
           actor: { type: 'cli', id: 'channel-lease-peer' },
           capabilities: ['context:read', 'context:write'],
-          scope: { channelIds: [channelA] },
+          scope: { channelIds: [channelA, 'missing'] },
           ttlMs: 60_000,
         }),
       }),
@@ -681,6 +684,56 @@ test('real channel middleware enforces registry-issued channel leases and preser
             ...actorHeaders('channels.get'),
             'x-relay-cli-command': 'channels.history',
           },
+        })
+      ).status
+    ).toBe(401);
+
+    const actorSteering = await fetch(
+      `${base}/channels/${encodeURIComponent(channelA)}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          ...actorHeaders('channels.post'),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ text: 'forbidden', steering: 'interrupt' }),
+      }
+    );
+    expect(actorSteering.status).toBe(403);
+    const missingHistory = await fetch(`${base}/channels/missing/messages`, {
+      headers: actorHeaders('channels.history'),
+    });
+    expect(missingHistory.status).toBe(404);
+
+    const grantRevocation = await fetch(
+      `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/revoke`,
+      {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ revokedBy: { id: 'browser-operator-test' } }),
+      }
+    );
+    expect(grantRevocation.status).toBe(200);
+    const inspected = await expectJsonStatus<{
+      credentials: Array<{ id: string; grantId?: string; revokedAt?: string }>;
+    }>(
+      await fetch(`${base}/cli-gateway/actor-credentials`, {
+        headers: { cookie },
+      }),
+      200,
+      'credential inspection after grant revoke'
+    );
+    expect(
+      inspected.credentials.find((item) => item.id === issued.credential.id)
+    ).toMatchObject({ grantId: requested.grant.id });
+    expect(
+      inspected.credentials.find((item) => item.id === issued.credential.id)
+        ?.revokedAt
+    ).toBeTruthy();
+    expect(
+      (
+        await fetch(`${base}/channels/${encodeURIComponent(channelA)}`, {
+          headers: actorHeaders('channels.get'),
         })
       ).status
     ).toBe(401);

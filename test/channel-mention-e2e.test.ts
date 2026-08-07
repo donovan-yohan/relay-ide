@@ -677,6 +677,31 @@ describe('mention routing — end-to-end via the router', () => {
 });
 
 describe('mention routing — real scoped-actor auth composition (P2 #1180)', () => {
+  it('rejects scoped-actor steering before the production-composed binder runs', async () => {
+    const registry = createCliGatewayActorRegistry();
+    const h = await harness(undefined, { actorRegistry: registry });
+    const issued = issueCliGatewayActorCredential(registry, {
+      actor: { type: 'agent', id: 'orchestrator', displayName: 'orchestrator' },
+      capabilities: ['context:write'],
+      scope: { channelIds: [h.channelId] },
+    });
+    const response = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock must not run', steering: 'interrupt' },
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+      },
+    });
+    expect(response.status).toBe(403);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(h.store.history(h.channelId)).toEqual([]);
+    expect(agentReply(h.store, h.channelId)).toEqual([]);
+  });
+
   it('a real minted actor token authenticates, routes @mock, and is braked as an agent sender', async () => {
     // Mint a REAL credential in the registry the auth middleware validates
     // against — no fabricated record, the full bearer→validate→attach path runs.

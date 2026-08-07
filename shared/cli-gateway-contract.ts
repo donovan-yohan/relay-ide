@@ -3344,9 +3344,9 @@ const channelHistoryInputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     channelId: stringSchema,
-    limit: { type: 'number' },
-    beforeSeq: { type: 'number' },
-    afterSeq: { type: 'number' },
+    limit: { type: 'integer', minimum: 1, maximum: 200 },
+    beforeSeq: { type: 'integer', minimum: 0 },
+    afterSeq: { type: 'integer', minimum: 0 },
   },
   required: ['channelId'],
 };
@@ -3358,9 +3358,28 @@ const channelThreadHistoryInputSchema: RelayJsonSchema = {
   properties: {
     channelId: stringSchema,
     threadId: stringSchema,
-    limit: { type: 'number' },
+    limit: { type: 'integer', minimum: 1, maximum: 200 },
+    beforeSeq: { type: 'integer', minimum: 0 },
+    afterSeq: { type: 'integer', minimum: 0 },
   },
   required: ['channelId', 'threadId'],
+};
+
+const channelHistoryCursorSchema: RelayJsonSchema = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { beforeSeq: { type: 'integer', minimum: 0 } },
+      required: ['beforeSeq'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { afterSeq: { type: 'integer', minimum: 0 } },
+      required: ['afterSeq'],
+    },
+  ],
 };
 
 const channelRosterInputSchema: RelayJsonSchema = {
@@ -3400,7 +3419,7 @@ const channelHistoryOutputDataSchema: RelayJsonSchema = {
   properties: {
     messages: { type: 'array', items: channelObjectSchema },
     hasMore: { type: 'boolean' },
-    nextCursor: { type: 'number' },
+    nextCursor: channelHistoryCursorSchema,
   },
   required: ['messages'],
 };
@@ -3412,7 +3431,7 @@ const channelThreadHistoryOutputDataSchema: RelayJsonSchema = {
   properties: {
     messages: { type: 'array', items: channelObjectSchema },
     hasMore: { type: 'boolean' },
-    nextCursor: { type: 'number' },
+    nextCursor: channelHistoryCursorSchema,
   },
   required: ['messages'],
 };
@@ -6480,6 +6499,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--thread-id',
       '<id>',
       '--limit',
+      '<n>',
+      '--before-seq',
+      '<n>',
+      '--after-seq',
       '<n>',
       '--json',
     ],

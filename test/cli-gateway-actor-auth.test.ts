@@ -1041,6 +1041,51 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
   );
 });
 
+test('caps grant-backed credential expiry and cascades grant revocation', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const ttlIssued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(approveGrant(grants, 'grant-expiry-ttl'), 'ttl'),
+      ttlMs: 120_000,
+    }
+  );
+  expect(ttlIssued.credential.expiresAt).toBe('2026-05-29T00:01:00.000Z');
+  const explicitIssued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-expiry-explicit'),
+        'explicit'
+      ),
+      ttlMs: undefined,
+      expiresAt: '2026-05-29T00:10:00.000Z',
+    }
+  );
+  expect(explicitIssued.credential.expiresAt).toBe('2026-05-29T00:01:00.000Z');
+  expect(
+    scopedRegistry.revokeByGrantId('grant-expiry-ttl', {
+      revokedBy: 'grant:grant-expiry-ttl',
+    })
+  ).toHaveLength(1);
+  expect(scopedRegistry.getCredential(ttlIssued.credential.id)).toHaveProperty(
+    'revokedAt'
+  );
+  expect(
+    scopedRegistry.getCredential(explicitIssued.credential.id)
+  ).not.toHaveProperty('revokedAt');
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: ttlIssued.token,
+      capabilities: ['session:read'],
+      scope: { sessionIds: ['session-1'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'revoked' });
+});
+
 test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts', () => {
   const scopedRegistry = registry();
   const grants = grantRegistry();

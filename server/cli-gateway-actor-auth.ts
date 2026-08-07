@@ -548,6 +548,7 @@ export function issueCliGatewayActorCredentialWithGrant(
     scope: request.scope,
     ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
     ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    notAfter: grant.expiresAt,
     ...(metadata ? { metadata } : {}),
     correlationId: request.correlationId,
   });
@@ -649,6 +650,7 @@ export function rotateCliGatewayActorCredentialWithGrant(
     scope: existing.scope,
     ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
     ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    notAfter: grant.expiresAt,
     ...(metadata ? { metadata } : {}),
     correlationId: request.correlationId,
   });

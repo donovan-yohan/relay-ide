@@ -124,6 +124,7 @@ export interface IssueScopedActorCredentialInput {
   metadata?: ScopedActorCredentialMetadata;
   expiresAt?: Date | string;
   ttlMs?: number;
+  notAfter?: Date | string;
   correlationId?: string;
 }
 
@@ -417,6 +418,25 @@ export class ScopedActorCredentialRegistry {
     return publicCredential(credential);
   }
 
+  revokeByGrantId(
+    grantId: string,
+    input: RevokeScopedActorCredentialInput
+  ): ScopedActorCredentialRecord[] {
+    const revoked: ScopedActorCredentialRecord[] = [];
+    for (const credential of this.credentials.values()) {
+      if (
+        credential.grantId !== grantId ||
+        credential.revokedAt ||
+        new Date(credential.expiresAt).getTime() <= this.now().getTime()
+      ) {
+        continue;
+      }
+      const result = this.revoke(credential.id, input);
+      if (result) revoked.push(result);
+    }
+    return revoked;
+  }
+
   listCredentials(): ScopedActorCredentialRecord[] {
     return Array.from(this.credentials.values()).map(publicCredential);
   }
@@ -447,7 +467,7 @@ export class ScopedActorCredentialRegistry {
         'scoped actor credentials require expiresAt or ttlMs'
       );
     }
-    const expiresAt = input.expiresAt
+    let expiresAt = input.expiresAt
       ? new Date(input.expiresAt)
       : new Date(issuedAt.getTime() + (input.ttlMs ?? 0));
     if (!Number.isFinite(expiresAt.getTime())) {
@@ -461,6 +481,22 @@ export class ScopedActorCredentialRegistry {
         'EXPIRY_EXCEEDS_MAX_TTL',
         'scoped actor credential ttl exceeds registry maximum'
       );
+    }
+    if (input.notAfter) {
+      const notAfter = new Date(input.notAfter);
+      if (!Number.isFinite(notAfter.getTime())) {
+        throw new ScopedActorCredentialRegistryError(
+          'EXPIRY_REQUIRED',
+          'scoped actor credential expiry ceiling is invalid'
+        );
+      }
+      if (notAfter.getTime() <= issuedAt.getTime()) {
+        throw new ScopedActorCredentialRegistryError(
+          'EXPIRY_REQUIRED',
+          'scoped actor credential expiry ceiling must be in the future'
+        );
+      }
+      if (expiresAt.getTime() > notAfter.getTime()) expiresAt = notAfter;
     }
     return expiresAt;
   }

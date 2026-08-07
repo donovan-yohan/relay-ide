@@ -5303,6 +5303,47 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
     return channelId;
   };
 
+  const validateHistoryArgs = (
+    commandName: 'channels.history' | 'channels.threads.history',
+    args: string[],
+    allowedValueFlags: readonly string[]
+  ): void => {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === '--json') continue;
+      if (!arg || !allowedValueFlags.includes(arg)) {
+        gatewayInvalid(commandName, `unsupported ${commandName} argument`, {
+          argument: arg,
+          allowed: [...allowedValueFlags, '--json'],
+        });
+      }
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        gatewayInvalid(commandName, `${arg} requires a value`, {
+          argument: arg,
+        });
+      }
+      if (
+        arg === '--limit' ||
+        arg === '--before-seq' ||
+        arg === '--after-seq'
+      ) {
+        const numeric = Number(value);
+        if (
+          !Number.isSafeInteger(numeric) ||
+          numeric < (arg === '--limit' ? 1 : 0) ||
+          (arg === '--limit' && numeric > 200)
+        ) {
+          gatewayInvalid(commandName, `${arg} has an invalid value`, {
+            field: arg.slice(2),
+            value,
+          });
+        }
+      }
+      index += 1;
+    }
+  };
+
   if (subcommand === 'get') {
     const channelId = channelIdFor('channels.get');
     const result = await gatewayHttpJson({
@@ -5314,6 +5355,12 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
   }
 
   if (subcommand === 'history') {
+    validateHistoryArgs('channels.history', channelArgs, [
+      '--channel-id',
+      '--limit',
+      '--before-seq',
+      '--after-seq',
+    ]);
     const channelId = channelIdFor('channels.history');
     const query = new URLSearchParams();
     for (const [flag, key] of [
@@ -5335,6 +5382,13 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
 
   if (subcommand === 'threads' && channelArgs[0] === 'history') {
     const threadArgs = channelArgs.slice(1);
+    validateHistoryArgs('channels.threads.history', threadArgs, [
+      '--channel-id',
+      '--thread-id',
+      '--limit',
+      '--before-seq',
+      '--after-seq',
+    ]);
     const channelId = gatewayArg(threadArgs, '--channel-id')?.trim() ?? '';
     if (!channelId) {
       gatewayInvalid('channels.threads.history', '--channel-id is required', {
@@ -5348,8 +5402,14 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
       });
     }
     const query = new URLSearchParams();
-    const limit = gatewayArg(threadArgs, '--limit');
-    if (limit !== undefined) query.set('limit', limit);
+    for (const [flag, key] of [
+      ['--limit', 'limit'],
+      ['--before-seq', 'beforeSeq'],
+      ['--after-seq', 'afterSeq'],
+    ] as const) {
+      const value = gatewayArg(threadArgs, flag);
+      if (value !== undefined) query.set(key, value);
+    }
     const search = query.toString();
     const result = await gatewayHttpJson({
       commandName: 'channels.threads.history',

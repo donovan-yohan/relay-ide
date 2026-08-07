@@ -2465,6 +2465,15 @@ async function main(): Promise<void> {
       cliGatewayAuth: requireCliGatewayAuth,
       cliGatewayAuthForActorCommand: requireCliGatewayAuthForActorCommand,
       operatorHandshakeGrants: cliGatewayHandshakeGrantRegistry,
+      onOperatorHandshakeGrantRevoked: (input) => {
+        cliGatewayActorRegistry.revokeByGrantId(input.grantId, {
+          revokedBy: `grant:${input.grantId}`,
+          reason: input.reason ?? 'originating operator grant revoked',
+          ...(input.correlationId
+            ? { correlationId: input.correlationId }
+            : {}),
+        });
+      },
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,

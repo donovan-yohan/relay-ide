@@ -47,6 +47,7 @@ function schemaTypeMatches(schema: RelayJsonSchema, value: unknown): boolean {
     if (type === 'object') return isSchemaObject(value);
     if (type === 'array') return Array.isArray(value);
     if (type === 'null') return value === null;
+    if (type === 'integer') return Number.isInteger(value);
     return typeof value === type;
   });
 }
@@ -64,7 +65,11 @@ function schemaNumberBoundsMatch(
   schema: RelayJsonSchema,
   value: unknown
 ): boolean {
-  if (schema.type !== 'number' || typeof value !== 'number') return true;
+  if (
+    (schema.type !== 'number' && schema.type !== 'integer') ||
+    typeof value !== 'number'
+  )
+    return true;
   const aboveMinimum = schema.minimum === undefined || value >= schema.minimum;
   const belowMaximum = schema.maximum === undefined || value <= schema.maximum;
   return aboveMinimum && belowMaximum;
@@ -288,6 +293,47 @@ describe('CLI gateway contract', () => {
       'channels.threads.history'
     );
     expect(commandSpec('channels.post').name).toBe('channels.post');
+  });
+
+  it('models channel pagination inputs and directional cursors exactly', () => {
+    expect(
+      schemaAcceptsCommandInput('channels.history', {
+        channelId: 'channel-1',
+        limit: 20,
+        afterSeq: 0,
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('channels.threads.history', {
+        channelId: 'channel-1',
+        threadId: 'root-1',
+        beforeSeq: 10,
+      })
+    ).toBe(true);
+    for (const value of [-1, 1.5, '1']) {
+      expect(
+        schemaAcceptsCommandInput('channels.history', {
+          channelId: 'channel-1',
+          afterSeq: value,
+        })
+      ).toBe(false);
+    }
+    const cursorSchema =
+      commandSpec('channels.history').outputSchema.properties?.['data']
+        ?.properties?.['nextCursor'];
+    expect(cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4 })).toBe(
+      true
+    );
+    expect(cursorSchema && schemaMatches(cursorSchema, { beforeSeq: 4 })).toBe(
+      true
+    );
+    expect(cursorSchema && schemaMatches(cursorSchema, 4)).toBe(false);
+    expect(
+      cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4, beforeSeq: 3 })
+    ).toBe(false);
+    expect(
+      cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4, extra: true })
+    ).toBe(false);
   });
 
   it('keeps cockpit limit validation aligned with its schema', () => {

@@ -636,6 +636,48 @@ function parseHistoryLimit(value: unknown): number {
   return Math.max(1, Math.min(CHANNEL_HISTORY_MAX_LIMIT, parsed));
 }
 
+function rejectInvalidActorPagination(
+  req: Request,
+  res: Response,
+  fields: readonly string[]
+): boolean {
+  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  const allowed = new Set(fields);
+  const undeclared = Object.keys(req.query).find(
+    (field) => !allowed.has(field)
+  );
+  if (undeclared) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      `${undeclared} is not declared for this stable actor command`,
+      false,
+      { field: undeclared, reasonCode: 'CHANNEL_QUERY_UNDECLARED' }
+    );
+    return true;
+  }
+  for (const field of fields) {
+    const value = req.query[field];
+    if (value === undefined) continue;
+    const parsed = parseSeqQuery(value);
+    if (
+      Array.isArray(value) ||
+      parsed === undefined ||
+      (field === 'limit' && (parsed < 1 || parsed > CHANNEL_HISTORY_MAX_LIMIT))
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} must be a non-negative safe integer${field === 'limit' ? ' greater than zero' : ''}`,
+        false,
+        { field, reasonCode: 'CHANNEL_PAGINATION_INVALID' }
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
 function parseStringQuery(value: unknown): string | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
@@ -1049,6 +1091,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (!store) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (
+      rejectInvalidActorPagination(req, res, ['beforeSeq', 'afterSeq', 'limit'])
+    )
+      return;
+    if (!requirePersistedChannel(req, res)) return;
     const filter: ChannelHistoryFilter = {};
     const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
     if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
@@ -1196,6 +1243,15 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       if (!store) return;
       const id = req.params['id'] ?? '';
       if (denyOutOfScopeChannel(req, res, id)) return;
+      if (
+        rejectInvalidActorPagination(req, res, [
+          'beforeSeq',
+          'afterSeq',
+          'limit',
+        ])
+      )
+        return;
+      if (!requirePersistedChannel(req, res)) return;
       const rootMessageId = req.params['rootMessageId'] ?? '';
       const filter: ChannelHistoryFilter = {};
       const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
@@ -1377,6 +1433,19 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     // live turn is allowed to finish first. Omitted (the default) queues; the
     // binder is the sole interpreter and ignores it for non-human senders.
     const suppliedSteering = body['steering'];
+    if (
+      suppliedSteering !== undefined &&
+      authenticatedCliGatewayActorCredential(req)
+    ) {
+      sendGatewayError(
+        res,
+        'FORBIDDEN',
+        'scoped actors cannot steer private agent runtime turns',
+        false,
+        { field: 'steering', reasonCode: 'CHANNEL_ACTOR_STEERING_FORBIDDEN' }
+      );
+      return;
+    }
     if (
       suppliedSteering !== undefined &&
       !isChannelPostSteering(suppliedSteering)

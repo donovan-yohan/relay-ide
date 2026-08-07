@@ -58,8 +58,29 @@ import {
   type ChannelEventV1,
 } from '../shared/channel-chat-protocol.js';
 import { dmChannelCreateInput } from '../shared/dm-channels.js';
+import { commandSpec } from '../shared/cli-gateway-contract.js';
 
 const cleanup: Array<() => void> = [];
+
+function expectRuntimeCursorMatchesSchema(
+  command: 'channels.history' | 'channels.threads.history',
+  cursor: Record<string, unknown>
+): void {
+  const schema =
+    commandSpec(command).outputSchema.properties?.['data']?.properties?.[
+      'nextCursor'
+    ];
+  const matchingBranches =
+    schema?.oneOf?.filter((branch) => {
+      const required = branch.required ?? [];
+      const properties = branch.properties ?? {};
+      return (
+        required.every((key) => Object.hasOwn(cursor, key)) &&
+        Object.keys(cursor).every((key) => Object.hasOwn(properties, key))
+      );
+    }) ?? [];
+  expect(matchingBranches).toHaveLength(1);
+}
 
 afterEach(() => {
   while (cleanup.length > 0) cleanup.pop()?.();
@@ -781,6 +802,60 @@ describe('channel routes — read / write contract', () => {
     ]);
   });
 
+  it('rejects scoped-actor steering before fresh or replay binder side effects', async () => {
+    const steered: string[] = [];
+    const h = await harness({
+      binder: { steerExisting: (_message, steering) => steered.push(steering) },
+    });
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const headers = {
+      'x-test-actor-id': 'scoped-agent',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+    };
+    const deniedFresh = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      headers,
+      body: {
+        text: 'no control',
+        clientMessageId: 'fresh',
+        steering: 'interrupt',
+      },
+    });
+    expect(deniedFresh.status).toBe(403);
+    expect(deniedFresh.body.error.code).toBe('FORBIDDEN');
+    expect(h.store.history(h.channelId)).toHaveLength(0);
+    expect(
+      (
+        await req({
+          port: h.port,
+          method: 'POST',
+          url,
+          headers,
+          body: { text: 'queued', clientMessageId: 'replay' },
+        })
+      ).status
+    ).toBe(201);
+    expect(
+      (
+        await req({
+          port: h.port,
+          method: 'POST',
+          url,
+          headers,
+          body: {
+            text: 'queued',
+            clientMessageId: 'replay',
+            steering: 'interrupt',
+          },
+        })
+      ).status
+    ).toBe(403);
+    expect(steered).toEqual([]);
+    expect(h.store.history(h.channelId)).toHaveLength(1);
+  });
+
   it('paginates history with limit and afterSeq', async () => {
     const h = await harness();
     const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
@@ -793,6 +868,43 @@ describe('channel routes — read / write contract', () => {
       url: `${url}?afterSeq=3&limit=10`,
     });
     expect(page.body.messages.map((m) => m.seq)).toEqual([4, 5]);
+  });
+
+  it('fails closed for undeclared actor history queries and missing channels', async () => {
+    const h = await harness();
+    const headers = {
+      'x-test-actor-id': 'scoped-agent',
+      'x-test-actor-scope': JSON.stringify({
+        channelIds: [h.channelId, 'missing'],
+      }),
+      'x-relay-capabilities': 'context:read',
+    };
+    for (const query of [
+      'threadId=root',
+      'undeclared=value',
+      'limit=-1',
+      'limit=201',
+      'limit=1.5',
+      'afterSeq=junk',
+      'afterSeq=1&afterSeq=2',
+    ]) {
+      const response = await req<{ error: { code: string } }>({
+        port: h.port,
+        method: 'GET',
+        url: `/channels/${encodeURIComponent(h.channelId)}/messages?${query}`,
+        headers,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('INVALID_ARGUMENT');
+    }
+    const missing = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/missing/messages',
+      headers,
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('NOT_FOUND');
   });
 
   it('byte-budgets a history response and returns a continuation cursor', async () => {
@@ -817,6 +929,10 @@ describe('channel routes — read / write contract', () => {
     expect(page.body.messages.length).toBeLessThan(12); // stopped before the full page
     const lastSeq = page.body.messages[page.body.messages.length - 1]!.seq;
     expect(page.body.nextCursor?.afterSeq).toBe(lastSeq);
+    expectRuntimeCursorMatchesSchema(
+      'channels.history',
+      page.body.nextCursor as Record<string, unknown>
+    );
     const bytes = Buffer.byteLength(JSON.stringify(page.body.messages), 'utf8');
     expect(bytes).toBeLessThanOrEqual(4000 + 1200);
   });
@@ -901,6 +1017,10 @@ describe('channel routes — threads', () => {
     expect(page1.body.messages.map((message) => message.seq)).toEqual([1, 2]);
     expect(page1.body.hasMore).toBe(true);
     expect(page1.body.nextCursor).toEqual({ afterSeq: 2 });
+    expectRuntimeCursorMatchesSchema(
+      'channels.threads.history',
+      page1.body.nextCursor as Record<string, unknown>
+    );
 
     const page2 = await req<{
       messages: Array<{ seq: number }>;
