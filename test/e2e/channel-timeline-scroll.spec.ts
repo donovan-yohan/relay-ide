@@ -123,7 +123,9 @@ test.describe('smoke channel timeline scroll UX (#1193)', () => {
 
     const card = row.locator('.ch-agent-card');
     await expect(card).toHaveAttribute('data-agent-card-kind', 'thought');
-    await expect(card.locator('.ch-agent-card__status')).toHaveText('running');
+    await expect(card.locator('.ch-agent-card__status')).toHaveText(
+      'reasoning…'
+    );
     await card.locator('.ch-agent-card__toggle').click();
     await expect(card.locator('.ch-agent-card__body')).toContainText(
       'authoritative debounced browser row'

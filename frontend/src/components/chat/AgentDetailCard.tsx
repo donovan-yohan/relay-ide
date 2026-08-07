@@ -9,12 +9,21 @@ import {
 } from 'lucide-react';
 import type { AgentDetailCardV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { useShikiHighlight } from '../../hooks/useShikiHighlight.js';
+import {
+  ReasoningDetail,
+  type ReasoningTerminalState,
+} from './ReasoningDetail.js';
+import type { ReasoningDetailStateApi } from './ReasoningDetailState.js';
 import './AgentDetailCard.css';
 
 interface AgentDetailCardProps {
   card: AgentDetailCardV2;
   /** Stable outer item id; isolates syntax-highlight cache entries. */
   itemId: string;
+  /** More specific channel-turn boundary for truthful reasoning labels. */
+  reasoningTerminalState?: ReasoningTerminalState | undefined;
+  reasoningViewState?: ReasoningDetailStateApi | undefined;
+  reasoningStateKey?: string | undefined;
   onUserToggle?: (itemId: string) => void;
 }
 
@@ -201,6 +210,9 @@ function CardContent({ card, itemId }: CardContentProps) {
 export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
   card,
   itemId,
+  reasoningTerminalState,
+  reasoningViewState,
+  reasoningStateKey,
   onUserToggle,
 }) => {
   const [expanded, setExpanded] = useState(false);
@@ -211,6 +223,25 @@ export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
   const size = contentSize(card);
   const title = card.path ?? card.title;
   const bodyId = `agent-detail-body-${itemId}`;
+
+  if (card.kind === 'thought') {
+    return (
+      <ReasoningDetail
+        key={itemId}
+        card={card}
+        itemId={itemId}
+        {...(reasoningStateKey ? { stateKey: reasoningStateKey } : {})}
+        size={size}
+        {...(reasoningTerminalState
+          ? { terminalState: reasoningTerminalState }
+          : {})}
+        {...(reasoningViewState ? { viewState: reasoningViewState } : {})}
+        {...(onUserToggle ? { onUserToggle } : {})}
+      >
+        <CardContent card={card} itemId={itemId} />
+      </ReasoningDetail>
+    );
+  }
 
   return (
     <div

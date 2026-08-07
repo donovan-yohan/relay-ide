@@ -6,6 +6,7 @@ import type {
   ChannelPostSteering,
 } from '../../../../shared/channel-chat-protocol.js';
 import { useChannelThread } from '../../hooks/useChannelThread.js';
+import { shouldRenderChannelMessage } from '../../lib/chat/reasoning-detail.js';
 import {
   buildTimelineNodes,
   deriveReplyCounts,
@@ -15,6 +16,7 @@ import {
 import { ChannelComposer } from './ChannelComposer.js';
 import { ChannelMessageGroup } from './ChannelMessageGroup.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
+import { useReasoningDetailStateScope } from './ReasoningDetailState.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
 import { useLiveReplyGrowth } from './useLiveReplyGrowth.js';
 
@@ -88,6 +90,13 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
     error,
     rootFloorRevision,
   } = useChannelThread(channelId, rootId, liveMessages);
+  const reasoningViewState = useReasoningDetailStateScope(
+    `thread:${channelId}:${rootId}`
+  );
+  const visibleReplies = useMemo(
+    () => replies.filter(shouldRenderChannelMessage),
+    [replies]
+  );
 
   const replyActivity = useMemo(
     () => deriveReplyCounts(root ? [root, ...replies] : replies),
@@ -109,7 +118,10 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
         liveReplyGrowth.get(root.id) ?? 0
       )
     : replies.length;
-  const nodes = useMemo(() => buildTimelineNodes(replies, null), [replies]);
+  const nodes = useMemo(
+    () => buildTimelineNodes(visibleReplies, null),
+    [visibleReplies]
+  );
   const {
     containerRef,
     contentRef,
@@ -117,7 +129,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
     scrollToBottom,
     newMessageCount,
   } = useFollowingScroll({
-    messages: replies,
+    messages: visibleReplies,
     hasMoreOlder,
     loadingOlder,
     loadOlder,
@@ -159,6 +171,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
             sender={root.sender}
             messages={[root]}
             channelId={channelId}
+            reasoningViewState={reasoningViewState}
           />
         ) : loading ? (
           <div className="ch-thread__state">loading thread…</div>
@@ -217,6 +230,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
                     key={message.id}
                     message={message}
                     channelId={channelId}
+                    reasoningViewState={reasoningViewState}
                     variant="system"
                   />
                 ));
@@ -229,6 +243,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
                   sender={node.sender}
                   messages={node.messages}
                   channelId={channelId}
+                  reasoningViewState={reasoningViewState}
                 />
               );
             })}
