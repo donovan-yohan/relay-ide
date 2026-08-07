@@ -76,7 +76,12 @@ function assertCorrelatedResponse(message: RpcMessage, command: string): void {
   requiredString(message.id, `${command} response id`);
   if (message.command !== command)
     throw new Error(`${command} response command did not match request`);
-  if (message.success !== true) throw new Error(`${command} was unsuccessful`);
+  if (message.success !== true)
+    throw new Error(
+      typeof message.error === 'string' && message.error.length > 0
+        ? message.error
+        : `${command} was unsuccessful`
+    );
 }
 
 function hashIdentifier(value: string): string {
@@ -320,9 +325,10 @@ function commandAvailable(command: string, env: NodeJS.ProcessEnv): boolean {
 }
 
 function readProvider(argv: string[]): SmokeProvider[] {
+  const positionalIndex = argv.indexOf('--provider');
   const selected =
     argv.find((arg) => arg.startsWith('--provider='))?.slice(11) ??
-    argv[argv.indexOf('--provider') + 1];
+    (positionalIndex >= 0 ? argv[positionalIndex + 1] : undefined);
   if (!selected || selected === 'both') return [PI, PRIME_AGENT];
   if (selected === PI) return [PI];
   if (selected === PRIME_AGENT || selected === 'prime') return [PRIME_AGENT];
@@ -357,7 +363,7 @@ function providerSkipReason(error: unknown): string | undefined {
   )
     return 'provider reported missing or unconfigured model';
   if (
-    /(?:auth|credential|api key|login|unauthori[sz]ed|forbidden|access token)/.test(
+    /(?:\bauth(?:entication|orization)?\b|\bcredentials?\b|\bapi[ -]?key\b|\blogin\b|\bunauthori[sz]ed\b|\bforbidden\b|\baccess token\b)/.test(
       message
     )
   )
@@ -396,6 +402,16 @@ export async function runSmokeCli(
     return 0;
   }
 
+  let timeoutMs: number;
+  try {
+    timeoutMs = parseTimeout(env.RELAY_AGENT_RPC_SMOKE_TIMEOUT_MS);
+  } catch (error) {
+    log(
+      `ERROR agent RPC smoke: ${error instanceof Error ? error.message : 'invalid timeout'}`
+    );
+    return 1;
+  }
+
   let failed = false;
   for (const provider of providers) {
     const model = modelFor(provider, env);
@@ -416,7 +432,7 @@ export async function runSmokeCli(
         command,
         model,
         env,
-        timeoutMs: parseTimeout(env.RELAY_AGENT_RPC_SMOKE_TIMEOUT_MS),
+        timeoutMs,
       });
       log(
         `PASS ${provider}: terminal=${result.terminalEvent} session=${result.sessionHash}`
@@ -437,7 +453,14 @@ export async function runSmokeCli(
 
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
-  runSmokeCli().then((code) => {
-    process.exitCode = code;
-  });
+  void runSmokeCli()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error: unknown) => {
+      console.error(
+        `ERROR agent RPC smoke: ${error instanceof Error ? error.message : String(error)}`
+      );
+      process.exitCode = 1;
+    });
 }

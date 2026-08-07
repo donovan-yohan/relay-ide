@@ -138,9 +138,7 @@ export class PiAgentRpcClient extends EventEmitter {
     const promise = new Promise<PiAgentRpcMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new Error(`pi RPC ${type} timed out after ${timeoutMs}ms`)
-        );
+        reject(new Error(`pi RPC ${type} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, command: type, timer });
@@ -312,7 +310,18 @@ export class PiAgentRpcClient extends EventEmitter {
     if (!stdin) return;
     while (this.writes.length) {
       const line = this.writes.shift()!;
-      if (!stdin.write(line)) {
+      let accepted: boolean;
+      try {
+        accepted = stdin.write(line);
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        this.writes.length = 0;
+        this.rejectPending(failure);
+        this.emit('error', failure);
+        return;
+      }
+      if (!accepted) {
         this.draining = true;
         const onDrain = () => {
           this.detachDrainListener = null;

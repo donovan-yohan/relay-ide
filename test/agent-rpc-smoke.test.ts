@@ -97,7 +97,7 @@ describe('agent RPC smoke harness', () => {
         provider,
         command,
         model: 'fixture-model',
-        timeoutMs: 1_000,
+        timeoutMs: 10_000,
         env: {
           ...process.env,
           FAKE_PROVIDER: provider,
@@ -172,6 +172,20 @@ describe('agent RPC smoke harness', () => {
     ]);
   });
 
+  it('ignores unrelated argv when provider was not specified', async () => {
+    const output: string[] = [];
+    await expect(
+      runSmokeCli({
+        argv: ['unrelated'],
+        env: {},
+        log: (line) => output.push(line),
+      })
+    ).resolves.toBe(0);
+    expect(output).toHaveLength(2);
+    expect(output[0]).toContain('SKIP pi:');
+    expect(output[1]).toContain('SKIP prime-agent:');
+  });
+
   it('reports a missing provider binary as a skip, not a pass', async () => {
     const output: string[] = [];
     await expect(
@@ -225,6 +239,49 @@ describe('agent RPC smoke harness', () => {
       expect(output).toEqual([expect.stringContaining(expected)]);
     }
   );
+
+  it.each(['authority denied', 'author rejected'])(
+    'does not classify unrelated auth substring as credentials: %s',
+    async (failure) => {
+      const { command, log } = fixture('pi');
+      const output: string[] = [];
+      await expect(
+        runSmokeCli({
+          argv: ['--provider=pi'],
+          env: {
+            ...process.env,
+            RELAY_AGENT_RPC_SMOKE_LIVE: '1',
+            RELAY_AGENT_RPC_SMOKE_CREDENTIALS: '1',
+            RELAY_AGENT_RPC_SMOKE_MODEL: 'fixture-model',
+            RELAY_AGENT_RPC_SMOKE_PI_COMMAND: command,
+            FAKE_PROVIDER: 'pi',
+            FAKE_RPC_LOG: log,
+            FAKE_FAILURE: failure,
+          },
+          log: (line) => output.push(line),
+        })
+      ).resolves.toBe(1);
+      expect(output).toEqual(['FAIL pi: RPC smoke contract did not complete']);
+    }
+  );
+
+  it('reports an invalid timeout once as an operator error', async () => {
+    const output: string[] = [];
+    await expect(
+      runSmokeCli({
+        argv: ['--provider=both'],
+        env: {
+          RELAY_AGENT_RPC_SMOKE_LIVE: '1',
+          RELAY_AGENT_RPC_SMOKE_CREDENTIALS: '1',
+          RELAY_AGENT_RPC_SMOKE_TIMEOUT_MS: 'nope',
+        },
+        log: (line) => output.push(line),
+      })
+    ).resolves.toBe(1);
+    expect(output).toEqual([
+      'ERROR agent RPC smoke: RELAY_AGENT_RPC_SMOKE_TIMEOUT_MS must be an integer from 1000 to 60000',
+    ]);
+  });
 
   it('turns a successful get_state without a configured model into a skip', async () => {
     const { command, log } = fixture('pi');

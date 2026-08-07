@@ -691,6 +691,52 @@ describe('PrimeAgentProtocolAdapter', () => {
     );
   });
 
+  it('routes interleaved anonymous Prime tools by name and args', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'tools' });
+    for (const command of ['one', 'two'])
+      client.emit('event', {
+        type: 'tool_execution_start',
+        toolName: 'bash',
+        args: { command },
+      });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      args: { command: 'two' },
+      result: { content: [{ type: 'text', text: 'second' }] },
+      isError: false,
+    });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      args: { command: 'one' },
+      result: { content: [{ type: 'text', text: 'first' }] },
+      isError: false,
+    });
+    const started = patches
+      .filter((patch) => patch.type === 'agent-item-started-v2')
+      .map((patch) => patch.item as { id: string; command?: string })
+      .filter((item) => item.command);
+    const idByCommand = new Map(started.map((item) => [item.command, item.id]));
+    const completed = patches
+      .filter((patch) => patch.type === 'agent-item-updated-v2')
+      .map((patch) => patch.item as { id: string; output?: string });
+    expect(completed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: idByCommand.get('one'),
+          output: 'first',
+        }),
+        expect.objectContaining({
+          id: idByCommand.get('two'),
+          output: 'second',
+        }),
+      ])
+    );
+  });
+
   it('bounds image count and rejects MIME-mismatched bytes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'relay-prime-image-'));
     const path = join(directory, 'image.png');

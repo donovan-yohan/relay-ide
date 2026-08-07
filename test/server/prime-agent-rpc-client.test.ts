@@ -202,8 +202,35 @@ describe('PrimeAgentRpcClient', () => {
     const client = new PrimeAgentRpcClient({
       spawn: () => child as unknown as ChildProcess,
       readinessTimeoutMs: 5,
+      stopTimeoutMs: 1,
     });
     await expect(client.start()).rejects.toThrow('get_state timed out');
+  });
+
+  it('rejects calls when stdin.write throws synchronously', async () => {
+    const child = fakeChild();
+    const client = new PrimeAgentRpcClient({
+      spawn: () => child as unknown as ChildProcess,
+    });
+    child.stdin.once('data', (chunk) => {
+      const request = JSON.parse(String(chunk)) as { id: string };
+      child.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          type: 'response',
+          command: 'get_state',
+          success: true,
+        }) + '\n'
+      );
+    });
+    await client.start();
+    vi.spyOn(child.stdin, 'write').mockImplementation(() => {
+      throw new Error('stdin exploded');
+    });
+
+    await expect(client.call('prompt', { message: 'x' })).rejects.toThrow(
+      'stdin exploded'
+    );
   });
 
   it('cleans a failed readiness attempt before a later start', async () => {

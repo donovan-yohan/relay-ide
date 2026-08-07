@@ -84,6 +84,21 @@ function toolArguments(value: unknown): RpcRecord {
   }
   return {};
 }
+function stableToolArgs(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map((entry) => stableToolArgs(entry)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const object = value as RpcRecord;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableToolArgs(object[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+function toolIdentityKey(name: string, args: RpcRecord): string {
+  return `${name}\0${stableToolArgs(args)}`;
+}
 function isCommandTool(name: string): boolean {
   return /^(bash|shell|exec|terminal)$/i.test(name);
 }
@@ -151,6 +166,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   // reset a stuck tool's streak (an empty `bash` loop keeps counting regardless
   // of interleaved `edit` calls).
   private readonly emptyToolCounts = new Map<string, number>();
+  private readonly suppressedEmptyToolIds = new Set<string>();
 
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
@@ -233,6 +249,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.items.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
   }
 
   private async teardownClient(): Promise<void> {
@@ -464,6 +481,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     // rejected by the harness validator (no usable tool result), which makes the
     // model retry the identical empty call until it exhausts output tokens.
     if (this.isEmptyToolCall(name, args)) {
+      this.suppressedEmptyToolIds.add(id);
       this.handleEmptyToolCall(name);
       return;
     }
@@ -499,7 +517,8 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private injectCorrectivePrompt(name: string): void {
-    const client = this.requireClient();
+    const client = this._status === 'connected' ? this.client : null;
+    if (!client) return;
     const corrective =
       `Your previous ${name} tool call omitted the required arguments (received empty). ` +
       `Re-issue the call with a concrete command/path, or if no tool is needed, ` +
@@ -559,6 +578,13 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private updateTool(event: RpcRecord, result: unknown, done: boolean): void {
     if (!this.activeTurnId) return;
     const id = this.toolIdForUpdate(event);
+    if (this.suppressedEmptyToolIds.has(id)) {
+      if (done) {
+        this.suppressedEmptyToolIds.delete(id);
+        this.forgetAnonymousToolId(event, id);
+      }
+      return;
+    }
     this.ensureTool(
       id,
       string(event.toolName, 'tool'),
@@ -761,6 +787,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
     this.emptyToolCounts.clear();
+    this.suppressedEmptyToolIds.clear();
     const timestamp = nowIso();
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -830,6 +857,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.emptyToolCounts.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
     this.emitLive({
       status: this.queued.length ? 'working' : 'idle',
       activeTurnId: null,
@@ -856,11 +884,12 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const providerId = string(event.toolCallId).trim();
     if (providerId) return providerId;
     const name = string(event.toolName, 'tool');
-    const pending = this.pendingAnonymousToolIds.get(name);
+    const key = toolIdentityKey(name, toolArguments(event.args));
+    const pending = this.pendingAnonymousToolIds.get(key);
     const id = pending?.shift() ?? this.fallbackToolId();
-    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(name);
-    this.anonymousToolIds.set(name, [
-      ...(this.anonymousToolIds.get(name) ?? []),
+    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(key);
+    this.anonymousToolIds.set(key, [
+      ...(this.anonymousToolIds.get(key) ?? []),
       id,
     ]);
     return id;
@@ -869,27 +898,43 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const providerId = string(event.toolCallId).trim();
     if (providerId) return providerId;
     const name = string(event.toolName, 'tool');
-    return this.anonymousToolIds.get(name)?.[0] ?? this.toolIdForStart(event);
+    const args = toolArguments(event.args);
+    const exact = this.anonymousToolIds.get(toolIdentityKey(name, args))?.[0];
+    if (exact) return exact;
+    // If args are absent, concurrent same-name events are indistinguishable;
+    // FIFO is the only truthful fallback available from the provider stream.
+    if (Object.keys(args).length === 0) {
+      for (const [key, ids] of this.anonymousToolIds) {
+        if (key.startsWith(`${name}\0`) && ids[0]) return ids[0];
+      }
+    }
+    return this.toolIdForStart(event);
   }
   private toolIdForPreview(toolCall: RpcRecord, index: number): string {
     const providerId = string(toolCall.id).trim();
     if (providerId) return providerId;
     const name = string(toolCall.name, 'tool');
+    const key = toolIdentityKey(
+      name,
+      toolArguments(toolCall.arguments ?? toolCall.args)
+    );
     const id = this.fallbackToolId(index);
-    this.pendingAnonymousToolIds.set(name, [
-      ...(this.pendingAnonymousToolIds.get(name) ?? []),
+    this.pendingAnonymousToolIds.set(key, [
+      ...(this.pendingAnonymousToolIds.get(key) ?? []),
       id,
     ]);
     return id;
   }
   private forgetAnonymousToolId(event: RpcRecord, id: string): void {
     if (string(event.toolCallId).trim()) return;
-    const name = string(event.toolName, 'tool');
-    const ids = this.anonymousToolIds.get(name);
-    if (!ids) return;
-    const remaining = ids.filter((candidate) => candidate !== id);
-    if (remaining.length) this.anonymousToolIds.set(name, remaining);
-    else this.anonymousToolIds.delete(name);
+    for (const [key, ids] of this.anonymousToolIds) {
+      const remaining = ids.filter((candidate) => candidate !== id);
+      if (remaining.length !== ids.length) {
+        if (remaining.length) this.anonymousToolIds.set(key, remaining);
+        else this.anonymousToolIds.delete(key);
+        return;
+      }
+    }
   }
   private emitDelta(
     id: string,
@@ -973,6 +1018,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.emptyToolCounts.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
+    this.suppressedEmptyToolIds.clear();
   }
 
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {

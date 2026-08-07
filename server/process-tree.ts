@@ -257,11 +257,13 @@ export function collectLanguageServerDiagnostics(
     .filter((proc) => proc.languageServerKind)
     .map((proc) => {
       const ancestors = ancestorsOf(proc, byPid);
-      const relayOwnedLikely = [proc, ...ancestors].some((candidate) =>
-        /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent|\bpi\b/i.test(
-          candidate.commandLine
-        )
-      );
+      const relayOwnedLikely = [proc, ...ancestors].some((candidate) => {
+        return (
+          /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent/i.test(
+            candidate.commandLine
+          ) || /(?:^|\/)pi$/i.test(candidate.command)
+        );
+      });
       return {
         pid: proc.pid,
         ppid: proc.ppid,

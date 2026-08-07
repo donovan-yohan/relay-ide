@@ -439,6 +439,52 @@ describe('PiAgentProtocolAdapter', () => {
     );
   });
 
+  it('routes interleaved anonymous Pi tools by name and args', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'tools' });
+    for (const command of ['one', 'two'])
+      client.emit('event', {
+        type: 'tool_execution_start',
+        toolName: 'bash',
+        args: { command },
+      });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      args: { command: 'two' },
+      result: { content: [{ type: 'text', text: 'second' }] },
+      isError: false,
+    });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      args: { command: 'one' },
+      result: { content: [{ type: 'text', text: 'first' }] },
+      isError: false,
+    });
+    const started = patches
+      .filter((patch) => patch.type === 'agent-item-started-v2')
+      .map((patch) => patch.item as { id: string; command?: string })
+      .filter((item) => item.command);
+    const idByCommand = new Map(started.map((item) => [item.command, item.id]));
+    const completed = patches
+      .filter((patch) => patch.type === 'agent-item-updated-v2')
+      .map((patch) => patch.item as { id: string; output?: string });
+    expect(completed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: idByCommand.get('one'),
+          output: 'first',
+        }),
+        expect.objectContaining({
+          id: idByCommand.get('two'),
+          output: 'second',
+        }),
+      ])
+    );
+  });
+
   it('bounds image count and rejects MIME-mismatched bytes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'relay-pi-image-'));
     const path = join(directory, 'image.png');
@@ -812,6 +858,46 @@ describe('PiAgentProtocolAdapter', () => {
     expect(call.mock.calls.filter(([type]) => type === 'prompt').length).toBe(
       1
     ); // the initial sendMessage
+  });
+
+  it('does not recreate a suppressed empty tool when its end event arrives', async () => {
+    const { adapter, client, patches } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't-empty-end', content: 'go' });
+    client.emit('event', {
+      type: 'tool_execution_start',
+      toolCallId: 'empty-end',
+      toolName: 'bash',
+      args: {},
+    });
+    client.emit('event', {
+      type: 'tool_execution_end',
+      toolCallId: 'empty-end',
+      toolName: 'bash',
+      args: {},
+      result: { content: [{ type: 'text', text: 'invalid' }] },
+      isError: true,
+    });
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-started-v2' &&
+          (patch.item as { id?: string }).id === 'empty-end'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('does not throw when corrective steering loses its client', async () => {
+    const { adapter } = harness();
+    await adapter.connect(config);
+    await adapter.disconnect();
+    expect(() =>
+      (
+        adapter as unknown as {
+          injectCorrectivePrompt(name: string): void;
+        }
+      ).injectCorrectivePrompt('bash')
+    ).not.toThrow();
   });
 
   it('does not inject after interleaved empty calls from different tools', async () => {

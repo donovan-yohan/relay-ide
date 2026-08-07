@@ -312,7 +312,18 @@ export class PrimeAgentRpcClient extends EventEmitter {
     if (!stdin) return;
     while (this.writes.length) {
       const line = this.writes.shift()!;
-      if (!stdin.write(line)) {
+      let accepted: boolean;
+      try {
+        accepted = stdin.write(line);
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        this.writes.length = 0;
+        this.rejectPending(failure);
+        this.emit('error', failure);
+        return;
+      }
+      if (!accepted) {
         this.draining = true;
         const onDrain = () => {
           this.detachDrainListener = null;

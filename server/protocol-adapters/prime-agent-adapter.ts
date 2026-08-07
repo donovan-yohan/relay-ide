@@ -89,6 +89,21 @@ function toolArguments(value: unknown): RpcRecord {
   }
   return {};
 }
+function stableToolArgs(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map((entry) => stableToolArgs(entry)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const object = value as RpcRecord;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableToolArgs(object[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+function toolIdentityKey(name: string, args: RpcRecord): string {
+  return `${name}\0${stableToolArgs(args)}`;
+}
 function isCommandTool(name: string): boolean {
   return /^(bash|shell|exec|terminal)$/i.test(name);
 }
@@ -885,11 +900,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const providerId = string(event.toolCallId).trim();
     if (providerId) return providerId;
     const name = string(event.toolName, 'tool');
-    const pending = this.pendingAnonymousToolIds.get(name);
+    const key = toolIdentityKey(name, toolArguments(event.args));
+    const pending = this.pendingAnonymousToolIds.get(key);
     const id = pending?.shift() ?? this.fallbackToolId();
-    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(name);
-    this.anonymousToolIds.set(name, [
-      ...(this.anonymousToolIds.get(name) ?? []),
+    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(key);
+    this.anonymousToolIds.set(key, [
+      ...(this.anonymousToolIds.get(key) ?? []),
       id,
     ]);
     return id;
@@ -898,27 +914,43 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const providerId = string(event.toolCallId).trim();
     if (providerId) return providerId;
     const name = string(event.toolName, 'tool');
-    return this.anonymousToolIds.get(name)?.[0] ?? this.toolIdForStart(event);
+    const args = toolArguments(event.args);
+    const exact = this.anonymousToolIds.get(toolIdentityKey(name, args))?.[0];
+    if (exact) return exact;
+    // If args are absent, concurrent same-name events are indistinguishable;
+    // FIFO is the only truthful fallback available from the provider stream.
+    if (Object.keys(args).length === 0) {
+      for (const [key, ids] of this.anonymousToolIds) {
+        if (key.startsWith(`${name}\0`) && ids[0]) return ids[0];
+      }
+    }
+    return this.toolIdForStart(event);
   }
   private toolIdForPreview(toolCall: RpcRecord, index: number): string {
     const providerId = string(toolCall.id).trim();
     if (providerId) return providerId;
     const name = string(toolCall.name, 'tool');
+    const key = toolIdentityKey(
+      name,
+      toolArguments(toolCall.arguments ?? toolCall.args)
+    );
     const id = this.fallbackToolId(index);
-    this.pendingAnonymousToolIds.set(name, [
-      ...(this.pendingAnonymousToolIds.get(name) ?? []),
+    this.pendingAnonymousToolIds.set(key, [
+      ...(this.pendingAnonymousToolIds.get(key) ?? []),
       id,
     ]);
     return id;
   }
   private forgetAnonymousToolId(event: RpcRecord, id: string): void {
     if (string(event.toolCallId).trim()) return;
-    const name = string(event.toolName, 'tool');
-    const ids = this.anonymousToolIds.get(name);
-    if (!ids) return;
-    const remaining = ids.filter((candidate) => candidate !== id);
-    if (remaining.length) this.anonymousToolIds.set(name, remaining);
-    else this.anonymousToolIds.delete(name);
+    for (const [key, ids] of this.anonymousToolIds) {
+      const remaining = ids.filter((candidate) => candidate !== id);
+      if (remaining.length !== ids.length) {
+        if (remaining.length) this.anonymousToolIds.set(key, remaining);
+        else this.anonymousToolIds.delete(key);
+        return;
+      }
+    }
   }
   private emitDelta(
     id: string,
