@@ -14,12 +14,12 @@ import type { Attachment } from './protocol-adapter-v2.js';
 // deterministic string shape (§4 of the spec). It never touches the network, the
 // store, or the adapter, so the golden test pins the exact bytes an agent sees.
 
-/** Newest N context rows retained; older eligible rows collapse to one marker. */
-export const PACKET_MAX_ROWS = 20;
+/** Newest N text context rows retained; older eligible rows collapse to one marker. */
+export const PACKET_MAX_ROWS = 16;
 /** Per-row body cap before the ellipsis marker (token frugality). */
 export const PACKET_ROW_MAX_CHARS = 2000;
 /** Whole-packet byte budget — oldest context rows drop until under (never the trigger). */
-export const PACKET_MAX_BYTES = 24 * 1024;
+export const PACKET_MAX_BYTES = 16 * 1024;
 /** Provider turns receive at most four images, regardless of retained row count. */
 export const PACKET_IMAGE_MAX_COUNT = 4;
 /** General raw-image ceiling bounds synchronous adapter encoding work. */
@@ -53,6 +53,8 @@ const ROW_TRUNCATED_SUFFIX = '…[truncated]';
  * that reads like an empty message.
  */
 const DELETED_ROW_MARKER = '[message deleted]';
+const IMAGE_ONLY_ROW_MARKER = '[image-only message]';
+const NON_TEXT_ROW_MARKER = '[non-text message]';
 const THREAD_SCOPE_MARKER =
   '[Thread scope — only this thread is shown; its root message is always included]';
 
@@ -62,7 +64,9 @@ export interface BuildMentionContextPacketInput {
   /** Framework id the packet is addressed to (`you are @<framework>`). */
   framework: string;
   /**
-   * Eligible prior rows, oldest-first. For a channel trigger this is every row
+   * Prior channel rows, oldest-first; only non-empty human/agent prose is eligible,
+   * except that a canonical thread root is always retained structurally. For a
+   * channel trigger this is every row
    * with `lastDeliveredSeq < seq < trigger.seq`. For a threaded trigger this is
    * the thread root plus prior replies; the channel delivery cursor is ignored.
    * The agent's own prior rows are skipped HERE (they already live in the reused
@@ -73,6 +77,15 @@ export interface BuildMentionContextPacketInput {
   trigger: ChannelMessage;
   /** Cursor: 0 for a first-ever mention (cold session → full orientation window). */
   lastDeliveredSeq: number;
+  /**
+   * Exact precomputed counts when the binder paginates a larger raw history.
+   * Unit callers may omit this and let the pure builder derive counts from rows.
+   */
+  summary?: {
+    totalCount: number;
+    activityFilteredCount: number;
+    scope: 'channel' | 'thread';
+  };
 }
 
 /** Stable packet result retained across adapter retry/rebind. */
@@ -127,12 +140,16 @@ function triggerAttribution(message: ChannelMessage): string {
 
 /** Render one row as `label: text`, agent-tagged, with multi-line bodies indented. */
 function renderRow(message: ChannelMessage): string {
-  // A tombstone reaching this point is a retained thread root; its body is
-  // already empty in the store, so the marker is what stands in for it. Every
-  // other deleted row was filtered out before assembly.
+  // Non-prose rows reaching this point are canonical thread roots. Render a
+  // truthful non-empty structural marker while their attachment refs continue
+  // through the envelope's image lane.
   const source = isChannelMessageDeleted(message)
     ? DELETED_ROW_MARKER
-    : message.body.text;
+    : message.body.text.trim().length > 0
+      ? message.body.text
+      : (message.parts?.length ?? 0) > 0
+        ? IMAGE_ONLY_ROW_MARKER
+        : NON_TEXT_ROW_MARKER;
   const truncated =
     source.length > PACKET_ROW_MAX_CHARS
       ? source.slice(0, PACKET_ROW_MAX_CHARS) + ROW_TRUNCATED_SUFFIX
@@ -155,12 +172,32 @@ function renderRow(message: ChannelMessage): string {
   return indentRest(`${label}: ${first}`);
 }
 
+/** Whether a durable row is human/agent prose suitable for agent context. */
+export function isMentionContextProseRow(row: ChannelMessage): boolean {
+  return (
+    row.kind === 'message' &&
+    (row.sender.kind === 'human' || row.sender.kind === 'agent') &&
+    row.agentDetail === undefined &&
+    !isChannelMessageDeleted(row) &&
+    row.body.text.trim().length > 0
+  );
+}
+
+/** Provider conversation rows already retained by the receiving agent. */
+export function isOwnMentionContextRow(
+  row: ChannelMessage,
+  framework: string
+): boolean {
+  return row.sender.kind === 'agent' && row.sender.providerId === framework;
+}
+
 /**
  * Build the deterministic context packet delivered as the agent's turn content.
  *
  * Shape (§4):
  *   [Relay channel #<title> — you are @<framework>, one participant in a multi-party chat]
- *   Recent messages, oldest first. Lines are "sender: text"; ...        (only with context)
+ *   N messages since your last turn (M shown, K activity rows filtered).
+ *   Recent text messages, oldest first. Lines are "sender: text"; ...   (only with context)
  *   […earlier messages omitted]                                          (only when >N eligible)
  *   <sender>: <text>
  *   ...
@@ -177,31 +214,37 @@ export function buildMentionContextPacketEnvelope(
   const header = `[Relay channel #${input.channelTitle} — you are @${input.framework}, one participant in a multi-party chat]`;
   const threadRootId = input.trigger.threadId;
 
-  // Eligible = rows strictly after the delivery cursor and strictly before the
-  // trigger, minus the agent's OWN prior rows (already in its reused provider
-  // conversation — re-sending wastes tokens and confuses attribution). A reused
-  // session with no interim rows therefore yields an empty window → header +
-  // footer only; a first-ever mention (cursor 0) yields the full orientation
-  // window.
-  const isOwnAgentRow = (row: ChannelMessage): boolean =>
-    row.sender.kind === 'agent' && row.sender.providerId === input.framework;
-  const eligible = input.rows.filter((row) => {
+  // Candidate rows are strictly after the delivery cursor and before the
+  // trigger, minus the agent's OWN prior prose (already retained by the reused
+  // provider conversation). Detail/activity rows are counted, then filtered,
+  // so the delivery summary is truthful without spending packet rows on blank
+  // tool/thought/status shells (#1358).
+  const candidates = input.rows.filter((row) => {
     if (row.seq >= input.trigger.seq) return false;
     if (threadRootId !== null) {
       const isRoot = row.id === threadRootId;
       if (!isRoot && row.threadId !== threadRootId) return false;
-      // A deleted row carries nothing an agent can act on, so it is dropped —
-      // except a thread root, which is structural and is retained as
-      // `DELETED_ROW_MARKER` instead (#1308 slice 1 item 4).
-      if (isChannelMessageDeleted(row)) return isRoot;
-      return isRoot || !isOwnAgentRow(row);
+      return isRoot || !isOwnMentionContextRow(row, input.framework);
     }
-    if (isChannelMessageDeleted(row)) return false;
-    return row.seq > input.lastDeliveredSeq && !isOwnAgentRow(row);
+    return (
+      row.seq > input.lastDeliveredSeq &&
+      !isOwnMentionContextRow(row, input.framework)
+    );
   });
+  const eligible = candidates.filter((row) => {
+    const isRoot = threadRootId !== null && row.id === threadRootId;
+    // Every canonical thread root is structural, including deleted, image-only,
+    // or otherwise non-text roots. Ordinary blank/activity replies still drop.
+    if (isRoot) return true;
+    return isMentionContextProseRow(row);
+  });
+  const activityFilteredCount =
+    input.summary?.activityFilteredCount ?? candidates.length - eligible.length;
+  const contextTotalCount = input.summary?.totalCount ?? candidates.length;
 
   let contextRows: ChannelMessage[];
-  let omittedEarlier = false;
+  let omittedEarlier =
+    contextTotalCount - activityFilteredCount > eligible.length;
   if (threadRootId !== null) {
     const root = eligible.find((row) => row.id === threadRootId);
     if (!root) {
@@ -234,13 +277,19 @@ export function buildMentionContextPacketEnvelope(
   ].join('\n');
 
   const assemble = (rows: ChannelMessage[], omitted: boolean): string => {
+    const summary =
+      (input.summary?.scope ??
+        (threadRootId === null ? 'channel' : 'thread')) === 'thread'
+        ? `${contextTotalCount} prior thread rows (${rows.length} shown, ${activityFilteredCount} activity rows filtered).`
+        : `${contextTotalCount} messages since your last turn (${rows.length} shown, ${activityFilteredCount} activity rows filtered).`;
     const scopeLines = threadRootId !== null ? [THREAD_SCOPE_MARKER] : [];
     if (rows.length === 0) {
-      return [header, ...scopeLines, '', footer].join('\n');
+      return [header, summary, ...scopeLines, '', footer].join('\n');
     }
     const contextBlock = [
+      summary,
       ...scopeLines,
-      'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+      'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
       ...(threadRootId !== null && omitted
         ? [renderRow(rows[0]!), OMITTED_MARKER, ...rows.slice(1).map(renderRow)]
         : [...(omitted ? [OMITTED_MARKER] : []), ...rows.map(renderRow)]),

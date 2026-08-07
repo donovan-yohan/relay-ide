@@ -118,6 +118,119 @@ export function buildChannelThreadHistorySql(
            ORDER BY m.seq ${order} LIMIT @limit`;
 }
 
+export type ChannelMentionContextScope = 'channel' | 'thread';
+
+/**
+ * Exact summary + bounded-row query used by mention delivery (#1358).
+ *
+ * Both builders deliberately share the same candidate/eligibility predicates.
+ * The count query sees the entire seq range, while the rows query sorts that
+ * range newest-first before LIMIT. Thus a million activity rows cost no JS
+ * allocations and cannot evict older prose from the packet window.
+ */
+function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
+  if (scope === 'thread') {
+    return `(
+      SELECT root.*
+        FROM channel_messages root
+       WHERE root.id = @threadRootId
+         AND root.channel_id = @channelId
+         AND root.seq < @triggerSeq
+      UNION ALL
+      SELECT reply.*
+        FROM channel_messages reply
+       WHERE reply.thread_id = @threadRootId
+         AND reply.channel_id = @channelId
+         AND reply.seq < @triggerSeq
+    )`;
+  }
+  return `(SELECT channel_row.*
+             FROM channel_messages channel_row
+            WHERE channel_row.channel_id = @channelId
+              AND channel_row.seq > @afterSeq
+              AND channel_row.seq < @triggerSeq)`;
+}
+
+function mentionContextOwnRowSql(
+  scope: ChannelMentionContextScope,
+  alias = 'm'
+): string {
+  const rootException =
+    scope === 'thread' ? `${alias}.id = @threadRootId OR ` : '';
+  return `(${rootException}NOT (
+    ${alias}.sender_kind = 'agent'
+    AND COALESCE(json_extract(${alias}.meta_json, '$.providerId'), '') = @framework
+  ))`;
+}
+
+function mentionContextEligibleSql(
+  scope: ChannelMentionContextScope,
+  alias = 'm'
+): string {
+  const structuralRoot =
+    scope === 'thread' ? `${alias}.id = @threadRootId OR ` : '';
+  return `(${structuralRoot}(
+    ${alias}.kind = 'message'
+    AND ${alias}.sender_kind IN ('human', 'agent')
+    AND json_extract(${alias}.meta_json, '$.agentDetail') IS NULL
+    AND json_extract(${alias}.meta_json, '$.${CHANNEL_DELETED_AT_META_KEY}') IS NULL
+    AND length(trim(${alias}.body_text, char(9) || char(10) || char(11) || char(12) || char(13) || char(32) || char(160) || char(5760) || char(8192) || char(8193) || char(8194) || char(8195) || char(8196) || char(8197) || char(8198) || char(8199) || char(8200) || char(8201) || char(8202) || char(8232) || char(8233) || char(8239) || char(8287) || char(12288) || char(65279))) > 0
+  ))`;
+}
+
+/** Production SQL exported so tests can lock the range-index query plan. */
+export function buildChannelMentionContextCountSql(
+  scope: ChannelMentionContextScope
+): string {
+  const eligible = mentionContextEligibleSql(scope);
+  return `SELECT COUNT(*) AS total_count,
+                 COALESCE(SUM(CASE WHEN ${eligible} THEN 0 ELSE 1 END), 0)
+                   AS activity_filtered_count
+            FROM ${mentionContextCandidateSql(scope)} m
+           WHERE ${mentionContextOwnRowSql(scope)}`;
+}
+
+/** Production SQL returning at most the packet's requested prose-row budget. */
+export function buildChannelMentionContextRowsSql(
+  scope: ChannelMentionContextScope
+): string {
+  if (scope === 'channel') {
+    // Keep this a plain descending range read. The caller reverses sixteen rows
+    // in JS; asking SQLite for ascending output through an outer query adds a
+    // temp sort to the hot path for no benefit.
+    return `SELECT m.*
+              FROM channel_messages m
+             WHERE m.channel_id = @channelId
+               AND m.seq > @afterSeq
+               AND m.seq < @triggerSeq
+               AND ${mentionContextOwnRowSql('channel')}
+               AND ${mentionContextEligibleSql('channel')}
+             ORDER BY m.seq DESC
+             LIMIT @limit`;
+  }
+  // The canonical root is structural regardless of its body/kind. Replies use
+  // the ordinary prose predicate and their own PACKET_MAX_ROWS-1 limit, so the
+  // root cannot be displaced by a long or activity-heavy thread.
+  return `SELECT root.*
+            FROM channel_messages root
+           WHERE root.id = @threadRootId
+             AND root.channel_id = @channelId
+             AND root.seq < @triggerSeq
+           UNION ALL
+          SELECT newest_reply.*
+            FROM (
+              SELECT reply.*
+                FROM channel_messages reply
+               WHERE reply.thread_id = @threadRootId
+                 AND reply.channel_id = @channelId
+                 AND reply.seq < @triggerSeq
+                 AND ${mentionContextOwnRowSql('channel', 'reply')}
+                 AND ${mentionContextEligibleSql('channel', 'reply')}
+               ORDER BY reply.seq DESC
+               LIMIT @replyLimit
+            ) newest_reply`;
+}
+
 /**
  * Production query builder for the channel-list thread aggregate (#1287 slice 5
  * item 18), exported for the same reason `buildChannelThreadHistorySql` is: this
@@ -305,10 +418,7 @@ export function channelSearchPrefixRange(
   const last = terms[terms.length - 1];
   if (last === undefined) return null;
   if ([...last].length < CHANNEL_SEARCH_MIN_QUERY_CHARS) return null;
-  const folded = last
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase();
+  const folded = last.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
   const tokens = folded.split(/[^\p{L}\p{N}]+/u).filter((part) => part !== '');
   const low = tokens[tokens.length - 1];
   if (low === undefined) return null;
@@ -876,6 +986,25 @@ export interface ChannelHistoryFilter {
   threadId?: string;
 }
 
+export interface ChannelMentionContextQuery {
+  channelId: string;
+  framework: string;
+  triggerSeq: number;
+  /** Channel delivery cursor; ignored for thread scope. */
+  afterSeq: number;
+  /** Canonical root id for thread scope, otherwise null. */
+  threadRootId: string | null;
+  /** Total retained row budget, including a structural thread root. */
+  limit: number;
+}
+
+export interface ChannelMentionContextResult {
+  rows: ChannelMessage[];
+  totalCount: number;
+  activityFilteredCount: number;
+  scope: ChannelMentionContextScope;
+}
+
 export interface ChannelMessageSearchQuery {
   /** Raw operator text; normalized into an FTS5 expression by the store. */
   query: string;
@@ -992,6 +1121,13 @@ export interface ChannelMessageStore {
     clientMessageId: string
   ): ChannelMessage | null;
   history(channelId: string, filter?: ChannelHistoryFilter): ChannelMessage[];
+  /**
+   * Exact mention-delivery summary plus newest bounded prose rows. Filtering,
+   * counting, and LIMIT all happen in SQLite; callers must not page JS history.
+   */
+  mentionContext(
+    input: ChannelMentionContextQuery
+  ): ChannelMentionContextResult;
   /**
    * Ranked full-text search over durable message bodies (#1308 slice 2 item 1).
    *
@@ -2367,6 +2503,16 @@ export function createChannelMessageStore(
       WHERE m.channel_id = @channelId AND m.sender_id = @senderId
         AND m.client_message_id = @clientMessageId`
   );
+  const mentionContextStatements = {
+    channel: {
+      count: db.prepare(buildChannelMentionContextCountSql('channel')),
+      rows: db.prepare(buildChannelMentionContextRowsSql('channel')),
+    },
+    thread: {
+      count: db.prepare(buildChannelMentionContextCountSql('thread')),
+      rows: db.prepare(buildChannelMentionContextRowsSql('thread')),
+    },
+  } as const;
 
   // Single atomic INSERT: seq is allocated inside the same statement via
   // SELECT COALESCE(MAX(seq),0)+1. SQLite takes the write lock for the whole
@@ -2919,6 +3065,34 @@ export function createChannelMessageStore(
         )
         .all(params) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
+    },
+
+    mentionContext(input) {
+      const scope: ChannelMentionContextScope =
+        input.threadRootId === null ? 'channel' : 'thread';
+      const limit = cleanLimit(input.limit);
+      const params = {
+        channelId: input.channelId,
+        framework: input.framework,
+        triggerSeq: input.triggerSeq,
+        afterSeq: input.afterSeq,
+        threadRootId: input.threadRootId,
+        limit,
+        replyLimit: Math.max(0, limit - 1),
+      };
+      const statements = mentionContextStatements[scope];
+      const count = statements.count.get(params) as {
+        total_count: number;
+        activity_filtered_count: number;
+      };
+      const rows = statements.rows.all(params) as ChannelMessageRow[];
+      rows.sort((left, right) => left.seq - right.seq);
+      return {
+        rows: rows.map(rowToMessage),
+        totalCount: count.total_count,
+        activityFilteredCount: count.activity_filtered_count,
+        scope,
+      };
     },
 
     searchMessages(input) {

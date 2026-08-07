@@ -7,6 +7,8 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildChannelMentionContextCountSql,
+  buildChannelMentionContextRowsSql,
   buildChannelMessageSearchSql,
   buildChannelSearchMatchQuery,
   buildChannelThreadHistorySql,
@@ -1809,6 +1811,126 @@ describe('channel-message-store posts, threads, idempotency', () => {
 
 // #1287 slice 5 item 18: the rail surfaces threads, so the channel list needs a
 // thread projection that agrees with the in-timeline "N replies" chip.
+describe('channel-message-store mention context (#1358)', () => {
+  it('counts the exact candidate range while returning only newest eligible prose', () => {
+    const s = store();
+    const channelId = 'topic:context';
+    s.appendComplete({ channelId, sender: HUMAN, text: 'before cursor' });
+    const cursor = s.latestSeq(channelId);
+    s.appendComplete({ channelId, sender: HUMAN, text: 'older prose' });
+    s.appendComplete({ channelId, sender: AGENT, text: 'own provider prose' });
+    s.appendComplete({
+      channelId,
+      kind: 'system',
+      sender: { kind: 'system', id: 'system:relay' },
+      text: 'collab:wait',
+    });
+    s.appendComplete({ channelId, sender: HUMAN, text: '\t \n ' });
+    const detail = s.beginStream({
+      channelId,
+      sender: {
+        kind: 'agent',
+        id: 'agent:other',
+        providerId: 'other',
+      },
+      source: {
+        runtimeId: 'runtime:other',
+        turnId: 'turn:detail',
+        itemId: 'item:detail',
+      },
+      agentDetail: {
+        itemId: 'item:detail',
+        card: {
+          kind: 'thought',
+          title: 'Reasoning summary',
+          status: 'running',
+          content: 'not prose',
+        },
+      },
+    });
+    s.finalizeStream(detail.id, { text: '', status: 'complete' });
+    for (let index = 0; index < 18; index += 1) {
+      s.appendComplete({ channelId, sender: HUMAN, text: `prose ${index}` });
+    }
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: cursor,
+      threadRootId: null,
+      limit: 16,
+    });
+    expect(context).toMatchObject({
+      totalCount: 22,
+      activityFilteredCount: 3,
+      scope: 'channel',
+    });
+    expect(context.rows).toHaveLength(16);
+    expect(context.rows.map((row) => row.body.text)).toEqual(
+      Array.from({ length: 16 }, (_, index) => `prose ${index + 2}`)
+    );
+  });
+
+  it('plans counts and bounded rows as direct indexed range reads', () => {
+    const file = dbPath();
+    const s = store(file);
+    const root = s.appendComplete({
+      channelId: 'topic:plan',
+      sender: HUMAN,
+      text: 'thread root',
+    });
+    const db = new Database(file, { readonly: true });
+    cleanup.push(() => db.close());
+    const params = {
+      channelId: 'topic:plan',
+      framework: 'claude',
+      triggerSeq: 100,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+      replyLimit: 15,
+    };
+    const explain = (sql: string): string =>
+      (
+        db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(params) as Array<{
+          detail: string;
+        }>
+      )
+        .map((step) => step.detail)
+        .join('\n');
+
+    const channelCount = explain(buildChannelMentionContextCountSql('channel'));
+    expect(channelCount).toMatch(
+      /SEARCH channel_row USING INDEX idx_chm_channel_seq \(channel_id=\? AND seq>\? AND seq<\?\)/
+    );
+    const channelRows = explain(buildChannelMentionContextRowsSql('channel'));
+    expect(channelRows).toMatch(
+      /SEARCH m USING INDEX idx_chm_channel_seq \(channel_id=\? AND seq>\? AND seq<\?\)/
+    );
+    expect(channelRows).not.toContain('USE TEMP B-TREE');
+    expect(channelRows).not.toMatch(/SCAN m/);
+
+    const threadCount = explain(buildChannelMentionContextCountSql('thread'));
+    expect(threadCount).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
+    expect(threadCount).toMatch(
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+    );
+    const threadRows = explain(buildChannelMentionContextRowsSql('thread'));
+    expect(threadRows).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
+    expect(threadRows).toMatch(
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+    );
+    expect(threadRows).not.toContain('USE TEMP B-TREE');
+    expect(threadRows).not.toMatch(/SCAN (?:root|reply)/);
+  });
+});
+
 describe('channel-message-store thread summaries', () => {
   it('reports live threads newest-active first with the chip reply count', () => {
     const s = store();

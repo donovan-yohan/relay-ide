@@ -378,6 +378,44 @@ describe('buildMentionContextPacket', () => {
     }
   });
 
+  it('filters blank activity/detail/system rows before they consume the text window', () => {
+    const detail = {
+      ...msg(2, HERMES, ''),
+      agentDetail: {
+        itemId: 'reasoning-1',
+        card: {
+          kind: 'thought' as const,
+          title: 'Reasoning summary',
+          status: 'complete' as const,
+          content: 'provider-visible reasoning',
+        },
+      },
+    };
+    const rows = [
+      msg(1, OPERATOR, 'real question'),
+      detail,
+      msg(3, SYSTEM, 'collab:wait', 'system'),
+      msg(4, HERMES, '   '),
+      msg(5, HERMES, 'real agent prose'),
+    ];
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger: msg(6, OPERATOR, '@claude continue'),
+      lastDeliveredSeq: 0,
+    });
+
+    expect(packet).toContain(
+      '5 messages since your last turn (2 shown, 3 activity rows filtered).'
+    );
+    expect(packet).toContain('operator: real question');
+    expect(packet).toContain('hermes [agent]: real agent prose');
+    expect(packet).not.toContain('provider-visible reasoning');
+    expect(packet).not.toContain('collab:wait');
+    expect(packet).not.toContain('hermes [agent]:    ');
+  });
+
   it('renders the exact golden packet (own rows skipped, sender labels, footer)', () => {
     const rows = [
       msg(1, OPERATOR, 'hey team, the build is red'),
@@ -400,10 +438,10 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
-        'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+        '3 messages since your last turn (2 shown, 1 activity rows filtered).',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
         'operator: hey team, the build is red',
         'hermes [agent]: bisecting now',
-        '[system]: codex is not available in channels yet',
         '',
         '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude please fix the flaky channel-hub test',
@@ -443,11 +481,11 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '4 prior thread rows (3 shown, 1 activity rows filtered).',
         '[Thread scope — only this thread is shown; its root message is always included]',
-        'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
         'operator: root question',
         'hermes [agent]: thread detail',
-        '[system]: thread system notice',
         'operator: thread row still streaming',
         '',
         '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
@@ -483,8 +521,9 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '2 prior thread rows (2 shown, 0 activity rows filtered).',
         '[Thread scope — only this thread is shown; its root message is always included]',
-        'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
         'claude [agent]: claude-authored root',
         'operator: new human detail',
         '',
@@ -544,14 +583,14 @@ describe('buildMentionContextPacket', () => {
     });
     expect(packet).toContain('claude [agent]: load-bearing root');
     expect(packet).toContain('[…earlier messages omitted]');
-    expect(packet).not.toContain('operator: thread line 6\n');
-    expect(packet).toContain('operator: thread line 7');
+    expect(packet).not.toContain('operator: thread line 10\n');
+    expect(packet).toContain('operator: thread line 11');
     expect(packet).toContain('operator: thread line 25');
     expect(packet.indexOf('claude [agent]: load-bearing root')).toBeLessThan(
       packet.indexOf('[…earlier messages omitted]')
     );
     expect(packet.indexOf('[…earlier messages omitted]')).toBeLessThan(
-      packet.indexOf('operator: thread line 7')
+      packet.indexOf('operator: thread line 11')
     );
     const contextLines = packet
       .split('\n')
@@ -609,6 +648,7 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '0 messages since your last turn (0 shown, 0 activity rows filtered).',
         '',
         '[hermes [agent:hermes] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude take a look at my bisect',
@@ -640,10 +680,10 @@ describe('buildMentionContextPacket', () => {
       lastDeliveredSeq: 0,
     });
     expect(packet).toContain('[…earlier messages omitted]');
-    // Newest 20 kept: rows 6..25 present, rows 1..5 omitted.
-    expect(packet).toContain('operator: line 6');
+    // Newest PACKET_MAX_ROWS kept: rows 10..25 present, rows 1..9 omitted.
+    expect(packet).toContain('operator: line 10');
     expect(packet).toContain('operator: line 25');
-    expect(packet).not.toContain('operator: line 5\n');
+    expect(packet).not.toContain('operator: line 9\n');
     const contextLines = packet
       .split('\n')
       .filter((l) => l.startsWith('operator: line'));
@@ -717,6 +757,7 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '0 messages since your last turn (0 shown, 0 activity rows filtered).',
         '',
         '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude go',
@@ -806,7 +847,11 @@ describe('buildMentionContextPacket', () => {
       trigger,
       lastDeliveredSeq: 0,
     });
+    expect(packet).toContain(
+      '2 prior thread rows (2 shown, 0 activity rows filtered).'
+    );
     expect(packet).toContain('operator: [message deleted]');
     expect(packet).toContain('operator: reply one');
+    expect(packet).not.toContain('[…earlier messages omitted]');
   });
 });

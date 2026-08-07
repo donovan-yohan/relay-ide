@@ -31,10 +31,12 @@ import {
   type AgentProfileStore,
 } from '../server/agent-profile-store.js';
 import {
+  CHANNEL_HISTORY_MAX_LIMIT,
   createChannelMessageStore,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
+import { PACKET_MAX_ROWS } from '../server/channel-context-packet.js';
 import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
 import {
   CHANNEL_BINDING_YOLO_DEFAULT,
@@ -2491,6 +2493,168 @@ describe('channel-agent-binder — delivery + idempotency', () => {
     expect(adapter.sendInputs[1]).toEqual(adapter.sendInputs[0]);
   });
 
+  it('retains an image-only thread root as structural text and an attachment', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binder-image-root-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const payloadPath = path.join(dir, 'root.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:image-root',
+      mime: 'image/png',
+      w: 1,
+      h: 1,
+      bytes: 7,
+    };
+    const attachmentStore = {
+      get: (id: string) =>
+        id === part.id
+          ? {
+              part,
+              sha256: 'image-root',
+              payloadPath,
+              createdAt: 't',
+            }
+          : null,
+    } as ChannelAttachmentStore;
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      attachmentStore,
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '',
+      parts: [part],
+    });
+
+    post(
+      store,
+      binder,
+      '@mock inspect the root image',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    expect(adapter.sendInputs[0]!.content).toContain(
+      '1 prior thread rows (1 shown, 0 activity rows filtered).'
+    );
+    expect(adapter.sendInputs[0]!.content).toContain(
+      'operator: [image-only message]'
+    );
+    expect(adapter.sendInputs[0]!.attachments).toEqual([
+      { type: 'image', path: payloadPath, mimeType: 'image/png' },
+    ]);
+  });
+
+  it('queries exact counts across a large activity-only stretch without losing older prose', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'retain this earlier prose',
+    });
+    for (let index = 0; index < CHANNEL_HISTORY_MAX_LIMIT + 5; index += 1) {
+      const detail = store.beginStream({
+        channelId: CH,
+        sender: {
+          kind: 'agent',
+          id: 'agent:other',
+          providerId: 'other',
+        },
+        source: {
+          runtimeId: 'runtime:other',
+          turnId: `turn:${index}`,
+          itemId: `thought:${index}`,
+        },
+        agentDetail: {
+          itemId: `thought:${index}`,
+          card: {
+            kind: 'thought',
+            title: 'Reasoning summary',
+            status: 'running',
+            content: 'activity must not consume prose context',
+          },
+        },
+      });
+      store.finalizeStream(detail.id, { text: '', status: 'complete' });
+    }
+
+    post(store, binder, '@mock inspect the earlier prose', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    const packet = adapter.sendInputs[0]!.content;
+    expect(packet).toContain('operator: retain this earlier prose');
+    expect(packet).toContain(
+      `${CHANNEL_HISTORY_MAX_LIMIT + 6} messages since your last turn (1 shown, ${CHANNEL_HISTORY_MAX_LIMIT + 5} activity rows filtered).`
+    );
+    expect(packet).not.toContain('activity must not consume prose context');
+  });
+
+  it('keeps a deleted thread root structural beside only the newest 15 of 16 replies', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread anchor to delete',
+    });
+    for (let index = 0; index < PACKET_MAX_ROWS; index += 1) {
+      store.appendComplete({
+        channelId: CH,
+        sender: OPERATOR,
+        text: `thread reply ${index}`,
+        parentMessageId: root.id,
+      });
+    }
+    store.deleteMessage({
+      channelId: CH,
+      messageId: root.id,
+      deleterId: OPERATOR.id,
+    });
+
+    post(
+      store,
+      binder,
+      '@mock inspect this thread',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    const packet = adapter.sendInputs[0]!.content;
+    expect(packet).toContain(
+      `${PACKET_MAX_ROWS + 1} prior thread rows (${PACKET_MAX_ROWS} shown, 0 activity rows filtered).`
+    );
+    expect(packet.match(/\[message deleted\]/g)).toHaveLength(1);
+    expect(packet.match(/\[…earlier messages omitted\]/g)).toHaveLength(1);
+    expect(packet).not.toContain('operator: thread reply 0\n');
+    expect(packet).toContain('operator: thread reply 1');
+    expect(packet).toContain(`operator: thread reply ${PACKET_MAX_ROWS - 1}`);
+    expect(packet).not.toContain('thread anchor to delete');
+  });
+
   it('advances the delivery cursor only after a send is accepted', async () => {
     const { binder, store } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
@@ -3465,24 +3629,21 @@ describe('channel-agent-binder — gateway agent-sender loop brake (P1 #1180)', 
 });
 
 describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () => {
-  it('a store.history throw does not wedge the binding; the next mention routes', async () => {
+  it('a store mention-context throw does not wedge the binding; the next mention routes', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
     });
-    // Throw once from the top-level packet-fetch history call (the one with
-    // `beforeSeq`); row helpers without beforeSeq continue to work.
-    const realHistory = store.history.bind(store);
+    const realMentionContext = store.mentionContext.bind(store);
     let thrown = false;
-    (store as unknown as { history: ChannelMessageStore['history'] }).history =
-      ((id: string, filter?: Parameters<ChannelMessageStore['history']>[1]) => {
-        if (!thrown && filter && 'beforeSeq' in filter) {
-          thrown = true;
-          throw new Error('db boom');
-        }
-        return realHistory(id, filter);
-      }) as ChannelMessageStore['history'];
+    store.mentionContext = (input) => {
+      if (!thrown) {
+        thrown = true;
+        throw new Error('db boom');
+      }
+      return realMentionContext(input);
+    };
 
     post(store, binder, '@mock one', ['mock']);
     await waitFor(() =>
@@ -3496,31 +3657,21 @@ describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () 
     expect(agentReplies(store, 'mock')).toHaveLength(1);
   });
 
-  it('a store.threadHistory throw does not wedge the binding; the next mention routes', async () => {
+  it('a threaded mention-context throw does not wedge the binding; the next mention routes', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
     });
-    // Throw once from the threaded packet-fetch lane. The next top-level turn
-    // uses ordinary history and proves the queue did not wedge.
-    const realThreadHistory = store.threadHistory.bind(store);
+    const realMentionContext = store.mentionContext.bind(store);
     let thrown = false;
-    (
-      store as unknown as {
-        threadHistory: ChannelMessageStore['threadHistory'];
-      }
-    ).threadHistory = ((
-      id: string,
-      rootMessageId: string,
-      filter?: Parameters<ChannelMessageStore['threadHistory']>[2]
-    ) => {
-      if (!thrown) {
+    store.mentionContext = (input) => {
+      if (!thrown && input.threadRootId !== null) {
         thrown = true;
         throw new Error('db boom');
       }
-      return realThreadHistory(id, rootMessageId, filter);
-    }) as ChannelMessageStore['threadHistory'];
+      return realMentionContext(input);
+    };
 
     const root = store.appendComplete({
       channelId: CH,
@@ -4890,7 +5041,11 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     await waitFor(() => adapter.sendCalls.length === 2);
     const packet = adapter.sendInputs[1]!.content;
     expect(packet.trimEnd().endsWith(`@steer burst ${total - 1}`)).toBe(true);
-    expect(packet).toContain('@steer burst 0');
+    expect(packet).toContain(
+      `${total - 1} messages since your last turn (${PACKET_MAX_ROWS} shown, 0 activity rows filtered).`
+    );
+    expect(packet).toContain('[…earlier messages omitted]');
+    expect(packet).toContain(`@steer burst ${total - 1 - PACKET_MAX_ROWS}`);
     expect(adapter.concurrentPeak).toBe(1);
   });
 

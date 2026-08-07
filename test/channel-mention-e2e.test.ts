@@ -581,9 +581,9 @@ describe('mention routing — end-to-end via the router', () => {
     await waitFor(() => adapter.contents.length === 1);
     const packet = adapter.contents[0]!;
     expect(packet).toContain('Operator: load-bearing long-thread root');
-    expect(packet).toContain('Operator: long-thread reply 47');
+    expect(packet).toContain('Operator: long-thread reply 51');
     expect(packet).toContain('Operator: long-thread reply 65');
-    expect(packet).not.toContain('Operator: long-thread reply 46\n');
+    expect(packet).not.toContain('Operator: long-thread reply 50\n');
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
     expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
       threadId: root.body.message.id,
