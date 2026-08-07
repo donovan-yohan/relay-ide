@@ -52,6 +52,9 @@ workflow.
 - Channel mention packets now exclude blank tool, reasoning, status, and system
   activity rows, report shown/filtered counts, and use a smaller prose window
   so real conversation is not displaced by empty activity (#1358)
+- Bound each mention-context SQLite statement to the newest 256 raw candidates
+  and label summaries as lower bounds when older channel or thread history is omitted
+  (#1358, #1368)
 - Designate-orchestrator failures now show actionable inline conflict or retry
   feedback instead of failing silently (#1352)
 - Designation errors now retire when the roster confirms an orchestrator and

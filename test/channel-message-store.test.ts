@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildChannelMentionContextBoundarySql,
   buildChannelMentionContextCountSql,
   buildChannelMentionContextRowsSql,
   buildChannelMessageSearchSql,
@@ -19,6 +20,7 @@ import {
   registerChannelSearchTick,
   ChannelMessageStoreError,
   ChannelSearchRefusedError,
+  MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
@@ -45,6 +47,7 @@ function dbPath(): string {
 function store(
   pathOverride?: string,
   options?: {
+    mentionContextCandidateScanBudget?: number;
     searchTimeBudgetMs?: number;
     searchCostPreflight?: 'auto' | 'unavailable';
   }
@@ -127,6 +130,33 @@ describe('channel-message-store schema migration', () => {
         .prepare('SELECT COUNT(*) AS count FROM channel_agent_bindings')
         .get()
     ).toEqual({ count: 1 });
+  });
+
+  it('repairs missing mention-context indexes before preparing bounded reads', () => {
+    const file = dbPath();
+    store(file).close();
+    const damaged = new Database(file);
+    damaged.exec(`
+      DROP INDEX idx_chm_channel_seq;
+      DROP INDEX idx_chm_thread;
+    `);
+    damaged.close();
+
+    // `createChannelMessageStore` prepares INDEXED BY statements before return;
+    // reopening therefore proves repair happened before the bounded reads load.
+    store(file).close();
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    const indexNames = (
+      inspect
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'index' AND name IN ('idx_chm_channel_seq', 'idx_chm_thread')
+            ORDER BY name`
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(indexNames).toEqual(['idx_chm_channel_seq', 'idx_chm_thread']);
   });
 
   it('widens v1 status, heals its known aliases, and preserves durable rows through v3', () => {
@@ -1869,11 +1899,205 @@ describe('channel-message-store mention context (#1358)', () => {
     expect(context).toMatchObject({
       totalCount: 22,
       activityFilteredCount: 3,
+      candidateScanBudget: MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET,
+      candidateScanTruncated: false,
       scope: 'channel',
     });
     expect(context.rows).toHaveLength(16);
     expect(context.rows.map((row) => row.body.text)).toEqual(
       Array.from({ length: 16 }, (_, index) => `prose ${index + 2}`)
+    );
+  });
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET + 1,
+    Number.MAX_SAFE_INTEGER,
+  ])(
+    'rejects invalid candidate budget %s at store creation',
+    (candidateBudget) => {
+      expect(() =>
+        store(undefined, {
+          mentionContextCandidateScanBudget: candidateBudget,
+        })
+      ).toThrow(
+        new RangeError(
+          `mentionContextCandidateScanBudget must be an integer from 1 through ${MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET}`
+        )
+      );
+    }
+  );
+
+  it('degrades channel context deterministically to the newest candidate budget', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+    const s = store(undefined, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:context-budget';
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({ channelId, sender: HUMAN, text: `prose ${index}` });
+    }
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: null,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 3,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'channel',
+    });
+    expect(context.rows.map((row) => row.body.text)).toEqual([
+      'prose 2',
+      'prose 3',
+      'prose 4',
+    ]);
+    const budgetLine = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('mention_context_candidate_budget_truncated')
+    );
+    expect(format(...(budgetLine as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] mention_context_candidate_budget_truncated channel_id=topic:context-budget scope=channel raw_index_entries_at_least=4 candidate_budget=3'
+    );
+  });
+
+  it('keeps a structural thread root outside the bounded reply window', () => {
+    const s = store(undefined, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:thread-context-budget';
+    const root = s.appendComplete({ channelId, sender: HUMAN, text: '' });
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `reply ${index}`,
+        parentMessageId: root.id,
+      });
+    }
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 4,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'thread',
+    });
+    expect(context.rows.map((row) => row.body.text)).toEqual([
+      '',
+      'reply 2',
+      'reply 3',
+      'reply 4',
+    ]);
+  });
+
+  it('bounds corrupt cross-channel thread collisions without leaking their rows', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+    const file = dbPath();
+    const s = store(file, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:thread-owner';
+    const root = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'owner root',
+    });
+    s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'owner reply outside conservative window',
+      parentMessageId: root.id,
+    });
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `owner filler ${index}`,
+      });
+    }
+
+    const corrupt = new Database(file);
+    const insert = corrupt.prepare(`
+      INSERT INTO channel_messages (
+        id, channel_id, seq, kind, status, sender_kind, sender_id,
+        thread_id, parent_message_id, body_text, body_format, created_at, updated_at
+      ) VALUES (
+        @id, @channelId, @seq, 'message', 'complete', 'human', 'human:other',
+        @threadId, @threadId, @body, 'markdown', @now, @now
+      )
+    `);
+    for (let seq = 3; seq <= 6; seq += 1) {
+      insert.run({
+        id: `chm:corrupt-cross-channel-${seq}`,
+        channelId: 'topic:other',
+        seq,
+        threadId: root.id,
+        body: `must-not-leak-${seq}`,
+        now: '2026-08-07T00:00:00.000Z',
+      });
+    }
+    corrupt.close();
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 1,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'thread',
+    });
+    expect(context.rows.map((row) => row.id)).toEqual([root.id]);
+    expect(JSON.stringify(context)).not.toContain('must-not-leak');
+    const budgetLine = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('mention_context_candidate_budget_truncated')
+    );
+    expect(format(...(budgetLine as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] mention_context_candidate_budget_truncated channel_id=topic:thread-owner scope=thread raw_index_entries_at_least=4 candidate_budget=3'
     );
   });
 
@@ -1892,6 +2116,8 @@ describe('channel-message-store mention context (#1358)', () => {
       framework: 'claude',
       triggerSeq: 100,
       afterSeq: 0,
+      candidateAfterSeq: 0,
+      candidateBudget: 4096,
       threadRootId: root.id,
       limit: 16,
       replyLimit: 15,
@@ -1904,6 +2130,24 @@ describe('channel-message-store mention context (#1358)', () => {
       )
         .map((step) => step.detail)
         .join('\n');
+
+    const channelBoundary = explain(
+      buildChannelMentionContextBoundarySql('channel')
+    );
+    expect(channelBoundary).toMatch(
+      /SEARCH channel_row USING COVERING INDEX idx_chm_channel_seq \(channel_id=\? AND seq>\? AND seq<\?\)/
+    );
+    expect(channelBoundary).not.toContain('USE TEMP B-TREE');
+    const threadBoundarySql = buildChannelMentionContextBoundarySql('thread');
+    // The raw thread probe intentionally omits channel_id: idx_chm_thread is
+    // keyed by thread+seq, so every visited entry must count toward the budget,
+    // including corrupt cross-channel collisions.
+    expect(threadBoundarySql).not.toContain('channel_id');
+    const threadBoundary = explain(threadBoundarySql);
+    expect(threadBoundary).toMatch(
+      /SEARCH reply USING (?:COVERING )?INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+    );
+    expect(threadBoundary).not.toContain('USE TEMP B-TREE');
 
     const channelCount = explain(buildChannelMentionContextCountSql('channel'));
     expect(channelCount).toMatch(
@@ -1919,12 +2163,12 @@ describe('channel-message-store mention context (#1358)', () => {
     const threadCount = explain(buildChannelMentionContextCountSql('thread'));
     expect(threadCount).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
     expect(threadCount).toMatch(
-      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\? AND seq<\?\)/
     );
     const threadRows = explain(buildChannelMentionContextRowsSql('thread'));
     expect(threadRows).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
     expect(threadRows).toMatch(
-      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\? AND seq<\?\)/
     );
     expect(threadRows).not.toContain('USE TEMP B-TREE');
     expect(threadRows).not.toMatch(/SCAN (?:root|reply)/);
