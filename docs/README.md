@@ -35,6 +35,7 @@ Every doc listed here is linked from this index. If you add a doc, add a row.
 | Workbench boundary   | [`WORKBENCH_BOUNDARY.md`](WORKBENCH_BOUNDARY.md)                                 |
 | Agent view artifacts | [`AGENT_VIEW_ARTIFACTS.md`](AGENT_VIEW_ARTIFACTS.md)                             |
 | Handoff artifacts    | [`pipeline-handoff-artifact-template.md`](pipeline-handoff-artifact-template.md) |
+| Repository context   | [`context-map.md`](context-map.md)                                               |
 
 ### Working in this repo
 
