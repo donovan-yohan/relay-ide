@@ -59,7 +59,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -773,6 +773,9 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   updated_at            TEXT NOT NULL,
   PRIMARY KEY (channel_id, profile_actor_id)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chab_sole_orchestrator
+  ON channel_agent_bindings(channel_id)
+  WHERE binding_role = 'orchestrator';
 `;
 
 interface ChannelMessageRow {
@@ -1077,6 +1080,14 @@ export interface ChannelBinding {
   updatedAt: string;
 }
 
+export interface SoleOrchestratorDesignationInput {
+  channelId: string;
+  profileActorId: string;
+  agentFramework: string;
+  runtimeId?: string | null;
+  providerSession?: Record<string, unknown>;
+}
+
 export interface StaleStreamSweepResult {
   channelId: string;
   truncatedIds: ChannelMessageId[];
@@ -1119,6 +1130,23 @@ export class ChannelMessageStoreError extends Error {
     super(message);
     this.name = 'ChannelMessageStoreError';
   }
+}
+
+export function createChannelOrchestratorConflictError(input: {
+  channelId: string;
+  designatedProfileActorId: string | null;
+  requestedProfileActorId: string;
+}): ChannelMessageStoreError {
+  return new ChannelMessageStoreError(
+    409,
+    'channel_orchestrator_conflict',
+    'channel already has a designated orchestrator',
+    {
+      channelId: input.channelId,
+      designatedProfileActorId: input.designatedProfileActorId ?? 'unknown',
+      requestedProfileActorId: input.requestedProfileActorId,
+    }
+  );
 }
 
 export interface ChannelMessageStore {
@@ -1272,12 +1300,21 @@ export interface ChannelMessageStore {
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(channelId: string, profileActorId: string): ChannelBinding | null;
+  /** Returns the one durable designation guaranteed by the partial unique index. */
+  getSoleOrchestratorBinding(channelId: string): ChannelBinding | null;
+  /**
+   * First-writer designation. Repeating the same profile is idempotent; a
+   * different profile receives a stable 409 without changing either binding.
+   */
+  designateSoleOrchestrator(
+    input: SoleOrchestratorDesignationInput
+  ): ChannelBinding;
   upsertBinding(input: {
     channelId: string;
     profileActorId: string;
     agentFramework: string;
     runtimeId?: string | null;
-    role?: AgentRole | null;
+    role?: Exclude<AgentRole, 'orchestrator'> | null;
     providerSession?: Record<string, unknown>;
   }): ChannelBinding;
   sweepStaleStreaming(): StaleStreamSweepResult[];
@@ -2380,6 +2417,43 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 7').run();
     })();
   }
+  if (current < 8) {
+    db.transaction(() => {
+      const duplicates = db
+        .prepare(
+          `SELECT channel_id, COUNT(*) AS binding_count
+             FROM channel_agent_bindings
+            WHERE binding_role = 'orchestrator'
+            GROUP BY channel_id
+           HAVING COUNT(*) > 1`
+        )
+        .all() as Array<{ channel_id: string; binding_count: number }>;
+      if (duplicates.length > 0) {
+        const clear = db.prepare(
+          `UPDATE channel_agent_bindings
+              SET binding_role = NULL
+            WHERE channel_id = ? AND binding_role = 'orchestrator'`
+        );
+        let clearedBindings = 0;
+        for (const duplicate of duplicates) {
+          clearedBindings += clear.run(duplicate.channel_id).changes;
+        }
+        // Neither channel nor profile ids belong in migration telemetry.
+        logger.warn(
+          'cleared ambiguous legacy orchestrator designations before sole-role migration: channel_count=%d binding_count=%d',
+          duplicates.length,
+          clearedBindings
+        );
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_chab_sole_orchestrator;
+        CREATE UNIQUE INDEX idx_chab_sole_orchestrator
+          ON channel_agent_bindings(channel_id)
+          WHERE binding_role = 'orchestrator';
+      `);
+      db.prepare('UPDATE schema_version SET version = 8').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -2790,6 +2864,79 @@ export function createChannelMessageStore(
     const row = select.get(channelId, profileActorId) as BindingRow | undefined;
     return row ? bindingRowToRecord(row) : null;
   }
+
+  function getSoleOrchestratorBindingImpl(
+    channelId: string
+  ): ChannelBinding | null {
+    const row = db
+      .prepare(
+        `SELECT * FROM channel_agent_bindings
+          WHERE channel_id = ? AND binding_role = 'orchestrator'`
+      )
+      .get(channelId) as BindingRow | undefined;
+    return row ? bindingRowToRecord(row) : null;
+  }
+
+  function writeBindingImpl(
+    input: SoleOrchestratorDesignationInput & { role?: AgentRole | null }
+  ): ChannelBinding {
+    const now = nowIso();
+    const existing = db
+      .prepare(
+        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+      )
+      .get(input.channelId, input.profileActorId) as BindingRow | undefined;
+    const providerSessionJson = JSON.stringify(
+      input.providerSession ??
+        (existing
+          ? parseBindingProviderSession(existing.provider_session_json)
+          : {})
+    );
+    db.prepare(
+      `INSERT INTO channel_agent_bindings
+         (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
+       VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
+       ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
+         agent_framework = excluded.agent_framework,
+         runtime_id = excluded.runtime_id,
+         binding_role = excluded.binding_role,
+         provider_session_json = excluded.provider_session_json,
+         updated_at = excluded.updated_at`
+    ).run({
+      channelId: input.channelId,
+      profileActorId: input.profileActorId,
+      agentFramework: input.agentFramework,
+      runtimeId:
+        input.runtimeId !== undefined
+          ? input.runtimeId
+          : (existing?.runtime_id ?? null),
+      bindingRole:
+        input.role !== undefined
+          ? input.role
+          : (existing?.binding_role ?? null),
+      providerSessionJson,
+      createdAt: existing?.created_at ?? now,
+      updatedAt: now,
+    });
+    return getBindingImpl(input.channelId, input.profileActorId)!;
+  }
+
+  const designateSoleOrchestratorTransaction = db.transaction(
+    (input: SoleOrchestratorDesignationInput): ChannelBinding => {
+      const designated = getSoleOrchestratorBindingImpl(input.channelId);
+      if (
+        designated !== null &&
+        designated.profileActorId !== input.profileActorId
+      ) {
+        throw createChannelOrchestratorConflictError({
+          channelId: input.channelId,
+          designatedProfileActorId: designated.profileActorId,
+          requestedProfileActorId: input.profileActorId,
+        });
+      }
+      return writeBindingImpl({ ...input, role: 'orchestrator' });
+    }
+  );
 
   return {
     close() {
@@ -3599,45 +3746,44 @@ export function createChannelMessageStore(
       return getBindingImpl(channelId, profileActorId);
     },
 
+    getSoleOrchestratorBinding(channelId) {
+      return getSoleOrchestratorBindingImpl(channelId);
+    },
+
+    designateSoleOrchestrator(input) {
+      try {
+        // IMMEDIATE takes the write reservation before the conflict read, so
+        // separate store handles cannot both observe an empty designation.
+        return designateSoleOrchestratorTransaction.immediate(input);
+      } catch (error) {
+        if (error instanceof ChannelMessageStoreError) throw error;
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          String(error.code).startsWith('SQLITE_CONSTRAINT')
+        ) {
+          const designated = getSoleOrchestratorBindingImpl(input.channelId);
+          throw createChannelOrchestratorConflictError({
+            channelId: input.channelId,
+            designatedProfileActorId: designated?.profileActorId ?? null,
+            requestedProfileActorId: input.profileActorId,
+          });
+        }
+        throw error;
+      }
+    },
+
     upsertBinding(input) {
-      const now = nowIso();
-      const profileActorId = input.profileActorId;
-      const existing = db
-        .prepare(
-          'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
-        )
-        .get(input.channelId, profileActorId) as BindingRow | undefined;
-      const providerSessionJson = JSON.stringify(
-        input.providerSession ??
-          (existing ? JSON.parse(existing.provider_session_json) : {})
-      );
-      db.prepare(
-        `INSERT INTO channel_agent_bindings
-           (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
-         VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
-         ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
-           agent_framework = excluded.agent_framework,
-           runtime_id = excluded.runtime_id,
-           binding_role = excluded.binding_role,
-           provider_session_json = excluded.provider_session_json,
-           updated_at = excluded.updated_at`
-      ).run({
-        channelId: input.channelId,
-        profileActorId,
-        agentFramework: input.agentFramework,
-        runtimeId:
-          input.runtimeId !== undefined
-            ? input.runtimeId
-            : (existing?.runtime_id ?? null),
-        bindingRole:
-          input.role !== undefined
-            ? input.role
-            : (existing?.binding_role ?? null),
-        providerSessionJson,
-        createdAt: existing?.created_at ?? now,
-        updatedAt: now,
-      });
-      return getBindingImpl(input.channelId, profileActorId)!;
+      // Untyped callers must not bypass the channel-level invariant.
+      if ((input as { role?: AgentRole | null }).role === 'orchestrator') {
+        throw new ChannelMessageStoreError(
+          400,
+          'orchestrator_requires_sole_designation',
+          'use designateSoleOrchestrator to assign the orchestrator role'
+        );
+      }
+      return writeBindingImpl(input);
     },
 
     sweepStaleStreaming() {
@@ -3802,16 +3948,23 @@ export function createChannelMessageStore(
   }
 }
 
-function bindingRowToRecord(row: BindingRow): ChannelBinding {
-  let providerSession: Record<string, unknown> = {};
+function parseBindingProviderSession(
+  providerSessionJson: string
+): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(row.provider_session_json) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      providerSession = parsed as Record<string, unknown>;
-    }
+    const parsed = JSON.parse(providerSessionJson) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
-    providerSession = {};
+    return {};
   }
+}
+
+function bindingRowToRecord(row: BindingRow): ChannelBinding {
+  const providerSession = parseBindingProviderSession(
+    row.provider_session_json
+  );
   return {
     channelId: row.channel_id,
     profileActorId: row.profile_actor_id,

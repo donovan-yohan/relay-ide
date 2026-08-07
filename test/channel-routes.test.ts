@@ -14,6 +14,7 @@ import {
   CLI_GATEWAY_ACTOR_WRITE_COMMANDS,
 } from '../server/cli-gateway-actor-auth.js';
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -34,6 +35,8 @@ import {
   createChannelAgentBinder,
   type ChannelAgentBinder,
 } from '../server/channel-agent-binder.js';
+import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
+import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
 import {
   CHANNEL_IMAGE_MAX_BYTES,
   createChannelAttachmentStore,
@@ -130,7 +133,13 @@ async function harness(
   const topic = topicStore.create({ workspaceId: 'ws', title: 'General' });
   const binder =
     options.binderFactory?.({ store, hub, topicStore }) ?? options.binder;
-  if (options.binderFactory) cleanup.push(() => binder?.close?.());
+  if (options.binderFactory) {
+    cleanup.push(() => binder?.close?.());
+    const unlisten = hub.onMessagePosted((message, mentions, postOptions) =>
+      binder?.handleMessagePosted(message, mentions, postOptions)
+    );
+    cleanup.push(unlisten);
+  }
 
   const app = express();
   app.use(express.json());
@@ -211,6 +220,18 @@ async function req<T>(input: {
     ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
   });
   return { status: res.status, body: (await res.json()) as T };
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  timeoutMs = 4000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('condition timed out');
 }
 
 function fakeSocket(): ChannelSocket & { sent: ChannelEventV1[] } {
@@ -1523,6 +1544,117 @@ describe('channel routes — agent commands', () => {
 });
 
 describe('channel routes — orchestrator designation (#1259)', () => {
+  function realDesignationBinder(gated: boolean): {
+    factory: (deps: {
+      store: ChannelMessageStore;
+      hub: ChannelHub;
+      topicStore: WorkspaceTopicStore;
+    }) => ChannelAgentBinder;
+    state: { spawns: number };
+    release: () => void;
+  } {
+    const state = { spawns: 0 };
+    const runtimes = new Map<string, ChannelAgentRuntime>();
+    let release!: () => void;
+    const gate = gated
+      ? new Promise<void>((resolve) => {
+          release = resolve;
+        })
+      : Promise.resolve();
+    if (!gated) release = () => {};
+    return {
+      state,
+      release: () => release(),
+      factory: ({ store, hub, topicStore }) =>
+        createChannelAgentBinder({
+          store,
+          hub,
+          topicStore,
+          runtimes: {
+            create: async (params) => {
+              state.spawns += 1;
+              await gate;
+              const id = `runtime:${state.spawns}:${params.providerId}`;
+              const adapter = new MockProtocolAdapterV2({
+                connectMs: 0,
+                stepMs: 0,
+              });
+              await adapter.connect({
+                cwd: params.cwd,
+                port: 0,
+                sessionId: id,
+                hookToken: 'test',
+                configDir: params.configDir,
+              });
+              const runtime = {
+                id,
+                providerId: params.providerId,
+                profileActorId: params.profileActorId,
+                role: params.role,
+                status: 'active',
+                adapter,
+                cwd: params.cwd,
+                providerSession: {},
+              } as ChannelAgentRuntime;
+              runtimes.set(id, runtime);
+              return runtime;
+            },
+            get: (id) => runtimes.get(id),
+            destroy: async (id) => {
+              runtimes.delete(id);
+            },
+            onRuntimeEnd: () => () => {},
+          },
+          knownProviderIds: ['mock', 'codex'],
+          mentionTargets: async () => [
+            {
+              id: 'mock',
+              displayName: 'Mock',
+              kind: 'framework',
+              available: true,
+              reason: null,
+            },
+            {
+              id: 'codex',
+              displayName: 'Codex',
+              kind: 'framework',
+              available: true,
+              reason: null,
+            },
+          ],
+          port: 0,
+          configDir: '/tmp',
+        }),
+    };
+  }
+
+  async function postBareAndReadWinner(h: Harness): Promise<string[]> {
+    const post = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: 'continue the plan' },
+    });
+    expect(post.status).toBe(201);
+    try {
+      await waitForCondition(() =>
+        h.store
+          .history(h.channelId, { limit: 20 })
+          .some((row) => row.sender.kind === 'agent')
+      );
+    } catch {
+      throw new Error(
+        `bare route produced no agent row: ${JSON.stringify(
+          h.store.history(h.channelId, { limit: 20 })
+        )}`
+      );
+    }
+    return h.store
+      .history(h.channelId, { limit: 20 })
+      .filter((row) => row.sender.kind === 'agent')
+      .map((row) => row.sender.providerId ?? '');
+  }
+
   it('designates the persistent orchestrator via ensureOrchestrator', async () => {
     const calls: Array<{ channelId: string; framework: string }> = [];
     const h = await harness({
@@ -1549,6 +1681,80 @@ describe('channel routes — orchestrator designation (#1259)', () => {
       framework: 'claude',
     });
     expect(calls).toEqual([{ channelId: h.channelId, framework: 'claude' }]);
+  });
+
+  it('keeps sequential route designation idempotent, then bare-routes the winner', async () => {
+    const real = realDesignationBinder(false);
+    const h = await harness({ binderFactory: real.factory });
+    const designate = (framework: string) =>
+      req<{
+        ok?: boolean;
+        error?: {
+          code: string;
+          details?: Record<string, unknown>;
+        };
+      }>({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${h.channelId}/orchestrator?framework=${framework}`,
+      });
+
+    expect((await designate('mock')).status).toBe(200);
+    expect((await designate('mock')).status).toBe(200);
+    const conflict = await designate('codex');
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toMatchObject({
+      code: 'SESSION_CONFLICT',
+      details: {
+        reasonCode: 'CHANNEL_ORCHESTRATOR_CONFLICT',
+        channelId: h.channelId,
+        designatedProfileActorId: builtInAgentProfileId('mock'),
+        requestedProfileActorId: builtInAgentProfileId('codex'),
+      },
+    });
+    expect(
+      h.store.getSoleOrchestratorBinding(h.channelId)?.profileActorId
+    ).toBe(builtInAgentProfileId('mock'));
+    expect(real.state.spawns).toBe(1);
+    const routedProviders = await postBareAndReadWinner(h);
+    expect(routedProviders.length).toBeGreaterThan(0);
+    expect(new Set(routedProviders)).toEqual(new Set(['mock']));
+  });
+
+  it('allows one concurrent route winner, then bare-routes only that runtime', async () => {
+    const real = realDesignationBinder(true);
+    const h = await harness({ binderFactory: real.factory });
+    const mockRequest = req<{ ok?: boolean; error?: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator?framework=mock`,
+    });
+    const codexRequest = req<{ ok?: boolean; error?: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/orchestrator?framework=codex`,
+    });
+    await waitForCondition(() => real.state.spawns === 1);
+    // Both requests overlap while the winner's runtime launch is parked; the
+    // channel-level binder lock must keep the competitor from spawning.
+    expect(real.state.spawns).toBe(1);
+    real.release();
+    const [mock, codex] = await Promise.all([mockRequest, codexRequest]);
+    expect([mock.status, codex.status].sort()).toEqual([200, 409]);
+    const loser = mock.status === 409 ? mock : codex;
+    expect(loser.body.error?.code).toBe('SESSION_CONFLICT');
+    expect(real.state.spawns).toBe(1);
+    const sole = h.store.getSoleOrchestratorBinding(h.channelId);
+    expect(sole).not.toBeNull();
+    const winnerProvider = sole?.agentFramework ?? '';
+    const loserProfile =
+      winnerProvider === 'mock'
+        ? builtInAgentProfileId('codex')
+        : builtInAgentProfileId('mock');
+    expect(h.store.getBinding(h.channelId, loserProfile)).toBeNull();
+    const routedProviders = await postBareAndReadWinner(h);
+    expect(routedProviders.length).toBeGreaterThan(0);
+    expect(new Set(routedProviders)).toEqual(new Set([winnerProvider]));
   });
 
   it('defaults the framework to claude when omitted', async () => {
