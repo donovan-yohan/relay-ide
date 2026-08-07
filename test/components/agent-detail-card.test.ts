@@ -18,6 +18,8 @@ const {
   AGENT_DETAIL_RENDER_MAX_CHARS,
   AGENT_DETAIL_RENDER_MAX_LINES,
 } = await import('../../frontend/src/components/chat/AgentDetailCard.js');
+const { REASONING_STATUS_CLASS } =
+  await import('../../frontend/src/components/chat/ReasoningDetail.js');
 const { useReasoningDetailSettingsStore } =
   await import('../../frontend/src/lib/stores/reasoning-detail-settings.js');
 const { resetFallbackReasoningDetailStateForTests } =
@@ -55,6 +57,39 @@ describe('AgentDetailCard', () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+  });
+
+  it('maps every reasoning status to its explicit class', () => {
+    const expected = {
+      pending: 'ch-agent-card__status--pending',
+      running: 'ch-agent-card__status--running',
+      'reasoning…': 'ch-agent-card__status--running',
+      completed: 'ch-agent-card__status--completed',
+      failed: 'ch-agent-card__status--failed',
+      cancelled: 'ch-agent-card__status--cancelled',
+      interrupted: 'ch-agent-card__status--cancelled',
+      truncated: 'ch-agent-card__status--cancelled',
+    } satisfies typeof REASONING_STATUS_CLASS;
+
+    expect(REASONING_STATUS_CLASS).toEqual(expected);
+  });
+
+  it('renders pending reasoning with the pending class', async () => {
+    await render({
+      kind: 'thought',
+      title: 'queued reasoning',
+      status: 'pending',
+      content: 'waiting for provider execution',
+    });
+
+    expect(host.querySelector('.ch-agent-card__status')?.textContent).toBe(
+      'pending'
+    );
+    expect(
+      host
+        .querySelector('.ch-agent-card__status')
+        ?.classList.contains('ch-agent-card__status--pending')
+    ).toBe(true);
   });
 
   it('keeps a 500-line output collapsed until its summary is toggled', async () => {

@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
 import {
   AgentSteerRejectedError,
   BaseProtocolAdapterV2,
@@ -63,6 +64,14 @@ import {
   type ChannelMessage,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
+
+const CHANNEL_COMMAND_CONTRACTS: Array<[string, string]> = Object.entries(
+  CHANNEL_ADAPTER_LAUNCH_CONTRACTS
+).flatMap(([providerId, contract]) =>
+  contract.requirement.kind === 'command'
+    ? [[providerId, contract.requirement.command]]
+    : []
+);
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -3083,48 +3092,57 @@ describe('channel-agent-binder — roster + availability', () => {
     ).toBe(true);
   });
 
-  it('resolves command availability against each profile PATH', async () => {
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-profile-bin-'));
-    fs.writeFileSync(path.join(binDir, 'prime-agent'), '#!/bin/sh\nexit 0\n', {
-      mode: 0o755,
-    });
-    const profiles = createAgentProfileStore(':memory:');
-    cleanup.push(() => profiles.close());
-    profiles.seedBuiltIns([{ id: 'prime-agent' }]);
-    const configured = profiles.create({
-      providerId: 'prime-agent',
-      displayName: 'Configured Prime',
-      envVars: { PATH: binDir },
-    });
-    const { binder } = makeBinder({
-      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
-      targets: [
-        {
-          id: 'prime-agent',
-          displayName: 'Prime Agent',
-          kind: 'framework',
-          available: true,
-          reason: null,
-          command: 'prime-agent',
-        },
-      ],
-      knownProviderIds: ['prime-agent'],
-      agentProfileStore: profiles,
-      processEnv: { PATH: '' },
-    });
+  it.each(CHANNEL_COMMAND_CONTRACTS)(
+    'resolves %s command availability against built-in and named-profile PATH',
+    async (providerId, command) => {
+      const binDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), `relay-${providerId}-profile-bin-`)
+      );
+      const executableName =
+        process.platform === 'win32' ? `${command}.EXE` : command;
+      fs.writeFileSync(
+        path.join(binDir, executableName),
+        '#!/bin/sh\nexit 0\n',
+        { mode: 0o755 }
+      );
+      const profiles = createAgentProfileStore(':memory:');
+      cleanup.push(() => profiles.close());
+      profiles.seedBuiltIns([{ id: providerId }]);
+      const configured = profiles.create({
+        providerId,
+        displayName: `Configured ${providerId}`,
+        envVars: { PATH: binDir },
+      });
+      const { binder } = makeBinder({
+        build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+        targets: [
+          {
+            id: providerId,
+            displayName: providerId,
+            kind: 'framework',
+            available: true,
+            reason: null,
+            command,
+          },
+        ],
+        knownProviderIds: [providerId],
+        agentProfileStore: profiles,
+        processEnv: { PATH: '' },
+      });
 
-    const roster = await binder.rosterForChannel(CH);
-    expect(
-      roster.find((entry) => entry.id === builtInAgentProfileId('prime-agent'))
-    ).toMatchObject({
-      available: false,
-      reason: 'prime-agent is not installed on this node (not found on PATH).',
-    });
-    expect(roster.find((entry) => entry.id === configured.id)).toMatchObject({
-      available: true,
-      reason: null,
-    });
-  });
+      const roster = await binder.rosterForChannel(CH);
+      expect(
+        roster.find((entry) => entry.id === builtInAgentProfileId(providerId))
+      ).toMatchObject({
+        available: false,
+        reason: `${command} is not installed on this node (not found on PATH).`,
+      });
+      expect(roster.find((entry) => entry.id === configured.id)).toMatchObject({
+        available: true,
+        reason: null,
+      });
+    }
+  );
 
   it('turns a raced ENOENT spawn into an actionable system row', async () => {
     const spawnError = Object.assign(new Error('spawn prime-agent ENOENT'), {

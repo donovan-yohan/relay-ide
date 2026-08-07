@@ -16,7 +16,10 @@ import type {
 import { startOrchestratorCredentialLifecycle } from './orchestrator-credential-lifecycle.js';
 import type { AdapterConfig } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
-import { createAdapterV2 } from './protocol-adapters/index.js';
+import {
+  createAdapterV2,
+  sanitizeChannelAdapterProcessEnv,
+} from './protocol-adapters/index.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('channel-agent-runtime');
@@ -313,6 +316,10 @@ export class ChannelAgentRuntimeManager {
       );
       processEnv = { ...processEnv, ...lease.processEnv };
     }
+    processEnv = sanitizeChannelAdapterProcessEnv(
+      params.providerId,
+      processEnv
+    );
 
     const now = new Date().toISOString();
     const runtime: ChannelAgentRuntime = {

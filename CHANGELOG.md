@@ -46,6 +46,9 @@ workflow.
 
 #### Fixed
 
+- Make reasoning status styling exhaustive, distinguish nested-only designation
+  conflicts from unknown 409s, and lock every channel provider to a shared
+  launch-command, profile-PATH, and environment-sanitization matrix (#1368)
 - Channel mention packets now exclude blank tool, reasoning, status, and system
   activity rows, report shown/filtered counts, and use a smaller prose window
   so real conversation is not displaced by empty activity (#1358)

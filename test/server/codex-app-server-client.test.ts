@@ -14,6 +14,7 @@ import {
   type CodexServerRequest,
   type CodexAppServerClientOptions,
 } from '../../server/codex-app-server-client.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../server/protocol-adapters/index.js';
 
 // ── Mock child process ────────────────────────────────────────────────────────
 
@@ -46,7 +47,10 @@ function makeMockChild(): MockChild {
   child.stderr = new PassThrough();
 
   const stdinLines: string[] = [];
-  const lineWaiters: Array<{ count: number; resolve: (lines: string[]) => void }> = [];
+  const lineWaiters: Array<{
+    count: number;
+    resolve: (lines: string[]) => void;
+  }> = [];
 
   child.stdin.on('data', (chunk: Buffer) => {
     const raw = chunk.toString();
@@ -81,11 +85,18 @@ function makeMockChild(): MockChild {
 
   child.readStdinLines = () => [...stdinLines];
 
-  child.waitForStdinLines = (count: number, timeoutMs = 2000): Promise<string[]> => {
+  child.waitForStdinLines = (
+    count: number,
+    timeoutMs = 2000
+  ): Promise<string[]> => {
     if (stdinLines.length >= count) return Promise.resolve([...stdinLines]);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`timeout: waited for ${count} stdin line(s), got ${stdinLines.length}`));
+        reject(
+          new Error(
+            `timeout: waited for ${count} stdin line(s), got ${stdinLines.length}`
+          )
+        );
       }, timeoutMs);
       lineWaiters.push({
         count,
@@ -107,11 +118,15 @@ function makeMockChild(): MockChild {
 
 // ── Client factory ────────────────────────────────────────────────────────────
 
-const DEFAULT_CLIENT_INFO = { name: 'relay-ide', title: 'Relay IDE', version: '0.0.1' };
+const DEFAULT_CLIENT_INFO = {
+  name: 'relay-ide',
+  title: 'Relay IDE',
+  version: '0.0.1',
+};
 
 function makeClient(
   mockChild: MockChild,
-  extra?: Partial<CodexAppServerClientOptions>,
+  extra?: Partial<CodexAppServerClientOptions>
 ): CodexAppServerClient {
   return new CodexAppServerClient({
     clientInfo: DEFAULT_CLIENT_INFO,
@@ -121,7 +136,10 @@ function makeClient(
 }
 
 /** Build a minimal server-side `initialize` response. */
-function makeInitResponse(id: number | string, overrides?: Record<string, unknown>) {
+function makeInitResponse(
+  id: number | string,
+  overrides?: Record<string, unknown>
+) {
   return {
     jsonrpc: '2.0',
     id,
@@ -143,7 +161,7 @@ function makeInitResponse(id: number | string, overrides?: Record<string, unknow
 async function performHandshake(
   client: CodexAppServerClient,
   mock: MockChild,
-  initResultOverrides?: Record<string, unknown>,
+  initResultOverrides?: Record<string, unknown>
 ) {
   const startPromise = client.start();
 
@@ -191,8 +209,14 @@ describe('CodexAppServerClient', () => {
       });
 
       const startPromise = client.start();
+      const launchRequirement =
+        CHANNEL_ADAPTER_LAUNCH_CONTRACTS.codex.requirement;
+      expect(launchRequirement.kind).toBe('command');
+      if (launchRequirement.kind !== 'command') {
+        throw new Error('Codex must remain a command-backed channel adapter');
+      }
       expect(spawn).toHaveBeenCalledWith(
-        'codex',
+        launchRequirement.command,
         [
           'app-server',
           '--listen',
@@ -247,7 +271,7 @@ describe('CodexAppServerClient', () => {
           userAgent: 'codex/1.2.3',
           codexHome: '/codex-home',
           platform: 'linux',
-        }),
+        })
       );
 
       const result = await startPromise;
@@ -261,7 +285,9 @@ describe('CodexAppServerClient', () => {
 
       // After handshake: initialize (1 line) + initialized notification (2nd line)
       const lines = await mock.waitForStdinLines(2);
-      const messages = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      const messages = lines.map(
+        (l) => JSON.parse(l) as Record<string, unknown>
+      );
 
       const notification = messages.find((m) => m['method'] === 'initialized');
       expect(notification).toBeDefined();
@@ -298,7 +324,9 @@ describe('CodexAppServerClient', () => {
     it('sends a request and resolves with the result', async () => {
       await performHandshake(client, mock);
 
-      const callPromise = client.call<{ threadId: string }>('thread/start', { prompt: 'hello' });
+      const callPromise = client.call<{ threadId: string }>('thread/start', {
+        prompt: 'hello',
+      });
 
       // Line 1 = initialize, line 2 = initialized, line 3 = thread/start
       const lines = await mock.waitForStdinLines(3);
@@ -308,7 +336,11 @@ describe('CodexAppServerClient', () => {
       expect(req['method']).toBe('thread/start');
       expect(req['params']).toMatchObject({ prompt: 'hello' });
 
-      mock.serverWrite({ jsonrpc: '2.0', id: req['id'], result: { threadId: 'thread-abc' } });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        id: req['id'],
+        result: { threadId: 'thread-abc' },
+      });
 
       const result = await callPromise;
       expect(result.threadId).toBe('thread-abc');
@@ -341,7 +373,9 @@ describe('CodexAppServerClient', () => {
 
       // wait for lines: initialize(1) + initialized(2) + 3 calls = 5
       const lines = await mock.waitForStdinLines(5);
-      const callLines = lines.slice(2).map((l) => JSON.parse(l) as Record<string, unknown>);
+      const callLines = lines
+        .slice(2)
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
 
       const ids = callLines.map((m) => m['id'] as number);
       expect(ids[0]).toBeLessThan(ids[1]!);
@@ -361,11 +395,21 @@ describe('CodexAppServerClient', () => {
       const p2 = client.call<{ value: string }>('skills/list');
 
       const lines = await mock.waitForStdinLines(4); // init + initialized + 2 calls
-      const [msg1, msg2] = lines.slice(2).map((l) => JSON.parse(l) as Record<string, unknown>);
+      const [msg1, msg2] = lines
+        .slice(2)
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
 
       // Reply out of order
-      mock.serverWrite({ jsonrpc: '2.0', id: msg2!['id'], result: { value: 'skills' } });
-      mock.serverWrite({ jsonrpc: '2.0', id: msg1!['id'], result: { value: 'models' } });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        id: msg2!['id'],
+        result: { value: 'skills' },
+      });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        id: msg1!['id'],
+        result: { value: 'models' },
+      });
 
       const [r1, r2] = await Promise.all([p1, p2]);
       expect(r1.value).toBe('models');
@@ -382,27 +426,44 @@ describe('CodexAppServerClient', () => {
       const received: CodexNotification[] = [];
       client.on('notification', (n: CodexNotification) => received.push(n));
 
-      mock.serverWrite({ jsonrpc: '2.0', method: 'turn/started', params: { turnId: 'turn-1' } });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        method: 'turn/started',
+        params: { turnId: 'turn-1' },
+      });
 
       await tick();
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual({ method: 'turn/started', params: { turnId: 'turn-1' } });
+      expect(received[0]).toEqual({
+        method: 'turn/started',
+        params: { turnId: 'turn-1' },
+      });
     });
 
     it('emits multiple notifications in order', async () => {
       await performHandshake(client, mock);
 
       const received: string[] = [];
-      client.on('notification', (n: CodexNotification) => received.push(n.method));
+      client.on('notification', (n: CodexNotification) =>
+        received.push(n.method)
+      );
 
       mock.serverWrite({ jsonrpc: '2.0', method: 'turn/started', params: {} });
       mock.serverWrite({ jsonrpc: '2.0', method: 'item/started', params: {} });
-      mock.serverWrite({ jsonrpc: '2.0', method: 'turn/completed', params: {} });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        method: 'turn/completed',
+        params: {},
+      });
 
       await tick();
 
-      expect(received).toEqual(['turn/started', 'item/started', 'turn/completed']);
+      expect(received).toEqual([
+        'turn/started',
+        'item/started',
+        'turn/completed',
+      ]);
     });
   });
 
@@ -498,7 +559,11 @@ describe('CodexAppServerClient', () => {
       // Bad line goes directly to stdout
       mock.stdout.push('{ this is not valid json }\n');
       // Good line follows
-      mock.serverWrite({ jsonrpc: '2.0', method: 'skills/changed', params: {} });
+      mock.serverWrite({
+        jsonrpc: '2.0',
+        method: 'skills/changed',
+        params: {},
+      });
 
       await tick();
 
@@ -575,8 +640,14 @@ describe('CodexAppServerClient', () => {
       // when the rejection fires synchronously in the close handler.
       const p1 = client.call('thread/start');
       const p2 = client.call('turn/start');
-      const r1 = p1.then(() => 'ok' as const, (e: unknown) => e);
-      const r2 = p2.then(() => 'ok' as const, (e: unknown) => e);
+      const r1 = p1.then(
+        () => 'ok' as const,
+        (e: unknown) => e
+      );
+      const r2 = p2.then(
+        () => 'ok' as const,
+        (e: unknown) => e
+      );
 
       mock.exit(1);
       await tick();

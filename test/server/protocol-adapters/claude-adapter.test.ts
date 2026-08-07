@@ -21,6 +21,7 @@ import {
 } from '../../../server/protocol-adapters/claude-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 import claudeDetailFixture from '../../fixtures/agent-detail/claude.js';
 import {
   applyAgentPatchV2,
@@ -257,6 +258,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       processEnv: {
         RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.runtime-only.test-token',
         CLAUDECODE: 'must-still-be-stripped',
+        CLAUDE_CODE_ENTRYPOINT: 'must-also-be-stripped',
       },
       systemPromptAppendix: 'Relay orchestrator playbook',
       extra: {
@@ -287,7 +289,14 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     }
 
     expect(harness.spawns).toHaveLength(1);
-    const { args, options } = harness.latest();
+    const { command, args, options } = harness.latest();
+    const launchRequirement =
+      CHANNEL_ADAPTER_LAUNCH_CONTRACTS.claude.requirement;
+    expect(launchRequirement.kind).toBe('command');
+    if (launchRequirement.kind !== 'command') {
+      throw new Error('Claude must remain a command-backed channel adapter');
+    }
+    expect(command).toBe(launchRequirement.command);
 
     expect(args.slice(0, 11)).toEqual([
       '-p',
@@ -324,7 +333,10 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(args).not.toContain('SHOULD_DROP_R');
     expect(args).not.toContain('-r=alias-session');
     // CLAUDECODE stripped from the child env.
-    expect(options.env.CLAUDECODE).toBeUndefined();
+    for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS.claude
+      .processEnvDenylist) {
+      expect(options.env).not.toHaveProperty(key);
+    }
     expect(options.env.RELAY_IDE_ACTOR_TOKEN).toBe(
       'relay-sac-v1.runtime-only.test-token'
     );

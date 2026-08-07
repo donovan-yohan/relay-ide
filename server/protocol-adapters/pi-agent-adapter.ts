@@ -1,3 +1,4 @@
+import { PI_AGENT_CHANNEL_COMMAND } from './launch-commands.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
@@ -196,7 +197,7 @@ export class PiAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
     delete env['CLAUDECODE'];
     const client = this.clientFactory({
-      command: 'pi',
+      command: PI_AGENT_CHANNEL_COMMAND,
       args,
       cwd: config.cwd,
       env,

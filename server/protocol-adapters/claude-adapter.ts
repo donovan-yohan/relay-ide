@@ -1,3 +1,4 @@
+import { CLAUDE_CHANNEL_COMMAND } from './launch-commands.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
@@ -1330,7 +1331,7 @@ export class ClaudeProtocolAdapter
     });
 
     const client = new ClaudeStreamClient({
-      command: 'claude',
+      command: CLAUDE_CHANNEL_COMMAND,
       args,
       cwd: this.config.cwd,
       env: this.buildEnv(),

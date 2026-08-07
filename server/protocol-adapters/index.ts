@@ -14,6 +14,13 @@ import {
 import { CodexNativeProtocolAdapter } from './codex-native-adapter.js';
 import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
 import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
+import {
+  CLAUDE_CHANNEL_COMMAND,
+  CODEX_CHANNEL_COMMAND,
+  OPENCODE_CHANNEL_COMMAND,
+  PI_AGENT_CHANNEL_COMMAND,
+  PRIME_AGENT_CHANNEL_COMMAND,
+} from './launch-commands.js';
 
 /**
  * External process requirement for a channel adapter. Kept beside the adapter
@@ -35,6 +42,12 @@ export type ChannelAdapterLaunchRequirement =
   | { kind: 'command'; command: string }
   | { kind: 'gateway'; gateway: string; probe: ChannelGatewayProbe }
   | { kind: 'embedded' };
+
+export interface ChannelAdapterLaunchContract {
+  requirement: ChannelAdapterLaunchRequirement;
+  /** Keys that a named profile may not reintroduce into a child process. */
+  processEnvDenylist: readonly string[];
+}
 
 export const v2Adapters = {
   mock: () => new MockProtocolAdapterV2(),
@@ -111,35 +124,84 @@ export const v2Adapters = {
  * without declaring how it launches is therefore a type error rather than a
  * silently unavailable roster entry.
  */
-const CHANNEL_ADAPTER_LAUNCH_REQUIREMENTS = {
-  mock: { kind: 'embedded' },
-  claude: { kind: 'command', command: 'claude' },
-  codex: { kind: 'command', command: 'codex' },
-  'prime-agent': { kind: 'command', command: 'prime-agent' },
-  pi: { kind: 'command', command: 'pi' },
-  opencode: { kind: 'command', command: 'opencode' },
+export const CHANNEL_ADAPTER_LAUNCH_CONTRACTS = {
+  mock: { requirement: { kind: 'embedded' }, processEnvDenylist: [] },
+  claude: {
+    requirement: { kind: 'command', command: CLAUDE_CHANNEL_COMMAND },
+    processEnvDenylist: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
+  codex: {
+    requirement: { kind: 'command', command: CODEX_CHANNEL_COMMAND },
+    processEnvDenylist: ['CLAUDECODE'],
+  },
+  'prime-agent': {
+    requirement: { kind: 'command', command: PRIME_AGENT_CHANNEL_COMMAND },
+    processEnvDenylist: ['CLAUDECODE'],
+  },
+  pi: {
+    requirement: { kind: 'command', command: PI_AGENT_CHANNEL_COMMAND },
+    processEnvDenylist: ['CLAUDECODE'],
+  },
+  opencode: {
+    requirement: { kind: 'command', command: OPENCODE_CHANNEL_COMMAND },
+    processEnvDenylist: [
+      'CLAUDECODE',
+      'OPENCODE_SERVER_PASSWORD',
+      'OPENCODE_SERVER_USERNAME',
+    ],
+  },
   'opencode-attached': {
-    kind: 'gateway',
-    gateway: 'opencode-attached',
-    probe: probeOpenCodeAttachedApi,
+    requirement: {
+      kind: 'gateway',
+      gateway: 'opencode-attached',
+      probe: probeOpenCodeAttachedApi,
+    },
+    processEnvDenylist: [],
   },
   // Hermes channel sessions attach to the HTTP gateway and spawn no local CLI.
   hermes: {
-    kind: 'gateway',
-    gateway: 'hermes',
-    probe: probeHermesGatewayApi,
+    requirement: {
+      kind: 'gateway',
+      gateway: 'hermes',
+      probe: probeHermesGatewayApi,
+    },
+    processEnvDenylist: [],
   },
-} satisfies Record<keyof typeof v2Adapters, ChannelAdapterLaunchRequirement>;
+} satisfies Record<keyof typeof v2Adapters, ChannelAdapterLaunchContract>;
 
 export function channelAdapterLaunchRequirement(
   providerId: string
 ): ChannelAdapterLaunchRequirement | undefined {
   return (
-    CHANNEL_ADAPTER_LAUNCH_REQUIREMENTS as Record<
+    CHANNEL_ADAPTER_LAUNCH_CONTRACTS as Record<
       string,
-      ChannelAdapterLaunchRequirement
+      ChannelAdapterLaunchContract
+    >
+  )[providerId]?.requirement;
+}
+
+export function sanitizeChannelAdapterProcessEnv(
+  providerId: string,
+  processEnv: Record<string, string>,
+  platform: NodeJS.Platform = process.platform
+): Record<string, string> {
+  const sanitized = { ...processEnv };
+  const contract = (
+    CHANNEL_ADAPTER_LAUNCH_CONTRACTS as Record<
+      string,
+      ChannelAdapterLaunchContract
     >
   )[providerId];
+  const denied = contract?.processEnvDenylist ?? [];
+  if (platform === 'win32') {
+    const foldedDenylist = new Set(denied.map((key) => key.toUpperCase()));
+    for (const key of Object.keys(sanitized)) {
+      if (foldedDenylist.has(key.toUpperCase())) delete sanitized[key];
+    }
+  } else {
+    for (const key of denied) delete sanitized[key];
+  }
+  return sanitized;
 }
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
