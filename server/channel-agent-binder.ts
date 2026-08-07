@@ -1,6 +1,7 @@
 import os from 'node:os';
 
 import { createLogger } from './logger.js';
+import { resolveExecutablePath } from './frameworks.js';
 import { bindSessionToChannel } from './channel-agent-bridge.js';
 import {
   buildMentionContextPacketEnvelope,
@@ -141,6 +142,8 @@ export interface MentionTarget {
   kind: 'framework';
   available: boolean;
   reason: string | null;
+  /** Actual adapter executable; absent for gateway-only channel providers. */
+  command?: string;
 }
 
 export interface ChannelAgentRosterEntry {
@@ -205,6 +208,8 @@ export interface ChannelAgentBinderDeps {
   presenceSweepMs?: number;
   yolo?: boolean;
   now?: () => number;
+  /** Base environment inherited by channel adapter subprocesses. */
+  processEnv?: NodeJS.ProcessEnv;
 }
 
 export interface ChannelAgentBinder {
@@ -464,6 +469,11 @@ export function createChannelAgentBinder(
   const retryInFlight = new Set<string>();
   let statusBroadcaster: ChannelAgentStatusBroadcaster | null = null;
   let targetsCache: { at: number; value: MentionTarget[] } | null = null;
+  let targetsGeneration = 0;
+  let targetsInFlight: {
+    generation: number;
+    promise: Promise<MentionTarget[]>;
+  } | null = null;
   let closed = false;
 
   const unsubRuntimeEnd = deps.runtimes.onRuntimeEnd((runtimeId) =>
@@ -552,13 +562,42 @@ export function createChannelAgentBinder(
 
   // ── availability targets ────────────────────────────────────────────────────
 
+  function invalidateTargets(): void {
+    targetsGeneration += 1;
+    targetsCache = null;
+    targetsInFlight = null;
+  }
+
   async function getTargets(): Promise<MentionTarget[]> {
+    if (closed) return [];
     if (targetsCache && now() - targetsCache.at < TARGETS_TTL_MS) {
       return targetsCache.value;
     }
-    const value = await deps.mentionTargets();
-    targetsCache = { at: now(), value };
-    return value;
+    const generation = targetsGeneration;
+    if (targetsInFlight?.generation === generation) {
+      return targetsInFlight.promise;
+    }
+    const request = deps.mentionTargets();
+    const promise = request.then(
+      async (value) => {
+        // Invalidation may race an async gateway probe. Never let that stale
+        // completion repopulate the cache or escape to the caller; join/start
+        // the current generation instead.
+        if (generation !== targetsGeneration) return getTargets();
+        targetsCache = { at: now(), value };
+        return value;
+      },
+      async (error: unknown) => {
+        if (generation !== targetsGeneration) return getTargets();
+        throw error;
+      }
+    );
+    targetsInFlight = { generation, promise };
+    try {
+      return await promise;
+    } finally {
+      if (targetsInFlight?.promise === promise) targetsInFlight = null;
+    }
   }
 
   async function resolveTarget(
@@ -566,6 +605,35 @@ export function createChannelAgentBinder(
   ): Promise<MentionTarget | undefined> {
     const targets = await getTargets();
     return targets.find((target) => target.id === framework);
+  }
+
+  function effectiveLaunchEnv(profile: AgentProfile): NodeJS.ProcessEnv {
+    return {
+      ...(deps.processEnv ?? process.env),
+      ...(profile.envVars ?? {}),
+    };
+  }
+
+  function availabilityForProfile(
+    profile: AgentProfile,
+    target: MentionTarget | undefined
+  ): { available: boolean; reason: string | null } {
+    if (!target?.available) {
+      return {
+        available: false,
+        reason: target?.reason ?? 'framework unavailable',
+      };
+    }
+    if (
+      target.command &&
+      !resolveExecutablePath(target.command, effectiveLaunchEnv(profile))
+    ) {
+      return {
+        available: false,
+        reason: `${target.command} is not installed on this node (not found on PATH).`,
+      };
+    }
+    return { available: true, reason: null };
   }
 
   /**
@@ -977,6 +1045,27 @@ export function createChannelAgentBinder(
       });
     } catch (err) {
       setStatus(provisional, 'idle');
+      if (isMissingLaunchCommandError(err)) {
+        const target = await resolveTarget(framework).catch(() => undefined);
+        const command = target?.command;
+        const commandStillInstalled = command
+          ? resolveExecutablePath(command, effectiveLaunchEnv(profile)) !== null
+          : false;
+        // The probe result may have raced a config/gateway refresh. Invalidate
+        // with a generation bump so an older in-flight completion cannot put
+        // stale targets back after this failure.
+        invalidateTargets();
+        logger.warn('channel agent launch path disappeared:', err);
+        const friendlyMessage =
+          command && !commandStillInstalled
+            ? `@${senderDisplayName} could not start because the configured command "${command}" is not available on this node. Install or configure that CLI on the Relay hub, then review Settings → Agent profiles and try again.`
+            : `@${senderDisplayName} could not start because a launch path was not found on this node.${command ? ` The command "${command}" is installed; verify` : ' Verify'} the channel repo/worktree path and Settings → Agent profiles, then try again.`;
+        throw new ChannelBindingError(
+          friendlyMessage,
+          friendlyMessage,
+          command !== undefined && !commandStillInstalled
+        );
+      }
       throw new ChannelBindingError(
         `spawn failed for @${senderDisplayName}: ${errText(err)}`,
         `@${senderDisplayName} failed to start: ${errText(err)}`
@@ -1982,13 +2071,14 @@ export function createChannelAgentBinder(
           }
           return;
         }
-        if (!target.available) {
+        const availability = availabilityForProfile(profile, target);
+        if (!availability.available) {
           const senderDisplayName =
             profile.displayName || target.displayName || framework;
           postUnavailableRow(
             trigger.channelId,
             profile.id,
-            `@${senderDisplayName} is not available in channels yet — ${target.reason ?? 'channel runtime unavailable.'}`,
+            `@${senderDisplayName} is not available in channels yet — ${availability.reason ?? 'channel runtime unavailable.'}`,
             parentForTrigger(trigger)
           );
           return;
@@ -2503,9 +2593,10 @@ export function createChannelAgentBinder(
       // mark over a turn that never ran — the mark disables the row's own retry
       // affordance, so writing it for a no-op would strand the operator.
       const mentionTarget = await resolveTarget(profile.providerId);
-      if (!mentionTarget?.available) {
+      const availability = availabilityForProfile(profile, mentionTarget);
+      if (!availability.available) {
         throw new ChannelMessageNotRetryableError(
-          `@${profile.displayName || profile.providerId} is not available in channels — ${mentionTarget?.reason ?? 'framework unavailable'}`,
+          `@${profile.displayName || profile.providerId} is not available in channels — ${availability.reason ?? 'framework unavailable'}`,
           'AGENT_UNAVAILABLE'
         );
       }
@@ -2569,6 +2660,7 @@ export function createChannelAgentBinder(
     return Promise.all(
       profiles.map(async (profile) => {
         const target = targetByProvider.get(profile.providerId);
+        const availability = availabilityForProfile(profile, target);
         const binding = live.get(bindingKey(channelId, profile.id));
         const row = store.getBinding(channelId, profile.id);
         const runtimeId = binding?.runtimeId ?? row?.runtimeId ?? null;
@@ -2587,8 +2679,8 @@ export function createChannelAgentBinder(
           isDefault: profile.isDefault,
           isBuiltIn: profile.isBuiltIn,
           kind: 'framework',
-          available: target?.available ?? false,
-          reason: target?.reason ?? 'framework unavailable',
+          available: availability.available,
+          reason: availability.reason,
           ...(runtime?.role !== undefined ? { role: runtime.role } : {}),
           binding: runtimeId
             ? {
@@ -2784,9 +2876,28 @@ export function createChannelAgentBinder(
       retryInFlight.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();
-      targetsCache = null;
+      invalidateTargets();
     },
   };
+}
+
+function isMissingLaunchCommandError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const candidate = err as {
+    code?: unknown;
+    message?: unknown;
+    cause?: unknown;
+  };
+  if (candidate.code === 'ENOENT') return true;
+  if (
+    typeof candidate.message === 'string' &&
+    /(?:^|\s)ENOENT(?:\s|$|:)/.test(candidate.message)
+  ) {
+    return true;
+  }
+  return candidate.cause !== undefined && candidate.cause !== err
+    ? isMissingLaunchCommandError(candidate.cause)
+    : false;
 }
 
 function errText(err: unknown): string {

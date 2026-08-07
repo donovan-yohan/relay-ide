@@ -1039,7 +1039,11 @@ interface SessionsHarness {
 
 function makeSessions(
   build: (agentType: string) => ProtocolAdapterV2,
-  opts: { throwOnCreate?: boolean; gate?: Promise<void> } = {}
+  opts: {
+    throwOnCreate?: boolean;
+    createError?: unknown;
+    gate?: Promise<void>;
+  } = {}
 ): SessionsHarness {
   const created = new Map<string, { runtime: ChannelAgentRuntime }>();
   const order: string[] = [];
@@ -1052,6 +1056,7 @@ function makeSessions(
       spawns++;
       lastParams = params;
       createParams.push(params);
+      if (opts.createError !== undefined) throw opts.createError;
       if (opts.throwOnCreate) throw new Error('boom: spawn failed');
       // Optional gate: park the spawn so a test can drive a close()/reorder race
       // between runtime creation being invoked and its continuation resuming.
@@ -1151,15 +1156,18 @@ const MOCK_TARGETS: MentionTarget[] = [
 function makeBinder(cfg: {
   build: (agentType: string) => ProtocolAdapterV2;
   targets: MentionTarget[];
+  mentionTargets?: () => Promise<MentionTarget[]>;
   knownProviderIds: string[];
   topicStore?: WorkspaceTopicStore | null;
   watchdogMs?: number;
   presenceSweepMs?: number;
   throwOnCreate?: boolean;
+  createError?: unknown;
   yolo?: boolean;
   gate?: Promise<void>;
   attachmentStore?: ChannelAttachmentStore;
   agentProfileStore?: AgentProfileStore | null;
+  processEnv?: NodeJS.ProcessEnv;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -1169,6 +1177,7 @@ function makeBinder(cfg: {
   const { store, hub } = makeStore();
   const sessions = makeSessions(cfg.build, {
     ...(cfg.throwOnCreate ? { throwOnCreate: true } : {}),
+    ...(cfg.createError !== undefined ? { createError: cfg.createError } : {}),
     ...(cfg.gate ? { gate: cfg.gate } : {}),
   });
   const binder = createChannelAgentBinder({
@@ -1181,7 +1190,7 @@ function makeBinder(cfg: {
       : {}),
     runtimes: sessions.sessions,
     knownProviderIds: cfg.knownProviderIds,
-    mentionTargets: async () => cfg.targets,
+    mentionTargets: cfg.mentionTargets ?? (async () => cfg.targets),
     port: 0,
     configDir: '/tmp',
     ...(cfg.watchdogMs !== undefined ? { watchdogMs: cfg.watchdogMs } : {}),
@@ -1189,6 +1198,7 @@ function makeBinder(cfg: {
       ? { presenceSweepMs: cfg.presenceSweepMs }
       : {}),
     ...(cfg.yolo !== undefined ? { yolo: cfg.yolo } : {}),
+    ...(cfg.processEnv !== undefined ? { processEnv: cfg.processEnv } : {}),
   });
   cleanup.push(() => binder.close());
   return { binder, store, hub, sessions };
@@ -2868,6 +2878,206 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
 });
 
 describe('channel-agent-binder — roster + availability', () => {
+  it('projects one provider launch failure onto every profile roster row', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'prime-agent' }]);
+    profiles.create({
+      providerId: 'prime-agent',
+      displayName: 'Prime Reviewer',
+    });
+    const reason =
+      'prime-agent is not installed on this node (not found on PATH).';
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: false,
+          reason,
+          command: 'prime-agent',
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+      agentProfileStore: profiles,
+    });
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster).toHaveLength(2);
+    expect(
+      roster.every(
+        (entry) => entry.available === false && entry.reason === reason
+      )
+    ).toBe(true);
+  });
+
+  it('resolves command availability against each profile PATH', async () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-profile-bin-'));
+    fs.writeFileSync(path.join(binDir, 'prime-agent'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o755,
+    });
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'prime-agent' }]);
+    const configured = profiles.create({
+      providerId: 'prime-agent',
+      displayName: 'Configured Prime',
+      envVars: { PATH: binDir },
+    });
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+          command: 'prime-agent',
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+      agentProfileStore: profiles,
+      processEnv: { PATH: '' },
+    });
+
+    const roster = await binder.rosterForChannel(CH);
+    expect(
+      roster.find((entry) => entry.id === builtInAgentProfileId('prime-agent'))
+    ).toMatchObject({
+      available: false,
+      reason: 'prime-agent is not installed on this node (not found on PATH).',
+    });
+    expect(roster.find((entry) => entry.id === configured.id)).toMatchObject({
+      available: true,
+      reason: null,
+    });
+  });
+
+  it('turns a raced ENOENT spawn into an actionable system row', async () => {
+    const spawnError = Object.assign(new Error('spawn prime-agent ENOENT'), {
+      code: 'ENOENT',
+    });
+    const { binder, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+          command: 'prime-agent',
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+      createError: spawnError,
+      processEnv: { PATH: '' },
+    });
+
+    let directError: unknown;
+    try {
+      await binder.ensureBinding(CH, 'prime-agent');
+    } catch (error) {
+      directError = error;
+    }
+    expect(directError).toBeInstanceOf(Error);
+    expect((directError as Error).message).toContain(
+      'configured command "prime-agent" is not available on this node'
+    );
+    expect((directError as Error).message).not.toContain('ENOENT');
+
+    post(store, binder, '@prime-agent go', ['prime-agent']);
+    await waitFor(() => systemRows(store).length > 0);
+
+    const text = systemRows(store).at(-1)!.body.text;
+    expect(text).toContain(
+      'prime-agent is not installed on this node (not found on PATH)'
+    );
+    expect(text).not.toContain('ENOENT');
+    expect(text).not.toContain('spawn prime-agent');
+  });
+
+  it('does not misdiagnose an ENOENT from a missing working directory as a missing command', async () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cwd-bin-'));
+    fs.writeFileSync(path.join(binDir, 'prime-agent'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o755,
+    });
+    const spawnError = Object.assign(new Error('spawn prime-agent ENOENT'), {
+      code: 'ENOENT',
+    });
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+          command: 'prime-agent',
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+      createError: spawnError,
+      processEnv: { PATH: binDir },
+    });
+
+    let error: unknown;
+    try {
+      await binder.ensureBinding(CH, 'prime-agent');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(
+      'The command "prime-agent" is installed; verify the channel repo/worktree path'
+    );
+    expect((error as Error).message).not.toContain(
+      'configured command "prime-agent" is not available'
+    );
+  });
+
+  it('discards an in-flight target probe when shutdown invalidates its generation', async () => {
+    const stale: MentionTarget[] = [
+      {
+        id: 'stale',
+        displayName: 'Stale',
+        kind: 'framework',
+        available: true,
+        reason: null,
+      },
+    ];
+    let resolveFirst: ((targets: MentionTarget[]) => void) | undefined;
+    let calls = 0;
+    const { binder } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [],
+      mentionTargets: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<MentionTarget[]>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        throw new Error('closed binder must not start a fresh target probe');
+      },
+      knownProviderIds: ['stale'],
+    });
+
+    const firstRoster = binder.rosterForChannel(CH);
+    const joinedRoster = binder.rosterForChannel(CH);
+    await waitFor(() => calls === 1);
+    binder.close();
+    resolveFirst?.(stale);
+
+    await expect(firstRoster).resolves.toEqual([]);
+    await expect(joinedRoster).resolves.toEqual([]);
+    expect(calls).toBe(1);
+  });
+
   it('includes the default profile for an unseeded target provider without duplicating stored providers', async () => {
     const profiles = createAgentProfileStore(':memory:');
     cleanup.push(() => profiles.close());

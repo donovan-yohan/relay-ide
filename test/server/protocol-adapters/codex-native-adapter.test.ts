@@ -103,7 +103,10 @@ class StubCodexClient extends EventEmitter {
   }
 }
 
-type StubFactory = CodexClientFactory & { lastClient: StubCodexClient };
+type StubFactory = CodexClientFactory & {
+  lastClient: StubCodexClient;
+  lastOptions?: CodexAppServerClientOptions;
+};
 
 /**
  * Returns a factory that always hands out the same pre-built stub.
@@ -113,7 +116,8 @@ type StubFactory = CodexClientFactory & { lastClient: StubCodexClient };
 function makeStubFactory(): StubFactory {
   const stub = new StubCodexClient();
   let callCount = 0;
-  const factory: StubFactory = (_opts) => {
+  const factory: StubFactory = (opts) => {
+    factory.lastOptions = opts;
     // On second call (resume creates a new client), return a fresh stub
     // but update lastClient so tests can still access it.
     if (callCount++ > 0) {
@@ -260,6 +264,25 @@ describe('CodexNativeProtocolAdapter — connect', () => {
       ])
     );
 
+    await adapter.disconnect();
+  });
+
+  it('passes profile process env to the app-server subprocess', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thread-env' },
+    });
+
+    await adapter.connect({
+      ...config,
+      processEnv: { PATH: '/profile/bin', RELAY_PROFILE_TEST: 'yes' },
+    });
+
+    expect(factory.lastOptions?.env).toMatchObject({
+      PATH: '/profile/bin',
+      RELAY_PROFILE_TEST: 'yes',
+    });
     await adapter.disconnect();
   });
 

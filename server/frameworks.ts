@@ -7,7 +7,10 @@ import {
   type AgentFramework,
   type EventSourceType,
 } from './types.js';
-import { probeHermesGatewayApi } from './protocol-adapters/hermes-adapter.js';
+import {
+  channelAdapterLaunchRequirement,
+  type ChannelGatewayProbe,
+} from './protocol-adapters/index.js';
 
 export interface FrameworkAvailability {
   installed: boolean;
@@ -19,6 +22,17 @@ export interface FrameworkChannelAvailability {
   available: boolean;
   endpoint?: string;
   reason?: string;
+  /** Actual subprocess command used by the registered channel adapter. */
+  command?: string;
+}
+
+export interface FrameworkChannelAvailabilityOptions {
+  /** Roster targets defer this check until each profile's effective env is known. */
+  probeLaunchCommand?: boolean;
+  /** Test/host overrides keyed by the gateway id declared by the adapter. */
+  gatewayProbeOverrides?: Readonly<
+    Record<string, ChannelGatewayProbe | undefined>
+  >;
 }
 
 export interface FrameworkClientInfo {
@@ -113,10 +127,11 @@ export async function getFrameworkClientInfoWithRuntime(
   const frameworks = getFrameworkClientInfo(frameworkOverrides, env);
   return Promise.all(
     frameworks.map(async (framework) => {
-      if (framework.id !== 'hermes' || !framework.availability.installed) {
-        return framework;
-      }
-      const probe = await probeHermesGatewayApi(undefined, 300);
+      const requirement = channelAdapterLaunchRequirement(framework.id);
+      if (requirement?.kind !== 'gateway') return framework;
+      // Terminal installation and attached channel gateway reachability are
+      // independent: gateway adapters spawn no local CLI.
+      const probe = await requirement.probe(undefined, 300);
       return {
         ...framework,
         channelAvailability: {
@@ -132,7 +147,9 @@ export async function getFrameworkClientInfoWithRuntime(
 const CHANNEL_DEADVERTISE_REASONS: Record<string, string> = {};
 
 export async function getFrameworkChannelAvailability(
-  framework: AgentFramework
+  framework: AgentFramework,
+  env: NodeJS.ProcessEnv = process.env,
+  options: FrameworkChannelAvailabilityOptions = {}
 ): Promise<FrameworkChannelAvailability> {
   if (!framework.capabilities.supportsChannelAgents) {
     return {
@@ -142,13 +159,40 @@ export async function getFrameworkChannelAvailability(
         `${framework.displayName} is not currently available in channels.`,
     };
   }
-  if (framework.id !== 'hermes') {
-    return { available: true };
+
+  const requirement = channelAdapterLaunchRequirement(framework.id);
+  if (!requirement) {
+    return {
+      available: false,
+      reason: `${framework.displayName} has no registered channel runtime.`,
+    };
   }
-  const probe = await probeHermesGatewayApi(undefined, 500);
-  return {
-    available: probe.available,
-    endpoint: probe.endpoint,
-    ...(probe.reason ? { reason: probe.reason } : {}),
-  };
+
+  if (requirement.kind === 'gateway') {
+    const gatewayProbe =
+      options.gatewayProbeOverrides?.[requirement.gateway] ?? requirement.probe;
+    const probe = await gatewayProbe(undefined, 500);
+    return {
+      available: probe.available,
+      endpoint: probe.endpoint,
+      ...(probe.reason ? { reason: probe.reason } : {}),
+    };
+  }
+
+  if (requirement.kind === 'embedded') return { available: true };
+
+  // Framework commandOverride config currently controls terminal sessions only;
+  // channel adapters own their subprocess command. Probe that actual command so
+  // the roster never promises an override the adapter will not launch.
+  if (
+    options.probeLaunchCommand !== false &&
+    !resolveExecutablePath(requirement.command, env)
+  ) {
+    return {
+      available: false,
+      reason: `${requirement.command} is not installed on this node (not found on PATH).`,
+      command: requirement.command,
+    };
+  }
+  return { available: true, command: requirement.command };
 }

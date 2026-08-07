@@ -3,6 +3,51 @@ import type { AdapterConfig, Attachment } from '../protocol-adapter.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-attached');
+const DEFAULT_OPENCODE_ATTACHED_ENDPOINT = 'http://127.0.0.1:4096';
+
+export interface OpenCodeAttachedProbeResult {
+  available: boolean;
+  endpoint: string;
+  reason?: string;
+}
+
+function resolveOpenCodeAttachedEndpoint(
+  extra: Record<string, unknown> | undefined
+): string {
+  const endpoint =
+    typeof extra?.['endpoint'] === 'string'
+      ? extra['endpoint']
+      : DEFAULT_OPENCODE_ATTACHED_ENDPOINT;
+  return endpoint.replace(/\/$/, '');
+}
+
+/** Probe the same HTTP health endpoint used when the attached adapter connects. */
+export async function probeOpenCodeAttachedApi(
+  extra: Record<string, unknown> | undefined,
+  timeoutMs = 500
+): Promise<OpenCodeAttachedProbeResult> {
+  const endpoint = resolveOpenCodeAttachedEndpoint(extra);
+  try {
+    const response = await fetch(`${endpoint}/global/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      return {
+        available: false,
+        endpoint,
+        reason: `OpenCode server health check failed at ${endpoint}: HTTP ${response.status}`,
+      };
+    }
+    return { available: true, endpoint };
+  } catch (err) {
+    const lastError = err instanceof Error ? err.message : String(err);
+    return {
+      available: false,
+      endpoint,
+      reason: `OpenCode server is not reachable at ${endpoint}. Start opencode serve or opencode web there and try again. Last error: ${lastError}`,
+    };
+  }
+}
 
 interface OpenCodeEvent {
   type: string;
@@ -18,18 +63,14 @@ interface OpenCodeEvent {
 export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
   readonly agentType = 'opencode';
 
-  private _endpoint = 'http://127.0.0.1:4096';
+  private _endpoint = DEFAULT_OPENCODE_ATTACHED_ENDPOINT;
   private _sseAbortController: AbortController | null = null;
   private _messageAbortController: AbortController | null = null;
   private _turnCounter = 0;
   private _currentTurnId: string | null = null;
 
   protected async onConnect(config: AdapterConfig): Promise<void> {
-    const endpoint =
-      typeof config.extra?.['endpoint'] === 'string'
-        ? config.extra['endpoint']
-        : 'http://127.0.0.1:4096';
-    this._endpoint = endpoint.replace(/\/$/, '');
+    this._endpoint = resolveOpenCodeAttachedEndpoint(config.extra);
 
     // Verify the server is reachable
     const healthRes = await fetch(`${this._endpoint}/global/health`).catch(

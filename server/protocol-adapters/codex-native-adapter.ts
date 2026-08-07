@@ -31,6 +31,7 @@ import { createLogger } from '../logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
+import { cleanEnv } from '../utils.js';
 
 const logger = createLogger('codex-native-adapter');
 
@@ -1107,6 +1108,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       },
       optOutNotificationMethods: [],
       cwd: typeof extra['cwd'] === 'string' ? extra['cwd'] : config.cwd,
+      ...(config.processEnv
+        ? { env: { ...cleanEnv(), ...config.processEnv } }
+        : {}),
     };
     if (typeof extra['command'] === 'string') opts.command = extra['command'];
     if (Array.isArray(extra['args'])) opts.args = extra['args'] as string[];

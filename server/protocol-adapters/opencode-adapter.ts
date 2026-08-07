@@ -11,6 +11,7 @@ import type {
 } from '../protocol-adapter.js';
 import type { ChatEvent, ChatEventSource } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
+import { cleanEnv } from '../utils.js';
 
 const logger = createLogger('opencode-adapter');
 const MAX_TRACKED_USER_MESSAGES = 100;
@@ -114,7 +115,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       (config.extra?.['args'] as string[] | undefined) ?? defaultArgs
     ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
 
-    const env = { ...process.env };
+    const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
     delete env['OPENCODE_SERVER_PASSWORD'];
     delete env['OPENCODE_SERVER_USERNAME'];
 
