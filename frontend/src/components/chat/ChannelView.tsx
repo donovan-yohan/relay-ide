@@ -886,6 +886,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     (chip) => chip.role === 'orchestrator'
   );
 
+  // A designation write can commit while its response is lost. The next roster
+  // snapshot is authoritative: once its chip says orchestrator, retire any
+  // local failure from that write. Keep the render gate below as well so no
+  // intermediate commit can announce success and failure at the same time.
+  useEffect(() => {
+    if (hasOrchestrator && designateError !== null) setDesignateError(null);
+  }, [designateError, hasOrchestrator]);
+
   const channelNotFound =
     notFound ||
     (topicQuery.error instanceof HttpError && topicQuery.error.status === 404);
@@ -1014,7 +1022,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             )}
           </button>
         ) : null}
-        {designateError ? (
+        {designateError && !hasOrchestrator ? (
           <span className="ch-designate-orchestrator__error" role="alert">
             {designateError}
           </span>

@@ -206,6 +206,7 @@
 
 .ch-conn-dot {
   display: inline-block;
+  flex: 0 0 8px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1184,6 +1185,8 @@
 
 @media (max-width: 767px) {
   .ch-header {
+    flex-wrap: wrap;
+    row-gap: 4px;
     padding: 8px 10px;
   }
 
@@ -1193,6 +1196,22 @@
 
   .ch-header__title {
     flex: 1 1 auto;
+    min-width: 4ch;
+  }
+
+  /* A failed designation gets a bounded row instead of competing with title,
+     agent, and connection geometry in the primary header row. Visual clamping
+     does not alter the alert's full accessible text. */
+  .ch-designate-orchestrator__error {
+    display: -webkit-box;
+    order: 1;
+    flex: 1 0 100%;
+    max-width: 100%;
+    max-height: 2.4em;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   /* Retain the role distinction in the shared mobile header without consuming

@@ -382,7 +382,7 @@ export const SWEPT_SPECS: readonly SweptSpec[] = [
 /** Specs kept by the sweep. Asserted against `test/e2e/` by the ledger test. */
 export const KEPT_SPEC_COUNT = 11;
 /** E2E specs added after the #1299 audit baseline. */
-export const POST_SWEEP_SPEC_COUNT = 1;
+export const POST_SWEEP_SPEC_COUNT = 2;
 
 /**
  * Specs the #1299 target audit found navigating to a page that never existed.
