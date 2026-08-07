@@ -10,6 +10,14 @@
   flex-shrink: 0;
 }
 
+.ch-composer__chrome {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
 .ch-composer__banner {
   padding: 6px 12px;
   border-bottom: 1px solid var(--status-error);
@@ -27,7 +35,7 @@
 }
 
 .ch-composer__ta {
-  flex: 1;
+  flex: none;
   width: 100%;
   box-sizing: border-box;
   background: var(--bg);

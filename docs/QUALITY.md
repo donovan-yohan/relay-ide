@@ -136,20 +136,20 @@ The fixture web-server runs against a **run-scoped temp config dir**, never the 
 
 There is no fallback, on any side:
 
-| Where                                               | What fails                                                                              |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `playwright.config.ts` (web-server launch)          | an inherited `RELAY_IDE_CONFIG` that is not itself a run-scoped `relay-ide-e2e-*` dir     |
-| `test/e2e/global-setup.ts`                          | a server already listening on the e2e port whose `/healthz` reports a different config    |
-| `server/index.ts` (boot, `RELAY_IDE_E2E_FIXTURES=1`) | a missing, relative, or shared-root config — the server exits 1 before reading anything   |
-| `test/e2e-fixture-config-isolation.test.ts`         | `npm test` (required CI job), including the built server's boot refusal                   |
+| Where                                                | What fails                                                                              |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `playwright.config.ts` (web-server launch)           | an inherited `RELAY_IDE_CONFIG` that is not itself a run-scoped `relay-ide-e2e-*` dir   |
+| `test/e2e/global-setup.ts`                           | a server already listening on the e2e port whose `/healthz` reports a different config  |
+| `server/index.ts` (boot, `RELAY_IDE_E2E_FIXTURES=1`) | a missing, relative, or shared-root config — the server exits 1 before reading anything |
+| `test/e2e-fixture-config-isolation.test.ts`          | `npm test` (required CI job), including the built server's boot refusal                 |
 
 Three properties are worth stating exactly, because the looser versions read the same and are not the same thing:
 
-- **An inherited `RELAY_IDE_CONFIG` is validated, never trusted.** It must be outside every shared root *and* run-scoped — a `relay-ide-e2e-*` directory under `$TMPDIR`. "Not under `~/.config/relay-ide`" was the old rule and it was too weak: `RELAY_IDE_CONFIG=/srv/relay/hub/config.json` exported in a shell passed it and got exactly the silent override #1214 was about, one directory over.
+- **An inherited `RELAY_IDE_CONFIG` is validated, never trusted.** It must be outside every shared root _and_ run-scoped — a `relay-ide-e2e-*` directory under `$TMPDIR`. "Not under `~/.config/relay-ide`" was the old rule and it was too weak: `RELAY_IDE_CONFIG=/srv/relay/hub/config.json` exported in a shell passed it and got exactly the silent override #1214 was about, one directory over.
 - **The temp dir is minted lazily and removed by `globalTeardown`.** `--list`, `--ui`, and `--debug` never start a server and no longer create one; abandoned runs leave a dir behind, and the next mint sweeps `relay-ide-e2e-*` dirs older than a day.
 - **The default port `3466` is not the safeguard.** It avoids the installed hub's `3456`, but `reuseExistingServer` still adopts whatever is listening. `global-setup.ts` probes `/healthz` and refuses any server that does not report this run's config path — the fixture server publishes `fixtureConfigPath` there in fixture mode only. CI does not set `RELAY_IDE_PORT`; the harness owns the port.
 
-Both the harness and the server call `findFixtureConfigIsolationViolation` in `server/runtime-state-paths.ts`, which treats the XDG root *and* the hardcoded `~/.config/relay-ide` root as off-limits (`server/service.ts` ignores XDG, so checking one root leaves the other reachable).
+Both the harness and the server call `findFixtureConfigIsolationViolation` in `server/runtime-state-paths.ts`, which treats the XDG root _and_ the hardcoded `~/.config/relay-ide` root as off-limits (`server/service.ts` ignores XDG, so checking one root leaves the other reachable).
 
 This is #1214: before it, the fixture server inherited the default config resolution. Once a deploy put a PIN in the shared config, every smoke test failed on an unlock screen, and runs that "passed" had only recycled a PIN-less server started before the deploy. Never work around it by pointing `RELAY_IDE_CONFIG` at a hub's config; a per-run temp dir is the only supported value.
 
@@ -161,10 +161,12 @@ Adding an e2e spec therefore means adding **three** things: the spec, `frontend/
 
 Rewrites were deliberately not attempted. Re-pointing a stale component spec at a surface it was not written for produces a test that asserts the wrong thing, and a wrong test is worse than no test — the flows below are recorded as gaps instead.
 
-**Kept (11)** — target resolves *and the suite goes green*:
+**Kept (11)** — target resolves _and the suite goes green_:
+
+This is the original #1299 audit baseline, not a permanent cap. One new live-browser regression spec (`channel-composer-growth.spec.ts`) has since been added, so the current suite has 12 specs.
 
 | Spec                                        | Target                                |
-| --------------------------------------------- | ---------------------------------------- |
+| ------------------------------------------- | ------------------------------------- |
 | `basic.spec.ts`                             | `/` (the app itself)                  |
 | `channel-thread.spec.ts`                    | `test-channel-thread.html`            |
 | `channel-timeline-scroll.spec.ts`           | `test-channel-timeline.html`          |
