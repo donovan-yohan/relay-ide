@@ -67,10 +67,11 @@ export function resolveExecutablePath(
   command: string,
   env: NodeJS.ProcessEnv = process.env
 ): string | null {
+  if (!command.trim()) return null;
   for (const candidate of executableCandidates(command, env)) {
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
+      if (fs.statSync(candidate).isFile()) return candidate;
     } catch {
       // Try the next PATH candidate.
     }

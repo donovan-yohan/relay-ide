@@ -280,13 +280,13 @@ describe('ChannelView orchestrator control (#1242)', () => {
     await flush();
   });
 
-  it('shows the bound non-orchestrator conflict beside the control', async () => {
+  it('shows the conflict copy for a nested-only role conflict', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
     mocks.designateChannelOrchestrator.mockRejectedValue(
       new HttpError(
         409,
         'channel already bound to a non-orchestrator runtime',
-        'SESSION_CONFLICT',
+        'CHANNEL_DESIGNATION_FAILED',
         false,
         { reasonCode: 'CHANNEL_ROLE_CONFLICT' }
       )
@@ -321,6 +321,24 @@ describe('ChannelView orchestrator control (#1242)', () => {
     expect(
       container.querySelector('.ch-designate-orchestrator__error')?.textContent
     ).toBe('channel already has a non-orchestrator agent bound');
+  });
+
+  it('does not misclassify an unknown 409 as a role conflict', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
+    mocks.designateChannelOrchestrator.mockRejectedValue(
+      new HttpError(409, 'unknown designation conflict', 'UNKNOWN_CONFLICT')
+    );
+
+    await render();
+
+    const designate = container.querySelector<HTMLButtonElement>(
+      '.ch-designate-orchestrator'
+    );
+    await act(async () => designate?.click());
+
+    expect(
+      container.querySelector('.ch-designate-orchestrator__error')?.textContent
+    ).toBe('could not designate orchestrator — try again');
   });
 
   it('shows a useful generic error and clears it for a retry', async () => {

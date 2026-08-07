@@ -11,6 +11,7 @@ import {
 } from './channel-context-packet.js';
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
+  createChannelOrchestratorConflictError,
   type ChannelBinding,
   type ChannelMessageStore,
 } from './channel-message-store.js';
@@ -446,6 +447,9 @@ export function createChannelAgentBinder(
 
   const live = new Map<string, LiveBinding>();
   const inflight = new Map<string, Promise<LiveBinding>>();
+  // Designation is a channel-level invariant, not a (channel, profile) spawn.
+  // Serialize competing profile requests before either can launch a loser.
+  const orchestratorInflight = new Map<string, Promise<LiveBinding>>();
   const consecutiveAgentTurns = new Map<
     string,
     {
@@ -717,23 +721,13 @@ export function createChannelAgentBinder(
     const topic = topicStore?.get(channelId);
     if (!topic || isDmChannel(topic) !== null) return null;
 
-    const matches = knownProfiles().filter(
-      (profile) =>
-        store.getBinding(channelId, profile.id)?.role === 'orchestrator'
+    const designated = store.getSoleOrchestratorBinding(channelId);
+    if (!designated) return null;
+    return (
+      knownProfiles().find(
+        (profile) => profile.id === designated.profileActorId
+      ) ?? null
     );
-    if (matches.length === 1) return matches[0]!;
-    if (matches.length > 1) {
-      // #1259 models one designated orchestrator. Do not pick an arbitrary
-      // runtime if corrupt/legacy state violates that invariant.
-      logger.warn(
-        'multiple orchestrator bindings found; default route skipped',
-        {
-          channelId,
-          profileActorIds: matches.map((profile) => profile.id),
-        }
-      );
-    }
-    return null;
   }
 
   function supportsSafeBoundarySteer(binding: LiveBinding): boolean {
@@ -1136,7 +1130,6 @@ export function createChannelAgentBinder(
       profileActorId,
       agentFramework: framework,
       runtimeId: created.id,
-      ...(effectiveRole ? { role: effectiveRole } : {}),
       providerSession: {
         ...(row?.providerSession ?? {}),
         ...created.providerSession,
@@ -1174,11 +1167,23 @@ export function createChannelAgentBinder(
   }
 
   function persistOrchestratorDesignation(binding: LiveBinding): void {
-    store.upsertBinding({
+    store.designateSoleOrchestrator({
       channelId: binding.channelId,
       profileActorId: binding.profileActorId,
       agentFramework: binding.framework,
-      role: 'orchestrator',
+    });
+  }
+
+  function assertSoleOrchestratorTarget(
+    channelId: string,
+    profileActorId: string
+  ): void {
+    const designated = store.getSoleOrchestratorBinding(channelId);
+    if (!designated || designated.profileActorId === profileActorId) return;
+    throw createChannelOrchestratorConflictError({
+      channelId,
+      designatedProfileActorId: designated.profileActorId,
+      requestedProfileActorId: profileActorId,
     });
   }
 
@@ -1220,23 +1225,28 @@ export function createChannelAgentBinder(
         'The requested agent profile no longer exists.'
       );
     }
-    const key = bindingKey(channelId, profile.id);
-    const pending = inflight.get(key);
-    if (pending) {
-      const binding = await pending;
-      assertBindingRole(binding, profile.providerId, 'orchestrator');
+
+    const channelPending = orchestratorInflight.get(channelId);
+    if (channelPending) {
+      // First writer wins. A failed first attempt leaves no durable reservation,
+      // so the waiter retries; a success is observed by the preflight below.
+      await channelPending.catch(() => undefined);
+      return ensureOrchestrator(channelId, framework, profileActorId);
+    }
+
+    const promise = (async () => {
+      assertSoleOrchestratorTarget(channelId, profile.id);
+      const binding = await ensureProfileBinding(
+        channelId,
+        profile,
+        'orchestrator'
+      );
       persistOrchestratorDesignation(binding);
       return binding;
-    }
-    const promise = doEnsureBinding(channelId, profile, 'orchestrator')
-      .then((binding) => {
-        persistOrchestratorDesignation(binding);
-        return binding;
-      })
-      .finally(() => {
-        inflight.delete(key);
-      });
-    inflight.set(key, promise);
+    })().finally(() => {
+      orchestratorInflight.delete(channelId);
+    });
+    orchestratorInflight.set(channelId, promise);
     return promise;
   }
 
@@ -1588,6 +1598,8 @@ export function createChannelAgentBinder(
         summary: {
           totalCount: context.totalCount,
           activityFilteredCount: context.activityFilteredCount,
+          candidateScanBudget: context.candidateScanBudget,
+          candidateScanTruncated: context.candidateScanTruncated,
           scope: context.scope,
         },
       }),
@@ -2963,6 +2975,7 @@ export function createChannelAgentBinder(
       }
       live.clear();
       inflight.clear();
+      orchestratorInflight.clear();
       retryInFlight.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();

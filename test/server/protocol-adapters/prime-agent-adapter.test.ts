@@ -2,8 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { PrimeAgentRpcClient } from '../../../server/prime-agent-rpc-client.js';
+import {
+  PrimeAgentRpcClient,
+  type PrimeAgentRpcClientOptions,
+} from '../../../server/prime-agent-rpc-client.js';
 import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
 const config = {
   cwd: '/tmp',
@@ -93,18 +97,42 @@ function harness() {
     return { type: 'response', command: type, success: true };
   });
   vi.spyOn(client, 'stop').mockResolvedValue();
-  const adapter = new PrimeAgentProtocolAdapter(() => client);
+  const clientFactoryOptions: PrimeAgentRpcClientOptions[] = [];
+  const adapter = new PrimeAgentProtocolAdapter((options) => {
+    clientFactoryOptions.push(options);
+    return client;
+  });
   const patches: Array<Record<string, unknown>> = [];
   adapter.onPatch((patch) =>
     patches.push(patch as unknown as Record<string, unknown>)
   );
-  return { adapter, client, call, patches };
+  return { adapter, client, call, patches, clientFactoryOptions };
 }
 
 describe('PrimeAgentProtocolAdapter', () => {
   it('publishes honest capabilities and provider session identity after get_state', async () => {
-    const { adapter, patches } = harness();
-    await adapter.connect(config);
+    const { adapter, patches, clientFactoryOptions } = harness();
+    await adapter.connect({
+      ...config,
+      processEnv: {
+        CLAUDECODE: 'must-be-stripped',
+        RELAY_PROFILE_SAFE: 'preserved',
+      },
+    });
+    const launchRequirement =
+      CHANNEL_ADAPTER_LAUNCH_CONTRACTS['prime-agent'].requirement;
+    expect(launchRequirement.kind).toBe('command');
+    if (launchRequirement.kind !== 'command') {
+      throw new Error(
+        'Prime Agent must remain a command-backed channel adapter'
+      );
+    }
+    expect(clientFactoryOptions[0]?.command).toBe(launchRequirement.command);
+    expect(clientFactoryOptions[0]?.env?.RELAY_PROFILE_SAFE).toBe('preserved');
+    for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS['prime-agent']
+      .processEnvDenylist) {
+      expect(clientFactoryOptions[0]?.env).not.toHaveProperty(key);
+    }
     expect(adapter.agentType).toBe('prime-agent');
     expect(adapter.capabilities).toMatchObject({
       text: true,

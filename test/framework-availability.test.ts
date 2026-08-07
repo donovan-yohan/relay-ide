@@ -10,9 +10,56 @@ import {
 } from '../server/frameworks.js';
 import type { AgentFramework } from '../server/types.js';
 import {
+  CHANNEL_ADAPTER_LAUNCH_CONTRACTS,
   channelAdapterLaunchRequirement,
+  sanitizeChannelAdapterProcessEnv,
   v2Adapters,
 } from '../server/protocol-adapters/index.js';
+
+const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
+  mock: { kind: 'embedded', command: null, deny: [] },
+  claude: {
+    kind: 'command',
+    command: 'claude',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
+  codex: { kind: 'command', command: 'codex', deny: ['CLAUDECODE'] },
+  'prime-agent': {
+    kind: 'command',
+    command: 'prime-agent',
+    deny: ['CLAUDECODE'],
+  },
+  pi: { kind: 'command', command: 'pi', deny: ['CLAUDECODE'] },
+  opencode: {
+    kind: 'command',
+    command: 'opencode',
+    deny: [
+      'CLAUDECODE',
+      'OPENCODE_SERVER_PASSWORD',
+      'OPENCODE_SERVER_USERNAME',
+    ],
+  },
+  'opencode-attached': { kind: 'gateway', command: null, deny: [] },
+  hermes: { kind: 'gateway', command: null, deny: [] },
+} satisfies Record<
+  keyof typeof CHANNEL_ADAPTER_LAUNCH_CONTRACTS,
+  {
+    kind: 'command' | 'gateway' | 'embedded';
+    command: string | null;
+    deny: string[];
+  }
+>;
+
+const COMMAND_CONTRACTS = Object.entries(
+  EXPECTED_CHANNEL_LAUNCH_CONTRACT
+).filter(
+  (
+    entry
+  ): entry is [
+    keyof typeof EXPECTED_CHANNEL_LAUNCH_CONTRACT,
+    { kind: 'command'; command: string; deny: string[] },
+  ] => entry[1].kind === 'command' && entry[1].command !== null
+);
 
 function framework(command: string, id = command): AgentFramework {
   return {
@@ -62,6 +109,119 @@ describe('framework CLI availability', () => {
     ).toEqual({
       installed: false,
       reason: 'definitely-missing-relay-agent CLI not found on PATH',
+    });
+  });
+
+  it('rejects blank commands and executable directories', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fw-blank-'));
+
+    expect(resolveExecutablePath('', { PATH: tmpDir })).toBeNull();
+    expect(resolveExecutablePath('   ', { PATH: tmpDir })).toBeNull();
+    expect(resolveExecutablePath(tmpDir, { PATH: '' })).toBeNull();
+  });
+
+  it('keeps one exhaustive provider launch and sanitation matrix', () => {
+    const actual = Object.fromEntries(
+      Object.entries(CHANNEL_ADAPTER_LAUNCH_CONTRACTS).map(
+        ([providerId, contract]) => [
+          providerId,
+          {
+            kind: contract.requirement.kind,
+            command:
+              contract.requirement.kind === 'command'
+                ? contract.requirement.command
+                : null,
+            deny: [...contract.processEnvDenylist],
+          },
+        ]
+      )
+    );
+
+    expect(actual).toEqual(EXPECTED_CHANNEL_LAUNCH_CONTRACT);
+    expect(Object.keys(actual).sort()).toEqual(Object.keys(v2Adapters).sort());
+  });
+
+  it.each(COMMAND_CONTRACTS)(
+    'probes missing and executable launch commands for %s',
+    async (providerId, contract) => {
+      await expect(
+        getFrameworkChannelAvailability(
+          channelFramework('terminal-only-command', providerId),
+          { PATH: '' }
+        )
+      ).resolves.toEqual({
+        available: false,
+        reason: `${contract.command} is not installed on this node (not found on PATH).`,
+        command: contract.command,
+      });
+
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), `relay-${providerId}-bin-`)
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, contract.command),
+        '#!/bin/sh\nexit 0\n',
+        { mode: 0o755 }
+      );
+      await expect(
+        getFrameworkChannelAvailability(
+          channelFramework('terminal-only-command', providerId),
+          { PATH: tmpDir }
+        )
+      ).resolves.toEqual({
+        available: true,
+        command: contract.command,
+      });
+    }
+  );
+
+  it.each(Object.entries(EXPECTED_CHANNEL_LAUNCH_CONTRACT))(
+    'applies the declared process-environment denylist for %s',
+    (providerId, contract) => {
+      const candidate = {
+        SAFE_PROFILE_KEY: 'kept',
+        CLAUDECODE: 'blocked',
+        CLAUDE_CODE_ENTRYPOINT: 'blocked',
+        OPENCODE_SERVER_PASSWORD: 'blocked',
+        OPENCODE_SERVER_USERNAME: 'blocked',
+      };
+      const sanitized = sanitizeChannelAdapterProcessEnv(providerId, candidate);
+
+      expect(sanitized.SAFE_PROFILE_KEY).toBe('kept');
+      for (const key of Object.keys(candidate).filter(
+        (key) => key !== 'SAFE_PROFILE_KEY'
+      )) {
+        expect(Object.hasOwn(sanitized, key)).toBe(
+          !contract.deny.includes(key)
+        );
+      }
+    }
+  );
+
+  it('removes mixed-case denylisted keys on Windows', () => {
+    const sanitized = sanitizeChannelAdapterProcessEnv(
+      'opencode',
+      {
+        ClaudeCode: 'blocked',
+        opencode_server_password: 'blocked',
+        OpenCode_Server_UserName: 'blocked',
+        SAFE_PROFILE_KEY: 'kept',
+      },
+      'win32'
+    );
+
+    expect(sanitized).toEqual({ SAFE_PROFILE_KEY: 'kept' });
+  });
+
+  it('fails closed when a channel provider has no launch contract', async () => {
+    await expect(
+      getFrameworkChannelAvailability(
+        channelFramework('future-agent', 'future-agent'),
+        { PATH: '' }
+      )
+    ).resolves.toEqual({
+      available: false,
+      reason: 'future-agent has no registered channel runtime.',
     });
   });
 

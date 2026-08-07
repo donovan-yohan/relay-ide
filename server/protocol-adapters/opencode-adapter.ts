@@ -1,3 +1,4 @@
+import { OPENCODE_CHANNEL_COMMAND } from './launch-commands.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -61,6 +62,10 @@ function textPartId(part: TextPart): string {
 export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   readonly agentType = 'opencode';
 
+  constructor(private readonly spawnFn: typeof spawn = spawn) {
+    super();
+  }
+
   private _status: AdapterStatus = 'disconnected';
   private _config: AdapterConfig | null = null;
   private _process: ChildProcess | null = null;
@@ -102,8 +107,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       (config.extra?.['host'] as string | undefined) ?? '127.0.0.1';
     this._endpoint = `http://${this._apiHost}:${this._apiPort}`;
 
-    const command =
-      (config.extra?.['command'] as string | undefined) ?? 'opencode';
+    const command = OPENCODE_CHANNEL_COMMAND;
     const defaultArgs = [
       'serve',
       '--hostname',
@@ -116,10 +120,11 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
 
     const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
+    delete env['CLAUDECODE'];
     delete env['OPENCODE_SERVER_PASSWORD'];
     delete env['OPENCODE_SERVER_USERNAME'];
 
-    this._process = spawn(command, args, {
+    this._process = this.spawnFn(command, args, {
       cwd: config.cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],

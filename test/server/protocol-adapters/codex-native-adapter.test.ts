@@ -3213,7 +3213,7 @@ describe('CodexNativeProtocolAdapter — spawn hygiene', () => {
     await adapter.disconnect();
   });
 
-  it('forwards only command/args/spawn from config.extra and ignores unrelated keys', async () => {
+  it('ignores command overrides while forwarding args/spawn test seams', async () => {
     const capturedOpts: CodexAppServerClientOptions[] = [];
     const stub = new StubCodexClient();
     stub.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
@@ -3240,7 +3240,7 @@ describe('CodexNativeProtocolAdapter — spawn hygiene', () => {
 
     expect(capturedOpts).toHaveLength(1);
     const opts = capturedOpts[0]!;
-    expect(opts.command).toBe('codex');
+    expect(opts.command).toBeUndefined();
     expect(opts.args).toEqual(['app-server', '--listen', 'stdio://']);
     expect(opts.spawn).toBe(injectedSpawn);
     // The stray claudeArgs/model keys never become client options.

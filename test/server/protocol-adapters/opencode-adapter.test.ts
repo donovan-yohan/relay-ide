@@ -1,5 +1,11 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess, spawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { createAdapterV2 } from '../../../server/protocol-adapters/index.js';
+import {
+  CHANNEL_ADAPTER_LAUNCH_CONTRACTS,
+  createAdapterV2,
+} from '../../../server/protocol-adapters/index.js';
 import { LegacyProtocolAdapterV2Bridge } from '../../../server/protocol-adapters/legacy-v2-bridge.js';
 import { OpenCodeProtocolAdapter } from '../../../server/protocol-adapters/opencode-adapter.js';
 import {
@@ -31,6 +37,76 @@ function driveOpenCodeEvent(
 }
 
 describe('OpenCode V2 web adapter registration', () => {
+  it('spawns the advertised command with the complete provider denylist enforced', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(() => true),
+    }) as unknown as ChildProcess;
+    const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith('/global/health')) {
+          return new Response('{}', { status: 200 });
+        }
+        if (url.endsWith('/session') && init?.method === 'POST') {
+          return new Response(JSON.stringify({ id: 'opencode-session' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.endsWith('/global/event')) {
+          return new Response('', { status: 200 });
+        }
+        throw new Error(`unexpected OpenCode URL: ${url}`);
+      });
+    const adapter = new OpenCodeProtocolAdapter(spawnFn);
+    try {
+      await adapter.connect({
+        cwd: '/tmp',
+        port: 1,
+        sessionId: 'relay-session',
+        hookToken: 'x',
+        configDir: '/tmp',
+        extra: { command: 'unavailable-opencode-override' },
+        processEnv: {
+          CLAUDECODE: 'must-be-stripped',
+          OPENCODE_SERVER_PASSWORD: 'must-be-stripped',
+          OPENCODE_SERVER_USERNAME: 'must-be-stripped',
+          RELAY_PROFILE_SAFE: 'preserved',
+        },
+      });
+
+      const launchRequirement =
+        CHANNEL_ADAPTER_LAUNCH_CONTRACTS.opencode.requirement;
+      expect(launchRequirement.kind).toBe('command');
+      if (launchRequirement.kind !== 'command') {
+        throw new Error(
+          'OpenCode must remain a command-backed channel adapter'
+        );
+      }
+      expect(spawnFn).toHaveBeenCalledWith(
+        launchRequirement.command,
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({ RELAY_PROFILE_SAFE: 'preserved' }),
+        })
+      );
+      const childEnv = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[2]?.env as Record<string, string>;
+      for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS.opencode
+        .processEnvDenylist) {
+        expect(childEnv).not.toHaveProperty(key);
+      }
+    } finally {
+      await adapter.disconnect();
+      fetchMock.mockRestore();
+    }
+  });
+
   it('registers opencode as a ProtocolAdapterV2 bridge while native mapping is ported', () => {
     const adapter = createAdapterV2('opencode');
 

@@ -1112,7 +1112,6 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         ? { env: { ...cleanEnv(), ...config.processEnv } }
         : {}),
     };
-    if (typeof extra['command'] === 'string') opts.command = extra['command'];
     if (Array.isArray(extra['args'])) opts.args = extra['args'] as string[];
     if (typeof extra['spawn'] === 'function') {
       opts.spawn = extra['spawn'] as NonNullable<

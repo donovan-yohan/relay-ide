@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildChannelMentionContextBoundarySql,
   buildChannelMentionContextCountSql,
   buildChannelMentionContextRowsSql,
   buildChannelMessageSearchSql,
@@ -19,6 +20,7 @@ import {
   registerChannelSearchTick,
   ChannelMessageStoreError,
   ChannelSearchRefusedError,
+  MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET,
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
@@ -45,6 +47,7 @@ function dbPath(): string {
 function store(
   pathOverride?: string,
   options?: {
+    mentionContextCandidateScanBudget?: number;
     searchTimeBudgetMs?: number;
     searchCostPreflight?: 'auto' | 'unavailable';
   }
@@ -128,6 +131,182 @@ describe('channel-message-store schema migration', () => {
         .get()
     ).toEqual({ count: 1 });
   });
+
+  it('repairs missing mention-context indexes before preparing bounded reads', () => {
+    const file = dbPath();
+    store(file).close();
+    const damaged = new Database(file);
+    damaged.exec(`
+      DROP INDEX idx_chm_channel_seq;
+      DROP INDEX idx_chm_thread;
+    `);
+    damaged.close();
+
+    // `createChannelMessageStore` prepares INDEXED BY statements before return;
+    // reopening therefore proves repair happened before the bounded reads load.
+    store(file).close();
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    const indexNames = (
+      inspect
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'index' AND name IN ('idx_chm_channel_seq', 'idx_chm_thread')
+            ORDER BY name`
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(indexNames).toEqual(['idx_chm_channel_seq', 'idx_chm_thread']);
+  });
+
+  it('clears ambiguous v7 orchestrators, preserves sole rows, and creates the unique index', () => {
+    const file = dbPath();
+    store(file).close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX idx_chab_sole_orchestrator;
+      UPDATE schema_version SET version = 7;
+      DELETE FROM channel_agent_bindings;
+      INSERT INTO channel_agent_bindings VALUES
+        ('topic:ambiguous', 'profile:a', 'claude', 'runtime:a', 'orchestrator', '{"cursor":1}', '2026-08-01', '2026-08-02'),
+        ('topic:ambiguous', 'profile:b', 'codex', 'runtime:b', 'orchestrator', '{"cursor":2}', '2026-08-03', '2026-08-04'),
+        ('topic:valid', 'profile:c', 'claude', 'runtime:c', 'orchestrator', '{"cursor":3}', '2026-08-05', '2026-08-06');
+    `);
+    legacy.close();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+
+    const migrated = store(file);
+    expect(migrated.getBinding('topic:ambiguous', 'profile:a')).toMatchObject({
+      role: null,
+      runtimeId: 'runtime:a',
+      providerSession: { cursor: 1 },
+    });
+    expect(migrated.getBinding('topic:ambiguous', 'profile:b')).toMatchObject({
+      role: null,
+      runtimeId: 'runtime:b',
+      providerSession: { cursor: 2 },
+    });
+    expect(migrated.getSoleOrchestratorBinding('topic:valid')).toMatchObject({
+      profileActorId: 'profile:c',
+      role: 'orchestrator',
+      providerSession: { cursor: 3 },
+    });
+    const warning = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('ambiguous legacy orchestrator')
+    );
+    expect(format(...(warning as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] cleared ambiguous legacy orchestrator designations before sole-role migration: channel_count=1 binding_count=2'
+    );
+    expect(format(...(warning as [string, ...unknown[]]))).not.toContain(
+      'topic:ambiguous'
+    );
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      inspect
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_chab_sole_orchestrator'`
+        )
+        .get()
+    ).toEqual({ name: 'idx_chab_sole_orchestrator' });
+    expect(
+      inspect
+        .prepare(
+          `SELECT channel_id, COUNT(*) AS count
+             FROM channel_agent_bindings
+            WHERE binding_role = 'orchestrator'
+            GROUP BY channel_id
+           HAVING COUNT(*) > 1`
+        )
+        .all()
+    ).toEqual([]);
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
+    'installs the sole-orchestrator invariant from schema version %i',
+    (version) => {
+      const file = dbPath();
+      const seeded = store(file);
+      seeded.upsertBinding({
+        channelId: `topic:upgrade-${version}`,
+        profileActorId: 'profile:keeper',
+        agentFramework: 'claude',
+        runtimeId: 'runtime:keeper',
+        providerSession: { cursor: version },
+      });
+      seeded.close();
+      const legacy = new Database(file);
+      legacy.exec('DROP INDEX idx_chab_sole_orchestrator');
+      // Reconstruct the column names each numbered migration actually expects;
+      // older schemas could not yet carry a binding role.
+      if (version >= 1 && version <= 4) {
+        legacy.exec(
+          'ALTER TABLE channel_messages RENAME COLUMN source_runtime_id TO source_session_id'
+        );
+      }
+      if (version >= 1 && version <= 3) {
+        legacy.exec(
+          'ALTER TABLE channel_agent_bindings RENAME COLUMN runtime_id TO session_id'
+        );
+      }
+      legacy.prepare('UPDATE schema_version SET version = ?').run(version);
+      legacy.close();
+
+      const migrated = store(file);
+      const expectedProfile =
+        version === 1 || version === 2
+          ? builtInAgentProfileId('claude')
+          : 'profile:keeper';
+      expect(
+        migrated.getBinding(`topic:upgrade-${version}`, expectedProfile)
+      ).toMatchObject({
+        profileActorId: expectedProfile,
+        runtimeId: 'runtime:keeper',
+        role: null,
+        providerSession: { cursor: version },
+      });
+      expect(
+        migrated.getSoleOrchestratorBinding(`topic:upgrade-${version}`)
+      ).toBeNull();
+      migrated.designateSoleOrchestrator({
+        channelId: `topic:upgrade-${version}`,
+        profileActorId: expectedProfile,
+        agentFramework: 'claude',
+      });
+      expect(() =>
+        migrated.designateSoleOrchestrator({
+          channelId: `topic:upgrade-${version}`,
+          profileActorId: 'profile:loser',
+          agentFramework: 'codex',
+        })
+      ).toThrowError(expect.objectContaining({ status: 409 }));
+      const inspect = new Database(file, { readonly: true });
+      cleanup.push(() => inspect.close());
+      expect(
+        inspect
+          .prepare(
+            `SELECT name FROM sqlite_master
+              WHERE type = 'index' AND name = 'idx_chab_sole_orchestrator'`
+          )
+          .get()
+      ).toEqual({ name: 'idx_chab_sole_orchestrator' });
+      expect(
+        inspect
+          .prepare(
+            `SELECT channel_id
+               FROM channel_agent_bindings
+              WHERE binding_role = 'orchestrator'
+              GROUP BY channel_id
+             HAVING COUNT(*) > 1`
+          )
+          .all()
+      ).toEqual([]);
+    }
+  );
 
   it('widens v1 status, heals its known aliases, and preserves durable rows through v3', () => {
     const file = dbPath();
@@ -346,7 +525,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(7);
+    ).toBe(8);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -534,7 +713,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(7);
+    ).toBe(8);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1869,11 +2048,205 @@ describe('channel-message-store mention context (#1358)', () => {
     expect(context).toMatchObject({
       totalCount: 22,
       activityFilteredCount: 3,
+      candidateScanBudget: MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET,
+      candidateScanTruncated: false,
       scope: 'channel',
     });
     expect(context.rows).toHaveLength(16);
     expect(context.rows.map((row) => row.body.text)).toEqual(
       Array.from({ length: 16 }, (_, index) => `prose ${index + 2}`)
+    );
+  });
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET + 1,
+    Number.MAX_SAFE_INTEGER,
+  ])(
+    'rejects invalid candidate budget %s at store creation',
+    (candidateBudget) => {
+      expect(() =>
+        store(undefined, {
+          mentionContextCandidateScanBudget: candidateBudget,
+        })
+      ).toThrow(
+        new RangeError(
+          `mentionContextCandidateScanBudget must be an integer from 1 through ${MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET}`
+        )
+      );
+    }
+  );
+
+  it('degrades channel context deterministically to the newest candidate budget', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+    const s = store(undefined, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:context-budget';
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({ channelId, sender: HUMAN, text: `prose ${index}` });
+    }
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: null,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 3,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'channel',
+    });
+    expect(context.rows.map((row) => row.body.text)).toEqual([
+      'prose 2',
+      'prose 3',
+      'prose 4',
+    ]);
+    const budgetLine = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('mention_context_candidate_budget_truncated')
+    );
+    expect(format(...(budgetLine as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] mention_context_candidate_budget_truncated channel_id=topic:context-budget scope=channel raw_index_entries_at_least=4 candidate_budget=3'
+    );
+  });
+
+  it('keeps a structural thread root outside the bounded reply window', () => {
+    const s = store(undefined, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:thread-context-budget';
+    const root = s.appendComplete({ channelId, sender: HUMAN, text: '' });
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `reply ${index}`,
+        parentMessageId: root.id,
+      });
+    }
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 4,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'thread',
+    });
+    expect(context.rows.map((row) => row.body.text)).toEqual([
+      '',
+      'reply 2',
+      'reply 3',
+      'reply 4',
+    ]);
+  });
+
+  it('bounds corrupt cross-channel thread collisions without leaking their rows', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+    const file = dbPath();
+    const s = store(file, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:thread-owner';
+    const root = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'owner root',
+    });
+    s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'owner reply outside conservative window',
+      parentMessageId: root.id,
+    });
+    for (let index = 0; index < 5; index += 1) {
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `owner filler ${index}`,
+      });
+    }
+
+    const corrupt = new Database(file);
+    const insert = corrupt.prepare(`
+      INSERT INTO channel_messages (
+        id, channel_id, seq, kind, status, sender_kind, sender_id,
+        thread_id, parent_message_id, body_text, body_format, created_at, updated_at
+      ) VALUES (
+        @id, @channelId, @seq, 'message', 'complete', 'human', 'human:other',
+        @threadId, @threadId, @body, 'markdown', @now, @now
+      )
+    `);
+    for (let seq = 3; seq <= 6; seq += 1) {
+      insert.run({
+        id: `chm:corrupt-cross-channel-${seq}`,
+        channelId: 'topic:other',
+        seq,
+        threadId: root.id,
+        body: `must-not-leak-${seq}`,
+        now: '2026-08-07T00:00:00.000Z',
+      });
+    }
+    corrupt.close();
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    const context = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+    });
+
+    expect(context).toMatchObject({
+      totalCount: 1,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'thread',
+    });
+    expect(context.rows.map((row) => row.id)).toEqual([root.id]);
+    expect(JSON.stringify(context)).not.toContain('must-not-leak');
+    const budgetLine = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('mention_context_candidate_budget_truncated')
+    );
+    expect(format(...(budgetLine as [string, ...unknown[]]))).toBe(
+      '[channel-message-store] mention_context_candidate_budget_truncated channel_id=topic:thread-owner scope=thread raw_index_entries_at_least=4 candidate_budget=3'
     );
   });
 
@@ -1892,6 +2265,8 @@ describe('channel-message-store mention context (#1358)', () => {
       framework: 'claude',
       triggerSeq: 100,
       afterSeq: 0,
+      candidateAfterSeq: 0,
+      candidateBudget: 4096,
       threadRootId: root.id,
       limit: 16,
       replyLimit: 15,
@@ -1904,6 +2279,24 @@ describe('channel-message-store mention context (#1358)', () => {
       )
         .map((step) => step.detail)
         .join('\n');
+
+    const channelBoundary = explain(
+      buildChannelMentionContextBoundarySql('channel')
+    );
+    expect(channelBoundary).toMatch(
+      /SEARCH channel_row USING COVERING INDEX idx_chm_channel_seq \(channel_id=\? AND seq>\? AND seq<\?\)/
+    );
+    expect(channelBoundary).not.toContain('USE TEMP B-TREE');
+    const threadBoundarySql = buildChannelMentionContextBoundarySql('thread');
+    // The raw thread probe intentionally omits channel_id: idx_chm_thread is
+    // keyed by thread+seq, so every visited entry must count toward the budget,
+    // including corrupt cross-channel collisions.
+    expect(threadBoundarySql).not.toContain('channel_id');
+    const threadBoundary = explain(threadBoundarySql);
+    expect(threadBoundary).toMatch(
+      /SEARCH reply USING (?:COVERING )?INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+    );
+    expect(threadBoundary).not.toContain('USE TEMP B-TREE');
 
     const channelCount = explain(buildChannelMentionContextCountSql('channel'));
     expect(channelCount).toMatch(
@@ -1919,12 +2312,12 @@ describe('channel-message-store mention context (#1358)', () => {
     const threadCount = explain(buildChannelMentionContextCountSql('thread'));
     expect(threadCount).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
     expect(threadCount).toMatch(
-      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\? AND seq<\?\)/
     );
     const threadRows = explain(buildChannelMentionContextRowsSql('thread'));
     expect(threadRows).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
     expect(threadRows).toMatch(
-      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\? AND seq<\?\)/
     );
     expect(threadRows).not.toContain('USE TEMP B-TREE');
     expect(threadRows).not.toMatch(/SCAN (?:root|reply)/);
@@ -2188,13 +2581,131 @@ describe('channel-message-store members and bindings', () => {
     expect(s.findDmChannel('human:operator', 'agent:codex')).toBeNull();
   });
 
+  it('enforces one idempotent durable orchestrator and rejects another profile', () => {
+    const s = store();
+    const first = s.designateSoleOrchestrator({
+      channelId: 'topic:sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+      runtimeId: 'runtime:a',
+      providerSession: { cursor: 7 },
+    });
+    const repeated = s.designateSoleOrchestrator({
+      channelId: 'topic:sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+    });
+    expect(repeated).toMatchObject({
+      profileActorId: 'profile:a',
+      runtimeId: 'runtime:a',
+      role: 'orchestrator',
+      providerSession: { cursor: 7 },
+      createdAt: first.createdAt,
+    });
+    expect(s.getSoleOrchestratorBinding('topic:sole')).toEqual(repeated);
+
+    expect(() =>
+      s.designateSoleOrchestrator({
+        channelId: 'topic:sole',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        status: 409,
+        code: 'channel_orchestrator_conflict',
+        details: {
+          channelId: 'topic:sole',
+          designatedProfileActorId: 'profile:a',
+          requestedProfileActorId: 'profile:b',
+        },
+      })
+    );
+    expect(s.getSoleOrchestratorBinding('topic:sole')?.profileActorId).toBe(
+      'profile:a'
+    );
+    expect(s.getBinding('topic:sole', 'profile:b')).toBeNull();
+    expect(() =>
+      s.upsertBinding({
+        channelId: 'topic:other',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+        role: 'orchestrator',
+      } as never)
+    ).toThrowError(
+      expect.objectContaining({
+        status: 400,
+        code: 'orchestrator_requires_sole_designation',
+      })
+    );
+  });
+
+  it('keeps the sole designation across reopen and rejects raw duplicates', () => {
+    const file = dbPath();
+    const initial = store(file);
+    initial.designateSoleOrchestrator({
+      channelId: 'topic:restart-sole',
+      profileActorId: 'profile:a',
+      agentFramework: 'claude',
+    });
+    initial.close();
+    const malformed = new Database(file);
+    malformed
+      .prepare(
+        `UPDATE channel_agent_bindings
+            SET provider_session_json = '{'
+          WHERE channel_id = 'topic:restart-sole'`
+      )
+      .run();
+    malformed.close();
+
+    const reopened = store(file);
+    expect(
+      reopened.getSoleOrchestratorBinding('topic:restart-sole')?.profileActorId
+    ).toBe('profile:a');
+    expect(
+      reopened.designateSoleOrchestrator({
+        channelId: 'topic:restart-sole',
+        profileActorId: 'profile:a',
+        agentFramework: 'claude',
+      }).providerSession
+    ).toEqual({});
+    expect(() =>
+      reopened.designateSoleOrchestrator({
+        channelId: 'topic:restart-sole',
+        profileActorId: 'profile:b',
+        agentFramework: 'codex',
+      })
+    ).toThrowError(expect.objectContaining({ status: 409 }));
+    expect(() => {
+      const raw = new Database(file);
+      try {
+        raw
+          .prepare(
+            `INSERT INTO channel_agent_bindings
+              (channel_id, profile_actor_id, agent_framework, runtime_id,
+               binding_role, provider_session_json, created_at, updated_at)
+             VALUES (?, ?, ?, NULL, 'orchestrator', '{}', ?, ?)`
+          )
+          .run(
+            'topic:restart-sole',
+            'profile:raw-loser',
+            'codex',
+            '2026-08-07T00:00:00.000Z',
+            '2026-08-07T00:00:00.000Z'
+          );
+      } finally {
+        raw.close();
+      }
+    }).toThrow(/UNIQUE constraint failed/);
+  });
+
   it('stores and reads agent bindings (slice-4 landing pad)', () => {
     const s = store();
-    const created = s.upsertBinding({
+    const created = s.designateSoleOrchestrator({
       channelId: 'topic:c',
       profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
-      role: 'orchestrator',
       providerSession: { claudeSessionId: 'abc' },
     });
     expect(created.runtimeId).toBeNull();
@@ -2698,7 +3209,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(7);
+    expect(version.version).toBe(8);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {

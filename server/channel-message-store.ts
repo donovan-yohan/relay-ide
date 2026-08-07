@@ -59,7 +59,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -121,13 +121,43 @@ export function buildChannelThreadHistorySql(
 
 export type ChannelMentionContextScope = 'channel' | 'thread';
 
+/** Raw candidate window per semantic statement: 16× the packet row budget. */
+export const MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET = 256;
+
+/**
+ * Indexed lookahead that finds the exclusive lower seq bound for a candidate
+ * window. One OFFSET read examines at most budget + 1 index entries; each
+ * subsequent count/row statement is constrained to at most the newest budget
+ * entries (at most `3 * budget + 1` visits across the three statements).
+ */
+export function buildChannelMentionContextBoundarySql(
+  scope: ChannelMentionContextScope
+): string {
+  if (scope === 'thread') {
+    return `SELECT reply.seq
+              FROM channel_messages reply INDEXED BY idx_chm_thread
+             WHERE reply.thread_id = @threadRootId
+               AND reply.seq < @triggerSeq
+             ORDER BY reply.seq DESC
+             LIMIT 1 OFFSET @candidateBudget`;
+  }
+  return `SELECT channel_row.seq
+            FROM channel_messages channel_row INDEXED BY idx_chm_channel_seq
+           WHERE channel_row.channel_id = @channelId
+             AND channel_row.seq > @afterSeq
+             AND channel_row.seq < @triggerSeq
+           ORDER BY channel_row.seq DESC
+           LIMIT 1 OFFSET @candidateBudget`;
+}
+
 /**
  * Exact summary + bounded-row query used by mention delivery (#1358).
  *
  * Both builders deliberately share the same candidate/eligibility predicates.
- * The count query sees the entire seq range, while the rows query sorts that
- * range newest-first before LIMIT. Thus a million activity rows cost no JS
- * allocations and cannot evict older prose from the packet window.
+ * The caller first narrows the range to the newest deterministic candidate
+ * budget; counts are exact within that window and carry an explicit truncation
+ * bit when older candidates exist. Activity rows cost no JS allocations and
+ * cannot make either SQL query scan an unbounded cursor range.
  */
 function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
   if (scope === 'thread') {
@@ -142,13 +172,14 @@ function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
         FROM channel_messages reply
        WHERE reply.thread_id = @threadRootId
          AND reply.channel_id = @channelId
+         AND reply.seq > @candidateAfterSeq
          AND reply.seq < @triggerSeq
     )`;
   }
   return `(SELECT channel_row.*
              FROM channel_messages channel_row
             WHERE channel_row.channel_id = @channelId
-              AND channel_row.seq > @afterSeq
+              AND channel_row.seq > @candidateAfterSeq
               AND channel_row.seq < @triggerSeq)`;
 }
 
@@ -202,7 +233,7 @@ export function buildChannelMentionContextRowsSql(
     return `SELECT m.*
               FROM channel_messages m
              WHERE m.channel_id = @channelId
-               AND m.seq > @afterSeq
+               AND m.seq > @candidateAfterSeq
                AND m.seq < @triggerSeq
                AND ${mentionContextOwnRowSql('channel')}
                AND ${mentionContextEligibleSql('channel')}
@@ -224,6 +255,7 @@ export function buildChannelMentionContextRowsSql(
                 FROM channel_messages reply
                WHERE reply.thread_id = @threadRootId
                  AND reply.channel_id = @channelId
+                 AND reply.seq > @candidateAfterSeq
                  AND reply.seq < @triggerSeq
                  AND ${mentionContextOwnRowSql('channel', 'reply')}
                  AND ${mentionContextEligibleSql('channel', 'reply')}
@@ -741,6 +773,9 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   updated_at            TEXT NOT NULL,
   PRIMARY KEY (channel_id, profile_actor_id)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chab_sole_orchestrator
+  ON channel_agent_bindings(channel_id)
+  WHERE binding_role = 'orchestrator';
 `;
 
 interface ChannelMessageRow {
@@ -1003,8 +1038,18 @@ export interface ChannelMentionContextQuery {
 
 export interface ChannelMentionContextResult {
   rows: ChannelMessage[];
+  /** Exact count inside the bounded candidate window. */
   totalCount: number;
+  /** Exact filtered count inside the bounded candidate window. */
   activityFilteredCount: number;
+  /** Maximum raw candidates examined by each semantic count/row statement. */
+  candidateScanBudget: number;
+  /**
+   * True when older raw index entries exist outside the bounded window. Thread
+   * probes are deliberately conservative and can include corrupt cross-channel
+   * entries sharing the same thread id; no such row enters the semantic result.
+   */
+  candidateScanTruncated: boolean;
   scope: ChannelMentionContextScope;
 }
 
@@ -1033,6 +1078,14 @@ export interface ChannelBinding {
   providerSession: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SoleOrchestratorDesignationInput {
+  channelId: string;
+  profileActorId: string;
+  agentFramework: string;
+  runtimeId?: string | null;
+  providerSession?: Record<string, unknown>;
 }
 
 export interface StaleStreamSweepResult {
@@ -1077,6 +1130,23 @@ export class ChannelMessageStoreError extends Error {
     super(message);
     this.name = 'ChannelMessageStoreError';
   }
+}
+
+export function createChannelOrchestratorConflictError(input: {
+  channelId: string;
+  designatedProfileActorId: string | null;
+  requestedProfileActorId: string;
+}): ChannelMessageStoreError {
+  return new ChannelMessageStoreError(
+    409,
+    'channel_orchestrator_conflict',
+    'channel already has a designated orchestrator',
+    {
+      channelId: input.channelId,
+      designatedProfileActorId: input.designatedProfileActorId ?? 'unknown',
+      requestedProfileActorId: input.requestedProfileActorId,
+    }
+  );
 }
 
 export interface ChannelMessageStore {
@@ -1230,12 +1300,21 @@ export interface ChannelMessageStore {
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(channelId: string, profileActorId: string): ChannelBinding | null;
+  /** Returns the one durable designation guaranteed by the partial unique index. */
+  getSoleOrchestratorBinding(channelId: string): ChannelBinding | null;
+  /**
+   * First-writer designation. Repeating the same profile is idempotent; a
+   * different profile receives a stable 409 without changing either binding.
+   */
+  designateSoleOrchestrator(
+    input: SoleOrchestratorDesignationInput
+  ): ChannelBinding;
   upsertBinding(input: {
     channelId: string;
     profileActorId: string;
     agentFramework: string;
     runtimeId?: string | null;
-    role?: AgentRole | null;
+    role?: Exclude<AgentRole, 'orchestrator'> | null;
     providerSession?: Record<string, unknown>;
   }): ChannelBinding;
   sweepStaleStreaming(): StaleStreamSweepResult[];
@@ -2140,6 +2219,16 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
 
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
+  // Repair legacy/hand-built schema-version rows that predate index backstops.
+  // Mention-context budgeting is only a work bound when its boundary probe is an
+  // indexed range read, so prepare-time `INDEXED BY` must fail neither open nor
+  // on an otherwise readable older database.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chm_channel_seq
+      ON channel_messages(channel_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_chm_thread
+      ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+  `);
   db.exec(CHANNEL_READ_STATE_SCHEMA_SQL);
   // Order matters both ways: the heal translates `channel_read_state` (created
   // above) and may drop the search index, which `ensureChannelSearchIndex`
@@ -2328,6 +2417,43 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 7').run();
     })();
   }
+  if (current < 8) {
+    db.transaction(() => {
+      const duplicates = db
+        .prepare(
+          `SELECT channel_id, COUNT(*) AS binding_count
+             FROM channel_agent_bindings
+            WHERE binding_role = 'orchestrator'
+            GROUP BY channel_id
+           HAVING COUNT(*) > 1`
+        )
+        .all() as Array<{ channel_id: string; binding_count: number }>;
+      if (duplicates.length > 0) {
+        const clear = db.prepare(
+          `UPDATE channel_agent_bindings
+              SET binding_role = NULL
+            WHERE channel_id = ? AND binding_role = 'orchestrator'`
+        );
+        let clearedBindings = 0;
+        for (const duplicate of duplicates) {
+          clearedBindings += clear.run(duplicate.channel_id).changes;
+        }
+        // Neither channel nor profile ids belong in migration telemetry.
+        logger.warn(
+          'cleared ambiguous legacy orchestrator designations before sole-role migration: channel_count=%d binding_count=%d',
+          duplicates.length,
+          clearedBindings
+        );
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_chab_sole_orchestrator;
+        CREATE UNIQUE INDEX idx_chab_sole_orchestrator
+          ON channel_agent_bindings(channel_id)
+          WHERE binding_role = 'orchestrator';
+      `);
+      db.prepare('UPDATE schema_version SET version = 8').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -2337,6 +2463,12 @@ export function initChannelMessageStore(
 }
 
 export interface ChannelMessageStoreOptions {
+  /**
+   * Raw timeline candidates examined by one mention-context query. The default
+   * is `MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET`; tests may lower it to prove the
+   * deterministic degradation path without machine-dependent timing.
+   */
+  mentionContextCandidateScanBudget?: number;
   /**
    * Wall-clock ceiling for one ranked index read, in milliseconds. Defaults to
    * `CHANNEL_SEARCH_TIME_BUDGET_MS`.
@@ -2375,6 +2507,19 @@ export function createChannelMessageStore(
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  const mentionContextCandidateScanBudget =
+    options.mentionContextCandidateScanBudget ??
+    MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET;
+  if (
+    !Number.isSafeInteger(mentionContextCandidateScanBudget) ||
+    mentionContextCandidateScanBudget < 1 ||
+    mentionContextCandidateScanBudget > MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET
+  ) {
+    throw new RangeError(
+      `mentionContextCandidateScanBudget must be an integer from 1 through ${MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET}`
+    );
   }
 
   // ── search cost guards (#1316) ────────────────────────────────────────────
@@ -2529,10 +2674,12 @@ export function createChannelMessageStore(
   );
   const mentionContextStatements = {
     channel: {
+      boundary: db.prepare(buildChannelMentionContextBoundarySql('channel')),
       count: db.prepare(buildChannelMentionContextCountSql('channel')),
       rows: db.prepare(buildChannelMentionContextRowsSql('channel')),
     },
     thread: {
+      boundary: db.prepare(buildChannelMentionContextBoundarySql('thread')),
       count: db.prepare(buildChannelMentionContextCountSql('thread')),
       rows: db.prepare(buildChannelMentionContextRowsSql('thread')),
     },
@@ -2717,6 +2864,79 @@ export function createChannelMessageStore(
     const row = select.get(channelId, profileActorId) as BindingRow | undefined;
     return row ? bindingRowToRecord(row) : null;
   }
+
+  function getSoleOrchestratorBindingImpl(
+    channelId: string
+  ): ChannelBinding | null {
+    const row = db
+      .prepare(
+        `SELECT * FROM channel_agent_bindings
+          WHERE channel_id = ? AND binding_role = 'orchestrator'`
+      )
+      .get(channelId) as BindingRow | undefined;
+    return row ? bindingRowToRecord(row) : null;
+  }
+
+  function writeBindingImpl(
+    input: SoleOrchestratorDesignationInput & { role?: AgentRole | null }
+  ): ChannelBinding {
+    const now = nowIso();
+    const existing = db
+      .prepare(
+        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+      )
+      .get(input.channelId, input.profileActorId) as BindingRow | undefined;
+    const providerSessionJson = JSON.stringify(
+      input.providerSession ??
+        (existing
+          ? parseBindingProviderSession(existing.provider_session_json)
+          : {})
+    );
+    db.prepare(
+      `INSERT INTO channel_agent_bindings
+         (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
+       VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
+       ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
+         agent_framework = excluded.agent_framework,
+         runtime_id = excluded.runtime_id,
+         binding_role = excluded.binding_role,
+         provider_session_json = excluded.provider_session_json,
+         updated_at = excluded.updated_at`
+    ).run({
+      channelId: input.channelId,
+      profileActorId: input.profileActorId,
+      agentFramework: input.agentFramework,
+      runtimeId:
+        input.runtimeId !== undefined
+          ? input.runtimeId
+          : (existing?.runtime_id ?? null),
+      bindingRole:
+        input.role !== undefined
+          ? input.role
+          : (existing?.binding_role ?? null),
+      providerSessionJson,
+      createdAt: existing?.created_at ?? now,
+      updatedAt: now,
+    });
+    return getBindingImpl(input.channelId, input.profileActorId)!;
+  }
+
+  const designateSoleOrchestratorTransaction = db.transaction(
+    (input: SoleOrchestratorDesignationInput): ChannelBinding => {
+      const designated = getSoleOrchestratorBindingImpl(input.channelId);
+      if (
+        designated !== null &&
+        designated.profileActorId !== input.profileActorId
+      ) {
+        throw createChannelOrchestratorConflictError({
+          channelId: input.channelId,
+          designatedProfileActorId: designated.profileActorId,
+          requestedProfileActorId: input.profileActorId,
+        });
+      }
+      return writeBindingImpl({ ...input, role: 'orchestrator' });
+    }
+  );
 
   return {
     close() {
@@ -3095,16 +3315,36 @@ export function createChannelMessageStore(
       const scope: ChannelMentionContextScope =
         input.threadRootId === null ? 'channel' : 'thread';
       const limit = cleanLimit(input.limit);
-      const params = {
+      const baseParams = {
         channelId: input.channelId,
         framework: input.framework,
         triggerSeq: input.triggerSeq,
         afterSeq: input.afterSeq,
         threadRootId: input.threadRootId,
+        candidateBudget: mentionContextCandidateScanBudget,
+      };
+      const statements = mentionContextStatements[scope];
+      const boundary = statements.boundary.get(baseParams) as
+        | { seq: number }
+        | undefined;
+      const candidateScanTruncated = boundary !== undefined;
+      const candidateAfterSeq =
+        boundary?.seq ?? (scope === 'channel' ? input.afterSeq : -1);
+      const params = {
+        ...baseParams,
+        candidateAfterSeq,
         limit,
         replyLimit: Math.max(0, limit - 1),
       };
-      const statements = mentionContextStatements[scope];
+      if (candidateScanTruncated) {
+        logger.warn(
+          'mention_context_candidate_budget_truncated channel_id=%s scope=%s raw_index_entries_at_least=%d candidate_budget=%d',
+          input.channelId,
+          scope,
+          mentionContextCandidateScanBudget + 1,
+          mentionContextCandidateScanBudget
+        );
+      }
       const count = statements.count.get(params) as {
         total_count: number;
         activity_filtered_count: number;
@@ -3115,6 +3355,8 @@ export function createChannelMessageStore(
         rows: rows.map(rowToMessage),
         totalCount: count.total_count,
         activityFilteredCount: count.activity_filtered_count,
+        candidateScanBudget: mentionContextCandidateScanBudget,
+        candidateScanTruncated,
         scope,
       };
     },
@@ -3504,45 +3746,44 @@ export function createChannelMessageStore(
       return getBindingImpl(channelId, profileActorId);
     },
 
+    getSoleOrchestratorBinding(channelId) {
+      return getSoleOrchestratorBindingImpl(channelId);
+    },
+
+    designateSoleOrchestrator(input) {
+      try {
+        // IMMEDIATE takes the write reservation before the conflict read, so
+        // separate store handles cannot both observe an empty designation.
+        return designateSoleOrchestratorTransaction.immediate(input);
+      } catch (error) {
+        if (error instanceof ChannelMessageStoreError) throw error;
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          String(error.code).startsWith('SQLITE_CONSTRAINT')
+        ) {
+          const designated = getSoleOrchestratorBindingImpl(input.channelId);
+          throw createChannelOrchestratorConflictError({
+            channelId: input.channelId,
+            designatedProfileActorId: designated?.profileActorId ?? null,
+            requestedProfileActorId: input.profileActorId,
+          });
+        }
+        throw error;
+      }
+    },
+
     upsertBinding(input) {
-      const now = nowIso();
-      const profileActorId = input.profileActorId;
-      const existing = db
-        .prepare(
-          'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
-        )
-        .get(input.channelId, profileActorId) as BindingRow | undefined;
-      const providerSessionJson = JSON.stringify(
-        input.providerSession ??
-          (existing ? JSON.parse(existing.provider_session_json) : {})
-      );
-      db.prepare(
-        `INSERT INTO channel_agent_bindings
-           (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
-         VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
-         ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
-           agent_framework = excluded.agent_framework,
-           runtime_id = excluded.runtime_id,
-           binding_role = excluded.binding_role,
-           provider_session_json = excluded.provider_session_json,
-           updated_at = excluded.updated_at`
-      ).run({
-        channelId: input.channelId,
-        profileActorId,
-        agentFramework: input.agentFramework,
-        runtimeId:
-          input.runtimeId !== undefined
-            ? input.runtimeId
-            : (existing?.runtime_id ?? null),
-        bindingRole:
-          input.role !== undefined
-            ? input.role
-            : (existing?.binding_role ?? null),
-        providerSessionJson,
-        createdAt: existing?.created_at ?? now,
-        updatedAt: now,
-      });
-      return getBindingImpl(input.channelId, profileActorId)!;
+      // Untyped callers must not bypass the channel-level invariant.
+      if ((input as { role?: AgentRole | null }).role === 'orchestrator') {
+        throw new ChannelMessageStoreError(
+          400,
+          'orchestrator_requires_sole_designation',
+          'use designateSoleOrchestrator to assign the orchestrator role'
+        );
+      }
+      return writeBindingImpl(input);
     },
 
     sweepStaleStreaming() {
@@ -3707,16 +3948,23 @@ export function createChannelMessageStore(
   }
 }
 
-function bindingRowToRecord(row: BindingRow): ChannelBinding {
-  let providerSession: Record<string, unknown> = {};
+function parseBindingProviderSession(
+  providerSessionJson: string
+): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(row.provider_session_json) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      providerSession = parsed as Record<string, unknown>;
-    }
+    const parsed = JSON.parse(providerSessionJson) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
-    providerSession = {};
+    return {};
   }
+}
+
+function bindingRowToRecord(row: BindingRow): ChannelBinding {
+  const providerSession = parseBindingProviderSession(
+    row.provider_session_json
+  );
   return {
     channelId: row.channel_id,
     profileActorId: row.profile_actor_id,
