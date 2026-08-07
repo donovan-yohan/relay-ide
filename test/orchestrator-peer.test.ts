@@ -214,13 +214,11 @@ describe('orchestrator peer pure seams', () => {
 
     const fromArgs = readPeerConfig(
       {
-        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-only-lease',
         RELAY_PEER_CHANNEL_ID: 'topic:product-environment',
         RELAY_PEER_IMPL_CHANNEL_ID: 'topic:impl-environment',
       },
       [
-        '--actor-token',
-        'relay-sac-v1.arg-lease',
         '--channel',
         'topic:product-argument',
         '--impl-channel',
@@ -229,13 +227,22 @@ describe('orchestrator peer pure seams', () => {
         'codex-argument',
       ]
     );
-    expect(fromArgs.actorToken).toBe('relay-sac-v1.arg-lease');
+    expect(fromArgs.actorToken).toBe('relay-sac-v1.env-only-lease');
     expect(fromArgs.productChannelId).toBe('topic:product-argument');
     expect(fromArgs.implChannelId).toBe('topic:impl-argument');
     expect(fromArgs.workerFramework).toBe('codex-argument');
     expect(fromArgs.scope).toEqual({
       channelIds: ['topic:product-argument', 'topic:impl-argument'],
     });
+    expect(() =>
+      readPeerConfig(
+        {
+          RELAY_PEER_CHANNEL_ID: 'topic:general',
+          RELAY_PEER_IMPL_CHANNEL_ID: 'topic:implementation',
+        },
+        ['--actor-token', 'relay-sac-v1.argv-leak']
+      )
+    ).toThrow(/RELAY_IDE_ACTOR_TOKEN/);
 
     const withDefault = readPeerConfig({
       RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.env-lease',

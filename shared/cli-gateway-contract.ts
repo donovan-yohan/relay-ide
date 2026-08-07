@@ -3360,7 +3360,7 @@ const channelThreadHistoryInputSchema: RelayJsonSchema = {
     threadId: stringSchema,
     limit: { type: 'number' },
   },
-  required: ['channelId'],
+  required: ['channelId', 'threadId'],
 };
 
 const channelRosterInputSchema: RelayJsonSchema = {

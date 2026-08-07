@@ -762,21 +762,43 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
 });
 
 describe('mention routing — gateway command/capability mapping', () => {
-  it('registers the new verbs with the correct capability bits', () => {
-    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.roster');
-    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.interrupt');
-    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain(
-      'channels.respond-approval'
+  it('registers Slice 0 channel verbs with the correct capability bits', () => {
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.list');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.get');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.history');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain(
+      'channels.threads.history'
     );
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.roster');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.post');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.interrupt' as never
+    );
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.respond-approval' as never
+    );
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.agent-commands' as never
+    );
+
+    expect(cliGatewayActorCommandCapabilities('channels.list')).toEqual([
+      'context:read',
+    ]);
+    expect(cliGatewayActorCommandCapabilities('channels.get')).toEqual([
+      'context:read',
+    ]);
+    expect(cliGatewayActorCommandCapabilities('channels.history')).toEqual([
+      'context:read',
+    ]);
+    expect(
+      cliGatewayActorCommandCapabilities('channels.threads.history')
+    ).toEqual(['context:read']);
     expect(cliGatewayActorCommandCapabilities('channels.roster')).toEqual([
       'context:read',
     ]);
-    expect(cliGatewayActorCommandCapabilities('channels.interrupt')).toEqual([
+    expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
-    expect(
-      cliGatewayActorCommandCapabilities('channels.respond-approval')
-    ).toEqual(['context:write']);
   });
 });
 

@@ -454,6 +454,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     classifyCliGatewayCredentialLane(
       req({
         authorization: `Bearer ${token}`,
+        command: 'nodes.list',
       }),
       'nodes.list'
     )
@@ -568,7 +569,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }),
       'nodes.list'
     )
-  ).toBe('scoped-actor-credential');
+  ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(
       req({
@@ -693,9 +694,6 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
-    'channels.agent-commands',
-    'channels.interrupt',
-    'channels.respond-approval',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
@@ -1107,6 +1105,12 @@ test('rejects grant-backed lifecycle requests that expand multi-value scope dime
       allowed: 'work-context-1',
       denied: 'work-context-2',
       reason: 'wrong_work_context_scope',
+    },
+    {
+      key: 'channelIds',
+      allowed: 'channel-1',
+      denied: 'channel-2',
+      reason: 'wrong_channel_scope',
     },
     {
       key: 'repoIds',

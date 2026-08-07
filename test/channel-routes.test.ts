@@ -311,6 +311,39 @@ describe('channel routes — image attachments', () => {
     });
     const attachmentId = String(uploadBody.attachments[0]?.['id']);
 
+    const actorHeaders = {
+      Authorization: 'Bearer test',
+      'x-test-actor-id': 'agent-profile:codex:scoped',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+    };
+    const actorUpload = await uploadImages({
+      port: h.port,
+      channelId: h.channelId,
+      images: [{ bytes: png, name: 'actor.png', mime: 'image/png' }],
+      capabilities: 'context:write',
+    });
+    // Re-send with the actor lane marker; FormData helper intentionally only
+    // models production auth headers, so use fetch directly for this denial.
+    const actorForm = new FormData();
+    actorForm.append(
+      'images',
+      new Blob([new Uint8Array(png)], { type: 'image/png' }),
+      'actor.png'
+    );
+    const deniedActorUpload = await fetch(
+      `http://127.0.0.1:${h.port}/channels/${encodeURIComponent(h.channelId)}/attachments`,
+      {
+        method: 'POST',
+        headers: {
+          ...actorHeaders,
+          'x-relay-capabilities': 'context:write',
+        },
+        body: actorForm,
+      }
+    );
+    expect(actorUpload.status).toBe(401);
+    expect(deniedActorUpload.status).toBe(403);
+
     const posted = await req<{
       message: {
         body: { text: string };
@@ -350,6 +383,19 @@ describe('channel routes — image attachments', () => {
       ],
     });
 
+    const rowsBeforeActorReuse = h.store.history(h.channelId, { limit: 10 });
+    const deniedActorReuse = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: actorHeaders,
+      body: { text: 'reuse', parts: uploadBody.attachments },
+    });
+    expect(deniedActorReuse.status).toBe(403);
+    expect(h.store.history(h.channelId, { limit: 10 })).toEqual(
+      rowsBeforeActorReuse
+    );
+
     const serveUrl = `http://127.0.0.1:${h.port}/channels/${encodeURIComponent(h.channelId)}/attachments/${encodeURIComponent(attachmentId)}`;
     expect((await fetch(serveUrl)).status).toBe(401);
     expect(
@@ -380,6 +426,16 @@ describe('channel routes — image attachments', () => {
       width: 7,
       height: 5,
     });
+    expect(
+      (
+        await fetch(serveUrl, {
+          headers: {
+            ...actorHeaders,
+            'x-relay-capabilities': 'context:read',
+          },
+        })
+      ).status
+    ).toBe(403);
 
     const missing = await fetch(`${serveUrl}-missing`, {
       headers: {
@@ -1375,8 +1431,8 @@ describe('channel routes — gateway capability mapping', () => {
       'channels.threads.history'
     );
     expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.post');
-    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain(
-      'channels.agent-commands'
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.agent-commands' as never
     );
   });
 
@@ -1396,9 +1452,6 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
-    expect(
-      cliGatewayActorCommandCapabilities('channels.agent-commands')
-    ).toEqual(['context:write']);
   });
 });
 
@@ -1467,8 +1520,7 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
       url: '/channels/search?q=quarantine',
       headers: actorHeaders(a, 'GET'),
     });
-    expect(globalSearch.status).toBe(200);
-    expect(globalSearch.body.results).toEqual([]);
+    expect(globalSearch.status).toBe(403);
 
     // (b) Every channel-B read/write is 403 FORBIDDEN before touching the store.
     for (const [method, url] of [
@@ -1516,7 +1568,9 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
       expect(denied.status).toBe(403);
       expect(denied.body.error.code).toBe('FORBIDDEN');
       expect(denied.body.error.details?.['reasonCode']).toBe(
-        'CHANNEL_SCOPE_REQUIRED'
+        url === '/channels'
+          ? 'CHANNEL_SCOPE_REQUIRED'
+          : 'CHANNEL_PRIVATE_ROUTE_ACTOR_FORBIDDEN'
       );
     }
 
@@ -1571,15 +1625,13 @@ describe('channel routes — agent commands', () => {
     },
   });
 
-  it('uses the command-specific actor auth lane and denies before dispatch', async () => {
+  it('keeps private commands outside the scoped actor lane and denies before dispatch', async () => {
     const commands: string[] = [];
+    const calls: unknown[] = [];
     const h = await harness({
-      binder: commandBinder(),
+      binder: commandBinder(calls),
       requireWriteActorAuth: (command) => (req, res, next) => {
         commands.push(command);
-        if (command === 'channels.agent-commands') {
-          return res.status(403).json({ error: { code: 'FORBIDDEN' } });
-        }
         next();
       },
     });
@@ -1587,6 +1639,10 @@ describe('channel routes — agent commands', () => {
       port: h.port,
       method: 'POST',
       url: `/channels/${h.channelId}/agent-commands`,
+      headers: {
+        'x-test-actor-id': 'agent-profile:codex:scoped',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      },
       body: {
         profileId: 'agent-profile:codex:default',
         command: 'model',
@@ -1594,7 +1650,58 @@ describe('channel routes — agent commands', () => {
       },
     });
     expect(res.status).toBe(403);
-    expect(commands).toEqual(['channels.agent-commands']);
+    expect(commands).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(h.store.history(h.channelId, { limit: 10 })).toEqual([]);
+  });
+
+  it('denies actor search, interrupt, and approval with no store or binder side effect', async () => {
+    const calls: string[] = [];
+    const h = await harness({
+      binder: {
+        interrupt: async () => {
+          calls.push('interrupt');
+        },
+        respondToApproval: async () => {
+          calls.push('approval');
+        },
+      },
+    });
+    h.store.appendComplete({
+      channelId: h.channelId,
+      sender: { kind: 'human', id: 'human:operator' },
+      text: 'private searchable text',
+    });
+    const rowsBefore = h.store.history(h.channelId, { limit: 10 });
+    const actorHeaders = {
+      'x-test-actor-id': 'agent-profile:codex:scoped',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+    };
+    const search = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/search?q=private&channelId=${encodeURIComponent(h.channelId)}`,
+      headers: actorHeaders,
+    });
+    const interrupt = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/codex/interrupt`,
+      headers: actorHeaders,
+      body: {},
+    });
+    const approval = await req<{ error: unknown }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/codex/approvals`,
+      headers: actorHeaders,
+      body: { requestId: 'approval-1', decision: { kind: 'accept' } },
+    });
+    expect([search.status, interrupt.status, approval.status]).toEqual([
+      403, 403, 403,
+    ]);
+    expect(calls).toEqual([]);
+    expect(h.store.history(h.channelId, { limit: 10 })).toEqual(rowsBefore);
   });
 
   it('rejects archived commands and dispatches successful controls without rows', async () => {

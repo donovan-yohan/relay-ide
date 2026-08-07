@@ -109,9 +109,6 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
-  'channels.agent-commands',
-  'channels.interrupt',
-  'channels.respond-approval',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -295,8 +292,7 @@ export function isSupportedCliGatewayActorReadRequest(
       return false;
     }
   }
-  const command = req.header(CLI_GATEWAY_COMMAND_HEADER);
-  return command == null || command === expectedCommand;
+  return req.header(CLI_GATEWAY_COMMAND_HEADER) === expectedCommand;
 }
 
 export function isSupportedCliGatewayActorWriteRequest(
@@ -358,13 +354,7 @@ export function cliGatewayActorCommandCapabilities(
     command === 'channels.roster'
   )
     return ['context:read'];
-  if (
-    command === 'channels.post' ||
-    command === 'channels.agent-commands' ||
-    command === 'channels.interrupt' ||
-    command === 'channels.respond-approval'
-  )
-    return ['context:write'];
+  if (command === 'channels.post') return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||
@@ -904,14 +894,6 @@ function validateRequestedScopeAgainstGrant(
   grantScope: HandshakeGrantScope,
   requestScope: ScopedActorCredentialScope
 ): HandshakeGrantValidationFailureReason | null {
-  // Slice 0 channel scope: grants carry NO channel dimension
-  // (`HandshakeGrantScope` has no channelIds — operator-handshake-grants is out
-  // of this slice's ownership boundary). Fail closed: a grant-backed lifecycle
-  // request that names channels is never authorized until the grant lane adds
-  // channel scope. Denied as a scope the grant cannot cover.
-  if (requestScope.channelIds?.length) {
-    return 'wrong_work_context_scope';
-  }
   const rules: {
     grantValues: readonly string[] | undefined;
     requestValues: readonly string[] | undefined;
@@ -940,6 +922,11 @@ function validateRequestedScopeAgainstGrant(
       grantValues: grantScope.workContextIds,
       requestValues: requestScope.workContextIds,
       wrongReason: 'wrong_work_context_scope',
+    },
+    {
+      grantValues: grantScope.channelIds,
+      requestValues: requestScope.channelIds,
+      wrongReason: 'wrong_channel_scope',
     },
     {
       grantValues: grantScope.repoIds,

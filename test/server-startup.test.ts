@@ -495,16 +495,16 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
         ttlMs: 60_000,
       }),
     });
-    const issued = await expectJsonStatus<{ token: string }>(
-      minted,
-      201,
-      'grant-backed actor credential mint'
-    );
+    const issued = await expectJsonStatus<{
+      token: string;
+      credential: { id: string };
+    }>(minted, 201, 'grant-backed actor credential mint');
 
     const actorNodes = await fetch(`${base}/nodes`, {
       headers: {
         authorization: `Bearer ${issued.token}`,
         'x-relay-cli-gateway': 'v1',
+        'x-relay-cli-command': 'nodes.list',
         'x-relay-capabilities': 'session:read',
       },
     });
@@ -513,6 +513,36 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
       200,
       'actor nodes.list'
     );
+
+    for (const command of [undefined, 'sessions.list']) {
+      const denied = await fetch(`${base}/nodes`, {
+        headers: {
+          authorization: `Bearer ${issued.token}`,
+          'x-relay-cli-gateway': 'v1',
+          ...(command ? { 'x-relay-cli-command': command } : {}),
+          'x-relay-capabilities': 'session:read',
+        },
+      });
+      expect(denied.status).toBe(401);
+    }
+
+    const browserNodes = await fetch(`${base}/nodes`, { headers: { cookie } });
+    expect(browserNodes.status).toBe(200);
+
+    const revoked = await fetch(
+      `${base}/cli-gateway/actor-credentials/${encodeURIComponent(issued.credential.id)}`,
+      { method: 'DELETE', headers: { cookie } }
+    );
+    expect(revoked.status).toBe(200);
+    const revokedActorNodes = await fetch(`${base}/nodes`, {
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-cli-command': 'nodes.list',
+        'x-relay-capabilities': 'session:read',
+      },
+    });
+    expect(revokedActorNodes.status).toBe(401);
 
     const nodeCredentialNodes = await fetch(`${base}/nodes`, {
       headers: {
@@ -523,6 +553,137 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
       },
     });
     expect(nodeCredentialNodes.status).toBe(401);
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('real channel middleware enforces registry-issued channel leases and preserves browser access', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-channel-lease-'));
+  const configPath = path.join(tmpDir, 'config.json');
+  const pin = '246810';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+  const child = startServer({
+    env: { RELAY_IDE_CONFIG: configPath, RELAY_IDE_PORT: '0', HOME: tmpDir },
+  });
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+    const login = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    await expectJsonStatus<{ ok: true }>(login, 200, 'PIN login');
+    const cookie = cookieFromSetCookie(login.headers);
+    const createTopic = async (title: string) =>
+      expectJsonStatus<{ topic: { id: string } }>(
+        await fetch(`${base}/workspace-topics`, {
+          method: 'POST',
+          headers: {
+            cookie,
+            'content-type': 'application/json',
+            'x-relay-capabilities': 'context:write',
+          },
+          body: JSON.stringify({ workspaceId: 'workspace:local', title }),
+        }),
+        201,
+        `create ${title}`
+      );
+    const channelA = (await createTopic('Lease A')).topic.id;
+    const channelB = (await createTopic('Lease B')).topic.id;
+
+    const requested = await expectJsonStatus<{ grant: { id: string } }>(
+      await fetch(`${base}/hub/operator-handshake-grants`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actor: { type: 'cli', id: 'channel-lease-peer' },
+          issuer: { id: 'browser-operator-test' },
+          audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+          capabilities: ['context:read', 'context:write'],
+          scope: { channelIds: [channelA] },
+          ttlMs: 60_000,
+        }),
+      }),
+      201,
+      'channel grant request'
+    );
+    const approved = await expectJsonStatus<{ handle: string }>(
+      await fetch(
+        `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/approve`,
+        {
+          method: 'POST',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ approvedBy: { id: 'browser-operator-test' } }),
+        }
+      ),
+      200,
+      'channel grant approval'
+    );
+    const issued = await expectJsonStatus<{ token: string }>(
+      await fetch(`${base}/cli-gateway/actor-credentials`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          grantHandle: approved.handle,
+          audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+          actor: { type: 'cli', id: 'channel-lease-peer' },
+          capabilities: ['context:read', 'context:write'],
+          scope: { channelIds: [channelA] },
+          ttlMs: 60_000,
+        }),
+      }),
+      201,
+      'channel actor credential mint'
+    );
+    const actorHeaders = (command: string) => ({
+      authorization: `Bearer ${issued.token}`,
+      'x-relay-cli-gateway': 'v1',
+      'x-relay-cli-command': command,
+      'x-relay-capabilities':
+        command === 'channels.post' ? 'context:write' : 'context:read',
+    });
+    expect(
+      (
+        await fetch(`${base}/channels/${encodeURIComponent(channelA)}`, {
+          headers: actorHeaders('channels.get'),
+        })
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${base}/channels/${encodeURIComponent(channelB)}`, {
+          headers: actorHeaders('channels.get'),
+        })
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${base}/channels/${encodeURIComponent(channelA)}`, {
+          headers: { cookie, 'x-relay-capabilities': 'context:read' },
+        })
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${base}/channels/${encodeURIComponent(channelA)}`, {
+          headers: {
+            ...actorHeaders('channels.get'),
+            'x-relay-cli-command': 'channels.history',
+          },
+        })
+      ).status
+    ).toBe(401);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });

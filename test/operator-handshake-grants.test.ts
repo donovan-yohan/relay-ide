@@ -232,6 +232,49 @@ describe('operator handshake grant registry', () => {
     );
   });
 
+  it('issues and redeems channel-scoped grants without widening the approved set', () => {
+    const store = registry();
+    const grant = store.request({
+      id: 'grant-channels',
+      actor: { type: 'cli', id: 'channel-peer' },
+      issuer: { id: 'operator-1' },
+      audience: 'relay:cli-gateway:v1',
+      capabilities: ['context:read'],
+      scope: { channelIds: ['channel-a', 'channel-b'] },
+      ttlMs: 60_000,
+    });
+    expect(grant.scope.channelIds).toEqual(['channel-a', 'channel-b']);
+    const approved = store.approve(grant.id, {
+      approvedBy: { id: 'operator-1' },
+    });
+    expect(approved.grant.scope.channelIds).toEqual(['channel-a', 'channel-b']);
+    expect(approved.copy.details).toContain(
+      'Scope: channelIds=channel-a,channel-b'
+    );
+    expect(
+      store.validate(approved.handle, {
+        audience: 'relay:cli-gateway:v1',
+        actor: { type: 'cli', id: 'channel-peer' },
+        requiredCapabilities: ['context:read'],
+        scope: { channelIds: ['channel-a'] },
+        consume: false,
+      })
+    ).toMatchObject({ ok: true });
+    expect(
+      store.validate(approved.handle, {
+        audience: 'relay:cli-gateway:v1',
+        actor: { type: 'cli', id: 'channel-peer' },
+        requiredCapabilities: ['context:read'],
+        scope: { channelIds: ['channel-a', 'channel-c'] },
+        consume: false,
+      })
+    ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+    expect(store.getGrant(grant.id)?.scope.channelIds).toEqual([
+      'channel-a',
+      'channel-b',
+    ]);
+  });
+
   it('rejects lane-mixed browser, scoped actor, pair-token, and node credentials', () => {
     const store = registry();
     for (const foreign of [

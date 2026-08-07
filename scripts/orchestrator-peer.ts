@@ -24,8 +24,7 @@ export interface PeerConfig {
    * The daily-driver PIN/cookie must NEVER be used here: this peer is
    * migration-only until the operator-handshake-grant redemption path lands
    * (MCP bridge design). The token is supplied out-of-band via
-   * `RELAY_IDE_ACTOR_TOKEN` / `--actor-token` and never appears in agent config,
-   * env, logs, or artifacts.
+   * `RELAY_IDE_ACTOR_TOKEN` and never appears in argv, logs, or artifacts.
    */
   actorToken: string;
   actorId: string;
@@ -360,15 +359,14 @@ export function readPeerConfig(
   // Pre-minted short-lived scoped-actor lease (see PeerConfig.actorToken).
   // The daily-driver PIN/cookie is explicitly FORBIDDEN here — this peer is
   // migration-only until the operator-handshake-grant path lands.
-  const actorToken =
-    argValue(argv, '--actor-token') ?? env['RELAY_IDE_ACTOR_TOKEN'];
+  const actorToken = env['RELAY_IDE_ACTOR_TOKEN'];
   const productChannelId =
     argValue(argv, '--channel') ?? env['RELAY_PEER_CHANNEL_ID'];
   const implChannelId =
     argValue(argv, '--impl-channel') ?? env['RELAY_PEER_IMPL_CHANNEL_ID'];
   if (!actorToken || !productChannelId || !implChannelId) {
     throw new Error(
-      'actor token, product channel, and impl channel are required via --actor-token/--channel/--impl-channel or RELAY_IDE_ACTOR_TOKEN/RELAY_PEER_CHANNEL_ID/RELAY_PEER_IMPL_CHANNEL_ID'
+      'actor token, product channel, and impl channel are required via RELAY_IDE_ACTOR_TOKEN and --channel/--impl-channel or RELAY_PEER_CHANNEL_ID/RELAY_PEER_IMPL_CHANNEL_ID'
     );
   }
   if (!actorToken.startsWith('relay-sac-v1.')) {
