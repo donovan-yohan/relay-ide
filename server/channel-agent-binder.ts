@@ -54,10 +54,11 @@ import type { AgentRole } from '../shared/agent-roster.js';
 import { isDmChannel } from '../shared/dm-channels.js';
 import { workspaceTopicAgentRuntimeLinkPatch } from '../shared/workspace-topics.js';
 
-// @-mention routing binder (#1167, slice 4). One module owns the whole loop:
-// subscribe to hub.onMessagePosted → resolve mentions → ensure a (channel,
-// framework) channel runtime (single-flight spawn | reuse | rebind) → wire the
-// slice-2 bridge → build a context packet → deliver the turn. Single-node only.
+// Channel routing binder (#1167, #1353). One module owns the whole loop:
+// subscribe to hub.onMessagePosted → resolve explicit mentions or the implicit
+// DM/designated-orchestrator recipient → ensure a (channel, profile) runtime
+// (single-flight spawn | reuse | rebind) → wire the slice-2 bridge → build a
+// context packet → deliver the turn. Single-node only.
 //
 // It never touches the wire protocol and requires ZERO adapter changes: the
 // bridge remains the sole text mirror; the binder registers its OWN onPatch
@@ -687,6 +688,54 @@ export function createChannelAgentBinder(
     return profile.displayName || (await senderLabelFor(profile.providerId));
   }
 
+  /**
+   * Profiles the binder can safely reconstruct without inventing a deleted
+   * named profile. Built-in defaults remain available when the durable profile
+   * catalog is absent (boot/tests) or has not seeded that provider yet.
+   */
+  function knownProfiles(): AgentProfile[] {
+    const profiles = [...(deps.agentProfileStore?.list() ?? [])];
+    const seen = new Set(profiles.map((profile) => profile.id));
+    for (const providerId of deps.knownProviderIds) {
+      const profile = defaultProfileForProvider(providerId);
+      if (seen.has(profile.id)) continue;
+      seen.add(profile.id);
+      profiles.push(profile);
+    }
+    return profiles;
+  }
+
+  /**
+   * Resolve the channel's durable orchestrator designation. Runtime handles are
+   * intentionally ephemeral across hub restarts; the binding role is the source
+   * of truth and `routeOne(..., requiredRole='orchestrator')` cold-resumes it.
+   * Recipient selection itself never upgrades an ordinary collaborator row.
+   */
+  function designatedOrchestratorProfile(
+    channelId: string
+  ): AgentProfile | null {
+    const topic = topicStore?.get(channelId);
+    if (!topic || isDmChannel(topic) !== null) return null;
+
+    const matches = knownProfiles().filter(
+      (profile) =>
+        store.getBinding(channelId, profile.id)?.role === 'orchestrator'
+    );
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) {
+      // #1259 models one designated orchestrator. Do not pick an arbitrary
+      // runtime if corrupt/legacy state violates that invariant.
+      logger.warn(
+        'multiple orchestrator bindings found; default route skipped',
+        {
+          channelId,
+          profileActorIds: matches.map((profile) => profile.id),
+        }
+      );
+    }
+    return null;
+  }
+
   function supportsSafeBoundarySteer(binding: LiveBinding): boolean {
     return (
       binding.adapter?.capabilities.steer === true &&
@@ -912,6 +961,21 @@ export function createChannelAgentBinder(
     return `#${topic?.display.title ?? channelId} · ${profile.displayName || framework}`;
   }
 
+  function assertRuntimeRole(
+    channelId: string,
+    framework: string,
+    runtime: ChannelAgentRuntime,
+    requiredRole?: AgentRole
+  ): void {
+    if (!requiredRole || runtime.role === requiredRole) return;
+    throw new ChannelAgentRoleConflictError(
+      channelId,
+      framework,
+      runtime.id,
+      runtime.role ?? 'unknown'
+    );
+  }
+
   async function doEnsureBinding(
     channelId: string,
     profile: AgentProfile,
@@ -922,6 +986,10 @@ export function createChannelAgentBinder(
     const profileActorId = profile.id;
     const key = bindingKey(channelId, profileActorId);
     const runtimeDisplayName = displayNameFor(channelId, framework, profile);
+    const row = store.getBinding(channelId, profileActorId);
+    // Once a profile is durably designated, every recovery path preserves that
+    // runtime role — including an explicit mention that happens after restart.
+    const effectiveRole = requiredRole ?? row?.role ?? undefined;
 
     // 2. Reuse a live entry whose private runtime is still healthy.
     const existing = live.get(key);
@@ -932,14 +1000,7 @@ export function createChannelAgentBinder(
         profileActorId
       );
       if (runtime && runtime.adapter === existing.adapter) {
-        if (requiredRole && runtime.role !== requiredRole) {
-          throw new ChannelAgentRoleConflictError(
-            channelId,
-            framework,
-            runtime.id,
-            runtime.role ?? 'unknown'
-          );
-        }
+        assertRuntimeRole(channelId, framework, runtime, effectiveRole);
         // Reuse still links: a topic row created (or re-created) after this
         // runtime was attached would otherwise never learn its participant.
         // The patch helper returns undefined when already linked, so a hot
@@ -956,21 +1017,13 @@ export function createChannelAgentBinder(
     const senderDisplayName = await rosterDisplayName(profile);
 
     // 3. Rebind a restored provider conversation to a live private runtime.
-    const row = store.getBinding(channelId, profileActorId);
     const restored = healthyRuntime(
       row?.runtimeId ?? null,
       framework,
       profileActorId
     );
     if (restored) {
-      if (requiredRole && restored.role !== requiredRole) {
-        throw new ChannelAgentRoleConflictError(
-          channelId,
-          framework,
-          restored.id,
-          restored.role ?? 'unknown'
-        );
-      }
+      assertRuntimeRole(channelId, framework, restored, effectiveRole);
       return attachRuntime(
         channelId,
         profileActorId,
@@ -1013,7 +1066,7 @@ export function createChannelAgentBinder(
         ...(row?.providerSession
           ? { providerSession: row.providerSession }
           : {}),
-        ...(requiredRole ? { role: requiredRole } : {}),
+        ...(effectiveRole ? { role: effectiveRole } : {}),
         ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
         ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
         ...(yolo ? { permissionMode: YOLO_PERMISSION_MODE } : {}),
@@ -1083,6 +1136,7 @@ export function createChannelAgentBinder(
       profileActorId,
       agentFramework: framework,
       runtimeId: created.id,
+      ...(effectiveRole ? { role: effectiveRole } : {}),
       providerSession: {
         ...(row?.providerSession ?? {}),
         ...created.providerSession,
@@ -1102,6 +1156,32 @@ export function createChannelAgentBinder(
     );
   }
 
+  function assertBindingRole(
+    binding: LiveBinding,
+    framework: string,
+    requiredRole: 'orchestrator'
+  ): void {
+    const runtime = binding.runtimeId
+      ? healthyRuntime(binding.runtimeId, framework, binding.profileActorId)
+      : null;
+    if (runtime?.role === requiredRole) return;
+    throw new ChannelAgentRoleConflictError(
+      binding.channelId,
+      framework,
+      binding.runtimeId ?? 'unknown',
+      runtime?.role ?? 'unknown'
+    );
+  }
+
+  function persistOrchestratorDesignation(binding: LiveBinding): void {
+    store.upsertBinding({
+      channelId: binding.channelId,
+      profileActorId: binding.profileActorId,
+      agentFramework: binding.framework,
+      role: 'orchestrator',
+    });
+  }
+
   function ensureProfileBinding(
     channelId: string,
     profile: AgentProfile,
@@ -1109,7 +1189,13 @@ export function createChannelAgentBinder(
   ): Promise<LiveBinding> {
     const key = bindingKey(channelId, profile.id);
     const pending = inflight.get(key);
-    if (pending) return pending;
+    if (pending) {
+      if (!requiredRole) return pending;
+      return pending.then((binding) => {
+        assertBindingRole(binding, profile.providerId, requiredRole);
+        return binding;
+      });
+    }
     // Store before awaiting so concurrent mentions of one profile single-flight.
     const promise = doEnsureBinding(channelId, profile, requiredRole).finally(
       () => {
@@ -1138,24 +1224,18 @@ export function createChannelAgentBinder(
     const pending = inflight.get(key);
     if (pending) {
       const binding = await pending;
-      const runtime = binding.runtimeId
-        ? healthyRuntime(binding.runtimeId, profile.providerId, profile.id)
-        : null;
-      if (!runtime || runtime.role !== 'orchestrator') {
-        throw new ChannelAgentRoleConflictError(
-          channelId,
-          framework,
-          binding.runtimeId ?? 'unknown',
-          runtime?.role ?? 'unknown'
-        );
-      }
+      assertBindingRole(binding, profile.providerId, 'orchestrator');
+      persistOrchestratorDesignation(binding);
       return binding;
     }
-    const promise = doEnsureBinding(channelId, profile, 'orchestrator').finally(
-      () => {
+    const promise = doEnsureBinding(channelId, profile, 'orchestrator')
+      .then((binding) => {
+        persistOrchestratorDesignation(binding);
+        return binding;
+      })
+      .finally(() => {
         inflight.delete(key);
-      }
-    );
+      });
     inflight.set(key, promise);
     return promise;
   }
@@ -2023,7 +2103,8 @@ export function createChannelAgentBinder(
   function routeOne(
     trigger: ChannelMessage,
     profile: AgentProfile,
-    steering?: ChannelPostSteering
+    steering?: ChannelPostSteering,
+    requiredRole?: 'orchestrator'
   ): Promise<void> {
     return (async () => {
       try {
@@ -2070,7 +2151,11 @@ export function createChannelAgentBinder(
         }
         let binding: LiveBinding;
         try {
-          binding = await ensureProfileBinding(trigger.channelId, profile);
+          binding = await ensureProfileBinding(
+            trigger.channelId,
+            profile,
+            requiredRole
+          );
         } catch (err) {
           if (err instanceof BinderClosedError) return; // shutdown — silent
           if (err instanceof ChannelBindingError) {
@@ -2262,12 +2347,20 @@ export function createChannelAgentBinder(
       routeWithBrake(message, profiles);
       return;
     }
+    // A message-shaped system row is not a normal production shape, but sender
+    // attribution is the loop-safety boundary. It must neither route nor reset
+    // the consecutive-agent brake if one is ever presented by a caller/test.
+    if (message.sender.kind !== 'human') return;
     // Mechanics are explicit (epic #1308 rule): the steering intent comes from
     // the operator's choice on the post route, never inferred from the text.
     const steering = options?.steering;
     consecutiveAgentTurns.delete(message.channelId);
     if (profiles.length === 0) {
-      routeImplicitDm(message, steering);
+      // A durable/pinned mention may no longer resolve after a profile deletion.
+      // It is still explicit operator intent, so never fall through to a DM or
+      // orchestrator default and silently address somebody else.
+      if (routingMentions.length > 0) return;
+      routeImplicitHumanMessage(message, steering);
       return;
     }
     for (const profile of profiles) {
@@ -2308,11 +2401,11 @@ export function createChannelAgentBinder(
     const mentions = currentProfileMentions(message, message.mentions ?? []);
     let profiles = eligibleProfiles(message, mentions);
     if (profiles.length === 0) {
-      // Same implicit-DM resolution as `routeImplicitDm`: addressing a DM IS
-      // the mention, so a steered DM post carries no literal `@name` to resolve.
-      const providerId = dmProviderIdFor(message.channelId);
-      if (providerId === null) return;
-      profiles = [defaultProfileForProvider(providerId)];
+      // Explicit intent always wins, even if its pinned profile disappeared.
+      if (mentions.length > 0) return;
+      const implicit = implicitHumanRecipient(message.channelId);
+      if (!implicit) return;
+      profiles = [implicit.profile];
     }
     for (const profile of profiles) {
       const binding = live.get(bindingKey(message.channelId, profile.id));
@@ -2335,34 +2428,45 @@ export function createChannelAgentBinder(
   }
 
   /**
-   * DM implicit routing. A DM is "a channel with one agent" (ADR-020,
-   * `docs/CHANNEL_CHAT.md`), so addressing it IS the mention — a human message
-   * in a DM must reach that agent with no literal `@name` typed.
-   *
-   * Only reached when the explicit-mention resolver produced ZERO routable
-   * profiles, so an explicit `@name` can never be double-routed, and only from
-   * the human branch of `handleMessagePosted`, so an agent's own DM post can
-   * never re-trigger itself (`eligibleProfiles`' self-filter does not cover a
-   * message with no mentions at all).
+   * Resolve the one implicit recipient for an unmentioned HUMAN post. DMs keep
+   * their existing provider-default behavior. A non-DM product channel routes
+   * only when its durable binding carries role=`orchestrator`; the runtime may
+   * be cold and will resume through the same binding path. An ordinary
+   * collaborator binding never qualifies as the default.
    */
-  function routeImplicitDm(
+  function implicitHumanRecipient(
+    channelId: string
+  ): { profile: AgentProfile; requiredRole?: 'orchestrator' } | null {
+    const providerId = dmProviderIdFor(channelId);
+    if (providerId !== null) {
+      return { profile: defaultProfileForProvider(providerId) };
+    }
+    const profile = designatedOrchestratorProfile(channelId);
+    return profile ? { profile, requiredRole: 'orchestrator' } : null;
+  }
+
+  /**
+   * An unmentioned human post uses the same `routeOne` queue/steer path as an
+   * explicit mention. Sender-kind and explicit-mention gates live at the caller,
+   * so agent/system output cannot self-trigger and named intent cannot fan out.
+   */
+  function routeImplicitHumanMessage(
     message: ChannelMessage,
     steering?: ChannelPostSteering
   ): void {
-    const providerId = dmProviderIdFor(message.channelId);
-    if (providerId === null) {
-      // Legitimate in a multi-party channel: humans chat without addressing an
-      // agent. Logged, never announced — a system row here would spam #general.
+    const recipient = implicitHumanRecipient(message.channelId);
+    if (!recipient) {
+      // Legitimate in a multi-party channel with no designated orchestrator.
+      // Logged, never announced — a system row here would spam #general.
       logger.debug(
         `message posted, 0 profiles routed, channel=${message.channelId} message=${message.id}`
       );
       return;
     }
-    const profile = defaultProfileForProvider(providerId);
     logger.debug(
-      `dm implicit route, channel=${message.channelId} provider=${providerId} profile=${profile.id}`
+      `implicit human route, channel=${message.channelId} provider=${recipient.profile.providerId} profile=${recipient.profile.id}`
     );
-    void routeOne(message, profile, steering);
+    void routeOne(message, recipient.profile, steering, recipient.requiredRole);
   }
 
   function handleAssistantFinalized(message: ChannelMessage): void {
@@ -2650,6 +2754,7 @@ export function createChannelAgentBinder(
         const row = store.getBinding(channelId, profile.id);
         const runtimeId = binding?.runtimeId ?? row?.runtimeId ?? null;
         const runtime = runtimeId ? deps.runtimes.get(runtimeId) : undefined;
+        const role = runtime?.role ?? row?.role ?? undefined;
         const baseCommands = relayControlCatalogForProvider(
           profile.providerId
         ).filter((command) => command.collisionKey !== 'fast');
@@ -2666,7 +2771,7 @@ export function createChannelAgentBinder(
           kind: 'framework',
           available: availability.available,
           reason: availability.reason,
-          ...(runtime?.role !== undefined ? { role: runtime.role } : {}),
+          ...(role !== undefined ? { role } : {}),
           binding: runtimeId
             ? {
                 runtimeId,

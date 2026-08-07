@@ -1597,6 +1597,9 @@ describe('channel-agent-binder — lifecycle', () => {
     const binding = await binder.ensureOrchestrator(CH, 'mock');
 
     expect(binding.runtimeId).toBe(sessions.firstSessionId());
+    expect(store.getBinding(CH, builtInAgentProfileId('mock'))?.role).toBe(
+      'orchestrator'
+    );
     expect(sessions.lastCreateParams()).toMatchObject({
       providerId: 'mock',
       role: 'orchestrator',
@@ -1622,6 +1625,9 @@ describe('channel-agent-binder — lifecycle', () => {
     const binding = await binder.ensureOrchestrator(CH, 'mock');
 
     expect(binding.runtimeId).toBe(sessionId);
+    expect(store.getBinding(CH, builtInAgentProfileId('mock'))?.role).toBe(
+      'orchestrator'
+    );
     expect(sessions.spawns()).toBe(0);
   });
 
@@ -4272,6 +4278,311 @@ describe('channel-agent-binder — DM implicit routing', () => {
   });
 });
 
+// ── #1353: unmentioned product-channel posts use the designated orchestrator
+// binding, while explicit recipient and sender-kind gates remain authoritative.
+
+describe('channel-agent-binder — orchestrator default-routing matrix', () => {
+  const TARGETS: MentionTarget[] = [
+    {
+      id: 'orchestrator',
+      displayName: 'Orchestrator',
+      kind: 'framework',
+      available: true,
+      reason: null,
+    },
+    {
+      id: 'worker',
+      displayName: 'Worker',
+      kind: 'framework',
+      available: true,
+      reason: null,
+    },
+  ];
+
+  function makeProductTopics(): WorkspaceTopicStore {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'product',
+    });
+    return topics;
+  }
+
+  it.each([
+    {
+      name: 'human + bare + designated => orchestrator',
+      designate: true,
+      sender: OPERATOR,
+      kind: 'message' as const,
+      text: 'please take the next step',
+      expected: { orchestrator: 1, worker: 0 },
+    },
+    {
+      name: 'human + explicit worker + designated => worker only',
+      designate: true,
+      sender: OPERATOR,
+      kind: 'message' as const,
+      text: '@worker please inspect this',
+      expected: { orchestrator: 0, worker: 1 },
+    },
+    {
+      name: 'human + bare + no designation => no dispatch',
+      designate: false,
+      sender: OPERATOR,
+      kind: 'message' as const,
+      text: 'morning everyone',
+      expected: { orchestrator: 0, worker: 0 },
+    },
+    {
+      name: 'human + bare + collaborator binding => no role upgrade',
+      designate: false,
+      collaborator: true,
+      sender: OPERATOR,
+      kind: 'message' as const,
+      text: 'do not infer a driver',
+      expected: { orchestrator: 0, worker: 0 },
+    },
+    {
+      name: 'agent + bare + designated => no default loop',
+      designate: true,
+      sender: AGENT_SENDER,
+      kind: 'message' as const,
+      text: 'still coordinating',
+      expected: { orchestrator: 0, worker: 0 },
+    },
+    {
+      name: 'system row + designated => no default loop',
+      designate: true,
+      sender: { kind: 'system' as const, id: 'system' },
+      kind: 'system' as const,
+      text: 'runtime notice',
+      expected: { orchestrator: 0, worker: 0 },
+    },
+  ])(
+    '$name',
+    async ({ designate, collaborator, sender, kind, text, expected }) => {
+      const adapters = new Map<string, ScriptedAdapter[]>();
+      const topics = makeProductTopics();
+      const { binder, store } = makeBinder({
+        build: (providerId) => {
+          const adapter = new ScriptedAdapter(providerId, {
+            mode: 'reply',
+            text: `${providerId} ack`,
+          });
+          const list = adapters.get(providerId) ?? [];
+          list.push(adapter);
+          adapters.set(providerId, list);
+          return adapter;
+        },
+        targets: TARGETS,
+        knownProviderIds: ['orchestrator', 'worker'],
+        topicStore: topics,
+      });
+      if (designate) {
+        await binder.ensureOrchestrator(CH, 'orchestrator');
+      } else if (collaborator) {
+        await binder.ensureBinding(CH, 'orchestrator');
+      }
+
+      const mentions = parseMentions(text, ['orchestrator', 'worker']);
+      const message = store.appendComplete({
+        channelId: CH,
+        kind,
+        sender,
+        text,
+        ...(mentions.length ? { mentions } : {}),
+      });
+      binder.handleMessagePosted(message, message.mentions ?? []);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(
+        (adapters.get('orchestrator') ?? []).reduce(
+          (count, adapter) => count + adapter.sendCalls.length,
+          0
+        )
+      ).toBe(expected.orchestrator);
+      expect(
+        (adapters.get('worker') ?? []).reduce(
+          (count, adapter) => count + adapter.sendCalls.length,
+          0
+        )
+      ).toBe(expected.worker);
+    }
+  );
+
+  it('cold-resumes a durable orchestrator designation with an empty runtime registry', async () => {
+    const topics = makeProductTopics();
+    const { binder, store, sessions } = makeBinder({
+      build: (providerId) =>
+        new ScriptedAdapter(providerId, {
+          mode: 'reply',
+          text: 'cold ack',
+        }),
+      targets: [TARGETS[0]!],
+      knownProviderIds: ['orchestrator'],
+      topicStore: topics,
+    });
+    const profileActorId = builtInAgentProfileId('orchestrator');
+    // Production starts with no channel runtimes after a hub restart. The role,
+    // not runtime_id, is the durable designation source of truth.
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId,
+      agentFramework: 'orchestrator',
+      runtimeId: null,
+      role: 'orchestrator',
+    });
+    expect((await binder.rosterForChannel(CH))[0]).toMatchObject({
+      id: profileActorId,
+      role: 'orchestrator',
+      binding: null,
+    });
+
+    post(store, binder, 'resume the plan', ['orchestrator']);
+
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    expect(sessions.lastCreateParams()).toMatchObject({
+      providerId: 'orchestrator',
+      profileActorId,
+      role: 'orchestrator',
+    });
+    expect(agentReplies(store, 'orchestrator')[0]?.body.text).toBe('cold ack');
+  });
+
+  it('does not discard the required orchestrator role when joining a collaborator spawn', async () => {
+    const topics = makeProductTopics();
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: (providerId) => new ScriptedAdapter(providerId, { mode: 'stall' }),
+      targets: [TARGETS[0]!],
+      knownProviderIds: ['orchestrator'],
+      topicStore: topics,
+      gate,
+    });
+    const profileActorId = builtInAgentProfileId('orchestrator');
+    const collaborator = binder.ensureBinding(CH, 'orchestrator');
+    await waitFor(() => sessions.spawns() === 1);
+    // The ordinary spawn has already captured no role and is parked. Model a
+    // concurrent durable designation becoming visible before the bare post.
+    store.upsertBinding({
+      channelId: CH,
+      profileActorId,
+      agentFramework: 'orchestrator',
+      runtimeId: null,
+      role: 'orchestrator',
+    });
+    post(store, binder, 'must not enter the collaborator runtime', [
+      'orchestrator',
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    releaseGate();
+    const collaboratorBinding = await collaborator;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const adapter = sessions.adapterFor(
+      collaboratorBinding.runtimeId!
+    ) as ScriptedAdapter;
+    expect(sessions.createParams()).toEqual([
+      expect.not.objectContaining({ role: 'orchestrator' }),
+    ]);
+    expect(adapter.sendCalls).toHaveLength(0);
+    expect(sessions.spawns()).toBe(1);
+    expect(store.getBinding(CH, profileActorId)?.role).toBe('orchestrator');
+  });
+
+  it('keeps an implicit orchestrator reply in the triggering thread', async () => {
+    const topics = makeProductTopics();
+    const adapter = new ScriptedAdapter('orchestrator', {
+      mode: 'reply',
+      text: 'threaded ack',
+    });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: [TARGETS[0]!],
+      knownProviderIds: ['orchestrator'],
+      topicStore: topics,
+    });
+    await binder.ensureOrchestrator(CH, 'orchestrator');
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const trigger = post(
+      store,
+      binder,
+      'threaded implicit instruction',
+      ['orchestrator'],
+      OPERATOR,
+      root.id
+    );
+
+    await waitFor(() => agentReplies(store, 'orchestrator').length === 1);
+    expect(agentReplies(store, 'orchestrator')[0]).toMatchObject({
+      threadId: root.id,
+      parentMessageId: trigger.id,
+    });
+  });
+
+  it('preserves FIFO queue semantics for implicit turns', async () => {
+    const topics = makeProductTopics();
+    const adapter = new ScriptedAdapter('orchestrator', { mode: 'stall' });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: [TARGETS[0]!],
+      knownProviderIds: ['orchestrator'],
+      topicStore: topics,
+    });
+    const binding = await binder.ensureOrchestrator(CH, 'orchestrator');
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+
+    const first = post(
+      store,
+      binder,
+      'first implicit instruction',
+      ['orchestrator'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => adapter.sendCalls.length === 1);
+    post(
+      store,
+      binder,
+      'second implicit instruction',
+      ['orchestrator'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => binding.queue.length === 1);
+    const roster = await binder.rosterForChannel(CH);
+    expect(roster[0]?.binding?.queuedCount).toBe(1);
+
+    expect(adapter.sendInputs[0]?.turnId).toBe(
+      channelTurnId(first.id, builtInAgentProfileId('orchestrator'))
+    );
+    expect(binding.parentMessageIdByTurn.get(adapter.sendCalls[0]!)).toBe(
+      first.id
+    );
+    expect(binding.queue.map((entry) => entry.trigger.threadId)).toEqual([
+      root.id,
+    ]);
+  });
+});
+
 // ── retry (#1308 slice 1 item 2) ─────────────────────────────────────────────
 
 describe('channel-agent-binder — retry', () => {
@@ -4690,6 +5001,45 @@ async function steerAdapter(
 }
 
 describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
+  it('uses the native safe-boundary steer lane for an unmentioned orchestrator post', async () => {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({
+      id: CH,
+      workspaceId: 'ws:local',
+      title: 'product',
+    });
+    const harness = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+      topicStore: topics,
+    });
+    await harness.binder.ensureOrchestrator(CH, 'steer');
+
+    postSteering(
+      harness.store,
+      harness.binder,
+      'first implicit instruction',
+      ['steer'],
+      undefined
+    );
+    const adapter = await steerAdapter(harness.sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    postSteering(
+      harness.store,
+      harness.binder,
+      'second implicit instruction',
+      ['steer'],
+      undefined
+    );
+
+    await waitFor(() => adapter.steerInputs.length === 1);
+    expect(adapter.steerInputs[0]?.content).toContain(
+      'second implicit instruction'
+    );
+  });
+
   it('bounds accepted native steers at the aggregate queue cap', async () => {
     const { binder, store, sessions } = makeSteerBinder(true);
     postSteering(store, binder, '@steer opener', ['steer'], undefined);

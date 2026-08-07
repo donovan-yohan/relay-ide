@@ -4,6 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { createLogger } from './logger.js';
+import type { AgentRole } from '../shared/agent-roster.js';
 
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
@@ -58,7 +59,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -734,6 +735,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   profile_actor_id      TEXT NOT NULL,
   agent_framework       TEXT NOT NULL,
   runtime_id            TEXT,
+  binding_role          TEXT,
   provider_session_json TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
@@ -821,6 +823,7 @@ interface BindingRow {
   profile_actor_id: string;
   agent_framework: string;
   runtime_id: string | null;
+  binding_role: AgentRole | null;
   provider_session_json: string;
   created_at: string;
   updated_at: string;
@@ -1025,6 +1028,8 @@ export interface ChannelBinding {
   /** Provider/framework spawn selector retained independently of the profile. */
   agentFramework: string;
   runtimeId: string | null;
+  /** Durable participant role; orchestrator designation survives runtime loss. */
+  role: AgentRole | null;
   providerSession: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -1230,6 +1235,7 @@ export interface ChannelMessageStore {
     profileActorId: string;
     agentFramework: string;
     runtimeId?: string | null;
+    role?: AgentRole | null;
     providerSession?: Record<string, unknown>;
   }): ChannelBinding;
   sweepStaleStreaming(): StaleStreamSweepResult[];
@@ -2302,6 +2308,24 @@ function runSchemaMigrations(db: Database.Database): void {
       }
       db.exec(`DROP TABLE IF EXISTS ${CHANNEL_SEARCH_TABLE}`);
       db.prepare('UPDATE schema_version SET version = 6').run();
+    })();
+  }
+  if (current < 7) {
+    db.transaction(() => {
+      // The runtime registry is intentionally ephemeral across hub restarts.
+      // Persist the participant role on the binding so an orchestrator remains
+      // designated even when runtime_id no longer resolves to a live handle.
+      const hasBindingRole = (
+        db.prepare(`PRAGMA table_info(channel_agent_bindings)`).all() as Array<{
+          name: string;
+        }>
+      ).some((column) => column.name === 'binding_role');
+      if (!hasBindingRole) {
+        db.exec(
+          'ALTER TABLE channel_agent_bindings ADD COLUMN binding_role TEXT'
+        );
+      }
+      db.prepare('UPDATE schema_version SET version = 7').run();
     })();
   }
 }
@@ -3494,11 +3518,12 @@ export function createChannelMessageStore(
       );
       db.prepare(
         `INSERT INTO channel_agent_bindings
-           (channel_id, profile_actor_id, agent_framework, runtime_id, provider_session_json, created_at, updated_at)
-         VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @providerSessionJson, @createdAt, @updatedAt)
+           (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
+         VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
          ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
            agent_framework = excluded.agent_framework,
            runtime_id = excluded.runtime_id,
+           binding_role = excluded.binding_role,
            provider_session_json = excluded.provider_session_json,
            updated_at = excluded.updated_at`
       ).run({
@@ -3509,6 +3534,10 @@ export function createChannelMessageStore(
           input.runtimeId !== undefined
             ? input.runtimeId
             : (existing?.runtime_id ?? null),
+        bindingRole:
+          input.role !== undefined
+            ? input.role
+            : (existing?.binding_role ?? null),
         providerSessionJson,
         createdAt: existing?.created_at ?? now,
         updatedAt: now,
@@ -3693,6 +3722,7 @@ function bindingRowToRecord(row: BindingRow): ChannelBinding {
     profileActorId: row.profile_actor_id,
     agentFramework: row.agent_framework,
     runtimeId: row.runtime_id,
+    role: row.binding_role,
     providerSession,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -346,7 +346,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(6);
+    ).toBe(7);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -377,11 +377,11 @@ describe('channel-message-store schema migration', () => {
       },
     ]);
 
-    // The repair is recorded as a marker ROW, not as a schema version. That is
-    // what keeps an older hub able to open this db (a version bump would make
-    // `current > SCHEMA_VERSION` throw) and makes re-arming a DELETE instead of
-    // a schema-version rewind. Two pairs matched the SQL predicate; only the
-    // one carrying the bounded echo signature was removed.
+    // The repair is recorded as a marker row rather than an additional schema
+    // bump, so re-arming remains a DELETE instead of a schema-version rewind.
+    // Schema-version compatibility is governed separately. Two pairs matched
+    // the SQL predicate; only the one carrying the bounded echo signature was
+    // removed.
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -456,13 +456,13 @@ describe('channel-message-store schema migration', () => {
       );
       INSERT INTO channel_agent_bindings VALUES (
         'topic:stranded-heal', 'agent-profile:claude:default', 'claude',
-        'runtime-stranded',
+        'runtime-stranded', NULL,
         '{"claudeSessionId":"runtime-stranded","lastDeliveredSeq":4}',
         '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
       );
       INSERT INTO channel_agent_bindings VALUES (
         'topic:stranded-heal', 'agent-profile:claude:reviewer', 'claude',
-        'runtime-b',
+        'runtime-b', NULL,
         '{"claudeSessionId":"runtime-b","lastDeliveredSeq":2}',
         '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
       );
@@ -526,15 +526,15 @@ describe('channel-message-store schema migration', () => {
 
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
-    // No schema bump: the repair records a marker row, so a db healed by this
-    // hub still opens on one built before the repair existed.
+    // The repair itself records a marker rather than owning a schema version;
+    // the independent binding-role migration still advances this old fixture.
     expect(
       (
         inspect.prepare('SELECT version FROM schema_version').get() as {
           version: number;
         }
       ).version
-    ).toBe(6);
+    ).toBe(7);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -2194,9 +2194,11 @@ describe('channel-message-store members and bindings', () => {
       channelId: 'topic:c',
       profileActorId: builtInAgentProfileId('claude'),
       agentFramework: 'claude',
+      role: 'orchestrator',
       providerSession: { claudeSessionId: 'abc' },
     });
     expect(created.runtimeId).toBeNull();
+    expect(created.role).toBe('orchestrator');
     const updated = s.upsertBinding({
       channelId: 'topic:c',
       profileActorId: builtInAgentProfileId('claude'),
@@ -2204,6 +2206,8 @@ describe('channel-message-store members and bindings', () => {
       runtimeId: 'runtime-9',
     });
     expect(updated.runtimeId).toBe('runtime-9');
+    // Omitting role updates runtime state without erasing the designation.
+    expect(updated.role).toBe('orchestrator');
     expect(updated.providerSession).toEqual({ claudeSessionId: 'abc' });
 
     // Arbitrary profile ids are real actor ids, never rewritten by a prefix
@@ -2694,7 +2698,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(6);
+    expect(version.version).toBe(7);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
