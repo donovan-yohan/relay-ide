@@ -704,6 +704,21 @@ describe('channel routes — topic validation', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns NOT_FOUND for thread history on an unknown / derived topic', async () => {
+    const h = await harness();
+    const res = await req<{
+      error: { code: string };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent('topic:ghost')}/threads/chm%3Amissing`,
+    });
+    expect(res).toMatchObject({
+      status: 404,
+      body: { error: { code: 'NOT_FOUND' } },
+    });
+  });
+
   it('rejects a post to an archived topic with 409', async () => {
     const h = await harness();
     h.topicStore.archive(h.channelId);
