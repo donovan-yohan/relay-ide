@@ -38,6 +38,8 @@ workflow.
   with a persisted collapsed or expanded default for new summaries (#1361)
 - Publish canonical, exact-head pipeline handoff review evidence through the
   existing WorkContext artifact and CLI surfaces (#1368)
+- Expose stable CLI gateway commands for scoped channel list, get, history,
+  thread-history, roster, and post access (#1372)
 
 #### Changed
 
