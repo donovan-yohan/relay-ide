@@ -40,6 +40,8 @@ workflow.
 
 #### Fixed
 
+- Designate-orchestrator failures now show actionable inline conflict or retry
+  feedback instead of failing silently (#1352)
 - Existing Codex channel conversations now recover after a hub/runtime restart,
   and user message bubbles no longer collapse into character-by-character
   wrapping (#1339)

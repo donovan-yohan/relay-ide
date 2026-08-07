@@ -178,6 +178,15 @@
   font-size: inherit;
 }
 
+.ch-designate-orchestrator__error {
+  min-width: 0;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
 .ch-agent-chip__stop {
   display: inline-flex;
   align-items: center;
