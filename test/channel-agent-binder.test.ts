@@ -1040,6 +1040,7 @@ class LateOpeningReplyAdapter extends BaseProtocolAdapterV2 {
 interface SessionsHarness {
   sessions: BinderRuntimes;
   spawns: () => number;
+  destroyCalls: () => string[];
   firstSessionId: () => string;
   adapterFor: (sessionId: string) => ProtocolAdapterV2;
   fireEnd: (sessionId: string) => void;
@@ -1066,6 +1067,7 @@ function makeSessions(
   const created = new Map<string, { runtime: ChannelAgentRuntime }>();
   const order: string[] = [];
   const endCbs: Array<(id: string) => void> = [];
+  const destroyCalls: string[] = [];
   let spawns = 0;
   let lastParams: CreateChannelAgentRuntimeParams | undefined;
   const createParams: CreateChannelAgentRuntimeParams[] = [];
@@ -1107,6 +1109,7 @@ function makeSessions(
     },
     async destroy(id) {
       if (!created.delete(id)) return;
+      destroyCalls.push(id);
       for (const cb of [...endCbs]) cb(id);
     },
     onRuntimeEnd(cb) {
@@ -1120,6 +1123,7 @@ function makeSessions(
   return {
     sessions,
     spawns: () => spawns,
+    destroyCalls: () => destroyCalls,
     firstSessionId: () => order[0]!,
     adapterFor: (id) => created.get(id)!.runtime.adapter,
     fireEnd: (id) => {
@@ -5232,6 +5236,35 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(adapter.sendCalls).toHaveLength(1);
     expect(adapter.steerInputs).toHaveLength(0);
+  });
+
+  it('refuses release while a terminal patch races an unresolved native steer', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) =>
+        new SteerableAdapter(agentType, true, false, false, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    postSteering(store, binder, '@steer opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    postSteering(
+      store,
+      binder,
+      '@steer ambiguous native request',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerAttempts.length === 1);
+
+    // The provider may already have accepted the steer even though its RPC has
+    // not returned. Its turn terminal races ahead and makes the binding look
+    // idle; release must not destroy the runtime in that ambiguity window.
+    adapter.completeLatest();
+    await expect(
+      binder.release(CH, builtInAgentProfileId('steer'))
+    ).rejects.toMatchObject({ reasonCode: 'CHANNEL_AGENT_NOT_IDLE' });
+    expect(sessions.destroyCalls()).toEqual([]);
   });
 
   it('uses a native safe-boundary steer by default and preserves FIFO without a concurrent turn', async () => {

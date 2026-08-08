@@ -604,12 +604,33 @@ export class ChannelAgentRuntimeManager {
     const processTable = this.readProcessTable();
     // An unexpected close retains the old detached-group leader id briefly.
     // Do not replace a useful pre-exit snapshot with an empty post-exit table,
-    // but do retain reparented members of that *same* group when the leader has
+    // but merge reparented members of that *same* group when the leader has
     // already exited. A live member with `pgid === rootPid` proves the group
     // still exists — that numeric group identity cannot have been reused while
     // it has a member — and the reaper validates its start time before signal.
     const hasLeader = processTable.some((proc) => rootPids.includes(proc.pid));
-    if (!hasLeader && this.ownedProcessSnapshots.has(id)) return;
+    const previousSnapshot = this.ownedProcessSnapshots.get(id);
+    if (!hasLeader && previousSnapshot) {
+      const reparentedGroupMembers = processTable.filter((proc) =>
+        rootPids.includes(proc.pgid)
+      );
+      if (reparentedGroupMembers.length === 0) return;
+      // Keep the pre-exit tree, but refresh every surviving group member from
+      // the current table. This both gives the delayed reaper a live group
+      // witness and records the member's current start time for PID-reuse
+      // validation immediately before it signals.
+      const mergedByPid = new Map(
+        previousSnapshot.processTable.map((proc) => [proc.pid, proc])
+      );
+      for (const member of reparentedGroupMembers) {
+        mergedByPid.set(member.pid, member);
+      }
+      this.ownedProcessSnapshots.set(id, {
+        rootPids,
+        processTable: [...mergedByPid.values()],
+      });
+      return;
+    }
     const hasOwnedMember =
       hasLeader || processTable.some((proc) => rootPids.includes(proc.pgid));
     if (!hasOwnedMember) return;

@@ -2633,6 +2633,7 @@ export function createChannelAgentBinder(
     if (
       binding.status !== 'idle' ||
       binding.activeTurnId !== null ||
+      binding.steeringInFlight ||
       inflight.has(bindingKey(channelId, binding.profileActorId))
     ) {
       throw new ChannelAgentReleaseRefusedError(

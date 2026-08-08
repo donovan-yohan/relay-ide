@@ -812,9 +812,9 @@ describe('ChannelAgentRuntimeManager', () => {
     ]);
   });
 
-  it('reaps the last captured tree after an unexpected child exit clears its live root', async () => {
+  it('merges a late reparented member into a root-only snapshot before reaping', async () => {
     const { ChannelAgentRuntimeManager } = await runtimeModule();
-    const table: ProcessInfo[] = [
+    const initialTable: ProcessInfo[] = [
       {
         pid: 50_010,
         ppid: 1,
@@ -824,19 +824,28 @@ describe('ChannelAgentRuntimeManager', () => {
         rssBytes: 10,
         startTicks: 1,
       },
-      {
-        pid: 50_011,
-        ppid: 50_010,
-        pgid: 50_010,
-        command: 'node',
-        commandLine: 'node',
-        rssBytes: 20,
-        startTicks: 2,
-      },
     ];
+    const reparentedMember: ProcessInfo = {
+      pid: 50_011,
+      ppid: 1,
+      pgid: 50_010,
+      command: 'node',
+      commandLine: 'node build',
+      rssBytes: 20,
+      startTicks: 2,
+    };
+    const unrelated: ProcessInfo = {
+      pid: 50_012,
+      ppid: 1,
+      pgid: 50_012,
+      command: 'node',
+      commandLine: 'node unrelated',
+      rssBytes: 30,
+      startTicks: 3,
+    };
     const reaps: Array<{ rootPids: number[]; processTable: ProcessInfo[] }> =
       [];
-    let currentTable = table;
+    let currentTable = initialTable;
     const manager = new ChannelAgentRuntimeManager({
       readProcessTable: () => currentTable,
       scheduleProcessTreeReap: (input) => reaps.push(input),
@@ -859,9 +868,10 @@ describe('ChannelAgentRuntimeManager', () => {
         }
       ).ownedProcessSnapshots.get(runtime.id)?.rootPids
     ).toEqual([50_010]);
-    // The adapter retains the exited leader ID, but `/proc` no longer contains
-    // it. The last useful snapshot must survive this disconnect patch.
-    currentTable = [{ ...table[1]!, ppid: 1 }];
+    // The adapter retains the exited leader ID, but `/proc` now contains only
+    // a former child under init. The old root-only snapshot must gain this
+    // same-group witness, without absorbing an unrelated process.
+    currentTable = [reparentedMember, unrelated];
     adapterState.last!.emitDisconnected();
 
     await vi.waitFor(() => {
@@ -869,7 +879,10 @@ describe('ChannelAgentRuntimeManager', () => {
       expect(reaps).toHaveLength(1);
     });
     expect(reaps).toEqual([
-      expect.objectContaining({ rootPids: [50_010], processTable: table }),
+      expect.objectContaining({
+        rootPids: [50_010],
+        processTable: [...initialTable, reparentedMember],
+      }),
     ]);
   });
 
