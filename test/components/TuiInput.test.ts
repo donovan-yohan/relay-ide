@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Window } from 'happy-dom';
+import { describe, it, expect, vi } from 'vitest';
+import TuiInput from '../../frontend/src/components/TuiInput.js';
+import { getTuiCursorGeometry } from '../../frontend/src/components/tuiCursorGeometry.js';
 
-// Note: Full DOM testing would require a test runner with JSX support (e.g., Vitest + React Testing Library)
+// Most behavior is deterministic; the scroll regression below mounts the
+// component with the repo's existing happy-dom dependency.
 
 describe('TuiInput', () => {
   describe('Props Interface', () => {
@@ -251,6 +257,164 @@ describe('TuiInput', () => {
       const inputHeight = 24;
       const cursorHeight = inputHeight || 16;
       expect(cursorHeight).toBe(24);
+    });
+
+    it('anchors the cursor to the text content line instead of the input border box', () => {
+      expect(
+        getTuiCursorGeometry({
+          borderLeft: 1,
+          borderTop: 1,
+          paddingLeft: 8,
+          paddingRight: 8,
+          paddingTop: 8,
+          paddingBottom: 8,
+          clientHeight: 38,
+          clientWidth: 300,
+          scrollLeft: 0,
+          textBeforeCursorWidth: 42,
+          textAlign: 'left',
+        })
+      ).toEqual({ left: 51, top: 9, height: 22 });
+    });
+
+    it('keeps the cursor aligned after the input scrolls horizontally', () => {
+      expect(
+        getTuiCursorGeometry({
+          borderLeft: 1,
+          borderTop: 1,
+          paddingLeft: 8,
+          paddingRight: 8,
+          paddingTop: 8,
+          paddingBottom: 8,
+          clientHeight: 38,
+          clientWidth: 120,
+          scrollLeft: 36,
+          textBeforeCursorWidth: 112,
+          textAlign: 'left',
+        }).left
+      ).toBe(85);
+    });
+
+    it('uses the measured text width with the centered input content box', () => {
+      expect(
+        getTuiCursorGeometry({
+          borderLeft: 1,
+          borderTop: 1,
+          paddingLeft: 8,
+          paddingRight: 8,
+          paddingTop: 8,
+          paddingBottom: 8,
+          clientHeight: 38,
+          clientWidth: 200,
+          scrollLeft: 0,
+          textBeforeCursorWidth: 24,
+          fullTextWidth: 48,
+          textAlign: 'center',
+        }).left
+      ).toBe(101);
+    });
+
+    it('tracks an input scroll without replacing the caller callback', async () => {
+      const domWindow = new Window();
+      const originalWindow = globalThis.window;
+      const originalDocument = globalThis.document;
+      const originalNavigator = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'navigator'
+      );
+      const originalActEnvironment = (
+        globalThis as {
+          IS_REACT_ACT_ENVIRONMENT?: boolean;
+        }
+      ).IS_REACT_ACT_ENVIRONMENT;
+      const callerOnScroll = vi.fn();
+      const container = domWindow.document.createElement('div');
+
+      Object.assign(globalThis, {
+        window: domWindow,
+        document: domWindow.document,
+      });
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: domWindow.navigator,
+      });
+      (
+        globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      ).IS_REACT_ACT_ENVIRONMENT = true;
+      const root = createRoot(container);
+      vi.spyOn(domWindow, 'getComputedStyle').mockReturnValue({
+        font: 'normal 14px monospace',
+        fontKerning: 'auto',
+        fontFeatureSettings: 'normal',
+        fontVariationSettings: 'normal',
+        letterSpacing: 'normal',
+        wordSpacing: 'normal',
+        paddingLeft: '8px',
+        paddingRight: '8px',
+        paddingTop: '8px',
+        paddingBottom: '8px',
+        borderLeftWidth: '1px',
+        borderTopWidth: '1px',
+        textAlign: 'left',
+      } as CSSStyleDeclaration);
+
+      try {
+        await act(async () => {
+          root.render(
+            React.createElement(TuiInput, {
+              value: 'asdas',
+              onScroll: callerOnScroll,
+            })
+          );
+        });
+
+        const input = container.querySelector('input');
+        const measure = container.querySelector('.tui-measure');
+        expect(input).not.toBeNull();
+        expect(measure).not.toBeNull();
+        if (!input || !measure) return;
+
+        Object.defineProperties(input, {
+          clientHeight: { configurable: true, value: 38 },
+          clientWidth: { configurable: true, value: 120 },
+          scrollLeft: { configurable: true, value: 0, writable: true },
+        });
+        Object.defineProperty(measure, 'offsetWidth', {
+          configurable: true,
+          value: 42,
+        });
+        input.setSelectionRange(5, 5);
+
+        await act(async () => {
+          input.dispatchEvent(
+            new domWindow.FocusEvent('focusin', { bubbles: true })
+          );
+        });
+        const cursor = container.querySelector('.tui-cursor') as HTMLElement;
+        expect(cursor.style.left).toBe('51px');
+
+        input.scrollLeft = 36;
+        await act(async () => {
+          input.dispatchEvent(new domWindow.Event('scroll', { bubbles: true }));
+        });
+
+        expect(callerOnScroll).toHaveBeenCalledTimes(1);
+        expect(callerOnScroll.mock.calls[0]?.[0].target).toBe(input);
+        expect(cursor.style.left).toBe('15px');
+      } finally {
+        await act(async () => root.unmount());
+        vi.restoreAllMocks();
+        Object.assign(globalThis, {
+          window: originalWindow,
+          document: originalDocument,
+        });
+        if (originalNavigator) {
+          Object.defineProperty(globalThis, 'navigator', originalNavigator);
+        }
+        (
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = originalActEnvironment;
+      }
     });
   });
 

@@ -51,8 +51,6 @@
 
 .tui-cursor {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   color: var(--text);
@@ -66,6 +64,11 @@
 }
 
 @keyframes cursor-blink {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 0; }
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0;
+  }
 }
