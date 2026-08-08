@@ -28,7 +28,8 @@ workflow.
   (#1353)
 - Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
 - Run Pi as a built-in terminal and channel provider through its native JSONL RPC mode (#1349)
-- Control Prime Agent models, reasoning, compaction, and fresh sessions from the `@agent/` command palette (#1345)
+- Discover Prime Agent model and live-evidenced reasoning controls from the
+  connected runtime in the `@agent/` command palette (#1345, #1377)
 - Create and name new folders directly in the local Add Project browser (#1338)
 - Start project-scoped channels and direct messages from per-project sidebar
   add controls, with an explicit project selector in New Chat (#1347)
