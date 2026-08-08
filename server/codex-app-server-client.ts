@@ -195,6 +195,10 @@ export class CodexAppServerClient extends EventEmitter {
     }>('initialize', {
       clientInfo: this.options.clientInfo,
       capabilities: {
+        // Keep the default Relay transport on Codex's stable app-server
+        // contract. In particular, do not negotiate `experimentalApi` merely
+        // to mutate thread settings: model, effort, and service-tier controls
+        // are stable `turn/start` overrides.
         ...(this.options.optOutNotificationMethods?.length
           ? {
               optOutNotificationMethods: this.options.optOutNotificationMethods,

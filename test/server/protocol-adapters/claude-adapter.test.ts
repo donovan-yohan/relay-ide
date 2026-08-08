@@ -221,12 +221,12 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     });
   });
 
-  it('connect emits snapshot + idle live-state + relay commands WITHOUT spawning', async () => {
+  it('connect does not advertise dead Relay controls without a control executor', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
 
-    await adapter.connect(baseConfig());
+    await adapter.connect({ ...baseConfig(), extra: { effort: ' high ' } });
 
     expect(harness.spawns).toHaveLength(0);
     expect(patches.map((p) => p.type)).toEqual([
@@ -237,11 +237,20 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     const slash = patches.find((p) => p.type === 'agent-session-updated-v2');
     expect(
       slash?.type === 'agent-session-updated-v2' && slash.slashCommands
-    ).toEqual(
+    ).toEqual([]);
+    expect(adapter.executeControlCommand).toBeUndefined();
+    expect(patches).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'clear', source: 'relay' }),
-        expect.objectContaining({ name: 'resume', source: 'relay' }),
-        expect.objectContaining({ name: 'model', source: 'relay' }),
+        expect.objectContaining({
+          type: 'agent-session-snapshot-v2',
+          session: expect.objectContaining({
+            config: expect.objectContaining({ effort: 'high' }),
+          }),
+        }),
+        expect.objectContaining({
+          type: 'agent-live-state-updated-v2',
+          live: expect.objectContaining({ fastModeAvailable: false }),
+        }),
       ])
     );
 
@@ -263,6 +272,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       systemPromptAppendix: 'Relay orchestrator playbook',
       extra: {
         additionalDirectories: ['/extra/dir'],
+        effort: 'high',
         yolo: true,
         claudeArgs: [
           '--append-system-prompt',
@@ -275,6 +285,8 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
           '-r', // short alias of --resume (value) → dropped with its value token
           'SHOULD_DROP_R',
           '-r=alias-session', // short alias (=form) → dropped
+          '--effort', // canonical profile effort wins over raw args
+          'SHOULD_DROP_EFFORT',
           '--keep-me',
         ],
       },
@@ -313,6 +325,8 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     ]);
     expect(args).toContain('--model');
     expect(args[args.indexOf('--model') + 1]).toBe('sonnet');
+    expect(args).toContain('--effort');
+    expect(args[args.indexOf('--effort') + 1]).toBe('high');
     expect(args).toContain('--add-dir');
     expect(args[args.indexOf('--add-dir') + 1]).toBe('/extra/dir');
     expect(args).toContain('--append-system-prompt');
@@ -332,6 +346,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(args).not.toContain('-r');
     expect(args).not.toContain('SHOULD_DROP_R');
     expect(args).not.toContain('-r=alias-session');
+    expect(args).not.toContain('SHOULD_DROP_EFFORT');
     // CLAUDECODE stripped from the child env.
     for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS.claude
       .processEnvDenylist) {
@@ -1345,7 +1360,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-    await adapter.connect(baseConfig());
+    await adapter.connect({ ...baseConfig(), extra: { effort: 'high' } });
 
     await adapter.resumeSession('resume-xyz');
     expect(harness.spawns).toHaveLength(0);
@@ -1356,7 +1371,13 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       resumeSnap?.type === 'agent-session-snapshot-v2' && resumeSnap.session
     ).toMatchObject({
       providerSession: { claudeSessionId: 'resume-xyz' },
+      config: { effort: 'high' },
     });
+    expect(
+      patches
+        .filter((patch) => patch.type === 'agent-live-state-updated-v2')
+        .at(-1)
+    ).toMatchObject({ live: { fastModeAvailable: false } });
 
     await adapter.sendMessage({ turnId: 'turn-1', content: 'go' });
     expect(harness.spawns).toHaveLength(1);
