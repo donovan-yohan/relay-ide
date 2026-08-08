@@ -1686,6 +1686,19 @@ export async function fetchWorkspaceTopics(
   };
 }
 
+/** Reversibly archive a topic while preserving its history and bindings. */
+export async function archiveWorkspaceTopic(
+  id: string
+): Promise<WorkspaceTopic> {
+  const data = await json<{ topic: WorkspaceTopic }>(
+    await fetch(`/workspace-topics/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+      headers: { 'x-relay-capabilities': 'context:write' },
+    })
+  );
+  return data.topic;
+}
+
 /** Reactivate an archived topic (clears its archivedAt marker). */
 export async function restoreWorkspaceTopic(
   id: string

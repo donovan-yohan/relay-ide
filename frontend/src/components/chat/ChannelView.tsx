@@ -29,6 +29,7 @@ import {
   type ChannelAgentStatus,
 } from '../../lib/api.js';
 import { isArchivedChannelPostError } from '../../lib/agent-channels.js';
+import { useArchiveTopicMutation } from '../../lib/hooks/use-archive-topic.js';
 import { useRestoreTopicMutation } from '../../lib/hooks/use-restore-topic.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
@@ -77,6 +78,137 @@ function designateOrchestratorErrorCopy(error: unknown): string {
   }
 
   return DESIGNATE_ORCHESTRATOR_GENERIC_ERROR;
+}
+
+function ChannelArchiveControl({
+  channelId,
+  archived,
+  busyAgentCount,
+  rosterStatus,
+}: {
+  channelId: string;
+  archived: boolean;
+  busyAgentCount: number;
+  rosterStatus: 'pending' | 'error' | 'ready';
+}) {
+  const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
+  const {
+    mutateAsync: archiveChannel,
+    isPending: archivePending,
+    isError: archiveFailed,
+    error: archiveError,
+    reset: resetArchive,
+  } = useArchiveTopicMutation();
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    setConfirming(false);
+    resetArchive();
+  }, [channelId, resetArchive]);
+
+  if (archived) return null;
+
+  // Fail closed until the authoritative roster lands: offering archive during
+  // the initial query (or after a roster failure) creates a click window where
+  // a bound busy runtime exists but the header has not learned about it yet.
+  const blocked = rosterStatus !== 'ready' || busyAgentCount > 0;
+  let blockedCopy = '';
+  let blockedTitle = '';
+  if (rosterStatus === 'pending') {
+    blockedCopy = 'archive unavailable · checking agents';
+    blockedTitle = 'checking bound agent status before archiving';
+  } else if (rosterStatus === 'error') {
+    blockedCopy = 'archive unavailable · agent status unknown';
+    blockedTitle = 'agent status is unavailable; retry before archiving';
+  } else if (busyAgentCount > 0) {
+    blockedCopy =
+      busyAgentCount === 1
+        ? 'archive unavailable · agent active'
+        : `archive unavailable · ${busyAgentCount} agents active`;
+    blockedTitle = 'wait for every bound agent to become idle before archiving';
+  }
+
+  const confirmArchive = async (): Promise<void> => {
+    if (blocked || archivePending) return;
+    try {
+      await archiveChannel(channelId);
+      // The shared mutation does not resolve until every mounted topic/channel
+      // projection has reconciled. Only then leave this now-archived channel,
+      // preventing the active-only rail from immediately selecting it again.
+      if (useUiStore.getState().activeChannelId === channelId) {
+        setActiveChannelId(null);
+      }
+    } catch {
+      // Shared mutation owns the operator toast; the inline error below keeps
+      // the failed confirmation actionable in the header as well.
+    }
+  };
+
+  return (
+    <>
+      {confirming ? (
+        <span
+          className="ch-archive-channel ch-archive-channel--confirming"
+          role="group"
+          aria-label="confirm archive channel"
+        >
+          <span className="ch-archive-channel__prompt">archive?</span>
+          <button
+            type="button"
+            className="ch-archive-channel__button ch-archive-channel__button--confirm"
+            onClick={() => void confirmArchive()}
+            disabled={blocked || archivePending}
+          >
+            {archivePending ? (
+              <>
+                <TuiProgress
+                  variant="braille"
+                  className="ch-archive-channel__progress"
+                />{' '}
+                archiving
+              </>
+            ) : blocked ? (
+              blockedCopy
+            ) : (
+              'yes'
+            )}
+          </button>
+          <button
+            type="button"
+            className="ch-archive-channel__button"
+            onClick={() => {
+              resetArchive();
+              setConfirming(false);
+            }}
+            disabled={archivePending}
+          >
+            cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="ch-archive-channel__button"
+          onClick={() => {
+            resetArchive();
+            setConfirming(true);
+          }}
+          disabled={blocked}
+          title={blocked ? blockedTitle : 'archive channel'}
+          aria-label={blocked ? blockedCopy : 'archive channel'}
+        >
+          {blocked ? blockedCopy : 'archive'}
+        </button>
+      )}
+      {archiveFailed ? (
+        <span className="ch-archive-channel__error" role="alert">
+          {archiveError instanceof Error
+            ? archiveError.message
+            : 'failed to archive channel'}
+        </span>
+      ) : null}
+    </>
+  );
 }
 
 /**
@@ -1028,6 +1160,18 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           </span>
         ) : null}
         <span className="ch-header__spacer" />
+        <ChannelArchiveControl
+          channelId={channelId}
+          archived={archived}
+          busyAgentCount={busyAgentIds.size}
+          rosterStatus={
+            rosterChipsQuery.isPending
+              ? 'pending'
+              : rosterChipsQuery.isError
+                ? 'error'
+                : 'ready'
+          }
+        />
         {disconnected ? (
           // Reconnect gave up (server outage/deploy > backoff budget). Surface a
           // manual affordance — NOT gated on needsCatchup, which can never flip

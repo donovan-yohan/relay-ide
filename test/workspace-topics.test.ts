@@ -1230,6 +1230,44 @@ describe('workspace topics foundation', () => {
     });
   });
 
+  it('keeps an all-archived workspace empty instead of resurrecting derived ghost rows', async () => {
+    const store = topicStore();
+    const topic = store.create({
+      id: 'topic:archived-lane',
+      workspaceId: 'ws-derived',
+      title: 'Archived lane',
+      linkedRefs: { workContextIds: ['wc-topic-1'] },
+    });
+    store.archive(topic.id);
+    const workContextStore = {
+      list: () => [workContext()],
+    } as unknown as WorkContextStore;
+    const { port } = await listen({ store, workContextStore });
+
+    const activeOnly = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived'
+    );
+    expect(activeOnly.status).toBe(200);
+    expect(activeOnly.body).toMatchObject({
+      topics: [],
+      derived: false,
+      truncated: false,
+    });
+
+    const withArchived = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived&includeArchived=true'
+    );
+    expect(withArchived.body.derived).toBe(false);
+    expect(withArchived.body.topics).toHaveLength(1);
+    expect(withArchived.body.topics[0]).toMatchObject({
+      id: topic.id,
+      status: 'archived',
+      source: 'persisted',
+    });
+  });
+
   it('marks derived topic lists truncated when the sentinel entry exists', async () => {
     let requestedLimit: number | undefined;
     let requestedWorkspaceId: string | undefined;

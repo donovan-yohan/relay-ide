@@ -64,6 +64,68 @@
   margin-left: auto;
 }
 
+/* Reversible channel lifecycle control (#1382). Confirmation stays inline in
+   the header: no modal, no destructive fill, and no permanent-delete wording. */
+.ch-archive-channel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ch-archive-channel__prompt {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-archive-channel__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-transform: lowercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ch-archive-channel__button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-archive-channel__button--confirm {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.ch-archive-channel__button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ch-archive-channel__progress {
+  color: currentColor;
+  font-size: inherit;
+}
+
+.ch-archive-channel__error {
+  min-width: 0;
+  color: var(--status-error);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
 /* agent presence chips (#1167) — one per bound/active agent, glyph + status dot
    + optional interrupt button. Status color: grey idle, pulsing amber busy,
    green streaming. Only DESIGN.md tokens. */
@@ -1197,6 +1259,30 @@
   .ch-header__title {
     flex: 1 1 auto;
     min-width: 4ch;
+  }
+
+  /* Touch controls meet the 44px mobile target. The lifecycle cluster takes a
+     fresh row so confirmation never crushes the title or connection state. */
+  .ch-archive-channel,
+  .ch-header > .ch-archive-channel__button {
+    order: 1;
+  }
+
+  .ch-archive-channel--confirming {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+  }
+
+  .ch-archive-channel__button {
+    min-height: 44px;
+    padding-inline: 12px;
+  }
+
+  .ch-archive-channel__error {
+    order: 2;
+    flex: 1 0 100%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   /* A failed designation gets a bounded row instead of competing with title,

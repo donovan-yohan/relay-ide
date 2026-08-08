@@ -44,6 +44,8 @@ workflow.
 - Deliver durable, exactly-once upward completion callbacks for explicit
   agent-to-agent channel delegations, including restart recovery, busy-agent
   FIFO queueing, nested child fan-in, and explicit-return de-duplication (#1359)
+- Reversibly archive idle channels from the active conversation header, with
+  inline confirmation and the existing older-channel restore path (#1382)
 
 #### Changed
 
@@ -75,6 +77,8 @@ workflow.
 - Existing Codex channel conversations now recover after a hub/runtime restart,
   and user message bubbles no longer collapse into character-by-character
   wrapping (#1339)
+- Keep all-archived workspaces empty in the active channel list instead of
+  resurrecting their WorkContexts as derived ghost rows (#1382)
 
 ### Agent runtimes
 

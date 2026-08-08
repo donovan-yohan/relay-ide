@@ -1343,6 +1343,16 @@ export function createWorkspaceTopicsRouter(
             limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
           })
         : [];
+      const hasAnyPersistedTopic = options.store
+        ? options.store.list({
+            ...(workspaceId ? { workspaceId } : {}),
+            includeArchived: true,
+            // Derived fallback is all-or-nothing, so one row is enough to prove
+            // this workspace has crossed from its cold-start scaffold into
+            // durable channel ownership.
+            limit: 1,
+          }).length > 0
+        : false;
       // All-or-nothing on purpose (#1287 audit item 23): the derived lane is a
       // cold-start scaffold for a hub with no channels yet, so one UNARCHIVED
       // persisted row hides EVERY derived row rather than unioning them — a
@@ -1352,20 +1362,12 @@ export function createWorkspaceTopicsRouter(
       // (`collectSearchTopics`) deliberately does union, so search can still
       // reach a masked WorkContext.
       //
-      // KNOWN HOLE (accepted debt, not a claim of correctness): `persisted` is
-      // filtered by `includeArchived`, and the store drops `status =
-      // 'archived'` rows when it is false (see `list()` above). So with
-      // `includeArchived=false` and EVERY channel in the workspace archived,
-      // `persisted.length === 0` and this flips back to the derived scaffold —
-      // re-surfacing the archived channels' WorkContexts as derived rows under
-      // different ids (`derived-<contextId>`), which neither dedupe against nor
-      // inherit the archive filter. The guard only holds while >= 1 unarchived
-      // row survives. Gating on the UNFILTERED row count
-      // (`store.list({ workspaceId, includeArchived: true })`) would close it;
-      // that is a product call about what an all-archived workspace should
-      // render, deliberately not made in the #1287 slice 0 hygiene pass.
+      // Archive is reversible operator intent, not permission to resurrect the
+      // same WorkContext under a new derived id. Gate fallback on the unfiltered
+      // persisted row count so an all-archived workspace correctly renders an
+      // empty active list; its rows remain reachable through includeArchived.
       // See docs/LEARNINGS.md L-20260801-derived-topics-are-all-or-nothing.
-      const derived = persisted.length === 0;
+      const derived = !hasAnyPersistedTopic;
       const allTopics = derived
         ? fallbackTopics({
             workContextStore: options.workContextStore,
