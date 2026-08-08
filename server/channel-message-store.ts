@@ -59,7 +59,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 12;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -776,6 +776,45 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chab_sole_orchestrator
   ON channel_agent_bindings(channel_id)
   WHERE binding_role = 'orchestrator';
+
+CREATE TABLE IF NOT EXISTS channel_completion_callbacks (
+  id                    TEXT PRIMARY KEY,
+  channel_id            TEXT NOT NULL,
+  thread_id             TEXT,
+  trigger_message_id    TEXT NOT NULL,
+  requester_profile_id  TEXT NOT NULL,
+  target_profile_id     TEXT NOT NULL,
+  target_runtime_id     TEXT NOT NULL,
+  target_turn_id        TEXT NOT NULL,
+  -- A child delegation may continue an already-open ancestor edge. This is
+  -- relation data, deliberately separate from the one-shot edge lifecycle.
+  continuation_parent_callback_id TEXT,
+  awaiting_child        INTEGER NOT NULL DEFAULT 0 CHECK (awaiting_child IN (0, 1)),
+  pending_child_intents INTEGER NOT NULL DEFAULT 0,
+  continuation_completed_at TEXT,
+  state                 TEXT NOT NULL
+                          CHECK (state IN ('pending','satisfied','delivered','consumed')),
+  terminal_reason       TEXT,
+  terminal_message_id   TEXT,
+  message_disposition   TEXT,
+  created_at            TEXT NOT NULL,
+  satisfied_at          TEXT,
+  delivered_at          TEXT,
+  consumed_at           TEXT,
+  updated_at            TEXT NOT NULL,
+  UNIQUE(channel_id, target_profile_id, target_turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chcc_recovery
+  ON channel_completion_callbacks(state, created_at)
+  WHERE state IN ('pending','satisfied','delivered');
+CREATE INDEX IF NOT EXISTS idx_chcc_target_turn
+ON channel_completion_callbacks(channel_id, target_profile_id, target_turn_id);
+CREATE INDEX IF NOT EXISTS idx_chcc_continuation_parent
+ON channel_completion_callbacks(continuation_parent_callback_id)
+WHERE continuation_parent_callback_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chcc_consumed_retention
+ON channel_completion_callbacks(consumed_at)
+WHERE state = 'consumed';
 `;
 
 interface ChannelMessageRow {
@@ -861,6 +900,30 @@ interface BindingRow {
   binding_role: AgentRole | null;
   provider_session_json: string;
   created_at: string;
+  updated_at: string;
+}
+
+interface CompletionCallbackRow {
+  id: string;
+  channel_id: string;
+  thread_id: string | null;
+  trigger_message_id: string;
+  requester_profile_id: string;
+  target_profile_id: string;
+  target_runtime_id: string;
+  target_turn_id: string;
+  continuation_parent_callback_id: string | null;
+  awaiting_child: number;
+  pending_child_intents: number;
+  continuation_completed_at: string | null;
+  state: ChannelCompletionCallbackState;
+  terminal_reason: ChannelCompletionCallbackTerminalReason | null;
+  terminal_message_id: string | null;
+  message_disposition: ChannelCompletionCallbackMessageDisposition | null;
+  created_at: string;
+  satisfied_at: string | null;
+  delivered_at: string | null;
+  consumed_at: string | null;
   updated_at: string;
 }
 
@@ -1078,6 +1141,93 @@ export interface ChannelBinding {
   providerSession: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Durable one-shot state for an upward delegation-completion callback. */
+export type ChannelCompletionCallbackState =
+  | 'pending'
+  | 'satisfied'
+  | 'delivered'
+  | 'consumed';
+
+/** Guarded terminal event that satisfied a delegated routed turn. */
+export type ChannelCompletionCallbackTerminalReason =
+  | 'completed'
+  | 'error'
+  | 'interrupt'
+  | 'unexpected-disconnect'
+  | 'safe-idle'
+  | 'watchdog';
+
+/** Whether Relay could bind the callback to a terminal assistant message. */
+export type ChannelCompletionCallbackMessageDisposition =
+  | 'final-message'
+  | 'no-terminal-message';
+
+/** Keep settled edge identities long enough for late provider patches to no-op. */
+const COMPLETION_CALLBACK_CONSUMED_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * A durable callback edge is Relay-internal routing state, not a chat row.
+ * Its unique target turn makes duplicate and late provider terminal patches a
+ * no-op at the persistence boundary.
+ */
+export interface ChannelCompletionCallbackEdge {
+  id: string;
+  channelId: string;
+  threadId: string | null;
+  triggerMessageId: string;
+  requesterProfileId: string;
+  targetProfileId: string;
+  targetRuntimeId: string;
+  targetTurnId: string;
+  /** Ancestor edge satisfied only after this callback-triggered turn ends. */
+  continuationParentCallbackId: string | null;
+  /** A delegatee explicitly delegated further before its own return. */
+  awaitingChild: boolean;
+  /** Child routes announced by this turn that have not resolved yet. */
+  pendingChildIntents: number;
+  /** The callback recipient completed its upward continuation once. */
+  continuationCompletedAt: string | null;
+  state: ChannelCompletionCallbackState;
+  terminalReason: ChannelCompletionCallbackTerminalReason | null;
+  terminalMessageId: string | null;
+  messageDisposition: ChannelCompletionCallbackMessageDisposition | null;
+  createdAt: string;
+  satisfiedAt: string | null;
+  deliveredAt: string | null;
+  consumedAt: string | null;
+  updatedAt: string;
+}
+
+export interface CreateChannelCompletionCallbackInput {
+  /** Deterministic identity supplied by the binder for one routed target turn. */
+  id: string;
+  channelId: string;
+  threadId: string | null;
+  triggerMessageId: string;
+  requesterProfileId: string;
+  targetProfileId: string;
+  targetRuntimeId: string;
+  targetTurnId: string;
+  /** The still-pending ancestor edge this child completes into, if any. */
+  continuationParentCallbackId?: string | null;
+}
+
+export interface SatisfyChannelCompletionCallbackInput {
+  channelId: string;
+  targetProfileId: string;
+  targetTurnId: string;
+  terminalReason: ChannelCompletionCallbackTerminalReason;
+  terminalMessageId?: string | null;
+  messageDisposition: ChannelCompletionCallbackMessageDisposition;
+}
+
+export interface CompleteChildContinuationInput {
+  callbackId: string;
+  terminalReason: ChannelCompletionCallbackTerminalReason;
+  terminalMessageId?: string | null;
+  messageDisposition: ChannelCompletionCallbackMessageDisposition;
 }
 
 export interface SoleOrchestratorDesignationInput {
@@ -1317,6 +1467,82 @@ export interface ChannelMessageStore {
     role?: Exclude<AgentRole, 'orchestrator'> | null;
     providerSession?: Record<string, unknown>;
   }): ChannelBinding;
+  /** Idempotently records a downward delegation once its routed target turn exists. */
+  createCompletionCallback(
+    input: CreateChannelCompletionCallbackInput
+  ): ChannelCompletionCallbackEdge;
+  /** CAS: only the first guarded terminal event may satisfy a pending edge. */
+  satisfyCompletionCallback(
+    input: SatisfyChannelCompletionCallbackInput
+  ): ChannelCompletionCallbackEdge | null;
+  /**
+   * Marks an incoming edge as waiting for a child delegation. Its original
+   * target turn may terminalize, but the callback remains pending until the
+   * child callback re-enters the delegatee and that continuation terminalizes.
+   */
+  deferCompletionCallbackForChild(input: {
+    channelId: string;
+    targetProfileId: string;
+    targetTurnId: string;
+    expectedChildCount: number;
+  }): ChannelCompletionCallbackEdge | null;
+  /** Adds child route intents while an existing callback continuation delegates again. */
+  announceContinuationChildren(
+    callbackId: string,
+    expectedChildCount: number
+  ): ChannelCompletionCallbackEdge | null;
+  /**
+   * CASes one consumed child callback's recipient continuation, then satisfies
+   * its parent only after every persisted child continuation has terminalized.
+   */
+  completeChildContinuation(
+    input: CompleteChildContinuationInput
+  ): ChannelCompletionCallbackEdge | null;
+  /**
+   * If a downstream route could not be created, releases the durable defer so
+   * the already-recorded terminal result can still return upward.
+   */
+  releaseDeferredCompletionCallback(
+    id: string
+  ): ChannelCompletionCallbackEdge | null;
+  getCompletionCallback(id: string): ChannelCompletionCallbackEdge | null;
+  /**
+   * CAS: claims satisfied work for one live binder. A delivered row is still
+   * recovery-visible until the internal callback trigger starts its recipient
+   * turn and consumes it.
+   */
+  claimSatisfiedCompletionCallbacks(
+    limit?: number
+  ): ChannelCompletionCallbackEdge[];
+  /** Return an undeliverable in-memory claim to durable retryable work. */
+  releaseDeliveredCompletionCallback(id: string): boolean;
+  /** CAS: records that the one typed internal trigger has begun its recipient turn. */
+  consumeCompletionCallback(id: string): boolean;
+  /**
+   * A delegatee's explicit final return consumes its own pending edge before
+   * the normal mention path routes that one return upward.
+   */
+  consumeCompletionCallbacksForExplicitReturn(input: {
+    channelId: string;
+    targetProfileId: string;
+    targetTurnId: string;
+    requesterProfileIds: readonly string[];
+  }): ChannelCompletionCallbackEdge[];
+  /**
+   * An ancestor-directed explicit return may arrive on a callback continuation
+   * turn whose id differs from the ancestor's original delegated target turn.
+   */
+  consumeAncestorCompletionCallbackForExplicitReturn(
+    id: string
+  ): ChannelCompletionCallbackEdge | null;
+  /**
+   * Restart recovery never promotes raw idle. It re-offers volatile delivered
+   * work and terminalizes orphaned pending routed turns as disconnects, using
+   * durable terminal message evidence where it exists.
+   */
+  recoverCompletionCallbacks(): ChannelCompletionCallbackEdge[];
+  /** Bounded retention for settled callback idempotency history. */
+  pruneConsumedCompletionCallbacks(olderThanMs?: number): number;
   sweepStaleStreaming(): StaleStreamSweepResult[];
   sweepOrphans(persistedTopicIds: Set<string>): {
     channelsDeleted: string[];
@@ -2454,6 +2680,107 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 8').run();
     })();
   }
+  if (current < 9) {
+    db.transaction(() => {
+      // Completion callbacks are an outbox-like one-shot ledger. It is a
+      // separate table rather than message meta because an edge has its own
+      // guarded lifecycle and must survive a hub restart even when the target
+      // produced no terminal chat row.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS channel_completion_callbacks (
+          id                    TEXT PRIMARY KEY,
+          channel_id            TEXT NOT NULL,
+          thread_id             TEXT,
+          trigger_message_id    TEXT NOT NULL,
+          requester_profile_id  TEXT NOT NULL,
+          target_profile_id     TEXT NOT NULL,
+          target_runtime_id     TEXT NOT NULL,
+          target_turn_id        TEXT NOT NULL,
+          state                 TEXT NOT NULL
+                                  CHECK (state IN ('pending','satisfied','delivered','consumed')),
+          terminal_reason       TEXT,
+          terminal_message_id   TEXT,
+          message_disposition   TEXT,
+          created_at            TEXT NOT NULL,
+          satisfied_at          TEXT,
+          delivered_at          TEXT,
+          consumed_at           TEXT,
+          updated_at            TEXT NOT NULL,
+          UNIQUE(channel_id, target_profile_id, target_turn_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chcc_recovery
+          ON channel_completion_callbacks(state, created_at)
+          WHERE state IN ('pending','satisfied','delivered');
+        CREATE INDEX IF NOT EXISTS idx_chcc_target_turn
+          ON channel_completion_callbacks(channel_id, target_profile_id, target_turn_id);
+      `);
+      db.prepare('UPDATE schema_version SET version = 9').run();
+    })();
+  }
+  if (current < 10) {
+    db.transaction(() => {
+      // Preserve the one-shot state machine while making ancestry durable.
+      // These columns allow A→B→C to return C→B→A without turning B's
+      // original terminal patch into a premature callback to A.
+      const columns = db
+        .prepare(`PRAGMA table_info(channel_completion_callbacks)`)
+        .all() as Array<{
+        name: string;
+      }>;
+      if (
+        !columns.some(
+          (column) => column.name === 'continuation_parent_callback_id'
+        )
+      ) {
+        db.exec(
+          'ALTER TABLE channel_completion_callbacks ADD COLUMN continuation_parent_callback_id TEXT'
+        );
+      }
+      if (!columns.some((column) => column.name === 'awaiting_child')) {
+        db.exec(
+          'ALTER TABLE channel_completion_callbacks ADD COLUMN awaiting_child INTEGER NOT NULL DEFAULT 0'
+        );
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_chcc_continuation_parent
+          ON channel_completion_callbacks(continuation_parent_callback_id)
+          WHERE continuation_parent_callback_id IS NOT NULL;
+      `);
+      db.prepare('UPDATE schema_version SET version = 10').run();
+    })();
+  }
+  if (current < 11) {
+    db.transaction(() => {
+      const columns = db
+        .prepare(`PRAGMA table_info(channel_completion_callbacks)`)
+        .all() as Array<{
+        name: string;
+      }>;
+      if (!columns.some((column) => column.name === 'pending_child_intents')) {
+        db.exec(
+          'ALTER TABLE channel_completion_callbacks ADD COLUMN pending_child_intents INTEGER NOT NULL DEFAULT 0'
+        );
+      }
+      if (
+        !columns.some((column) => column.name === 'continuation_completed_at')
+      ) {
+        db.exec(
+          'ALTER TABLE channel_completion_callbacks ADD COLUMN continuation_completed_at TEXT'
+        );
+      }
+      db.prepare('UPDATE schema_version SET version = 11').run();
+    })();
+  }
+  if (current < 12) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_chcc_consumed_retention
+          ON channel_completion_callbacks(consumed_at)
+          WHERE state = 'consumed';
+      `);
+      db.prepare('UPDATE schema_version SET version = 12').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -2794,6 +3121,22 @@ export function createChannelMessageStore(
   );
   // Compiled once: `GET /channels` runs this per channel per list fetch.
   const threadSummaryStmt = db.prepare(buildChannelThreadSummarySql());
+  const selectCompletionCallbackById = db.prepare(
+    'SELECT * FROM channel_completion_callbacks WHERE id = ?'
+  );
+  const selectTerminalCallbackMessage = db.prepare(
+    `SELECT id, status
+       FROM channel_messages
+      WHERE channel_id = @channelId
+        AND sender_kind = 'agent'
+        AND sender_id = @targetProfileId
+        AND source_runtime_id = @targetRuntimeId
+        AND source_turn_id = @targetTurnId
+        AND kind = 'message'
+        AND json_extract(meta_json, '$.agentDetail') IS NULL
+        AND status <> 'streaming'
+      ORDER BY seq DESC LIMIT 1`
+  );
 
   function memberRowToRef(row: MemberRow): ChannelMemberRef {
     return {
@@ -2920,6 +3263,506 @@ export function createChannelMessageStore(
     });
     return getBindingImpl(input.channelId, input.profileActorId)!;
   }
+
+  const createCompletionCallbackImpl = db.transaction(
+    (
+      input: CreateChannelCompletionCallbackInput
+    ): ChannelCompletionCallbackEdge => {
+      const timestamp = nowIso();
+      const continuationParentCallbackId =
+        input.continuationParentCallbackId ?? null;
+      if (continuationParentCallbackId) {
+        const parent = selectCompletionCallbackById.get(
+          continuationParentCallbackId
+        ) as CompletionCallbackRow | undefined;
+        // A child may only consume an intent announced by the callback turn it
+        // is returning to. Rejecting a corrupt/replayed relation rolls back the
+        // whole operation, including the child insert and parent's intent.
+        if (
+          !parent ||
+          parent.channel_id !== input.channelId ||
+          parent.target_profile_id !== input.requesterProfileId ||
+          parent.state !== 'pending' ||
+          parent.awaiting_child !== 1 ||
+          parent.pending_child_intents < 1
+        ) {
+          throw new Error('completion callback continuation parent is invalid');
+        }
+      }
+      const findTarget = db.prepare(
+        `SELECT * FROM channel_completion_callbacks
+          WHERE channel_id = ? AND target_profile_id = ? AND target_turn_id = ?`
+      );
+      const existing = findTarget.get(
+        input.channelId,
+        input.targetProfileId,
+        input.targetTurnId
+      ) as CompletionCallbackRow | undefined;
+      if (existing) {
+        // Retrying a durable admission is safe; repointing one target turn at a
+        // different ancestor is corruption and must not silently steal an intent.
+        if (
+          existing.requester_profile_id !== input.requesterProfileId ||
+          existing.continuation_parent_callback_id !==
+            continuationParentCallbackId
+        ) {
+          throw new Error(
+            'completion callback target turn conflicts with relation'
+          );
+        }
+        return completionCallbackRowToRecord(existing);
+      }
+      const inserted = db
+        .prepare(
+          `INSERT INTO channel_completion_callbacks
+           (id, channel_id, thread_id, trigger_message_id, requester_profile_id,
+            target_profile_id, target_runtime_id, target_turn_id,
+            continuation_parent_callback_id, state,
+            created_at, updated_at)
+         VALUES
+           (@id, @channelId, @threadId, @triggerMessageId, @requesterProfileId,
+            @targetProfileId, @targetRuntimeId, @targetTurnId,
+            @continuationParentCallbackId, 'pending',
+            @createdAt, @updatedAt)`
+        )
+        .run({
+          ...input,
+          continuationParentCallbackId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      if (inserted.changes !== 1) {
+        throw new Error('completion callback insert did not persist');
+      }
+      if (continuationParentCallbackId) {
+        // Insert and decrement are deliberately one transaction: a crash or
+        // malformed relation can never leave a child without its matching intent.
+        const decremented = db
+          .prepare(
+            `UPDATE channel_completion_callbacks
+              SET pending_child_intents = pending_child_intents - 1,
+                  updated_at = ?
+            WHERE id = ? AND state = 'pending' AND awaiting_child = 1
+              AND pending_child_intents > 0`
+          )
+          .run(timestamp, continuationParentCallbackId);
+        if (decremented.changes !== 1) {
+          throw new Error(
+            'completion callback continuation intent disappeared'
+          );
+        }
+      }
+      const row = selectCompletionCallbackById.get(input.id) as
+        | CompletionCallbackRow
+        | undefined;
+      if (!row) throw new Error('completion callback insert did not persist');
+      return completionCallbackRowToRecord(row);
+    }
+  );
+
+  function satisfyCompletionCallbackImpl(
+    input: SatisfyChannelCompletionCallbackInput
+  ): ChannelCompletionCallbackEdge | null {
+    const timestamp = nowIso();
+    const result = db
+      .prepare(
+        `UPDATE channel_completion_callbacks
+            SET state = 'satisfied', terminal_reason = @terminalReason,
+                terminal_message_id = @terminalMessageId,
+                message_disposition = @messageDisposition,
+                satisfied_at = @timestamp, updated_at = @timestamp
+          WHERE channel_id = @channelId
+            AND target_profile_id = @targetProfileId
+            AND target_turn_id = @targetTurnId
+            AND state = 'pending' AND awaiting_child = 0`
+      )
+      .run({
+        ...input,
+        terminalMessageId: input.terminalMessageId ?? null,
+        timestamp,
+      });
+    if (result.changes === 0) {
+      // A parent that delegated further still records the terminal evidence of
+      // its original turn. `releaseDeferred...` can use it if the child never
+      // becomes routable; a real continuation overwrites it atomically later.
+      db.prepare(
+        `UPDATE channel_completion_callbacks
+            SET terminal_reason = @terminalReason,
+                terminal_message_id = @terminalMessageId,
+                message_disposition = @messageDisposition,
+                updated_at = @timestamp
+          WHERE channel_id = @channelId
+            AND target_profile_id = @targetProfileId
+            AND target_turn_id = @targetTurnId
+            AND state = 'pending' AND awaiting_child = 1`
+      ).run({
+        ...input,
+        terminalMessageId: input.terminalMessageId ?? null,
+        timestamp,
+      });
+      return null;
+    }
+    const row = db
+      .prepare(
+        `SELECT * FROM channel_completion_callbacks
+          WHERE channel_id = ? AND target_profile_id = ? AND target_turn_id = ?`
+      )
+      .get(input.channelId, input.targetProfileId, input.targetTurnId) as
+      | CompletionCallbackRow
+      | undefined;
+    return row ? completionCallbackRowToRecord(row) : null;
+  }
+
+  function deferCompletionCallbackForChildImpl(input: {
+    channelId: string;
+    targetProfileId: string;
+    targetTurnId: string;
+    expectedChildCount: number;
+  }): ChannelCompletionCallbackEdge | null {
+    const timestamp = nowIso();
+    const result = db
+      .prepare(
+        `UPDATE channel_completion_callbacks
+            SET awaiting_child = 1,
+                pending_child_intents = pending_child_intents + @expectedChildCount,
+                updated_at = @timestamp
+          WHERE channel_id = @channelId
+            AND target_profile_id = @targetProfileId
+            AND target_turn_id = @targetTurnId
+            AND state = 'pending'`
+      )
+      .run({ ...input, timestamp });
+    if (result.changes === 0) return null;
+    const row = db
+      .prepare(
+        `SELECT * FROM channel_completion_callbacks
+          WHERE channel_id = ? AND target_profile_id = ? AND target_turn_id = ?`
+      )
+      .get(input.channelId, input.targetProfileId, input.targetTurnId) as
+      | CompletionCallbackRow
+      | undefined;
+    return row ? completionCallbackRowToRecord(row) : null;
+  }
+
+  function announceContinuationChildrenImpl(
+    callbackId: string,
+    expectedChildCount: number
+  ): ChannelCompletionCallbackEdge | null {
+    if (expectedChildCount < 1) return null;
+    const timestamp = nowIso();
+    const result = db
+      .prepare(
+        `UPDATE channel_completion_callbacks
+            SET awaiting_child = 1,
+                pending_child_intents = pending_child_intents + ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'pending'`
+      )
+      .run(expectedChildCount, timestamp, callbackId);
+    if (result.changes === 0) return null;
+    const row = selectCompletionCallbackById.get(callbackId) as
+      | CompletionCallbackRow
+      | undefined;
+    return row ? completionCallbackRowToRecord(row) : null;
+  }
+
+  const completeChildContinuationImpl = db.transaction(
+    (
+      input: CompleteChildContinuationInput
+    ): ChannelCompletionCallbackEdge | null => {
+      const timestamp = nowIso();
+      const child = selectCompletionCallbackById.get(input.callbackId) as
+        | CompletionCallbackRow
+        | undefined;
+      if (
+        !child ||
+        child.state !== 'consumed' ||
+        !child.continuation_parent_callback_id ||
+        child.continuation_completed_at !== null
+      ) {
+        return null;
+      }
+      const marked = db
+        .prepare(
+          `UPDATE channel_completion_callbacks
+              SET continuation_completed_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'consumed'
+              AND continuation_completed_at IS NULL`
+        )
+        .run(timestamp, timestamp, input.callbackId);
+      if (marked.changes === 0) return null;
+      const remaining = db
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM channel_completion_callbacks
+            WHERE continuation_parent_callback_id = ?
+              AND continuation_completed_at IS NULL`
+        )
+        .get(child.continuation_parent_callback_id) as { count: number };
+      if (remaining.count > 0) return null;
+      const parentUpdate = db
+        .prepare(
+          `UPDATE channel_completion_callbacks
+              SET state = 'satisfied', awaiting_child = 0,
+                  terminal_reason = @terminalReason,
+                  terminal_message_id = @terminalMessageId,
+                  message_disposition = @messageDisposition,
+                  satisfied_at = @timestamp, updated_at = @timestamp
+            WHERE id = @callbackId AND state = 'pending' AND awaiting_child = 1
+              AND pending_child_intents = 0`
+        )
+        .run({
+          callbackId: child.continuation_parent_callback_id,
+          terminalReason: input.terminalReason,
+          terminalMessageId: input.terminalMessageId ?? null,
+          messageDisposition: input.messageDisposition,
+          timestamp,
+        });
+      if (parentUpdate.changes === 0) return null;
+      const parent = selectCompletionCallbackById.get(
+        child.continuation_parent_callback_id
+      ) as CompletionCallbackRow | undefined;
+      return parent ? completionCallbackRowToRecord(parent) : null;
+    }
+  );
+
+  function releaseDeferredCompletionCallbackImpl(
+    id: string
+  ): ChannelCompletionCallbackEdge | null {
+    const timestamp = nowIso();
+    // One route target vanished after the parent announced a fan-out. Decrement
+    // only its own durable intent; any sibling child still keeps the parent
+    // pending. Once every route failed, use the original terminal evidence.
+    db.prepare(
+      `UPDATE channel_completion_callbacks
+          SET pending_child_intents = MAX(0, pending_child_intents - 1),
+              updated_at = ?
+        WHERE id = ? AND state = 'pending' AND awaiting_child = 1`
+    ).run(timestamp, id);
+    const result = db
+      .prepare(
+        `UPDATE channel_completion_callbacks
+            SET awaiting_child = 0,
+                state = CASE WHEN terminal_reason IS NULL THEN 'pending' ELSE 'satisfied' END,
+                satisfied_at = CASE WHEN terminal_reason IS NULL THEN satisfied_at ELSE @timestamp END,
+                updated_at = @timestamp
+          WHERE id = @id AND state = 'pending' AND awaiting_child = 1
+            AND pending_child_intents = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM channel_completion_callbacks child
+               WHERE child.continuation_parent_callback_id = @id
+            )`
+      )
+      .run({ id, timestamp });
+    if (result.changes === 0) return null;
+    const row = selectCompletionCallbackById.get(id) as
+      | CompletionCallbackRow
+      | undefined;
+    return row ? completionCallbackRowToRecord(row) : null;
+  }
+
+  const claimSatisfiedCompletionCallbacksImpl = db.transaction(
+    (limit: number): ChannelCompletionCallbackEdge[] => {
+      const candidates = db
+        .prepare(
+          `SELECT * FROM channel_completion_callbacks
+            WHERE state = 'satisfied'
+            ORDER BY satisfied_at ASC, created_at ASC, id ASC
+            LIMIT ?`
+        )
+        .all(limit) as CompletionCallbackRow[];
+      const claim = db.prepare(
+        `UPDATE channel_completion_callbacks
+            SET state = 'delivered', delivered_at = ?, updated_at = ?
+          WHERE id = ? AND state = 'satisfied'`
+      );
+      const timestamp = nowIso();
+      const claimed: ChannelCompletionCallbackEdge[] = [];
+      for (const candidate of candidates) {
+        if (claim.run(timestamp, timestamp, candidate.id).changes === 0) {
+          continue;
+        }
+        const row = selectCompletionCallbackById.get(candidate.id) as
+          | CompletionCallbackRow
+          | undefined;
+        if (row) claimed.push(completionCallbackRowToRecord(row));
+      }
+      return claimed;
+    }
+  );
+
+  function releaseDeliveredCompletionCallbackImpl(id: string): boolean {
+    const timestamp = nowIso();
+    return (
+      db
+        .prepare(
+          `UPDATE channel_completion_callbacks
+              SET state = 'satisfied', delivered_at = NULL, updated_at = ?
+            WHERE id = ? AND state = 'delivered'`
+        )
+        .run(timestamp, id).changes === 1
+    );
+  }
+
+  const pruneConsumedCompletionCallbacksImpl = db.transaction(
+    (olderThanMs: number): number => {
+      const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+      // Do not sever ancestry while a child is still incomplete, or while this
+      // row itself is a child of an unresolved parent. Settled subtrees prune
+      // together only after the retention window preserves late-patch no-ops.
+      return db
+        .prepare(
+          `DELETE FROM channel_completion_callbacks AS settled
+            WHERE settled.state = 'consumed'
+              AND settled.consumed_at IS NOT NULL
+              AND settled.consumed_at < @cutoff
+              AND NOT EXISTS (
+                SELECT 1 FROM channel_completion_callbacks child
+                 WHERE child.continuation_parent_callback_id = settled.id
+                   AND (child.state <> 'consumed'
+                        OR child.continuation_completed_at IS NULL)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM channel_completion_callbacks parent
+                 WHERE parent.id = settled.continuation_parent_callback_id
+                   AND parent.state <> 'consumed'
+              )`
+        )
+        .run({ cutoff }).changes;
+    }
+  );
+
+  const consumeCompletionCallbacksForExplicitReturnImpl = db.transaction(
+    (input: {
+      channelId: string;
+      targetProfileId: string;
+      targetTurnId: string;
+      requesterProfileIds: readonly string[];
+    }): ChannelCompletionCallbackEdge[] => {
+      if (input.requesterProfileIds.length === 0) return [];
+      const marks = input.requesterProfileIds.map(() => '?').join(', ');
+      const candidates = db
+        .prepare(
+          `SELECT * FROM channel_completion_callbacks
+            WHERE channel_id = ? AND target_profile_id = ? AND target_turn_id = ?
+              AND requester_profile_id IN (${marks})
+              AND state IN ('pending','satisfied','delivered')`
+        )
+        .all(
+          input.channelId,
+          input.targetProfileId,
+          input.targetTurnId,
+          ...input.requesterProfileIds
+        ) as CompletionCallbackRow[];
+      const consume = db.prepare(
+        `UPDATE channel_completion_callbacks
+            SET state = 'consumed', consumed_at = ?, updated_at = ?
+          WHERE id = ? AND state IN ('pending','satisfied','delivered')`
+      );
+      const timestamp = nowIso();
+      const consumed: ChannelCompletionCallbackEdge[] = [];
+      for (const candidate of candidates) {
+        if (consume.run(timestamp, timestamp, candidate.id).changes === 0) {
+          continue;
+        }
+        const row = selectCompletionCallbackById.get(candidate.id) as
+          | CompletionCallbackRow
+          | undefined;
+        if (row) consumed.push(completionCallbackRowToRecord(row));
+      }
+      return consumed;
+    }
+  );
+
+  function consumeAncestorCompletionCallbackForExplicitReturnImpl(
+    id: string
+  ): ChannelCompletionCallbackEdge | null {
+    const timestamp = nowIso();
+    const result = db
+      .prepare(
+        `UPDATE channel_completion_callbacks
+            SET state = 'consumed', consumed_at = ?, updated_at = ?
+          WHERE id = ? AND state IN ('pending','satisfied','delivered')`
+      )
+      .run(timestamp, timestamp, id);
+    if (result.changes === 0) return null;
+    const row = selectCompletionCallbackById.get(id) as
+      | CompletionCallbackRow
+      | undefined;
+    return row ? completionCallbackRowToRecord(row) : null;
+  }
+
+  const recoverCompletionCallbacksImpl = db.transaction(
+    (): ChannelCompletionCallbackEdge[] => {
+      const timestamp = nowIso();
+      // `delivered` means a callback was in the in-memory FIFO. The process
+      // restart discarded that FIFO, so re-offer it; `consumed` is intentionally
+      // never reopened because its recipient turn had already started.
+      db.prepare(
+        `UPDATE channel_completion_callbacks
+            SET state = 'satisfied', delivered_at = NULL, updated_at = ?
+          WHERE state = 'delivered'`
+      ).run(timestamp);
+      // A restart between marking B's parent edge and creating C's target turn
+      // leaves no child relationship. That is not a live delegation, so release
+      // the defer and let B's persisted terminal evidence recover normally.
+      db.prepare(
+        `UPDATE channel_completion_callbacks
+            SET awaiting_child = 0, pending_child_intents = 0, updated_at = ?
+          WHERE state = 'pending' AND awaiting_child = 1
+            AND NOT EXISTS (
+              SELECT 1 FROM channel_completion_callbacks child
+               WHERE child.continuation_parent_callback_id = channel_completion_callbacks.id
+            )`
+      ).run(timestamp);
+      const pending = db
+        .prepare(
+          `SELECT * FROM channel_completion_callbacks
+            WHERE state = 'pending' AND awaiting_child = 0
+            ORDER BY created_at ASC, id ASC`
+        )
+        .all() as CompletionCallbackRow[];
+      for (const edge of pending) {
+        const message = selectTerminalCallbackMessage.get({
+          channelId: edge.channel_id,
+          targetProfileId: edge.target_profile_id,
+          targetRuntimeId: edge.target_runtime_id,
+          targetTurnId: edge.target_turn_id,
+        }) as { id: string; status: string } | undefined;
+        const terminalReason: ChannelCompletionCallbackTerminalReason =
+          message?.status === 'complete'
+            ? 'completed'
+            : message?.status === 'failed'
+              ? 'error'
+              : message?.status === 'interrupted'
+                ? 'interrupt'
+                : 'unexpected-disconnect';
+        db.prepare(
+          `UPDATE channel_completion_callbacks
+              SET state = 'satisfied', terminal_reason = ?,
+                  terminal_message_id = ?, message_disposition = ?,
+                  satisfied_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'pending'`
+        ).run(
+          terminalReason,
+          message?.id ?? null,
+          message ? 'final-message' : 'no-terminal-message',
+          timestamp,
+          timestamp,
+          edge.id
+        );
+      }
+      return (
+        db
+          .prepare(
+            `SELECT * FROM channel_completion_callbacks
+              WHERE state = 'satisfied'
+              ORDER BY satisfied_at ASC, created_at ASC, id ASC`
+          )
+          .all() as CompletionCallbackRow[]
+      ).map(completionCallbackRowToRecord);
+    }
+  );
 
   const designateSoleOrchestratorTransaction = db.transaction(
     (input: SoleOrchestratorDesignationInput): ChannelBinding => {
@@ -3786,6 +4629,83 @@ export function createChannelMessageStore(
       return writeBindingImpl(input);
     },
 
+    createCompletionCallback(input) {
+      return createCompletionCallbackImpl(input);
+    },
+
+    satisfyCompletionCallback(input) {
+      return satisfyCompletionCallbackImpl(input);
+    },
+
+    deferCompletionCallbackForChild(input) {
+      return deferCompletionCallbackForChildImpl(input);
+    },
+
+    announceContinuationChildren(callbackId, expectedChildCount) {
+      return announceContinuationChildrenImpl(callbackId, expectedChildCount);
+    },
+
+    completeChildContinuation(input) {
+      return completeChildContinuationImpl(input);
+    },
+
+    releaseDeferredCompletionCallback(id) {
+      return releaseDeferredCompletionCallbackImpl(id);
+    },
+
+    getCompletionCallback(id) {
+      const row = selectCompletionCallbackById.get(id) as
+        | CompletionCallbackRow
+        | undefined;
+      return row ? completionCallbackRowToRecord(row) : null;
+    },
+
+    claimSatisfiedCompletionCallbacks(limit = 100) {
+      const bounded = Math.max(1, Math.min(1_000, Math.floor(limit)));
+      return claimSatisfiedCompletionCallbacksImpl(bounded);
+    },
+
+    releaseDeliveredCompletionCallback(id) {
+      return releaseDeliveredCompletionCallbackImpl(id);
+    },
+
+    consumeCompletionCallback(id) {
+      const timestamp = nowIso();
+      return (
+        db
+          .prepare(
+            `UPDATE channel_completion_callbacks
+                SET state = 'consumed', consumed_at = ?, updated_at = ?
+              WHERE id = ? AND state = 'delivered'`
+          )
+          .run(timestamp, timestamp, id).changes > 0
+      );
+    },
+
+    consumeCompletionCallbacksForExplicitReturn(input) {
+      return consumeCompletionCallbacksForExplicitReturnImpl(input);
+    },
+
+    consumeAncestorCompletionCallbackForExplicitReturn(id) {
+      return consumeAncestorCompletionCallbackForExplicitReturnImpl(id);
+    },
+
+    recoverCompletionCallbacks() {
+      const recovered = recoverCompletionCallbacksImpl();
+      pruneConsumedCompletionCallbacksImpl(
+        COMPLETION_CALLBACK_CONSUMED_RETENTION_MS
+      );
+      return recovered;
+    },
+
+    pruneConsumedCompletionCallbacks(
+      olderThanMs = COMPLETION_CALLBACK_CONSUMED_RETENTION_MS
+    ) {
+      return pruneConsumedCompletionCallbacksImpl(
+        Math.max(0, Math.floor(olderThanMs))
+      );
+    },
+
     sweepStaleStreaming() {
       const channels = db
         .prepare(
@@ -3847,6 +4767,7 @@ export function createChannelMessageStore(
         'channel_messages',
         'channel_members',
         'channel_agent_bindings',
+        'channel_completion_callbacks',
         // Read marks are swept for the same reason bindings are: a channel the
         // topic store no longer knows about is gone, and its marker would
         // otherwise be resurrected verbatim by a channel later created under the
@@ -3877,6 +4798,9 @@ export function createChannelMessageStore(
           );
           db.prepare(
             'DELETE FROM channel_agent_bindings WHERE channel_id = ?'
+          ).run(id);
+          db.prepare(
+            'DELETE FROM channel_completion_callbacks WHERE channel_id = ?'
           ).run(id);
           db.prepare(
             `DELETE FROM ${CHANNEL_READ_STATE_TABLE} WHERE channel_id = ?`
@@ -3973,6 +4897,34 @@ function bindingRowToRecord(row: BindingRow): ChannelBinding {
     role: row.binding_role,
     providerSession,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function completionCallbackRowToRecord(
+  row: CompletionCallbackRow
+): ChannelCompletionCallbackEdge {
+  return {
+    id: row.id,
+    channelId: row.channel_id,
+    threadId: row.thread_id,
+    triggerMessageId: row.trigger_message_id,
+    requesterProfileId: row.requester_profile_id,
+    targetProfileId: row.target_profile_id,
+    targetRuntimeId: row.target_runtime_id,
+    targetTurnId: row.target_turn_id,
+    continuationParentCallbackId: row.continuation_parent_callback_id,
+    awaitingChild: row.awaiting_child === 1,
+    pendingChildIntents: row.pending_child_intents,
+    continuationCompletedAt: row.continuation_completed_at,
+    state: row.state,
+    terminalReason: row.terminal_reason,
+    terminalMessageId: row.terminal_message_id,
+    messageDisposition: row.message_disposition,
+    createdAt: row.created_at,
+    satisfiedAt: row.satisfied_at,
+    deliveredAt: row.delivered_at,
+    consumedAt: row.consumed_at,
     updatedAt: row.updated_at,
   };
 }

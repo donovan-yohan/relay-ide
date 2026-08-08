@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createChannelAgentBinder,
   type BinderRuntimes,
+  type ChannelAgentBinder,
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
 import { createChannelChatRouter } from '../server/channel-chat-router.js';
@@ -18,13 +19,25 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
-import type { ProtocolAdapterV2 } from '../server/protocol-adapter-v2.js';
+import {
+  BaseProtocolAdapterV2,
+  type AdapterConfig,
+  type AdapterStatus,
+  type AgentInterruptInputV2,
+  type AgentSendMessageInputV2,
+  type ProtocolAdapterV2,
+} from '../server/protocol-adapter-v2.js';
 import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
+import { builtInAgentProfileId } from '../shared/agent-profile.js';
 import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
-import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
+import {
+  parseMentions,
+  type ChannelMessage,
+} from '../shared/channel-chat-protocol.js';
+import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -42,24 +55,95 @@ const TARGETS: MentionTarget[] = [
   },
 ];
 
+class ThreadRecordingAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = { text: true, streaming: true };
+  readonly contents: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'thread-recording';
+  constructor(
+    readonly agentType: string,
+    private readonly reply: string
+  ) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_input: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.contents.push(input.content);
+    const itemId = `a-${input.turnId}`;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: { type: 'assistantMessage', id: itemId, text: '' },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      itemId,
+      delta: { text: this.reply },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: {
+        type: 'assistantMessage',
+        id: itemId,
+        text: this.reply,
+        status: 'completed',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      status: 'completed',
+    });
+  }
+}
+
 interface Harness {
   port: number;
   store: ChannelMessageStore;
   topicStore: WorkspaceTopicStore;
   hub: ChannelHub;
   channelId: string;
+  binder: ChannelAgentBinder;
+  adapters: () => ProtocolAdapterV2[];
 }
 
-function mockSessions(): BinderRuntimes {
+function mockSessions(
+  build: (provider: string) => ProtocolAdapterV2 = () =>
+    new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+  adapters: ProtocolAdapterV2[] = []
+): BinderRuntimes {
   const sessions = new Map<string, ChannelAgentRuntime>();
   const endHandlers = new Set<(id: string) => void>();
   return {
     async create(params) {
       const id = `session-${sessions.size + 1}`;
-      const adapter: ProtocolAdapterV2 = new MockProtocolAdapterV2({
-        connectMs: 1,
-        stepMs: 1,
-      });
+      const adapter = build(params.providerId);
+      adapters.push(adapter);
       await adapter.connect({
         cwd: params.cwd,
         port: 0,
@@ -93,7 +177,13 @@ function mockSessions(): BinderRuntimes {
   };
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(
+  opts: {
+    build?: (provider: string) => ProtocolAdapterV2;
+    targets?: MentionTarget[];
+    knownProviderIds?: string[];
+  } = {}
+): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-thread-e2e-'));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -114,13 +204,15 @@ async function createHarness(): Promise<Harness> {
     title: 'Thread round trip',
   });
 
+  const adapters: ProtocolAdapterV2[] = [];
+  const knownProviderIds = opts.knownProviderIds ?? ['mock'];
   const binder = createChannelAgentBinder({
     store,
     hub,
     topicStore,
-    runtimes: mockSessions(),
-    knownProviderIds: ['mock'],
-    mentionTargets: async () => TARGETS,
+    runtimes: mockSessions(opts.build, adapters),
+    knownProviderIds,
+    mentionTargets: async () => opts.targets ?? TARGETS,
     port: 0,
     configDir: dir,
   });
@@ -137,7 +229,7 @@ async function createHarness(): Promise<Harness> {
       hub,
       topicStore,
       binder,
-      knownProviderIds: ['mock'],
+      knownProviderIds,
     })
   );
   const server = http.createServer(app);
@@ -151,6 +243,8 @@ async function createHarness(): Promise<Harness> {
     topicStore,
     hub,
     channelId: topic.id,
+    binder,
+    adapters: () => adapters,
   };
 }
 
@@ -238,5 +332,67 @@ describe('channel thread mention round trip', () => {
     // The four detail cards persist in-thread (with a thread_id) but are not
     // conversational replies — only the human trigger and the mock reply count.
     expect(harness.store.getMessage(root.message.id)?.replyCount).toBe(2);
+  });
+
+  it('retains thread scope when a delegated agent receives its typed completion callback', async () => {
+    const targets: MentionTarget[] = ['a', 'b'].map((id) => ({
+      id,
+      displayName: id.toUpperCase(),
+      kind: 'framework' as const,
+      available: true,
+      reason: null,
+    }));
+    const harness = await createHarness({
+      build: (provider) =>
+        new ThreadRecordingAdapter(
+          provider,
+          provider === 'b' ? 'B thread result' : 'A thread follow-up'
+        ),
+      targets,
+      knownProviderIds: ['a', 'b'],
+    });
+    const root = await post(harness, { text: 'thread callback root' });
+    await post(harness, { text: 'unrelated channel update' });
+    const text = '@b investigate in this thread';
+    const stream = harness.store.beginStream({
+      channelId: harness.channelId,
+      sender: {
+        kind: 'agent',
+        id: builtInAgentProfileId('a'),
+        providerId: 'a',
+        displayName: 'A',
+      },
+      source: { runtimeId: 'runtime:a', turnId: 'a-thread-b', itemId: 'a-1' },
+      parentMessageId: root.message.id,
+      mentions: parseMentions(text, ['a', 'b']),
+    });
+    const delegated = harness.store.finalizeStream(stream.id, {
+      text,
+      status: 'complete',
+    })!;
+    harness.binder.handleMessagePosted(delegated, delegated.mentions ?? []);
+
+    await waitFor(() => harness.adapters().length === 2);
+    const a = harness
+      .adapters()
+      .find(
+        (adapter) => (adapter as ThreadRecordingAdapter).agentType === 'a'
+      ) as ThreadRecordingAdapter;
+    await waitFor(() => a.contents.length === 1);
+    expect(a.contents[0]).toContain('[Relay internal completion callback]');
+    expect(a.contents[0]).toContain(
+      '[Thread scope — only this thread is shown; its root message is always included]'
+    );
+    expect(a.contents[0]).toContain('thread callback root');
+    expect(a.contents[0]).not.toContain('unrelated channel update');
+    const prose = harness.store
+      .history(harness.channelId, { limit: 20 })
+      .filter((message) => !message.agentDetail);
+    const aFollowUp = prose.find(
+      (message) => message.body.text === 'A thread follow-up'
+    )!;
+    expect(aFollowUp).toMatchObject({
+      threadId: root.message.id,
+    });
   });
 });

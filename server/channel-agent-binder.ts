@@ -13,6 +13,9 @@ import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
   createChannelOrchestratorConflictError,
   type ChannelBinding,
+  type ChannelCompletionCallbackEdge,
+  type ChannelCompletionCallbackMessageDisposition,
+  type ChannelCompletionCallbackTerminalReason,
   type ChannelMessageStore,
 } from './channel-message-store.js';
 import type { ChannelHub, ChannelMessagePostedOptions } from './channel-hub.js';
@@ -121,6 +124,12 @@ export const MAX_CONSECUTIVE_AGENT_TURNS = 4;
 const UNAVAILABLE_ROW_TTL_MS = 5 * 60 * 1000;
 /** How long a resolved framework-availability list is reused before re-probing. */
 const TARGETS_TTL_MS = 5 * 1000;
+/** Claim in bounded pages so a large recovered outbox cannot strand its tail. */
+const COMPLETION_CALLBACK_BATCH_LIMIT = 100;
+const COMPLETION_CALLBACK_RETRY_MS = 25;
+const COMPLETION_CALLBACK_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+const CALLBACK_NO_TERMINAL_MESSAGE = 'no-terminal-message' as const;
+const CALLBACK_UNEXPECTED_DISCONNECT = 'unexpected-disconnect' as const;
 
 // ── public types ─────────────────────────────────────────────────────────────
 
@@ -257,6 +266,8 @@ export interface ChannelAgentBinder {
   ): Promise<{ config?: Record<string, unknown> }>;
   isControlMessage(text: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
+  /** Replays persisted callback work only after boot store sweeps complete. */
+  recoverCompletionCallbacks(): Promise<void>;
   close(): void;
 }
 
@@ -264,6 +275,10 @@ export interface ChannelAgentBinder {
 
 interface QueuedTurn {
   trigger: ChannelMessage;
+  /** Relay-internal upward completion trigger; never serialized as a chat row. */
+  completionCallback?: ChannelCompletionCallbackEdge;
+  /** Explicit agent delegation whose edge was durably admitted before this FIFO entry. */
+  callbackEdgeRequest?: CallbackEdgeRequest;
   /**
    * Set only by `handleSendFailure`'s re-enqueue after a rebind. Such a trigger
    * is BELOW the binding's delivery cursor (a newer turn already succeeded and
@@ -273,6 +288,12 @@ interface QueuedTurn {
    * where the packet footer renders it unconditionally. See `pump`.
    */
   reEnqueued?: true;
+}
+
+interface CallbackEdgeRequest {
+  requesterProfileId: string;
+  /** The ancestor edge to satisfy when the callback recipient finishes. */
+  continuationParentCallbackId?: string;
 }
 
 export interface LiveBinding {
@@ -290,6 +311,25 @@ export interface LiveBinding {
   activeTurnId: string | null;
   /** Immediate thread parent keyed by routed turn; retained past binder idle. */
   parentMessageIdByTurn: Map<string, string | null>;
+  /** Last terminal prose row by turn, available before the terminal patch lands. */
+  finalMessageByTurn: Map<string, ChannelMessage>;
+  /** Child callback and ancestor edge awaited by its internal callback turn. */
+  continuationByTurn: Map<
+    string,
+    { childCallbackId: string; parentCallbackId: string }
+  >;
+  /** Claimed callback triggers that have not yet been accepted by their adapter. */
+  completionCallbackByTurn: Map<string, ChannelCompletionCallbackEdge>;
+  /** A provider may terminalize synchronously before sendMessage resolves. */
+  deferredCompletionTerminalByTurn: Map<
+    string,
+    {
+      terminalReason: ChannelCompletionCallbackTerminalReason;
+      terminalMessageId?: string;
+      messageDisposition: ChannelCompletionCallbackMessageDisposition;
+      continuation?: { childCallbackId: string; parentCallbackId: string };
+    }
+  >;
   /** Anonymous turn-0 cannot be associated safely after retained generations overlap. */
   turnZeroFallbackUnsafe: boolean;
   /** Context packet for the active turn (kept so a retry re-sends identical content). */
@@ -490,6 +530,8 @@ export function createChannelAgentBinder(
     generation: number;
     promise: Promise<MentionTarget[]>;
   } | null = null;
+  let completionDrainScheduled = false;
+  let lastCompletionCallbackPruneAt: number | null = null;
   let closed = false;
 
   const unsubRuntimeEnd = deps.runtimes.onRuntimeEnd((runtimeId) =>
@@ -574,6 +616,246 @@ export function createChannelAgentBinder(
   function releaseTurnParent(binding: LiveBinding, turnId: string): void {
     const key = parentKeyForTurn(binding, turnId);
     if (key !== undefined) binding.parentMessageIdByTurn.delete(key);
+  }
+
+  /** Stable edge and callback-turn identities make late terminal patches inert. */
+  function completionCallbackEdgeId(targetTurnId: string): string {
+    return `chcb:${targetTurnId}`;
+  }
+
+  function completionCallbackTurnId(
+    edge: ChannelCompletionCallbackEdge,
+    requesterProfileId: string
+  ): string {
+    return channelTurnId(edge.id as ChannelMessage['id'], requesterProfileId);
+  }
+
+  function requesterProfileForAgentMessage(
+    message: ChannelMessage
+  ): string | null {
+    if (message.sender.kind !== 'agent') return null;
+    if (deps.agentProfileStore?.get(message.sender.id))
+      return message.sender.id;
+    return message.sender.providerId
+      ? defaultProfileForProvider(message.sender.providerId).id
+      : null;
+  }
+
+  function profileForActorId(profileActorId: string): AgentProfile | null {
+    const stored = deps.agentProfileStore?.get(profileActorId);
+    if (stored) return stored;
+    const providerId = deps.knownProviderIds.find(
+      (candidate) => builtInAgentProfileId(candidate) === profileActorId
+    );
+    return providerId ? defaultProfileForProvider(providerId) : null;
+  }
+
+  function completionDisposition(
+    finalMessage: ChannelMessage | undefined
+  ): ChannelCompletionCallbackMessageDisposition {
+    return finalMessage ? 'final-message' : CALLBACK_NO_TERMINAL_MESSAGE;
+  }
+
+  /**
+   * Keep idempotency rows bounded on a live hub too, not just after a restart.
+   * The store keeps unresolved ancestry out of the delete set; rate limiting
+   * makes this a tiny amortized write on callback lifecycle transitions.
+   */
+  function maybePruneCompletionCallbacks(): void {
+    const timestamp = now();
+    if (
+      lastCompletionCallbackPruneAt !== null &&
+      timestamp - lastCompletionCallbackPruneAt <
+        COMPLETION_CALLBACK_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastCompletionCallbackPruneAt = timestamp;
+    try {
+      store.pruneConsumedCompletionCallbacks();
+    } catch (err) {
+      logger.warn('channel completion callback retention prune failed:', err);
+    }
+  }
+
+  function terminalizeCompletionCallback(
+    binding: LiveBinding,
+    turnId: string,
+    terminalReason: ChannelCompletionCallbackTerminalReason
+  ): void {
+    const finalMessage = binding.finalMessageByTurn.get(turnId);
+    try {
+      const continuation = binding.continuationByTurn.get(turnId);
+      const input = {
+        terminalReason,
+        ...(finalMessage ? { terminalMessageId: finalMessage.id } : {}),
+        messageDisposition: completionDisposition(finalMessage),
+      };
+      const callback = binding.completionCallbackByTurn.get(turnId);
+      // The adapter has not accepted this internal callback yet. A terminal
+      // patch may race sendMessage (including a watchdog or runtime death), but
+      // consuming now would make a crash between CAS and send permanently lose
+      // the callback. Hold the terminal evidence until acceptance instead.
+      if (
+        callback &&
+        store.getCompletionCallback(callback.id)?.state === 'delivered'
+      ) {
+        binding.deferredCompletionTerminalByTurn.set(turnId, {
+          ...input,
+          ...(continuation ? { continuation } : {}),
+        });
+        return;
+      }
+      const satisfied = continuation
+        ? store.completeChildContinuation({
+            callbackId: continuation.childCallbackId,
+            ...input,
+          })
+        : store.satisfyCompletionCallback({
+            channelId: binding.channelId,
+            targetProfileId: binding.profileActorId,
+            targetTurnId: turnId,
+            ...input,
+          });
+      if (satisfied) drainCompletionCallbacks();
+      maybePruneCompletionCallbacks();
+    } catch (err) {
+      logger.warn('channel completion callback terminalization failed:', err);
+    }
+  }
+
+  function flushDeferredCompletionTerminal(
+    binding: LiveBinding,
+    turnId: string
+  ): void {
+    const deferred = binding.deferredCompletionTerminalByTurn.get(turnId);
+    if (!deferred) return;
+    binding.deferredCompletionTerminalByTurn.delete(turnId);
+    try {
+      const satisfied = deferred.continuation
+        ? store.completeChildContinuation({
+            callbackId: deferred.continuation.childCallbackId,
+            terminalReason: deferred.terminalReason,
+            ...(deferred.terminalMessageId
+              ? { terminalMessageId: deferred.terminalMessageId }
+              : {}),
+            messageDisposition: deferred.messageDisposition,
+          })
+        : null;
+      if (satisfied) drainCompletionCallbacks();
+    } catch (err) {
+      logger.warn(
+        'channel deferred completion callback terminalization failed:',
+        err
+      );
+    }
+  }
+
+  /**
+   * An unaccepted callback turn must stay recoverable. This intentionally does
+   * not terminalize its ancestor relation: no provider accepted the typed
+   * trigger, so completion would be a fabricated acknowledgement.
+   */
+  function releaseUnacceptedCompletionCallbackTurn(
+    binding: LiveBinding,
+    turnId: string
+  ): boolean {
+    const callback = binding.completionCallbackByTurn.get(turnId);
+    if (!callback) return false;
+    try {
+      store.releaseDeliveredCompletionCallback(callback.id);
+      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+    } catch (err) {
+      logger.warn(
+        'channel unaccepted completion callback release failed:',
+        err
+      );
+    }
+    binding.completionCallbackByTurn.delete(turnId);
+    binding.deferredCompletionTerminalByTurn.delete(turnId);
+    return true;
+  }
+
+  /**
+   * Claims durable satisfied edges before touching a live binding. The durable
+   * CAS is the exactly-once boundary for duplicate/late terminal patches; the
+   * FIFO below is only delivery scheduling for a busy requester.
+   */
+  function drainCompletionCallbacks(delayMs = 0): void {
+    if (closed || completionDrainScheduled) return;
+    // Let the provider's terminal patch finish its current microtask fan-out
+    // before the upward callback enters another agent's FIFO. That preserves
+    // one terminal boundary between downward delegation and upward completion;
+    // the durable CAS below remains the correctness boundary.
+    completionDrainScheduled = true;
+    const timer = setTimeout(() => {
+      completionDrainScheduled = false;
+      claimAndRouteCompletionCallbacks();
+    }, delayMs);
+    timer.unref?.();
+  }
+
+  function claimAndRouteCompletionCallbacks(): void {
+    if (closed) return;
+    let edges: ChannelCompletionCallbackEdge[];
+    try {
+      edges = store.claimSatisfiedCompletionCallbacks(
+        COMPLETION_CALLBACK_BATCH_LIMIT
+      );
+    } catch (err) {
+      logger.warn('channel completion callback claim failed:', err);
+      return;
+    }
+    for (const edge of edges) {
+      const profile = profileForActorId(edge.requesterProfileId);
+      if (!profile) {
+        logger.warn(
+          'channel completion callback requester profile is unavailable',
+          { callbackId: edge.id, requesterProfileId: edge.requesterProfileId }
+        );
+        store.releaseDeliveredCompletionCallback(edge.id);
+        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        continue;
+      }
+      const trigger =
+        (edge.terminalMessageId
+          ? store.getMessage(edge.terminalMessageId)
+          : null) ?? store.getMessage(edge.triggerMessageId);
+      if (!trigger) {
+        logger.warn('channel completion callback trigger is unavailable', {
+          callbackId: edge.id,
+        });
+        store.releaseDeliveredCompletionCallback(edge.id);
+        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        continue;
+      }
+      void ensureProfileBinding(edge.channelId, profile)
+        .then((binding) => {
+          if (closed) return;
+          if (!enqueueTurn(binding, trigger, undefined, false, edge)) {
+            // Queue admission is a durable boundary too. A full/released
+            // requester must re-offer this claimed edge rather than stranding it.
+            store.releaseDeliveredCompletionCallback(edge.id);
+            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+          }
+        })
+        .catch((err) => {
+          if (closed || err instanceof BinderClosedError) return;
+          logger.warn('channel completion callback routing failed:', err);
+          try {
+            store.releaseDeliveredCompletionCallback(edge.id);
+            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+          } catch (releaseErr) {
+            logger.warn(
+              'channel completion callback claim release failed:',
+              releaseErr
+            );
+          }
+        });
+    }
+    if (edges.length === COMPLETION_CALLBACK_BATCH_LIMIT) {
+      drainCompletionCallbacks();
+    }
   }
 
   // ── availability targets ────────────────────────────────────────────────────
@@ -812,7 +1094,7 @@ export function createChannelAgentBinder(
         framework: binding.framework,
         turnId: binding.activeTurnId,
       });
-      finishTurn(binding);
+      finishTurn(binding, 'watchdog');
     }, watchdogMs);
     binding.watchdog.unref?.();
   }
@@ -844,6 +1126,10 @@ export function createChannelAgentBinder(
       status: 'idle',
       activeTurnId: null,
       parentMessageIdByTurn: new Map(),
+      finalMessageByTurn: new Map(),
+      continuationByTurn: new Map(),
+      completionCallbackByTurn: new Map(),
+      deferredCompletionTerminalByTurn: new Map(),
       turnZeroFallbackUnsafe: false,
       activeContent: null,
       activeAttachments: [],
@@ -933,7 +1219,7 @@ export function createChannelAgentBinder(
       displayName: senderDisplayName,
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
       onAssistantMessageFinalized: (message) =>
-        handleAssistantFinalized(message),
+        handleAssistantFinalized(binding, message),
     });
     binding.patchUnlisten = runtime.adapter.onPatch((patch) =>
       handleBindingPatch(binding, patch)
@@ -1314,14 +1600,75 @@ export function createChannelAgentBinder(
     binding: LiveBinding,
     trigger: ChannelMessage,
     steering?: ChannelPostSteering,
-    reEnqueued = false
-  ): void {
+    reEnqueued = false,
+    completionCallback?: ChannelCompletionCallbackEdge,
+    callbackEdgeRequest?: CallbackEdgeRequest
+  ): boolean {
+    // A delegation becomes durable at FIFO admission, not when the provider
+    // eventually starts it. This preserves a queued B/C target across restart
+    // and gives rejection a concrete edge to terminalize upward.
+    let admittedDelegationTurnId: string | undefined;
+    if (callbackEdgeRequest) {
+      if (binding.runtimeId === null) {
+        logger.warn(
+          'channel completion callback admission has no target runtime'
+        );
+        return false;
+      }
+      admittedDelegationTurnId = channelTurnId(
+        trigger.id,
+        binding.profileActorId
+      );
+      try {
+        store.createCompletionCallback({
+          id: completionCallbackEdgeId(admittedDelegationTurnId),
+          channelId: binding.channelId,
+          threadId: trigger.threadId,
+          triggerMessageId: trigger.id,
+          requesterProfileId: callbackEdgeRequest.requesterProfileId,
+          targetProfileId: binding.profileActorId,
+          targetRuntimeId: binding.runtimeId,
+          targetTurnId: admittedDelegationTurnId,
+          ...(callbackEdgeRequest.continuationParentCallbackId
+            ? {
+                continuationParentCallbackId:
+                  callbackEdgeRequest.continuationParentCallbackId,
+              }
+            : {}),
+        });
+        maybePruneCompletionCallbacks();
+      } catch (err) {
+        logger.warn('channel completion callback admission failed:', err);
+        return false;
+      }
+    }
+    const rejectAdmittedDelegation = () => {
+      if (!admittedDelegationTurnId) return;
+      try {
+        const satisfied = store.satisfyCompletionCallback({
+          channelId: binding.channelId,
+          targetProfileId: binding.profileActorId,
+          targetTurnId: admittedDelegationTurnId,
+          terminalReason: 'error',
+          messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
+        });
+        if (satisfied) drainCompletionCallbacks();
+        maybePruneCompletionCallbacks();
+      } catch (err) {
+        logger.warn(
+          'channel completion callback admission rejection failed:',
+          err
+        );
+      }
+    };
     // Native harnesses get the user's next instruction at their own tool-safe
     // boundary. Keep this ahead of the queue branch: while a turn is live the
     // regular pump cannot dispatch, whereas a provider steer is explicitly
     // designed to alter that live turn without interrupting its current tool.
     if (
       !reEnqueued &&
+      completionCallback === undefined &&
+      callbackEdgeRequest === undefined &&
       steering !== 'interrupt' &&
       binding.activeTurnId !== null &&
       binding.adapter?.capabilities.steer === true &&
@@ -1333,14 +1680,24 @@ export function createChannelAgentBinder(
           `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
           { parentMessageId: parentForTrigger(trigger) }
         );
-        return;
+        rejectAdmittedDelegation();
+        return false;
       }
       enqueueSteering(binding, trigger);
-      return;
+      return true;
     }
     const entry: QueuedTurn = reEnqueued
-      ? { trigger, reEnqueued: true }
-      : { trigger };
+      ? {
+          trigger,
+          reEnqueued: true,
+          ...(completionCallback ? { completionCallback } : {}),
+          ...(callbackEdgeRequest ? { callbackEdgeRequest } : {}),
+        }
+      : {
+          trigger,
+          ...(completionCallback ? { completionCallback } : {}),
+          ...(callbackEdgeRequest ? { callbackEdgeRequest } : {}),
+        };
     if (occupiedTurnSlots(binding) >= QUEUE_CAP) {
       const tailIndex = binding.queue.length - 1;
       const tail = binding.queue[tailIndex];
@@ -1353,6 +1710,10 @@ export function createChannelAgentBinder(
         tail &&
         !tail.reEnqueued &&
         !reEnqueued &&
+        tail.completionCallback === undefined &&
+        completionCallback === undefined &&
+        tail.callbackEdgeRequest === undefined &&
+        callbackEdgeRequest === undefined &&
         coalescesIntoOneTurn(tail.trigger, trigger)
       ) {
         // A human run drains as one turn triggered by its NEWEST member, so
@@ -1364,14 +1725,15 @@ export function createChannelAgentBinder(
         emitAgentStatus(binding);
         if (steering === 'interrupt') steerInterrupt(binding, trigger);
         pump(binding);
-        return;
+        return true;
       }
       postSystemRow(
         binding.channelId,
         `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
         { parentMessageId: parentForTrigger(trigger) }
       );
-      return;
+      rejectAdmittedDelegation();
+      return false;
     }
     binding.queue.push(entry);
     emitAgentStatus(binding);
@@ -1382,6 +1744,7 @@ export function createChannelAgentBinder(
     // send" degrades cleanly to plain "send".
     if (steering === 'interrupt') steerInterrupt(binding, trigger);
     pump(binding);
+    return true;
   }
 
   function occupiedTurnSlots(binding: LiveBinding): number {
@@ -1563,10 +1926,16 @@ export function createChannelAgentBinder(
     // would be neither trigger nor context row and would vanish entirely, the
     // exact loss coalescing exists to avoid. Alone it is the trigger, and the
     // footer renders the trigger unconditionally.
-    if (!head.reEnqueued) {
+    if (
+      !head.reEnqueued &&
+      head.completionCallback === undefined &&
+      head.callbackEdgeRequest === undefined
+    ) {
       while (
         take < binding.queue.length &&
         !binding.queue[take]!.reEnqueued &&
+        binding.queue[take]!.completionCallback === undefined &&
+        binding.queue[take]!.callbackEdgeRequest === undefined &&
         coalescesIntoOneTurn(head.trigger, binding.queue[take]!.trigger)
       ) {
         take += 1;
@@ -1584,7 +1953,13 @@ export function createChannelAgentBinder(
     for (const entry of batch) {
       if (entry.trigger.seq > trigger.seq) trigger = entry.trigger;
     }
-    sendTurn(binding, trigger);
+    const completionCallback = batch.find(
+      (entry) => entry.completionCallback !== undefined
+    )?.completionCallback;
+    const callbackEdgeRequest = batch.find(
+      (entry) => entry.callbackEdgeRequest !== undefined
+    )?.callbackEdgeRequest;
+    sendTurn(binding, trigger, completionCallback, callbackEdgeRequest);
   }
 
   function buildPacket(
@@ -1625,10 +2000,32 @@ export function createChannelAgentBinder(
     );
   }
 
-  function sendTurn(binding: LiveBinding, trigger: ChannelMessage): void {
+  function buildCompletionCallbackPacket(
+    binding: LiveBinding,
+    trigger: ChannelMessage,
+    callback: ChannelCompletionCallbackEdge
+  ): ResolvedMentionContextPacket {
+    const packet = buildPacket(binding, trigger);
+    const finalReference = callback.terminalMessageId
+      ? `finalMessageId=${callback.terminalMessageId}`
+      : 'finalMessageId=none';
+    return {
+      ...packet,
+      content: `${packet.content}\n\n[Relay internal completion callback]\nThis is a typed Relay completion trigger, not a chat message or a new delegation.\ncallbackId=${callback.id}\ndelegateeProfileId=${callback.targetProfileId}\ntargetTurnId=${callback.targetTurnId}\nterminalReason=${callback.terminalReason ?? 'unknown'}\nmessageDisposition=${callback.messageDisposition ?? 'no-terminal-message'}\n${finalReference}\nContinue the requester workflow if needed; do not infer a reverse callback edge from this trigger.`,
+    };
+  }
+
+  function sendTurn(
+    binding: LiveBinding,
+    trigger: ChannelMessage,
+    completionCallback?: ChannelCompletionCallbackEdge,
+    callbackEdgeRequest?: CallbackEdgeRequest
+  ): void {
     const adapter = binding.adapter;
     if (!adapter) return;
-    const turnId = channelTurnId(trigger.id, binding.profileActorId);
+    const turnId = completionCallback
+      ? completionCallbackTurnId(completionCallback, binding.profileActorId)
+      : channelTurnId(trigger.id, binding.profileActorId);
     // Build the packet BEFORE mutating any binding state: buildPacket does
     // synchronous SQLite work (getBinding/mentionContext) that can throw. If it did so
     // AFTER activeTurnId was set (and before the watchdog armed), the binding
@@ -1636,7 +2033,9 @@ export function createChannelAgentBinder(
     // every later mention dropped. On a throw we surface a row and keep draining.
     let packet: ResolvedMentionContextPacket;
     try {
-      packet = buildPacket(binding, trigger);
+      packet = completionCallback
+        ? buildCompletionCallbackPacket(binding, trigger, completionCallback)
+        : buildPacket(binding, trigger);
     } catch (err) {
       logger.warn('channel binder packet build failed:', err);
       postSystemRow(
@@ -1644,6 +2043,17 @@ export function createChannelAgentBinder(
         `@${binding.displayName} could not build the message context: ${errText(err)}`,
         { parentMessageId: parentForTrigger(trigger) }
       );
+      if (completionCallback) {
+        try {
+          store.releaseDeliveredCompletionCallback(completionCallback.id);
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        } catch (releaseErr) {
+          logger.warn(
+            'channel completion callback packet-failure release failed:',
+            releaseErr
+          );
+        }
+      }
       pump(binding); // activeTurnId is still null — keep the queue draining
       return;
     }
@@ -1662,20 +2072,38 @@ export function createChannelAgentBinder(
       turnId,
       parentForTrigger(trigger) ?? null
     );
+    if (completionCallback?.continuationParentCallbackId) {
+      binding.continuationByTurn.set(turnId, {
+        childCallbackId: completionCallback.id,
+        parentCallbackId: completionCallback.continuationParentCallbackId,
+      });
+    }
+    if (completionCallback) {
+      binding.completionCallbackByTurn.set(turnId, completionCallback);
+    }
     binding.sawStream = false;
     binding.waitingOn = null;
     binding.activeContent = packet.content;
     binding.activeAttachments = packet.attachments;
     setStatus(binding, 'thinking');
     armWatchdog(binding);
-    deliver(binding, adapter, turnId, trigger);
+    deliver(
+      binding,
+      adapter,
+      turnId,
+      trigger,
+      completionCallback,
+      callbackEdgeRequest
+    );
   }
 
   function deliver(
     binding: LiveBinding,
     adapter: ProtocolAdapterV2,
     turnId: string,
-    trigger: ChannelMessage
+    trigger: ChannelMessage,
+    completionCallback?: ChannelCompletionCallbackEdge,
+    callbackEdgeRequest?: CallbackEdgeRequest
   ): void {
     adapter
       .sendMessage({
@@ -1687,10 +2115,37 @@ export function createChannelAgentBinder(
         // Deterministic per routed (message, framework) turn (Amendment 3): a
         // retry reuses the same turn identity. `clientMessageId` is forward-compat
         // only — no adapter dedupes on it today.
-        clientMessageId: `${trigger.id}:${binding.profileActorId}`,
+        clientMessageId: completionCallback
+          ? `${completionCallback.id}:${binding.profileActorId}`
+          : `${trigger.id}:${binding.profileActorId}`,
       })
-      .then(() => advanceCursor(binding, trigger))
-      .catch((err) => handleSendFailure(binding, trigger, turnId, err));
+      .then(() => {
+        if (!completionCallback) {
+          advanceCursor(binding, trigger);
+          return;
+        }
+        // `sendMessage` acceptance is the callback's delivery boundary. The
+        // CAS deliberately follows acceptance so a crash-before-send reopens
+        // the claim after restart; repeat acceptance then sees consumed=false
+        // and cannot synthesize a second upward continuation.
+        if (store.consumeCompletionCallback(completionCallback.id)) {
+          flushDeferredCompletionTerminal(binding, turnId);
+          maybePruneCompletionCallbacks();
+          if (binding.activeTurnId !== turnId) {
+            binding.completionCallbackByTurn.delete(turnId);
+          }
+        }
+      })
+      .catch((err) =>
+        handleSendFailure(
+          binding,
+          trigger,
+          turnId,
+          err,
+          completionCallback,
+          callbackEdgeRequest
+        )
+      );
   }
 
   function advanceCursor(binding: LiveBinding, trigger: ChannelMessage): void {
@@ -1745,7 +2200,9 @@ export function createChannelAgentBinder(
     binding: LiveBinding,
     trigger: ChannelMessage,
     turnId: string,
-    err: unknown
+    err: unknown,
+    completionCallback?: ChannelCompletionCallbackEdge,
+    callbackEdgeRequest?: CallbackEdgeRequest
   ): Promise<void> {
     if (closed) return; // shutdown in progress — no rows, no re-delivery
     // A rejected sendMessage means the turn was NEVER accepted (Amendment 3), so
@@ -1766,7 +2223,14 @@ export function createChannelAgentBinder(
         if (closed) return;
         if (rebound.adapter && rebound.activeTurnId === turnId) {
           // Same binding still owns this turn — redeliver identical content.
-          deliver(rebound, rebound.adapter, turnId, trigger);
+          deliver(
+            rebound,
+            rebound.adapter,
+            turnId,
+            trigger,
+            completionCallback,
+            callbackEdgeRequest
+          );
           return;
         }
         if (rebound.adapter) {
@@ -1780,12 +2244,37 @@ export function createChannelAgentBinder(
           // already advanced the delivery cursor past this trigger's seq, so it
           // must get its own turn rather than be coalesced into a later packet
           // that would filter it out (see `QueuedTurn.reEnqueued` and `pump`).
-          enqueueTurn(rebound, trigger, undefined, true);
+          enqueueTurn(
+            rebound,
+            trigger,
+            undefined,
+            true,
+            completionCallback,
+            callbackEdgeRequest
+          );
           return;
         }
       } catch {
         // fall through to the error row
       }
+    }
+    if (completionCallback) {
+      releaseUnacceptedCompletionCallbackTurn(binding, turnId);
+      releaseTurnParent(binding, turnId);
+      binding.finalMessageByTurn.delete(turnId);
+      binding.continuationByTurn.delete(turnId);
+      if (binding.activeTurnId === turnId) {
+        binding.activeTurnId = null;
+        binding.activeContent = null;
+        binding.activeAttachments = [];
+        binding.waitingOn = null;
+        binding.sawStream = false;
+        disarmWatchdog(binding);
+        setStatus(binding, 'idle');
+        emitAgentStatus(binding);
+        pump(binding);
+      }
+      return;
     }
     postSystemRow(
       binding.channelId,
@@ -1793,7 +2282,7 @@ export function createChannelAgentBinder(
       { parentMessageId: parentForTrigger(trigger) }
     );
     releaseTurnParent(binding, turnId);
-    finishTurn(binding);
+    finishTurn(binding, 'error');
   }
 
   /**
@@ -1806,6 +2295,45 @@ export function createChannelAgentBinder(
    */
   function dropQueuedTurns(binding: LiveBinding): void {
     for (const queued of binding.queue) {
+      if (queued.completionCallback) {
+        // This is an upward callback that was claimed into an in-memory FIFO
+        // but never handed to the dead runtime. Re-offer it; do not pretend the
+        // requester accepted it or terminalize a reverse relation.
+        try {
+          store.releaseDeliveredCompletionCallback(
+            queued.completionCallback.id
+          );
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        } catch (err) {
+          logger.warn(
+            'channel queued completion callback release failed:',
+            err
+          );
+        }
+      }
+      if (queued.callbackEdgeRequest) {
+        // A downward target already has its durable edge at FIFO admission. Its
+        // dead runtime is a guarded terminal outcome, so wake the delegator
+        // through normal callback routing rather than silently losing the
+        // parent intent (or waiting for a hub restart to discover it).
+        try {
+          const targetTurnId = channelTurnId(
+            queued.trigger.id,
+            binding.profileActorId
+          );
+          const satisfied = store.satisfyCompletionCallback({
+            channelId: binding.channelId,
+            targetProfileId: binding.profileActorId,
+            targetTurnId,
+            terminalReason: CALLBACK_UNEXPECTED_DISCONNECT,
+            messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
+          });
+          if (satisfied) drainCompletionCallbacks();
+          maybePruneCompletionCallbacks();
+        } catch (err) {
+          logger.warn('channel queued delegation terminalization failed:', err);
+        }
+      }
       postSystemRow(
         binding.channelId,
         `@${binding.displayName} runtime ended before delivering a queued message.`,
@@ -1814,6 +2342,38 @@ export function createChannelAgentBinder(
     }
     binding.queue = [];
     for (const steering of binding.steeringQueue) {
+      if (steering.completionCallback) {
+        try {
+          store.releaseDeliveredCompletionCallback(
+            steering.completionCallback.id
+          );
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        } catch (err) {
+          logger.warn('channel queued steering callback release failed:', err);
+        }
+      }
+      if (steering.callbackEdgeRequest) {
+        try {
+          const targetTurnId = channelTurnId(
+            steering.trigger.id,
+            binding.profileActorId
+          );
+          const satisfied = store.satisfyCompletionCallback({
+            channelId: binding.channelId,
+            targetProfileId: binding.profileActorId,
+            targetTurnId,
+            terminalReason: CALLBACK_UNEXPECTED_DISCONNECT,
+            messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
+          });
+          if (satisfied) drainCompletionCallbacks();
+          maybePruneCompletionCallbacks();
+        } catch (err) {
+          logger.warn(
+            'channel queued steering delegation terminalization failed:',
+            err
+          );
+        }
+      }
       postSystemRow(
         binding.channelId,
         `@${binding.displayName} runtime ended before accepting a steering message.`,
@@ -1835,6 +2395,18 @@ export function createChannelAgentBinder(
    * queued-send chips key off (#1308 slice 4).
    */
   function markDeadRuntimeIdle(binding: LiveBinding): void {
+    if (binding.activeTurnId !== null) {
+      const activeTurnId = binding.activeTurnId;
+      if (!releaseUnacceptedCompletionCallbackTurn(binding, activeTurnId)) {
+        terminalizeCompletionCallback(
+          binding,
+          activeTurnId,
+          CALLBACK_UNEXPECTED_DISCONNECT
+        );
+      }
+      binding.finalMessageByTurn.delete(activeTurnId);
+      binding.continuationByTurn.delete(activeTurnId);
+    }
     binding.activeTurnId = null;
     binding.activeContent = null;
     binding.activeAttachments = [];
@@ -1849,8 +2421,22 @@ export function createChannelAgentBinder(
     emitAgentStatus(binding);
   }
 
-  function finishTurn(binding: LiveBinding): void {
-    if (binding.activeTurnId === null) return;
+  function finishTurn(
+    binding: LiveBinding,
+    terminalReason: ChannelCompletionCallbackTerminalReason = 'safe-idle'
+  ): void {
+    const terminalTurnId = binding.activeTurnId;
+    if (terminalTurnId === null) return;
+    terminalizeCompletionCallback(binding, terminalTurnId, terminalReason);
+    const callback = binding.completionCallbackByTurn.get(terminalTurnId);
+    if (
+      callback &&
+      store.getCompletionCallback(callback.id)?.state === 'consumed'
+    ) {
+      binding.completionCallbackByTurn.delete(terminalTurnId);
+    }
+    binding.finalMessageByTurn.delete(terminalTurnId);
+    binding.continuationByTurn.delete(terminalTurnId);
     binding.activeTurnId = null;
     binding.activeContent = null;
     binding.activeAttachments = [];
@@ -1935,7 +2521,14 @@ export function createChannelAgentBinder(
           patch.turnId === binding.activeTurnId ||
           completedParentKey === binding.activeTurnId
         ) {
-          finishTurn(binding);
+          finishTurn(
+            binding,
+            patch.status === 'interrupted'
+              ? 'interrupt'
+              : patch.status === 'failed'
+                ? 'error'
+                : 'completed'
+          );
         }
         break;
       }
@@ -1986,7 +2579,7 @@ export function createChannelAgentBinder(
             binding.turnZeroFallbackUnsafe = false;
           }
           if (targetsActiveTurn) {
-            finishTurn(binding);
+            finishTurn(binding, 'error');
           }
         }
         break;
@@ -2044,7 +2637,7 @@ export function createChannelAgentBinder(
         binding.announcedApprovals.size === 0 &&
         binding.waitingOn === null
       ) {
-        finishTurn(binding);
+        finishTurn(binding, 'safe-idle');
       }
       return;
     }
@@ -2134,14 +2727,26 @@ export function createChannelAgentBinder(
     trigger: ChannelMessage,
     profile: AgentProfile,
     steering?: ChannelPostSteering,
-    requiredRole?: 'orchestrator'
+    requiredRole?: 'orchestrator',
+    callbackEdgeRequest?: CallbackEdgeRequest
   ): Promise<void> {
     return (async () => {
+      const releaseDeferredParent = () => {
+        const parentId = callbackEdgeRequest?.continuationParentCallbackId;
+        if (!parentId) return;
+        try {
+          const released = store.releaseDeferredCompletionCallback(parentId);
+          if (released?.state === 'satisfied') drainCompletionCallbacks();
+        } catch (err) {
+          logger.warn('channel completion callback defer release failed:', err);
+        }
+      };
       try {
         const framework = profile.providerId;
         const target = await resolveTarget(framework);
         if (closed) return; // close() raced the availability probe
         if (!target) {
+          releaseDeferredParent();
           // Not a known framework. In a multi-party channel an unroutable
           // @name stays silent (§1). In a DM there is nobody ELSE to answer the
           // HUMAN, so silence reads as the product being broken — say so.
@@ -2169,6 +2774,7 @@ export function createChannelAgentBinder(
         }
         const availability = availabilityForProfile(profile, target);
         if (!availability.available) {
+          releaseDeferredParent();
           const senderDisplayName =
             profile.displayName || target.displayName || framework;
           postUnavailableRow(
@@ -2189,6 +2795,7 @@ export function createChannelAgentBinder(
         } catch (err) {
           if (err instanceof BinderClosedError) return; // shutdown — silent
           if (err instanceof ChannelBindingError) {
+            releaseDeferredParent();
             if (err.unavailable) {
               postUnavailableRow(
                 trigger.channelId,
@@ -2206,9 +2813,31 @@ export function createChannelAgentBinder(
           throw err;
         }
         if (closed) return; // never enqueue/spawn a turn after close()
-        enqueueTurn(binding, trigger, steering);
+        const admitted = enqueueTurn(
+          binding,
+          trigger,
+          steering,
+          false,
+          undefined,
+          callbackEdgeRequest
+        );
+        if (!admitted && callbackEdgeRequest?.continuationParentCallbackId) {
+          const targetTurnId = channelTurnId(
+            trigger.id,
+            binding.profileActorId
+          );
+          // FIFO rejection creates and terminalizes its own child edge. Only a
+          // failure BEFORE durable admission needs to release the announced
+          // parent intent directly.
+          if (
+            !store.getCompletionCallback(completionCallbackEdgeId(targetTurnId))
+          ) {
+            releaseDeferredParent();
+          }
+        }
       } catch (err) {
         if (closed || err instanceof BinderClosedError) return;
+        releaseDeferredParent();
         logger.warn('channel binder route failed:', err);
       }
     })();
@@ -2302,7 +2931,9 @@ export function createChannelAgentBinder(
    */
   function routeWithBrake(
     message: ChannelMessage,
-    profiles: AgentProfile[]
+    profiles: AgentProfile[],
+    callbackSuppressedProfiles = new Set<string>(),
+    prepareContinuation?: () => string | undefined
   ): void {
     if (profiles.length === 0) return;
     const sourceRuntime = message.source?.runtimeId
@@ -2313,8 +2944,24 @@ export function createChannelAgentBinder(
       // participant. It must keep coordinating even after worker traffic trips
       // the brake, and its turns must not consume the worker-turn allowance.
       // Human posts still reset the ordinary brake state below.
+      const continuationParentCallbackId = prepareContinuation?.();
       for (const profile of profiles) {
-        void routeOne(message, profile);
+        void routeOne(
+          message,
+          profile,
+          undefined,
+          undefined,
+          callbackSuppressedProfiles.has(profile.id)
+            ? undefined
+            : requesterProfileForAgentMessage(message) !== null
+              ? {
+                  requesterProfileId: requesterProfileForAgentMessage(message)!,
+                  ...(continuationParentCallbackId
+                    ? { continuationParentCallbackId }
+                    : {}),
+                }
+              : undefined
+        );
       }
       return;
     }
@@ -2343,8 +2990,26 @@ export function createChannelAgentBinder(
       state.allowedTurnKeys.add(turnKey);
       state.count += 1;
     }
+    // This happens only after the one dispatch was admitted by the brake. An
+    // at-cap/paused mention therefore never announces a child intent that no
+    // route can later balance.
+    const continuationParentCallbackId = prepareContinuation?.();
     for (const profile of profiles) {
-      void routeOne(message, profile);
+      const requesterProfileId = requesterProfileForAgentMessage(message);
+      void routeOne(
+        message,
+        profile,
+        undefined,
+        undefined,
+        callbackSuppressedProfiles.has(profile.id) || !requesterProfileId
+          ? undefined
+          : {
+              requesterProfileId,
+              ...(continuationParentCallbackId
+                ? { continuationParentCallbackId }
+                : {}),
+            }
+      );
     }
   }
 
@@ -2499,14 +3164,124 @@ export function createChannelAgentBinder(
     void routeOne(message, recipient.profile, steering, recipient.requiredRole);
   }
 
-  function handleAssistantFinalized(message: ChannelMessage): void {
+  function consumeAncestorExplicitReturn(
+    binding: LiveBinding,
+    sourceTurnId: string,
+    profiles: AgentProfile[],
+    explicitReturnProfiles: Set<string>
+  ): void {
+    // C's callback reaches B on a new B turn, while A→B is still keyed to
+    // B's original delegated turn. An explicit `@A` from that continuation is
+    // a return, not a new B→A delegation.
+    const inherited =
+      binding.continuationByTurn.get(sourceTurnId)?.parentCallbackId;
+    if (!inherited) return;
+    try {
+      const parent = store.getCompletionCallback(inherited);
+      const returnsToAncestor =
+        parent !== null &&
+        profiles.some((profile) => profile.id === parent.requesterProfileId);
+      if (!returnsToAncestor || parent === null) return;
+      const consumed = store.consumeAncestorCompletionCallbackForExplicitReturn(
+        parent.id
+      );
+      if (consumed) explicitReturnProfiles.add(consumed.requesterProfileId);
+    } catch (err) {
+      logger.warn(
+        'channel completion callback ancestor explicit-return consume failed:',
+        err
+      );
+    }
+  }
+
+  function handleAssistantFinalized(
+    binding: LiveBinding,
+    message: ChannelMessage
+  ): void {
     if (closed) return;
+    const sourceTurnId = message.source?.turnId;
+    if (sourceTurnId) binding.finalMessageByTurn.set(sourceTurnId, message);
     const mentions = parseMentions(
       message.body.text,
       deps.knownProviderIds,
       deps.agentProfileStore?.list()
     );
-    routeWithBrake(message, eligibleProfiles(message, mentions));
+    const profiles = eligibleProfiles(message, mentions);
+    const explicitReturnProfiles = new Set<string>();
+    if (sourceTurnId && profiles.length > 0) {
+      try {
+        const consumed = store.consumeCompletionCallbacksForExplicitReturn({
+          channelId: message.channelId,
+          targetProfileId: binding.profileActorId,
+          targetTurnId: sourceTurnId,
+          requesterProfileIds: profiles.map((profile) => profile.id),
+        });
+        for (const edge of consumed) {
+          explicitReturnProfiles.add(edge.requesterProfileId);
+        }
+      } catch (err) {
+        logger.warn(
+          'channel completion callback explicit-return consume failed:',
+          err
+        );
+      }
+    }
+    if (sourceTurnId && profiles.length > 0) {
+      consumeAncestorExplicitReturn(
+        binding,
+        sourceTurnId,
+        profiles,
+        explicitReturnProfiles
+      );
+    }
+    const delegatedProfiles = profiles.filter(
+      (profile) => !explicitReturnProfiles.has(profile.id)
+    );
+    const prepareContinuation =
+      sourceTurnId && delegatedProfiles.length > 0
+        ? (): string | undefined => {
+            try {
+              // A continuation callback keeps its original ancestor open; a
+              // normal delegated turn discovers that ancestor by target turn.
+              const inherited =
+                binding.continuationByTurn.get(sourceTurnId)?.parentCallbackId;
+              const parent = inherited
+                ? store.announceContinuationChildren(
+                    inherited,
+                    delegatedProfiles.length
+                  )
+                : store.deferCompletionCallbackForChild({
+                    channelId: message.channelId,
+                    targetProfileId: binding.profileActorId,
+                    targetTurnId: sourceTurnId,
+                    expectedChildCount: delegatedProfiles.length,
+                  });
+              return parent?.state === 'pending' ? parent.id : undefined;
+            } catch (err) {
+              logger.warn(
+                'channel completion callback continuation defer failed:',
+                err
+              );
+              return undefined;
+            }
+          }
+        : undefined;
+    routeWithBrake(
+      message,
+      profiles,
+      explicitReturnProfiles,
+      prepareContinuation
+    );
+  }
+
+  async function recoverCompletionCallbacks(): Promise<void> {
+    if (closed) return;
+    try {
+      store.recoverCompletionCallbacks();
+      drainCompletionCallbacks();
+    } catch (err) {
+      logger.warn('channel completion callback recovery failed:', err);
+    }
   }
 
   // ── runtime death ───────────────────────────────────────────────────────────
@@ -2520,6 +3295,18 @@ export function createChannelAgentBinder(
    * disarmed while `waitingOn !== null` and unarmed once a turn is over).
    */
   function releaseBinding(key: string, binding: LiveBinding): void {
+    if (binding.activeTurnId !== null) {
+      const activeTurnId = binding.activeTurnId;
+      if (!releaseUnacceptedCompletionCallbackTurn(binding, activeTurnId)) {
+        terminalizeCompletionCallback(
+          binding,
+          activeTurnId,
+          CALLBACK_UNEXPECTED_DISCONNECT
+        );
+      }
+      binding.finalMessageByTurn.delete(activeTurnId);
+      binding.continuationByTurn.delete(activeTurnId);
+    }
     binding.unbind?.(); // bridge finalizes any open stream 'interrupted'
     binding.patchUnlisten?.();
     disarmWatchdog(binding);
@@ -2531,6 +3318,10 @@ export function createChannelAgentBinder(
     binding.patchUnlisten = null;
     binding.activeTurnId = null;
     binding.parentMessageIdByTurn.clear();
+    binding.finalMessageByTurn.clear();
+    binding.continuationByTurn.clear();
+    binding.completionCallbackByTurn.clear();
+    binding.deferredCompletionTerminalByTurn.clear();
     binding.activeContent = null;
     binding.activeAttachments = [];
     binding.waitingOn = null;
@@ -3007,6 +3798,7 @@ export function createChannelAgentBinder(
     rosterForChannel,
     executeCommand,
     isControlMessage,
+    recoverCompletionCallbacks,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },
@@ -3019,6 +3811,10 @@ export function createChannelAgentBinder(
         binding.unbind?.();
         binding.patchUnlisten?.();
         binding.parentMessageIdByTurn.clear();
+        binding.finalMessageByTurn.clear();
+        binding.continuationByTurn.clear();
+        binding.completionCallbackByTurn.clear();
+        binding.deferredCompletionTerminalByTurn.clear();
         // Terminal presence on shutdown (#1307). The socket carries transitions
         // only, so a binding torn down mid-turn would leave every attached
         // client pinned at thinking/streaming/waiting until something else made

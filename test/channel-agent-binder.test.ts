@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
@@ -76,6 +77,993 @@ const CHANNEL_COMMAND_CONTRACTS: Array<[string, string]> = Object.entries(
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   while (cleanup.length > 0) cleanup.pop()?.();
+});
+
+describe('channel-agent-binder — durable delegation completion callbacks', () => {
+  const callbackTargets = ['a', 'b', 'c', 'd'].map((id) => ({
+    id,
+    displayName: id.toUpperCase(),
+    kind: 'framework' as const,
+    available: true,
+    reason: null,
+  }));
+  const A: ChannelSenderRef = {
+    kind: 'agent',
+    id: builtInAgentProfileId('a'),
+    providerId: 'a',
+    displayName: 'A',
+  };
+
+  it('wakes a silent successful delegator exactly once with a typed internal trigger', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: 'work complete' }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-delegates-b',
+      'a-item',
+      '@b investigate this',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    const a = adapters.get('a')!;
+    const b = adapters.get('b')!;
+    expect(a.sendInputs[0]?.content).toContain(
+      '[Relay internal completion callback]'
+    );
+    expect(a.sendInputs[0]?.content).toContain('terminalReason=completed');
+    const bTurn = channelTurnId(delegated.id, builtInAgentProfileId('b'));
+    expect(store.getCompletionCallback(`chcb:${bTurn}`)).toMatchObject({
+      state: 'consumed',
+      messageDisposition: 'final-message',
+    });
+    b.emitTerminal('completed'); // duplicate/late terminal patch
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(a.sendCalls).toHaveLength(1);
+    // Internal callbacks never manufacture a chat row attributed to B or A.
+    expect(
+      rows(store).filter((row) => row.body.text.includes('internal completion'))
+    ).toHaveLength(0);
+  });
+
+  it('uses B’s explicit final @A once and consumes the automatic duplicate', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: '@a completed explicitly' }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-explicit-b',
+      'a-item',
+      '@b investigate this',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    const a = adapters.get('a')!;
+    expect(a.sendInputs[0]?.content).not.toContain(
+      '[Relay internal completion callback]'
+    );
+    const bTurn = channelTurnId(delegated.id, builtInAgentProfileId('b'));
+    expect(store.getCompletionCallback(`chcb:${bTurn}`)).toMatchObject({
+      state: 'consumed',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(a.sendCalls).toHaveLength(1);
+  });
+
+  for (const scenario of [
+    {
+      name: 'error',
+      reason: 'error',
+      end: (adapter: ScriptedAdapter) => adapter.emitError(),
+    },
+    {
+      name: 'interrupt',
+      reason: 'interrupt',
+      end: (adapter: ScriptedAdapter) => adapter.emitTerminal('interrupted'),
+    },
+    {
+      name: 'unexpected disconnect',
+      reason: 'unexpected-disconnect',
+      end: (adapter: ScriptedAdapter) => adapter.emitUnexpectedDisconnect(),
+    },
+  ] as const) {
+    it(`wakes the delegator on ${scenario.name} with the guarded reason`, async () => {
+      const adapters = new Map<string, ScriptedAdapter>();
+      const { binder, store } = makeBinder({
+        build: (provider) => {
+          const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+          adapters.set(provider, adapter);
+          return adapter;
+        },
+        targets: callbackTargets,
+        knownProviderIds: ['a', 'b', 'c', 'd'],
+      });
+      postAgentTurnRow(
+        store,
+        binder,
+        `a-${scenario.reason}`,
+        'a-item',
+        '@b investigate this',
+        ['a', 'b', 'c', 'd'],
+        'runtime:a',
+        A
+      );
+      await waitFor(() => adapters.has('b'));
+      scenario.end(adapters.get('b')!);
+      await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+      expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+        `terminalReason=${scenario.reason}`
+      );
+    });
+  }
+
+  it('marks a watchdog callback no-terminal-message', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      watchdogMs: 10,
+    });
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-watchdog',
+      'a-item',
+      '@b investigate this',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=watchdog'
+    );
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'messageDisposition=no-terminal-message'
+    );
+  });
+
+  it('keeps an approval-related bare idle pending until the real terminal patch', async () => {
+    const adapters = new Map<string, ScriptedAdapter | ApprovalAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter =
+          provider === 'b'
+            ? new ApprovalAdapter(provider)
+            : new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      watchdogMs: 10,
+    });
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-approval',
+      'a-item',
+      '@b investigate this',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.has('b'));
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    expect(adapters.has('a')).toBe(false);
+    const bTurn = channelTurnId(delegated.id, builtInAgentProfileId('b'));
+    expect(store.getCompletionCallback(`chcb:${bTurn}`)).toMatchObject({
+      state: 'pending',
+    });
+  });
+
+  it('unwinds A → B → C as C → B → A without a downward callback', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply-sequence', texts: ['@c investigate', 'B final'] }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-nested',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.has('c'));
+    // B has terminalized its first turn, but C is still active: A must wait.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(adapters.has('a')).toBe(false);
+    adapters.get('c')!.emitTerminal('completed');
+    await waitFor(() => adapters.get('b')?.sendCalls.length === 2);
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('c')!.sendCalls).toHaveLength(1);
+    expect(adapters.get('b')!.sendCalls).toHaveLength(2);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=completed'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    // B’s completion callback returns upward only; it never re-notifies C.
+    expect(adapters.get('c')!.sendCalls).toHaveLength(1);
+  });
+
+  it('enqueues a completion callback behind a busy delegator FIFO', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: 'B done' }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    post(store, binder, '@a keep working', ['a', 'b', 'c', 'd']);
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-busy-delegates-b',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.has('b'));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(adapters.get('a')!.sendCalls).toHaveLength(1);
+    adapters.get('a')!.emitTerminal('completed');
+    await waitFor(() => adapters.get('a')!.sendCalls.length === 2);
+    expect(adapters.get('a')!.sendInputs[1]?.content).toContain(
+      '[Relay internal completion callback]'
+    );
+  });
+
+  it('treats a nested B callback final @A as an upward return, never B → A delegation', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? {
+                mode: 'reply-sequence',
+                texts: ['@c investigate', '@a B explicitly returned'],
+              }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-nested-explicit-return',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.has('c'));
+    adapters.get('c')!.emitTerminal('completed');
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).not.toContain(
+      '[Relay internal completion callback]'
+    );
+    const bTurn = channelTurnId(delegated.id, builtInAgentProfileId('b'));
+    expect(store.getCompletionCallback(`chcb:${bTurn}`)).toMatchObject({
+      state: 'consumed',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(adapters.get('a')!.sendCalls).toHaveLength(1);
+    expect(adapters.get('c')!.sendCalls).toHaveLength(1);
+  });
+
+  it('recovers a persisted pending callback after a hub restart', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-callback-restart-')
+    );
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const first = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    postAgentTurnRow(
+      first.store,
+      first.binder,
+      'a-restart-delegates-b',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => first.sessions.spawns() === 1);
+    first.binder.close();
+    first.store.close();
+
+    const adapters = new Map<string, ScriptedAdapter>();
+    const restarted = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    await restarted.binder.recoverCompletionCallbacks();
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=unexpected-disconnect'
+    );
+  });
+
+  it('converges reciprocal A and B mentions without ping-ponging', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: '@a B explicitly returned' }
+            : { mode: 'reply', text: 'A acknowledged without delegating' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-b-mutual',
+      'a-item',
+      '@b delegated work',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(adapters.get('b')!.sendCalls).toHaveLength(1);
+    expect(adapters.get('a')!.sendCalls).toHaveLength(1);
+  });
+
+  it('does not rearm a reverse delegation when callback handling has no new @mention', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: 'B finished silently' }
+            : { mode: 'reply', text: 'A handled the callback' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-no-rearm',
+      'a-item',
+      '@b delegated work',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      '[Relay internal completion callback]'
+    );
+    expect(adapters.get('b')!.sendCalls).toHaveLength(1);
+    expect(
+      agentReplies(store, 'a').some(
+        (row) => row.body.text === 'A handled the callback'
+      )
+    ).toBe(true);
+  });
+
+  it('replays a callback after crash-before-send and consumes only after acceptance', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-callback-preaccept-')
+    );
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const firstAdapters = new Map<string, ScriptedAdapter | DeferredAdapter>();
+    const first = makeBinder({
+      build: (provider) => {
+        const adapter =
+          provider === 'a'
+            ? new DeferredAdapter(provider)
+            : new ScriptedAdapter(provider, { mode: 'reply', text: 'B done' });
+        firstAdapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    const delegated = postAgentTurnRow(
+      first.store,
+      first.binder,
+      'a-preaccept-b',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => firstAdapters.get('a') instanceof DeferredAdapter);
+    const deferred = firstAdapters.get('a') as DeferredAdapter;
+    await waitFor(() => deferred.sendCalls.length === 1);
+    const firstDispatch = deferred.sendInputs[0]!;
+    const edgeId = `chcb:${channelTurnId(delegated.id, builtInAgentProfileId('b'))}`;
+    expect(first.store.getCompletionCallback(edgeId)).toMatchObject({
+      state: 'delivered',
+    });
+    first.binder.close();
+    first.store.close();
+
+    const restartedAdapters = new Map<string, ScriptedAdapter>();
+    const restarted = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        restartedAdapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    await restarted.binder.recoverCompletionCallbacks();
+    await waitFor(() => restartedAdapters.get('a')?.sendCalls.length === 1);
+    const recoveredDispatch = restartedAdapters.get('a')!.sendInputs[0]!;
+    // Relay replays the same deterministic provider-facing identifiers. The
+    // generic adapter contract does not promise provider-side dedupe, but a
+    // provider that honors either identity sees the same dispatch on recovery.
+    expect(recoveredDispatch.turnId).toBe(firstDispatch.turnId);
+    expect(recoveredDispatch.clientMessageId).toBe(
+      firstDispatch.clientMessageId
+    );
+    expect(restarted.store.getCompletionCallback(edgeId)).toMatchObject({
+      state: 'consumed',
+    });
+    restarted.binder.close();
+    restarted.store.close();
+
+    const postAcceptance = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    await postAcceptance.binder.recoverCompletionCallbacks();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(postAcceptance.sessions.spawns()).toBe(0);
+  });
+
+  it('persists a busy delegatee admission across restart before that turn starts', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-callback-busy-restart-')
+    );
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const first = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    post(first.store, first.binder, '@b keep working', ['a', 'b', 'c', 'd']);
+    await waitFor(() => first.sessions.spawns() === 1);
+    const delegated = postAgentTurnRow(
+      first.store,
+      first.binder,
+      'a-queued-b',
+      'a-item',
+      '@b queued delegation',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    const edgeId = `chcb:${channelTurnId(delegated.id, builtInAgentProfileId('b'))}`;
+    await waitFor(() => first.store.getCompletionCallback(edgeId) !== null);
+    expect(first.store.getCompletionCallback(edgeId)).toMatchObject({
+      state: 'pending',
+    });
+    first.binder.close();
+    first.store.close();
+
+    const adapters = new Map<string, ScriptedAdapter>();
+    const restarted = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    await restarted.binder.recoverCompletionCallbacks();
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=unexpected-disconnect'
+    );
+  });
+
+  it('recovers a nested child admitted behind a busy delegatee FIFO and unwinds upward', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-callback-nested-queue-')
+    );
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const first = makeBinder({
+      build: (provider) =>
+        new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: '@c delegated while C is busy' }
+            : { mode: 'stall' }
+        ),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    post(first.store, first.binder, '@c keep working', ['a', 'b', 'c', 'd']);
+    await waitFor(() => first.sessions.spawns() === 1);
+    postAgentTurnRow(
+      first.store,
+      first.binder,
+      'a-nested-queued-c',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => agentReplies(first.store, 'b').length === 1);
+    const cTrigger = agentReplies(first.store, 'b')[0]!;
+    const childId = `chcb:${channelTurnId(cTrigger.id, builtInAgentProfileId('c'))}`;
+    await waitFor(() => first.store.getCompletionCallback(childId) !== null);
+    expect(first.store.getCompletionCallback(childId)).toMatchObject({
+      state: 'pending',
+    });
+    first.binder.close();
+    first.store.close();
+
+    const adapters = new Map<string, ScriptedAdapter>();
+    const restarted = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: 'B resumed and completed' }
+            : { mode: 'stall' }
+        );
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    await restarted.binder.recoverCompletionCallbacks();
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      '[Relay internal completion callback]'
+    );
+  });
+
+  it('releases an unaccepted callback on runtime death and rebinds it exactly once', async () => {
+    const aAdapters: Array<DeferredAdapter | ScriptedAdapter> = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (provider) => {
+        if (provider === 'a') {
+          const adapter =
+            aAdapters.length === 0
+              ? new DeferredAdapter(provider)
+              : new ScriptedAdapter(provider, { mode: 'stall' });
+          aAdapters.push(adapter);
+          return adapter;
+        }
+        return new ScriptedAdapter(provider, { mode: 'reply', text: 'B done' });
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-dead-preaccept-b',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => aAdapters[0] instanceof DeferredAdapter);
+    await waitFor(
+      () => (aAdapters[0] as DeferredAdapter).sendCalls.length === 1
+    );
+    // B is the first spawned runtime; A's still-unaccepted callback is second.
+    sessions.fireEnd('sess-2-a');
+    await waitFor(() => aAdapters.length === 2);
+    await waitFor(
+      () => (aAdapters[1] as ScriptedAdapter).sendCalls.length === 1
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect((aAdapters[1] as ScriptedAdapter).sendCalls).toHaveLength(1);
+  });
+
+  it('retries transient callback routing after configured runtimes and preserves orchestrator role', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store, sessions } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      createErrorOnce: new Error('transient runtime launch failure'),
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'callback trigger',
+    });
+    store.designateSoleOrchestrator({
+      channelId: CH,
+      profileActorId: builtInAgentProfileId('a'),
+      agentFramework: 'a',
+    });
+    const edge = store.createCompletionCallback({
+      id: 'chcb:transient-recovery',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: trigger.id,
+      requesterProfileId: builtInAgentProfileId('a'),
+      targetProfileId: builtInAgentProfileId('b'),
+      targetRuntimeId: 'runtime:b',
+      targetTurnId: 'turn:transient-recovery',
+    });
+    store.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'error',
+      messageDisposition: 'no-terminal-message',
+    });
+    await binder.recoverCompletionCallbacks();
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(sessions.spawns()).toBe(2);
+    expect(sessions.lastCreateParams()?.role).toBe('orchestrator');
+  });
+
+  it('terminalizes a delegatee FIFO-cap rejection upward instead of dropping its edge', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    post(store, binder, '@b occupy the worker', ['a', 'b', 'c', 'd']);
+    await waitFor(() => adapters.get('b')?.sendCalls.length === 1);
+    for (let index = 0; index < 8; index += 1) {
+      post(store, binder, `@b queued ${index}`, ['a', 'b', 'c', 'd']);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-cap-delegates-b',
+      'a-item',
+      '@b one too many',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=error'
+    );
+  });
+
+  it('queues a callback-bearing delegation behind a busy steerable agent instead of steering it', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (provider) => {
+        return new SteerableAdapter(provider, true);
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    post(store, binder, '@b keep the native turn active', ['a', 'b', 'c', 'd']);
+    await waitFor(() => sessions.spawns() === 1);
+    const b = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as SteerableAdapter;
+    await waitFor(() => b.sendCalls.length === 1);
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-steerable-delegates-b',
+      'a-item',
+      '@b must be its own callback edge',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(b.steerAttempts).toHaveLength(0);
+    expect(b.sendCalls).toHaveLength(1);
+    b.completeLatest();
+    await waitFor(() => b.sendCalls.length === 2);
+    const targetTurnId = channelTurnId(
+      delegated.id,
+      builtInAgentProfileId('b')
+    );
+    expect(b.sendInputs[1]?.turnId).toBe(targetTurnId);
+    expect(store.getCompletionCallback(`chcb:${targetTurnId}`)).toMatchObject({
+      targetTurnId,
+    });
+  });
+
+  it('releases a queued upward callback when its busy requester runtime dies', async () => {
+    const aAdapters: ScriptedAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(
+          provider,
+          provider === 'b'
+            ? { mode: 'reply', text: 'B done' }
+            : { mode: 'stall' }
+        );
+        if (provider === 'a') aAdapters.push(adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    post(store, binder, '@a keep working', ['a', 'b', 'c', 'd']);
+    await waitFor(() => aAdapters[0]?.sendCalls.length === 1);
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-upward-queued-delegates-b',
+      'a-item',
+      '@b investigate',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    const edgeId = `chcb:${channelTurnId(delegated.id, builtInAgentProfileId('b'))}`;
+    await waitFor(
+      () => store.getCompletionCallback(edgeId)?.state === 'delivered'
+    );
+    sessions.fireEnd('sess-1-a');
+    await waitFor(() => aAdapters.length === 2);
+    await waitFor(() => aAdapters[1]?.sendCalls.length === 1);
+    expect(store.getCompletionCallback(edgeId)).toMatchObject({
+      state: 'consumed',
+    });
+  });
+
+  it('terminalizes a queued downward delegation when its delegatee runtime dies', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store, sessions } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, { mode: 'stall' });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    post(store, binder, '@b keep working', ['a', 'b', 'c', 'd']);
+    await waitFor(() => adapters.get('b')?.sendCalls.length === 1);
+    const delegated = postAgentTurnRow(
+      store,
+      binder,
+      'a-downward-queued-delegates-b',
+      'a-item',
+      '@b queued work',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    const edgeId = `chcb:${channelTurnId(delegated.id, builtInAgentProfileId('b'))}`;
+    await waitFor(
+      () => store.getCompletionCallback(edgeId)?.state === 'pending'
+    );
+    sessions.fireEnd('sess-1-b');
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 1);
+    expect(adapters.get('a')!.sendInputs[0]?.content).toContain(
+      'terminalReason=unexpected-disconnect'
+    );
+    expect(store.getCompletionCallback(edgeId)).toMatchObject({
+      state: 'consumed',
+    });
+  });
+
+  it('prunes expired settled callback rows during live callback mutation without restart', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-callback-live-prune-')
+    );
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const storePath = path.join(dir, 'channel-chat.db');
+    const { binder, store } = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      storePath,
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'old callback trigger',
+    });
+    const old = store.createCompletionCallback({
+      id: 'chcb:expired-live-row',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: trigger.id,
+      requesterProfileId: builtInAgentProfileId('a'),
+      targetProfileId: builtInAgentProfileId('b'),
+      targetRuntimeId: 'runtime:b',
+      targetTurnId: 'turn:expired-live-row',
+    });
+    store.satisfyCompletionCallback({
+      channelId: old.channelId,
+      targetProfileId: old.targetProfileId,
+      targetTurnId: old.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    store.claimSatisfiedCompletionCallbacks();
+    expect(store.consumeCompletionCallback(old.id)).toBe(true);
+    const raw = new Database(storePath);
+    raw
+      .prepare(
+        `UPDATE channel_completion_callbacks
+          SET consumed_at = ?, updated_at = ?
+        WHERE id = ?`
+      )
+      .run(
+        new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString(),
+        new Date().toISOString(),
+        old.id
+      );
+    raw.close();
+
+    postAgentTurnRow(
+      store,
+      binder,
+      'a-prune-live-delegates-b',
+      'a-item',
+      '@b trigger a live callback mutation',
+      ['a', 'b', 'c', 'd'],
+      'runtime:a',
+      A
+    );
+    await waitFor(() => store.getCompletionCallback(old.id) === null);
+  });
+
+  it('drains more than one bounded recovery batch without stranding callback edges', async () => {
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (provider) => {
+        const adapter = new ScriptedAdapter(provider, {
+          mode: 'reply',
+          text: 'ack',
+        });
+        adapters.set(provider, adapter);
+        return adapter;
+      },
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'batch callback trigger',
+    });
+    for (let index = 0; index < 101; index += 1) {
+      const edge = store.createCompletionCallback({
+        id: `chcb:batch:${index}`,
+        channelId: CH,
+        threadId: null,
+        triggerMessageId: trigger.id,
+        requesterProfileId: builtInAgentProfileId('a'),
+        targetProfileId: builtInAgentProfileId('b'),
+        targetRuntimeId: 'runtime:b',
+        targetTurnId: `turn:batch:${index}`,
+      });
+      store.satisfyCompletionCallback({
+        channelId: edge.channelId,
+        targetProfileId: edge.targetProfileId,
+        targetTurnId: edge.targetTurnId,
+        terminalReason: 'completed',
+        messageDisposition: 'no-terminal-message',
+      });
+    }
+    await binder.recoverCompletionCallbacks();
+    await waitFor(() => adapters.get('a')?.sendCalls.length === 101, 8000);
+    expect(store.claimSatisfiedCompletionCallbacks()).toEqual([]);
+  });
 });
 
 const CH = 'topic:test';
@@ -195,6 +1183,8 @@ type ScriptMode =
   | { mode: 'stall' }
   | { mode: 'reply'; text: string }
   | { mode: 'reply-items'; texts: string[] }
+  | { mode: 'reply-items-once-then-stall'; texts: string[] }
+  | { mode: 'reply-sequence'; texts: string[] }
   | { mode: 'reject' }
   | { mode: 'reject-once-then-reply'; text: string };
 
@@ -212,6 +1202,7 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
   private _status: AdapterStatus = 'disconnected';
   private sid = 'scripted';
   private rejected = false;
+  private lastTurnId: string | null = null;
 
   constructor(
     readonly agentType: string,
@@ -238,18 +1229,71 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     this.sendCalls.push(input.turnId);
     this.sendInputs.push(input);
+    this.lastTurnId = input.turnId;
     if (this.script.mode === 'reject-once-then-reply' && !this.rejected) {
       this.rejected = true;
       throw new Error('transport down');
     }
     if (this.script.mode === 'reject') throw new Error('transport down');
-    if (this.script.mode === 'stall') return; // resolve, never complete
+    if (
+      this.script.mode === 'stall' ||
+      (this.script.mode === 'reply-items-once-then-stall' &&
+        this.sendCalls.length > 1)
+    ) {
+      return; // resolve, never complete
+    }
     this.runReplyItems(
       input.turnId,
-      this.script.mode === 'reply-items'
+      this.script.mode === 'reply-items' ||
+        this.script.mode === 'reply-items-once-then-stall'
         ? this.script.texts
-        : [this.script.text]
+        : this.script.mode === 'reply-sequence'
+          ? [
+              this.script.texts[
+                Math.min(
+                  this.sendCalls.length - 1,
+                  this.script.texts.length - 1
+                )
+              ] ?? '',
+            ]
+          : [this.script.text]
     );
+  }
+
+  emitTerminal(status: 'completed' | 'interrupted' | 'failed'): void {
+    if (!this.lastTurnId) return;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: this.lastTurnId,
+      status,
+    });
+  }
+
+  emitError(message = 'scripted error'): void {
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      ...(this.lastTurnId ? { turnId: this.lastTurnId } : {}),
+      message,
+    });
+  }
+
+  emitUnexpectedDisconnect(): void {
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'disconnected',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        queueLength: 0,
+      },
+    });
   }
 
   private runReplyItems(turnId: string, texts: string[]): void {
@@ -645,6 +1689,7 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
     queue: false,
   };
   readonly sendCalls: string[] = [];
+  readonly sendInputs: AgentSendMessageInputV2[] = [];
   private _status: AdapterStatus = 'disconnected';
   private sid = 'deferred';
   private readonly pending = new Map<
@@ -673,6 +1718,7 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
 
   sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     this.sendCalls.push(input.turnId);
+    this.sendInputs.push(input);
     return new Promise<void>((resolve, reject) => {
       this.pending.set(input.turnId, { resolve, reject });
     });
@@ -1061,6 +2107,7 @@ function makeSessions(
   opts: {
     throwOnCreate?: boolean;
     createError?: unknown;
+    createErrorOnce?: unknown;
     gate?: Promise<void>;
   } = {}
 ): SessionsHarness {
@@ -1069,6 +2116,7 @@ function makeSessions(
   const endCbs: Array<(id: string) => void> = [];
   const destroyCalls: string[] = [];
   let spawns = 0;
+  let createErrorOnceRaised = false;
   let lastParams: CreateChannelAgentRuntimeParams | undefined;
   const createParams: CreateChannelAgentRuntimeParams[] = [];
   const sessions: BinderRuntimes = {
@@ -1077,6 +2125,10 @@ function makeSessions(
       lastParams = params;
       createParams.push(params);
       if (opts.createError !== undefined) throw opts.createError;
+      if (opts.createErrorOnce !== undefined && !createErrorOnceRaised) {
+        createErrorOnceRaised = true;
+        throw opts.createErrorOnce;
+      }
       if (opts.throwOnCreate) throw new Error('boom: spawn failed');
       // Optional gate: park the spawn so a test can drive a close()/reorder race
       // between runtime creation being invoked and its continuation resuming.
@@ -1185,6 +2237,7 @@ function makeBinder(cfg: {
   presenceSweepMs?: number;
   throwOnCreate?: boolean;
   createError?: unknown;
+  createErrorOnce?: unknown;
   yolo?: boolean;
   gate?: Promise<void>;
   attachmentStore?: ChannelAttachmentStore;
@@ -1201,6 +2254,9 @@ function makeBinder(cfg: {
   const sessions = makeSessions(cfg.build, {
     ...(cfg.throwOnCreate ? { throwOnCreate: true } : {}),
     ...(cfg.createError !== undefined ? { createError: cfg.createError } : {}),
+    ...(cfg.createErrorOnce !== undefined
+      ? { createErrorOnce: cfg.createErrorOnce }
+      : {}),
     ...(cfg.gate ? { gate: cfg.gate } : {}),
   });
   const binder = createChannelAgentBinder({
@@ -3011,7 +4067,10 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     const build = (agentType: string) =>
       agentType === 'a'
         ? new ScriptedAdapter('a', {
-            mode: 'reply-items',
+            // Completion callbacks are now intentionally delivered back to A.
+            // Keep this fan-out-counting fixture focused on A's FIRST provider
+            // turn so a callback re-entry cannot manufacture another batch.
+            mode: 'reply-items-once-then-stall',
             texts: ['one @b @c', 'two @b', 'three @b', 'four @b'],
           })
         : new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' });

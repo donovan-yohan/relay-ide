@@ -40,6 +40,9 @@ workflow.
   existing WorkContext artifact and CLI surfaces (#1368)
 - Expose stable CLI gateway commands for scoped channel list, get, history,
   thread-history, roster, and post access (#1372)
+- Deliver durable, exactly-once upward completion callbacks for explicit
+  agent-to-agent channel delegations, including restart recovery, busy-agent
+  FIFO queueing, nested child fan-in, and explicit-return de-duplication (#1359)
 
 #### Changed
 

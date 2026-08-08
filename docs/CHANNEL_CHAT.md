@@ -265,6 +265,52 @@ patches and channel messages. It:
 The provider adapter protocol remains internal execution infrastructure.
 Conversation state and rendering are always channel-native.
 
+### Delegation completion callbacks
+
+An explicit agent-to-agent `@mention` creates a durable, per-routed-turn
+callback edge from the delegator to the delegatee. The edge is scoped to the
+channel and thread, original trigger message, requester and target profile,
+target runtime, and target turn identity. It is Relay routing state, never a
+synthetic chat row.
+
+The directional invariant is: **delegation travels downward; completion travels
+upward; completion never creates a reverse delegation.** The one-shot lifecycle
+is `pending → satisfied → delivered → consumed`; guarded SQLite transitions make
+late or duplicate provider terminal patches inert. A delivered callback remains
+recoverable until the requester adapter resolves its typed-trigger acceptance;
+hub startup re-offers any such volatile FIFO offer. Relay uses the same
+deterministic recipient turn id and client-message id on every re-offer. Only
+that post-accept CAS consumes the edge, so a crash before Relay calls the
+adapter cannot lose it and a late Relay retry cannot fabricate a second Relay
+wake. The generic provider adapter contract has no durable provider acceptance
+receipt or declared external idempotency capability, however: a process crash
+after an external provider accepts input but before Relay observes the promise
+may produce an at-least-once external dispatch on recovery. Consumed rows retain
+bounded idempotency history while unresolved parent/child ancestry is preserved.
+
+- Completed, failed, interrupted, unexpected-disconnect, safe-idle fallback,
+  and watchdog terminalization can satisfy an edge. A watchdog with no prose
+  response explicitly carries `no-terminal-message`.
+- A raw provider `idle` is not enough. Approval/waiting state keeps the edge
+  pending until Relay's guarded terminal lifecycle observes a real boundary.
+- Relay sends a typed internal completion trigger that references the delegatee
+  final message and terminal reason. It does not add a row pretending the
+  delegatee wrote an `@mention`. If the delegatee already explicitly returns to
+  its requester in its final row, that ordinary route consumes the edge and
+  suppresses the automatic duplicate.
+- Nested delegation is durable fan-in: if B delegates C (or C and D) while
+  handling A, B's first terminal stores its evidence but A waits. Each child
+  completion wakes B once; only the last callback-triggered B continuation
+  releases A. A callback-triggered response has no reverse edge unless it makes
+  a new explicit downstream delegation.
+
+Callback delivery uses the existing per-profile FIFO, so a busy requester is
+queued behind its live turn. Downward callback edges are persisted before the
+delegatee enters that FIFO; queue-cap rejection terminalizes that edge upward
+instead of silently losing it. The consecutive agent-turn brake remains in
+force for every normal mention route and admits child intent only after its
+turn passes the brake.
+
 ## Threads
 
 Thread replies use the root message id as `threadId` and
