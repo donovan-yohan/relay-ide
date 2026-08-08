@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PrimeAgentRpcClient,
+  PrimeAgentRpcResponseError,
   type PrimeAgentRpcClientOptions,
 } from '../../../server/prime-agent-rpc-client.js';
+import { AgentControlUnavailableError } from '../../../server/protocol-adapter-v2.js';
 import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
@@ -141,7 +143,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       resume: true,
       approvals: false,
       questions: false,
-      compact: true,
+      compact: false,
       telemetry: true,
     });
     const snapshot = patches.find(
@@ -160,9 +162,12 @@ describe('PrimeAgentProtocolAdapter', () => {
     const { adapter, call, patches } = harness();
     await adapter.connect(config);
 
+    expect(adapter.getSlashCommands().map((command) => command.name)).toEqual([
+      'model',
+      'thinking',
+    ]);
     expect(adapter.getSlashCommands()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'new', destructive: true }),
         expect.objectContaining({
           name: 'model',
           args: expect.arrayContaining([
@@ -174,9 +179,8 @@ describe('PrimeAgentProtocolAdapter', () => {
         }),
         expect.objectContaining({
           name: 'thinking',
-          args: expect.arrayContaining([{ value: 'xhigh' }]),
+          args: [{ value: 'xhigh' }],
         }),
-        expect.objectContaining({ name: 'compact' }),
       ])
     );
 
@@ -199,20 +203,13 @@ describe('PrimeAgentProtocolAdapter', () => {
     });
     await adapter.executeControlCommand({
       command: 'thinking',
-      args: 'high',
+      args: 'xhigh',
     });
-    await adapter.executeControlCommand({ command: 'compact' });
-    await expect(
-      adapter.executeControlCommand({ command: 'new' })
-    ).rejects.toThrow('requires confirmation');
-    await adapter.executeControlCommand({ command: 'new', confirmed: true });
 
     expect(call.mock.calls).toEqual(
       expect.arrayContaining([
         ['set_model', { provider: 'prime-inference', modelId: 'claude-prime' }],
-        ['set_thinking_level', { level: 'high' }],
-        ['compact'],
-        ['new_session'],
+        ['set_thinking_level', { level: 'xhigh' }],
       ])
     );
     expect(patches).toEqual(
@@ -221,55 +218,199 @@ describe('PrimeAgentProtocolAdapter', () => {
           type: 'agent-session-updated-v2',
           slashCommands: expect.any(Array),
         }),
-        expect.objectContaining({
-          type: 'agent-session-updated-v2',
-          providerSession: {
-            primeAgentSessionId: 'prime-2',
-            primeAgentSessionFile: '/tmp/prime-2.jsonl',
-          },
-        }),
       ])
     );
   });
 
-  it('clears stale optional state after a fresh Prime session', async () => {
-    const { adapter, call, patches } = harness();
+  it('keeps the catalog empty until delayed current-runtime discovery completes', async () => {
+    const { adapter, call } = harness();
+    let releaseDiscovery!: (value: Record<string, unknown>) => void;
+    const discovery = new Promise<Record<string, unknown>>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    call.mockImplementation(async (type) => {
+      if (type === 'get_available_models') return await discovery;
+      return { type: 'response', command: type, success: true };
+    });
+
+    const connected = adapter.connect(config);
+    await vi.waitFor(() =>
+      expect(call).toHaveBeenCalledWith('get_available_models')
+    );
+    expect(adapter.getSlashCommands()).toEqual([]);
+
+    releaseDiscovery({
+      type: 'response',
+      command: 'get_available_models',
+      success: true,
+      data: {
+        models: [
+          {
+            id: 'delayed-prime',
+            provider: 'prime-inference',
+            reasoning: false,
+          },
+        ],
+      },
+    });
+    await connected;
+
+    expect(adapter.getSlashCommands().map((command) => command.name)).toEqual([
+      'model',
+    ]);
+  });
+
+  it('retracts only a native method-not-found control and returns typed unavailability', async () => {
+    const { adapter, call } = harness();
     await adapter.connect(config);
     call.mockImplementation(async (type) => {
-      if (type === 'new_session') {
-        return {
+      if (type === 'set_model') {
+        throw new PrimeAgentRpcResponseError('set_model', {
           type: 'response',
-          command: type,
-          success: true,
-          data: { cancelled: false },
-        };
-      }
-      if (type === 'get_state') {
-        return {
-          type: 'response',
-          command: type,
-          success: true,
-          data: { sessionId: 'prime-empty' },
-        };
+          command: 'set_model',
+          success: false,
+          error: 'unknown command: set_model',
+        });
       }
       return { type: 'response', command: type, success: true };
     });
 
-    const result = await adapter.executeControlCommand({
-      command: 'new',
-      confirmed: true,
+    await expect(
+      adapter.executeControlCommand({
+        command: 'model',
+        args: 'prime-inference/gpt-prime',
+      })
+    ).rejects.toBeInstanceOf(AgentControlUnavailableError);
+    expect(adapter.getSlashCommands().map((command) => command.name)).toEqual(
+      expect.not.arrayContaining(['model'])
+    );
+    expect(adapter.getSlashCommands().map((command) => command.name)).toEqual([
+      'thinking',
+    ]);
+  });
+
+  it('does not retract controls for ordinary provider or validation failures', async () => {
+    const { adapter, call } = harness();
+    await adapter.connect(config);
+    call.mockImplementation(async (type) => {
+      if (type === 'set_model') {
+        throw new PrimeAgentRpcResponseError('set_model', {
+          type: 'response',
+          command: 'set_model',
+          success: false,
+          error: 'unknown model: prime-inference/gpt-prime',
+        });
+      }
+      return { type: 'response', command: type, success: true };
     });
-    expect(result.config).toEqual({});
-    expect(patches.at(-1)).toMatchObject({
-      type: 'agent-session-updated-v2',
-      providerSession: { primeAgentSessionId: 'prime-empty' },
-      config: {},
+
+    await expect(
+      adapter.executeControlCommand({
+        command: 'model',
+        args: 'prime-inference/gpt-prime',
+      })
+    ).rejects.toThrow('unknown model');
+    await expect(
+      adapter.executeControlCommand({
+        command: 'thinking',
+        args: 'turbo',
+      })
+    ).rejects.toThrow('thinking must be one of');
+    expect(adapter.getSlashCommands().map((command) => command.name)).toContain(
+      'model'
+    );
+  });
+
+  it('fences stale discovery when a reconnect replaces its RPC client', async () => {
+    const first = new PrimeAgentRpcClient();
+    const second = new PrimeAgentRpcClient();
+    const startResponse = {
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: {
+        sessionId: 'prime-session',
+        model: {
+          id: 'current',
+          provider: 'prime-inference',
+          reasoning: false,
+        },
+      },
+    };
+    vi.spyOn(first, 'start').mockResolvedValue(startResponse);
+    vi.spyOn(second, 'start').mockResolvedValue(startResponse);
+    vi.spyOn(first, 'stop').mockResolvedValue();
+    vi.spyOn(second, 'stop').mockResolvedValue();
+    let releaseFirstDiscovery!: (value: Record<string, unknown>) => void;
+    const firstDiscovery = new Promise<Record<string, unknown>>((resolve) => {
+      releaseFirstDiscovery = resolve;
     });
-    expect(
-      (patches.at(-1)?.providerSession as Record<string, unknown>)?.[
-        'primeAgentSessionFile'
-      ]
-    ).toBeUndefined();
+    const firstCall = vi
+      .spyOn(first, 'call')
+      .mockImplementation(async (type) => {
+        if (type === 'get_available_models') return await firstDiscovery;
+        return { type: 'response', command: type, success: true };
+      });
+    vi.spyOn(second, 'call').mockResolvedValue({
+      type: 'response',
+      command: 'get_available_models',
+      success: true,
+      data: {
+        models: [
+          {
+            id: 'fresh',
+            provider: 'prime-inference',
+            reasoning: false,
+          },
+        ],
+      },
+    });
+    const clients = [first, second];
+    const adapter = new PrimeAgentProtocolAdapter(() => {
+      const client = clients.shift();
+      if (!client) throw new Error('unexpected Prime client');
+      return client;
+    });
+
+    const staleConnect = adapter.connect(config);
+    await vi.waitFor(() =>
+      expect(firstCall).toHaveBeenCalledWith('get_available_models')
+    );
+    first.emit('close', 0);
+    await adapter.reconnect();
+    const modelArgs = () =>
+      adapter.getSlashCommands().find((command) => command.name === 'model')
+        ?.args;
+    expect(modelArgs()).toEqual([
+      {
+        value: 'prime-inference/fresh',
+        label: 'fresh',
+        description: 'prime-inference',
+      },
+    ]);
+
+    releaseFirstDiscovery({
+      type: 'response',
+      command: 'get_available_models',
+      success: true,
+      data: {
+        models: [
+          {
+            id: 'stale',
+            provider: 'prime-inference',
+            reasoning: false,
+          },
+        ],
+      },
+    });
+    await staleConnect;
+    expect(modelArgs()).toEqual([
+      {
+        value: 'prime-inference/fresh',
+        label: 'fresh',
+        description: 'prime-inference',
+      },
+    ]);
   });
 
   it('serializes controls against prompts and other controls', async () => {
@@ -315,7 +456,7 @@ describe('PrimeAgentProtocolAdapter', () => {
       adapter.sendMessage({ turnId: 'racing-turn', content: 'hello' })
     ).rejects.toThrow('control command is in progress');
     await expect(
-      adapter.executeControlCommand({ command: 'compact' })
+      adapter.executeControlCommand({ command: 'thinking', args: 'xhigh' })
     ).rejects.toThrow('another Prime Agent control command is in progress');
 
     releaseModel();
@@ -842,26 +983,25 @@ describe('PrimeAgentProtocolAdapter', () => {
     );
   });
 
-  it('runs /compact through native RPC and terminalizes the Relay turn', async () => {
+  it('sends literal /compact text as a normal Prime prompt', async () => {
     const { adapter, call, patches } = harness();
     call.mockImplementation(async (type) => ({
       type: 'response',
       command: type,
       success: true,
-      ...(type === 'compact' ? { data: { tokensBefore: 100 } } : {}),
     }));
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 'compact', content: '/compact' });
     expect(call.mock.calls.map(([type]) => type)).toEqual([
       'get_available_models',
-      'compact',
+      'prompt',
     ]);
-    expect(patches).toEqual(
+    expect(call).toHaveBeenCalledWith('prompt', { message: '/compact' });
+    expect(patches).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-turn-completed-v2',
           turnId: 'compact',
-          status: 'completed',
         }),
       ])
     );

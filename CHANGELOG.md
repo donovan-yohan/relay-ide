@@ -28,7 +28,8 @@ workflow.
   (#1353)
 - Run Prime Agent as a built-in terminal and channel provider through its native RPC mode (#1340)
 - Run Pi as a built-in terminal and channel provider through its native JSONL RPC mode (#1349)
-- Control Prime Agent models, reasoning, compaction, and fresh sessions from the `@agent/` command palette (#1345)
+- Discover Prime Agent model and live-evidenced reasoning controls from the
+  connected runtime in the `@agent/` command palette (#1345, #1377)
 - Create and name new folders directly in the local Add Project browser (#1338)
 - Start project-scoped channels and direct messages from per-project sidebar
   add controls, with an explicit project selector in New Chat (#1347)
@@ -82,6 +83,9 @@ workflow.
 - Apply Codex model, reasoning-effort, and Fast Mode controls through stable
   turn overrides, stop advertising unimplemented Claude controls, and pass
   profile effort into Claude launches (#1375)
+- Discover Prime Agent model controls from the current RPC runtime before
+  advertising them, show thinking only for explicit live model metadata, and
+  keep fresh-session and compaction controls hidden pending a capability source (#1377)
 - Agent profiles whose launch command is missing now appear unavailable in channel rosters and mention palettes, and spawn races report an actionable configuration error instead of raw `ENOENT` (#1357)
 - Codex reasoning cards now show expandable provider-generated summaries when available, and no longer show inactive expand chevrons when no summary exists
 - Terminal-style text field block cursors now align with the input content line

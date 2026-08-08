@@ -17,6 +17,7 @@ import {
 } from './channel-message-store.js';
 import type { ChannelHub, ChannelMessagePostedOptions } from './channel-hub.js';
 import {
+  AgentControlUnavailableError,
   AgentSteerRejectedError,
   type Attachment,
   type ProtocolAdapterV2,
@@ -25,7 +26,10 @@ import type {
   ChannelAgentRuntime,
   CreateChannelAgentRuntimeParams,
 } from './channel-agent-runtime.js';
-import { relayControlCatalogForProvider } from '../shared/agent-command-catalog.js';
+import {
+  relayControlCatalogForProvider,
+  relayControlInputGuardCatalogForProvider,
+} from '../shared/agent-command-catalog.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { AgentProfileStore } from './agent-profile-store.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
@@ -412,6 +416,7 @@ export class ChannelAgentCommandError extends Error {
       | 'UNKNOWN_COMMAND'
       | 'UNSUPPORTED_DISPATCH'
       | 'UNSUPPORTED_PROVIDER'
+      | 'UNAVAILABLE_COMMAND'
       | 'CONFIRMATION_REQUIRED'
   ) {
     super(message);
@@ -2910,9 +2915,9 @@ export function createChannelAgentBinder(
     let selected = preview.find(
       (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
     );
-    // Static catalog entries make pre-bind previews possible. Other adapters
-    // may expose their own relay controls only after connect; discover those
-    // through the same adapter contract rather than a provider branch.
+    // Static catalog entries make pre-bind previews possible. Providers that
+    // require live discovery intentionally publish no static entry, so the
+    // same path binds and reselects only after their catalog is authoritative.
     if (!selected && !binding) {
       binding = await ensureProfileBinding(channelId, profile);
       preview = binding.adapter?.getSlashCommands?.() ?? [];
@@ -2945,11 +2950,21 @@ export function createChannelAgentBinder(
         'UNSUPPORTED_PROVIDER'
       );
     }
-    return binding.adapter.executeControlCommand({
-      command: selected.name,
-      ...(args ? { args } : {}),
-      ...(confirmed !== undefined ? { confirmed } : {}),
-    });
+    try {
+      return await binding.adapter.executeControlCommand({
+        command: selected.name,
+        ...(args ? { args } : {}),
+        ...(confirmed !== undefined ? { confirmed } : {}),
+      });
+    } catch (error) {
+      if (error instanceof AgentControlUnavailableError) {
+        throw new ChannelAgentCommandError(
+          error.message,
+          'UNAVAILABLE_COMMAND'
+        );
+      }
+      throw error;
+    }
   }
 
   function isControlMessage(text: string): boolean {
@@ -2984,7 +2999,7 @@ export function createChannelAgentBinder(
         ?.toLowerCase();
       if (
         command &&
-        relayControlCatalogForProvider(mention.providerId).some(
+        relayControlInputGuardCatalogForProvider(mention.providerId).some(
           (entry) =>
             entry.name === command || (entry.aliases ?? []).includes(command)
         )

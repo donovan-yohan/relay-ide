@@ -134,18 +134,12 @@ const CODEX_CONTROLS: AgentSlashCommandV2[] = [
   },
 ];
 
-const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
-  {
-    id: 'relay:prime-agent:new',
-    name: 'new',
-    aliases: ['clear', 'reset'],
-    description: 'Start a fresh Prime Agent session',
-    source: 'builtin',
-    sourceLabel: 'Prime Agent',
-    dispatch: 'relay-control',
-    collisionKey: 'clear',
-    destructive: true,
-  },
+/**
+ * Prime controls are definitions for its connected adapter, not a pre-bind
+ * preview. Unlike Codex, Prime has no static control contract that Relay can
+ * safely promise before the current RPC runtime has completed discovery.
+ */
+const PRIME_AGENT_CONTROL_DEFINITIONS: AgentSlashCommandV2[] = [
   {
     id: 'relay:prime-agent:model',
     name: 'model',
@@ -170,26 +164,42 @@ const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
     dispatch: 'relay-control',
     collisionKey: 'thinking',
   },
-  {
-    id: 'relay:prime-agent:compact',
-    name: 'compact',
-    description: 'Compact the current Prime Agent session context',
-    source: 'builtin',
-    sourceLabel: 'Prime Agent',
-    dispatch: 'relay-control',
-    collisionKey: 'compact',
-  },
 ];
 
 export function relayControlCatalogForProvider(
   providerId: string
 ): AgentSlashCommandV2[] {
+  const controls = providerId === 'codex' ? CODEX_CONTROLS : [];
+  return cloneCatalog(controls);
+}
+
+/**
+ * Returns Prime's candidate controls for a connected adapter to narrow using
+ * the current RPC runtime's live discovery result.
+ */
+export function primeAgentControlDefinitions(): AgentSlashCommandV2[] {
+  return cloneCatalog(PRIME_AGENT_CONTROL_DEFINITIONS);
+}
+
+/**
+ * Controls reserved from ordinary channel prose. Prime's candidate set is
+ * limited to controls that its connected adapter can discover and execute;
+ * undiscovered candidates are not advertised, but are still kept off the
+ * ordinary-message lane.
+ */
+export function relayControlInputGuardCatalogForProvider(
+  providerId: string
+): AgentSlashCommandV2[] {
   const controls =
-    providerId === 'codex'
-      ? CODEX_CONTROLS
-      : providerId === 'prime-agent'
-        ? PRIME_AGENT_CONTROLS
+    providerId === 'prime-agent'
+      ? PRIME_AGENT_CONTROL_DEFINITIONS
+      : providerId === 'codex'
+        ? CODEX_CONTROLS
         : [];
+  return cloneCatalog(controls);
+}
+
+function cloneCatalog(controls: AgentSlashCommandV2[]): AgentSlashCommandV2[] {
   return controls.map((command) => ({
     ...command,
     ...(command.aliases ? { aliases: [...command.aliases] } : {}),

@@ -6,7 +6,7 @@ import React, {
   useState,
 } from 'react';
 import './ChannelComposer.css';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ChannelImagePart,
   ChannelMemberRef,
@@ -205,6 +205,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   onRestore,
   restorePending,
 }) => {
+  const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineBreakGuardRef = useRef(createLineBreakSubmitGuard());
   // Idempotency (§6.3): one clientMessageId per draft attempt, reused on retry
@@ -604,6 +605,11 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         ...(confirmed ? { confirmed: true } : {}),
       })
         .then(() => {
+          // The control may have changed the provider's live catalog. Invalidate
+          // before clearing the trigger so this active query immediately refetches.
+          void queryClient.invalidateQueries({
+            queryKey: ['channel-roster', channelId],
+          });
           setCommandStatus(
             `/${command.name} applied to @${commandTrigger.contact.displayName}`
           );
@@ -614,13 +620,18 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           setPaletteDismissed(true);
         })
         .catch((error) => {
+          // An UNAVAILABLE_COMMAND response retracts a stale control on the
+          // server; refresh here rather than waiting for the 30s roster cache.
+          void queryClient.invalidateQueries({
+            queryKey: ['channel-roster', channelId],
+          });
           const detail =
             error instanceof Error ? error.message : 'command failed';
           setCommandStatus(`/${command.name} failed: ${detail}`);
         })
         .finally(() => setCommandPending(false));
     },
-    [channelId, commandPending, commandTrigger]
+    [channelId, commandPending, commandTrigger, queryClient]
   );
 
   const selectCommand = useCallback(
