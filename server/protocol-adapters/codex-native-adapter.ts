@@ -135,6 +135,7 @@ const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {
 
 const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] =
   relayControlCatalogForProvider('codex');
+const CODEX_MODEL_CONTROL_KEYS = new Set(['model', 'effort', 'fast']);
 /*
 export const RELAY_CODEX_COMMANDS: AgentSlashCommandV2[] = [
   {
@@ -559,7 +560,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   /** Runtime controls survive follow-up turns on this adapter, never raw prompts. */
   private pendingModelOverride: string | null = null;
   private pendingEffortOverride: string | null = null;
-  private pendingServiceTier: 'fast' | null = null;
+  private pendingServiceTier: string | null = null;
 
   // Pending approvals keyed by relay item id (e.g. "approval-{requestId}")
   private readonly pendingApprovals = new Map<
@@ -601,7 +602,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // Slash commands
   private slashCommandsLoaded = false;
-  private commandCatalog: AgentSlashCommandV2[] = [...RELAY_CODEX_COMMANDS];
+  private commandCatalog: AgentSlashCommandV2[] = RELAY_CODEX_COMMANDS.filter(
+    (command) => !CODEX_MODEL_CONTROL_KEYS.has(command.collisionKey ?? '')
+  );
   private fastModeAvailable = false;
   private supportedReasoningEfforts: string[] | null = null;
   private modelCatalog: Record<string, unknown>[] = [];
@@ -627,6 +630,13 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   async connect(config: AdapterConfig): Promise<void> {
     this.config = config;
+    this.modelCatalog = [];
+    this.supportedReasoningEfforts = null;
+    this.fastModeAvailable = false;
+    this.skillCommands = [];
+    this.commandCatalog = RELAY_CODEX_COMMANDS.filter(
+      (command) => !CODEX_MODEL_CONTROL_KEYS.has(command.collisionKey ?? '')
+    );
     const client = this.createClient(config);
     this.client = client;
     this.exitedProcessRootPid = null;
@@ -819,9 +829,6 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         (entry.name === command || (entry.aliases ?? []).includes(command))
     );
     if (!known) throw new Error('unsupported Codex control command');
-    if (known.collisionKey === 'fast' && !this.fastModeAvailable) {
-      throw new Error('Codex Fast Mode is unavailable for the selected model');
-    }
     await this.handleControlAction(
       known.collisionKey ?? known.name,
       input.args?.trim() ?? ''
@@ -2774,16 +2781,22 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
         case 'model': {
           if (!arg) throw new Error('model requires an argument');
-          const clearFastTier =
-            this.pendingServiceTier === 'fast' &&
-            this.modelCatalog.length > 0 &&
-            !this.modelSupportsFast(arg);
-          await this.updateThreadSettings({
-            model: arg,
-            ...(clearFastTier ? { serviceTier: null } : {}),
-          });
+          if (this.modelCatalog.length === 0) {
+            throw new Error('Codex model metadata is unavailable');
+          }
+          if (
+            !this.modelCatalog.some(
+              (model) =>
+                model.id === arg || model.model === arg || model.name === arg
+            )
+          ) {
+            throw new Error(`model ${arg} is not available`);
+          }
+          const nextFastTier = this.pendingServiceTier
+            ? this.fastServiceTierForModel(arg)
+            : null;
           this.pendingModelOverride = arg;
-          if (clearFastTier) this.pendingServiceTier = null;
+          if (this.pendingServiceTier) this.pendingServiceTier = nextFastTier;
           this.recomputeModelCommands();
           this.emitSessionUpdate({ config: { model: arg } });
           emitControl('success', arg);
@@ -2791,6 +2804,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         }
 
         case 'effort': {
+          if (this.modelCatalog.length === 0) {
+            throw new Error('Codex model metadata is unavailable');
+          }
           if (
             !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arg)
           ) {
@@ -2806,7 +2822,6 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
               `effort ${arg} is not supported by the selected model`
             );
           }
-          await this.updateThreadSettings({ effort: arg });
           this.pendingEffortOverride = arg;
           this.emitSessionUpdate({ config: { effort: arg } });
           emitControl('success', arg);
@@ -2817,8 +2832,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           if (arg !== 'on' && arg !== 'off') {
             throw new Error('fast requires on or off');
           }
-          const serviceTier = arg === 'on' ? 'fast' : null;
-          await this.updateThreadSettings({ serviceTier });
+          const fastServiceTier = this.fastServiceTierForModel(
+            this.pendingModelOverride ?? this.config.model
+          );
+          if (arg === 'on' && !fastServiceTier) {
+            throw new Error(
+              'Codex Fast Mode is unavailable for the selected model'
+            );
+          }
+          const serviceTier = arg === 'on' ? fastServiceTier : null;
           this.pendingServiceTier = serviceTier;
           this.emitSessionUpdate({
             config: { providerOptions: { serviceTier } },
@@ -2952,18 +2974,6 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     };
   }
 
-  private async updateThreadSettings(
-    settings: Record<string, unknown>
-  ): Promise<void> {
-    if (!this.client || !this.providerSessionId) {
-      throw new Error('Codex thread is not connected');
-    }
-    await this.client.call('thread/settings/update', {
-      threadId: this.providerSessionId,
-      ...settings,
-    });
-  }
-
   private initialEffort(config: AdapterConfig): string | null {
     const extra = isRecord(config.extra) ? config.extra : {};
     return (
@@ -2972,10 +2982,13 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     );
   }
 
-  private initialServiceTier(config: AdapterConfig): 'fast' | null {
+  private initialServiceTier(config: AdapterConfig): string | null {
     const extra = isRecord(config.extra) ? config.extra : {};
     return (
-      this.pendingServiceTier ?? (extra.serviceTier === 'fast' ? 'fast' : null)
+      this.pendingServiceTier ??
+      (typeof extra.serviceTier === 'string' && extra.serviceTier
+        ? extra.serviceTier
+        : null)
     );
   }
 
@@ -2990,7 +3003,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         )
       : (this.modelCatalog.find((model) => model.isDefault === true) ??
         this.modelCatalog[0]);
-    this.fastModeAvailable = this.modelSupportsFast(selected);
+    this.fastModeAvailable = this.fastServiceTierForModel(selected) !== null;
     const efforts = selectedModel?.supportedReasoningEfforts;
     this.supportedReasoningEfforts =
       this.modelCatalog.length === 0
@@ -3005,7 +3018,33 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             )
           : [];
     const controls = RELAY_CODEX_COMMANDS.flatMap((command) => {
+      if (
+        CODEX_MODEL_CONTROL_KEYS.has(command.collisionKey ?? '') &&
+        this.modelCatalog.length === 0
+      ) {
+        return [];
+      }
       if (command.collisionKey === 'fast' && !this.fastModeAvailable) return [];
+      if (command.collisionKey === 'model' && this.modelCatalog.length > 0) {
+        return [
+          {
+            ...command,
+            args: this.modelCatalog.flatMap((model) => {
+              const value = stringField(model.id ?? model.model);
+              if (!value) return [];
+              const label = stringField(model.displayName, value);
+              const description = stringField(model.description);
+              return [
+                {
+                  value,
+                  ...(label !== value ? { label } : {}),
+                  ...(description ? { description } : {}),
+                },
+              ];
+            }),
+          },
+        ];
+      }
       if (command.collisionKey === 'effort' && this.supportedReasoningEfforts) {
         return [
           {
@@ -3022,7 +3061,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     );
   }
 
-  private modelSupportsFast(modelId: string | null | undefined): boolean {
+  private fastServiceTierForModel(
+    modelId: string | null | undefined
+  ): string | null {
     const model = modelId
       ? this.modelCatalog.find(
           (candidate) =>
@@ -3033,15 +3074,25 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       : (this.modelCatalog.find((candidate) => candidate.isDefault === true) ??
         this.modelCatalog[0]);
     const tiers = model?.serviceTiers;
-    return (
-      (Array.isArray(tiers) &&
-        tiers.some(
-          (tier) =>
-            tier === 'fast' ||
-            (isRecord(tier) && (tier.value === 'fast' || tier.id === 'fast'))
-        )) ||
-      (isRecord(tiers) && tiers.fast !== false && tiers.fast !== undefined)
-    );
+    if (Array.isArray(tiers)) {
+      for (const tier of tiers) {
+        if (typeof tier === 'string') {
+          if (tier === 'fast' || tier === 'priority') return tier;
+          continue;
+        }
+        if (!isRecord(tier)) continue;
+        const id = stringField(tier.id ?? tier.value);
+        const name = stringField(tier.name).toLowerCase();
+        if (id && (id === 'fast' || name === 'fast')) return id;
+      }
+    }
+    if (isRecord(tiers)) {
+      if (typeof tiers.fast === 'string') return tiers.fast;
+      if (tiers.fast === true) return 'fast';
+      if (typeof tiers.priority === 'string') return tiers.priority;
+      if (tiers.priority === true) return 'priority';
+    }
+    return null;
   }
 
   // ── Internal: slash commands ──────────────────────────────────────────────

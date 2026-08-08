@@ -264,7 +264,13 @@ describe('CodexAppServerClient', () => {
       expect(req['jsonrpc']).toBe('2.0');
       expect(req['method']).toBe('initialize');
       expect(typeof req['id']).toBe('number');
-      expect(req['params']).toMatchObject({ clientInfo: DEFAULT_CLIENT_INFO });
+      expect(req['params']).toEqual({
+        clientInfo: DEFAULT_CLIENT_INFO,
+        capabilities: {},
+      });
+      expect(req['params']).not.toMatchObject({
+        capabilities: { experimentalApi: true },
+      });
 
       mock.serverWrite(
         makeInitResponse(req['id'] as number, {

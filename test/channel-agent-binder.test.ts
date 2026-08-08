@@ -1326,6 +1326,38 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(connected[0]?.commands).toBeUndefined();
   });
 
+  it('does not advertise relay controls from an adapter without a control executor', async () => {
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            {
+              name: 'model',
+              dispatch: 'relay-control',
+              collisionKey: 'model',
+            },
+          ],
+        });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'mock',
+          displayName: 'Mock',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['mock'],
+    });
+
+    await binder.ensureBinding(CH, 'mock');
+    const connected = await binder.rosterForChannel(CH);
+    expect(connected[0]?.commands).toBeUndefined();
+  });
+
   it('targets command controls by exact named-profile Actor ID across a display-name collision', async () => {
     const profiles = createAgentProfileStore(':memory:');
     cleanup.push(() => profiles.close());

@@ -62,37 +62,10 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   streaming: true,
 };
 
-const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] = [
-  {
-    id: 'relay:clear',
-    name: 'clear',
-    description: 'Start a new session with empty context',
-    aliases: ['reset', 'new'],
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'clear',
-  },
-  {
-    id: 'relay:resume',
-    name: 'resume',
-    description: 'Resume a saved Claude session',
-    aliases: ['continue'],
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'resume',
-  },
-  {
-    id: 'relay:model',
-    name: 'model',
-    description: 'Switch model for subsequent Claude responses',
-    source: 'relay',
-    sourceLabel: 'Relay',
-    dispatch: 'relay-control',
-    collisionKey: 'model',
-  },
-];
+// Claude stream-json has no mapped runtime-control transport. Keep its catalog
+// provider-native until an executable control contract exists; advertising a
+// Relay control without executeControlCommand only creates a dead UI action.
+const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] = [];
 
 /** Claude supports only once/permanent accept and deny — no cancel, no amendments. */
 const CLAUDE_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
@@ -151,6 +124,7 @@ const RESERVED_VALUE_FLAGS = new Set([
   '--resume',
   '--session-id',
   '--permission-prompt-tool',
+  '--effort',
 ]);
 
 /**
@@ -770,8 +744,8 @@ export class ClaudeProtocolAdapter
       fastModeAvailable: true,
       error: null,
     });
-    // Relay-owned controls are available immediately; the init line later
-    // merges any CLI-advertised commands on top.
+    // Claude currently has no executable Relay control lane. The init line may
+    // later surface provider-native commands as agent-dispatch entries.
     this.emitSessionUpdate({ slashCommands: RELAY_CLAUDE_COMMANDS });
   }
 
@@ -1401,11 +1375,14 @@ export class ClaudeProtocolAdapter
     args.push('--permission-mode', mode);
 
     if (config.model) args.push('--model', config.model);
+    const extra = isRecord(config.extra) ? config.extra : {};
+    if (typeof extra.effort === 'string' && extra.effort.trim()) {
+      args.push('--effort', extra.effort.trim());
+    }
     if (config.systemPromptAppendix?.trim()) {
       args.push('--append-system-prompt', config.systemPromptAppendix);
     }
 
-    const extra = isRecord(config.extra) ? config.extra : {};
     const additionalDirs = extra.additionalDirectories;
     if (Array.isArray(additionalDirs)) {
       for (const dir of additionalDirs) {

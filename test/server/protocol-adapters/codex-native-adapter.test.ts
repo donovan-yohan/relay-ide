@@ -2896,14 +2896,30 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
 // ── Relay-control dispatch ────────────────────────────────────────────────────
 
 describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
-  it('uses flat thread/settings/update controls and carries profile effort into turn/start', async () => {
+  it('applies effort through stable turn/start without experimental thread settings', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     factory.lastClient?.serverResponses.set('thread/start', {
       thread: { id: 'thread-1' },
     });
+    factory.lastClient.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'o4-mini',
+          isDefault: true,
+          serviceTiers: [],
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'high' },
+            { reasoningEffort: 'ultra' },
+          ],
+        },
+      ],
+    });
     await adapter.connect({ ...config, extra: { effort: 'high' } });
     const client = factory.lastClient!;
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'effort')
+    );
 
     await adapter.sendMessage({ turnId: 'turn-effort-default', content: 'go' });
     expect(
@@ -2911,13 +2927,21 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     ).toMatchObject({ effort: 'high' });
 
     await adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' });
-    expect(
-      client.calls.find((call) => call.method === 'thread/settings/update')
-        ?.params
-    ).toMatchObject({
-      threadId: 'thread-1',
-      effort: 'ultra',
+    client.feedNotification('turn/started', { turn: { id: 'native-effort' } });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'native-effort', status: 'completed' },
     });
+    await adapter.sendMessage({
+      turnId: 'turn-effort-override',
+      content: 'go',
+    });
+    const overrideTurn = client.calls.filter(
+      (call) => call.method === 'turn/start'
+    )[1];
+    expect(overrideTurn?.params).toMatchObject({ effort: 'ultra' });
+    expect(
+      client.calls.some((call) => call.method === 'thread/settings/update')
+    ).toBe(false);
     await adapter.disconnect();
   });
 
@@ -2944,7 +2968,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     await adapter.disconnect();
   });
 
-  it('rejects Fast Mode until model/list has advertised the fast service tier', async () => {
+  it('derives the stable Fast Mode service tier id from live model metadata', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     factory.lastClient?.serverResponses.set('thread/start', {
@@ -2956,7 +2980,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
           id: 'gpt-fast',
           isDefault: true,
           serviceTiers: [
-            { id: 'fast', name: 'Fast', description: 'Fast tier' },
+            { id: 'priority', name: 'Fast', description: 'Fast tier' },
           ],
           supportedReasoningEfforts: [
             { reasoningEffort: 'low', description: 'Low effort' },
@@ -2974,14 +2998,49 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
         ?.args
     ).toEqual([{ value: 'low' }, { value: 'ultra' }]);
     await adapter.executeControlCommand?.({ command: 'fast', args: 'on' });
+    await adapter.sendMessage({ turnId: 'fast-turn', content: 'go' });
     expect(
-      factory.lastClient!.calls.find(
-        (call) => call.method === 'thread/settings/update'
-      )?.params
+      factory.lastClient!.calls.find((call) => call.method === 'turn/start')
+        ?.params
     ).toMatchObject({
-      threadId: 'thread-1',
-      serviceTier: 'fast',
+      serviceTier: 'priority',
     });
+    expect(
+      factory.lastClient!.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
+    await adapter.disconnect();
+  });
+
+  it('fails model controls closed when live model metadata is unavailable', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient.serverResponses.set('model/list', []);
+    await adapter.connect(config);
+    await waitFor(() =>
+      factory.lastClient.calls.some((call) => call.method === 'model/list')
+    );
+
+    expect(
+      adapter
+        .getSlashCommands()
+        .some((command) => ['model', 'effort', 'fast'].includes(command.name))
+    ).toBe(false);
+    await expect(
+      adapter.executeControlCommand?.({ command: 'model', args: 'gpt-unknown' })
+    ).rejects.toThrow('Codex model metadata is unavailable');
+    await expect(
+      adapter.executeControlCommand?.({ command: 'fast', args: 'on' })
+    ).rejects.toThrow('Fast Mode is unavailable');
+    expect(
+      factory.lastClient.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
     await adapter.disconnect();
   });
 
@@ -3015,20 +3074,17 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
       command: 'model',
       args: 'gpt-standard',
     });
-    const updates = factory.lastClient!.calls.filter(
-      (call) => call.method === 'thread/settings/update'
-    );
-    expect(updates.at(-1)?.params).toMatchObject({
-      threadId: 'thread-1',
-      model: 'gpt-standard',
-      serviceTier: null,
-    });
-
     await adapter.sendMessage({ turnId: 'standard-turn', content: 'go' });
     const turn = factory.lastClient!.calls.find(
       (call) => call.method === 'turn/start'
     );
     expect(turn?.params).not.toHaveProperty('serviceTier');
+    expect(turn?.params).toMatchObject({ model: 'gpt-standard' });
+    expect(
+      factory.lastClient!.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
     await adapter.disconnect();
   });
 
@@ -3052,9 +3108,18 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
       adapter.getSlashCommands().some((command) => command.name === 'fast')
     );
 
+    await adapter.executeControlCommand?.({ command: 'effort', args: 'low' });
     await expect(
       adapter.executeControlCommand?.({ command: 'effort', args: 'ultra' })
     ).rejects.toThrow('not supported by the selected model');
+    await adapter.sendMessage({
+      turnId: 'after-invalid-effort',
+      content: 'go',
+    });
+    expect(
+      factory.lastClient.calls.find((call) => call.method === 'turn/start')
+        ?.params
+    ).toMatchObject({ effort: 'low' });
     expect(
       factory.lastClient!.calls.some(
         (call) => call.method === 'thread/settings/update'
@@ -3116,15 +3181,28 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     await adapter.disconnect();
   });
 
-  it('/model arg updates session config', async () => {
+  it('/model updates session config and persists on subsequent stable turns', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
     factory.lastClient?.serverResponses.set('thread/start', {
       thread: { id: 'thread-1' },
     });
+    factory.lastClient.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-4',
+          isDefault: true,
+          serviceTiers: [],
+          supportedReasoningEfforts: [{ reasoningEffort: 'high' }],
+        },
+      ],
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
+    await waitFor(() =>
+      adapter.getSlashCommands().some((command) => command.name === 'model')
+    );
 
     await adapter.sendMessage({ turnId: 'turn-model', content: 'go' });
     client.feedNotification('turn/started', { turn: { id: 'n-1' } });
@@ -3151,6 +3229,89 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
       ])
     );
 
+    client.feedNotification('turn/completed', {
+      turn: { id: 'n-1', status: 'completed' },
+    });
+    await adapter.sendMessage({ turnId: 'after-model-1', content: 'first' });
+    client.feedNotification('turn/started', { turn: { id: 'n-2' } });
+    client.feedNotification('turn/completed', {
+      turn: { id: 'n-2', status: 'completed' },
+    });
+    await adapter.sendMessage({ turnId: 'after-model-2', content: 'second' });
+
+    expect(client.calls.filter((call) => call.method === 'turn/start')).toEqual(
+      [
+        expect.objectContaining({
+          params: expect.not.objectContaining({ model: 'gpt-4' }),
+        }),
+        expect.objectContaining({
+          params: expect.objectContaining({ model: 'gpt-4' }),
+        }),
+        expect.objectContaining({
+          params: expect.objectContaining({ model: 'gpt-4' }),
+        }),
+      ]
+    );
+    expect(
+      client.calls.some((call) => call.method === 'thread/settings/update')
+    ).toBe(false);
+
+    await adapter.disconnect();
+  });
+
+  it('rejects an unavailable model without mutating the pending override', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const patches = collectPatches(adapter);
+    factory.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
+    factory.lastClient.serverResponses.set('model/list', {
+      data: [
+        {
+          id: 'gpt-known',
+          displayName: 'Known model',
+          description: 'Known model description',
+          isDefault: true,
+          serviceTiers: [],
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        },
+      ],
+    });
+    await adapter.connect(config);
+    await waitFor(() =>
+      adapter
+        .getSlashCommands()
+        .some(
+          (command) =>
+            command.name === 'model' && command.args?.[0]?.value === 'gpt-known'
+        )
+    );
+
+    await expect(
+      adapter.executeControlCommand?.({
+        command: 'model',
+        args: 'gpt-missing',
+      })
+    ).rejects.toThrow('model gpt-missing is not available');
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-session-updated-v2' &&
+          patch.config?.model === 'gpt-missing'
+      )
+    ).toBe(false);
+
+    await adapter.sendMessage({ turnId: 'after-invalid-model', content: 'go' });
+    expect(
+      factory.lastClient.calls.find((call) => call.method === 'turn/start')
+        ?.params
+    ).not.toMatchObject({ model: 'gpt-missing' });
+    expect(
+      factory.lastClient.calls.some(
+        (call) => call.method === 'thread/settings/update'
+      )
+    ).toBe(false);
     await adapter.disconnect();
   });
 

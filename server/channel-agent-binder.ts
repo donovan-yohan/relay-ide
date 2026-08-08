@@ -2832,7 +2832,11 @@ export function createChannelAgentBinder(
         const liveCatalog = binding?.adapter?.getSlashCommands;
         const commands = (
           liveCatalog ? liveCatalog.call(binding.adapter) : baseCommands
-        ).filter((command) => command.dispatch === 'relay-control');
+        ).filter(
+          (command) =>
+            command.dispatch === 'relay-control' &&
+            (!binding || binding.adapter?.executeControlCommand !== undefined)
+        );
         return {
           id: profile.id,
           displayName: await rosterDisplayName(profile),

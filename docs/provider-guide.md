@@ -181,10 +181,12 @@ Only advertise controls the live provider can execute. Where provider metadata
 lists models, service tiers, or reasoning efforts, derive command arguments
 from that metadata and refresh the catalog on a model change. A missing catalog
 may use a documented static fallback; an available catalog must reject values
-it does not support. Codex currently implements Relay-owned controls including
-Fast Mode through this contract. Claude, OpenCode, and Hermes must not be
-presented as supporting a channel control until their own adapters expose and
-execute it.
+it does not support. Codex model, reasoning-effort, and Fast Mode changes use
+the stable `turn/start` override fields; Relay does not negotiate
+`experimentalApi` or call `thread/settings/update` for them. Claude profile
+model and effort values are launch-time CLI settings, not live channel
+controls. Claude, OpenCode, and Hermes must not be presented as supporting a
+channel control until their own adapters expose and execute it.
 
 ## Provider extension policy
 
