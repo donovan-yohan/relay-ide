@@ -503,6 +503,48 @@ describe('ChannelView reversible archive control (#1382)', () => {
     expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
   });
 
+  it('revalidates cached idle status and blocks when the confirmation roster is busy', async () => {
+    mocks.fetchChannelRoster
+      .mockResolvedValueOnce([rosterEntry('orchestrator')])
+      .mockResolvedValueOnce([
+        {
+          ...rosterEntry('orchestrator'),
+          binding: {
+            runtimeId: 'runtime:claude-1',
+            status: 'streaming',
+          },
+        },
+      ]);
+    await render();
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-header > .ch-archive-channel__button'
+        )
+        ?.click()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-archive-channel__button--confirm'
+        )
+        ?.click()
+    );
+    await flush();
+
+    expect(mocks.fetchChannelRoster).toHaveBeenCalledTimes(2);
+    expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('.ch-archive-channel__error')?.textContent
+    ).toBe('archive blocked — a bound agent is active');
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '.ch-archive-channel__button--confirm'
+      )?.disabled
+    ).toBe(true);
+  });
+
   it('keeps a failed confirmation retryable with inline and toast feedback', async () => {
     mocks.archiveWorkspaceTopic.mockRejectedValue(
       new Error('archive store unavailable')

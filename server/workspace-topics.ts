@@ -1287,6 +1287,18 @@ export interface WorkspaceTopicsRouterOptions {
   surfaceStore?: WorkspaceSurfaceStore | null;
   workContextStore?: WorkContextStore;
   getConfig?: () => Config;
+  /**
+   * Synchronous binder invariant for reversible archive. `undefined` means the
+   * embedding has no binder (unit/minimal topic router, therefore no agent
+   * activity); explicit `null` means production expected a binder but it is
+   * unavailable, which fails closed rather than guessing that agents are idle.
+   */
+  channelArchiveActivity?:
+    | ((channelId: string) => {
+        active: boolean;
+        reasons: readonly string[];
+      })
+    | null;
   requireAuth?: RequestHandler;
   requireReadAuth?: RequestHandler;
   requireReadActorAuth?: (
@@ -1609,6 +1621,34 @@ export function createWorkspaceTopicsRouter(
       const id = req.params['id'] ?? '';
       try {
         assertWorkspaceTopicId(id);
+        if (options.channelArchiveActivity === null) {
+          sendGatewayError(
+            res,
+            'SERVER_UNAVAILABLE',
+            'agent activity cannot be verified; retry when channel runtimes are available',
+            true,
+            { reasonCode: 'CHANNEL_ARCHIVE_ACTIVITY_UNAVAILABLE', id }
+          );
+          return;
+        }
+        const activity = options.channelArchiveActivity?.(id);
+        if (activity?.active) {
+          sendGatewayError(
+            res,
+            'SESSION_CONFLICT',
+            'channel has active agent work; wait for every bound agent to become idle before archiving',
+            false,
+            {
+              reasonCode: 'CHANNEL_ARCHIVE_AGENT_ACTIVE',
+              id,
+              activityReasons: activity.reasons,
+            }
+          );
+          return;
+        }
+        // No await is permitted between the synchronous binder snapshot above
+        // and this mutation. JavaScript cannot admit new binder work between
+        // them, and archive itself never interrupts or releases a runtime.
         const topic = options.store.archive(id);
         if (!topic) {
           sendGatewayError(

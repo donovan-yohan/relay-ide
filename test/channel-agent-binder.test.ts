@@ -2287,6 +2287,36 @@ function makeBinder(cfg: {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe('channel-agent-binder — lifecycle', () => {
+  it('reports binding admission synchronously and returns to archive-safe when idle', async () => {
+    let releaseSpawn!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    const { binder } = makeBinder({
+      build: (agentType) => new ScriptedAdapter(agentType, { mode: 'stall' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      gate,
+    });
+
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+    const binding = binder.ensureBinding(CH, 'mock');
+    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+      active: true,
+      reasons: expect.arrayContaining(['binding-in-flight']),
+    });
+
+    releaseSpawn();
+    await binding;
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+  });
+
   it('discovers and executes only confirmed Codex controls without persisting or routing a message', async () => {
     const calls: Array<{
       command: string;

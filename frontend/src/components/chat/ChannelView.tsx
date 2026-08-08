@@ -27,6 +27,7 @@ import {
   retryChannelMessage,
   HttpError,
   type ChannelAgentStatus,
+  type RosterEntry,
 } from '../../lib/api.js';
 import { isArchivedChannelPostError } from '../../lib/agent-channels.js';
 import { useArchiveTopicMutation } from '../../lib/hooks/use-archive-topic.js';
@@ -91,6 +92,7 @@ function ChannelArchiveControl({
   busyAgentCount: number;
   rosterStatus: 'pending' | 'error' | 'ready';
 }) {
+  const queryClient = useQueryClient();
   const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
   const {
     mutateAsync: archiveChannel,
@@ -100,9 +102,13 @@ function ChannelArchiveControl({
     reset: resetArchive,
   } = useArchiveTopicMutation();
   const [confirming, setConfirming] = useState(false);
+  const [freshCheckPending, setFreshCheckPending] = useState(false);
+  const [freshCheckBlock, setFreshCheckBlock] = useState<string | null>(null);
 
   useEffect(() => {
     setConfirming(false);
+    setFreshCheckPending(false);
+    setFreshCheckBlock(null);
     resetArchive();
   }, [channelId, resetArchive]);
 
@@ -129,7 +135,40 @@ function ChannelArchiveControl({
   }
 
   const confirmArchive = async (): Promise<void> => {
-    if (blocked || archivePending) return;
+    if (blocked || archivePending || freshCheckPending) return;
+    resetArchive();
+    setFreshCheckBlock(null);
+    setFreshCheckPending(true);
+    let freshRoster: RosterEntry[];
+    try {
+      // Confirmation deliberately bypasses the 30s query freshness window.
+      // The server repeats the invariant authoritatively; this fresh read keeps
+      // the operator from firing a request we already know must be rejected.
+      freshRoster = await fetchChannelRoster(channelId);
+      queryClient.setQueryData(['channel-roster', channelId], freshRoster);
+    } catch {
+      setFreshCheckBlock(
+        'agent status could not be verified — retry before archiving'
+      );
+      return;
+    } finally {
+      setFreshCheckPending(false);
+    }
+    const freshBusy = freshRoster.filter(
+      (entry) =>
+        entry.binding !== null &&
+        (entry.binding.status !== 'idle' ||
+          (entry.binding.queuedCount ?? 0) > 0 ||
+          (entry.binding.steeringCount ?? 0) > 0)
+    );
+    if (freshBusy.length > 0) {
+      setFreshCheckBlock(
+        freshBusy.length === 1
+          ? 'archive blocked — a bound agent is active'
+          : `archive blocked — ${freshBusy.length} bound agents are active`
+      );
+      return;
+    }
     try {
       await archiveChannel(channelId);
       // The shared mutation does not resolve until every mounted topic/channel
@@ -157,9 +196,17 @@ function ChannelArchiveControl({
             type="button"
             className="ch-archive-channel__button ch-archive-channel__button--confirm"
             onClick={() => void confirmArchive()}
-            disabled={blocked || archivePending}
+            disabled={blocked || archivePending || freshCheckPending}
           >
-            {archivePending ? (
+            {freshCheckPending ? (
+              <>
+                <TuiProgress
+                  variant="braille"
+                  className="ch-archive-channel__progress"
+                />{' '}
+                checking agents
+              </>
+            ) : archivePending ? (
               <>
                 <TuiProgress
                   variant="braille"
@@ -178,9 +225,10 @@ function ChannelArchiveControl({
             className="ch-archive-channel__button"
             onClick={() => {
               resetArchive();
+              setFreshCheckBlock(null);
               setConfirming(false);
             }}
-            disabled={archivePending}
+            disabled={archivePending || freshCheckPending}
           >
             cancel
           </button>
@@ -191,6 +239,7 @@ function ChannelArchiveControl({
           className="ch-archive-channel__button"
           onClick={() => {
             resetArchive();
+            setFreshCheckBlock(null);
             setConfirming(true);
           }}
           disabled={blocked}
@@ -205,6 +254,10 @@ function ChannelArchiveControl({
           {archiveError instanceof Error
             ? archiveError.message
             : 'failed to archive channel'}
+        </span>
+      ) : freshCheckBlock ? (
+        <span className="ch-archive-channel__error" role="alert">
+          {freshCheckBlock}
         </span>
       ) : null}
     </>

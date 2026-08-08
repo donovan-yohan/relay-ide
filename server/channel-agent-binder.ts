@@ -183,6 +183,22 @@ export interface ChannelAgentRosterEntry {
   commands?: AgentSlashCommandV2[];
 }
 
+export type ChannelArchiveActivityReason =
+  | 'binding-status'
+  | 'active-turn'
+  | 'queued-turn'
+  | 'steering'
+  | 'binding-in-flight'
+  | 'orchestrator-in-flight'
+  | 'routing-in-flight'
+  | 'retry-in-flight';
+
+/** Synchronous snapshot used by the topic archive mutation boundary. */
+export interface ChannelArchiveActivitySnapshot {
+  active: boolean;
+  reasons: ChannelArchiveActivityReason[];
+}
+
 export type ChannelAgentStatusBroadcaster = (
   type: string,
   data: Record<string, unknown>
@@ -261,6 +277,11 @@ export interface ChannelAgentBinder {
     decision: AgentApprovalDecisionV2
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
+  /**
+   * Synchronous by design: callers check this and archive in one JS turn, so a
+   * new binder operation cannot interleave between the invariant and mutation.
+   */
+  archiveActivityForChannel(channelId: string): ChannelArchiveActivitySnapshot;
   executeCommand(
     channelId: string,
     profileActorId: string,
@@ -528,6 +549,10 @@ export function createChannelAgentBinder(
   // This marker is taken synchronously with the busy check and held until the
   // route settles, so the second caller is refused rather than admitted.
   const retryInFlight = new Set<string>();
+  // `routeOne` awaits target discovery before `inflight` owns a binding key.
+  // Count that earlier window too, otherwise archive can race a mention that is
+  // already admitted but has not started spawning its runtime yet.
+  const routingInFlightByChannel = new Map<string, number>();
   let statusBroadcaster: ChannelAgentStatusBroadcaster | null = null;
   let targetsCache: { at: number; value: MentionTarget[] } | null = null;
   let targetsGeneration = 0;
@@ -2735,6 +2760,10 @@ export function createChannelAgentBinder(
     requiredRole?: 'orchestrator',
     callbackEdgeRequest?: CallbackEdgeRequest
   ): Promise<void> {
+    routingInFlightByChannel.set(
+      trigger.channelId,
+      (routingInFlightByChannel.get(trigger.channelId) ?? 0) + 1
+    );
     return (async () => {
       const releaseDeferredParent = () => {
         const parentId = callbackEdgeRequest?.continuationParentCallbackId;
@@ -2845,7 +2874,12 @@ export function createChannelAgentBinder(
         releaseDeferredParent();
         logger.warn('channel binder route failed:', err);
       }
-    })();
+    })().finally(() => {
+      const remaining =
+        (routingInFlightByChannel.get(trigger.channelId) ?? 1) - 1;
+      if (remaining <= 0) routingInFlightByChannel.delete(trigger.channelId);
+      else routingInFlightByChannel.set(trigger.channelId, remaining);
+    });
   }
 
   /** Eligible profile-resolved, non-self mentions in routing order. */
@@ -3801,6 +3835,39 @@ export function createChannelAgentBinder(
     return false;
   }
 
+  function archiveActivityForChannel(
+    channelId: string
+  ): ChannelArchiveActivitySnapshot {
+    const reasons = new Set<ChannelArchiveActivityReason>();
+    const prefix = `${channelId}\u0000`;
+    for (const [key, binding] of live) {
+      if (!key.startsWith(prefix)) continue;
+      if (binding.status !== 'idle') reasons.add('binding-status');
+      if (binding.activeTurnId !== null) reasons.add('active-turn');
+      if (binding.queue.length > 0) reasons.add('queued-turn');
+      if (
+        binding.steeringQueue.length > 0 ||
+        binding.steeringInFlight ||
+        binding.steeringAcceptedCount > 0
+      ) {
+        reasons.add('steering');
+      }
+    }
+    if (Array.from(inflight.keys()).some((key) => key.startsWith(prefix))) {
+      reasons.add('binding-in-flight');
+    }
+    if (orchestratorInflight.has(channelId)) {
+      reasons.add('orchestrator-in-flight');
+    }
+    if ((routingInFlightByChannel.get(channelId) ?? 0) > 0) {
+      reasons.add('routing-in-flight');
+    }
+    if (Array.from(retryInFlight).some((key) => key.startsWith(prefix))) {
+      reasons.add('retry-in-flight');
+    }
+    return { active: reasons.size > 0, reasons: Array.from(reasons) };
+  }
+
   return {
     handleMessagePosted,
     ensureBinding,
@@ -3811,6 +3878,7 @@ export function createChannelAgentBinder(
     retryMessage,
     respondToApproval,
     rosterForChannel,
+    archiveActivityForChannel,
     executeCommand,
     isControlMessage,
     recoverCompletionCallbacks,
@@ -3852,6 +3920,7 @@ export function createChannelAgentBinder(
       inflight.clear();
       orchestratorInflight.clear();
       retryInFlight.clear();
+      routingInFlightByChannel.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();
       invalidateTargets();
