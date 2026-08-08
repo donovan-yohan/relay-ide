@@ -29,6 +29,7 @@ import {
 } from './channel-attachments.js';
 import {
   ChannelAgentBusyError,
+  ChannelAgentReleaseRefusedError,
   ChannelAgentNoActiveTurnError,
   ChannelAgentCommandError,
   ChannelAgentNotFoundError,
@@ -941,6 +942,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
   const rosterAuth = deps.requireReadActorAuth?.('channels.roster') ?? auth;
   const interruptAuth = auth;
+  // This is an operator lifecycle control, authenticated through the existing
+  // channel router lane. It is not a provider command or a message write.
+  const releaseAuth = auth;
   const approvalAuth = auth;
   const agentCommandsAuth = auth;
   const uploadImages = multer({
@@ -1920,6 +1924,53 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
               false,
               { channelId: topic.id, agentId, reasonCode: 'NO_ACTIVE_TURN' }
             );
+            return;
+          }
+          mapStoreError(res, error);
+        });
+    }
+  );
+
+  router.post(
+    '/channels/:id/agents/:agentId/release',
+    releaseAuth,
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const topic = requirePersistedChannel(req, res);
+      if (!topic) return;
+      const sender = deriveSender(req, undefined);
+      if (sender.kind !== 'human') {
+        sendGatewayError(
+          res,
+          'FORBIDDEN',
+          'only the operator can release a channel agent',
+          false,
+          { channelId: topic.id, reasonCode: 'CHANNEL_RELEASE_HUMAN_ONLY' }
+        );
+        return;
+      }
+      const binder = binderOr503(res, deps.binder);
+      if (!binder) return;
+      const agentId = req.params['agentId'] ?? '';
+      binder
+        .release(topic.id, agentId)
+        .then(() => res.json({ ok: true }))
+        .catch((error) => {
+          if (error instanceof ChannelAgentNotFoundError) {
+            sendGatewayError(res, 'NOT_FOUND', 'no live agent binding', false, {
+              channelId: topic.id,
+              agentId,
+              reasonCode: 'CHANNEL_AGENT_NOT_BOUND',
+            });
+            return;
+          }
+          if (error instanceof ChannelAgentReleaseRefusedError) {
+            sendGatewayError(res, 'SESSION_CONFLICT', error.message, true, {
+              channelId: topic.id,
+              agentId,
+              status: error.status,
+              reasonCode: error.reasonCode,
+            });
             return;
           }
           mapStoreError(res, error);

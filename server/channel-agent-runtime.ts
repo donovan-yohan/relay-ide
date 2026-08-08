@@ -21,6 +21,12 @@ import {
   sanitizeChannelAdapterProcessEnv,
 } from './protocol-adapters/index.js';
 import { createLogger } from './logger.js';
+import {
+  readProcessTable,
+  scheduleRelayProcessTreeReap,
+  summarizeOwnedProcessResources,
+  type ProcessInfo,
+} from './process-tree.js';
 
 const logger = createLogger('channel-agent-runtime');
 
@@ -80,6 +86,24 @@ export interface ChannelAgentRuntime {
   lastActivity: string;
   adapter: ProtocolAdapterV2;
   providerSession: Record<string, string>;
+}
+
+/** Deliberately aggregate-only: safe for unauthenticated health reporting. */
+export interface ChannelAgentRuntimeResourceSummary {
+  runtimeCount: number;
+  runtimeWithOwnedProcesses: number;
+  processCount: number;
+  totalRssBytes: number;
+}
+
+export interface ChannelAgentRuntimeManagerOptions {
+  readProcessTable?: () => ProcessInfo[];
+  scheduleProcessTreeReap?: (input: {
+    rootPids: number[];
+    processGroupIds: number[];
+    processTable: ProcessInfo[];
+    reason: string;
+  }) => void;
 }
 
 type RuntimeEndHandler = (runtimeId: string) => void;
@@ -255,6 +279,28 @@ export class ChannelAgentRuntimeManager {
   private readonly endHandlers = new Set<RuntimeEndHandler>();
   private readonly leases = new Map<string, OrchestratorCredentialLifecycle>();
   private readonly patchUnlisteners = new Map<string, () => void>();
+  private readonly ownedProcessSnapshots = new Map<
+    string,
+    { rootPids: number[]; processTable: ProcessInfo[] }
+  >();
+  private readonly readProcessTable: () => ProcessInfo[];
+  private readonly scheduleProcessTreeReap: NonNullable<
+    ChannelAgentRuntimeManagerOptions['scheduleProcessTreeReap']
+  >;
+
+  constructor(options: ChannelAgentRuntimeManagerOptions = {}) {
+    this.readProcessTable = options.readProcessTable ?? readProcessTable;
+    this.scheduleProcessTreeReap =
+      options.scheduleProcessTreeReap ??
+      ((input) => {
+        scheduleRelayProcessTreeReap({
+          ...input,
+          // The supplied table is an ownership snapshot, never the authority
+          // for a delayed signal after graceful provider teardown.
+          verifyProcessTable: readProcessTable,
+        });
+      });
+  }
 
   get(id: string): ChannelAgentRuntime | undefined {
     return this.runtimes.get(id);
@@ -350,10 +396,12 @@ export class ChannelAgentRuntimeManager {
       providerSession: {},
     };
     this.runtimes.set(id, runtime);
+    this.captureOwnedProcessSnapshot(id, runtime);
     if (lease) this.leases.set(id, lease);
 
     const unlisten = adapter.onPatch((patch) => {
       if (this.runtimes.get(id) !== runtime) return;
+      this.captureOwnedProcessSnapshot(id, runtime);
       const providerSession = providerSessionFromPatch(patch);
       if (providerSession) {
         runtime.providerSession = {
@@ -456,6 +504,8 @@ export class ChannelAgentRuntimeManager {
       }
       return runtime;
     } catch (error) {
+      this.captureOwnedProcessSnapshot(id, runtime);
+      const snapshot = this.ownedProcessSnapshots.get(id);
       this.runtimes.delete(id);
       this.patchUnlisteners.get(id)?.();
       this.patchUnlisteners.delete(id);
@@ -464,6 +514,15 @@ export class ChannelAgentRuntimeManager {
       runtime.status = 'disconnected';
       runtime.agentState = 'error';
       await adapter.disconnect().catch(() => {});
+      if (snapshot && snapshot.rootPids.length > 0) {
+        this.scheduleProcessTreeReap({
+          ...snapshot,
+          processGroupIds:
+            process.platform === 'linux' ? snapshot.rootPids : [],
+          reason: `channel runtime ${runtime.providerId} connect failure`,
+        });
+      }
+      this.ownedProcessSnapshots.delete(id);
       throw error;
     }
   }
@@ -471,7 +530,16 @@ export class ChannelAgentRuntimeManager {
   async destroy(id: string): Promise<void> {
     const runtime = this.runtimes.get(id);
     if (!runtime) return;
+    // Capture before provider shutdown; after disconnect, grandchildren may no
+    // longer be reachable through their former parent relationship.
+    const snapshot = this.ownedProcessSnapshots.get(id);
+    const rootPids =
+      snapshot?.rootPids ?? ownedProcessRootPids(runtime.adapter);
+    const processTable =
+      snapshot?.processTable ??
+      (rootPids.length > 0 ? this.readProcessTable() : []);
     this.runtimes.delete(id);
+    this.ownedProcessSnapshots.delete(id);
     this.patchUnlisteners.get(id)?.();
     this.patchUnlisteners.delete(id);
     this.leases.get(id)?.stop();
@@ -479,6 +547,16 @@ export class ChannelAgentRuntimeManager {
     runtime.status = 'disconnected';
     runtime.hooksActive = false;
     await runtime.adapter.disconnect().catch(() => {});
+    if (rootPids.length > 0) {
+      this.scheduleProcessTreeReap({
+        rootPids,
+        // Claude/Codex launch detached on Linux, so the root PID remains the
+        // group identity when an unexpected exit has already reparented kids.
+        processGroupIds: process.platform === 'linux' ? rootPids : [],
+        processTable,
+        reason: `channel runtime ${runtime.providerId} teardown`,
+      });
+    }
     for (const handler of [...this.endHandlers]) {
       try {
         handler(id);
@@ -496,6 +574,97 @@ export class ChannelAgentRuntimeManager {
       [...this.runtimes.keys()].map((id) => this.destroy(id))
     );
     this.endHandlers.clear();
+  }
+
+  resourceSummary(): ChannelAgentRuntimeResourceSummary {
+    const table = this.readProcessTable();
+    const seenRoots = new Set<number>();
+    let runtimeWithOwnedProcesses = 0;
+    for (const runtime of this.runtimes.values()) {
+      const roots = ownedProcessRootPids(runtime.adapter);
+      const summary = summarizeOwnedProcessResources(roots, table);
+      if (summary.rootCount > 0) runtimeWithOwnedProcesses += 1;
+      for (const root of roots) seenRoots.add(root);
+    }
+    const aggregate = summarizeOwnedProcessResources([...seenRoots], table);
+    return {
+      runtimeCount: this.runtimes.size,
+      runtimeWithOwnedProcesses,
+      processCount: aggregate.processCount,
+      totalRssBytes: aggregate.totalRssBytes,
+    };
+  }
+
+  private captureOwnedProcessSnapshot(
+    id: string,
+    runtime: ChannelAgentRuntime
+  ): void {
+    const rootPids = ownedProcessRootPids(runtime.adapter);
+    if (rootPids.length === 0) return;
+    const processTable = this.readProcessTable();
+    // An unexpected close retains the old detached-group leader id briefly.
+    // Do not replace a useful pre-exit snapshot with an empty post-exit table,
+    // but merge reparented members of that *same* group when the leader has
+    // already exited. A live member with `pgid === rootPid` proves the group
+    // still exists — that numeric group identity cannot have been reused while
+    // it has a member — and the reaper validates its start time before signal.
+    const previousSnapshot = this.ownedProcessSnapshots.get(id);
+    const hasLeader = processTable.some((proc) => {
+      if (!rootPids.includes(proc.pid)) return false;
+      if (!previousSnapshot) return true;
+      const capturedLeader = previousSnapshot.processTable.find(
+        (captured) => captured.pid === proc.pid
+      );
+      // A root PID by itself is not ownership evidence after an unexpected
+      // exit: Linux may already have reused it for another process group.
+      return (
+        capturedLeader?.startTicks !== undefined &&
+        proc.startTicks !== undefined &&
+        capturedLeader.startTicks === proc.startTicks
+      );
+    });
+    if (!hasLeader && previousSnapshot) {
+      const reparentedGroupMembers = processTable.filter(
+        (proc) => rootPids.includes(proc.pgid) && !rootPids.includes(proc.pid)
+      );
+      if (reparentedGroupMembers.length === 0) return;
+      // Keep the pre-exit tree, but refresh every surviving group member from
+      // the current table. This both gives the delayed reaper a live group
+      // witness and records the member's current start time for PID-reuse
+      // validation immediately before it signals.
+      const mergedByPid = new Map(
+        previousSnapshot.processTable.map((proc) => [proc.pid, proc])
+      );
+      for (const member of reparentedGroupMembers) {
+        mergedByPid.set(member.pid, member);
+      }
+      this.ownedProcessSnapshots.set(id, {
+        rootPids,
+        processTable: [...mergedByPid.values()],
+      });
+      return;
+    }
+    const hasOwnedMember =
+      hasLeader || processTable.some((proc) => rootPids.includes(proc.pgid));
+    if (!hasOwnedMember) return;
+    this.ownedProcessSnapshots.set(id, {
+      rootPids,
+      processTable,
+    });
+  }
+}
+
+function ownedProcessRootPids(adapter: ProtocolAdapterV2): number[] {
+  try {
+    return (adapter.ownedProcessRootPids?.() ?? []).filter(
+      (pid) => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid
+    );
+  } catch (error) {
+    logger.warn('channel runtime owned process lookup failed', {
+      providerId: adapter.agentType,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
   }
 }
 

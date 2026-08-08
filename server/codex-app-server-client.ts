@@ -24,8 +24,14 @@ export interface CodexAppServerClientOptions {
   spawn?: (
     command: string,
     args: string[],
-    options: { cwd?: string; env?: Record<string, string>; stdio: 'pipe' }
+    options: {
+      cwd?: string;
+      env?: Record<string, string>;
+      stdio: 'pipe';
+      detached?: boolean;
+    }
   ) => ChildProcess;
+  teardownDelays?: { afterSignalMs?: number; afterKillMs?: number };
 }
 
 export interface CodexNotification {
@@ -96,6 +102,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   // Line-buffer for partial stdout reads
   private lineBuffer = '';
+  private stopPromise: Promise<void> | null = null;
 
   constructor(options: CodexAppServerClientOptions) {
     super();
@@ -130,6 +137,9 @@ export class CodexAppServerClient extends EventEmitter {
     if (this.child) {
       throw new Error('CodexAppServerClient already started');
     }
+    // A transport object can reconnect after an intentional stop. The previous
+    // stop promise is no longer the lifecycle authority for its next child.
+    this.stopPromise = null;
 
     const spawnFn = this.options.spawn ?? nodeSpawn;
     const { command, args, cwd, env } = this.options;
@@ -138,6 +148,7 @@ export class CodexAppServerClient extends EventEmitter {
       ...(cwd !== undefined ? { cwd } : {}),
       env: env ?? (process.env as Record<string, string>),
       stdio: 'pipe',
+      ...(process.platform === 'linux' ? { detached: true } : {}),
     });
     this.child = child;
 
@@ -248,21 +259,70 @@ export class CodexAppServerClient extends EventEmitter {
    * Terminate the child process.  Rejects all pending calls.
    */
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
     if (!this.child) return;
 
     const child = this.child;
     this.child = null;
 
+    this.stopPromise = this.runStop(child, signal);
+    return this.stopPromise;
+  }
+
+  get pid(): number | undefined {
+    return this.child?.pid ?? undefined;
+  }
+
+  private async runStop(
+    child: ChildProcess,
+    signal: NodeJS.Signals
+  ): Promise<void> {
     const waitClose = new Promise<void>((resolve) => {
       child.once('close', () => resolve());
       child.once('error', () => resolve());
     });
 
-    child.kill(signal);
-    await waitClose;
+    try {
+      child.kill(signal);
+    } catch {
+      // It may have exited between the ownership handoff and this signal.
+    }
+    const afterSignalMs = this.options.teardownDelays?.afterSignalMs ?? 5_000;
+    if (
+      !(await this.raceClose(waitClose, afterSignalMs)) &&
+      signal !== 'SIGKILL'
+    ) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Best effort.
+      }
+      await this.raceClose(
+        waitClose,
+        this.options.teardownDelays?.afterKillMs ?? afterSignalMs
+      );
+    }
 
     this.rejectAllPending(new Error('CodexAppServerClient stopped'));
     child.removeAllListeners();
+  }
+
+  private raceClose(waitClose: Promise<void>, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, ms);
+      timer.unref?.();
+      void waitClose.then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────

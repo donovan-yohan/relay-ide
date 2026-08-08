@@ -77,13 +77,68 @@ describe('/healthz fixture identity (#1214/#1299)', () => {
   it('reports the config path it booted with when the harness supplies one', () => {
     expect(
       respond({ fixtureConfigPath: '/tmp/relay-ide-e2e-abc/config.json' })
-    ).toMatchObject({ fixtureConfigPath: '/tmp/relay-ide-e2e-abc/config.json' });
+    ).toMatchObject({
+      fixtureConfigPath: '/tmp/relay-ide-e2e-abc/config.json',
+    });
   });
 
   it('omits the field entirely outside fixture mode', () => {
     // A deployed hub must not publish its config path on an unauthenticated
     // endpoint, so absence is the default and the key is not even present.
     expect(respond({})).not.toHaveProperty('fixtureConfigPath');
+  });
+
+  it('adds only aggregate runtime resource accounting without affecting health', () => {
+    expect(
+      respond({
+        getResourceSummary: () => ({
+          runtimeCount: 2,
+          runtimeWithOwnedProcesses: 1,
+          processCount: 4,
+          totalRssBytes: 456,
+        }),
+      })
+    ).toMatchObject({
+      status: 'ok',
+      resource: {
+        runtimeCount: 2,
+        runtimeWithOwnedProcesses: 1,
+        processCount: 4,
+        totalRssBytes: 456,
+      },
+    });
+  });
+
+  it('includes aggregate cgroup memory without leaking its filesystem path', () => {
+    const body = respond({
+      getCgroupMemory: () => ({ currentBytes: 1_000, maxBytes: 2_000 }),
+    });
+    expect(body).toMatchObject({
+      status: 'ok',
+      resource: { cgroupMemory: { currentBytes: 1_000, maxBytes: 2_000 } },
+    });
+    expect(JSON.stringify(body)).not.toContain('/sys/fs/cgroup');
+  });
+
+  it('serves cached resource accounting without reading process state per request', () => {
+    const getResourceSummary = vi.fn(() => ({
+      runtimeCount: 1,
+      runtimeWithOwnedProcesses: 1,
+      processCount: 2,
+      totalRssBytes: 3,
+    }));
+    const monitor = createHealthMonitor({
+      getLagMs: () => 0,
+      memoryLogIntervalMs: 60_000,
+      resourceRefreshIntervalMs: 60_000,
+      getResourceSummary,
+    });
+    monitors.push(monitor);
+    const response = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+    monitor.handler({} as never, response as never, vi.fn());
+    monitor.handler({} as never, response as never, vi.fn());
+
+    expect(getResourceSummary).toHaveBeenCalledOnce();
   });
 });
 

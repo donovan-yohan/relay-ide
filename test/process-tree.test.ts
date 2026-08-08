@@ -8,6 +8,7 @@ import {
   readProcessTable,
   redactCommandLine,
   scheduleRelayProcessTreeReap,
+  summarizeOwnedProcessResources,
   summarizeProcessReap,
   type ProcessInfo,
 } from '../server/process-tree.js';
@@ -60,6 +61,24 @@ async function waitFor(
 }
 
 describe('process-tree session runtime reaping', () => {
+  it('accounts only an owned root and its descendants, without command data', () => {
+    const summary = summarizeOwnedProcessResources(
+      [100],
+      [
+        proc({ pid: 100, ppid: 1, pgid: 100, rssBytes: 10 }),
+        proc({ pid: 101, ppid: 100, pgid: 100, rssBytes: 20 }),
+        proc({ pid: 102, ppid: 1, pgid: 102, rssBytes: 1_000 }),
+      ]
+    );
+
+    expect(summary).toEqual({
+      rootCount: 1,
+      processCount: 2,
+      totalRssBytes: 30,
+    });
+    expect(summary).not.toHaveProperty('commandLine');
+  });
+
   it('summarizes descendant language servers before session kill', () => {
     const table: ProcessInfo[] = [
       proc({
@@ -124,6 +143,46 @@ describe('process-tree session runtime reaping', () => {
       { pid: -200, signal: 'SIGTERM' },
       { pid: 201, signal: 'SIGTERM' },
       { pid: 200, signal: 'SIGTERM' },
+    ]);
+  });
+
+  it('does not signal a reused captured PID after graceful teardown', () => {
+    const calls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const captured = [
+      proc({ pid: 300, ppid: 1, pgid: 300, startTicks: 10 }),
+      proc({ pid: 301, ppid: 300, pgid: 300, startTicks: 11 }),
+    ];
+    scheduleRelayProcessTreeReap({
+      rootPids: [300],
+      processTable: captured,
+      verifyProcessTable: () => [
+        proc({ pid: 300, ppid: 1, pgid: 999, startTicks: 99 }),
+      ],
+      killProcess: (pid, signal) => calls.push({ pid, signal }),
+      setTimer: () => ({ unref() {} }),
+      logger: {},
+    });
+
+    expect(calls).toEqual([]);
+  });
+
+  it('reaps a still-live detached group when its leader already exited', () => {
+    const calls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    scheduleRelayProcessTreeReap({
+      rootPids: [400],
+      processGroupIds: [400],
+      processTable: [proc({ pid: 401, ppid: 400, pgid: 400, startTicks: 21 })],
+      verifyProcessTable: () => [
+        proc({ pid: 401, ppid: 1, pgid: 400, startTicks: 21 }),
+      ],
+      killProcess: (pid, signal) => calls.push({ pid, signal }),
+      setTimer: () => ({ unref() {} }),
+      logger: {},
+    });
+
+    expect(calls).toEqual([
+      { pid: -400, signal: 'SIGTERM' },
+      { pid: 401, signal: 'SIGTERM' },
     ]);
   });
 

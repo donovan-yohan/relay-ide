@@ -611,6 +611,24 @@ describe('CodexAppServerClient', () => {
       expect(mock.kill).toHaveBeenCalledWith('SIGKILL');
     });
 
+    it('escalates a non-closing TERM to a bounded SIGKILL', async () => {
+      client = makeClient(mock, {
+        teardownDelays: { afterSignalMs: 1, afterKillMs: 1 },
+      });
+      await performHandshake(client, mock);
+      mock.kill
+        .mockImplementationOnce(() => true)
+        .mockImplementationOnce(() => {
+          setImmediate(() => mock.emit('close', 137));
+          return true;
+        });
+
+      await client.stop('SIGTERM');
+
+      expect(mock.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+      expect(mock.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+    });
+
     it('emits close with the exit code on unexpected exit', async () => {
       await performHandshake(client, mock);
 
@@ -627,6 +645,24 @@ describe('CodexAppServerClient', () => {
       await performHandshake(client, mock);
       await client.stop();
       await expect(client.stop()).resolves.toBeUndefined();
+    });
+
+    it('resets stop state so a restarted client terminates its next child', async () => {
+      const second = makeMockChild();
+      client = new CodexAppServerClient({
+        clientInfo: DEFAULT_CLIENT_INFO,
+        spawn: vi
+          .fn()
+          .mockReturnValueOnce(mock as unknown as ChildProcess)
+          .mockReturnValueOnce(second as unknown as ChildProcess),
+      });
+      await performHandshake(client, mock);
+      await client.stop();
+      await performHandshake(client, second);
+      await client.stop();
+
+      expect(mock.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(second.kill).toHaveBeenCalledWith('SIGTERM');
     });
   });
 

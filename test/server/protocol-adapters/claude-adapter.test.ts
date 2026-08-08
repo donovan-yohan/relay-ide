@@ -1236,7 +1236,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     await adapter.disconnect();
   });
 
-  it('reports a mid-turn crash with stderr tail and respawns with --resume on the next send', async () => {
+  it('reports a mid-turn crash with stderr tail and terminalizes the adapter', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
@@ -1265,42 +1265,36 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(error?.type === 'agent-error-v2' && error.message).toMatch(/exited/);
     expect(error?.type === 'agent-error-v2' && error.message).toMatch(/boom/);
 
-    // Next send respawns with --resume against the captured session id.
-    await adapter.sendMessage({ turnId: 'turn-after-crash', content: 'again' });
-    expect(harness.spawns).toHaveLength(2);
-    const args = harness.latest().args;
-    expect(args).toContain('--resume');
-    expect(args[args.indexOf('--resume') + 1]).toBe('claude-abc');
+    expect(adapter.status).toBe('disconnected');
+    expect(adapter.ownedProcessRootPids()).toEqual([child.pid]);
+    await expect(
+      adapter.sendMessage({ turnId: 'turn-after-crash', content: 'again' })
+    ).rejects.toThrow(/before connect/);
+    expect(harness.spawns).toHaveLength(1);
 
     await adapter.disconnect();
   });
 
-  it('trips the crash-loop breaker after 3 respawns', async () => {
+  it('requires an explicit reconnect before retrying a crashed turn', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     await adapter.connect(baseConfig());
 
-    for (let i = 0; i < 3; i++) {
-      await adapter.sendMessage({ turnId: `turn-${i}`, content: 'go' });
-      const child = harness.latest().child;
-      await child.waitForFrames(1);
-      child.serverWrite({
-        type: 'system',
-        subtype: 'init',
-        session_id: 'sess',
-      });
-      child.emitClose(1, null);
-      await waitFor(
-        () => adapter.status === 'connected' && harness.spawns.length === i + 1
-      );
-      await tick();
-    }
-    expect(harness.spawns).toHaveLength(3);
+    await adapter.sendMessage({ turnId: 'turn-crash', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.emitClose(1, null);
+    await waitFor(() => adapter.status === 'disconnected');
 
     await expect(
-      adapter.sendMessage({ turnId: 'turn-breaker', content: 'go' })
-    ).rejects.toThrow(/crash-loop/i);
-    expect(harness.spawns).toHaveLength(3);
+      adapter.sendMessage({ turnId: 'turn-before-reconnect', content: 'go' })
+    ).rejects.toThrow(/before connect/);
+
+    await adapter.reconnect();
+    await expect(
+      adapter.sendMessage({ turnId: 'turn-after-reconnect', content: 'go' })
+    ).resolves.toBeUndefined();
+    expect(harness.spawns).toHaveLength(2);
 
     await adapter.disconnect();
   });
@@ -1572,6 +1566,80 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     expect(
       bCompletion?.type === 'agent-turn-completed-v2' && bCompletion.status
     ).toBe('completed');
+
+    await adapter.disconnect();
+  });
+
+  it('turn timeout drains a queued message onto a fresh child', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig({ turnTimeoutMs: 1 }));
+
+    await adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const firstChild = harness.latest().child;
+    await firstChild.waitForFrames(1);
+    const queued = adapter.sendMessage({ turnId: 'turn-B', content: 'b' });
+
+    adapter.gcSweep(Date.now() + 10_000);
+
+    await waitFor(() => harness.spawns.length === 2);
+    const secondChild = harness.latest().child;
+    await secondChild.waitForFrames(1);
+    expect(secondChild.frames()[0]).toMatchObject({
+      message: { content: 'b' },
+    });
+    secondChild.serverWrite(successResult());
+    await queued;
+
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' &&
+          patch.turnId === 'turn-A' &&
+          patch.status === 'failed'
+      )
+    ).toBe(true);
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' &&
+          patch.turnId === 'turn-B' &&
+          patch.status === 'completed'
+      )
+    ).toBe(true);
+
+    await adapter.disconnect();
+  });
+
+  it('terminalizes an active unexpected close without respawning queued work', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-A', content: 'a' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    const queuedResult = adapter
+      .sendMessage({ turnId: 'turn-B', content: 'b' })
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+    child.emitClose(1, null);
+
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.status === 'disconnected'
+      )
+    );
+    expect(adapter.status).toBe('disconnected');
+    expect(adapter.ownedProcessRootPids()).toEqual([child.pid]);
+    await expect(queuedResult).resolves.toBeInstanceOf(Error);
+    expect(harness.spawns).toHaveLength(1);
 
     await adapter.disconnect();
   });

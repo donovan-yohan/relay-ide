@@ -27,6 +27,10 @@ import {
   type ClaudeSpawnFn,
   type ClaudeStreamCloseEvent,
 } from '../claude-stream-client.js';
+import {
+  captureOwnedProcessTree,
+  reapOwnedProcessTree,
+} from '../process-tree.js';
 
 const logger = createLogger('claude-adapter');
 
@@ -611,9 +615,16 @@ export class ClaudeProtocolAdapter
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
 
+  ownedProcessRootPids(): number[] {
+    const pid = this.client?.pid ?? this.exitedProcessRootPid;
+    return typeof pid === 'number' && pid > 1 ? [pid] : [];
+  }
+
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
   private client: ClaudeStreamClient | null = null;
+  /** Detached group leader retained only after an unexpected child exit. */
+  private exitedProcessRootPid: number | null = null;
   private claudeSessionId: string | null = null;
 
   private activeTurnId: string | null = null;
@@ -867,7 +878,10 @@ export class ClaudeProtocolAdapter
     this.resetCurrentStreamMessage();
     this.streamFallbackMessageSeq = 0;
 
-    if (dead) await dead.stop().catch(() => undefined);
+    if (dead)
+      await this.stopOwnedClient(dead, 'adapter disconnect').catch(
+        () => undefined
+      );
   }
 
   async reconnect(): Promise<void> {
@@ -911,7 +925,8 @@ export class ClaudeProtocolAdapter
     this.claudeSessionId = sessionId;
     this._status = 'connected';
     this.lastActivityAt = Date.now();
-    if (dead) await dead.stop().catch(() => undefined);
+    if (dead)
+      await this.stopOwnedClient(dead, 'session resume').catch(() => undefined);
 
     this.emitPatch({
       type: 'agent-session-snapshot-v2',
@@ -1041,7 +1056,10 @@ export class ClaudeProtocolAdapter
         // No receipt — fall back to the SIGTERM ladder and evict (§3).
         const dead = this.client;
         this.client = null;
-        if (dead) await dead.stop().catch(() => undefined);
+        if (dead)
+          await this.stopOwnedClient(dead, 'interrupt timeout').catch(
+            () => undefined
+          );
         if (this.activeTurnId !== targetTurnId) return false;
         this.completeActiveTurn('interrupted');
         if (!deferDrain) this.drainQueue();
@@ -1113,7 +1131,9 @@ export class ClaudeProtocolAdapter
       const message = `Claude turn exceeded ${this.turnTimeoutMs}ms without completing; the subprocess was terminated.`;
       const dead = this.client;
       this.client = null;
-      void (dead ? dead.stop().catch(() => undefined) : Promise.resolve());
+      void (dead
+        ? this.stopOwnedClient(dead, 'turn timeout').catch(() => undefined)
+        : Promise.resolve());
       this.emitPatch({
         type: 'agent-error-v2',
         sessionId: this.sessionId,
@@ -1123,7 +1143,6 @@ export class ClaudeProtocolAdapter
       });
       this.completeActiveTurn('failed', undefined, message);
       this.drainQueue();
-      return;
     }
 
     // Warm-idle eviction: kill the child, keep the adapter `connected` and the
@@ -1136,14 +1155,15 @@ export class ClaudeProtocolAdapter
     ) {
       const dead = this.client;
       this.client = null;
-      void dead.stop().catch(() => undefined);
+      void this.stopOwnedClient(dead, 'idle eviction').catch(() => undefined);
     }
   }
 
   async forceStop(): Promise<void> {
     const dead = this.client;
     this.client = null;
-    if (dead) await dead.stop().catch(() => undefined);
+    if (dead)
+      await this.stopOwnedClient(dead, 'forced stop').catch(() => undefined);
   }
 
   // ── Turn lifecycle ─────────────────────────────────────────────────────────
@@ -1339,6 +1359,7 @@ export class ClaudeProtocolAdapter
       ...(this.teardownDelays ? { teardownDelays: this.teardownDelays } : {}),
     });
     this.client = client;
+    this.exitedProcessRootPid = null;
 
     client.on('message', (msg: Record<string, unknown>) => {
       if (this.client !== client) return;
@@ -1426,6 +1447,7 @@ export class ClaudeProtocolAdapter
     client: ClaudeStreamClient
   ): void {
     const stderrTail = client.stderrTail;
+    this.exitedProcessRootPid = client.pid ?? null;
     this.client = null;
     // This handler only runs for an unexpected exit (deliberate kills detach
     // `this.client` first and are filtered out by the caller's identity guard),
@@ -1447,11 +1469,25 @@ export class ClaudeProtocolAdapter
         message,
       });
       this.completeActiveTurn('failed', undefined, message);
-      this.drainQueue();
-      return;
+      // This was an unexpected transport death, not a recoverable turn
+      // boundary. Keep the exited detached-group leader available to the
+      // runtime manager, reject waiters rather than respawning on the queue,
+      // and terminalize the runtime so the binding releases and reaps it.
+      this.rejectQueued(new Error(message));
     }
-    // Idle close (process died on its own) — silent; next send respawns with
-    // --resume against the stored claudeSessionId.
+
+    // A crashed stream child cannot safely stay attached to this runtime: any
+    // detached MCP/build descendants need the runtime manager's captured-tree
+    // reaper. The durable Claude session id remains in the channel binding, so
+    // the next explicit bind resumes provider state instead of losing evidence.
+    this._status = 'disconnected';
+    this.emitLiveState({
+      status: 'disconnected',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      queueLength: 0,
+    });
   }
 
   private handleSpawnError(err: Error): void {
@@ -2565,7 +2601,21 @@ export class ClaudeProtocolAdapter
     };
     const dead = this.client;
     this.client = null;
-    if (dead) await dead.stop();
+    if (dead) await this.stopOwnedClient(dead, 'runtime environment refresh');
+  }
+
+  private async stopOwnedClient(
+    client: ClaudeStreamClient,
+    reason: string
+  ): Promise<void> {
+    const snapshot = captureOwnedProcessTree(
+      client.pid === undefined ? [] : [client.pid]
+    );
+    try {
+      await client.stop();
+    } finally {
+      if (snapshot.rootPids.length > 0) reapOwnedProcessTree(snapshot, reason);
+    }
   }
 
   private rejectPendingRuntimeEnvRefresh(error: Error): void {

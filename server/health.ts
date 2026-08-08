@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import type { RequestHandler } from 'express';
 import { createLogger, type Logger } from './logger.js';
@@ -25,6 +26,19 @@ export interface HealthMemorySnapshot {
   external: number;
 }
 
+/** Aggregate-only process accounting; intentionally excludes ids and commands. */
+export interface HealthResourceSummary {
+  runtimeCount: number;
+  runtimeWithOwnedProcesses: number;
+  processCount: number;
+  totalRssBytes: number;
+}
+
+export interface HealthCgroupMemory {
+  currentBytes: number;
+  maxBytes?: number;
+}
+
 /**
  * Progress for work that begins only after the HTTP listener is available.
  * Health reports this informationally; it never changes the health status.
@@ -48,12 +62,18 @@ export interface HealthMonitorOptions {
   lagThresholdMs?: number;
   probeIntervalMs?: number;
   memoryLogIntervalMs?: number;
+  /** Bounded off-request refresh for process/cgroup resource accounting. */
+  resourceRefreshIntervalMs?: number;
   getLagMs?: () => number;
   memoryUsage?: () => NodeJS.MemoryUsage;
   monotonicNow?: () => number;
   logger?: Logger;
   /** Optional post-listen session-resume progress owned by server startup. */
   getResumeReadiness?: () => ResumeReadiness;
+  /** Informational aggregate child-process accounting; never affects liveness. */
+  getResourceSummary?: () => HealthResourceSummary;
+  /** Aggregate service cgroup memory; informational and never a health gate. */
+  getCgroupMemory?: () => HealthCgroupMemory | undefined;
   /** Overrides the per-process boot id reported by `/healthz` (tests). */
   bootId?: string;
   /**
@@ -78,6 +98,32 @@ export function readHealthMemorySnapshot(
 ): HealthMemorySnapshot {
   const { rss, heapUsed, external } = memoryUsage();
   return { rss, heapUsed, external };
+}
+
+/** Read cgroup v2 memory without disclosing the unit/cgroup path in health. */
+export function readHealthCgroupMemory(): HealthCgroupMemory | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const cgroup = fs
+      .readFileSync('/proc/self/cgroup', 'utf8')
+      .split('\n')
+      .find((line) => line.startsWith('0::'))
+      ?.slice(3);
+    if (!cgroup) return undefined;
+    const root = `/sys/fs/cgroup${cgroup}`;
+    const current = Number(
+      fs.readFileSync(`${root}/memory.current`, 'utf8').trim()
+    );
+    if (!Number.isFinite(current)) return undefined;
+    const maxRaw = fs.readFileSync(`${root}/memory.max`, 'utf8').trim();
+    const max = Number(maxRaw);
+    return {
+      currentBytes: current,
+      ...(Number.isFinite(max) ? { maxBytes: max } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export function formatHealthMemoryLine(snapshot: HealthMemorySnapshot): string {
@@ -106,6 +152,7 @@ export function createHealthMonitor(
   const logger = options.logger ?? healthLogger;
   const monotonicNow =
     options.monotonicNow ?? performance.now.bind(performance);
+  const resourceRefreshIntervalMs = options.resourceRefreshIntervalMs ?? 5_000;
 
   let measuredLagMs = 0;
   let expectedProbeAt = monotonicNow() + probeIntervalMs;
@@ -125,6 +172,12 @@ export function createHealthMonitor(
   }, memoryLogIntervalMs);
   memoryTimer.unref();
 
+  let cachedResource = readResourceSummary(options);
+  const resourceTimer = setInterval(() => {
+    cachedResource = readResourceSummary(options);
+  }, resourceRefreshIntervalMs);
+  resourceTimer.unref();
+
   const getLagMs = (): number =>
     Math.max(0, options.getLagMs?.() ?? measuredLagMs);
   const disabledStores = options.disabledStores ?? [];
@@ -137,6 +190,7 @@ export function createHealthMonitor(
     const { rss } = readHealthMemorySnapshot(memoryUsage);
     const healthy = lagMs <= lagThresholdMs && disabledStores.length === 0;
     const resume = options.getResumeReadiness?.();
+    const resource = cachedResource;
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'ok' : 'degraded',
       lagMs,
@@ -145,6 +199,7 @@ export function createHealthMonitor(
       ...(fixtureConfigPath ? { fixtureConfigPath } : {}),
       ...(disabledStores.length > 0 ? { disabledStores } : {}),
       ...(resume ? { ready: resume.complete, resume } : {}),
+      ...(resource ? { resource } : {}),
     });
   };
 
@@ -154,6 +209,19 @@ export function createHealthMonitor(
     stop() {
       if (probeTimer) clearInterval(probeTimer);
       clearInterval(memoryTimer);
+      clearInterval(resourceTimer);
     },
   };
+}
+
+function readResourceSummary(options: HealthMonitorOptions):
+  | (Partial<HealthResourceSummary> & {
+      cgroupMemory?: HealthCgroupMemory;
+    })
+  | undefined {
+  const runtimeResource = options.getResourceSummary?.();
+  const cgroupMemory = options.getCgroupMemory?.();
+  return runtimeResource || cgroupMemory
+    ? { ...(runtimeResource ?? {}), ...(cgroupMemory ? { cgroupMemory } : {}) }
+    : undefined;
 }

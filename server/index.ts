@@ -8,7 +8,11 @@ import { promisify } from 'node:util';
 
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { createHealthMonitor, PROCESS_BOOT_ID } from './health.js';
+import {
+  createHealthMonitor,
+  PROCESS_BOOT_ID,
+  readHealthCgroupMemory,
+} from './health.js';
 import { restoreSessionsAfterListen } from './startup-restore.js';
 
 import {
@@ -1652,6 +1656,8 @@ async function main(): Promise<void> {
   const healthMonitor = createHealthMonitor({
     disabledStores: persistenceState.disabledStores,
     getResumeReadiness: () => startupResume,
+    getResourceSummary: () => channelAgentRuntimes.resourceSummary(),
+    getCgroupMemory: readHealthCgroupMemory,
     // Fixture mode only: lets the Playwright harness tell its own server from a
     // leftover one before `reuseExistingServer` adopts it (#1214/#1299).
     ...(process.env[E2E_FIXTURE_ENV_VAR] === '1'
