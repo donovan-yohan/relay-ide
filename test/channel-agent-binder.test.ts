@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
 import {
+  AgentControlUnavailableError,
   AgentSteerRejectedError,
   BaseProtocolAdapterV2,
   type AdapterConfig,
@@ -1295,7 +1296,7 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(rows(store)).toHaveLength(0);
   });
 
-  it('treats a connected adapter command catalog as authoritative, including empty', async () => {
+  it('does not advertise unbound Prime controls and treats a connected empty catalog as authoritative', async () => {
     const { binder } = makeBinder({
       build: (agentType) => {
         const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
@@ -1315,15 +1316,110 @@ describe('channel-agent-binder — lifecycle', () => {
     });
 
     const preview = await binder.rosterForChannel(CH);
-    expect(preview[0]?.commands?.map((command) => command.name)).toEqual([
-      'new',
-      'model',
-      'thinking',
-      'compact',
-    ]);
+    expect(preview[0]?.commands).toBeUndefined();
+    expect(binder.isControlMessage('@prime-agent /compact')).toBe(true);
     await binder.ensureBinding(CH, 'prime-agent');
     const connected = await binder.rosterForChannel(CH);
     expect(connected[0]?.commands).toBeUndefined();
+  });
+
+  it('waits for a cold Prime binding to discover the requested control before dispatch', async () => {
+    let releaseDiscovery!: () => void;
+    const discovery = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    let enteredDiscovery!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredDiscovery = resolve;
+    });
+    const calls: string[] = [];
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        const connect = adapter.connect.bind(adapter);
+        let discovered = false;
+        Object.assign(adapter, {
+          connect: async (adapterConfig: AdapterConfig) => {
+            enteredDiscovery();
+            await discovery;
+            await connect(adapterConfig);
+            discovered = true;
+          },
+          getSlashCommands: () =>
+            discovered
+              ? [
+                  {
+                    name: 'compact',
+                    dispatch: 'relay-control' as const,
+                    collisionKey: 'compact',
+                  },
+                ]
+              : [],
+          executeControlCommand: async (input: { command: string }) => {
+            calls.push(input.command);
+            return {};
+          },
+        });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+    });
+    const profileId = builtInAgentProfileId('prime-agent');
+    expect((await binder.rosterForChannel(CH))[0]?.commands).toBeUndefined();
+
+    const command = binder.executeCommand(CH, profileId, 'compact');
+    await entered;
+    expect(calls).toEqual([]);
+    releaseDiscovery();
+    await command;
+    expect(calls).toEqual(['compact']);
+  });
+
+  it('maps a live provider control retraction to a typed unavailable result', async () => {
+    const { binder } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            {
+              name: 'compact',
+              dispatch: 'relay-control' as const,
+              collisionKey: 'compact',
+            },
+          ],
+          executeControlCommand: async () => {
+            throw new AgentControlUnavailableError(
+              'compact',
+              'Prime Agent no longer supports /compact on this runtime'
+            );
+          },
+        });
+        return adapter;
+      },
+      targets: [
+        {
+          id: 'prime-agent',
+          displayName: 'Prime Agent',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['prime-agent'],
+    });
+
+    await expect(
+      binder.executeCommand(CH, builtInAgentProfileId('prime-agent'), 'compact')
+    ).rejects.toMatchObject({ reasonCode: 'UNAVAILABLE_COMMAND' });
   });
 
   it('does not advertise relay controls from an adapter without a control executor', async () => {

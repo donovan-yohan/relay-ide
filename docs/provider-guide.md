@@ -190,10 +190,11 @@ channel control until their own adapters expose and execute it.
 
 The #1375 provider audit found no equivalent advertise-then-fail path in Pi or
 OpenCode: Pi exposes no Relay-owned channel controls, and OpenCode exposes no
-control catalog. Prime Agent's connected catalog is live-metadata-backed and
-its advertised controls have matching RPC implementations. Its pre-bind static
-preview remains a separate compatibility surface to keep aligned with the
-installed Prime RPC contract; connected empty catalogs remain authoritative.
+control catalog. Prime Agent has no pre-bind control preview: its connected
+catalog is live-metadata-backed and remains empty until the current RPC runtime
+has completed discovery. A missing native Prime control retracts only that
+control for the active runtime generation and returns a typed unavailable
+result; reconnect invalidates the prior discovery result.
 
 ## Provider extension policy
 

@@ -50,6 +50,17 @@ export class AgentSteerRejectedError extends Error {
   }
 }
 
+/** A live provider has explicitly reported that one control is unavailable. */
+export class AgentControlUnavailableError extends Error {
+  constructor(
+    readonly command: string,
+    message = `provider control /${command} is unavailable`
+  ) {
+    super(message);
+    this.name = 'AgentControlUnavailableError';
+  }
+}
+
 export interface AgentApprovalResponseInputV2 {
   requestId: string;
   decision: AgentApprovalDecisionV2;

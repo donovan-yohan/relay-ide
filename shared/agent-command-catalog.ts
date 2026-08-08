@@ -134,7 +134,12 @@ const CODEX_CONTROLS: AgentSlashCommandV2[] = [
   },
 ];
 
-const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
+/**
+ * Prime controls are definitions for its connected adapter, not a pre-bind
+ * preview. Unlike Codex, Prime has no static control contract that Relay can
+ * safely promise before the current RPC runtime has completed discovery.
+ */
+const PRIME_AGENT_CONTROL_DEFINITIONS: AgentSlashCommandV2[] = [
   {
     id: 'relay:prime-agent:new',
     name: 'new',
@@ -184,12 +189,36 @@ const PRIME_AGENT_CONTROLS: AgentSlashCommandV2[] = [
 export function relayControlCatalogForProvider(
   providerId: string
 ): AgentSlashCommandV2[] {
+  const controls = providerId === 'codex' ? CODEX_CONTROLS : [];
+  return cloneCatalog(controls);
+}
+
+/**
+ * Returns Prime's candidate controls for a connected adapter to narrow using
+ * the current RPC runtime's live discovery result.
+ */
+export function primeAgentControlDefinitions(): AgentSlashCommandV2[] {
+  return cloneCatalog(PRIME_AGENT_CONTROL_DEFINITIONS);
+}
+
+/**
+ * Controls reserved from ordinary channel prose. This is intentionally wider
+ * than the advertised catalog: an undiscovered Prime control must still not
+ * be mistaken for a normal targeted message.
+ */
+export function relayControlInputGuardCatalogForProvider(
+  providerId: string
+): AgentSlashCommandV2[] {
   const controls =
-    providerId === 'codex'
-      ? CODEX_CONTROLS
-      : providerId === 'prime-agent'
-        ? PRIME_AGENT_CONTROLS
+    providerId === 'prime-agent'
+      ? PRIME_AGENT_CONTROL_DEFINITIONS
+      : providerId === 'codex'
+        ? CODEX_CONTROLS
         : [];
+  return cloneCatalog(controls);
+}
+
+function cloneCatalog(controls: AgentSlashCommandV2[]): AgentSlashCommandV2[] {
   return controls.map((command) => ({
     ...command,
     ...(command.aliases ? { aliases: [...command.aliases] } : {}),

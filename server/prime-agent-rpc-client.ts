@@ -5,6 +5,26 @@ export interface PrimeAgentRpcMessage extends Record<string, unknown> {
   type: string;
 }
 
+/** A correlated native RPC failure, retaining the command and response shape. */
+export class PrimeAgentRpcResponseError extends Error {
+  constructor(
+    readonly command: string,
+    readonly response: PrimeAgentRpcMessage
+  ) {
+    const detail =
+      typeof response.error === 'string'
+        ? response.error
+        : response.error &&
+            typeof response.error === 'object' &&
+            typeof (response.error as Record<string, unknown>).message ===
+              'string'
+          ? String((response.error as Record<string, unknown>).message)
+          : `${command} failed`;
+    super(detail);
+    this.name = 'PrimeAgentRpcResponseError';
+  }
+}
+
 export interface PrimeAgentRpcClientOptions {
   command?: string;
   args?: string[];
@@ -268,11 +288,7 @@ export class PrimeAgentRpcClient extends EventEmitter {
           );
         } else if (message.success !== true) {
           pending.reject(
-            new Error(
-              typeof message.error === 'string'
-                ? message.error
-                : `${pending.command} failed`
-            )
+            new PrimeAgentRpcResponseError(pending.command, message)
           );
         } else {
           pending.resolve(message);

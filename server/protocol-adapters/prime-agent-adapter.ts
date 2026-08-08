@@ -1,7 +1,10 @@
 import { PRIME_AGENT_CHANNEL_COMMAND } from './launch-commands.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
-import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
+import {
+  AgentControlUnavailableError,
+  BaseProtocolAdapterV2,
+} from '../protocol-adapter-v2.js';
 import type {
   AdapterConfig,
   AdapterStatus,
@@ -19,10 +22,11 @@ import type {
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
-import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
+import { primeAgentControlDefinitions } from '../../shared/agent-command-catalog.js';
 import { cleanEnv } from '../utils.js';
 import {
   PrimeAgentRpcClient,
+  PrimeAgentRpcResponseError,
   type PrimeAgentRpcClientOptions,
   type PrimeAgentRpcMessage,
 } from '../prime-agent-rpc-client.js';
@@ -165,11 +169,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
-  private commandCatalog = relayControlCatalogForProvider('prime-agent');
+  private commandCatalog: AgentSlashCommandV2[] = [];
   private modelCatalog: RpcRecord[] = [];
   private currentModel: RpcRecord | null = null;
   private thinkingLevel: string | null = null;
-  private controlInFlight = false;
+  private readonly unavailableControlKeys = new Set<string>();
+  private nextControlId = 0;
+  private controlInFlightId: number | null = null;
 
   constructor(
     private readonly clientFactory: ClientFactory = (options) =>
@@ -194,6 +200,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   async connect(config: AdapterConfig): Promise<void> {
     this.config = config;
     this._status = 'connecting';
+    this.clearControlDiscovery();
     const args = ['--mode', 'rpc', '--no-extensions'];
     const provider = string(config.extra?.['provider']);
     const thinking = string(config.extra?.['effort']);
@@ -232,9 +239,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
     try {
       const response = await client.start();
+      if (!current()) return;
       this.applyState(record(response.data));
       this._status = 'connected';
-      await this.refreshControlCommands();
+      await this.refreshControlCommands(client, generation);
+      if (!current()) return;
       this.emitSnapshot();
       this.emitSessionUpdate();
       this.emitLive({
@@ -250,8 +259,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
         error: null,
       });
     } catch (error) {
-      this._status = 'disconnected';
-      await client.stop().catch(() => undefined);
+      if (current()) {
+        this._status = 'disconnected';
+        this.clearControlDiscovery();
+        await client.stop().catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -262,6 +274,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeTurnId = null;
     this.queued.length = 0;
     this.queueAdvanceInFlight = false;
+    this.clearControlDiscovery();
     this.items.clear();
     this.anonymousToolIds.clear();
     this.pendingAnonymousToolIds.clear();
@@ -271,6 +284,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const client = this.client;
     this.client = null;
     this.clientGeneration += 1;
+    this.clearControlDiscovery();
     await client?.stop();
   }
 
@@ -298,7 +312,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
-    if (this.controlInFlight) {
+    if (this.controlInFlightId !== null) {
       throw new Error('Prime Agent control command is in progress');
     }
     const client = this.requireClient();
@@ -335,15 +349,17 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     input: AgentControlCommandInputV2
   ): Promise<{ config?: Record<string, unknown> }> {
     const client = this.requireClient();
+    const generation = this.clientGeneration;
     if (this.activeTurnId || this.queued.length > 0) {
       throw new Error(
         'Prime Agent controls are unavailable while a turn is active'
       );
     }
-    if (this.controlInFlight) {
+    if (this.controlInFlightId !== null) {
       throw new Error('another Prime Agent control command is in progress');
     }
-    this.controlInFlight = true;
+    const controlId = ++this.nextControlId;
+    this.controlInFlightId = controlId;
     try {
       const command = input.command.trim().toLowerCase();
       const known = this.commandCatalog.find(
@@ -360,7 +376,12 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
       switch (action) {
         case 'clear': {
-          const response = await client.call('new_session');
+          const response = await this.callNativeControl(
+            client,
+            generation,
+            action,
+            'new_session'
+          );
           if (record(response.data).cancelled === true) {
             throw new Error('Prime Agent cancelled the new session request');
           }
@@ -378,10 +399,16 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
               'model must be selected from the live Prime Agent catalog'
             );
           }
-          await client.call('set_model', {
-            provider: string(selected.provider),
-            modelId: string(selected.id),
-          });
+          await this.callNativeControl(
+            client,
+            generation,
+            action,
+            'set_model',
+            {
+              provider: string(selected.provider),
+              modelId: string(selected.id),
+            }
+          );
           break;
         }
         case 'thinking': {
@@ -391,23 +418,32 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
               `thinking must be one of: ${allowed.join(', ') || 'none available'}`
             );
           }
-          await client.call('set_thinking_level', { level: args });
+          await this.callNativeControl(
+            client,
+            generation,
+            action,
+            'set_thinking_level',
+            { level: args }
+          );
           break;
         }
         case 'compact':
-          await client.call('compact');
+          await this.callNativeControl(client, generation, action, 'compact');
           break;
         default:
           throw new Error('unsupported Prime Agent control command');
       }
 
       const state = await client.call('get_state');
+      if (!this.isCurrentClient(client, generation)) {
+        throw new Error('Prime Agent control connection changed');
+      }
       this.applyState(record(state.data));
       this.recomputeControlCommands();
       this.emitSessionUpdate();
       return { config: this.currentControlConfig() };
     } finally {
-      this.controlInFlight = false;
+      if (this.controlInFlightId === controlId) this.controlInFlightId = null;
     }
   }
 
@@ -1045,10 +1081,13 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  private async refreshControlCommands(): Promise<void> {
-    const client = this.requireClient();
+  private async refreshControlCommands(
+    client: PrimeAgentRpcClient,
+    generation: number
+  ): Promise<void> {
     try {
       const response = await client.call('get_available_models');
+      if (!this.isCurrentClient(client, generation)) return;
       const models = record(response.data).models;
       this.modelCatalog = Array.isArray(models)
         ? models.map(record).filter((model) => this.modelValue(model) !== '')
@@ -1060,8 +1099,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     } catch {
       // Older or malformed Prime Agent runtimes must not receive guessed
       // controls: an advertised command is an executable capability promise.
-      this.modelCatalog = [];
-      this.commandCatalog = [];
+      if (this.isCurrentClient(client, generation))
+        this.clearControlDiscovery();
       return;
     }
     this.recomputeControlCommands();
@@ -1089,9 +1128,14 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private recomputeControlCommands(): void {
-    const controls = relayControlCatalogForProvider('prime-agent');
+    const controls = primeAgentControlDefinitions();
     const thinkingLevels = this.availableThinkingLevels(this.currentModel);
     this.commandCatalog = controls.flatMap((command) => {
+      if (
+        command.collisionKey &&
+        this.unavailableControlKeys.has(command.collisionKey)
+      )
+        return [];
       if (command.collisionKey === 'model') {
         if (this.modelCatalog.length === 0) return [];
         return [
@@ -1153,6 +1197,77 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.currentModel = string(model.id) ? model : null;
     this.thinkingLevel = string(data.thinkingLevel) || null;
   }
+  private clearControlDiscovery(): void {
+    this.commandCatalog = [];
+    this.modelCatalog = [];
+    this.currentModel = null;
+    this.thinkingLevel = null;
+    this.unavailableControlKeys.clear();
+    this.controlInFlightId = null;
+  }
+  private isCurrentClient(
+    client: PrimeAgentRpcClient,
+    generation: number
+  ): boolean {
+    return this.client === client && this.clientGeneration === generation;
+  }
+  private async callNativeControl(
+    client: PrimeAgentRpcClient,
+    generation: number,
+    control: string,
+    method: string,
+    fields?: RpcRecord
+  ): Promise<PrimeAgentRpcMessage> {
+    try {
+      const response = fields
+        ? await client.call(method, fields)
+        : await client.call(method);
+      if (!this.isCurrentClient(client, generation))
+        throw new Error('Prime Agent control connection changed');
+      return response;
+    } catch (error) {
+      if (this.isUnavailableNativeControlError(error, method)) {
+        this.retractControl(control, client, generation);
+        throw new AgentControlUnavailableError(
+          control,
+          `Prime Agent no longer supports /${control} on this runtime`
+        );
+      }
+      throw error;
+    }
+  }
+  private retractControl(
+    control: string,
+    client: PrimeAgentRpcClient,
+    generation: number
+  ): void {
+    if (!this.isCurrentClient(client, generation)) return;
+    this.unavailableControlKeys.add(control);
+    this.recomputeControlCommands();
+    this.emitSessionUpdate();
+  }
+  private isUnavailableNativeControlError(
+    error: unknown,
+    method: string
+  ): boolean {
+    if (
+      !(error instanceof PrimeAgentRpcResponseError) ||
+      error.command !== method
+    )
+      return false;
+    const escapedMethod = method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const message = error.message;
+    return (
+      new RegExp(
+        `^(?:unknown|unsupported)\\s+(?:rpc\\s+)?(?:method|command)\\s*:?\\s*${escapedMethod}\\b`,
+        'i'
+      ).test(message) ||
+      new RegExp(
+        `^(?:(?:rpc\\s+)?(?:method|command)\\s+not\\s+found\\s*:?\\s*${escapedMethod}|${escapedMethod}\\s+(?:method|command)\\s+(?:is\\s+)?(?:unknown|unsupported|not found))\\b`,
+        'i'
+      ).test(message)
+    );
+  }
   private emitSnapshot(): void {
     if (!this.config) return;
     this.emitPatch({
@@ -1196,6 +1311,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     const client = this.client;
     this.client = null;
     this.clientGeneration += 1;
+    this.clearControlDiscovery();
     void client?.stop().catch(() => undefined);
     this.emitError(error.message);
     this.emitLive({

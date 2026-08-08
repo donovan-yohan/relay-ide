@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
-import { PrimeAgentRpcClient } from '../../server/prime-agent-rpc-client.js';
+import {
+  PrimeAgentRpcClient,
+  PrimeAgentRpcResponseError,
+} from '../../server/prime-agent-rpc-client.js';
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & {
@@ -115,9 +118,27 @@ describe('PrimeAgentRpcClient', () => {
       );
     });
     await client.start();
-    await expect(client.call('prompt', { message: 'x' })).rejects.toThrow(
-      'nope'
+    await expect(client.call('prompt', { message: 'x' })).rejects.toMatchObject(
+      {
+        name: 'PrimeAgentRpcResponseError',
+        command: 'prompt',
+        message: 'nope',
+        response: expect.objectContaining({
+          command: 'prompt',
+          success: false,
+        }),
+      }
     );
+    await expect(
+      Promise.reject(
+        new PrimeAgentRpcResponseError('compact', {
+          type: 'response',
+          command: 'compact',
+          success: false,
+          error: { message: 'method not found: compact' },
+        })
+      )
+    ).rejects.toThrow('method not found: compact');
   });
 
   it('bounds oversized records and a trailing unterminated tail', async () => {

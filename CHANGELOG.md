@@ -82,6 +82,8 @@ workflow.
 - Apply Codex model, reasoning-effort, and Fast Mode controls through stable
   turn overrides, stop advertising unimplemented Claude controls, and pass
   profile effort into Claude launches (#1375)
+- Discover Prime Agent controls from the current RPC runtime before advertising
+  them, and retract only a control that the runtime explicitly reports missing (#1377)
 - Agent profiles whose launch command is missing now appear unavailable in channel rosters and mention palettes, and spawn races report an actionable configuration error instead of raw `ENOENT` (#1357)
 - Codex reasoning cards now show expandable provider-generated summaries when available, and no longer show inactive expand chevrons when no summary exists
 - Terminal-style text field block cursors now align with the input content line
