@@ -15,6 +15,7 @@ import {
 import {
   executeChannelAgentCommand,
   fetchChannelRoster,
+  HttpError,
   uploadChannelImages,
   type RosterEntry,
 } from '../../frontend/src/lib/api.js';
@@ -101,7 +102,7 @@ interface RenderOpts {
   restorePending?: boolean;
 }
 
-async function renderComposer(opts: RenderOpts = {}): Promise<void> {
+async function renderComposer(opts: RenderOpts = {}): Promise<QueryClient> {
   // ChannelComposer lazily fetches the @mention roster via useQuery, so it must
   // render under a QueryClientProvider even when the palette never opens.
   const queryClient = new QueryClient({
@@ -125,6 +126,7 @@ async function renderComposer(opts: RenderOpts = {}): Promise<void> {
       )
     );
   });
+  return queryClient;
 }
 
 async function typeAndEnter(text: string): Promise<void> {
@@ -592,6 +594,62 @@ describe('ChannelComposer (#1178)', () => {
       args: 'on',
     });
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('immediately invalidates and refetches the roster after a successful control', async () => {
+    vi.mocked(fetchChannelRoster)
+      .mockResolvedValueOnce(codexRoster)
+      .mockResolvedValueOnce(codexRoster);
+    const queryClient = await renderComposer();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    await pressKey('Enter');
+
+    await vi.waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ['channel-roster', 'topic:general'],
+      })
+    );
+    await vi.waitFor(() => expect(fetchChannelRoster).toHaveBeenCalledTimes(2));
+  });
+
+  it('immediately refreshes the roster after an unavailable control retracts', async () => {
+    vi.mocked(fetchChannelRoster)
+      .mockResolvedValueOnce(codexRoster)
+      .mockResolvedValueOnce([]);
+    vi.mocked(executeChannelAgentCommand).mockRejectedValue(
+      new HttpError(
+        400,
+        'Prime Agent no longer supports /fast on this runtime',
+        'INVALID_ARGUMENT',
+        false,
+        { reasonCode: 'UNAVAILABLE_COMMAND' }
+      )
+    );
+    const queryClient = await renderComposer();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    await pressKey('Enter');
+
+    await vi.waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ['channel-roster', 'topic:general'],
+      })
+    );
+    await vi.waitFor(() => expect(fetchChannelRoster).toHaveBeenCalledTimes(2));
+    expect(container.textContent).toContain('no longer supports /fast');
   });
 
   it('escapes the command palette without losing the exact draft or posting it', async () => {

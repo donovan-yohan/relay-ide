@@ -47,7 +47,7 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   resume: true,
   fork: false,
   rollback: false,
-  compact: true,
+  compact: false,
   telemetry: true,
   rateLimits: false,
   streaming: true,
@@ -375,21 +375,6 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       const args = input.args?.trim() ?? '';
 
       switch (action) {
-        case 'clear': {
-          const response = await this.callNativeControl(
-            client,
-            generation,
-            action,
-            'new_session'
-          );
-          if (record(response.data).cancelled === true) {
-            throw new Error('Prime Agent cancelled the new session request');
-          }
-          this.providerSessionId = null;
-          this.providerSessionFile = null;
-          this.items.clear();
-          break;
-        }
         case 'model': {
           const selected = this.modelCatalog.find(
             (model) => this.modelValue(model) === args
@@ -427,9 +412,6 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
           );
           break;
         }
-        case 'compact':
-          await this.callNativeControl(client, generation, action, 'compact');
-          break;
         default:
           throw new Error('unsupported Prime Agent control command');
       }
@@ -782,17 +764,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     input: AgentSendMessageInputV2,
     payload: RpcRecord
   ): Promise<void> {
-    if (input.content.trim() !== '/compact') {
-      await client.call('prompt', payload);
-      return;
-    }
-    const response = await client.call('compact');
-    this.emitProviderExtension({
-      kind: 'contextCompaction',
-      ...record(response.data),
-    });
-    this.completeTurn('completed');
-    void this.advanceQueuedTurn();
+    await client.call('prompt', payload);
   }
 
   private async advanceQueuedTurn(): Promise<void> {
@@ -1115,11 +1087,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private availableThinkingLevels(model: RpcRecord | null): string[] {
-    if (!model) return [];
-    if (model.reasoning !== true) return ['off'];
+    if (!model || model.reasoning !== true) return [];
     const levelMap = record(model.thinkingLevelMap);
+    if (Object.keys(levelMap).length === 0) return [];
     const levels = ['off', 'minimal', 'low', 'medium', 'high'].filter(
-      (level) => levelMap[level] !== null
+      (level) => Object.hasOwn(levelMap, level) && levelMap[level] !== null
     );
     for (const level of ['xhigh', 'max']) {
       if (level in levelMap && levelMap[level] !== null) levels.push(level);
@@ -1129,7 +1101,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private recomputeControlCommands(): void {
     const controls = primeAgentControlDefinitions();
-    const thinkingLevels = this.availableThinkingLevels(this.currentModel);
+    const selectedModel = this.modelCatalog.find(
+      (model) =>
+        this.modelValue(model) === this.modelValue(this.currentModel ?? {})
+    );
+    const thinkingLevels = this.availableThinkingLevels(selectedModel ?? null);
     this.commandCatalog = controls.flatMap((command) => {
       if (
         command.collisionKey &&
@@ -1164,7 +1140,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
           },
         ];
       }
-      return [command];
+      return [];
     });
   }
 

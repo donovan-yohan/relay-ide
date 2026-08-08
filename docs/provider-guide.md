@@ -42,7 +42,7 @@ lifecycle, `message_update` text and
 thinking deltas to assistant and reasoning items, and
 `tool_execution_start|update|end` to canonical command, file-change, or dynamic
 tool items. It advertises text, reasoning, tools, command execution, file
-changes, queueing, interrupt, resume, compaction, telemetry, and streaming; unsupported
+changes, queueing, interrupt, resume, telemetry, and streaming; unsupported
 approval, question, plan, and queue-cancellation operations remain false. Because Prime steering stays within one native run, Relay queues concurrent
 messages locally and sends a fresh RPC prompt after each `agent_end`, preserving
 one durable Relay turn per message. Channel subprocesses currently launch with
@@ -50,17 +50,19 @@ one durable Relay turn per message. Channel subprocesses currently launch with
 to Relay approvals/questions yet.
 
 The channel command palette discovers Prime models from the connected RPC
-runtime and exposes native `model`, `thinking`/`effort`, `compact`, and confirmed
-`new`/`clear` controls. These execute on Relay's authenticated control lane, not
-as persisted chat messages or token-consuming prompts. Model and thinking
-arguments are validated against live Prime metadata; if discovery is unavailable,
-the adapter fails closed instead of guessing. Prime skills, prompt templates,
-and TUI-only commands are not exposed as channel controls. This control surface
-is installed-tested with Prime Agent 0.7.0. It assumes strict-LF JSONL records,
-a correlated `get_state` readiness response, `agent_end` as the settled run
-boundary, and `sessionActions.queuedCount` as a finite non-negative integer; a
-runtime that cannot return a valid live model catalog publishes no connected
-command catalog.
+runtime and exposes `model`, plus `thinking`/`effort` only when the selected
+live model explicitly supplies supported thinking levels. These execute on
+Relay's authenticated control lane, not as persisted chat messages or
+token-consuming prompts. Fresh-session and compaction controls are intentionally
+hidden until Prime supplies an authoritative non-mutating capability source for
+their RPC methods. Model and thinking arguments are validated against live Prime
+metadata; if discovery is unavailable, the adapter fails closed instead of
+guessing. Prime skills, prompt templates, and TUI-only commands are not exposed
+as channel controls. This control surface is installed-tested with Prime Agent
+0.7.0. It assumes strict-LF JSONL records, a correlated `get_state` readiness
+response, `agent_end` as the settled run boundary, and
+`sessionActions.queuedCount` as a finite non-negative integer; a runtime that
+cannot return a valid live model catalog publishes no connected command catalog.
 
 The `prime-agent` executable is also available as a normal terminal launch, but
 that surface stays a generic PTY: Relay does not parse terminal output or infer
@@ -191,10 +193,14 @@ channel control until their own adapters expose and execute it.
 The #1375 provider audit found no equivalent advertise-then-fail path in Pi or
 OpenCode: Pi exposes no Relay-owned channel controls, and OpenCode exposes no
 control catalog. Prime Agent has no pre-bind control preview: its connected
-catalog is live-metadata-backed and remains empty until the current RPC runtime
-has completed discovery. A missing native Prime control retracts only that
-control for the active runtime generation and returns a typed unavailable
-result; reconnect invalidates the prior discovery result.
+catalog remains empty until the current RPC runtime has completed discovery.
+The available-model catalog proves only model selection; reasoning depth appears
+only when the selected model explicitly returns supported thinking levels.
+Fresh-session and compaction controls remain hidden because the current RPC
+contract has no authoritative non-mutating capability source for those methods.
+A missing live-evidenced native control retracts only that control for the
+active runtime generation and returns a typed unavailable result; reconnect
+invalidates the prior discovery result.
 
 ## Provider extension policy
 
