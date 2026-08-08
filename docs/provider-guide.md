@@ -188,6 +188,13 @@ model and effort values are launch-time CLI settings, not live channel
 controls. Claude, OpenCode, and Hermes must not be presented as supporting a
 channel control until their own adapters expose and execute it.
 
+The #1375 provider audit found no equivalent advertise-then-fail path in Pi or
+OpenCode: Pi exposes no Relay-owned channel controls, and OpenCode exposes no
+control catalog. Prime Agent's connected catalog is live-metadata-backed and
+its advertised controls have matching RPC implementations. Its pre-bind static
+preview remains a separate compatibility surface to keep aligned with the
+installed Prime RPC contract; connected empty catalogs remain authoritative.
+
 ## Provider extension policy
 
 Use:

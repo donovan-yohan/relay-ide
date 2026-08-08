@@ -226,7 +226,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
 
-    await adapter.connect(baseConfig());
+    await adapter.connect({ ...baseConfig(), extra: { effort: ' high ' } });
 
     expect(harness.spawns).toHaveLength(0);
     expect(patches.map((p) => p.type)).toEqual([
@@ -239,6 +239,20 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       slash?.type === 'agent-session-updated-v2' && slash.slashCommands
     ).toEqual([]);
     expect(adapter.executeControlCommand).toBeUndefined();
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-session-snapshot-v2',
+          session: expect.objectContaining({
+            config: expect.objectContaining({ effort: 'high' }),
+          }),
+        }),
+        expect.objectContaining({
+          type: 'agent-live-state-updated-v2',
+          live: expect.objectContaining({ fastModeAvailable: false }),
+        }),
+      ])
+    );
 
     await adapter.disconnect();
   });
@@ -1346,7 +1360,7 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
     const patches = collectPatches(adapter);
-    await adapter.connect(baseConfig());
+    await adapter.connect({ ...baseConfig(), extra: { effort: 'high' } });
 
     await adapter.resumeSession('resume-xyz');
     expect(harness.spawns).toHaveLength(0);
@@ -1357,7 +1371,13 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       resumeSnap?.type === 'agent-session-snapshot-v2' && resumeSnap.session
     ).toMatchObject({
       providerSession: { claudeSessionId: 'resume-xyz' },
+      config: { effort: 'high' },
     });
+    expect(
+      patches
+        .filter((patch) => patch.type === 'agent-live-state-updated-v2')
+        .at(-1)
+    ).toMatchObject({ live: { fastModeAvailable: false } });
 
     await adapter.sendMessage({ turnId: 'turn-1', content: 'go' });
     expect(harness.spawns).toHaveLength(1);

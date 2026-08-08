@@ -64,7 +64,8 @@ export interface AgentSessionLiveStateV2 {
 export interface AgentSessionConfigV2 {
   cwd: string;
   model?: string;
-  effort?: string;
+  /** null explicitly resets the provider to its model-default effort. */
+  effort?: string | null;
   permissionMode?: string;
   additionalDirectories?: string[];
   providerOptions?: Record<string, unknown>;
@@ -1609,7 +1610,11 @@ function isPartialSessionConfig(value: unknown): boolean {
   if (Object.hasOwn(value, 'cwd')) return false;
   if (value.model !== undefined && typeof value.model !== 'string')
     return false;
-  if (value.effort !== undefined && typeof value.effort !== 'string')
+  if (
+    value.effort !== undefined &&
+    value.effort !== null &&
+    typeof value.effort !== 'string'
+  )
     return false;
   if (
     value.permissionMode !== undefined &&

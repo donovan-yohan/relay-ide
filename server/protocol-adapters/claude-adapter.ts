@@ -495,6 +495,13 @@ function filterClaudeArgs(raw: unknown): string[] {
   return out;
 }
 
+function configuredClaudeEffort(config: AdapterConfig): string | undefined {
+  const extra = isRecord(config.extra) ? config.extra : {};
+  return typeof extra.effort === 'string' && extra.effort.trim()
+    ? extra.effort.trim()
+    : undefined;
+}
+
 function mimeForAttachment(path: string, declared: string | undefined): string {
   if (declared) return declared;
   const dot = path.lastIndexOf('.');
@@ -741,7 +748,7 @@ export class ClaudeProtocolAdapter
       activeRequestIds: [],
       proposedPlanItemId: null,
       queueLength: 0,
-      fastModeAvailable: true,
+      fastModeAvailable: false,
       error: null,
     });
     // Claude currently has no executable Relay control lane. The init line may
@@ -901,6 +908,7 @@ export class ClaudeProtocolAdapter
     this.lastActivityAt = Date.now();
     if (dead)
       await this.stopOwnedClient(dead, 'session resume').catch(() => undefined);
+    const effort = configuredClaudeEffort(config);
 
     this.emitPatch({
       type: 'agent-session-snapshot-v2',
@@ -914,6 +922,7 @@ export class ClaudeProtocolAdapter
         providerSession: { claudeSessionId: sessionId },
         config: {
           ...(config.model ? { model: config.model } : {}),
+          ...(effort ? { effort } : {}),
           ...(config.permissionMode
             ? { permissionMode: config.permissionMode }
             : {}),
@@ -927,7 +936,7 @@ export class ClaudeProtocolAdapter
       activeRequestIds: [],
       proposedPlanItemId: null,
       queueLength: 0,
-      fastModeAvailable: true,
+      fastModeAvailable: false,
       error: null,
     });
     this.emitSessionUpdate({ slashCommands: RELAY_CLAUDE_COMMANDS });
@@ -1376,8 +1385,9 @@ export class ClaudeProtocolAdapter
 
     if (config.model) args.push('--model', config.model);
     const extra = isRecord(config.extra) ? config.extra : {};
-    if (typeof extra.effort === 'string' && extra.effort.trim()) {
-      args.push('--effort', extra.effort.trim());
+    const effort = configuredClaudeEffort(config);
+    if (effort) {
+      args.push('--effort', effort);
     }
     if (config.systemPromptAppendix?.trim()) {
       args.push('--append-system-prompt', config.systemPromptAppendix);
@@ -2606,6 +2616,7 @@ export class ClaudeProtocolAdapter
 
   private emitSnapshot(): void {
     if (!this.config) return;
+    const effort = configuredClaudeEffort(this.config);
     this.emitPatch({
       type: 'agent-session-snapshot-v2',
       sessionId: this.config.sessionId,
@@ -2617,6 +2628,7 @@ export class ClaudeProtocolAdapter
         capabilities: this.capabilities,
         config: {
           ...(this.config.model ? { model: this.config.model } : {}),
+          ...(effort ? { effort } : {}),
           ...(this.config.permissionMode
             ? { permissionMode: this.config.permissionMode }
             : {}),

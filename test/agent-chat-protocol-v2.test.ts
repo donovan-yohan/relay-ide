@@ -351,6 +351,22 @@ describe('Agent Chat Protocol v2', () => {
         config: { model: 'sonnet' },
       })
     ).toBe(true);
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        config: { effort: null },
+      })
+    ).toBe(true);
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        config: { effort: 42 },
+      })
+    ).toBe(false);
   });
 
   it('rejects malformed slash command optional string fields', () => {
