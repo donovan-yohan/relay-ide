@@ -48,6 +48,7 @@ function approveGrant(
   options: {
     actor?: { type: string; id: string; displayName?: string };
     scope?: typeof GRANT_SCOPE | Record<string, string[]>;
+    expiresAt?: Date | string;
   } = {}
 ): string {
   const grant = grants.request({
@@ -57,7 +58,9 @@ function approveGrant(
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     capabilities: ['session:read'],
     scope: options.scope ?? GRANT_SCOPE,
-    ttlMs: 60_000,
+    ...(options.expiresAt
+      ? { expiresAt: options.expiresAt }
+      : { ttlMs: 60_000 }),
     correlationId: `${id}-request`,
   });
   return grants.approve(grant.id, {
@@ -210,6 +213,57 @@ test('validates WorkContext-scoped actor credentials against exact artifact read
       deferWorkContextScope: true,
     })
   ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+});
+
+test('accepts and enforces a channelIds scope dimension on actor credentials', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:read'],
+    scope: { channelIds: ['A'] },
+  });
+  expect(issued.credential.scope?.channelIds).toEqual(['A']);
+
+  // In-scope channel A validates.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['A'] },
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['context:read'] });
+
+  // Out-of-scope channel B is denied with wrong_channel_scope.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['B'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+
+  // A request naming no channel is missing_scope (list requires an explicit
+  // channel scope from a scoped actor).
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+    })
+  ).toMatchObject({ ok: false, reason: 'missing_scope' });
+});
+
+test('denies a channel request when the credential has NO channel scope (fail-closed)', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:read'],
+    scope: { workContextIds: ['wc:allowed'] }, // no channelIds dimension
+  });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:read'],
+      scope: { channelIds: ['B'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
 });
 
 test('requires scoped actor credentials to cover every requested WorkContext id', () => {
@@ -403,6 +457,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     classifyCliGatewayCredentialLane(
       req({
         authorization: `Bearer ${token}`,
+        command: 'nodes.list',
       }),
       'nodes.list'
     )
@@ -426,6 +481,40 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       command
     ).toBe('scoped-actor-credential');
   }
+  // The five channel read verbs classify into the scoped-actor-credential read
+  // lane (GET), and a read verb on POST is not an actor read route.
+  for (const command of [
+    'channels.list',
+    'channels.get',
+    'channels.history',
+    'channels.threads.history',
+    'channels.roster',
+  ] as const) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('scoped-actor-credential');
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          method: 'POST',
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('unsupported-route');
+  }
+
   // A read verb presented on POST (a write method) is not an actor read route.
   expect(
     classifyCliGatewayCredentialLane(
@@ -483,7 +572,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }),
       'nodes.list'
     )
-  ).toBe('scoped-actor-credential');
+  ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(
       req({
@@ -608,9 +697,6 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
-    'channels.agent-commands',
-    'channels.interrupt',
-    'channels.respond-approval',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
@@ -958,6 +1044,205 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
   );
 });
 
+test('caps grant-backed credential expiry and cascades grant revocation', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const ttlIssued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(approveGrant(grants, 'grant-expiry-ttl'), 'ttl'),
+      ttlMs: 120_000,
+    }
+  );
+  expect(ttlIssued.credential.expiresAt).toBe('2026-05-29T00:01:00.000Z');
+  const explicitIssued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-expiry-explicit'),
+        'explicit'
+      ),
+      ttlMs: undefined,
+      expiresAt: '2026-05-29T00:10:00.000Z',
+    }
+  );
+  expect(explicitIssued.credential.expiresAt).toBe('2026-05-29T00:01:00.000Z');
+  expect(
+    scopedRegistry.revokeByGrantId('grant-expiry-ttl', {
+      revokedBy: 'grant:grant-expiry-ttl',
+    })
+  ).toHaveLength(1);
+  expect(scopedRegistry.getCredential(ttlIssued.credential.id)).toHaveProperty(
+    'revokedAt'
+  );
+  expect(
+    scopedRegistry.getCredential(explicitIssued.credential.id)
+  ).not.toHaveProperty('revokedAt');
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: ttlIssued.token,
+      capabilities: ['session:read'],
+      scope: { sessionIds: ['session-1'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'revoked' });
+});
+
+test('does not consume issue or rotation grants before deterministic lease validation', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const invalidInputs = [
+    { ttlMs: 0 },
+    { ttlMs: 15 * 60 * 1000 + 1 },
+    { ttlMs: undefined, expiresAt: 'not-a-date' },
+    { ttlMs: undefined, expiresAt: '2026-05-29T00:00:00.000Z' },
+  ];
+
+  for (const [index, invalid] of invalidInputs.entries()) {
+    const handle = approveGrant(grants, `grant-invalid-issue-${index}`);
+    const beforeCredentials = scopedRegistry.listCredentials();
+    const beforeAudit = scopedRegistry.listAuditEvents();
+    expect(() =>
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(handle, `invalid-issue-${index}`),
+        ...invalid,
+      })
+    ).toThrow();
+    expect(scopedRegistry.listCredentials()).toEqual(beforeCredentials);
+    expect(scopedRegistry.listAuditEvents()).toEqual(beforeAudit);
+    // The same one-use handle remains redeemable after a local validation
+    // error; a valid retry is the proof that it was not consumed.
+    expect(
+      issueCliGatewayActorCredentialWithGrant(
+        scopedRegistry,
+        grants,
+        grantLifecycleInput(handle, `valid-issue-${index}`)
+      ).credential.grantId
+    ).toBe(`grant-invalid-issue-${index}`);
+  }
+
+  const existing = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-rotate-existing'),
+      'rotate-existing'
+    )
+  );
+  const rotateHandle = approveGrant(grants, 'grant-invalid-rotate');
+  const beforeRotateAudit = scopedRegistry.listAuditEvents();
+  expect(() =>
+    rotateCliGatewayActorCredentialWithGrant(
+      scopedRegistry,
+      grants,
+      existing.credential.id,
+      {
+        ...grantLifecycleInput(rotateHandle, 'invalid-rotate'),
+        ttlMs: 0,
+      }
+    )
+  ).toThrow();
+  expect(
+    scopedRegistry.getCredential(existing.credential.id)
+  ).not.toHaveProperty('revokedAt');
+  expect(scopedRegistry.listAuditEvents()).toEqual(beforeRotateAudit);
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    existing.credential.id,
+    grantLifecycleInput(rotateHandle, 'valid-rotate')
+  );
+  expect(rotated.revoked.id).toBe(existing.credential.id);
+  expect(rotated.credential.grantId).toBe('grant-invalid-rotate');
+});
+
+test('shares the grant issuance instant across consume and registry persistence', () => {
+  const beforeNotAfter = new Date('2026-05-29T00:00:00.000Z');
+  const notAfter = new Date('2026-05-29T00:00:00.001Z');
+  const afterNotAfter = new Date('2026-05-29T00:00:00.002Z');
+  const advancingRegistry = (initialNowReads: number) => {
+    let nowReads = 0;
+    const scopedRegistry = new ScopedActorCredentialRegistry({
+      now: () => {
+        nowReads += 1;
+        return nowReads <= initialNowReads ? beforeNotAfter : afterNotAfter;
+      },
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    return { scopedRegistry, nowReads: () => nowReads };
+  };
+  const grants = new HandshakeGrantRegistry({
+    now: () => beforeNotAfter,
+    secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+  });
+
+  const issuing = advancingRegistry(1);
+  const issued = issueCliGatewayActorCredentialWithGrant(
+    issuing.scopedRegistry,
+    grants,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-advancing-issue', { expiresAt: notAfter }),
+      'advancing-issue'
+    )
+  );
+  expect(issued.credential.expiresAt).toBe(notAfter.toISOString());
+  // A second registry clock read would be after the grant ceiling. The issue
+  // therefore proves persistence reused the preflight issuance instant.
+  expect(issuing.nowReads()).toBe(1);
+
+  const rotating = advancingRegistry(2);
+  const existing = issueCliGatewayActorCredential(rotating.scopedRegistry, {
+    actor: GRANT_ACTOR,
+    issuer: { id: 'browser-operator-test' },
+    capabilities: ['session:read'],
+    scope: { sessionIds: ['session-1'] },
+    ttlMs: 60_000,
+  });
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    rotating.scopedRegistry,
+    grants,
+    existing.credential.id,
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-advancing-rotate', { expiresAt: notAfter }),
+      'advancing-rotate'
+    )
+  );
+  expect(rotated.credential.expiresAt).toBe(notAfter.toISOString());
+  expect(rotated.revoked.id).toBe(existing.credential.id);
+  // The later clock sample belongs to recording the revocation; issuing the
+  // replacement at that instant would have rejected against `notAfter`.
+  expect(rotating.nowReads()).toBe(3);
+
+  const expiredGrants = new HandshakeGrantRegistry({
+    now: () => afterNotAfter,
+    secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+  });
+  const expiredHandle = approveGrant(
+    expiredGrants,
+    'grant-expired-before-use',
+    {
+      expiresAt: notAfter,
+    }
+  );
+  const beforeExpiredAttempt = issuing.scopedRegistry.listCredentials();
+  expectGrantError(
+    () =>
+      issueCliGatewayActorCredentialWithGrant(
+        issuing.scopedRegistry,
+        expiredGrants,
+        grantLifecycleInput(expiredHandle, 'expired-before-use')
+      ),
+    'expired'
+  );
+  expect(issuing.scopedRegistry.listCredentials()).toEqual(
+    beforeExpiredAttempt
+  );
+  expect(expiredGrants.getGrant('grant-expired-before-use')).toMatchObject({
+    status: 'expired',
+  });
+});
+
 test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts', () => {
   const scopedRegistry = registry();
   const grants = grantRegistry();
@@ -1022,6 +1307,12 @@ test('rejects grant-backed lifecycle requests that expand multi-value scope dime
       allowed: 'work-context-1',
       denied: 'work-context-2',
       reason: 'wrong_work_context_scope',
+    },
+    {
+      key: 'channelIds',
+      allowed: 'channel-1',
+      denied: 'channel-2',
+      reason: 'wrong_channel_scope',
     },
     {
       key: 'repoIds',

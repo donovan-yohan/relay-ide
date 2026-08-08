@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -59,6 +59,46 @@ function runCli(
   });
 }
 
+function runCliFailure(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<Record<string, unknown>> {
+  const captureDir = mkdtempSync(path.join(tmpdir(), 'relay-cli-fetch-'));
+  const capturePath = path.join(captureDir, 'request.json');
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [RELAY_BIN, ...args],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          NODE_OPTIONS: `--import=${FETCH_PRELOAD}`,
+          RELAY_TEST_FETCH_CAPTURE: capturePath,
+        },
+        timeout: 10_000,
+      },
+      (error, stdout, stderr) => {
+        try {
+          if (!error) {
+            reject(new Error(`CLI unexpectedly succeeded: ${stdout}`));
+            return;
+          }
+          if (existsSync(capturePath)) {
+            reject(new Error(`CLI sent HTTP for invalid input: ${stdout}`));
+            return;
+          }
+          resolve(JSON.parse(stdout) as Record<string, unknown>);
+        } catch {
+          reject(new Error(`CLI did not emit a gateway envelope: ${stderr}`));
+        } finally {
+          rmSync(captureDir, { recursive: true, force: true });
+        }
+      }
+    );
+  });
+}
+
 beforeAll(() => {
   execFileSync('npm', ['run', 'build:server'], {
     cwd: path.resolve('.'),
@@ -92,9 +132,9 @@ describe('channels.post CLI gateway command', () => {
         parentMessageId: { type: 'string' },
         threadId: { type: ['string', 'null'] },
         clientMessageId: { type: 'string' },
-        parts: { type: 'array' },
       },
     });
+    expect(spec.inputSchema.properties).not.toHaveProperty('parts');
     expect(spec.inputSchema.properties).not.toHaveProperty('sender');
     expect(spec.inputSchema.properties).not.toHaveProperty('source');
   });
@@ -107,17 +147,6 @@ describe('channels.post CLI gateway command', () => {
       parentMessageId: 'chm:root',
       threadId: 'chm:root',
       clientMessageId: 'orchestrator-update-1',
-      parts: [
-        {
-          type: 'image',
-          id: 'cha:diagram',
-          mime: 'image/png',
-          w: 640,
-          h: 480,
-          bytes: 1024,
-          alt: 'Worker dependency diagram',
-        },
-      ],
     };
 
     const { envelope, request } = await runCli(
@@ -151,7 +180,6 @@ describe('channels.post CLI gateway command', () => {
         parentMessageId: input.parentMessageId,
         threadId: input.threadId,
         clientMessageId: input.clientMessageId,
-        parts: input.parts,
       },
       headers: {
         Authorization: 'Bearer relay-sac-v1.test-actor.[REDACTED]',
@@ -164,6 +192,71 @@ describe('channels.post CLI gateway command', () => {
     });
     expect(request.body).not.toHaveProperty('channelId');
   });
+
+  it.each([
+    [['post', '--json']],
+    [['post', '--input-json', '{}', '--input-json', '{}', '--json']],
+    [
+      [
+        'post',
+        '--input-json',
+        JSON.stringify({
+          channelId: 'topic:one',
+          text: 'ok',
+          clientMessageId: 7,
+        }),
+        '--json',
+      ],
+    ],
+    [
+      [
+        'post',
+        '--input-json',
+        JSON.stringify({
+          channelId: 'topic:one',
+          text: 'ok',
+          unexpected: true,
+        }),
+        '--json',
+      ],
+    ],
+    [
+      [
+        'post',
+        '--input-json',
+        JSON.stringify({
+          channelId: 'topic:one',
+          text: 'ok',
+          parts: [
+            {
+              type: 'image',
+              id: 'cha:diagram',
+              mime: 'image/png',
+              w: 640,
+              h: 480,
+              bytes: 1024,
+            },
+          ],
+        }),
+        '--json',
+      ],
+    ],
+  ] as const)(
+    'rejects malformed post argv or input before HTTP %j',
+    async (channelArgs) => {
+      const envelope = await runCliFailure(['v1', 'channels', ...channelArgs], {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      });
+      expect(envelope).toMatchObject({
+        ok: false,
+        command: 'channels.post',
+        error: { code: 'INVALID_ARGUMENT' },
+      });
+    }
+  );
 
   it('allows the actor token lane to create terminal sessions', async () => {
     const input = {

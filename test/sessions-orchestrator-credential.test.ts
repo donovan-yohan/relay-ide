@@ -9,6 +9,11 @@ import type {
   ProtocolAdapterV2,
 } from '../server/protocol-adapter-v2.js';
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
+import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
+import {
+  issuePersistentOrchestratorCliGatewayActorCredential,
+  validateCliGatewayActorCredential,
+} from '../server/cli-gateway-actor-auth.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 
 const connect = vi.fn<(config: AdapterConfig) => Promise<void>>();
@@ -142,6 +147,7 @@ describe('channel runtime orchestrator credential integration', () => {
 
     const runtime = await runtimes.channelAgentRuntimes.create({
       id: 'orchestrator-runtime',
+      channelId: 'channel-A',
       providerId: 'mock',
       role: 'orchestrator',
       profileActorId: 'agent-profile:test',
@@ -165,7 +171,10 @@ describe('channel runtime orchestrator credential integration', () => {
     expect(issueCredential).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: expect.objectContaining({ id: 'agent-profile:test' }),
-        scope: { sessionIds: ['orchestrator-runtime'] },
+        scope: {
+          sessionIds: ['orchestrator-runtime'],
+          channelIds: ['channel-A'],
+        },
       })
     );
 
@@ -174,6 +183,95 @@ describe('channel runtime orchestrator credential integration', () => {
       revokedBy: 'relay-ide',
       reason: 'orchestrator-runtime-ended',
     });
+  });
+
+  it('retains channel A scope and denies B across persisted lease rotation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-07-25T00:00:00.000Z');
+    const credentialRegistry = new ScopedActorCredentialRegistry({
+      now: () => new Date(Date.now()),
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
+      orchestratorCredentials: {
+        issueCredential: (input) =>
+          issuePersistentOrchestratorCliGatewayActorCredential(
+            credentialRegistry,
+            input
+          ),
+        revokeCredential: (id, input) => credentialRegistry.revoke(id, input),
+      },
+    });
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'orchestrator-session',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      role: 'orchestrator',
+      profileActorId: 'agent-profile:test',
+      cwd: '/tmp',
+      displayName: 'Product orchestrator',
+      port: 4567,
+      configDir: '/tmp',
+    });
+    const first = credentialRegistry.listCredentials()[0]!;
+    const firstToken =
+      connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN;
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: firstToken!,
+        capabilities: ['context:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          channelIds: ['channel-A'],
+        },
+      })
+    ).toMatchObject({ ok: true });
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: firstToken!,
+        capabilities: ['context:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          channelIds: ['channel-B'],
+        },
+      })
+    ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+
+    await vi.advanceTimersByTimeAsync(7.5 * 60 * 1000);
+    const rotatedToken =
+      refreshRuntimeEnv.mock.calls[0]?.[0]?.RELAY_IDE_ACTOR_TOKEN;
+    const records = credentialRegistry.listCredentials();
+    expect(records).toHaveLength(2);
+    expect(records.map((credential) => credential.scope.channelIds)).toEqual([
+      ['channel-A'],
+      ['channel-A'],
+    ]);
+    expect(credentialRegistry.getCredential(first.id)).toMatchObject({
+      revokedAt: expect.any(String),
+      scope: { channelIds: ['channel-A'] },
+    });
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: rotatedToken!,
+        capabilities: ['context:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          channelIds: ['channel-A'],
+        },
+      })
+    ).toMatchObject({ ok: true });
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: rotatedToken!,
+        capabilities: ['context:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          channelIds: ['channel-B'],
+        },
+      })
+    ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
   });
 
   it('fails before adapter connect when initial minting fails', async () => {
@@ -190,6 +288,7 @@ describe('channel runtime orchestrator credential integration', () => {
     await expect(
       runtimes.channelAgentRuntimes.create({
         id: 'orchestrator-session',
+        channelId: 'channel-A',
         providerId: 'mock',
         role: 'orchestrator',
         profileActorId: 'agent-profile:test',
@@ -260,6 +359,7 @@ describe('channel runtime orchestrator credential integration', () => {
     await expect(
       runtimes.channelAgentRuntimes.create({
         id: 'orchestrator-session',
+        channelId: 'channel-A',
         providerId: 'mock',
         role: 'orchestrator',
         profileActorId: 'agent-profile:test',
@@ -298,6 +398,7 @@ describe('channel runtime orchestrator credential integration', () => {
 
     await runtimes.channelAgentRuntimes.create({
       id: 'orchestrator-session',
+      channelId: 'channel-A',
       providerId: 'mock',
       role: 'orchestrator',
       profileActorId: 'agent-profile:test',
@@ -343,6 +444,7 @@ describe('channel runtime orchestrator credential integration', () => {
 
     const session = await runtimes.channelAgentRuntimes.create({
       id: 'orchestrator-session',
+      channelId: 'channel-A',
       providerId: 'mock',
       role: 'orchestrator',
       profileActorId: 'agent-profile:test',

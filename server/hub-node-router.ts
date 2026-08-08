@@ -186,6 +186,12 @@ interface HubNodeRouterOptions {
   releaseRoutedPtyControlSessionsForNode?: (nodeId: string) => void;
   confirmations?: ConfirmationChallengeStore;
   operatorHandshakeGrants?: HandshakeGrantRegistry;
+  onOperatorHandshakeGrantRevoked?: (input: {
+    grantId: string;
+    revokedBy: string;
+    reason?: string;
+    correlationId?: string;
+  }) => void;
   auditSink?: RoutedSessionAuditSink;
   workContextStore?: WorkContextStore;
   readModelCache?: RoutedSessionReadModelCache;
@@ -2781,12 +2787,13 @@ export function createHubNodeRouter(
       const reason =
         typeof body['reason'] === 'string' ? body['reason'] : undefined;
       const correlationId = pairTokenMintCorrelationId(req, body);
+      const revokedBy = handshakeGrantIssuerFromBody(
+        body,
+        'revokedBy',
+        'browser-operator'
+      );
       const grant = operatorHandshakeGrants.revoke(grantId, {
-        revokedBy: handshakeGrantIssuerFromBody(
-          body,
-          'revokedBy',
-          'browser-operator'
-        ),
+        revokedBy,
         ...(reason ? { reason } : {}),
         ...(correlationId ? { correlationId } : {}),
       });
@@ -2798,6 +2805,23 @@ export function createHubNodeRouter(
           })
         );
         return;
+      }
+      // The grant revocation has already been persisted. Downstream teardown is
+      // best effort: a callback failure must not misreport that durable success
+      // as an HTTP 500 (or invite a client retry against an already revoked grant).
+      try {
+        options.onOperatorHandshakeGrantRevoked?.({
+          grantId,
+          revokedBy: revokedBy.id,
+          ...(reason ? { reason } : {}),
+          ...(correlationId ? { correlationId } : {}),
+        });
+      } catch {
+        // eslint-disable-next-line no-console
+        console.error(
+          '[hub-node-router] operator handshake grant revocation callback failed'
+        );
+        // The durable handshake-grant audit remains the source of truth.
       }
       res.json({ grant });
     }

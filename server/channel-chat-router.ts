@@ -171,7 +171,7 @@ export interface ChannelChatRouterDeps {
     options?: {
       scopeForRequest?: (
         req: Request
-      ) => { workContextIds?: string[] } | undefined;
+      ) => { workContextIds?: string[]; channelIds?: string[] } | undefined;
     }
   ) => RequestHandler;
   requireWriteActorAuth?: (
@@ -179,7 +179,7 @@ export interface ChannelChatRouterDeps {
     options?: {
       scopeForRequest?: (
         req: Request
-      ) => { workContextIds?: string[] } | undefined;
+      ) => { workContextIds?: string[]; channelIds?: string[] } | undefined;
     }
   ) => RequestHandler;
 }
@@ -204,6 +204,84 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function bodyRecord(req: Request): Record<string, unknown> {
   return isRecord(req.body) ? req.body : {};
+}
+
+/**
+ * Channel-scope enforcement at the ROUTE level (defense in depth alongside the
+ * actor-auth middleware). A scoped actor credential's `channelIds` are the ONLY
+ * channels it may enumerate/read/write. Browser-authenticated (non-actor)
+ * requests have no `channelIds` scope and keep their existing authority.
+ */
+function actorChannelIds(req: Request): readonly string[] | undefined {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  return credential?.scope?.channelIds;
+}
+
+/** Deny (403) when a scoped actor targets a channel outside its channel scope. */
+function denyOutOfScopeChannel(
+  req: Request,
+  res: Response,
+  channelId: string
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return false; // browser/operator lane: existing authority
+  if (credential.scope?.channelIds?.includes(channelId)) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'actor is not scoped to this channel',
+    false,
+    { channelId, reasonCode: 'CHANNEL_OUT_OF_SCOPE' }
+  );
+  return true;
+}
+
+/** Narrow a list of channel summaries to the actor's channel scope (if any). */
+function filterChannelListToScope(
+  req: Request,
+  channels: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const allowed = actorChannelIds(req);
+  if (!allowed) return channels;
+  const allowedSet = new Set(allowed);
+  return channels.filter(
+    (channel) =>
+      typeof channel['id'] === 'string' && allowedSet.has(channel['id'])
+  );
+}
+
+/**
+ * Fail-closed channel read guard for the scope-less channel verbs (`channels.list`
+ * and global `channels/search`): a scoped actor credential that names NO channels
+ * must not enumerate or read every channel. Browser/operator (non-actor) requests
+ * carry no actor `channelIds` scope and keep their existing authority.
+ */
+function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return false; // browser/operator lane: existing authority
+  const allowed = credential.scope?.channelIds;
+  if (allowed && allowed.length > 0) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'actor credential has no channel scope; cannot enumerate or search channels',
+    false,
+    { reasonCode: 'CHANNEL_SCOPE_REQUIRED' }
+  );
+  return true;
+}
+
+/** Private browser/operator REST surfaces are never part of the actor lane. */
+function denyScopedActorPrivateRoute(req: Request, res: Response): boolean {
+  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'scoped actors cannot access this private channel route',
+    false,
+    { reasonCode: 'CHANNEL_PRIVATE_ROUTE_ACTOR_FORBIDDEN' }
+  );
+  return true;
 }
 
 function parseCapabilityHeader(value: string | undefined): Set<string> {
@@ -546,6 +624,125 @@ function rejectEmptyChannelPost(
   return true;
 }
 
+/**
+ * The browser post surface intentionally accepts a few legacy conveniences
+ * (attachments and steering included). A scoped actor is a stable gateway
+ * caller, though, so its request body must be the exact public command shape
+ * before this route learns whether a channel exists or touches the transcript.
+ */
+function rejectInvalidActorChannelPostBody(
+  req: Request,
+  res: Response
+): boolean {
+  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  if (!isRecord(req.body)) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'channels.post body must be an object',
+      false,
+      { reasonCode: 'CHANNEL_ACTOR_POST_BODY_INVALID' }
+    );
+    return true;
+  }
+  const body = req.body;
+  // These have dedicated actor denials rather than falling through to an
+  // unknown-field error. They are real browser features, but never actor
+  // authority.
+  if ('parts' in body) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped actors cannot author attachment or image parts',
+      false,
+      { field: 'parts', reasonCode: 'CHANNEL_ACTOR_ATTACHMENT_PARTS_FORBIDDEN' }
+    );
+    return true;
+  }
+  if ('steering' in body) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped actors cannot steer private agent runtime turns',
+      false,
+      { field: 'steering', reasonCode: 'CHANNEL_ACTOR_STEERING_FORBIDDEN' }
+    );
+    return true;
+  }
+  const allowed = new Set([
+    'text',
+    'format',
+    'parentMessageId',
+    'threadId',
+    'clientMessageId',
+  ]);
+  const undeclared = Object.keys(body).find((field) => !allowed.has(field));
+  if (undeclared) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      `${undeclared} is not declared for channels.post`,
+      false,
+      { field: undeclared, reasonCode: 'CHANNEL_ACTOR_POST_UNDECLARED' }
+    );
+    return true;
+  }
+  if (typeof body['text'] !== 'string' || body['text'].trim().length === 0) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'text must be a non-empty string',
+      false,
+      { field: 'text', reasonCode: 'CHANNEL_ACTOR_POST_TEXT_INVALID' }
+    );
+    return true;
+  }
+  if (
+    body['format'] !== undefined &&
+    body['format'] !== 'text' &&
+    body['format'] !== 'markdown'
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'format must be text or markdown',
+      false,
+      { field: 'format', reasonCode: 'CHANNEL_ACTOR_POST_FORMAT_INVALID' }
+    );
+    return true;
+  }
+  for (const field of ['parentMessageId', 'clientMessageId'] as const) {
+    if (
+      body[field] !== undefined &&
+      (typeof body[field] !== 'string' || body[field].length === 0)
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} must be a non-empty string`,
+        false,
+        { field, reasonCode: 'CHANNEL_ACTOR_POST_ALIAS_INVALID' }
+      );
+      return true;
+    }
+  }
+  if (
+    body['threadId'] !== undefined &&
+    body['threadId'] !== null &&
+    (typeof body['threadId'] !== 'string' || body['threadId'].length === 0)
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'threadId must be a non-empty string or null',
+      false,
+      { field: 'threadId', reasonCode: 'CHANNEL_ACTOR_POST_ALIAS_INVALID' }
+    );
+    return true;
+  }
+  return false;
+}
+
 function parseSeqQuery(value: unknown): number | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
   if (typeof raw !== 'string' || !raw.trim()) return undefined;
@@ -557,6 +754,64 @@ function parseHistoryLimit(value: unknown): number {
   const parsed = parseSeqQuery(value);
   if (parsed === undefined) return CHANNEL_HISTORY_DEFAULT_LIMIT;
   return Math.max(1, Math.min(CHANNEL_HISTORY_MAX_LIMIT, parsed));
+}
+
+function rejectInvalidActorPagination(
+  req: Request,
+  res: Response,
+  fields: readonly string[]
+): boolean {
+  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  const allowed = new Set(fields);
+  const undeclared = Object.keys(req.query).find(
+    (field) => !allowed.has(field)
+  );
+  if (undeclared) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      `${undeclared} is not declared for this stable actor command`,
+      false,
+      { field: undeclared, reasonCode: 'CHANNEL_QUERY_UNDECLARED' }
+    );
+    return true;
+  }
+  for (const field of fields) {
+    const value = req.query[field];
+    if (value === undefined) continue;
+    const parsed = parseSeqQuery(value);
+    if (
+      Array.isArray(value) ||
+      parsed === undefined ||
+      (field === 'limit' && (parsed < 1 || parsed > CHANNEL_HISTORY_MAX_LIMIT))
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `${field} must be a non-negative safe integer${field === 'limit' ? ' greater than zero' : ''}`,
+        false,
+        { field, reasonCode: 'CHANNEL_PAGINATION_INVALID' }
+      );
+      return true;
+    }
+  }
+  if (
+    req.query['beforeSeq'] !== undefined &&
+    req.query['afterSeq'] !== undefined
+  ) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'beforeSeq and afterSeq cannot be used together',
+      false,
+      {
+        fields: ['beforeSeq', 'afterSeq'],
+        reasonCode: 'CHANNEL_PAGINATION_DIRECTION_CONFLICT',
+      }
+    );
+    return true;
+  }
+  return false;
 }
 
 function parseStringQuery(value: unknown): string | undefined {
@@ -678,21 +933,20 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // Search is a filtered read of the same durable message log `channels.history`
   // already grants, so it rides that verb rather than minting a new gateway
   // command: a credential that may read a channel's transcript may search it,
-  // and one that may not, cannot.
-  const searchAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
+  // and one that may not, cannot. When a scoped actor supplies a `channelId` the
+  // requested scope is that single channel; a scope-less search is denied by the
+  // actor lane (browser searches keep their existing authority).
+  const searchAuth = auth;
   const threadHistoryAuth =
     deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
   const rosterAuth = deps.requireReadActorAuth?.('channels.roster') ?? auth;
-  const interruptAuth =
-    deps.requireWriteActorAuth?.('channels.interrupt') ?? auth;
+  const interruptAuth = auth;
   // This is an operator lifecycle control, authenticated through the existing
   // channel router lane. It is not a provider command or a message write.
   const releaseAuth = auth;
-  const approvalAuth =
-    deps.requireWriteActorAuth?.('channels.respond-approval') ?? auth;
-  const agentCommandsAuth =
-    deps.requireWriteActorAuth?.('channels.agent-commands') ?? auth;
+  const approvalAuth = auth;
+  const agentCommandsAuth = auth;
   const uploadImages = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -723,6 +977,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   router.get('/channels', listAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    if (denyChannelReadWithoutScope(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
@@ -737,7 +992,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           (topic) => topic.status !== 'archived' || summaries.has(topic.id)
         )
         .map((topic) => channelSummaryView(store, topic));
-      res.json({ channels });
+      // A scoped actor enumerates ONLY its allowed channelIds (Slice 0 gate:
+      // an actor scoped to channel A must never see channel B in the list).
+      res.json({ channels: filterChannelListToScope(req, channels) });
     } catch (error) {
       mapStoreError(res, error);
     }
@@ -748,7 +1005,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // ids are all `topic:`-prefixed, so `search` can never BE a channel id — the
   // ordering is about routing, not about a namespace collision.)
   router.get('/channels/search', searchAuth, (req, res) => {
+    if (denyScopedActorPrivateRoute(req, res)) return;
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    if (denyChannelReadWithoutScope(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
@@ -778,6 +1037,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const includeArchived = parseBooleanQuery(req.query['includeArchived']);
     const limit = parseSearchLimit(req.query['limit']);
     const scopeChannelId = parseStringQuery(req.query['channelId']);
+    if (scopeChannelId && denyOutOfScopeChannel(req, res, scopeChannelId))
+      return;
     const scopeWorkspaceId = parseStringQuery(req.query['workspaceId']);
 
     try {
@@ -799,7 +1060,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // point reads on a debounced, minimum-length query.
       const candidateIds = scopeChannelId
         ? [scopeChannelId]
-        : topicStore.listAllTopicIds();
+        : (actorChannelIds(req) ?? topicStore.listAllTopicIds());
       const visible = new Map<string, WorkspaceTopic>();
       for (const candidateId of candidateIds) {
         const topic = topicStore.get(candidateId);
@@ -948,6 +1209,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const topicStore = topicStoreOr503(res, deps.topicStore);
     if (!topicStore) return;
     const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = topicStore.get(id);
     if (!topic || topic.source !== 'persisted') {
       sendGatewayError(res, 'NOT_FOUND', 'channel not found', false, {
@@ -967,13 +1229,22 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (
+      rejectInvalidActorPagination(req, res, ['beforeSeq', 'afterSeq', 'limit'])
+    )
+      return;
+    if (!requirePersistedChannel(req, res)) return;
     const filter: ChannelHistoryFilter = {};
     const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
     if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
     const afterSeq = parseSeqQuery(req.query['afterSeq']);
     if (afterSeq !== undefined) filter.afterSeq = afterSeq;
-    const limit = parseSeqQuery(req.query['limit']);
-    if (limit !== undefined) filter.limit = limit;
+    const limit = parseHistoryLimit(req.query['limit']);
+    // One extra row makes a full public page distinguishable from the end of
+    // the log without an expensive COUNT. `budgetHistoryPage` drops it while
+    // retaining the exact exclusive cursor for either direction.
+    filter.limit = limit + 1;
     const threadId =
       typeof req.query['threadId'] === 'string'
         ? req.query['threadId']
@@ -982,9 +1253,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     try {
       const all = store.history(id, filter);
       const direction = filter.afterSeq !== undefined ? 'forward' : 'backward';
-      const budgeted = budgetHistoryRows(
+      const budgeted = budgetHistoryPage(
         all,
         direction,
+        limit,
         deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
       );
       res.json({
@@ -998,8 +1270,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
-  router.post('/channels/:id/attachments', postAuth, (req, res) => {
+  router.post('/channels/:id/attachments', auth, (req, res) => {
+    if (denyScopedActorPrivateRoute(req, res)) return;
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     if (topic.status === 'archived') {
@@ -1048,60 +1323,59 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     });
   });
 
-  router.get(
-    '/channels/:id/attachments/:attachmentId',
-    historyAuth,
-    (req, res) => {
-      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-      if (!requirePersistedChannel(req, res)) return;
-      const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
-      if (!attachmentStore) return;
-      const attachmentId = req.params['attachmentId'] ?? '';
-      const record = attachmentStore.get(attachmentId);
-      if (!record || !existsSync(record.payloadPath)) {
-        res.set('Cache-Control', 'no-store');
-        sendGatewayError(
-          res,
-          'NOT_FOUND',
-          'channel attachment not found',
-          false,
-          {
-            attachmentId,
-            reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND',
-          }
-        );
-        return;
-      }
-      res.sendFile(
-        record.payloadPath,
+  router.get('/channels/:id/attachments/:attachmentId', auth, (req, res) => {
+    if (denyScopedActorPrivateRoute(req, res)) return;
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (!requirePersistedChannel(req, res)) return;
+    const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
+    if (!attachmentStore) return;
+    const attachmentId = req.params['attachmentId'] ?? '';
+    const record = attachmentStore.get(attachmentId);
+    if (!record || !existsSync(record.payloadPath)) {
+      res.set('Cache-Control', 'no-store');
+      sendGatewayError(
+        res,
+        'NOT_FOUND',
+        'channel attachment not found',
+        false,
         {
-          headers: {
-            'Content-Type': record.part.mime,
-            'Content-Length': String(record.part.bytes),
-            'Content-Disposition': 'inline',
-            'Cache-Control': 'private, max-age=31536000, immutable',
-            ETag: `"sha256-${record.sha256}"`,
-            'X-Content-Type-Options': 'nosniff',
-          },
-        },
-        (error) => {
-          if (!error) return;
-          if (res.headersSent) {
-            res.destroy(error);
-          } else {
-            res.set('Cache-Control', 'no-store');
-            sendGatewayError(
-              res,
-              'NOT_FOUND',
-              'channel attachment not found',
-              false,
-              { attachmentId, reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND' }
-            );
-          }
+          attachmentId,
+          reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND',
         }
       );
+      return;
     }
-  );
+    res.sendFile(
+      record.payloadPath,
+      {
+        headers: {
+          'Content-Type': record.part.mime,
+          'Content-Length': String(record.part.bytes),
+          'Content-Disposition': 'inline',
+          'Cache-Control': 'private, max-age=31536000, immutable',
+          ETag: `"sha256-${record.sha256}"`,
+          'X-Content-Type-Options': 'nosniff',
+        },
+      },
+      (error) => {
+        if (!error) return;
+        if (res.headersSent) {
+          res.destroy(error);
+        } else {
+          res.set('Cache-Control', 'no-store');
+          sendGatewayError(
+            res,
+            'NOT_FOUND',
+            'channel attachment not found',
+            false,
+            { attachmentId, reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND' }
+          );
+        }
+      }
+    );
+  });
 
   router.get(
     '/channels/:id/threads/:rootMessageId',
@@ -1111,6 +1385,16 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const store = storeOr503(res, deps.store);
       if (!store) return;
       const id = req.params['id'] ?? '';
+      if (denyOutOfScopeChannel(req, res, id)) return;
+      if (
+        rejectInvalidActorPagination(req, res, [
+          'beforeSeq',
+          'afterSeq',
+          'limit',
+        ])
+      )
+        return;
+      if (!requirePersistedChannel(req, res)) return;
       const rootMessageId = req.params['rootMessageId'] ?? '';
       const filter: ChannelHistoryFilter = {};
       const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
@@ -1144,13 +1428,18 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   );
 
+  // The existing post parser sits at the configured threshold; this security
+  // denial is deliberately kept adjacent to attachment canonicalization.
+  // eslint-disable-next-line complexity
   router.post('/channels/:id/messages', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (rejectInvalidActorChannelPostBody(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topicStore = topicStoreOr503(res, deps.topicStore);
     if (!topicStore) return;
-    const id = req.params['id'] ?? '';
     const body = bodyRecord(req);
 
     // [MF] Reject a client-supplied sender field outright — attribution is
@@ -1527,6 +1816,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   router.get('/channels/:id/roster', rosterAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     if (!storeOr503(res, deps.store)) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     const binder = binderOr503(res, deps.binder);
@@ -1540,6 +1831,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   router.post(
     '/channels/:id/agent-commands',
     agentCommandsAuth,
+    (req, res, next) => {
+      if (denyScopedActorPrivateRoute(req, res)) return;
+      next();
+    },
     createAgentCommandsHandler(deps, requirePersistedChannel)
   );
 
@@ -1602,6 +1897,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     '/channels/:id/agents/:agentId/interrupt',
     interruptAuth,
     (req, res) => {
+      if (denyScopedActorPrivateRoute(req, res)) return;
       if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
       const topic = requirePersistedChannel(req, res);
       if (!topic) return;
@@ -1763,6 +2059,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     '/channels/:id/agents/:agentId/approvals',
     approvalAuth,
     (req, res) => {
+      if (denyScopedActorPrivateRoute(req, res)) return;
       if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
       const topic = requirePersistedChannel(req, res);
       if (!topic) return;

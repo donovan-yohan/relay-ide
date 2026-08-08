@@ -47,6 +47,7 @@ function schemaTypeMatches(schema: RelayJsonSchema, value: unknown): boolean {
     if (type === 'object') return isSchemaObject(value);
     if (type === 'array') return Array.isArray(value);
     if (type === 'null') return value === null;
+    if (type === 'integer') return Number.isInteger(value);
     return typeof value === type;
   });
 }
@@ -64,7 +65,11 @@ function schemaNumberBoundsMatch(
   schema: RelayJsonSchema,
   value: unknown
 ): boolean {
-  if (schema.type !== 'number' || typeof value !== 'number') return true;
+  if (
+    (schema.type !== 'number' && schema.type !== 'integer') ||
+    typeof value !== 'number'
+  )
+    return true;
   const aboveMinimum = schema.minimum === undefined || value >= schema.minimum;
   const belowMaximum = schema.maximum === undefined || value <= schema.maximum;
   return aboveMinimum && belowMaximum;
@@ -101,6 +106,7 @@ function schemaMatches(schema: RelayJsonSchema, value: unknown): boolean {
   if (schema.anyOf?.some((branch) => schemaMatches(branch, value)) === false) {
     return false;
   }
+  if (schema.not && schemaMatches(schema.not, value)) return false;
   if (!schema.oneOf) return true;
   return (
     schema.oneOf.filter((branch) => schemaMatches(branch, value)).length === 1
@@ -227,6 +233,11 @@ describe('CLI gateway contract', () => {
       'workspace-topics.create',
       'workspace-topics.update',
       'workspace-topics.archive',
+      'channels.list',
+      'channels.get',
+      'channels.history',
+      'channels.threads.history',
+      'channels.roster',
       'channels.post',
       'cockpit.list',
       'cockpit.get',
@@ -244,6 +255,101 @@ describe('CLI gateway contract', () => {
       expect(spec.outputSchema).toBeDefined();
       expect(spec.errorCodes.length).toBeGreaterThan(0);
     }
+  });
+
+  it('declares the five channel read verbs as stable gateway commands', () => {
+    const readVerbs = [
+      'channels.list',
+      'channels.get',
+      'channels.history',
+      'channels.threads.history',
+      'channels.roster',
+    ] as const;
+    const names = new Set(stableCommandNames());
+    for (const verb of readVerbs) {
+      expect(names.has(verb)).toBe(true);
+      const spec = commandSpec(verb);
+      expect(spec.stable).toBe(true);
+      expect(spec.transport).toBe('hub-http');
+      expect(spec.requiresAuth).toBe(true);
+      expect(spec.capabilityHints).toContain('context:read');
+      expect(spec.cli).toContain('--json');
+      expect(spec.inputSchema).toBeDefined();
+      expect(spec.outputSchema).toBeDefined();
+      expect(spec.errorCodes.length).toBeGreaterThan(0);
+      for (const code of [
+        'UNAUTHORIZED',
+        'FORBIDDEN',
+        'INVALID_ARGUMENT',
+        'SERVER_UNAVAILABLE',
+      ]) {
+        expect(spec.errorCodes).toContain(code);
+      }
+      if (verb === 'channels.history' || verb === 'channels.threads.history') {
+        expect(spec.errorCodes).toContain('NOT_FOUND');
+      }
+    }
+    // Exact command naming: `channels.threads.history`, NOT `channels.threads`.
+    expect(commandSpec('channels.threads.history').name).toBe(
+      'channels.threads.history'
+    );
+    expect(commandSpec('channels.post').name).toBe('channels.post');
+  });
+
+  it('models channel pagination inputs and directional cursors exactly', () => {
+    expect(
+      schemaAcceptsCommandInput('channels.history', {
+        channelId: 'channel-1',
+        limit: 20,
+        afterSeq: 0,
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('channels.threads.history', {
+        channelId: 'channel-1',
+        threadId: 'root-1',
+        beforeSeq: 10,
+      })
+    ).toBe(true);
+    for (const value of [-1, 1.5, '1']) {
+      expect(
+        schemaAcceptsCommandInput('channels.history', {
+          channelId: 'channel-1',
+          afterSeq: value,
+        })
+      ).toBe(false);
+    }
+    expect(
+      schemaAcceptsCommandInput('channels.history', {
+        channelId: 'channel-1',
+        beforeSeq: 4,
+        afterSeq: 3,
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('channels.threads.history', {
+        channelId: 'channel-1',
+        threadId: 'root-1',
+        beforeSeq: 4,
+        afterSeq: 3,
+      })
+    ).toBe(false);
+    const cursorSchema =
+      commandSpec('channels.history').outputSchema.properties?.['data']
+        ?.properties?.['nextCursor'];
+    expect(cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4 })).toBe(
+      true
+    );
+    expect(cursorSchema && schemaMatches(cursorSchema, { beforeSeq: 4 })).toBe(
+      true
+    );
+    expect(cursorSchema && schemaMatches(cursorSchema, 4)).toBe(false);
+    expect(
+      cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4, beforeSeq: 3 })
+    ).toBe(false);
+    expect(
+      cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4, extra: true })
+    ).toBe(false);
   });
 
   it('keeps cockpit limit validation aligned with its schema', () => {

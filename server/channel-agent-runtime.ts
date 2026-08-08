@@ -32,6 +32,8 @@ const logger = createLogger('channel-agent-runtime');
 
 export interface CreateChannelAgentRuntimeParams {
   id?: string;
+  /** Durable channel binding; required for an orchestrator actor lease. */
+  channelId?: string;
   providerId: string;
   profileActorId: string;
   role?: AgentRole;
@@ -322,6 +324,9 @@ export class ChannelAgentRuntimeManager {
     let processEnv = { ...(params.processEnv ?? {}) };
 
     if (params.role === 'orchestrator') {
+      if (!params.channelId?.trim()) {
+        throw new Error('Orchestrator runtime requires a bound channel id');
+      }
       if (!adapter.refreshRuntimeEnv) {
         throw new Error(
           `Agent adapter ${params.providerId} does not support orchestrator credential refresh`
@@ -335,6 +340,7 @@ export class ChannelAgentRuntimeManager {
       lease = startOrchestratorCredentialLifecycle(
         {
           runtimeId: id,
+          channelId: params.channelId,
           profileActorId: params.profileActorId,
           port: params.port,
           ...(params.displayName ? { displayName: params.displayName } : {}),

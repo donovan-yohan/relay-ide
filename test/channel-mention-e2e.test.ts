@@ -292,9 +292,12 @@ function realActorAuthDeps(registry: ScopedActorCredentialRegistry): {
         sendCliGatewayActorFailure(res, cliGatewayActorFailure({ lane }));
         return;
       }
+      const channelId =
+        typeof req.params['id'] === 'string' ? req.params['id'] : '';
       const validation = validateCliGatewayActorCredential(registry, {
         token: bearerActorToken(req),
         capabilities: cliGatewayActorCommandCapabilities(expectedCommand),
+        ...(channelId ? { scope: { channelIds: [channelId] } } : {}),
       });
       if ('reason' in validation) {
         sendCliGatewayActorFailure(
@@ -365,6 +368,7 @@ async function harness(
           id: 'cred-1',
           actor: { type: 'agent', id: actorId, displayName: actorId },
           capabilities: ['context:read', 'context:write'],
+          scope: { channelIds: [topic.id] },
         } as unknown as ScopedActorCredentialRecord);
       }
       next();
@@ -673,17 +677,43 @@ describe('mention routing — end-to-end via the router', () => {
 });
 
 describe('mention routing — real scoped-actor auth composition (P2 #1180)', () => {
+  it('rejects scoped-actor steering before the production-composed binder runs', async () => {
+    const registry = createCliGatewayActorRegistry();
+    const h = await harness(undefined, { actorRegistry: registry });
+    const issued = issueCliGatewayActorCredential(registry, {
+      actor: { type: 'agent', id: 'orchestrator', displayName: 'orchestrator' },
+      capabilities: ['context:write'],
+      scope: { channelIds: [h.channelId] },
+    });
+    const response = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock must not run', steering: 'interrupt' },
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+      },
+    });
+    expect(response.status).toBe(403);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(h.store.history(h.channelId)).toEqual([]);
+    expect(agentReply(h.store, h.channelId)).toEqual([]);
+  });
+
   it('a real minted actor token authenticates, routes @mock, and is braked as an agent sender', async () => {
     // Mint a REAL credential in the registry the auth middleware validates
     // against — no fabricated record, the full bearer→validate→attach path runs.
     const registry = createCliGatewayActorRegistry();
     // Mirrors the shipped mail-loop credential: session:read stamps the read
     // task-ref (giving a non-empty scope), context:write authorizes channels.post.
+    const h = await harness(undefined, { actorRegistry: registry });
     const issued = issueCliGatewayActorCredential(registry, {
       actor: { type: 'agent', id: 'orchestrator', displayName: 'orchestrator' },
       capabilities: ['session:read', 'context:read', 'context:write'],
+      scope: { channelIds: [h.channelId] },
     });
-    const h = await harness(undefined, { actorRegistry: registry });
     const actorHeaders = {
       authorization: `Bearer ${issued.token}`,
       'x-relay-cli-actor-token': 'v1',
@@ -757,21 +787,43 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
 });
 
 describe('mention routing — gateway command/capability mapping', () => {
-  it('registers the new verbs with the correct capability bits', () => {
-    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.roster');
-    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.interrupt');
-    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain(
-      'channels.respond-approval'
+  it('registers Slice 0 channel verbs with the correct capability bits', () => {
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.list');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.get');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.history');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain(
+      'channels.threads.history'
     );
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.roster');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.post');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.interrupt' as never
+    );
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.respond-approval' as never
+    );
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.agent-commands' as never
+    );
+
+    expect(cliGatewayActorCommandCapabilities('channels.list')).toEqual([
+      'context:read',
+    ]);
+    expect(cliGatewayActorCommandCapabilities('channels.get')).toEqual([
+      'context:read',
+    ]);
+    expect(cliGatewayActorCommandCapabilities('channels.history')).toEqual([
+      'context:read',
+    ]);
+    expect(
+      cliGatewayActorCommandCapabilities('channels.threads.history')
+    ).toEqual(['context:read']);
     expect(cliGatewayActorCommandCapabilities('channels.roster')).toEqual([
       'context:read',
     ]);
-    expect(cliGatewayActorCommandCapabilities('channels.interrupt')).toEqual([
+    expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);
-    expect(
-      cliGatewayActorCommandCapabilities('channels.respond-approval')
-    ).toEqual(['context:write']);
   });
 });
 
