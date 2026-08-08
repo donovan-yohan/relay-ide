@@ -36,6 +36,7 @@ import { createChannelChatRouter } from '../server/channel-chat-router.js';
 import {
   createChannelAgentBinder,
   type BinderRuntimes,
+  type ChannelAgentBinder,
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
@@ -52,7 +53,10 @@ import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
-import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
+import {
+  parseMentions,
+  type ChannelMessage,
+} from '../shared/channel-chat-protocol.js';
 import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
 
 const cleanup: Array<() => void> = [];
@@ -220,6 +224,7 @@ interface Harness {
   store: ChannelMessageStore;
   hub: ChannelHub;
   channelId: string;
+  binder: ChannelAgentBinder;
   adapters: () => ProtocolAdapterV2[];
 }
 
@@ -323,7 +328,11 @@ function realActorAuthDeps(registry: ScopedActorCredentialRegistry): {
 async function harness(
   build: (agentType: string) => ProtocolAdapterV2 = () =>
     new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
-  opts: { actorRegistry?: ScopedActorCredentialRegistry } = {}
+  opts: {
+    actorRegistry?: ScopedActorCredentialRegistry;
+    targets?: MentionTarget[];
+    knownProviderIds?: string[];
+  } = {}
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mention-e2e-'));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -341,14 +350,21 @@ async function harness(
   cleanup.push(() => hub.close());
   const topic = topicStore.create({ workspaceId: 'ws', title: 'General' });
 
+  const knownProviderIds = opts.knownProviderIds ?? [
+    'mock',
+    'claude',
+    'codex',
+    'opencode',
+    'hermes',
+  ];
   const adapters: ProtocolAdapterV2[] = [];
   const binder = createChannelAgentBinder({
     store,
     hub,
     topicStore,
     runtimes: makeSessions(build, adapters),
-    knownProviderIds: ['mock', 'claude', 'codex', 'opencode', 'hermes'],
-    mentionTargets: async () => TARGETS,
+    knownProviderIds,
+    mentionTargets: async () => opts.targets ?? TARGETS,
     port: 0,
     configDir: dir,
   });
@@ -380,7 +396,7 @@ async function harness(
       hub,
       topicStore,
       binder,
-      knownProviderIds: ['mock', 'claude', 'codex', 'opencode', 'hermes'],
+      knownProviderIds,
       ...(opts.actorRegistry ? realActorAuthDeps(opts.actorRegistry) : {}),
     })
   );
@@ -394,6 +410,7 @@ async function harness(
     store,
     hub,
     channelId: topic.id,
+    binder,
     adapters: () => adapters,
   };
 }
@@ -460,6 +477,65 @@ describe('mention routing — end-to-end via the router', () => {
       h.store.getBinding(h.channelId, builtInAgentProfileId('mock'))
         ?.providerSession['lastDeliveredSeq']
     ).toBe(res.body.message.seq);
+  });
+
+  it('delivers a typed completion trigger after an agent @mention without fabricating an @mention row', async () => {
+    const targets: MentionTarget[] = ['a', 'b'].map((id) => ({
+      id,
+      displayName: id.toUpperCase(),
+      kind: 'framework' as const,
+      available: true,
+      reason: null,
+    }));
+    const h = await harness(
+      (provider) =>
+        new RecordingAdapter(
+          provider,
+          provider === 'b' ? 'B finished silently' : 'A acknowledged'
+        ),
+      { targets, knownProviderIds: ['a', 'b'] }
+    );
+    const text = '@b delegate this';
+    const stream = h.store.beginStream({
+      channelId: h.channelId,
+      sender: {
+        kind: 'agent',
+        id: builtInAgentProfileId('a'),
+        providerId: 'a',
+        displayName: 'A',
+      },
+      source: {
+        runtimeId: 'runtime:a',
+        turnId: 'a-delegates-b',
+        itemId: 'a-1',
+      },
+      mentions: parseMentions(text, ['a', 'b']),
+    });
+    const delegated = h.store.finalizeStream(stream.id, {
+      text,
+      status: 'complete',
+    })!;
+    h.binder.handleMessagePosted(delegated, delegated.mentions ?? []);
+
+    await waitFor(() => h.adapters().length === 2);
+    const a = h
+      .adapters()
+      .find(
+        (adapter) => (adapter as RecordingAdapter).agentType === 'a'
+      ) as RecordingAdapter;
+    await waitFor(() => a.contents.length === 1);
+    expect(a.contents[0]).toContain('[Relay internal completion callback]');
+    expect(a.contents[0]).toContain('terminalReason=completed');
+    const rows = h.store.history(h.channelId, { limit: 20 });
+    expect(rows.map((row) => row.body.text)).toEqual(
+      expect.arrayContaining([text, 'B finished silently', 'A acknowledged'])
+    );
+    expect(
+      rows.filter((row) => row.body.text.includes('[Relay internal completion'))
+    ).toHaveLength(0);
+    expect(rows.some((row) => row.body.text === '@a B finished silently')).toBe(
+      false
+    );
   });
 
   it('a CLI-gateway-actor @mock post routes identically to a browser post', async () => {

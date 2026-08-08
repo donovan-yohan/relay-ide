@@ -525,7 +525,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(8);
+    ).toBe(12);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -713,7 +713,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(8);
+    ).toBe(12);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -3209,7 +3209,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(8);
+    expect(version.version).toBe(12);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -3641,5 +3641,399 @@ describe('channel-message-store read state (#1308 slice 3 item 1)', () => {
       lastReadSeq: 1,
       advanced: true,
     });
+  });
+});
+
+describe('channel completion callback edge store', () => {
+  function edgeInput(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'chcb:turn:delegatee:1',
+      channelId: 'topic:callbacks',
+      threadId: null,
+      triggerMessageId: 'chm:trigger',
+      requesterProfileId: 'agent-profile:claude:default',
+      targetProfileId: 'agent-profile:codex:default',
+      targetRuntimeId: 'runtime:codex:1',
+      targetTurnId: 'turn:delegatee:1',
+      ...overrides,
+    };
+  }
+
+  it('persists one target-turn edge and CASes pending through consumed exactly once', () => {
+    const file = dbPath();
+    const first = store(file);
+    const created = first.createCompletionCallback(edgeInput());
+    expect(created).toMatchObject({
+      state: 'pending',
+      channelId: 'topic:callbacks',
+      requesterProfileId: 'agent-profile:claude:default',
+      targetProfileId: 'agent-profile:codex:default',
+      targetRuntimeId: 'runtime:codex:1',
+      targetTurnId: 'turn:delegatee:1',
+    });
+    // The target turn is the durable idempotency boundary, not binder memory.
+    expect(
+      first.createCompletionCallback(
+        edgeInput({ id: 'different-id', targetRuntimeId: 'runtime:retry' })
+      )
+    ).toMatchObject({ id: created.id, targetRuntimeId: 'runtime:codex:1' });
+    expect(
+      first.satisfyCompletionCallback({
+        channelId: 'topic:callbacks',
+        targetProfileId: 'agent-profile:codex:default',
+        targetTurnId: 'turn:delegatee:1',
+        terminalReason: 'completed',
+        terminalMessageId: 'chm:final',
+        messageDisposition: 'final-message',
+      })
+    ).toMatchObject({ state: 'satisfied', terminalReason: 'completed' });
+    expect(
+      first.satisfyCompletionCallback({
+        channelId: 'topic:callbacks',
+        targetProfileId: 'agent-profile:codex:default',
+        targetTurnId: 'turn:delegatee:1',
+        terminalReason: 'error',
+        messageDisposition: 'no-terminal-message',
+      })
+    ).toBeNull();
+    expect(first.claimSatisfiedCompletionCallbacks()).toMatchObject([
+      { id: created.id, state: 'delivered', terminalReason: 'completed' },
+    ]);
+    expect(first.consumeCompletionCallback(created.id)).toBe(true);
+    expect(first.consumeCompletionCallback(created.id)).toBe(false);
+    first.close();
+
+    const reopened = store(file);
+    expect(reopened.recoverCompletionCallbacks()).toEqual([]);
+  });
+
+  it('recovers volatile delivery and terminalizes restart-orphaned pending turns from durable evidence only', () => {
+    const s = store();
+    const final = s.beginStream({
+      channelId: 'topic:callbacks',
+      sender: {
+        kind: 'agent',
+        id: 'agent-profile:codex:default',
+        providerId: 'codex',
+      },
+      source: {
+        runtimeId: 'runtime:codex:1',
+        turnId: 'turn:delegatee:1',
+        itemId: 'assistant:final',
+      },
+    });
+    const finalized = s.finalizeStream(final.id, {
+      text: 'finished without mentioning the requester',
+      status: 'complete',
+    })!;
+    const evidenced = s.createCompletionCallback(edgeInput());
+    const silent = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:turn:silent',
+        targetRuntimeId: 'runtime:codex:2',
+        targetTurnId: 'turn:silent',
+      })
+    );
+    s.satisfyCompletionCallback({
+      channelId: evidenced.channelId,
+      targetProfileId: evidenced.targetProfileId,
+      targetTurnId: evidenced.targetTurnId,
+      terminalReason: 'completed',
+      terminalMessageId: finalized.id,
+      messageDisposition: 'final-message',
+    });
+    expect(s.claimSatisfiedCompletionCallbacks()).toHaveLength(1);
+
+    const recovered = s.recoverCompletionCallbacks();
+    expect(recovered).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: evidenced.id,
+          state: 'satisfied',
+          terminalReason: 'completed',
+          terminalMessageId: finalized.id,
+          messageDisposition: 'final-message',
+        }),
+        expect.objectContaining({
+          id: silent.id,
+          state: 'satisfied',
+          terminalReason: 'unexpected-disconnect',
+          messageDisposition: 'no-terminal-message',
+        }),
+      ])
+    );
+    expect(s.claimSatisfiedCompletionCallbacks()).toHaveLength(2);
+  });
+
+  it('persists an ancestor defer until its child callback continuation terminalizes', () => {
+    const s = store();
+    const parent = s.createCompletionCallback(edgeInput());
+    expect(
+      s.deferCompletionCallbackForChild({
+        channelId: parent.channelId,
+        targetProfileId: parent.targetProfileId,
+        targetTurnId: parent.targetTurnId,
+        expectedChildCount: 1,
+      })
+    ).toMatchObject({ id: parent.id, state: 'pending', awaitingChild: true });
+    // B's first terminal event records its row but does not wake A yet.
+    expect(
+      s.satisfyCompletionCallback({
+        channelId: parent.channelId,
+        targetProfileId: parent.targetProfileId,
+        targetTurnId: parent.targetTurnId,
+        terminalReason: 'completed',
+        terminalMessageId: 'chm:b-delegated-c',
+        messageDisposition: 'final-message',
+      })
+    ).toBeNull();
+    const child = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:turn:c',
+        requesterProfileId: parent.targetProfileId,
+        targetProfileId: 'agent-profile:hermes:default',
+        targetRuntimeId: 'runtime:hermes:1',
+        targetTurnId: 'turn:c',
+        continuationParentCallbackId: parent.id,
+      })
+    );
+    expect(child.continuationParentCallbackId).toBe(parent.id);
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      awaitingChild: true,
+      pendingChildIntents: 0,
+    });
+    s.satisfyCompletionCallback({
+      channelId: child.channelId,
+      targetProfileId: child.targetProfileId,
+      targetTurnId: child.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    s.claimSatisfiedCompletionCallbacks();
+    expect(s.consumeCompletionCallback(child.id)).toBe(true);
+    expect(s.getCompletionCallback(child.id)).toMatchObject({
+      state: 'consumed',
+      continuationCompletedAt: null,
+    });
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'pending',
+      awaitingChild: true,
+      pendingChildIntents: 0,
+    });
+    const continuation = s.completeChildContinuation({
+      callbackId: child.id,
+      terminalReason: 'completed',
+      terminalMessageId: 'chm:b-final',
+      messageDisposition: 'final-message',
+    });
+    expect(s.getCompletionCallback(child.id)).toMatchObject({
+      continuationCompletedAt: expect.any(String),
+    });
+    expect(continuation).toMatchObject({
+      id: parent.id,
+      state: 'satisfied',
+      terminalMessageId: 'chm:b-final',
+      awaitingChild: false,
+    });
+    expect(s.claimSatisfiedCompletionCallbacks()).toMatchObject([
+      { id: parent.id, state: 'delivered' },
+    ]);
+  });
+
+  it('fans in staggered child continuations without releasing the parent twice', () => {
+    const s = store();
+    const parent = s.createCompletionCallback(edgeInput());
+    s.deferCompletionCallbackForChild({
+      channelId: parent.channelId,
+      targetProfileId: parent.targetProfileId,
+      targetTurnId: parent.targetTurnId,
+      expectedChildCount: 2,
+    });
+    s.satisfyCompletionCallback({
+      channelId: parent.channelId,
+      targetProfileId: parent.targetProfileId,
+      targetTurnId: parent.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    const c = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:turn:c',
+        requesterProfileId: parent.targetProfileId,
+        targetProfileId: 'agent-profile:hermes:default',
+        targetRuntimeId: 'runtime:hermes:1',
+        targetTurnId: 'turn:c',
+        continuationParentCallbackId: parent.id,
+      })
+    );
+    const d = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:turn:d',
+        requesterProfileId: parent.targetProfileId,
+        targetProfileId: 'agent-profile:gemini:default',
+        targetRuntimeId: 'runtime:gemini:1',
+        targetTurnId: 'turn:d',
+        continuationParentCallbackId: parent.id,
+      })
+    );
+    for (const child of [c, d]) {
+      s.satisfyCompletionCallback({
+        channelId: child.channelId,
+        targetProfileId: child.targetProfileId,
+        targetTurnId: child.targetTurnId,
+        terminalReason: 'completed',
+        messageDisposition: 'no-terminal-message',
+      });
+    }
+    expect(s.claimSatisfiedCompletionCallbacks()).toHaveLength(2);
+    expect(s.consumeCompletionCallback(c.id)).toBe(true);
+    expect(s.consumeCompletionCallback(d.id)).toBe(true);
+    expect(
+      s.completeChildContinuation({
+        callbackId: c.id,
+        terminalReason: 'completed',
+        messageDisposition: 'no-terminal-message',
+      })
+    ).toBeNull();
+    // A duplicate or late terminal patch cannot finish C twice or release A.
+    expect(
+      s.completeChildContinuation({
+        callbackId: c.id,
+        terminalReason: 'error',
+        messageDisposition: 'no-terminal-message',
+      })
+    ).toBeNull();
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'pending',
+      awaitingChild: true,
+    });
+    expect(
+      s.completeChildContinuation({
+        callbackId: d.id,
+        terminalReason: 'completed',
+        terminalMessageId: 'chm:b-after-d',
+        messageDisposition: 'final-message',
+      })
+    ).toMatchObject({
+      id: parent.id,
+      state: 'satisfied',
+      terminalMessageId: 'chm:b-after-d',
+    });
+  });
+
+  it('rolls back a corrupt child relation without spending its parent intent', () => {
+    const file = dbPath();
+    const s = store(file);
+    const parent = s.createCompletionCallback(edgeInput());
+    s.deferCompletionCallbackForChild({
+      channelId: parent.channelId,
+      targetProfileId: parent.targetProfileId,
+      targetTurnId: parent.targetTurnId,
+      expectedChildCount: 1,
+    });
+    expect(() =>
+      s.createCompletionCallback(
+        edgeInput({
+          id: 'chcb:bad-child',
+          targetProfileId: 'agent-profile:hermes:default',
+          targetRuntimeId: 'runtime:hermes:1',
+          targetTurnId: 'turn:bad-child',
+          requesterProfileId: 'agent-profile:not-the-parent',
+          continuationParentCallbackId: parent.id,
+        })
+      )
+    ).toThrow('continuation parent is invalid');
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'pending',
+      awaitingChild: true,
+      pendingChildIntents: 1,
+    });
+    expect(s.getCompletionCallback('chcb:bad-child')).toBeNull();
+    s.close();
+
+    const reopened = store(file);
+    expect(reopened.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'pending',
+      pendingChildIntents: 1,
+    });
+  });
+
+  it('prunes only settled callback subtrees after bounded retention', async () => {
+    const s = store();
+    const settled = s.createCompletionCallback(
+      edgeInput({ id: 'chcb:settled' })
+    );
+    s.satisfyCompletionCallback({
+      channelId: settled.channelId,
+      targetProfileId: settled.targetProfileId,
+      targetTurnId: settled.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    s.claimSatisfiedCompletionCallbacks();
+    expect(s.consumeCompletionCallback(settled.id)).toBe(true);
+
+    const parent = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:retained-parent',
+        targetTurnId: 'turn:retained-parent',
+      })
+    );
+    s.deferCompletionCallbackForChild({
+      channelId: parent.channelId,
+      targetProfileId: parent.targetProfileId,
+      targetTurnId: parent.targetTurnId,
+      expectedChildCount: 1,
+    });
+    const child = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:retained-child',
+        requesterProfileId: parent.targetProfileId,
+        targetProfileId: 'agent-profile:hermes:default',
+        targetRuntimeId: 'runtime:hermes:1',
+        targetTurnId: 'turn:retained-child',
+        continuationParentCallbackId: parent.id,
+      })
+    );
+    s.satisfyCompletionCallback({
+      channelId: child.channelId,
+      targetProfileId: child.targetProfileId,
+      targetTurnId: child.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    s.claimSatisfiedCompletionCallbacks();
+    expect(s.consumeCompletionCallback(child.id)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(s.pruneConsumedCompletionCallbacks(0)).toBe(1);
+    expect(s.getCompletionCallback(settled.id)).toBeNull();
+    // The child remains as idempotency and ancestry evidence until it completes
+    // its continuation into the still-pending parent.
+    expect(s.getCompletionCallback(child.id)).toMatchObject({
+      state: 'consumed',
+      continuationCompletedAt: null,
+    });
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'pending',
+    });
+  });
+
+  it('sweeps callback edges with their orphaned channels', () => {
+    const s = store();
+    s.createCompletionCallback(edgeInput({ channelId: 'topic:gone' }));
+    s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:live',
+        channelId: 'topic:live',
+        targetTurnId: 'turn:live',
+      })
+    );
+    expect(s.sweepOrphans(new Set(['topic:live']))).toMatchObject({
+      channelsDeleted: ['topic:gone'],
+    });
+    expect(s.recoverCompletionCallbacks()).toMatchObject([
+      { id: 'chcb:live', channelId: 'topic:live' },
+    ]);
   });
 });

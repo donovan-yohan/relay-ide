@@ -3204,6 +3204,12 @@ async function main(): Promise<void> {
         cliGatewayActorRegistry.revoke(credentialId, input),
     },
   });
+  // Configure the runtime factory before replaying the durable callback outbox:
+  // recovery can now spawn/rebind its requester profile instead of claiming an
+  // edge into a half-configured binder and leaving it delivered until restart.
+  if (channelAgentBinder) {
+    await channelAgentBinder.recoverCompletionCallbacks();
+  }
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({
