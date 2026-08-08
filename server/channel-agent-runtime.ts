@@ -608,11 +608,24 @@ export class ChannelAgentRuntimeManager {
     // already exited. A live member with `pgid === rootPid` proves the group
     // still exists — that numeric group identity cannot have been reused while
     // it has a member — and the reaper validates its start time before signal.
-    const hasLeader = processTable.some((proc) => rootPids.includes(proc.pid));
     const previousSnapshot = this.ownedProcessSnapshots.get(id);
+    const hasLeader = processTable.some((proc) => {
+      if (!rootPids.includes(proc.pid)) return false;
+      if (!previousSnapshot) return true;
+      const capturedLeader = previousSnapshot.processTable.find(
+        (captured) => captured.pid === proc.pid
+      );
+      // A root PID by itself is not ownership evidence after an unexpected
+      // exit: Linux may already have reused it for another process group.
+      return (
+        capturedLeader?.startTicks !== undefined &&
+        proc.startTicks !== undefined &&
+        capturedLeader.startTicks === proc.startTicks
+      );
+    });
     if (!hasLeader && previousSnapshot) {
-      const reparentedGroupMembers = processTable.filter((proc) =>
-        rootPids.includes(proc.pgid)
+      const reparentedGroupMembers = processTable.filter(
+        (proc) => rootPids.includes(proc.pgid) && !rootPids.includes(proc.pid)
       );
       if (reparentedGroupMembers.length === 0) return;
       // Keep the pre-exit tree, but refresh every surviving group member from

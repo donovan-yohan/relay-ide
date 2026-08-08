@@ -15,7 +15,10 @@ import type {
 } from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
-import type { ProcessInfo } from '../server/process-tree.js';
+import {
+  scheduleRelayProcessTreeReap,
+  type ProcessInfo,
+} from '../server/process-tree.js';
 
 const adapterState = vi.hoisted(() => ({
   last: null as TestAdapter | null,
@@ -884,6 +887,64 @@ describe('ChannelAgentRuntimeManager', () => {
         processTable: [...initialTable, reparentedMember],
       }),
     ]);
+  });
+
+  it('does not signal a reused root PID after an unexpected leader exit', async () => {
+    const { ChannelAgentRuntimeManager } = await runtimeModule();
+    const capturedRoot: ProcessInfo = {
+      pid: 50_013,
+      ppid: 1,
+      pgid: 50_013,
+      command: 'codex',
+      commandLine: 'codex',
+      rssBytes: 10,
+      startTicks: 1,
+    };
+    // The original leader exited. Its numeric PID now names an unrelated
+    // process and group, so it must not replace the captured identity.
+    const reusedRoot: ProcessInfo = {
+      pid: 50_013,
+      ppid: 1,
+      pgid: 50_099,
+      command: 'node',
+      commandLine: 'node unrelated',
+      rssBytes: 20,
+      startTicks: 99,
+    };
+    let currentTable: ProcessInfo[] = [capturedRoot];
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const manager = new ChannelAgentRuntimeManager({
+      readProcessTable: () => currentTable,
+      scheduleProcessTreeReap: (input) => {
+        scheduleRelayProcessTreeReap({
+          ...input,
+          verifyProcessTable: () => currentTable,
+          killProcess: (pid, signal) => signals.push({ pid, signal }),
+          setTimer: (callback) => {
+            callback();
+            return { unref() {} };
+          },
+          logger: {},
+        });
+      },
+    });
+    const runtime = await manager.create({
+      id: 'reused-root-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: 'Codex',
+      port: 3456,
+      configDir: '/tmp',
+    });
+    adapterState.last!.ownedRoots = [capturedRoot.pid];
+    adapterState.last!.emitLiveState({ status: 'working' });
+
+    currentTable = [reusedRoot];
+    adapterState.last!.emitDisconnected();
+
+    await vi.waitFor(() => expect(manager.get(runtime.id)).toBeUndefined());
+    expect(signals).toEqual([]);
   });
 
   it('captures and reaps a spawned root when connect fails before any patch', async () => {
