@@ -183,7 +183,7 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
 
     const health = await fetch(`http://127.0.0.1:${port}/healthz`);
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toEqual({
+    await expect(health.json()).resolves.toMatchObject({
       status: 'ok',
       lagMs: expect.any(Number),
       rss: expect.any(Number),
@@ -195,6 +195,12 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
         complete: expect.any(Boolean),
         restored: expect.any(Number),
         failed: expect.any(Boolean),
+      },
+      resource: {
+        runtimeCount: expect.any(Number),
+        runtimeWithOwnedProcesses: expect.any(Number),
+        processCount: expect.any(Number),
+        totalRssBytes: expect.any(Number),
       },
     });
 
