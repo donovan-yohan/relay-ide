@@ -1297,9 +1297,13 @@ describe('channel-agent-binder — lifecycle', () => {
   });
 
   it('does not advertise unbound Prime controls and treats a connected empty catalog as authoritative', async () => {
-    const { binder } = makeBinder({
+    let adapter: ScriptedAdapter | null = null;
+    const { binder, store } = makeBinder({
       build: (agentType) => {
-        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        adapter = new ScriptedAdapter(agentType, {
+          mode: 'reply',
+          text: 'ack',
+        });
         Object.assign(adapter, { getSlashCommands: () => [] });
         return adapter;
       },
@@ -1317,10 +1321,22 @@ describe('channel-agent-binder — lifecycle', () => {
 
     const preview = await binder.rosterForChannel(CH);
     expect(preview[0]?.commands).toBeUndefined();
-    expect(binder.isControlMessage('@prime-agent /compact')).toBe(true);
+    expect(binder.isControlMessage('@prime-agent /model')).toBe(true);
+    expect(binder.isControlMessage('@prime-agent /thinking high')).toBe(true);
+    expect(binder.isControlMessage('@prime-agent /effort high')).toBe(true);
+    expect(binder.isControlMessage('@prime-agent /compact')).toBe(false);
+    expect(binder.isControlMessage('@prime-agent /new')).toBe(false);
+    expect(binder.isControlMessage('@prime-agent /clear')).toBe(false);
+    expect(binder.isControlMessage('@prime-agent /reset')).toBe(false);
     await binder.ensureBinding(CH, 'prime-agent');
     const connected = await binder.rosterForChannel(CH);
     expect(connected[0]?.commands).toBeUndefined();
+    expect(adapter).not.toBeNull();
+    post(store, binder, '@prime-agent /compact', ['prime-agent']);
+    post(store, binder, '@prime-agent /new', ['prime-agent']);
+    await waitFor(() => adapter!.sendInputs.length === 2);
+    expect(adapter!.sendInputs[0]!.content).toContain('/compact');
+    expect(adapter!.sendInputs[1]!.content).toContain('/new');
   });
 
   it('waits for a cold Prime binding to discover the requested control before dispatch', async () => {

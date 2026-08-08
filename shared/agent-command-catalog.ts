@@ -141,17 +141,6 @@ const CODEX_CONTROLS: AgentSlashCommandV2[] = [
  */
 const PRIME_AGENT_CONTROL_DEFINITIONS: AgentSlashCommandV2[] = [
   {
-    id: 'relay:prime-agent:new',
-    name: 'new',
-    aliases: ['clear', 'reset'],
-    description: 'Start a fresh Prime Agent session',
-    source: 'builtin',
-    sourceLabel: 'Prime Agent',
-    dispatch: 'relay-control',
-    collisionKey: 'clear',
-    destructive: true,
-  },
-  {
     id: 'relay:prime-agent:model',
     name: 'model',
     description: 'Switch the model for subsequent Prime Agent responses',
@@ -175,15 +164,6 @@ const PRIME_AGENT_CONTROL_DEFINITIONS: AgentSlashCommandV2[] = [
     dispatch: 'relay-control',
     collisionKey: 'thinking',
   },
-  {
-    id: 'relay:prime-agent:compact',
-    name: 'compact',
-    description: 'Compact the current Prime Agent session context',
-    source: 'builtin',
-    sourceLabel: 'Prime Agent',
-    dispatch: 'relay-control',
-    collisionKey: 'compact',
-  },
 ];
 
 export function relayControlCatalogForProvider(
@@ -202,9 +182,10 @@ export function primeAgentControlDefinitions(): AgentSlashCommandV2[] {
 }
 
 /**
- * Controls reserved from ordinary channel prose. This is intentionally wider
- * than the advertised catalog: an undiscovered Prime control must still not
- * be mistaken for a normal targeted message.
+ * Controls reserved from ordinary channel prose. Prime's candidate set is
+ * limited to controls that its connected adapter can discover and execute;
+ * undiscovered candidates are not advertised, but are still kept off the
+ * ordinary-message lane.
  */
 export function relayControlInputGuardCatalogForProvider(
   providerId: string
