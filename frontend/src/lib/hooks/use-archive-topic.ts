@@ -2,17 +2,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { archiveWorkspaceTopic } from '../api.js';
 import { useToastStore } from '../stores/toasts.js';
+import { topicLifecycleQueryKeys } from './topic-lifecycle-query-keys.js';
 
-/** Every cached projection whose membership or archived state changes. */
-export function archiveTopicQueryKeys(topicId: string): string[][] {
-  return [
-    ['channel', topicId],
-    ['workspace-topic', topicId],
-    ['workspace-topics'],
-    ['channels'],
-    ['channel-message-search'],
-  ];
-}
+/** Backward-compatible test/caller name; one lifecycle key source owns both directions. */
+export const archiveTopicQueryKeys = topicLifecycleQueryKeys;
 
 /**
  * Shared reversible archive mutation.

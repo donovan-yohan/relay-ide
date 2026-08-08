@@ -104,13 +104,34 @@ function ChannelArchiveControl({
   const [confirming, setConfirming] = useState(false);
   const [freshCheckPending, setFreshCheckPending] = useState(false);
   const [freshCheckBlock, setFreshCheckBlock] = useState<string | null>(null);
+  const currentChannelIdRef = useRef<string | null>(channelId);
+  const archiveTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreTriggerFocusRef = useRef(false);
 
   useEffect(() => {
+    currentChannelIdRef.current = channelId;
     setConfirming(false);
     setFreshCheckPending(false);
     setFreshCheckBlock(null);
     resetArchive();
+    return () => {
+      if (currentChannelIdRef.current === channelId) {
+        currentChannelIdRef.current = null;
+      }
+    };
   }, [channelId, resetArchive]);
+
+  useLayoutEffect(() => {
+    if (confirming) {
+      confirmButtonRef.current?.focus();
+      return;
+    }
+    if (restoreTriggerFocusRef.current) {
+      restoreTriggerFocusRef.current = false;
+      archiveTriggerRef.current?.focus();
+    }
+  }, [confirming]);
 
   if (archived) return null;
 
@@ -136,6 +157,9 @@ function ChannelArchiveControl({
 
   const confirmArchive = async (): Promise<void> => {
     if (blocked || archivePending || freshCheckPending) return;
+    const requestedChannelId = channelId;
+    const isCurrentChannel = () =>
+      currentChannelIdRef.current === requestedChannelId;
     resetArchive();
     setFreshCheckBlock(null);
     setFreshCheckPending(true);
@@ -144,16 +168,22 @@ function ChannelArchiveControl({
       // Confirmation deliberately bypasses the 30s query freshness window.
       // The server repeats the invariant authoritatively; this fresh read keeps
       // the operator from firing a request we already know must be rejected.
-      freshRoster = await fetchChannelRoster(channelId);
-      queryClient.setQueryData(['channel-roster', channelId], freshRoster);
+      freshRoster = await fetchChannelRoster(requestedChannelId);
+      if (!isCurrentChannel()) return;
+      queryClient.setQueryData(
+        ['channel-roster', requestedChannelId],
+        freshRoster
+      );
     } catch {
+      if (!isCurrentChannel()) return;
       setFreshCheckBlock(
         'agent status could not be verified — retry before archiving'
       );
       return;
     } finally {
-      setFreshCheckPending(false);
+      if (isCurrentChannel()) setFreshCheckPending(false);
     }
+    if (!isCurrentChannel()) return;
     const freshBusy = freshRoster.filter(
       (entry) =>
         entry.binding !== null &&
@@ -170,11 +200,12 @@ function ChannelArchiveControl({
       return;
     }
     try {
-      await archiveChannel(channelId);
+      await archiveChannel(requestedChannelId);
+      if (!isCurrentChannel()) return;
       // The shared mutation does not resolve until every mounted topic/channel
       // projection has reconciled. Only then leave this now-archived channel,
       // preventing the active-only rail from immediately selecting it again.
-      if (useUiStore.getState().activeChannelId === channelId) {
+      if (useUiStore.getState().activeChannelId === requestedChannelId) {
         setActiveChannelId(null);
       }
     } catch {
@@ -193,6 +224,7 @@ function ChannelArchiveControl({
         >
           <span className="ch-archive-channel__prompt">archive?</span>
           <button
+            ref={confirmButtonRef}
             type="button"
             className="ch-archive-channel__button ch-archive-channel__button--confirm"
             onClick={() => void confirmArchive()}
@@ -226,6 +258,7 @@ function ChannelArchiveControl({
             onClick={() => {
               resetArchive();
               setFreshCheckBlock(null);
+              restoreTriggerFocusRef.current = true;
               setConfirming(false);
             }}
             disabled={archivePending || freshCheckPending}
@@ -235,6 +268,7 @@ function ChannelArchiveControl({
         </span>
       ) : (
         <button
+          ref={archiveTriggerRef}
           type="button"
           className="ch-archive-channel__button"
           onClick={() => {
@@ -935,6 +969,16 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     }
     return ids;
   }, [agentChips]);
+  const archiveBusyAgentCount = useMemo(
+    () =>
+      agentChips.filter(
+        (chip) =>
+          chip.status !== 'idle' ||
+          chip.queuedCount > 0 ||
+          chip.steeringCount > 0
+      ).length,
+    [agentChips]
+  );
 
   // #1308 slice 4 item 2b. The composer's steering cluster keys on the SAME chip
   // signal, so what the composer offers and what the header says the agent is
@@ -1214,9 +1258,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         ) : null}
         <span className="ch-header__spacer" />
         <ChannelArchiveControl
+          key={channelId}
           channelId={channelId}
           archived={archived}
-          busyAgentCount={busyAgentIds.size}
+          busyAgentCount={archiveBusyAgentCount}
           rosterStatus={
             rosterChipsQuery.isPending
               ? 'pending'

@@ -191,6 +191,59 @@ describe('channel-agent-binder — durable delegation completion callbacks', () 
     await waitFor(() => !binder.archiveActivityForChannel(CH).active);
   });
 
+  it('contains a synchronous callback release failure and retains the archive fence', async () => {
+    const { binder, store } = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'missing requester callback',
+    });
+    const edge = store.createCompletionCallback({
+      id: 'chcb:release-throws',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: trigger.id,
+      requesterProfileId: 'agent-profile:missing',
+      targetProfileId: builtInAgentProfileId('b'),
+      targetRuntimeId: 'runtime:b',
+      targetTurnId: 'turn:release-throws',
+    });
+    store.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    const originalRelease =
+      store.releaseDeliveredCompletionCallback.bind(store);
+    let releaseAttempts = 0;
+    store.releaseDeliveredCompletionCallback = (id) => {
+      releaseAttempts += 1;
+      if (releaseAttempts === 1) throw new Error('sqlite release failed');
+      return originalRelease(id);
+    };
+
+    await binder.recoverCompletionCallbacks();
+    await waitFor(() => releaseAttempts >= 2);
+    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+      active: true,
+      reasons: expect.arrayContaining(['completion-callback']),
+    });
+
+    // Close is the terminal cleanup for this intentionally undeliverable edge;
+    // its retry timer observes `closed` and cannot resurrect the marker.
+    binder.close();
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+  });
+
   it('wakes a silent successful delegator exactly once with a typed internal trigger', async () => {
     const adapters = new Map<string, ScriptedAdapter>();
     const { binder, store } = makeBinder({

@@ -519,6 +519,10 @@ function bindingKey(channelId: string, profileActorId: string): string {
   return `${channelId}\u0000${profileActorId}`;
 }
 
+function bindingKeyPrefix(channelId: string): string {
+  return bindingKey(channelId, '');
+}
+
 export function createChannelAgentBinder(
   deps: ChannelAgentBinderDeps
 ): ChannelAgentBinder {
@@ -844,6 +848,27 @@ export function createChannelAgentBinder(
     timer.unref?.();
   }
 
+  function releaseClaimedCompletionCallback(
+    edge: ChannelCompletionCallbackEdge,
+    context: string
+  ): void {
+    try {
+      store.releaseDeliveredCompletionCallback(edge.id);
+      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
+    } catch (err) {
+      // This runs from a timer. A synchronous SQLite failure must neither
+      // escape the timer nor drop the per-channel archive marker. Retry the
+      // release itself: delivered rows are not claimable until this CAS lands.
+      logger.warn(context, err);
+      if (closed) return;
+      const timer = setTimeout(
+        () => releaseClaimedCompletionCallback(edge, context),
+        COMPLETION_CALLBACK_RETRY_MS
+      );
+      timer.unref?.();
+    }
+  }
+
   function claimAndRouteCompletionCallbacks(): void {
     if (closed) return;
     let edges: ChannelCompletionCallbackEdge[];
@@ -866,8 +891,10 @@ export function createChannelAgentBinder(
           'channel completion callback requester profile is unavailable',
           { callbackId: edge.id, requesterProfileId: edge.requesterProfileId }
         );
-        store.releaseDeliveredCompletionCallback(edge.id);
-        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
+        releaseClaimedCompletionCallback(
+          edge,
+          'channel completion callback unavailable-requester release failed:'
+        );
         continue;
       }
       const trigger =
@@ -878,8 +905,10 @@ export function createChannelAgentBinder(
         logger.warn('channel completion callback trigger is unavailable', {
           callbackId: edge.id,
         });
-        store.releaseDeliveredCompletionCallback(edge.id);
-        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
+        releaseClaimedCompletionCallback(
+          edge,
+          'channel completion callback missing-trigger release failed:'
+        );
         continue;
       }
       void ensureProfileBinding(edge.channelId, profile)
@@ -3878,7 +3907,7 @@ export function createChannelAgentBinder(
     channelId: string
   ): ChannelArchiveActivitySnapshot {
     const reasons = new Set<ChannelArchiveActivityReason>();
-    const prefix = `${channelId}\u0000`;
+    const prefix = bindingKeyPrefix(channelId);
     for (const [key, binding] of live) {
       if (!key.startsWith(prefix)) continue;
       if (binding.status !== 'idle') reasons.add('binding-status');

@@ -452,6 +452,42 @@ describe('ChannelView reversible archive control (#1382)', () => {
     expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
   });
 
+  it('fails closed with clear copy when the initial roster is unavailable', async () => {
+    mocks.fetchChannelRoster.mockRejectedValue(new Error('roster offline'));
+    await render();
+
+    const archive = container.querySelector<HTMLButtonElement>(
+      '.ch-header > .ch-archive-channel__button'
+    );
+    expect(archive?.disabled).toBe(true);
+    expect(archive?.textContent).toContain('agent status unknown');
+  });
+
+  it('focuses confirmation and returns focus to the trigger after cancel', async () => {
+    await render();
+    const archive = container.querySelector<HTMLButtonElement>(
+      '.ch-header > .ch-archive-channel__button'
+    );
+    await act(async () => archive?.click());
+
+    const confirm = container.querySelector<HTMLButtonElement>(
+      '.ch-archive-channel__button--confirm'
+    );
+    expect(document.activeElement).toBe(confirm);
+    const cancel = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '.ch-archive-channel--confirming .ch-archive-channel__button'
+      )
+    ).find((button) => button.textContent === 'cancel');
+    await act(async () => cancel?.click());
+
+    expect(document.activeElement).toBe(
+      container.querySelector<HTMLButtonElement>(
+        '.ch-header > .ch-archive-channel__button'
+      )
+    );
+  });
+
   it('requires inline confirmation, reconciles every reader, then leaves the channel', async () => {
     useUiStore.getState().setActiveChannelId(CHANNEL_ID);
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
@@ -503,6 +539,27 @@ describe('ChannelView reversible archive control (#1382)', () => {
     expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
   });
 
+  it('treats an idle binding with queued work as archive-busy', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([
+      {
+        ...rosterEntry('orchestrator'),
+        binding: {
+          runtimeId: 'runtime:claude-1',
+          status: 'idle',
+          queuedCount: 1,
+          steeringCount: 0,
+        },
+      },
+    ]);
+    await render();
+
+    const archive = container.querySelector<HTMLButtonElement>(
+      '.ch-header > .ch-archive-channel__button'
+    );
+    expect(archive?.disabled).toBe(true);
+    expect(archive?.textContent).toContain('agent active');
+  });
+
   it('revalidates cached idle status and blocks when the confirmation roster is busy', async () => {
     mocks.fetchChannelRoster
       .mockResolvedValueOnce([rosterEntry('orchestrator')])
@@ -543,6 +600,97 @@ describe('ChannelView reversible archive control (#1382)', () => {
         '.ch-archive-channel__button--confirm'
       )?.disabled
     ).toBe(true);
+  });
+
+  it('keeps confirmation retryable when the fresh roster check fails', async () => {
+    mocks.fetchChannelRoster
+      .mockResolvedValueOnce([rosterEntry('orchestrator')])
+      .mockRejectedValueOnce(new Error('fresh roster offline'));
+    await render();
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-header > .ch-archive-channel__button'
+        )
+        ?.click()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-archive-channel__button--confirm'
+        )
+        ?.click()
+    );
+    await flush();
+
+    expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('.ch-archive-channel__error')?.textContent
+    ).toBe('agent status could not be verified — retry before archiving');
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '.ch-archive-channel__button--confirm'
+      )?.disabled
+    ).toBe(false);
+  });
+
+  it('drops stale confirmation results after switching channels', async () => {
+    let settleFreshRoster!: (value: ReturnType<typeof rosterEntry>[]) => void;
+    const delayedFreshRoster = new Promise<ReturnType<typeof rosterEntry>[]>(
+      (resolve) => {
+        settleFreshRoster = resolve;
+      }
+    );
+    mocks.fetchChannelRoster
+      .mockResolvedValueOnce([rosterEntry('orchestrator')])
+      .mockReturnValueOnce(delayedFreshRoster)
+      .mockResolvedValue([rosterEntry('orchestrator')]);
+    await render();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-header > .ch-archive-channel__button'
+        )
+        ?.click()
+    );
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '.ch-archive-channel__button--confirm'
+        )
+        ?.click();
+    });
+
+    const nextChannelId = 'topic:next-lane';
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(ChannelView, { channelId: nextChannelId })
+        )
+      );
+    });
+    await flush();
+    settleFreshRoster([
+      {
+        ...rosterEntry('orchestrator'),
+        binding: {
+          runtimeId: 'runtime:claude-1',
+          status: 'streaming',
+        },
+      },
+    ]);
+    await flush();
+
+    expect(mocks.archiveWorkspaceTopic).not.toHaveBeenCalled();
+    expect(container.querySelector('.ch-archive-channel__error')).toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '.ch-header > .ch-archive-channel__button'
+      )?.textContent
+    ).toBe('archive');
   });
 
   it('keeps a failed confirmation retryable with inline and toast feedback', async () => {

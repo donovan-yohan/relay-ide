@@ -114,16 +114,17 @@
 }
 
 .ch-archive-channel__progress {
-  color: currentColor;
   font-size: inherit;
 }
 
 .ch-archive-channel__error {
   min-width: 0;
+  max-width: min(36ch, 35vw);
   color: var(--status-error);
   font-size: var(--font-size-xs);
   line-height: 1.2;
   text-transform: lowercase;
+  overflow-wrap: anywhere;
 }
 
 /* agent presence chips (#1167) — one per bound/active agent, glyph + status dot
