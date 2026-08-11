@@ -183,6 +183,23 @@ export interface ChannelAgentRosterEntry {
   commands?: AgentSlashCommandV2[];
 }
 
+export type ChannelArchiveActivityReason =
+  | 'binding-status'
+  | 'active-turn'
+  | 'queued-turn'
+  | 'steering'
+  | 'binding-in-flight'
+  | 'orchestrator-in-flight'
+  | 'routing-in-flight'
+  | 'retry-in-flight'
+  | 'completion-callback';
+
+/** Synchronous snapshot used by the topic archive mutation boundary. */
+export interface ChannelArchiveActivitySnapshot {
+  active: boolean;
+  reasons: ChannelArchiveActivityReason[];
+}
+
 export type ChannelAgentStatusBroadcaster = (
   type: string,
   data: Record<string, unknown>
@@ -261,6 +278,11 @@ export interface ChannelAgentBinder {
     decision: AgentApprovalDecisionV2
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
+  /**
+   * Synchronous by design: callers check this and archive in one JS turn, so a
+   * new binder operation cannot interleave between the invariant and mutation.
+   */
+  archiveActivityForChannel(channelId: string): ChannelArchiveActivitySnapshot;
   executeCommand(
     channelId: string,
     profileActorId: string,
@@ -497,6 +519,10 @@ function bindingKey(channelId: string, profileActorId: string): string {
   return `${channelId}\u0000${profileActorId}`;
 }
 
+function bindingKeyPrefix(channelId: string): string {
+  return bindingKey(channelId, '');
+}
+
 export function createChannelAgentBinder(
   deps: ChannelAgentBinderDeps
 ): ChannelAgentBinder {
@@ -528,6 +554,10 @@ export function createChannelAgentBinder(
   // This marker is taken synchronously with the busy check and held until the
   // route settles, so the second caller is refused rather than admitted.
   const retryInFlight = new Set<string>();
+  // `routeOne` awaits target discovery before `inflight` owns a binding key.
+  // Count that earlier window too, otherwise archive can race a mention that is
+  // already admitted but has not started spawning its runtime yet.
+  const routingInFlightByChannel = new Map<string, number>();
   let statusBroadcaster: ChannelAgentStatusBroadcaster | null = null;
   let targetsCache: { at: number; value: MentionTarget[] } | null = null;
   let targetsGeneration = 0;
@@ -536,6 +566,10 @@ export function createChannelAgentBinder(
     promise: Promise<MentionTarget[]>;
   } | null = null;
   let completionDrainScheduled = false;
+  // Durable satisfied/delivered callbacks are work in the requester's channel
+  // before the next-tick drain creates ordinary binding/routing state. Key by
+  // callback id so repeated retry scheduling is idempotent and channel-local.
+  const pendingCompletionCallbacks = new Map<string, string>();
   let lastCompletionCallbackPruneAt: number | null = null;
   let closed = false;
 
@@ -722,7 +756,7 @@ export function createChannelAgentBinder(
             targetTurnId: turnId,
             ...input,
           });
-      if (satisfied) drainCompletionCallbacks();
+      if (satisfied) drainCompletionCallbacks(0, [satisfied]);
       maybePruneCompletionCallbacks();
     } catch (err) {
       logger.warn('channel completion callback terminalization failed:', err);
@@ -747,7 +781,7 @@ export function createChannelAgentBinder(
             messageDisposition: deferred.messageDisposition,
           })
         : null;
-      if (satisfied) drainCompletionCallbacks();
+      if (satisfied) drainCompletionCallbacks(0, [satisfied]);
     } catch (err) {
       logger.warn(
         'channel deferred completion callback terminalization failed:',
@@ -769,7 +803,7 @@ export function createChannelAgentBinder(
     if (!callback) return false;
     try {
       store.releaseDeliveredCompletionCallback(callback.id);
-      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [callback]);
     } catch (err) {
       logger.warn(
         'channel unaccepted completion callback release failed:',
@@ -786,7 +820,21 @@ export function createChannelAgentBinder(
    * CAS is the exactly-once boundary for duplicate/late terminal patches; the
    * FIFO below is only delivery scheduling for a busy requester.
    */
-  function drainCompletionCallbacks(delayMs = 0): void {
+  function trackCompletionCallbacks(
+    edges: readonly ChannelCompletionCallbackEdge[]
+  ): void {
+    for (const edge of edges) {
+      pendingCompletionCallbacks.set(edge.id, edge.channelId);
+    }
+  }
+
+  function drainCompletionCallbacks(
+    delayMs = 0,
+    edges: readonly ChannelCompletionCallbackEdge[] = []
+  ): void {
+    // Track even when a drain timer already exists. Many terminal patches can
+    // fan into that one timer, and every affected channel must remain blocked.
+    trackCompletionCallbacks(edges);
     if (closed || completionDrainScheduled) return;
     // Let the provider's terminal patch finish its current microtask fan-out
     // before the upward callback enters another agent's FIFO. That preserves
@@ -800,6 +848,27 @@ export function createChannelAgentBinder(
     timer.unref?.();
   }
 
+  function releaseClaimedCompletionCallback(
+    edge: ChannelCompletionCallbackEdge,
+    context: string
+  ): void {
+    try {
+      store.releaseDeliveredCompletionCallback(edge.id);
+      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
+    } catch (err) {
+      // This runs from a timer. A synchronous SQLite failure must neither
+      // escape the timer nor drop the per-channel archive marker. Retry the
+      // release itself: delivered rows are not claimable until this CAS lands.
+      logger.warn(context, err);
+      if (closed) return;
+      const timer = setTimeout(
+        () => releaseClaimedCompletionCallback(edge, context),
+        COMPLETION_CALLBACK_RETRY_MS
+      );
+      timer.unref?.();
+    }
+  }
+
   function claimAndRouteCompletionCallbacks(): void {
     if (closed) return;
     let edges: ChannelCompletionCallbackEdge[];
@@ -809,17 +878,23 @@ export function createChannelAgentBinder(
       );
     } catch (err) {
       logger.warn('channel completion callback claim failed:', err);
+      // Durable work is still satisfied, so keep its per-channel marker and
+      // retry instead of either losing delivery or declaring archive-safe.
+      drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
       return;
     }
     for (const edge of edges) {
+      trackCompletionCallbacks([edge]);
       const profile = profileForActorId(edge.requesterProfileId);
       if (!profile) {
         logger.warn(
           'channel completion callback requester profile is unavailable',
           { callbackId: edge.id, requesterProfileId: edge.requesterProfileId }
         );
-        store.releaseDeliveredCompletionCallback(edge.id);
-        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        releaseClaimedCompletionCallback(
+          edge,
+          'channel completion callback unavailable-requester release failed:'
+        );
         continue;
       }
       const trigger =
@@ -830,8 +905,10 @@ export function createChannelAgentBinder(
         logger.warn('channel completion callback trigger is unavailable', {
           callbackId: edge.id,
         });
-        store.releaseDeliveredCompletionCallback(edge.id);
-        drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+        releaseClaimedCompletionCallback(
+          edge,
+          'channel completion callback missing-trigger release failed:'
+        );
         continue;
       }
       void ensureProfileBinding(edge.channelId, profile)
@@ -841,15 +918,19 @@ export function createChannelAgentBinder(
             // Queue admission is a durable boundary too. A full/released
             // requester must re-offer this claimed edge rather than stranding it.
             store.releaseDeliveredCompletionCallback(edge.id);
-            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
+            return;
           }
+          // enqueueTurn synchronously installs active/queued binding state, so
+          // that invariant takes over without an archive-visible gap.
+          pendingCompletionCallbacks.delete(edge.id);
         })
         .catch((err) => {
           if (closed || err instanceof BinderClosedError) return;
           logger.warn('channel completion callback routing failed:', err);
           try {
             store.releaseDeliveredCompletionCallback(edge.id);
-            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+            drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [edge]);
           } catch (releaseErr) {
             logger.warn(
               'channel completion callback claim release failed:',
@@ -1657,7 +1738,7 @@ export function createChannelAgentBinder(
           terminalReason: 'error',
           messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
         });
-        if (satisfied) drainCompletionCallbacks();
+        if (satisfied) drainCompletionCallbacks(0, [satisfied]);
         maybePruneCompletionCallbacks();
       } catch (err) {
         logger.warn(
@@ -2051,7 +2132,9 @@ export function createChannelAgentBinder(
       if (completionCallback) {
         try {
           store.releaseDeliveredCompletionCallback(completionCallback.id);
-          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [
+            completionCallback,
+          ]);
         } catch (releaseErr) {
           logger.warn(
             'channel completion callback packet-failure release failed:',
@@ -2308,7 +2391,9 @@ export function createChannelAgentBinder(
           store.releaseDeliveredCompletionCallback(
             queued.completionCallback.id
           );
-          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [
+            queued.completionCallback,
+          ]);
         } catch (err) {
           logger.warn(
             'channel queued completion callback release failed:',
@@ -2333,7 +2418,7 @@ export function createChannelAgentBinder(
             terminalReason: CALLBACK_UNEXPECTED_DISCONNECT,
             messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
           });
-          if (satisfied) drainCompletionCallbacks();
+          if (satisfied) drainCompletionCallbacks(0, [satisfied]);
           maybePruneCompletionCallbacks();
         } catch (err) {
           logger.warn('channel queued delegation terminalization failed:', err);
@@ -2352,7 +2437,9 @@ export function createChannelAgentBinder(
           store.releaseDeliveredCompletionCallback(
             steering.completionCallback.id
           );
-          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS);
+          drainCompletionCallbacks(COMPLETION_CALLBACK_RETRY_MS, [
+            steering.completionCallback,
+          ]);
         } catch (err) {
           logger.warn('channel queued steering callback release failed:', err);
         }
@@ -2370,7 +2457,7 @@ export function createChannelAgentBinder(
             terminalReason: CALLBACK_UNEXPECTED_DISCONNECT,
             messageDisposition: CALLBACK_NO_TERMINAL_MESSAGE,
           });
-          if (satisfied) drainCompletionCallbacks();
+          if (satisfied) drainCompletionCallbacks(0, [satisfied]);
           maybePruneCompletionCallbacks();
         } catch (err) {
           logger.warn(
@@ -2735,13 +2822,19 @@ export function createChannelAgentBinder(
     requiredRole?: 'orchestrator',
     callbackEdgeRequest?: CallbackEdgeRequest
   ): Promise<void> {
+    routingInFlightByChannel.set(
+      trigger.channelId,
+      (routingInFlightByChannel.get(trigger.channelId) ?? 0) + 1
+    );
     return (async () => {
       const releaseDeferredParent = () => {
         const parentId = callbackEdgeRequest?.continuationParentCallbackId;
         if (!parentId) return;
         try {
           const released = store.releaseDeferredCompletionCallback(parentId);
-          if (released?.state === 'satisfied') drainCompletionCallbacks();
+          if (released?.state === 'satisfied') {
+            drainCompletionCallbacks(0, [released]);
+          }
         } catch (err) {
           logger.warn('channel completion callback defer release failed:', err);
         }
@@ -2845,7 +2938,12 @@ export function createChannelAgentBinder(
         releaseDeferredParent();
         logger.warn('channel binder route failed:', err);
       }
-    })();
+    })().finally(() => {
+      const remaining =
+        (routingInFlightByChannel.get(trigger.channelId) ?? 1) - 1;
+      if (remaining <= 0) routingInFlightByChannel.delete(trigger.channelId);
+      else routingInFlightByChannel.set(trigger.channelId, remaining);
+    });
   }
 
   /** Eligible profile-resolved, non-self mentions in routing order. */
@@ -3190,7 +3288,10 @@ export function createChannelAgentBinder(
       const consumed = store.consumeAncestorCompletionCallbackForExplicitReturn(
         parent.id
       );
-      if (consumed) explicitReturnProfiles.add(consumed.requesterProfileId);
+      if (consumed) {
+        pendingCompletionCallbacks.delete(consumed.id);
+        explicitReturnProfiles.add(consumed.requesterProfileId);
+      }
     } catch (err) {
       logger.warn(
         'channel completion callback ancestor explicit-return consume failed:',
@@ -3222,6 +3323,7 @@ export function createChannelAgentBinder(
           requesterProfileIds: profiles.map((profile) => profile.id),
         });
         for (const edge of consumed) {
+          pendingCompletionCallbacks.delete(edge.id);
           explicitReturnProfiles.add(edge.requesterProfileId);
         }
       } catch (err) {
@@ -3282,8 +3384,8 @@ export function createChannelAgentBinder(
   async function recoverCompletionCallbacks(): Promise<void> {
     if (closed) return;
     try {
-      store.recoverCompletionCallbacks();
-      drainCompletionCallbacks();
+      const recovered = store.recoverCompletionCallbacks();
+      drainCompletionCallbacks(0, recovered);
     } catch (err) {
       logger.warn('channel completion callback recovery failed:', err);
     }
@@ -3801,6 +3903,46 @@ export function createChannelAgentBinder(
     return false;
   }
 
+  function archiveActivityForChannel(
+    channelId: string
+  ): ChannelArchiveActivitySnapshot {
+    const reasons = new Set<ChannelArchiveActivityReason>();
+    const prefix = bindingKeyPrefix(channelId);
+    for (const [key, binding] of live) {
+      if (!key.startsWith(prefix)) continue;
+      if (binding.status !== 'idle') reasons.add('binding-status');
+      if (binding.activeTurnId !== null) reasons.add('active-turn');
+      if (binding.queue.length > 0) reasons.add('queued-turn');
+      if (
+        binding.steeringQueue.length > 0 ||
+        binding.steeringInFlight ||
+        binding.steeringAcceptedCount > 0
+      ) {
+        reasons.add('steering');
+      }
+    }
+    if (Array.from(inflight.keys()).some((key) => key.startsWith(prefix))) {
+      reasons.add('binding-in-flight');
+    }
+    if (orchestratorInflight.has(channelId)) {
+      reasons.add('orchestrator-in-flight');
+    }
+    if ((routingInFlightByChannel.get(channelId) ?? 0) > 0) {
+      reasons.add('routing-in-flight');
+    }
+    if (Array.from(retryInFlight).some((key) => key.startsWith(prefix))) {
+      reasons.add('retry-in-flight');
+    }
+    if (
+      Array.from(pendingCompletionCallbacks.values()).some(
+        (pendingChannelId) => pendingChannelId === channelId
+      )
+    ) {
+      reasons.add('completion-callback');
+    }
+    return { active: reasons.size > 0, reasons: Array.from(reasons) };
+  }
+
   return {
     handleMessagePosted,
     ensureBinding,
@@ -3811,6 +3953,7 @@ export function createChannelAgentBinder(
     retryMessage,
     respondToApproval,
     rosterForChannel,
+    archiveActivityForChannel,
     executeCommand,
     isControlMessage,
     recoverCompletionCallbacks,
@@ -3852,6 +3995,8 @@ export function createChannelAgentBinder(
       inflight.clear();
       orchestratorInflight.clear();
       retryInFlight.clear();
+      routingInFlightByChannel.clear();
+      pendingCompletionCallbacks.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();
       invalidateTargets();

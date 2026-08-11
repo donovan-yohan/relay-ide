@@ -1,8 +1,10 @@
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import Database from 'better-sqlite3';
+import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
@@ -56,6 +58,7 @@ import type {
 } from '../server/channel-agent-runtime.js';
 import {
   createWorkspaceTopicStore,
+  createWorkspaceTopicsRouter,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import {
@@ -94,6 +97,152 @@ describe('channel-agent-binder — durable delegation completion callbacks', () 
     providerId: 'a',
     displayName: 'A',
   };
+
+  it('blocks archive from callback scheduling through requester binding admission', async () => {
+    let releaseSpawn!: () => void;
+    const spawnGate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({ id: CH, workspaceId: 'ws:test', title: 'Test' });
+    const { binder, store } = makeBinder({
+      build: (provider) =>
+        new ScriptedAdapter(
+          provider,
+          provider === 'a'
+            ? { mode: 'reply', text: 'callback acknowledged' }
+            : { mode: 'stall' }
+        ),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+      topicStore: topics,
+      gate: spawnGate,
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'durable callback trigger',
+    });
+    const edge = store.createCompletionCallback({
+      id: 'chcb:archive-window',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: trigger.id,
+      requesterProfileId: builtInAgentProfileId('a'),
+      targetProfileId: builtInAgentProfileId('b'),
+      targetRuntimeId: 'runtime:b',
+      targetTurnId: 'turn:archive-window',
+    });
+    store.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+
+    // Recovery schedules claim on setTimeout(0). Before that timer can run,
+    // the requester's channel is already authoritatively active.
+    await binder.recoverCompletionCallbacks();
+    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+      active: true,
+      reasons: expect.arrayContaining(['completion-callback']),
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createWorkspaceTopicsRouter({
+        store: topics,
+        channelArchiveActivity: (channelId) =>
+          binder.archiveActivityForChannel(channelId),
+      })
+    );
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    cleanup.push(() => server.close());
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('missing callback archive test address');
+    }
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/workspace-topics/${encodeURIComponent(CH)}/archive`,
+      {
+        method: 'POST',
+        headers: { 'x-relay-capabilities': 'context:write' },
+      }
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: 'SESSION_CONFLICT',
+        details: { reasonCode: 'CHANNEL_ARCHIVE_AGENT_ACTIVE' },
+      },
+    });
+    expect(topics.get(CH)?.status).toBe('active');
+
+    releaseSpawn();
+    await waitFor(
+      () => store.getCompletionCallback(edge.id)?.state === 'consumed'
+    );
+    await waitFor(() => !binder.archiveActivityForChannel(CH).active);
+  });
+
+  it('contains a synchronous callback release failure and retains the archive fence', async () => {
+    const { binder, store } = makeBinder({
+      build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+      targets: callbackTargets,
+      knownProviderIds: ['a', 'b', 'c', 'd'],
+    });
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'missing requester callback',
+    });
+    const edge = store.createCompletionCallback({
+      id: 'chcb:release-throws',
+      channelId: CH,
+      threadId: null,
+      triggerMessageId: trigger.id,
+      requesterProfileId: 'agent-profile:missing',
+      targetProfileId: builtInAgentProfileId('b'),
+      targetRuntimeId: 'runtime:b',
+      targetTurnId: 'turn:release-throws',
+    });
+    store.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    const originalRelease =
+      store.releaseDeliveredCompletionCallback.bind(store);
+    let releaseAttempts = 0;
+    store.releaseDeliveredCompletionCallback = (id) => {
+      releaseAttempts += 1;
+      if (releaseAttempts === 1) throw new Error('sqlite release failed');
+      return originalRelease(id);
+    };
+
+    await binder.recoverCompletionCallbacks();
+    await waitFor(() => releaseAttempts >= 2);
+    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+      active: true,
+      reasons: expect.arrayContaining(['completion-callback']),
+    });
+
+    // Close is the terminal cleanup for this intentionally undeliverable edge;
+    // its retry timer observes `closed` and cannot resurrect the marker.
+    binder.close();
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+  });
 
   it('wakes a silent successful delegator exactly once with a typed internal trigger', async () => {
     const adapters = new Map<string, ScriptedAdapter>();
@@ -2287,6 +2436,36 @@ function makeBinder(cfg: {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe('channel-agent-binder — lifecycle', () => {
+  it('reports binding admission synchronously and returns to archive-safe when idle', async () => {
+    let releaseSpawn!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    const { binder } = makeBinder({
+      build: (agentType) => new ScriptedAdapter(agentType, { mode: 'stall' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      gate,
+    });
+
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+    const binding = binder.ensureBinding(CH, 'mock');
+    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+      active: true,
+      reasons: expect.arrayContaining(['binding-in-flight']),
+    });
+
+    releaseSpawn();
+    await binding;
+    expect(binder.archiveActivityForChannel(CH)).toEqual({
+      active: false,
+      reasons: [],
+    });
+  });
+
   it('discovers and executes only confirmed Codex controls without persisting or routing a message', async () => {
     const calls: Array<{
       command: string;

@@ -83,15 +83,12 @@ vi.mock('../../frontend/src/components/chat/ChannelThreadPanel.js', () => ({
   ChannelThreadPanel: () => null,
 }));
 
-const { ChannelView } = await import(
-  '../../frontend/src/components/chat/ChannelView.js'
-);
-const { restoreTopicQueryKeys, useRestoreTopicMutation } = await import(
-  '../../frontend/src/lib/hooks/use-restore-topic.js'
-);
-const { useToastStore } = await import(
-  '../../frontend/src/lib/stores/toasts.js'
-);
+const { ChannelView } =
+  await import('../../frontend/src/components/chat/ChannelView.js');
+const { restoreTopicQueryKeys, useRestoreTopicMutation } =
+  await import('../../frontend/src/lib/hooks/use-restore-topic.js');
+const { useToastStore } =
+  await import('../../frontend/src/lib/stores/toasts.js');
 const { HttpError } = await import('../../frontend/src/lib/api.js');
 
 function topicFixture(status: 'active' | 'archived' = 'archived') {
@@ -119,6 +116,8 @@ async function flush(): Promise<void> {
 /** Seed the readers that must not keep rendering the archived state. */
 function seedTopicCaches(): void {
   queryClient.setQueryData(['channel', CHANNEL_ID], { archived: true });
+  queryClient.setQueryData(['channels'], { channels: [] });
+  queryClient.setQueryData(['channel-message-search', 'lane'], { results: [] });
   queryClient.setQueryData(['workspace-topics'], { topics: [] });
   queryClient.setQueryData(['workspace-topics', 'with-archived'], {
     topics: [],
@@ -164,11 +163,13 @@ afterEach(async () => {
 });
 
 describe('shared restore mutation (#1287)', () => {
-  it('names every reader of a topic archived state, list keys by prefix', () => {
+  it('names every lifecycle reader, list and search keys by prefix', () => {
     expect(restoreTopicQueryKeys(CHANNEL_ID)).toEqual([
       ['channel', CHANNEL_ID],
       ['workspace-topic', CHANNEL_ID],
       ['workspace-topics'],
+      ['channels'],
+      ['channel-message-search'],
     ]);
   });
 
@@ -207,6 +208,8 @@ describe('shared restore mutation (#1287)', () => {
       ['workspace-topics'],
       ['workspace-topics', 'with-archived'],
       ['workspace-topics', 'search', 'lane', 'all', 'with-archived'],
+      ['channels'],
+      ['channel-message-search', 'lane'],
     ]) {
       expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
     }

@@ -2570,6 +2570,9 @@ async function main(): Promise<void> {
       surfaceStore: workspaceSurfaceStore,
       workContextStore,
       getConfig,
+      channelArchiveActivity: channelAgentBinder
+        ? (channelId) => channelAgentBinder.archiveActivityForChannel(channelId)
+        : null,
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,

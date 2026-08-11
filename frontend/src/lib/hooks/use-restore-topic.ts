@@ -9,22 +9,15 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { restoreWorkspaceTopic } from '../api.js';
 import { useToastStore } from '../stores/toasts.js';
+import { topicLifecycleQueryKeys } from './topic-lifecycle-query-keys.js';
 
 /**
  * Every query key that renders a topic's archived state.
  *
- * `['workspace-topics']` is a PREFIX, not an exact key: TanStack matches it
- * against the sidebar's `['workspace-topics', 'with-archived']` view and its
- * `['workspace-topics', 'search', …]` results too, so the three entries here
- * cover all five readers.
+ * `['workspace-topics']`, `['channels']`, and `['channel-message-search']` are
+ * prefixes, so active/archived list and search variants reconcile together.
  */
-export function restoreTopicQueryKeys(topicId: string): string[][] {
-  return [
-    ['channel', topicId],
-    ['workspace-topic', topicId],
-    ['workspace-topics'],
-  ];
-}
+export const restoreTopicQueryKeys = topicLifecycleQueryKeys;
 
 /**
  * Shared restore mutation. `mutate(topicId)` is a stable reference, so callers

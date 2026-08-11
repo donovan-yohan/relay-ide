@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import express, { type RequestHandler } from 'express';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   bearerActorToken,
@@ -99,6 +99,12 @@ async function listen(input: {
   store?: WorkspaceTopicStore | null;
   surfaceStore?: WorkspaceSurfaceStore | null;
   workContextStore?: WorkContextStore;
+  channelArchiveActivity?:
+    | ((channelId: string) => {
+        active: boolean;
+        reasons: readonly string[];
+      })
+    | null;
   getConfig?: () => Config;
   requireReadActorAuth?: (
     expectedCommand:
@@ -130,6 +136,7 @@ async function listen(input: {
       store: input.store ?? null,
       surfaceStore: input.surfaceStore,
       workContextStore: input.workContextStore,
+      channelArchiveActivity: input.channelArchiveActivity,
       getConfig: input.getConfig,
       requireReadActorAuth: input.requireReadActorAuth,
       requireWriteActorAuth: input.requireWriteActorAuth,
@@ -1053,6 +1060,83 @@ describe('workspace topics foundation', () => {
     expect(activeAgain.body.topics).toHaveLength(1);
   });
 
+  it('rejects active binder work without changing topic state, then archives when idle', async () => {
+    const store = topicStore();
+    const topic = store.create({
+      id: 'topic:runtime-guard',
+      workspaceId: 'ws-1',
+      title: 'Runtime guard',
+    });
+    let active = true;
+    const channelArchiveActivity = vi.fn(() => ({
+      active,
+      reasons: active ? ['active-turn', 'queued-turn'] : [],
+    }));
+    const { port } = await listen({ store, channelArchiveActivity });
+
+    const refused = await writeJson<{
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      };
+    }>({
+      port,
+      method: 'POST',
+      url: `/workspace-topics/${encodeURIComponent(topic.id)}/archive`,
+      body: {},
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'SESSION_CONFLICT',
+      details: {
+        reasonCode: 'CHANNEL_ARCHIVE_AGENT_ACTIVE',
+        activityReasons: ['active-turn', 'queued-turn'],
+      },
+    });
+    expect(refused.body.error.message).toContain('wait for every bound agent');
+    expect(store.get(topic.id)?.status).toBe('active');
+
+    active = false;
+    const archived = await writeJson<{ topic: WorkspaceTopic }>({
+      port,
+      method: 'POST',
+      url: `/workspace-topics/${encodeURIComponent(topic.id)}/archive`,
+      body: {},
+    });
+    expect(archived.status).toBe(200);
+    expect(archived.body.topic.status).toBe('archived');
+    expect(channelArchiveActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when production cannot verify channel runtime activity', async () => {
+    const store = topicStore();
+    const topic = store.create({
+      id: 'topic:binder-unavailable',
+      workspaceId: 'ws-1',
+      title: 'Binder unavailable',
+    });
+    const { port } = await listen({
+      store,
+      channelArchiveActivity: null,
+    });
+
+    const refused = await writeJson<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port,
+      method: 'POST',
+      url: `/workspace-topics/${encodeURIComponent(topic.id)}/archive`,
+      body: {},
+    });
+    expect(refused.status).toBe(503);
+    expect(refused.body.error).toMatchObject({
+      code: 'SERVER_UNAVAILABLE',
+      details: { reasonCode: 'CHANNEL_ARCHIVE_ACTIVITY_UNAVAILABLE' },
+    });
+    expect(store.get(topic.id)?.status).toBe('active');
+  });
+
   it('authorizes update and archive against persisted topic workContext refs', async () => {
     const store = topicStore();
     store.create({
@@ -1227,6 +1311,44 @@ describe('workspace topics foundation', () => {
         worktreePath: '/repo/.worktrees/one',
         cwd: '/repo',
       },
+    });
+  });
+
+  it('keeps an all-archived workspace empty instead of resurrecting derived ghost rows', async () => {
+    const store = topicStore();
+    const topic = store.create({
+      id: 'topic:archived-lane',
+      workspaceId: 'ws-derived',
+      title: 'Archived lane',
+      linkedRefs: { workContextIds: ['wc-topic-1'] },
+    });
+    store.archive(topic.id);
+    const workContextStore = {
+      list: () => [workContext()],
+    } as unknown as WorkContextStore;
+    const { port } = await listen({ store, workContextStore });
+
+    const activeOnly = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived'
+    );
+    expect(activeOnly.status).toBe(200);
+    expect(activeOnly.body).toMatchObject({
+      topics: [],
+      derived: false,
+      truncated: false,
+    });
+
+    const withArchived = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived&includeArchived=true'
+    );
+    expect(withArchived.body.derived).toBe(false);
+    expect(withArchived.body.topics).toHaveLength(1);
+    expect(withArchived.body.topics[0]).toMatchObject({
+      id: topic.id,
+      status: 'archived',
+      source: 'persisted',
     });
   });
 
