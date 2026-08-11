@@ -72,6 +72,7 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import {
   channelAgentStatusKey,
+  channelThreadStatusSuffix,
   resolveEffectiveAgentStatus,
   useChannelAgentStatusStore,
 } from '../lib/stores/channel-agent-status.js';
@@ -224,6 +225,7 @@ function channelRowSenderLabel(
  * message it hangs off, not by its newest reply.
  */
 function threadRowPreview(thread: ChannelRailThreadSummary): string {
+  if (thread.title?.trim()) return boundedTopicLatestStatus(thread.title);
   const text = thread.preview.replace(/\s+/g, ' ').trim();
   const sender = channelRowSenderLabel({
     seq: 0,
@@ -242,6 +244,21 @@ function threadRowPreview(thread: ChannelRailThreadSummary): string {
 
 function replyCountLabel(replyCount: number): string {
   return `${replyCount} repl${replyCount === 1 ? 'y' : 'ies'}`;
+}
+
+function threadActivityLabel(
+  channelId: string,
+  rootMessageId: string,
+  statuses: Readonly<Record<string, ChannelAgentStatus>>
+): 'working' | 'needs attention' | 'idle' {
+  const prefix = `${channelId} `;
+  const suffix = channelThreadStatusSuffix(rootMessageId);
+  const values = Object.entries(statuses)
+    .filter(([key]) => key.startsWith(prefix) && key.endsWith(suffix))
+    .map(([, status]) => status);
+  if (values.some((status) => status === 'waiting')) return 'needs attention';
+  if (values.some((status) => status !== 'idle')) return 'working';
+  return 'idle';
 }
 
 /** Compact last-activity stamp for a hydrated row; null without a summary. */
@@ -1061,6 +1078,7 @@ function TopicMobileAttentionRow({
   statusByChannelAgent,
   onNudge,
   onInterrupt,
+  onOpenThread,
   depth,
   selected,
   onSelect,
@@ -1073,6 +1091,9 @@ function TopicMobileAttentionRow({
     clientMessageId: string
   ) => Promise<void>;
   onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
   depth: number;
   selected: boolean;
   onSelect: (id: string) => void;
@@ -1084,6 +1105,14 @@ function TopicMobileAttentionRow({
   // status line remains the fallback for rows the channel list does not cover.
   const preview = channelRowPreview(summary);
   const timestamp = channelRowTimestamp(summary);
+  const recentThread = selectRailRowThreads(summary).threads[0];
+  const recentThreadActivity = recentThread
+    ? threadActivityLabel(
+        item.id,
+        recentThread.rootMessageId,
+        statusByChannelAgent
+      )
+    : 'idle';
   const resumeDisabledReason = sessionAttachDisabledReason(session);
   const resumesDerivedSession = Boolean(
     item.source === 'derived' &&
@@ -1142,6 +1171,25 @@ function TopicMobileAttentionRow({
           <StatusGlyph tone={item.tone} />
         </span>
       </button>
+      {recentThread ? (
+        <button
+          type="button"
+          className="topic-mobile-thread"
+          data-thread-root-id={recentThread.rootMessageId}
+          onClick={() => onOpenThread?.(item.id, recentThread.rootMessageId)}
+          disabled={!onOpenThread}
+          aria-label={`open recent conversation — ${threadRowPreview(recentThread)}`}
+        >
+          <span className="topic-mobile-thread__title">
+            {threadRowPreview(recentThread)}
+          </span>
+          <span className="topic-mobile-thread__meta">
+            {recentThreadActivity === 'idle'
+              ? replyCountLabel(recentThread.replyCount)
+              : recentThreadActivity}
+          </span>
+        </button>
+      ) : null}
       <MobileCockpitRowActions
         item={item}
         statuses={statusByChannelAgent}
@@ -1547,6 +1595,7 @@ function TopicRowThreads({
   channelId,
   channelTitle,
   summary,
+  statusByChannelAgent,
   expandedIds,
   onToggle,
   onOpenThread,
@@ -1554,6 +1603,7 @@ function TopicRowThreads({
   channelId: string;
   channelTitle: string;
   summary: ChannelRailSummary | null;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
   expandedIds: Set<string>;
   onToggle: (id: string) => void;
   onOpenThread?:
@@ -1596,6 +1646,11 @@ function TopicRowThreads({
           {threads.map((thread) => {
             const preview = threadRowPreview(thread);
             const stamp = formatRelativeTimeCompact(thread.lastReplyAt);
+            const activity = threadActivityLabel(
+              channelId,
+              thread.rootMessageId,
+              statusByChannelAgent
+            );
             return (
               <li
                 key={thread.rootMessageId}
@@ -1618,6 +1673,7 @@ function TopicRowThreads({
                     <span className="topic-thread-row__meta">
                       {replyCountLabel(thread.replyCount)}
                       {stamp ? ` · ${stamp}` : ''}
+                      {activity !== 'idle' ? ` · ${activity}` : ''}
                     </span>
                   </span>
                 </button>
@@ -1752,6 +1808,7 @@ function TopicRow({
         channelId={item.id}
         channelTitle={item.title}
         summary={summary}
+        statusByChannelAgent={statusByChannelAgent}
         expandedIds={expandedIds}
         onToggle={onToggle}
         onOpenThread={onOpenThread}
@@ -2093,6 +2150,7 @@ function MobileRailRows({
   statusByChannelAgent,
   onNudge,
   onInterrupt,
+  onOpenThread,
   selectedId,
   onSelect,
   depth = 0,
@@ -2105,6 +2163,9 @@ function MobileRailRows({
     clientMessageId: string
   ) => Promise<void>;
   onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
   selectedId: string | null;
   onSelect: (id: string) => void;
   depth?: number;
@@ -2116,6 +2177,7 @@ function MobileRailRows({
         statusByChannelAgent={statusByChannelAgent}
         onNudge={onNudge}
         onInterrupt={onInterrupt}
+        onOpenThread={onOpenThread}
         depth={depth}
         selected={selectedId === node.item.id}
         onSelect={onSelect}
@@ -2126,6 +2188,7 @@ function MobileRailRows({
           statusByChannelAgent={statusByChannelAgent}
           onNudge={onNudge}
           onInterrupt={onInterrupt}
+          onOpenThread={onOpenThread}
           selectedId={selectedId}
           onSelect={onSelect}
           depth={depth + 1}
@@ -2140,6 +2203,7 @@ function MobileRailSection({
   statusByChannelAgent,
   onNudge,
   onInterrupt,
+  onOpenThread,
   selectedId,
   onSelect,
 }: {
@@ -2151,6 +2215,9 @@ function MobileRailSection({
     clientMessageId: string
   ) => Promise<void>;
   onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -2162,6 +2229,7 @@ function MobileRailSection({
           statusByChannelAgent={statusByChannelAgent}
           onNudge={onNudge}
           onInterrupt={onInterrupt}
+          onOpenThread={onOpenThread}
           selectedId={selectedId}
           onSelect={onSelect}
         />
@@ -2175,6 +2243,7 @@ function MobileRailSection({
               statusByChannelAgent={statusByChannelAgent}
               onNudge={onNudge}
               onInterrupt={onInterrupt}
+              onOpenThread={onOpenThread}
               selectedId={selectedId}
               onSelect={onSelect}
             />
@@ -2196,6 +2265,7 @@ function TopicMobileCockpit({
   onSelect,
   onNudge,
   onInterrupt,
+  onOpenThread,
   onCreateTaskRoom,
   onResumeLast,
   onSelectSession,
@@ -2216,6 +2286,9 @@ function TopicMobileCockpit({
     clientMessageId: string
   ) => Promise<void>;
   onInterrupt: (channelId: string, agentId: string) => Promise<void>;
+  onOpenThread?:
+    | ((channelId: string, rootMessageId: string) => void)
+    | undefined;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
@@ -2314,6 +2387,7 @@ function TopicMobileCockpit({
                   statusByChannelAgent={statusByChannelAgent}
                   onNudge={onNudge}
                   onInterrupt={onInterrupt}
+                  onOpenThread={onOpenThread}
                   selectedId={selectedId}
                   onSelect={onSelect}
                 />
@@ -2337,6 +2411,7 @@ function TopicMobileCockpit({
               statusByChannelAgent={statusByChannelAgent}
               onNudge={onNudge}
               onInterrupt={onInterrupt}
+              onOpenThread={onOpenThread}
               selectedId={selectedId}
               onSelect={onSelect}
             />
@@ -3451,6 +3526,7 @@ export function TopicSidebarView({
         onSelect={selectMobile}
         onNudge={postMobileNudge}
         onInterrupt={interruptMobileAgent}
+        onOpenThread={openThread}
         onSelectSession={onSelectSession}
         onSelectWorkspace={selectWorkspaceLane}
         {...(onCreateTaskRoom

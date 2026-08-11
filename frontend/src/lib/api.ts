@@ -41,6 +41,7 @@ import {
   type WorkspaceTopicCreateInput,
   type WorkspaceTopicListResponse,
   type WorkspaceTopicSearchResponse,
+  type WorkspaceTopicUpdateInput,
 } from '../../../shared/workspace-topics.js';
 import type {
   ChannelImagePart,
@@ -1722,6 +1723,24 @@ export async function fetchWorkspaceTopic(id: string): Promise<WorkspaceTopic> {
   return data.topic;
 }
 
+/** Update one persisted channel/topic field group. */
+export async function updateWorkspaceTopic(
+  id: string,
+  input: WorkspaceTopicUpdateInput
+): Promise<WorkspaceTopic> {
+  const data = await json<{ topic: WorkspaceTopic }>(
+    await fetch(`/workspace-topics/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.topic;
+}
+
 /**
  * Create a bare workspace topic (POST /workspace-topics) with no attached
  * WorkContext — used by the DM-as-channel flow (#1166), which needs only the
@@ -1784,6 +1803,7 @@ export interface ChannelSummaryView {
    */
   threads?: {
     rootMessageId: string;
+    title?: string;
     replyCount: number;
     lastReplyAt: string;
     preview: string;
@@ -1962,6 +1982,20 @@ export interface ChannelHistoryPage {
   messages: ChannelMessage[];
   hasMore: boolean;
   nextCursor?: { afterSeq?: number; beforeSeq?: number };
+  /** Present on the root-inclusive thread route. */
+  thread?: { rootMessageId: ChannelMessageId; title: string };
+}
+
+export interface ChannelThreadSummary {
+  rootMessageId: string;
+  title: string;
+  replyCount: number;
+  lastReplyAt: string;
+  preview: string;
+  rootSenderId: string;
+  rootSenderKind: 'human' | 'agent' | 'system';
+  rootSenderDisplayName?: string;
+  providerId?: string;
 }
 
 export async function fetchChannelHistory(
@@ -2025,7 +2059,55 @@ export async function fetchChannelThreadHistory(
     messages: Array.isArray(data.messages) ? data.messages : [],
     hasMore: Boolean(data.hasMore),
     ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+    ...(data.thread &&
+    typeof data.thread.rootMessageId === 'string' &&
+    typeof data.thread.title === 'string'
+      ? {
+          thread: {
+            rootMessageId: data.thread.rootMessageId as ChannelMessageId,
+            title: data.thread.title,
+          },
+        }
+      : {}),
   };
+}
+
+export async function createChannelThread(
+  channelId: string,
+  title: string
+): Promise<ChannelThreadSummary> {
+  const data = await json<{ thread: ChannelThreadSummary }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/threads`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify({ title }),
+    })
+  );
+  return data.thread;
+}
+
+export async function renameChannelThread(
+  channelId: string,
+  rootMessageId: string,
+  title: string
+): Promise<ChannelThreadSummary> {
+  const data = await json<{ thread: ChannelThreadSummary }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/threads/${encodeURIComponent(rootMessageId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ title }),
+      }
+    )
+  );
+  return data.thread;
 }
 
 export async function postChannelMessage(
@@ -2165,6 +2247,8 @@ export async function executeChannelAgentCommand(
     args?: string;
     /** Required by the server for context-changing/destructive controls. */
     confirmed?: boolean;
+    /** Canonical thread root; absent addresses the root-channel runtime only. */
+    threadId?: string | null;
   }
 ): Promise<{ config?: Record<string, unknown> }> {
   const data = await json<{ config?: Record<string, unknown> }>(
@@ -2181,13 +2265,38 @@ export async function executeChannelAgentCommand(
 }
 
 /**
+ * Explicitly apply saved channel instructions to one conversation by restarting
+ * its idle runtimes. Busy turns are rejected by the server and keep their
+ * existing provider prompt until the operator applies again after they finish.
+ */
+export async function restartChannelAgentRuntimes(
+  channelId: string,
+  threadId?: string | null
+): Promise<{ restarted: number }> {
+  return json<{ restarted: number }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/agent-runtimes/restart`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify(threadId ? { threadId } : {}),
+      }
+    )
+  );
+}
+
+/**
  * Interrupt the given agent's active turn in a channel. Lets `HttpError`
  * propagate: callers ignore 404 (no live binding) / 409 (NO_ACTIVE_TURN, agent
  * idle) since both mean "nothing to interrupt".
  */
 export async function interruptChannelAgent(
   channelId: string,
-  agentId: string
+  agentId: string,
+  threadId?: string | null
 ): Promise<void> {
   await json<{ ok: true }>(
     await fetch(
@@ -2200,7 +2309,7 @@ export async function interruptChannelAgent(
           'Content-Type': 'application/json',
           'x-relay-capabilities': 'context:write',
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify(threadId ? { threadId } : {}),
       }
     )
   );
@@ -2343,7 +2452,8 @@ export async function respondChannelApproval(
   channelId: string,
   agentId: string,
   requestId: string,
-  decision: unknown
+  decision: unknown,
+  threadId?: string | null
 ): Promise<void> {
   await json<{ ok: true }>(
     await fetch(
@@ -2356,7 +2466,11 @@ export async function respondChannelApproval(
           'Content-Type': 'application/json',
           'x-relay-capabilities': 'context:write',
         },
-        body: JSON.stringify({ requestId, decision }),
+        body: JSON.stringify({
+          requestId,
+          decision,
+          ...(threadId ? { threadId } : {}),
+        }),
       }
     )
   );

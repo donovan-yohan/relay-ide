@@ -109,11 +109,12 @@ export const useChannelQueuedSendsStore = create<ChannelQueuedSendsState>(
 export function snapshotQueueDrainSeqs(
   channelId: string,
   agentIds: readonly string[],
+  threadId: string | null,
   drainSeqByChannelAgent: Readonly<Record<string, number>>
 ): Record<string, number> {
   const snapshot: Record<string, number> = {};
   for (const agentId of agentIds) {
-    const key = channelAgentStatusKey(channelId, agentId);
+    const key = channelAgentStatusKey(channelId, agentId, threadId);
     snapshot[key] = drainSeqByChannelAgent[key] ?? 0;
   }
   return snapshot;

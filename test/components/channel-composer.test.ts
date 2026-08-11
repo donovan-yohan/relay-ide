@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
   ChannelImagePart,
+  ChannelMessageId,
   ChannelMessagePart,
 } from '../../shared/channel-chat-protocol.js';
 import {
@@ -148,6 +149,7 @@ const primeRoster: RosterEntry[] = [
 ];
 
 interface RenderOpts {
+  threadId?: ChannelMessageId;
   onSend?: (
     text: string,
     clientMessageId: string,
@@ -178,6 +180,7 @@ async function renderComposer(opts: RenderOpts = {}): Promise<QueryClient> {
           ...(opts.implicitCommandProviderId
             ? { implicitCommandProviderId: opts.implicitCommandProviderId }
             : {}),
+          ...(opts.threadId ? { threadId: opts.threadId } : {}),
           onSend: opts.onSend ?? (() => Promise.resolve()),
           postPending: opts.postPending ?? false,
           storeDown: opts.storeDown ?? false,
@@ -647,6 +650,30 @@ describe('ChannelComposer (#1178)', () => {
     });
     expect(onSend).not.toHaveBeenCalled();
     expect(ta.value).toBe('');
+  });
+
+  it('dispatches a threaded slash command to its exact runtime scope', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      threadId: 'chm:thread-42' as ChannelMessageId,
+      onSend,
+    });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+
+    await act(async () => setNativeValue(ta, '@codex/fast'));
+    await settleRoster();
+    await pressKey('Enter');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'fast',
+      args: 'on',
+      threadId: 'chm:thread-42',
+    });
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('holds a reserved bare Codex control until its live roster resolves', async () => {

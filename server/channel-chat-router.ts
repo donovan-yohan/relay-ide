@@ -29,6 +29,7 @@ import {
 } from './channel-attachments.js';
 import {
   ChannelAgentBusyError,
+  ChannelAgentRestartRefusedError,
   ChannelAgentReleaseRefusedError,
   ChannelAgentNoActiveTurnError,
   ChannelAgentCommandError,
@@ -204,6 +205,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function bodyRecord(req: Request): Record<string, unknown> {
   return isRecord(req.body) ? req.body : {};
+}
+
+/** A control must name its thread explicitly; malformed scope never falls back to root. */
+function controlThreadScope(
+  res: Response,
+  body: Record<string, unknown>
+): string | null | undefined {
+  const raw = body['threadId'];
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === 'string' && raw.length > 0) return raw;
+  sendGatewayError(
+    res,
+    'INVALID_ARGUMENT',
+    'threadId must be a non-empty string when provided',
+    false,
+    { field: 'threadId' }
+  );
+  return undefined;
+}
+
+/**
+ * Thread-scoped actions may only address a durable thread root in this channel.
+ * In particular, commands must not turn an arbitrary client string into a new
+ * hidden runtime scope.
+ */
+function requireKnownThreadScope(
+  store: ChannelMessageStore,
+  res: Response,
+  channelId: string,
+  threadId: string | null
+): boolean {
+  if (threadId === null || store.getThreadTitle(channelId, threadId) !== null) {
+    return true;
+  }
+  sendGatewayError(res, 'NOT_FOUND', 'thread not found', false, {
+    channelId,
+    threadId,
+    reasonCode: 'CHANNEL_THREAD_NOT_FOUND',
+  });
+  return false;
 }
 
 /**
@@ -558,6 +599,8 @@ function createAgentCommandsHandler(
       });
       return;
     }
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
     const binder = binderOr503(res, deps.binder);
     if (!binder) return;
     const body = req.body as Record<string, unknown>;
@@ -566,6 +609,9 @@ function createAgentCommandsHandler(
     const command = typeof body['command'] === 'string' ? body['command'] : '';
     const args = typeof body['args'] === 'string' ? body['args'] : undefined;
     const confirmed = body['confirmed'] === true;
+    const threadId = controlThreadScope(res, body);
+    if (threadId === undefined) return;
+    if (!requireKnownThreadScope(store, res, topic.id, threadId)) return;
     if (!profileId || !command) {
       sendGatewayError(
         res,
@@ -576,7 +622,7 @@ function createAgentCommandsHandler(
       return;
     }
     binder
-      .executeCommand(topic.id, profileId, command, args, confirmed)
+      .executeCommand(topic.id, profileId, command, args, confirmed, threadId)
       .then((result) => res.json({ ok: true, ...result }))
       .catch((error) => {
         if (error instanceof ChannelAgentCommandError) {
@@ -1418,6 +1464,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
         );
         res.json({
+          thread: {
+            rootMessageId,
+            title: store.getThreadTitle(id, rootMessageId),
+          },
           messages: budgeted.rows,
           ...(budgeted.hasMore
             ? { hasMore: true, nextCursor: budgeted.nextCursor }
@@ -1428,6 +1478,77 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       }
     }
   );
+
+  // A conversation is cheap until a profile is actually summoned. The durable
+  // system root gives the existing thread/message model a stable id without
+  // fabricating a human prompt or allocating an agent runtime.
+  router.post('/channels/:id/threads', postAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const title = bodyRecord(req)['title'];
+    if (typeof title !== 'string') {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'title is required', false, {
+        field: 'title',
+      });
+      return;
+    }
+    try {
+      const thread = store.createThread({ channelId: topic.id, title });
+      const root = store.getMessage(thread.rootMessageId);
+      if (root) deps.hub?.broadcastCreated(root);
+      res.status(201).json({ thread });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  router.patch('/channels/:id/threads/:rootMessageId', postAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const title = bodyRecord(req)['title'];
+    if (typeof title !== 'string') {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'title is required', false, {
+        field: 'title',
+      });
+      return;
+    }
+    try {
+      const thread = store.renameThread({
+        channelId: topic.id,
+        rootMessageId: req.params['rootMessageId'] ?? '',
+        title,
+      });
+      if (!thread) {
+        sendGatewayError(res, 'NOT_FOUND', 'thread root not found', false, {
+          reasonCode: 'THREAD_ROOT_NOT_FOUND',
+        });
+        return;
+      }
+      res.json({ thread });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
 
   // The existing post parser sits at the configured threshold; this security
   // denial is deliberately kept adjacent to attachment canonicalization.
@@ -1839,6 +1960,46 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     createAgentCommandsHandler(deps, requirePersistedChannel)
   );
 
+  // Apply a saved topic prompt by restarting idle bindings in one conversation
+  // scope. It is deliberately separate from the topic PATCH: saving defaults
+  // never mutates a live provider turn behind the operator's back.
+  router.post('/channels/:id/agent-runtimes/restart', auth, (req, res) => {
+    if (denyScopedActorPrivateRoute(req, res)) return;
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    const threadId = controlThreadScope(res, bodyRecord(req));
+    if (threadId === undefined) return;
+    if (!requireKnownThreadScope(store, res, topic.id, threadId)) return;
+    binder
+      .restartScope(topic.id, threadId)
+      .then((result) => res.json({ ok: true, ...result }))
+      .catch((error) => {
+        if (error instanceof ChannelAgentRestartRefusedError) {
+          sendGatewayError(res, 'SESSION_CONFLICT', error.message, true, {
+            channelId: topic.id,
+            threadId: error.threadId,
+            profileActorId: error.profileActorId,
+            status: error.status,
+            reasonCode: error.reasonCode,
+          });
+          return;
+        }
+        mapStoreError(res, error);
+      });
+  });
+
   // #1259 slice 4: operator designates (spawns / resumes) the persistent
   // orchestrator for a product channel. Operator lane ONLY — scoped actors are
   // forbidden from creating orchestrator runtimes directly; the durable
@@ -1905,8 +2066,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const binder = binderOr503(res, deps.binder);
       if (!binder) return;
       const agentId = req.params['agentId'] ?? '';
+      const threadId = controlThreadScope(res, bodyRecord(req));
+      if (threadId === undefined) return;
       binder
-        .interrupt(topic.id, agentId)
+        .interrupt(topic.id, agentId, threadId)
         .then(() => res.json({ ok: true }))
         .catch((error) => {
           if (error instanceof ChannelAgentNotFoundError) {
@@ -1953,8 +2116,10 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const binder = binderOr503(res, deps.binder);
       if (!binder) return;
       const agentId = req.params['agentId'] ?? '';
+      const threadId = controlThreadScope(res, bodyRecord(req));
+      if (threadId === undefined) return;
       binder
-        .release(topic.id, agentId)
+        .release(topic.id, agentId, threadId)
         .then(() => res.json({ ok: true }))
         .catch((error) => {
           if (error instanceof ChannelAgentNotFoundError) {
@@ -2068,6 +2233,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       if (!binder) return;
       const agentId = req.params['agentId'] ?? '';
       const body = bodyRecord(req);
+      const threadId = controlThreadScope(res, body);
+      if (threadId === undefined) return;
       const requestId = body['requestId'];
       if (typeof requestId !== 'string' || requestId.length === 0) {
         sendGatewayError(
@@ -2102,7 +2269,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
           topic.id,
           agentId,
           requestId,
-          decision as unknown as AgentApprovalDecisionV2
+          decision as unknown as AgentApprovalDecisionV2,
+          threadId
         )
         .then(() => res.json({ ok: true }))
         .catch((error) => {

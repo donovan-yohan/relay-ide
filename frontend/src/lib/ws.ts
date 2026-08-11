@@ -136,6 +136,8 @@ export type EventMessage =
   | {
       type: 'channel-agent-status';
       channelId: string;
+      /** Null/root for legacy channel runtimes; a root id for a conversation. */
+      threadId?: string | null;
       agentId: string;
       status: 'spawning' | 'thinking' | 'streaming' | 'waiting' | 'idle';
       runtimeId: string | null;

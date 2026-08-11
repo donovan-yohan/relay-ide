@@ -19,11 +19,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
 import {
   fetchWorkspaceTopic,
+  updateWorkspaceTopic,
+  createChannelThread,
+  renameChannelThread,
   fetchChannelRoster,
   designateChannelOrchestrator,
   deleteChannelMessage,
   editChannelMessage,
   interruptChannelAgent,
+  restartChannelAgentRuntimes,
   retryChannelMessage,
   HttpError,
   type ChannelAgentStatus,
@@ -327,6 +331,163 @@ interface ChannelViewProps {
   channelId: string;
 }
 
+interface SteerTargets {
+  agentIds: string[];
+  labels: string[];
+  queueAgentIds: string[];
+  queueLabels: string[];
+  mode: 'all' | 'some' | 'none';
+}
+
+interface ScopedSteerTargets {
+  root: SteerTargets;
+  activeThreadRootId: ChannelMessageId | null;
+  activeThread: SteerTargets;
+}
+
+const EMPTY_STEER_TARGETS: SteerTargets = {
+  agentIds: [],
+  labels: [],
+  queueAgentIds: [],
+  queueLabels: [],
+  mode: 'none',
+};
+
+function targetsForConversation(
+  scopedTargets: ScopedSteerTargets,
+  threadId: ChannelMessageId | null
+): SteerTargets {
+  if (threadId === null) return scopedTargets.root;
+  if (scopedTargets.activeThreadRootId === threadId) {
+    return scopedTargets.activeThread;
+  }
+  return EMPTY_STEER_TARGETS;
+}
+
+function ChannelDesignateControl({
+  available,
+  pending,
+  error,
+  onDesignate,
+}: {
+  available: boolean;
+  pending: boolean;
+  error: string | null;
+  onDesignate: () => void;
+}) {
+  if (!available && error === null) return null;
+  return (
+    <>
+      {available ? (
+        <button
+          type="button"
+          className="ch-designate-orchestrator"
+          onClick={onDesignate}
+          disabled={pending}
+        >
+          {pending ? (
+            <>
+              <TuiProgress
+                variant="braille"
+                className="ch-designate-orchestrator__progress"
+              />{' '}
+              designating
+            </>
+          ) : (
+            'designate orchestrator'
+          )}
+        </button>
+      ) : null}
+      {error ? (
+        <span className="ch-designate-orchestrator__error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+function ChannelConversationActions({
+  visible,
+  applyPending,
+  onCreateThread,
+  onEditInstructions,
+  onApplyInstructions,
+}: {
+  visible: boolean;
+  applyPending: boolean;
+  onCreateThread: () => void;
+  onEditInstructions: () => void;
+  onApplyInstructions: () => void;
+}) {
+  if (!visible) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="ch-reconnect-btn"
+        onClick={onCreateThread}
+      >
+        new conversation
+      </button>
+      <button
+        type="button"
+        className="ch-reconnect-btn"
+        onClick={onEditInstructions}
+        title="saves defaults; current runtimes keep their prompt until applied"
+      >
+        instructions
+      </button>
+      <button
+        type="button"
+        className="ch-reconnect-btn"
+        onClick={onApplyInstructions}
+        disabled={applyPending}
+        title="restarts idle runtimes in this conversation; busy turns keep their current instructions"
+      >
+        {applyPending ? 'applying instructions' : 'apply instructions'}
+      </button>
+    </>
+  );
+}
+
+function ChannelConnectionStatus({
+  connected,
+  disconnected,
+  onReconnect,
+}: {
+  connected: boolean;
+  disconnected: boolean;
+  onReconnect: () => void;
+}) {
+  const state = connected
+    ? 'connected'
+    : disconnected
+      ? 'disconnected'
+      : 'reconnecting';
+  return (
+    <>
+      {disconnected ? (
+        <button
+          type="button"
+          className="ch-reconnect-btn"
+          onClick={onReconnect}
+          title="disconnected — reconnect"
+        >
+          reconnect
+        </button>
+      ) : null}
+      <span
+        className={`ch-conn-dot${connected ? ' ch-conn-dot--on' : ''}${
+          disconnected ? ' ch-conn-dot--off' : ''
+        }`}
+        title={state}
+        aria-label={state}
+      />
+    </>
+  );
+}
+
 export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const {
     channel,
@@ -399,6 +560,107 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       : null;
 
   const title = channel?.title ?? topicQuery.data?.display.title ?? channelId;
+  const activeThreadTitle =
+    channel?.threads?.find(
+      (thread) => thread.rootMessageId === activeThreadRootId
+    )?.title ?? undefined;
+  const [applyInstructionsPending, setApplyInstructionsPending] =
+    useState(false);
+
+  const refreshThreadNavigation = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['channels'] });
+  }, [queryClient]);
+
+  const handleCreateThread = useCallback(async () => {
+    const requested = window.prompt('new conversation title');
+    if (!requested?.trim()) return;
+    try {
+      const thread = await createChannelThread(channelId, requested);
+      await refreshThreadNavigation();
+      setActiveThreadRootId(thread.rootMessageId as ChannelMessageId);
+    } catch {
+      showToast('could not create conversation');
+    }
+  }, [channelId, refreshThreadNavigation, setActiveThreadRootId]);
+
+  const handleRenameThread = useCallback(
+    async (rootMessageId: ChannelMessageId, requested: string) => {
+      try {
+        await renameChannelThread(channelId, rootMessageId, requested);
+        await refreshThreadNavigation();
+      } catch {
+        showToast('could not rename conversation');
+        throw new Error('conversation rename failed');
+      }
+    },
+    [channelId, refreshThreadNavigation]
+  );
+
+  const handleEditChannelInstructions = useCallback(async () => {
+    const current = topicQuery.data?.promptDefaults ?? {};
+    const systemPrompt = window.prompt(
+      'shared channel system prompt (blank clears)',
+      current.systemPrompt ?? ''
+    );
+    if (systemPrompt === null) return;
+    const instructions = window.prompt(
+      'shared channel instructions (blank clears)',
+      current.instructions ?? ''
+    );
+    if (instructions === null) return;
+    try {
+      await updateWorkspaceTopic(channelId, {
+        promptDefaults: {
+          ...(current.starterPrompt
+            ? { starterPrompt: current.starterPrompt }
+            : {}),
+          ...(current.contextPacketIds
+            ? { contextPacketIds: current.contextPacketIds }
+            : {}),
+          ...(systemPrompt.trim() ? { systemPrompt: systemPrompt.trim() } : {}),
+          ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
+        },
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ['workspace-topic', channelId],
+      });
+      showToast(
+        'instructions saved — apply them to restart idle runtimes in this conversation'
+      );
+    } catch {
+      showToast('could not save channel instructions');
+    }
+  }, [channelId, queryClient, topicQuery.data?.promptDefaults]);
+
+  const handleApplyChannelInstructions = useCallback(async () => {
+    if (applyInstructionsPending) return;
+    const scopeLabel = activeThreadRootId ? 'this conversation' : 'the channel';
+    setApplyInstructionsPending(true);
+    try {
+      const result = await restartChannelAgentRuntimes(
+        channelId,
+        activeThreadRootId
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ['channel-roster', channelId],
+      });
+      showToast(
+        result.restarted > 0
+          ? `instructions applied — restarted ${result.restarted} idle runtime${
+              result.restarted === 1 ? '' : 's'
+            } in ${scopeLabel}`
+          : `instructions are saved — no runtime is active in ${scopeLabel}`
+      );
+    } catch (error) {
+      showToast(
+        error instanceof HttpError && error.status === 409
+          ? 'instructions are saved — the active turn keeps its current instructions. Wait until it is idle, then apply again.'
+          : 'could not apply channel instructions'
+      );
+    } finally {
+      setApplyInstructionsPending(false);
+    }
+  }, [activeThreadRootId, applyInstructionsPending, channelId, queryClient]);
 
   // Unread line: captured once on mount (per channelId, since ChatHome keys this
   // component by channelId). Absent marker → null → no unread line drawn.
@@ -470,18 +732,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
    * the current set without being rebuilt on every status transition. Assigned
    * further down, once `agentChips` exists.
    */
-  const steerTargetsRef = useRef<{
-    agentIds: string[];
-    labels: string[];
-    queueAgentIds: string[];
-    queueLabels: string[];
-    mode: 'all' | 'some' | 'none';
-  }>({
-    agentIds: [],
-    labels: [],
-    queueAgentIds: [],
-    queueLabels: [],
-    mode: 'none',
+  const steerTargetsRef = useRef<ScopedSteerTargets>({
+    root: EMPTY_STEER_TARGETS,
+    activeThreadRootId: null,
+    activeThread: EMPTY_STEER_TARGETS,
   });
 
   /**
@@ -498,13 +752,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       steering: ChannelPostSteering | undefined,
       threadId: ChannelMessageId | null
     ) => {
-      const targets = steerTargetsRef.current;
+      const scopedTargets = steerTargetsRef.current;
+      // The main and thread composers send through this one callback. Choose
+      // targets from the same conversation scope as the outgoing row; falling
+      // back to root here would mark an idle thread as queued behind unrelated
+      // root work.
+      const targets = targetsForConversation(scopedTargets, threadId);
       const statusStore = useChannelAgentStatusStore.getState();
       // Snapshot BEFORE the round trip: a turn that drains while the POST is in
       // flight must not leave a chip behind on a message it already consumed.
       const drainSeqs = snapshotQueueDrainSeqs(
         channelId,
         targets.queueAgentIds,
+        threadId,
         statusStore.queueDrainSeqByChannelAgent
       );
       const message = await post(text, {
@@ -828,18 +1088,32 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     };
   }, [channelId]);
 
-  const streamingProfileProviders = useMemo(() => {
-    const providers = new Map<string, string | undefined>();
+  const streamingProfiles = useMemo(() => {
+    const profiles = new Map<
+      string,
+      { agentId: string; threadId: string | null; providerId?: string }
+    >();
     for (const message of reducer.messages) {
       if (message.status !== 'streaming' || message.sender.kind !== 'agent')
         continue;
       // Agent sender ids are profile Actor ids. Keep stream state in the same
       // identity namespace as roster/status rather than collapsing profiles by
       // provider.
-      providers.set(message.sender.id, message.sender.providerId);
+      const key = channelAgentStatusKey(
+        channelId,
+        message.sender.id,
+        message.threadId
+      );
+      profiles.set(key, {
+        agentId: message.sender.id,
+        threadId: message.threadId,
+        ...(message.sender.providerId
+          ? { providerId: message.sender.providerId }
+          : {}),
+      });
     }
-    return providers;
-  }, [reducer.messages]);
+    return profiles;
+  }, [channelId, reducer.messages]);
 
   // Presence suppression keys on MAIN-LANE streaming rows only. `ChannelTimeline`
   // renders `selectTopLevel(messages)`, so an agent streaming a reply inside a
@@ -860,19 +1134,40 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const agentChips = useMemo(() => {
     const roster = rosterChipsQuery.data ?? [];
     const rosterById = new Map(roster.map((entry) => [entry.id, entry]));
-    const candidateIds = new Set<string>();
+    const candidates = new Map<
+      string,
+      { agentId: string; threadId: string | null }
+    >();
     for (const entry of roster) {
-      if (entry.binding != null) candidateIds.add(entry.id);
+      if (entry.binding != null) {
+        candidates.set(channelAgentStatusKey(channelId, entry.id), {
+          agentId: entry.id,
+          threadId: null,
+        });
+      }
     }
     const prefix = `${channelId} `;
     for (const key of Object.keys(statusMap)) {
-      if (key.startsWith(prefix)) candidateIds.add(key.slice(prefix.length));
+      if (!key.startsWith(prefix)) continue;
+      const encoded = key.slice(prefix.length);
+      const scopeStart = encoded.indexOf('\u0000');
+      const agentId = encoded.slice(
+        0,
+        scopeStart === -1 ? undefined : scopeStart
+      );
+      if (!agentId) continue;
+      candidates.set(key, {
+        agentId,
+        threadId: scopeStart === -1 ? null : encoded.slice(scopeStart + 1),
+      });
     }
-    for (const profileId of streamingProfileProviders.keys())
-      candidateIds.add(profileId);
+    for (const [key, candidate] of streamingProfiles) {
+      candidates.set(key, candidate);
+    }
 
     const chips: Array<{
       agentId: string;
+      threadId: string | null;
       status: ChannelAgentStatus;
       role?: AgentRole;
       queuedCount: number;
@@ -880,32 +1175,35 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       steerSupported: boolean;
       identity: ReturnType<typeof resolveSenderIdentity>;
     }> = [];
-    for (const agentId of candidateIds) {
+    for (const { agentId, threadId } of candidates.values()) {
       const entry = rosterById.get(agentId);
-      const key = channelAgentStatusKey(channelId, agentId);
-      const streaming = streamingProfileProviders.has(agentId);
+      const key = channelAgentStatusKey(channelId, agentId, threadId);
+      const streaming = streamingProfiles.has(key);
+      // The roster represents the channel-root binding only. A thread must
+      // derive solely from its thread-scoped status/message lanes.
+      const rosterBinding = threadId === null ? entry?.binding : undefined;
       const status = resolveEffectiveAgentStatus({
         socketStatus: statusMap[key],
         socketUpdatedAt: statusUpdatedAtMap[key],
-        rosterStatus: entry?.binding?.status,
+        rosterStatus: rosterBinding?.status,
         rosterUpdatedAt,
         streaming,
         // Staleness floor (#1307): only a roster that says "nothing is bound"
         // may retire a busy socket status, so a long live turn keeps its chip.
-        rosterHasLiveBinding: entry?.binding != null,
+        rosterHasLiveBinding: rosterBinding != null,
       });
       // Same lane the status came from (#1308 slice 4 item 2c), so the presence
       // row can never pair a live status with a stale count or the reverse.
       const queuedCount = resolveEffectiveQueuedCount({
         socketQueuedCount: queuedCountMap[key],
         socketUpdatedAt: statusUpdatedAtMap[key],
-        rosterQueuedCount: entry?.binding?.queuedCount,
+        rosterQueuedCount: rosterBinding?.queuedCount,
         rosterUpdatedAt,
       });
       const steeringCount = resolveEffectiveQueuedCount({
         socketQueuedCount: steeringCountMap[key],
         socketUpdatedAt: statusUpdatedAtMap[key],
-        rosterQueuedCount: entry?.binding?.steeringCount,
+        rosterQueuedCount: rosterBinding?.steeringCount,
         rosterUpdatedAt,
       });
       const socketSteerSupported = Object.hasOwn(steerSupportedMap, key)
@@ -917,15 +1215,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         resolveEffectiveQueuedCount({
           socketQueuedCount: socketSteerSupported,
           socketUpdatedAt: statusUpdatedAtMap[key],
-          rosterQueuedCount: entry?.binding?.steerSupported ? 1 : 0,
+          rosterQueuedCount: rosterBinding?.steerSupported ? 1 : 0,
           rosterUpdatedAt,
         }) > 0;
       // Show a chip for a bound agent (even when idle) or one that is currently
       // active/streaming — but drop an unbound agent whose only signal is a stale
       // socket status the roster has since superseded to idle.
-      if (entry?.binding == null && status === 'idle' && !streaming) continue;
+      if (rosterBinding == null && status === 'idle' && !streaming) continue;
       const providerId =
-        entry?.providerId ?? streamingProfileProviders.get(agentId);
+        entry?.providerId ?? streamingProfiles.get(key)?.providerId;
       const identity = resolveSenderIdentity({
         kind: 'agent',
         id: agentId,
@@ -934,6 +1232,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       });
       chips.push({
         agentId,
+        threadId,
         status,
         queuedCount,
         steeringCount,
@@ -951,9 +1250,18 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     queuedCountMap,
     steeringCountMap,
     steerSupportedMap,
-    streamingProfileProviders,
+    streamingProfiles,
     channelId,
   ]);
+
+  const rootAgentChips = useMemo(
+    () => agentChips.filter((chip) => chip.threadId === null),
+    [agentChips]
+  );
+  const activeConversationAgentChips = useMemo(
+    () => agentChips.filter((chip) => chip.threadId === activeThreadRootId),
+    [activeThreadRootId, agentChips]
+  );
 
   // In-timeline presence rows (#1277). Same chip signal, so a reload rebuilds
   // the rows from `resolveEffectiveAgentStatus` for free — no new WS event. The
@@ -964,8 +1272,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     topLevelStreamingAgentIds
   );
   const agentPresence = useMemo(
-    () => selectChannelAgentPresence(agentChips, presenceSuppression),
-    [agentChips, presenceSuppression]
+    () => selectChannelAgentPresence(rootAgentChips, presenceSuppression),
+    [rootAgentChips, presenceSuppression]
   );
 
   // #1308 item 2 storm brake, client half. Same `agentChips` signal the presence
@@ -974,11 +1282,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   // operator from firing a request that is already known to be rejected.
   const busyAgentIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const chip of agentChips) {
+    for (const chip of rootAgentChips) {
       if (chip.status !== 'idle') ids.add(chip.agentId);
     }
     return ids;
-  }, [agentChips]);
+  }, [rootAgentChips]);
   const archiveBusyAgentCount = useMemo(
     () =>
       agentChips.filter(
@@ -995,26 +1303,49 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   // doing can never disagree.
   const busyAgentLabels = useMemo(
     () =>
-      agentChips
+      rootAgentChips
         .filter((chip) => chip.status !== 'idle')
         .map((chip) => chip.identity.label),
-    [agentChips]
+    [rootAgentChips]
   );
   const busyAgentSteeringMode = useMemo((): 'all' | 'some' | 'none' => {
-    const busy = agentChips.filter((chip) => chip.status !== 'idle');
+    const busy = rootAgentChips.filter((chip) => chip.status !== 'idle');
     if (busy.length === 0 || busy.every((chip) => !chip.steerSupported)) {
       return 'none';
     }
     return busy.every((chip) => chip.steerSupported) ? 'all' : 'some';
-  }, [agentChips]);
+  }, [rootAgentChips]);
   const busyQueueFallback = useMemo(
     () =>
-      agentChips.filter(
+      rootAgentChips.filter(
         (chip) => chip.status !== 'idle' && !chip.steerSupported
       ),
-    [agentChips]
+    [rootAgentChips]
   );
-  const steerTargets = useMemo(
+  const activeThreadBusyAgentLabels = useMemo(
+    () =>
+      activeConversationAgentChips
+        .filter((chip) => chip.status !== 'idle')
+        .map((chip) => chip.identity.label),
+    [activeConversationAgentChips]
+  );
+  const activeThreadBusySteeringMode = useMemo((): 'all' | 'some' | 'none' => {
+    const busy = activeConversationAgentChips.filter(
+      (chip) => chip.status !== 'idle'
+    );
+    if (busy.length === 0 || busy.every((chip) => !chip.steerSupported)) {
+      return 'none';
+    }
+    return busy.every((chip) => chip.steerSupported) ? 'all' : 'some';
+  }, [activeConversationAgentChips]);
+  const activeThreadBusyQueueFallback = useMemo(
+    () =>
+      activeConversationAgentChips.filter(
+        (chip) => chip.status !== 'idle' && !chip.steerSupported
+      ),
+    [activeConversationAgentChips]
+  );
+  const steerTargets = useMemo<SteerTargets>(
     () => ({
       agentIds: [...busyAgentIds],
       labels: busyAgentLabels,
@@ -1024,12 +1355,35 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     }),
     [busyAgentIds, busyAgentLabels, busyQueueFallback, busyAgentSteeringMode]
   );
+  const activeThreadSteerTargets = useMemo<SteerTargets>(
+    () => ({
+      agentIds: activeConversationAgentChips
+        .filter((chip) => chip.status !== 'idle')
+        .map((chip) => chip.agentId),
+      labels: activeThreadBusyAgentLabels,
+      queueAgentIds: activeThreadBusyQueueFallback.map((chip) => chip.agentId),
+      queueLabels: activeThreadBusyQueueFallback.map(
+        (chip) => chip.identity.label
+      ),
+      mode: activeThreadBusySteeringMode,
+    }),
+    [
+      activeConversationAgentChips,
+      activeThreadBusyAgentLabels,
+      activeThreadBusyQueueFallback,
+      activeThreadBusySteeringMode,
+    ]
+  );
   // Send handlers must only observe a committed UI state. Updating the ref
   // during render lets an abandoned concurrent render steer a different set of
   // agents than the operator could actually see.
   useLayoutEffect(() => {
-    steerTargetsRef.current = steerTargets;
-  }, [steerTargets]);
+    steerTargetsRef.current = {
+      root: steerTargets,
+      activeThreadRootId,
+      activeThread: activeThreadSteerTargets,
+    };
+  }, [activeThreadRootId, activeThreadSteerTargets, steerTargets]);
 
   // Wired only while the channel is live, exactly like edit/delete below: a
   // retry re-runs a turn against an archived (read-only) channel, so the route
@@ -1096,10 +1450,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   );
 
   const handleInterruptAgent = useCallback(
-    (agentId: string) => {
+    (agentId: string, threadId: string | null = null) => {
       // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
       // swallow so a race between the click and the agent finishing is silent.
-      void interruptChannelAgent(channelId, agentId).catch(() => {});
+      void interruptChannelAgent(channelId, agentId, threadId).catch(() => {});
     },
     [channelId]
   );
@@ -1121,7 +1475,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     }
   }, [channelId, queryClient]);
 
-  const hasOrchestrator = agentChips.some(
+  const hasOrchestrator = rootAgentChips.some(
     (chip) => chip.role === 'orchestrator'
   );
 
@@ -1200,11 +1554,13 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                 chip.status === 'waiting';
               return (
                 <span
-                  key={chip.agentId}
+                  key={`${chip.agentId}\u0000${chip.threadId ?? ''}`}
                   className={`ch-agent-chip ch-agent-chip--${chip.status}`}
                   title={`${chip.identity.label}${
                     chip.role ? ` · ${chip.role}` : ''
-                  } · ${chip.status}`}
+                  } · ${chip.status}${
+                    chip.threadId ? ' · conversation runtime' : ''
+                  }`}
                 >
                   {chip.identity.glyph ? (
                     <span
@@ -1226,9 +1582,13 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                     <button
                       type="button"
                       className="ch-agent-chip__stop"
-                      aria-label={`interrupt ${chip.identity.label}`}
+                      aria-label={`interrupt ${chip.identity.label}${
+                        chip.threadId ? ' in conversation' : ''
+                      }`}
                       title="interrupt"
-                      onClick={() => handleInterruptAgent(chip.agentId)}
+                      onClick={() =>
+                        handleInterruptAgent(chip.agentId, chip.threadId)
+                      }
                     >
                       ■
                     </button>
@@ -1238,35 +1598,25 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             })}
           </span>
         ) : null}
-        {topicQuery.isSuccess &&
-        !isDm &&
-        rosterChipsQuery.isSuccess &&
-        !hasOrchestrator ? (
-          <button
-            type="button"
-            className="ch-designate-orchestrator"
-            onClick={() => void handleDesignateOrchestrator()}
-            disabled={designatePending}
-          >
-            {designatePending ? (
-              <>
-                <TuiProgress
-                  variant="braille"
-                  className="ch-designate-orchestrator__progress"
-                />{' '}
-                designating
-              </>
-            ) : (
-              'designate orchestrator'
-            )}
-          </button>
-        ) : null}
-        {designateError && !hasOrchestrator ? (
-          <span className="ch-designate-orchestrator__error" role="alert">
-            {designateError}
-          </span>
-        ) : null}
+        <ChannelDesignateControl
+          available={
+            topicQuery.isSuccess &&
+            !isDm &&
+            rosterChipsQuery.isSuccess &&
+            !hasOrchestrator
+          }
+          pending={designatePending}
+          error={hasOrchestrator ? null : designateError}
+          onDesignate={() => void handleDesignateOrchestrator()}
+        />
         <span className="ch-header__spacer" />
+        <ChannelConversationActions
+          visible={!isDm && !archived}
+          applyPending={applyInstructionsPending}
+          onCreateThread={() => void handleCreateThread()}
+          onEditInstructions={() => void handleEditChannelInstructions()}
+          onApplyInstructions={() => void handleApplyChannelInstructions()}
+        />
         <ChannelArchiveControl
           key={channelId}
           channelId={channelId}
@@ -1280,37 +1630,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                 : 'ready'
           }
         />
-        {disconnected ? (
-          // Reconnect gave up (server outage/deploy > backoff budget). Surface a
-          // manual affordance — NOT gated on needsCatchup, which can never flip
-          // true while the socket is dead (#1178).
-          <button
-            type="button"
-            className="ch-reconnect-btn"
-            onClick={resync}
-            title="disconnected — reconnect"
-          >
-            reconnect
-          </button>
-        ) : null}
-        <span
-          className={`ch-conn-dot${connected ? ' ch-conn-dot--on' : ''}${
-            disconnected ? ' ch-conn-dot--off' : ''
-          }`}
-          title={
-            connected
-              ? 'connected'
-              : disconnected
-                ? 'disconnected'
-                : 'reconnecting'
-          }
-          aria-label={
-            connected
-              ? 'connected'
-              : disconnected
-                ? 'disconnected'
-                : 'reconnecting'
-          }
+        {/* Reconnect is intentionally not gated on needsCatchup: a dead socket
+            cannot receive the transition that sets it (#1178). */}
+        <ChannelConnectionStatus
+          connected={connected}
+          disconnected={disconnected}
+          onReconnect={resync}
         />
       </div>
 
@@ -1374,14 +1699,16 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             key={activeThreadRootId}
             channelId={channelId}
             channelTitle={title}
+            {...(activeThreadTitle ? { threadTitle: activeThreadTitle } : {})}
             isDm={isDm}
             implicitCommandProviderId={implicitCommandProviderId}
             rootId={activeThreadRootId}
             liveMessages={reducer.messages}
             onClose={() => setActiveThreadRootId(null)}
+            onRename={(next) => handleRenameThread(activeThreadRootId, next)}
             onSend={handleThreadSend}
-            busyAgentLabels={busyAgentLabels}
-            busyAgentSteeringMode={busyAgentSteeringMode}
+            busyAgentLabels={activeThreadBusyAgentLabels}
+            busyAgentSteeringMode={activeThreadBusySteeringMode}
             postPending={postPending}
             storeDown={storeDown}
             archived={archived}

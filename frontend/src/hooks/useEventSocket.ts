@@ -643,7 +643,11 @@ export function useEventSocket({
         // `recordStatus` lands.
         const previous =
           useChannelAgentStatusStore.getState().statusByChannelAgent[
-            channelAgentStatusKey(msg.channelId, msg.agentId)
+            channelAgentStatusKey(
+              msg.channelId,
+              msg.agentId,
+              msg.threadId ?? null
+            )
           ];
         useChannelAgentStatusStore.getState().recordStatus(
           msg.channelId,
@@ -654,7 +658,8 @@ export function useEventSocket({
           // "nothing queued", which is also what an unqueued binding reports.
           msg.queuedCount ?? 0,
           msg.steeringCount ?? 0,
-          msg.steerSupported ?? false
+          msg.steerSupported ?? false,
+          msg.threadId ?? null
         );
         // #1308 slice 5: the ONE trigger the socket carries end to end. Default
         // OFF, so this is inert until the operator opts in from Settings.

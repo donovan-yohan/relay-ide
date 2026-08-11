@@ -140,6 +140,7 @@ describe('useChannelThread', () => {
       // A newest-first long-thread page may not reach the root at all.
       messages: [fetchedReply],
       hasMore: false,
+      thread: { rootMessageId: rootId, title: 'durable reopen title' },
     });
     const liveRoot = row('chm:root', 1, null, 'live root');
     const liveReply = row('chm:reply-3', 3, rootId, 'live reply');
@@ -159,6 +160,7 @@ describe('useChannelThread', () => {
       fetchedReply.id,
       liveReply.id,
     ]);
+    expect(latest.threadTitle).toBe('durable reopen title');
 
     await render([liveReply, otherReply]);
     expect(latest.root?.body.text).toBe('live root');

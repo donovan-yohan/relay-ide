@@ -11,6 +11,7 @@ import type {
   ChannelImagePart,
   ChannelMemberRef,
   ChannelMessagePart,
+  ChannelMessageId,
   ChannelPostSteering,
 } from '../../../../shared/channel-chat-protocol.js';
 import {
@@ -271,6 +272,8 @@ interface PendingImage {
 interface ChannelComposerProps {
   channelId: string;
   channelTitle: string;
+  /** Canonical thread root for every provider control issued from this composer. */
+  threadId?: ChannelMessageId | null;
   placeholder?: string;
   /** Human channel members, folded into the @mention contact set (#1236). */
   members?: readonly ChannelMemberRef[];
@@ -302,6 +305,7 @@ interface ChannelComposerProps {
 export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   channelId,
   channelTitle,
+  threadId = null,
   placeholder,
   members,
   implicitCommandProviderId,
@@ -721,6 +725,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         command: command.name,
         ...(normalizedArgs ? { args: normalizedArgs } : {}),
         ...(confirmed ? { confirmed: true } : {}),
+        ...(threadId ? { threadId } : {}),
       })
         .then(() => {
           // The control may have changed the provider's live catalog. Invalidate
@@ -749,7 +754,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         })
         .finally(() => setCommandPending(false));
     },
-    [channelId, commandPending, commandTrigger, queryClient]
+    [channelId, commandPending, commandTrigger, queryClient, threadId]
   );
 
   const selectCommand = useCallback(

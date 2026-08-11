@@ -1088,6 +1088,25 @@
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
+.ch-thread__rename {
+  min-height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-thread__rename:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .ch-thread__close-mobile {
   display: none;
 }

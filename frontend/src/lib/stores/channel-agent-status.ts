@@ -6,12 +6,20 @@
 import { create } from 'zustand';
 import type { ChannelAgentStatus } from '../api.js';
 
-/** Composite key for the status/runtime maps: `"<channelId> <agentId>"`. */
+/** Composite key for root and thread-scoped runtime status. */
 export function channelAgentStatusKey(
   channelId: string,
-  agentId: string
+  agentId: string,
+  threadId: string | null = null
 ): string {
-  return `${channelId} ${agentId}`;
+  return threadId === null
+    ? `${channelId} ${agentId}`
+    : `${channelId} ${agentId}\u0000${threadId}`;
+}
+
+/** Prefix that selects only one conversation scope from the live status map. */
+export function channelThreadStatusSuffix(threadId: string): string {
+  return `\u0000${threadId}`;
 }
 
 interface ChannelAgentStatusState {
@@ -58,7 +66,8 @@ interface ChannelAgentStatusState {
     runtimeId: string | null,
     queuedCount?: number,
     steeringCount?: number,
-    steerSupported?: boolean
+    steerSupported?: boolean,
+    threadId?: string | null
   ) => void;
   /** Drop every agent status/runtime entry for a channel. */
   clearChannel: (channelId: string) => void;
@@ -84,10 +93,11 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
       runtimeId,
       queuedCount = 0,
       steeringCount = 0,
-      steerSupported = false
+      steerSupported = false,
+      threadId = null
     ) =>
       set((state) => {
-        const key = channelAgentStatusKey(channelId, agentId);
+        const key = channelAgentStatusKey(channelId, agentId, threadId);
         if (
           state.statusByChannelAgent[key] === status &&
           state.runtimeByChannelAgent[key] === runtimeId &&

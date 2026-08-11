@@ -249,6 +249,7 @@ function makeSessions(
       });
       const runtime = {
         id,
+        threadId: params.threadId ?? null,
         providerId: params.providerId,
         profileActorId: params.profileActorId,
         status: 'active',
@@ -591,14 +592,16 @@ describe('mention routing — end-to-end via the router', () => {
     expect(trigger.body.message.threadId).toBe(root.body.message.id);
 
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
-    const adapter = h.adapters()[0] as RecordingAdapter;
-    expect(adapter.contents).toHaveLength(1);
-    expect(adapter.contents[0]).toContain(
+    const threadAdapter = h.adapters()[0] as RecordingAdapter;
+    expect(threadAdapter.contents).toHaveLength(1);
+    expect(threadAdapter.contents[0]).toContain(
       '[Thread scope — only this thread is shown; its root message is always included]'
     );
-    expect(adapter.contents[0]).toContain('root discussion');
-    expect(adapter.contents[0]).toContain('prior thread detail');
-    expect(adapter.contents[0]).not.toContain('unrelated top-level update');
+    expect(threadAdapter.contents[0]).toContain('root discussion');
+    expect(threadAdapter.contents[0]).toContain('prior thread detail');
+    expect(threadAdapter.contents[0]).not.toContain(
+      'unrelated top-level update'
+    );
     const reply = agentReply(h.store, h.channelId)[0]!;
     expect(reply.sender.id).toBe('agent-profile:mock:default');
     expect(reply.body.text).toBe('thread ack');
@@ -617,9 +620,13 @@ describe('mention routing — end-to-end via the router', () => {
       url,
       body: { text: '@mock now answer at top level' },
     });
-    await waitFor(() => adapter.contents.length === 2);
-    expect(adapter.contents[1]).toContain('unrelated top-level update');
-    expect(adapter.contents[1]).not.toContain('[Thread scope —');
+    // Runtime identity is conversation-scoped: this root mention launches a
+    // root runtime rather than borrowing the thread's provider session.
+    await waitFor(() => h.adapters().length === 2);
+    const rootAdapter = h.adapters()[1] as RecordingAdapter;
+    await waitFor(() => rootAdapter.contents.length === 1);
+    expect(rootAdapter.contents[0]).toContain('unrelated top-level update');
+    expect(rootAdapter.contents[0]).not.toContain('[Thread scope —');
     await waitFor(() => agentReply(h.store, h.channelId).length === 2);
     expect(agentReply(h.store, h.channelId)[1]!.threadId).toBeNull();
   });

@@ -35,7 +35,10 @@ import {
   hasUnseenActivity,
   useChannelActivityStore,
 } from '../frontend/src/lib/stores/channel-activity.js';
-import { useChannelAgentStatusStore } from '../frontend/src/lib/stores/channel-agent-status.js';
+import {
+  channelAgentStatusKey,
+  useChannelAgentStatusStore,
+} from '../frontend/src/lib/stores/channel-agent-status.js';
 import type {
   ChannelRailSummary,
   ChannelRailThreadSummary,
@@ -962,6 +965,53 @@ describe('TopicSidebarView', () => {
         'claude: how should the binder key runtimes?'
       );
       expect(block?.querySelector('.topic-thread-row')).toBeNull();
+    });
+
+    it('uses the durable conversation title and only its scoped live activity', async () => {
+      const rootId = 'chm:root-activity';
+      useChannelAgentStatusStore.setState({
+        statusByChannelAgent: {
+          [channelAgentStatusKey('topic:alpha', 'agent:mock', rootId)]:
+            'thinking',
+          [channelAgentStatusKey('topic:alpha', 'agent:mock', 'chm:other')]:
+            'waiting',
+        },
+      });
+      await renderWithThreads([
+        makeThread({
+          rootMessageId: rootId,
+          title: 'Provider session isolation',
+          replyCount: 0,
+        }),
+      ]);
+
+      expect(
+        threadsBlock()?.querySelector('.topic-threads__latest')?.textContent
+      ).toBe('Provider session isolation');
+      await act(async () => {
+        threadsBlock()
+          ?.querySelector<HTMLButtonElement>('.topic-threads__toggle')
+          ?.click();
+      });
+      const row = container.querySelector('.topic-thread-row');
+      expect(
+        row?.querySelector('.topic-thread-row__preview')?.textContent
+      ).toBe('Provider session isolation');
+      expect(
+        row?.querySelector('.topic-thread-row__meta')?.textContent
+      ).toContain('working');
+      expect(row?.textContent).not.toContain('needs attention');
+
+      const mobileRecent = container.querySelector<HTMLButtonElement>(
+        `.topic-mobile-thread[data-thread-root-id="${rootId}"]`
+      );
+      expect(mobileRecent?.textContent).toContain('Provider session isolation');
+      expect(mobileRecent?.textContent).toContain('working');
+      await act(async () => mobileRecent?.click());
+      expect(useUiStore.getState().pendingChannelThread).toEqual({
+        channelId: 'topic:alpha',
+        rootMessageId: rootId,
+      });
     });
 
     it('leaves a channel with no threads exactly as it was', async () => {

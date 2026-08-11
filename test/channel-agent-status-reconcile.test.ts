@@ -172,6 +172,28 @@ describe('useChannelAgentStatusStore — timestamped reconciliation state', () =
     expect(state.updatedAtByChannelAgent[key]).toBeGreaterThanOrEqual(before);
   });
 
+  it('keeps a profile status isolated per thread scope', () => {
+    const state = useChannelAgentStatusStore.getState();
+    state.recordStatus('c1', 'mock', 'streaming', 'root-runtime');
+    state.recordStatus(
+      'c1',
+      'mock',
+      'thinking',
+      'thread-runtime',
+      0,
+      0,
+      false,
+      'chm:thread-1'
+    );
+    const rootKey = channelAgentStatusKey('c1', 'mock');
+    const threadKey = channelAgentStatusKey('c1', 'mock', 'chm:thread-1');
+    const current = useChannelAgentStatusStore.getState();
+    expect(current.statusByChannelAgent[rootKey]).toBe('streaming');
+    expect(current.runtimeByChannelAgent[rootKey]).toBe('root-runtime');
+    expect(current.statusByChannelAgent[threadKey]).toBe('thinking');
+    expect(current.runtimeByChannelAgent[threadKey]).toBe('thread-runtime');
+  });
+
   it('clearChannel drops status, session, AND updatedAt for that channel only', () => {
     const s = useChannelAgentStatusStore.getState();
     s.recordStatus('c1', 'mock', 'streaming', 's1');

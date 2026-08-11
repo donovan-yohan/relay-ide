@@ -88,9 +88,13 @@ vi.mock('../../frontend/src/hooks/useChannelChatSocket.js', () => ({
 // here because its composer is a SECOND send path (`threadId` is attached by
 // `ChannelView`, not by the composer) and has to inherit the steering cluster.
 vi.mock('../../frontend/src/hooks/useChannelThread.js', () => ({
-  useChannelThread: () => ({
+  useChannelThread: (
+    _channelId: string,
+    rootId: ChannelMessageId,
+    liveMessages: ChannelMessage[]
+  ) => ({
     root: mocks.threadRoot,
-    replies: [],
+    replies: liveMessages.filter((message) => message.threadId === rootId),
     hasMoreOlder: false,
     loadingOlder: false,
     loadOlder: vi.fn(),
@@ -578,7 +582,7 @@ describe('presence queue depth (#1308 slice 4 item 2c)', () => {
 });
 
 describe('thread composer inherits steering (#1308 slice 4 item 2d)', () => {
-  it('offers the cluster in the thread lane and threads the flag through its own send path', async () => {
+  it('does not inherit a root busy agent into an idle thread', async () => {
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('streaming')]);
     const rootMessage = humanMessage(1, 'root question', null);
     mocks.messages = [rootMessage];
@@ -596,13 +600,82 @@ describe('thread composer inherits steering (#1308 slice 4 item 2d)', () => {
     expect(threadComposer).not.toBeNull();
     expect(
       container.querySelector('.ch-thread .ch-composer__steer')
-    ).not.toBeNull();
+    ).toBeNull();
 
-    await typeAndPressEnter(threadComposer!, 'reply now', { metaKey: true });
+    await typeAndPressEnter(threadComposer!, 'reply now');
 
     expect(mocks.post).toHaveBeenCalledTimes(1);
     const opts = mocks.post.mock.calls[0]![1] as PostOpts;
     expect(opts.threadId).toBe(rootMessage.id);
-    expect(opts.steering).toBe('interrupt');
+    expect(opts.steering).toBeUndefined();
+    await render();
+    expect(queuedChips()).toEqual([]);
+  });
+
+  it('snapshots and retires queued markers by the selected thread runtime', async () => {
+    mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('idle')]);
+    const rootMessage = humanMessage(1, 'root question', null);
+    mocks.messages = [rootMessage];
+    mocks.threadRoot = rootMessage;
+    await render();
+
+    await act(async () => {
+      useUiStore.getState().requestChannelThread(CHANNEL_ID, rootMessage.id);
+    });
+    await flush();
+
+    await act(async () => {
+      useChannelAgentStatusStore
+        .getState()
+        .recordStatus(
+          CHANNEL_ID,
+          CLAUDE_ID,
+          'streaming',
+          RUNTIME_ID,
+          1,
+          0,
+          false,
+          rootMessage.id
+        );
+    });
+    await flush();
+
+    const threadComposer = container.querySelector<HTMLTextAreaElement>(
+      '.ch-thread .ch-composer__ta'
+    );
+    expect(threadComposer).not.toBeNull();
+    expect(
+      container.querySelector('.ch-thread .ch-composer__steer')
+    ).not.toBeNull();
+    await typeAndPressEnter(threadComposer!, 'queue this reply');
+    await render();
+
+    expect(queuedChips()).toEqual(['queued — claude is mid-turn']);
+
+    // A similarly named root binding draining does not retire a thread marker.
+    await act(async () => {
+      useChannelAgentStatusStore
+        .getState()
+        .recordStatus(CHANNEL_ID, CLAUDE_ID, 'idle', RUNTIME_ID, 0);
+    });
+    await flush();
+    expect(queuedChips()).toEqual(['queued — claude is mid-turn']);
+
+    await act(async () => {
+      useChannelAgentStatusStore
+        .getState()
+        .recordStatus(
+          CHANNEL_ID,
+          CLAUDE_ID,
+          'idle',
+          RUNTIME_ID,
+          0,
+          0,
+          false,
+          rootMessage.id
+        );
+    });
+    await flush();
+    expect(queuedChips()).toEqual([]);
   });
 });

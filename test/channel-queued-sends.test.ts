@@ -115,6 +115,7 @@ describe('queued-send marks (#1308 slice 4)', () => {
     const snapshot = snapshotQueueDrainSeqs(
       CHANNEL,
       [CLAUDE],
+      null,
       useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent
     );
     expect(
@@ -126,7 +127,7 @@ describe('queued-send marks (#1308 slice 4)', () => {
   });
 
   it('retires the moment that generation advances', () => {
-    const snapshot = snapshotQueueDrainSeqs(CHANNEL, [CLAUDE], {});
+    const snapshot = snapshotQueueDrainSeqs(CHANNEL, [CLAUDE], null, {});
     useChannelAgentStatusStore
       .getState()
       .recordStatus(CHANNEL, CLAUDE, 'thinking', 'rt:1', 0);
@@ -148,6 +149,7 @@ describe('queued-send marks (#1308 slice 4)', () => {
     const snapshot = snapshotQueueDrainSeqs(
       CHANNEL,
       [CLAUDE, hermes],
+      null,
       drainSeqs
     );
     const multi = {
@@ -193,6 +195,7 @@ describe('queued-send marks (#1308 slice 4)', () => {
     const snapshot = snapshotQueueDrainSeqs(
       CHANNEL,
       [CLAUDE],
+      null,
       useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent
     );
     useChannelQueuedSendsStore
@@ -211,6 +214,7 @@ describe('queued-send marks (#1308 slice 4)', () => {
     const fresh = snapshotQueueDrainSeqs(
       CHANNEL,
       [CLAUDE],
+      null,
       useChannelAgentStatusStore.getState().queueDrainSeqByChannelAgent
     );
     useChannelQueuedSendsStore.getState().markQueuedSend('chm:3', mark(fresh));

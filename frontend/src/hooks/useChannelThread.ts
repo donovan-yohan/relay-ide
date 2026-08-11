@@ -10,6 +10,8 @@ const THREAD_HISTORY_PAGE_LIMIT = 50;
 export interface UseChannelThreadState {
   root: ChannelMessage | null;
   replies: ChannelMessage[];
+  /** Durable title returned by the root-inclusive thread route. */
+  threadTitle?: string;
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<void>;
@@ -75,6 +77,7 @@ export function useChannelThread(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [rootFloorRevision, setRootFloorRevision] = useState(0);
+  const [threadTitle, setThreadTitle] = useState<string | undefined>();
 
   const requestKeyRef = useRef('');
   const backfillRef = useRef(backfill);
@@ -100,6 +103,7 @@ export function useChannelThread(
     setLoadingOlder(false);
     setError(null);
     setRootFloorRevision(0);
+    setThreadTitle(undefined);
 
     if (rootId === null) {
       setLoading(false);
@@ -119,6 +123,8 @@ export function useChannelThread(
         );
         backfillRef.current = next;
         setBackfill(next);
+        if (page.thread?.rootMessageId === rootId)
+          setThreadTitle(page.thread.title);
         if (page.messages.some((message) => message.id === rootId)) {
           setRootFloorRevision((revision) => revision + 1);
         }
@@ -227,6 +233,8 @@ export function useChannelThread(
       const next = mergeThreadPage(backfillRef.current, page.messages, rootId);
       backfillRef.current = next;
       setBackfill(next);
+      if (page.thread?.rootMessageId === rootId)
+        setThreadTitle(page.thread.title);
       if (page.messages.some((message) => message.id === rootId)) {
         setRootFloorRevision((revision) => revision + 1);
       }
@@ -249,6 +257,7 @@ export function useChannelThread(
   return {
     root,
     replies,
+    ...(threadTitle ? { threadTitle } : {}),
     hasMoreOlder,
     loadingOlder,
     loadOlder,
