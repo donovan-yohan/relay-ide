@@ -7,10 +7,77 @@ import { Sidebar } from './components/Sidebar.js';
 import SettingsDialog, {
   type SettingsDialogHandle,
 } from './components/dialogs/SettingsDialog.js';
+import AddWorkspaceDialog, {
+  type AddWorkspaceDialogHandle,
+} from './components/dialogs/AddWorkspaceDialog.js';
 import { dmChannelTopicId } from './lib/dm-channels.js';
 import { useChannelActivityStore } from './lib/stores/channel-activity.js';
 import { useSessionsStore } from './lib/stores/sessions.js';
 import { useUiStore } from './lib/stores/ui.js';
+
+const nativeFetch = window.fetch.bind(window);
+const fileBrowserEntries = [
+  {
+    name: 'project-parent',
+    path: '/workspace/project-parent',
+    isGitRepo: false,
+    hasChildren: true,
+  },
+  ...Array.from({ length: 48 }, (_, index) => ({
+    name: `project-${String(index + 1).padStart(2, '0')}`,
+    path: `/workspace/project-${String(index + 1).padStart(2, '0')}`,
+    isGitRepo: false,
+    hasChildren: false,
+  })),
+];
+const fileBrowserChildren = [
+  {
+    name: 'child-project',
+    path: '/workspace/project-parent/child-project',
+    isGitRepo: false,
+    hasChildren: false,
+  },
+];
+
+/** Keep the production Add Project dialog deterministic in this browser fixture. */
+window.fetch = (input, init) => {
+  const url = new URL(
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url,
+    window.location.href
+  );
+  if (url.pathname === '/nodes') {
+    return Promise.resolve(
+      new Response(JSON.stringify({ nodes: [] }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+  }
+  if (url.pathname === '/workspaces/browse') {
+    const entries =
+      url.searchParams.get('path') === '/workspace/project-parent'
+        ? fileBrowserChildren
+        : fileBrowserEntries;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          resolved:
+            url.searchParams.get('path') === '/workspace/project-parent'
+              ? '/workspace/project-parent'
+              : '/workspace',
+          entries,
+          truncated: false,
+          total: entries.length,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+  }
+  return nativeFetch(input, init);
+};
 
 const CHANNEL_ID = 'topic:sidebar-smoke';
 const WORKSPACE_ID = 'workspace:sidebar-smoke';
@@ -182,6 +249,7 @@ useChannelActivityStore.setState({
 
 function Fixture(): React.ReactElement {
   const settingsRef = useRef<SettingsDialogHandle>(null);
+  const addWorkspaceRef = useRef<AddWorkspaceDialogHandle>(null);
   const activeChannelId = useUiStore((state) => state.activeChannelId);
   const activeRepoPath = useUiStore((state) => state.activeRepoPath);
   const dashboardTabIntent = useUiStore(
@@ -213,6 +281,21 @@ function Fixture(): React.ReactElement {
           >
             emit unread activity
           </button>
+          <button
+            type="button"
+            data-testid="open-add-project"
+            onClick={() => addWorkspaceRef.current?.open()}
+          >
+            open add project
+          </button>
+          <button
+            type="button"
+            data-testid="open-settings-top"
+            aria-label="open top dialog"
+            onClick={() => settingsRef.current?.open()}
+          >
+            open settings at top
+          </button>
           <output data-testid="active-channel">
             {activeChannelId ?? 'none'}
           </output>
@@ -230,6 +313,7 @@ function Fixture(): React.ReactElement {
         </section>
       </main>
       <SettingsDialog ref={settingsRef} />
+      <AddWorkspaceDialog ref={addWorkspaceRef} onWorkspacesAdded={() => {}} />
     </QueryClientProvider>
   );
 }

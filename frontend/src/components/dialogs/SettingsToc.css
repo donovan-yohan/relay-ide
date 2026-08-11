@@ -18,7 +18,8 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  overflow: hidden;
+  /* The inner .toc-items is the TOC scroll owner. */
+  overflow: clip;
 }
 
 @media (max-width: 600px) {
@@ -56,7 +57,9 @@
   color: var(--text-muted);
   cursor: pointer;
   user-select: none;
-  transition: background 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    color 0.1s;
 }
 
 .toc-item:hover {
