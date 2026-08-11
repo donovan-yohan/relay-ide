@@ -1596,6 +1596,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'channels.list',
   'channels.get',
   'channels.history',
+  'channels.subscribe',
   'channels.threads.history',
   'channels.roster',
   'channels.post',
@@ -2710,6 +2711,72 @@ function gatewayTargetPayload(
 function writeGatewayNdjson(envelope: RelayCliGatewayEnvelope): boolean {
   return process.stdout.write(`${JSON.stringify(envelope)}
 `);
+}
+
+/**
+ * Write one streaming gateway frame without treating stdout's high-water mark
+ * as a dropped frame. A piped consumer may intentionally close early (for
+ * example, `head` after it has its result); EPIPE is therefore a clean local
+ * cancellation signal, not a gateway failure to print over the broken pipe.
+ */
+function writeGatewayNdjsonDrained(
+  envelope: RelayCliGatewayEnvelope
+): Promise<boolean> {
+  const payload = `${JSON.stringify(envelope)}\n`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let writeCompleted = false;
+    let drainCompleted = false;
+    let accepted = false;
+
+    const cleanup = (): void => {
+      process.stdout.removeListener('error', onError);
+      process.stdout.removeListener('drain', onDrain);
+    };
+    const settle = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const finishIfReady = (): void => {
+      if (writeCompleted && (accepted || drainCompleted)) settle(true);
+    };
+    const onError = (error: Error): void => {
+      if ((error as NodeJS.ErrnoException).code === 'EPIPE') {
+        settle(false);
+      } else {
+        fail(error);
+      }
+    };
+    const onDrain = (): void => {
+      drainCompleted = true;
+      finishIfReady();
+    };
+    const onWrite = (error?: Error | null): void => {
+      if (error) {
+        onError(error);
+        return;
+      }
+      writeCompleted = true;
+      finishIfReady();
+    };
+
+    process.stdout.once('error', onError);
+    try {
+      accepted = process.stdout.write(payload, onWrite);
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (!accepted) process.stdout.once('drain', onDrain);
+  });
 }
 
 async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
@@ -5286,6 +5353,8 @@ type ChannelCliValueFlag =
   | '--limit'
   | '--before-seq'
   | '--after-seq'
+  | '--max-events'
+  | '--idle-timeout-ms'
   | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
@@ -5427,7 +5496,7 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
   }
 }
 
-async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
+async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   const subcommand = gatewayArgs[1];
   const channelArgs = gatewayArgs.slice(2);
 
@@ -5487,6 +5556,49 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
       capabilities: ['context:read'],
     });
     printGatewayEnvelope(gatewayOk('channels.history', result), 0);
+  }
+
+  if (subcommand === 'subscribe') {
+    const values = parseChannelCliFlags('channels.subscribe', channelArgs, [
+      '--channel-id',
+      '--after-seq',
+      '--max-events',
+      '--idle-timeout-ms',
+    ]);
+    const channelId = requiredChannelCliString(
+      'channels.subscribe',
+      values,
+      '--channel-id'
+    );
+    const readBoundedInt = (
+      flag: '--after-seq' | '--max-events' | '--idle-timeout-ms',
+      minimum: number,
+      maximum: number
+    ): number | undefined => {
+      const value = values.get(flag);
+      if (value === undefined) return undefined;
+      const parsed = Number(value);
+      if (
+        !Number.isSafeInteger(parsed) ||
+        parsed < minimum ||
+        parsed > maximum
+      ) {
+        gatewayInvalid('channels.subscribe', `${flag} has an invalid value`, {
+          field: flag.slice(2),
+          value,
+        });
+      }
+      return parsed;
+    };
+    const afterSeq = readBoundedInt('--after-seq', 0, Number.MAX_SAFE_INTEGER);
+    const maxEvents = readBoundedInt('--max-events', 1, 10000);
+    const idleTimeoutMs = readBoundedInt('--idle-timeout-ms', 1, 300000);
+    return runGatewayChannelsSubscribe({
+      channelId,
+      ...(afterSeq !== undefined ? { afterSeq } : {}),
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+    });
   }
 
   if (subcommand === 'threads' && channelArgs[0] === 'history') {
@@ -5569,6 +5681,193 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<never> {
   gatewayInvalid('channels.list', 'unknown channels command', {
     args: gatewayArgs,
   });
+}
+
+async function runGatewayChannelsSubscribe(input: {
+  channelId: string;
+  afterSeq?: number;
+  maxEvents?: number;
+  idleTimeoutMs?: number;
+}): Promise<void> {
+  const commandName = 'channels.subscribe' as const;
+  const token = gatewayRequiredToken(commandName);
+  const actorToken = gatewayActorToken();
+  const query = new URLSearchParams();
+  if (input.afterSeq !== undefined)
+    query.set('afterSeq', String(input.afterSeq));
+  const controller = new AbortController();
+  const stop = (): void => controller.abort();
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  let res: Response;
+  try {
+    res = await fetch(
+      `http://127.0.0.1:${gatewayWsPort()}/channels/${encodeURIComponent(input.channelId)}/subscribe?${query.toString()}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/x-ndjson',
+          'x-relay-cli-gateway': 'v1',
+          'x-relay-capabilities': 'context:read',
+          ...(actorToken
+            ? {
+                'x-relay-cli-actor-token': 'v1',
+                'x-relay-cli-command': commandName,
+              }
+            : {}),
+          ...(gatewayCorrelationId()
+            ? { 'x-relay-correlation-id': gatewayCorrelationId()! }
+            : {}),
+        },
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'SERVER_UNAVAILABLE',
+        message: `could not connect to Relay hub: ${error instanceof Error ? error.message : String(error)}`,
+        retryable: true,
+        details: { channelId: input.channelId },
+      }),
+      1
+    );
+  }
+  if (!res.ok) {
+    const raw = await res.text().catch(() => '');
+    let upstream: Record<string, unknown> | undefined;
+    try {
+      const parsed = raw ? JSON.parse(raw) : undefined;
+      if (parsed && typeof parsed === 'object')
+        upstream = parsed as Record<string, unknown>;
+    } catch {
+      upstream = raw ? { raw } : undefined;
+    }
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: normalizeGatewayErrorCode(res.status, upstream),
+        message: gatewayErrorMessage(res.status, upstream),
+        retryable: gatewayErrorRetryable(res.status, upstream),
+        details: {
+          ...sanitizedGatewayErrorDetails(res.status, upstream),
+          channelId: input.channelId,
+        },
+      }),
+      1
+    );
+  }
+  if (!res.body) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UPSTREAM_ERROR',
+        message: 'hub channel subscription response had no body stream',
+        retryable: true,
+      }),
+      1
+    );
+  }
+  let buffer = '';
+  let events = 0;
+  let idleTimer: NodeJS.Timeout | undefined;
+  let normalClose = false;
+  let stdoutWriteError: Error | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const cancelStream = (): void => {
+    controller.abort();
+    void reader?.cancel().catch(() => {
+      /* AbortController already closes the fetch body; cancellation is best effort. */
+    });
+  };
+  // `Writable` can emit EPIPE after its individual write callback ran. Keep a
+  // subscription-scoped listener until teardown so an early downstream close
+  // never becomes an unhandled process error between frames.
+  const onStdoutError = (error: Error): void => {
+    if ((error as NodeJS.ErrnoException).code === 'EPIPE') {
+      normalClose = true;
+      cancelStream();
+      return;
+    }
+    stdoutWriteError = error;
+    cancelStream();
+  };
+  process.stdout.on('error', onStdoutError);
+  const resetIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (input.idleTimeoutMs !== undefined) {
+      idleTimer = setTimeout(cancelStream, input.idleTimeoutMs);
+      idleTimer.unref?.();
+    }
+  };
+  const emit = async (line: string): Promise<boolean> => {
+    if (!line) return true;
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return true;
+    }
+    if (frame['frame'] === 'event') events += 1;
+    if (frame['frame'] === 'closed') normalClose = frame['retryable'] !== true;
+    const written = await writeGatewayNdjsonDrained(
+      gatewayOk(commandName, frame)
+    );
+    if (!written) {
+      normalClose = true;
+      cancelStream();
+      return false;
+    }
+    resetIdle();
+    if (input.maxEvents !== undefined && events >= input.maxEvents) {
+      normalClose = true;
+      cancelStream();
+      return false;
+    }
+    return true;
+  };
+  resetIdle();
+  try {
+    reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let keepReading = true;
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        keepReading = await emit(buffer.slice(0, newline).trim());
+        buffer = buffer.slice(newline + 1);
+        if (!keepReading) break;
+        newline = buffer.indexOf('\n');
+      }
+    }
+    if (keepReading) {
+      buffer += decoder.decode();
+      await emit(buffer.trim());
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      await writeGatewayNdjsonDrained(
+        gatewayError(commandName, {
+          code: 'UPSTREAM_ERROR',
+          message: `channel subscription failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          details: { channelId: input.channelId, events },
+        })
+      );
+      process.exitCode = 1;
+    }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stop);
+    process.stdout.removeListener('error', onStdoutError);
+  }
+  process.exitCode = stdoutWriteError
+    ? 1
+    : normalClose || controller.signal.aborted
+      ? 0
+      : 1;
 }
 
 async function readGatewayCockpitGroups(
@@ -5779,7 +6078,7 @@ async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
   });
 }
 
-async function runGatewayV1(): Promise<never> {
+async function runGatewayV1(): Promise<void> {
   const gatewayArgs = args.slice(1);
   const json = gatewayArgs.includes('--json');
   const top = gatewayArgs[0];
@@ -5803,36 +6102,35 @@ async function runGatewayV1(): Promise<never> {
   // Top-level group → handler. All handlers take the full gateway argv and never
   // return (each prints an envelope and exits). A table keeps this dispatch flat
   // instead of an ever-growing if-chain.
-  const gatewayGroupHandlers: Record<string, (a: string[]) => Promise<never>> =
-    {
-      nodes: runGatewayNodes,
-      repos: runGatewayRepos,
-      workspaces: runGatewayWorkspaces,
-      worktrees: runGatewayWorktrees,
-      sessions: runGatewaySessions,
-      tickets: runGatewayTickets,
-      branches: runGatewayBranches,
-      files: runGatewayFiles,
-      'work-contexts': runGatewayWorkContexts,
-      context: runGatewayContext,
-      inbox: runGatewayInbox,
-      handoffs: runGatewayHandoffs,
-      'work-context-messages': runGatewayWorkContextMessages,
-      'work-context-artifacts': runGatewayWorkContextArtifacts,
-      'handoff-artifacts': runGatewayHandoffArtifacts,
-      'workflow-runs': runGatewayWorkflowRuns,
-      'automation-runs': runGatewayAutomationRuns,
-      'pr-overseer': runGatewayPrOverseer,
-      'workspace-surfaces': runGatewayWorkspaceSurfaces,
-      'workspace-topics': runGatewayWorkspaceTopics,
-      channels: runGatewayChannels,
-      cockpit: runGatewayCockpit,
-      artifacts: runGatewayArtifacts,
-      supervisor: runGatewaySupervisor,
-      events: runGatewayEvents,
-      settings: runGatewaySettings,
-      webhooks: runGatewayWebhooks,
-    };
+  const gatewayGroupHandlers: Record<string, (a: string[]) => Promise<void>> = {
+    nodes: runGatewayNodes,
+    repos: runGatewayRepos,
+    workspaces: runGatewayWorkspaces,
+    worktrees: runGatewayWorktrees,
+    sessions: runGatewaySessions,
+    tickets: runGatewayTickets,
+    branches: runGatewayBranches,
+    files: runGatewayFiles,
+    'work-contexts': runGatewayWorkContexts,
+    context: runGatewayContext,
+    inbox: runGatewayInbox,
+    handoffs: runGatewayHandoffs,
+    'work-context-messages': runGatewayWorkContextMessages,
+    'work-context-artifacts': runGatewayWorkContextArtifacts,
+    'handoff-artifacts': runGatewayHandoffArtifacts,
+    'workflow-runs': runGatewayWorkflowRuns,
+    'automation-runs': runGatewayAutomationRuns,
+    'pr-overseer': runGatewayPrOverseer,
+    'workspace-surfaces': runGatewayWorkspaceSurfaces,
+    'workspace-topics': runGatewayWorkspaceTopics,
+    channels: runGatewayChannels,
+    cockpit: runGatewayCockpit,
+    artifacts: runGatewayArtifacts,
+    supervisor: runGatewaySupervisor,
+    events: runGatewayEvents,
+    settings: runGatewaySettings,
+    webhooks: runGatewayWebhooks,
+  };
   const groupHandler = top ? gatewayGroupHandlers[top] : undefined;
   if (groupHandler) return groupHandler(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
@@ -8957,4 +9255,4 @@ if (args.includes('--allow-degraded')) {
   process.env['RELAY_IDE_ALLOW_DEGRADED'] = '1';
 }
 
-await import('../server/index.js');
+if (command !== 'v1') await import('../server/index.js');

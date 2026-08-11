@@ -124,12 +124,26 @@ a public session id, identifies an agent in a conversation. Public session and
 inbox commands operate on terminal execution records or WorkContexts; they do not
 launch, resume, or address private channel runtimes.
 
-**Gateway channel surface: `channels.post` only.** It is the sole channel verb
-declared in `shared/cli-gateway-contract.ts`. Channel reads — list, get,
-history, threads, roster, search — are authenticated browser routes and are
-**not** gateway verbs today. An adapter that needs to read a channel uses those
-HTTP routes with a scoped actor credential; do not assume `channels.list` or
-`channels.history` exists because the gateway "covers channels".
+The stable gateway exposes scoped list/get/history/thread-history/roster/post
+commands plus a durable `channels.subscribe` stream. Search and browser-only
+conveniences remain outside the gateway contract.
+
+`relay-ide v1 channels subscribe --channel-id <id> --after-seq <N> --json`
+emits one NDJSON envelope per versioned `open`, `event`, or `closed` frame.
+Every frame requires `schemaVersion: 1`, `channelId`, `sequence`, `occurredAt`,
+and `durableSeq`.
+`event` additionally requires `payload` (a `ChannelEventV1` or
+`channel-heartbeat-v1`); `closed` additionally requires `reason` and
+`retryable`. `afterSeq` is exclusive; persist each frame's `durableSeq` and
+supply it on reconnect. Created and
+authoritative full-row update/completion events may advance that cursor.
+Streaming text deltas are ephemeral and never do. One connection can therefore
+observe replies to multiple posted messages without holding one wait per post.
+Use `--max-events` or `--idle-timeout-ms` for bounded automation. A retryable
+closed frame means reconnect from the last durable sequence. The CLI awaits
+stdout drain instead of dropping frames; a downstream closed pipe is treated as
+clean local cancellation and promptly cancels the upstream reader. The stream uses
+`context:read` plus the actor credential's exact `channelIds` scope.
 
 The former public agent-session and terminal hand-back contracts are
 superseded. Public terminals are always human-driven. `sessions.input` and
@@ -145,6 +159,9 @@ conversation transport.
 - **Terminal cockpit (`cockpit.list` / `cockpit.get` / `relay-ide cockpit`, #934 slices).** A read-first terminal surface for operators on SSH/devboxes. It composes Active Work through the CLI gateway and orders WorkContexts with the same attention copy as the Active Work UI: approval/input first, then offline/revoked/stale last-known contexts, then errors/running/live. Each list row carries why attention is needed, node freshness, session durability, actor/control mode, TaskRefs, artifact counts/latest refs, and explicit action availability before attach. Offline/stale/revoked nodes keep the last-known WorkContext/session context but live controls are disabled with typed reasons; destructive controls are outside this MVP. The selected-item detail path (`cockpit get --work-context-id`) adds exact follow-up command hints for bounded status/evidence (`work-contexts get/resume`, `context list`, artifact list/show/export/read, inbox/interventions) and attach discovery when the session is live/fresh. Capability hints: `session:read` + `context:read`.
 
 ### Cursor / resume / gap / backpressure (metadata topics)
+
+This section describes the in-memory metadata bus. Channel subscriptions use
+the durable SQLite sequence contract above and do not share this cursor space.
 
 `inbox`, `attention`, `context`, `work-context-artifacts`, `handoff-artifacts`, `workflow-runs`, `automation-runs`, and `pr-overseer` share one in-memory metadata bus, so they share the same resume contract:
 

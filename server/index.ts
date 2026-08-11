@@ -249,6 +249,7 @@ import {
 } from './channel-attachments.js';
 import { createChannelHub, type ChannelHub } from './channel-hub.js';
 import { createChannelChatRouter } from './channel-chat-router.js';
+import { createChannelSubscriptionRouter } from './channel-subscription-router.js';
 import {
   createChannelAgentBinder,
   type ChannelAgentBinder,
@@ -2655,6 +2656,27 @@ async function main(): Promise<void> {
             : {}),
           ...(options ?? {}),
         }),
+    })
+  );
+  app.use(
+    createChannelSubscriptionRouter({
+      hub: channelHub,
+      requireSubscribeAuth: requireCliGatewayAuthForActorCommand(
+        'channels.subscribe',
+        { scopeForRequest: channelScopeFromParams }
+      ),
+      isStillAuthorized: (req, channelId) => {
+        if (!isCliGatewayActorTokenRequest(req)) return true;
+        const validation = validateCliGatewayActorCredential(
+          cliGatewayActorRegistry,
+          {
+            token: bearerActorToken(req),
+            capabilities: ['context:read'],
+            scope: { channelIds: [channelId] },
+          }
+        );
+        return !('reason' in validation);
+      },
     })
   );
   // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router

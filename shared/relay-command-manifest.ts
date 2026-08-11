@@ -170,6 +170,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'channels.list': 'list channels',
   'channels.get': 'channel details',
   'channels.history': 'channel message history',
+  'channels.subscribe': 'subscribe to channel messages',
   'channels.threads.history': 'channel thread history',
   'channels.roster': 'channel roster',
   'channels.post': 'post channel message',
@@ -199,6 +200,7 @@ const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.stream',
   'sessions.wait',
   'events.subscribe',
+  'channels.subscribe',
 ]);
 
 const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([

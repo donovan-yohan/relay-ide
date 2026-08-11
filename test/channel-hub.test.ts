@@ -12,6 +12,7 @@ import {
   CHANNEL_WS_BACKPRESSURE_CLOSE_CODE,
   createChannelHub,
   type ChannelHub,
+  type ChannelEventSink,
   type ChannelSocket,
 } from '../server/channel-hub.js';
 import {
@@ -70,6 +71,40 @@ function fakeSocket(): FakeSocket {
     },
     emit(event) {
       handlers[event]?.();
+    },
+  };
+}
+
+function fakeSink(): ChannelEventSink & {
+  bufferedAmount: number;
+  sent: ChannelEventV1[];
+  closed: string | null;
+  emitClose(): void;
+} {
+  const handlers: Array<() => void> = [];
+  let ready = true;
+  return {
+    bufferedAmount: 0,
+    get ready() {
+      return ready;
+    },
+    sent: [],
+    closed: null,
+    send(event) {
+      this.sent.push(event);
+      return true;
+    },
+    close(reason) {
+      this.closed = reason.code;
+      ready = false;
+      for (const handler of handlers) handler();
+    },
+    onClose(handler) {
+      handlers.push(handler);
+    },
+    emitClose() {
+      ready = false;
+      for (const handler of handlers) handler();
     },
   };
 }
@@ -805,6 +840,51 @@ describe('channel-hub backpressure', () => {
 });
 
 describe('channel-hub connection lifecycle', () => {
+  it('shares the register-before-replay handoff with a non-WebSocket sink', () => {
+    const s = store();
+    const hub = hubWith(s);
+    const initial = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'before',
+    });
+    const sink = fakeSink();
+    const originalSend = sink.send;
+    let injected = false;
+    sink.send = function (event) {
+      const accepted = originalSend.call(this, event);
+      if (injected || event.type !== 'channel-snapshot-v1') return accepted;
+      injected = true;
+      const committedDuringReplay = s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: 'during',
+      });
+      hub.broadcastCreated(committedDuringReplay);
+      return accepted;
+    };
+
+    const unsubscribe = hub.subscribe(sink, {
+      channelId: 'topic:c',
+      afterSeq: 0,
+    });
+
+    expect(sink.sent[0]).toMatchObject({
+      type: 'channel-snapshot-v1',
+      latestSeq: initial.seq,
+    });
+    expect(
+      sink.sent.filter(
+        (event) =>
+          event.type === 'channel-message-created-v1' &&
+          event.message.body.text === 'during'
+      )
+    ).toHaveLength(1);
+    expect(hub.subscriberCount('topic:c')).toBe(1);
+    unsubscribe();
+    expect(hub.subscriberCount('topic:c')).toBe(0);
+  });
+
   it('closes unknown channels with 4404', () => {
     const s = store();
     const hub = hubWith(s, { channelExists: () => false });

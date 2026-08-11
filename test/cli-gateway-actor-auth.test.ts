@@ -446,6 +446,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.list',
     'channels.get',
     'channels.history',
+    'channels.subscribe',
     'channels.threads.history',
     'channels.roster',
     'context.get',
@@ -481,12 +482,13 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       command
     ).toBe('scoped-actor-credential');
   }
-  // The five channel read verbs classify into the scoped-actor-credential read
+  // Channel read verbs classify into the scoped-actor-credential read
   // lane (GET), and a read verb on POST is not an actor read route.
   for (const command of [
     'channels.list',
     'channels.get',
     'channels.history',
+    'channels.subscribe',
     'channels.threads.history',
     'channels.roster',
   ] as const) {

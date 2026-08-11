@@ -98,6 +98,7 @@ export type RelayCliGatewayCommand =
   | 'channels.list'
   | 'channels.get'
   | 'channels.history'
+  | 'channels.subscribe'
   | 'channels.threads.history'
   | 'channels.roster'
   | 'channels.post'
@@ -3334,6 +3335,102 @@ const channelHistoryInputSchema: RelayJsonSchema = {
   not: { required: ['beforeSeq', 'afterSeq'] },
 };
 
+const channelSubscribeInputSchema: RelayJsonSchema = {
+  title: 'ChannelsSubscribeInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    afterSeq: { type: 'integer', minimum: 0 },
+    maxEvents: { type: 'integer', minimum: 1, maximum: 10000 },
+    idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 300000 },
+  },
+  required: ['channelId'],
+};
+
+const channelSubscribeFrameSchema: RelayJsonSchema = {
+  title: 'ChannelsSubscribeFrameData',
+  description:
+    'Versioned NDJSON frames. Discriminate on frame; event.payload is a ChannelEventV1 or channel-heartbeat-v1 payload.',
+  oneOf: [
+    {
+      title: 'ChannelsSubscribeOpenFrameV1',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        schemaVersion: { const: 1 },
+        frame: { const: 'open' },
+        channelId: stringSchema,
+        sequence: { type: 'integer', minimum: 0 },
+        occurredAt: stringSchema,
+        durableSeq: { type: 'integer', minimum: 0 },
+      },
+      required: [
+        'schemaVersion',
+        'frame',
+        'channelId',
+        'sequence',
+        'occurredAt',
+        'durableSeq',
+      ],
+    },
+    {
+      title: 'ChannelsSubscribeEventFrameV1',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        schemaVersion: { const: 1 },
+        frame: { const: 'event' },
+        channelId: stringSchema,
+        sequence: { type: 'integer', minimum: 0 },
+        occurredAt: stringSchema,
+        durableSeq: { type: 'integer', minimum: 0 },
+        payload: {
+          type: 'object',
+          additionalProperties: true,
+          properties: { type: stringSchema },
+          required: ['type'],
+        },
+      },
+      required: [
+        'schemaVersion',
+        'frame',
+        'channelId',
+        'sequence',
+        'occurredAt',
+        'durableSeq',
+        'payload',
+      ],
+    },
+    {
+      title: 'ChannelsSubscribeClosedFrameV1',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        schemaVersion: { const: 1 },
+        frame: { const: 'closed' },
+        channelId: stringSchema,
+        sequence: { type: 'integer', minimum: 0 },
+        occurredAt: stringSchema,
+        durableSeq: { type: 'integer', minimum: 0 },
+        reason: stringSchema,
+        retryable: booleanSchema,
+        latestSeq: { type: 'integer', minimum: 0 },
+      },
+      required: [
+        'schemaVersion',
+        'frame',
+        'channelId',
+        'sequence',
+        'occurredAt',
+        'durableSeq',
+        'reason',
+        'retryable',
+      ],
+    },
+  ],
+};
+
 const channelThreadHistoryInputSchema: RelayJsonSchema = {
   title: 'ChannelsThreadHistoryInput',
   type: 'object',
@@ -6468,6 +6565,39 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.subscribe',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'subscribe',
+      '--channel-id',
+      '<id>',
+      '--after-seq',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Stream durable channel events after an exclusive sequence cursor; ephemeral deltas never advance the resume cursor.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelSubscribeInputSchema,
+    outputSchema: okOutput(
+      'ChannelsSubscribeFrameOutput',
+      channelSubscribeFrameSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
     ],
   },
   {
