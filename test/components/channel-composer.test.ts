@@ -56,6 +56,34 @@ const codexRoster: RosterEntry[] = [
     binding: null,
     commands: [
       {
+        id: 'relay:model',
+        name: 'model',
+        description: 'Switch model for subsequent Codex responses',
+        argumentHint: '<model>',
+        args: [
+          { value: 'gpt-5.4', label: 'gpt-5.4' },
+          { value: 'gpt-5.6', label: 'gpt-5.6' },
+        ],
+        source: 'relay',
+        sourceLabel: 'Relay',
+        dispatch: 'relay-control',
+        collisionKey: 'model',
+      },
+      {
+        id: 'relay:effort',
+        name: 'effort',
+        description: 'Set Codex reasoning effort for subsequent responses',
+        argumentHint: '<effort>',
+        args: [
+          { value: 'low', label: 'low' },
+          { value: 'high', label: 'high' },
+        ],
+        source: 'relay',
+        sourceLabel: 'Relay',
+        dispatch: 'relay-control',
+        collisionKey: 'effort',
+      },
+      {
         id: 'relay:fast',
         name: 'fast',
         description: 'Enable or disable Codex Fast Mode',
@@ -89,6 +117,36 @@ const codexRoster: RosterEntry[] = [
   },
 ];
 
+const primeRoster: RosterEntry[] = [
+  {
+    id: 'agent-profile:prime-agent:default',
+    displayName: 'Prime',
+    providerId: 'prime-agent',
+    isDefault: true,
+    isBuiltIn: true,
+    kind: 'framework',
+    available: true,
+    reason: null,
+    binding: null,
+    commands: [
+      {
+        id: 'relay:prime-agent:thinking',
+        name: 'thinking',
+        aliases: ['effort'],
+        description: 'Set Prime Agent reasoning depth',
+        args: [
+          { value: 'low', label: 'low' },
+          { value: 'high', label: 'high' },
+        ],
+        source: 'builtin',
+        sourceLabel: 'Prime Agent',
+        dispatch: 'relay-control',
+        collisionKey: 'thinking',
+      },
+    ],
+  },
+];
+
 interface RenderOpts {
   onSend?: (
     text: string,
@@ -100,6 +158,7 @@ interface RenderOpts {
   archived?: boolean;
   onRestore?: () => void;
   restorePending?: boolean;
+  implicitCommandProviderId?: string;
 }
 
 async function renderComposer(opts: RenderOpts = {}): Promise<QueryClient> {
@@ -116,6 +175,9 @@ async function renderComposer(opts: RenderOpts = {}): Promise<QueryClient> {
         React.createElement(ChannelComposer, {
           channelId: 'topic:general',
           channelTitle: 'general',
+          ...(opts.implicitCommandProviderId
+            ? { implicitCommandProviderId: opts.implicitCommandProviderId }
+            : {}),
           onSend: opts.onSend ?? (() => Promise.resolve()),
           postPending: opts.postPending ?? false,
           storeDown: opts.storeDown ?? false,
@@ -553,6 +615,244 @@ describe('ChannelComposer (#1178)', () => {
       args: 'on',
     });
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('uses the DM target and live roster values for bare /model without posting', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      onSend,
+      implicitCommandProviderId: 'codex',
+    });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/model'));
+    await settleRoster();
+
+    expect(
+      container.querySelector(
+        '[role="listbox"][aria-label="commands for Codex"]'
+      )?.textContent
+    ).toContain('/model');
+    await pressKey('Enter');
+    // The enumerated choices come from the currently fetched roster, not a
+    // display-name or static UI list. Choose the second live model.
+    await pressKey('ArrowDown');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'model',
+      args: 'gpt-5.6',
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(ta.value).toBe('');
+  });
+
+  it('holds a reserved bare Codex control until its live roster resolves', async () => {
+    let resolveRoster: ((value: RosterEntry[]) => void) | undefined;
+    vi.mocked(fetchChannelRoster).mockImplementation(
+      () =>
+        new Promise<RosterEntry[]>((resolve) => {
+          resolveRoster = resolve;
+        })
+    );
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend, implicitCommandProviderId: 'codex' });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/model'));
+    await act(async () => Promise.resolve());
+    expect(fetchChannelRoster).toHaveBeenCalledWith('topic:general');
+
+    // Before the exact default profile and its live catalog arrive, Enter is a
+    // loading-palette action, never a 400-producing normal channel post.
+    await pressKey('Enter');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('loading commands…');
+
+    await act(async () => {
+      resolveRoster?.(codexRoster);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).not.toContain('loading commands…')
+    );
+    expect(container.textContent).toContain('/model');
+    await pressKey('Enter');
+    expect(container.textContent).toContain('gpt-5.4');
+  });
+
+  it.each([
+    [
+      'a default without model controls',
+      [{ ...codexRoster[0]!, commands: [] }],
+    ],
+    ['no current default profile', [{ ...codexRoster[0]!, isDefault: false }]],
+  ])(
+    'keeps /model unavailable rather than posting when the roster has %s',
+    async (_caseName, roster) => {
+      vi.mocked(fetchChannelRoster).mockResolvedValue(roster);
+      const onSend = vi.fn(async () => {});
+      await renderComposer({ onSend, implicitCommandProviderId: 'codex' });
+      const ta = container.querySelector(
+        '.ch-composer__ta'
+      ) as HTMLTextAreaElement;
+      await act(async () => setNativeValue(ta, '/model'));
+      await settleRoster();
+
+      expect(container.textContent).toContain('commands unavailable');
+      await pressKey('Enter');
+      expect(onSend).not.toHaveBeenCalled();
+      expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    }
+  );
+
+  it('uses the DM target for bare /effort without consuming a model turn', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      onSend,
+      implicitCommandProviderId: 'codex',
+    });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/effort'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    await pressKey('ArrowDown');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:default',
+      command: 'effort',
+      args: 'high',
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(ta.value).toBe('');
+  });
+
+  it('uses the exact non-Codex DM provider profile and live control catalog', async () => {
+    vi.mocked(fetchChannelRoster).mockResolvedValue(primeRoster);
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      onSend,
+      implicitCommandProviderId: 'prime-agent',
+    });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/effort'));
+    await settleRoster();
+
+    expect(
+      container.querySelector(
+        '[role="listbox"][aria-label="commands for Prime"]'
+      )?.textContent
+    ).toContain('/thinking');
+    await pressKey('Enter');
+    await pressKey('ArrowDown');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:prime-agent:default',
+      command: 'thinking',
+      args: 'high',
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps a bare group-channel slash draft as ordinary prose', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend });
+    await typeAndEnter('/model gpt-5.6');
+
+    expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith(
+      '/model gpt-5.6',
+      expect.any(String),
+      [],
+      undefined
+    );
+    expect(
+      (container.querySelector('[role="listbox"]') as HTMLElement).style.display
+    ).toBe('none');
+  });
+
+  it('uses a promoted custom Codex default instead of the dormant built-in id', async () => {
+    vi.mocked(fetchChannelRoster).mockResolvedValue([
+      {
+        ...codexRoster[0]!,
+        id: 'agent-profile:codex:promoted-default',
+        displayName: 'Codex Primary',
+        isBuiltIn: false,
+      },
+    ]);
+    const onSend = vi.fn(async () => {});
+    await renderComposer({ onSend, implicitCommandProviderId: 'codex' });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/model'));
+    await settleRoster();
+
+    await pressKey('Enter');
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:codex:promoted-default',
+      command: 'model',
+      args: 'gpt-5.4',
+    });
+    expect(executeChannelAgentCommand).not.toHaveBeenCalledWith(
+      'topic:general',
+      expect.objectContaining({ profileId: 'agent-profile:codex:default' })
+    );
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown Codex slash input and non-Codex DM slash input sendable', async () => {
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      onSend,
+      implicitCommandProviderId: 'codex',
+    });
+    let ta = container.querySelector('.ch-composer__ta') as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/skill investigate'));
+    await settleRoster();
+    expect(
+      (container.querySelector('[role="listbox"]') as HTMLElement).style.display
+    ).toBe('none');
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith(
+      '/skill investigate',
+      expect.any(String),
+      [],
+      undefined
+    );
+
+    vi.mocked(onSend).mockClear();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderComposer({ onSend, implicitCommandProviderId: 'claude' });
+    ta = container.querySelector('.ch-composer__ta') as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/model sonnet'));
+    await settleRoster();
+    expect(
+      (container.querySelector('[role="listbox"]') as HTMLElement).style.display
+    ).toBe('none');
+    await pressKey('Enter');
+    expect(executeChannelAgentCommand).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith(
+      '/model sonnet',
+      expect.any(String),
+      [],
+      undefined
+    );
   });
 
   it('accepts the single space inserted by mention selection before / commands', async () => {

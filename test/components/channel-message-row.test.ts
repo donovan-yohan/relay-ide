@@ -98,6 +98,33 @@ describe('ChannelMessageRow truncation fidelity', () => {
     }
   );
 
+  it('renders durable model and effort only when an agent row carries them', async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(ChannelMessageRow, {
+          message: agentMessage({
+            agentAttribution: { model: 'gpt-5.6', effort: 'high' },
+          }),
+          channelId: 'topic:eng-threads',
+        })
+      );
+    });
+
+    expect(container.querySelector('.ch-msg__attribution')?.textContent).toBe(
+      'model: gpt-5.6effort: high'
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(ChannelMessageRow, {
+          message: agentMessage({}),
+          channelId: 'topic:eng-threads',
+        })
+      );
+    });
+    expect(container.querySelector('.ch-msg__attribution')).toBeNull();
+  });
+
   it('renders a persisted reasoning card collapsed and expands its content', async () => {
     await act(async () => {
       root.render(

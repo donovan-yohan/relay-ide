@@ -99,6 +99,14 @@ class TestAdapter implements ProtocolAdapterV2 {
       providerSession: { threadId },
     });
   }
+  emitConfig(config: { model?: string; effort?: string | null }): void {
+    this.emitPatch({
+      type: 'agent-session-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: '2026-07-26T00:00:00.000Z',
+      config,
+    });
+  }
   emitLiveState(live: Partial<AgentSessionLiveStateV2>): void {
     this.emitPatch({
       type: 'agent-live-state-updated-v2',
@@ -194,6 +202,33 @@ afterEach(async () => {
 });
 
 describe('ChannelAgentRuntimeManager agentState (#1254)', () => {
+  it('keeps the latest authoritative model and effort for future channel turns', async () => {
+    const { channelAgentRuntimes } = await runtimeModule();
+    const runtime = await channelAgentRuntimes.create({
+      id: 'channel-runtime',
+      providerId: 'codex',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 3456,
+      configDir: '/tmp',
+      model: 'gpt-5.6',
+      extra: { effort: 'low' },
+    });
+
+    expect(runtime.agentAttribution).toEqual({
+      model: 'gpt-5.6',
+      effort: 'low',
+    });
+    adapterState.last!.emitConfig({ model: 'gpt-5.6-fast', effort: 'high' });
+    expect(runtime.agentAttribution).toEqual({
+      model: 'gpt-5.6-fast',
+      effort: 'high',
+    });
+    adapterState.last!.emitConfig({ effort: null });
+    expect(runtime.agentAttribution).toEqual({ model: 'gpt-5.6-fast' });
+  });
+
   it('leaves initializing as soon as the first turn runs and lands idle when it completes', async () => {
     const { channelAgentRuntimes } = await runtimeModule();
     // Codex delivers its first prompt natively (#1240), so the turn lifecycle

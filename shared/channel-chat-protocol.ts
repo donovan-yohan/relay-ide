@@ -25,6 +25,8 @@ export const CHANNEL_IMAGE_ALT_MAX_LENGTH = 500;
 export const CHANNEL_MESSAGE_BODY_MAX_BYTES = 256 * 1024;
 /** Card metadata shares the message-row budget and is bounded independently. */
 export const CHANNEL_AGENT_DETAIL_MAX_BYTES = 256 * 1024;
+/** Bounded display scalars carried with one agent-authored row. */
+export const CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS = 512;
 
 export type ChannelMessageId = `chm:${string}`;
 export type ChannelAttachmentId = `cha:${string}`;
@@ -142,6 +144,16 @@ export interface ChannelAgentDetail {
   card: AgentDetailCardV2;
 }
 
+/**
+ * Provider-neutral execution settings captured when an agent row is created.
+ * These are presentation metadata, not mutable session state: changing a
+ * provider's next-turn model or effort must never relabel a prior reply.
+ */
+export interface ChannelAgentAttribution {
+  model?: string;
+  effort?: string;
+}
+
 export interface ChannelMessage {
   schemaVersion: 1;
   id: ChannelMessageId;
@@ -161,6 +173,8 @@ export interface ChannelMessage {
   source?: ChannelMessageSource;
   /** Present on agent activity rows; prose rows leave this absent. */
   agentDetail?: ChannelAgentDetail;
+  /** Model/effort snapshot for an agent-authored prose or detail row. */
+  agentAttribution?: ChannelAgentAttribution;
   /**
    * Opaque row metadata surfaced to clients (#1167). System rows carry actionable
    * payloads here — e.g. an approval request `{ approvalRequestId, agentId,
@@ -918,6 +932,19 @@ function isMemberRef(value: unknown): value is ChannelMemberRef {
   );
 }
 
+function isAgentAttribution(value: unknown): value is ChannelAgentAttribution {
+  return (
+    isRecord(value) &&
+    (value.model !== undefined || value.effort !== undefined) &&
+    (value.model === undefined ||
+      (typeof value.model === 'string' &&
+        value.model.length <= CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS)) &&
+    (value.effort === undefined ||
+      (typeof value.effort === 'string' &&
+        value.effort.length <= CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS))
+  );
+}
+
 export function isChannelMessage(value: unknown): value is ChannelMessage {
   if (!isRecord(value)) return false;
   if (value.schemaVersion !== CHANNEL_CHAT_PROTOCOL_VERSION) return false;
@@ -950,6 +977,12 @@ export function isChannelMessage(value: unknown): value is ChannelMessage {
   if (
     value.agentDetail !== undefined &&
     !isChannelAgentDetail(value.agentDetail)
+  ) {
+    return false;
+  }
+  if (
+    value.agentAttribution !== undefined &&
+    !isAgentAttribution(value.agentAttribution)
   ) {
     return false;
   }

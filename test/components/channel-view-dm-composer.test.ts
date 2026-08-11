@@ -20,6 +20,8 @@ import { dmChannelTopicId } from '../../shared/dm-channels.js';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const DM_CHANNEL_ID = dmChannelTopicId('claude', 'ws:local');
+const CODEX_DM_CHANNEL_ID = dmChannelTopicId('codex', 'ws:local');
+const PRIME_DM_CHANNEL_ID = dmChannelTopicId('prime-agent', 'ws:local');
 const GROUP_CHANNEL_ID = 'topic:general';
 
 const mocks = vi.hoisted(() => ({
@@ -99,9 +101,8 @@ vi.mock('../../frontend/src/components/chat/ChannelComposer.js', () => ({
   },
 }));
 
-const { ChannelView } = await import(
-  '../../frontend/src/components/chat/ChannelView.js'
-);
+const { ChannelView } =
+  await import('../../frontend/src/components/chat/ChannelView.js');
 const { useUiStore } = await import('../../frontend/src/lib/stores/ui.js');
 
 const THREAD_ROOT_ID = 'chm:root-1' as ChannelMessageId;
@@ -133,6 +134,10 @@ async function render(channelId: string): Promise<void> {
 
 function latestPlaceholder(): unknown {
   return mocks.composerProps.at(-1)?.['placeholder'];
+}
+
+function latestCommandProviderHint(): unknown {
+  return mocks.composerProps.at(-1)?.['implicitCommandProviderId'];
 }
 
 /** Every placeholder any composer has been handed this render pass. */
@@ -205,6 +210,7 @@ describe('ChannelView composer copy', () => {
     // The DM routes implicitly — never prompt for the `@` it does not need.
     expect(placeholder as string).not.toContain('to mention');
     expect(placeholder as string).not.toContain('#');
+    expect(latestCommandProviderHint()).toBe('claude');
   });
 
   it('leaves a multi-party channel on the default `#channel` copy', async () => {
@@ -246,6 +252,7 @@ describe('ChannelView composer copy', () => {
     expect(placeholders().some((copy) => copy.includes('to mention'))).toBe(
       false
     );
+    expect(latestCommandProviderHint()).toBe('claude');
   });
 
   it('keeps the mention hint on a multi-party thread composer', async () => {
@@ -266,5 +273,40 @@ describe('ChannelView composer copy', () => {
     expect(placeholders()).toContain(
       'reply in thread…  ·  @ to mention · shift+enter for newline'
     );
+    expect(latestCommandProviderHint()).toBeUndefined();
+  });
+
+  it('passes the DM provider hint to main and thread composers', async () => {
+    mocks.channelId = CODEX_DM_CHANNEL_ID;
+    mocks.channelTitle = 'Codex';
+    mocks.fetchWorkspaceTopic.mockResolvedValue({
+      id: CODEX_DM_CHANNEL_ID,
+      workspaceId: 'ws:local',
+      display: { title: 'Codex' },
+      routingDefaults: { providerId: 'codex' },
+    });
+
+    await render(CODEX_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('codex');
+    mocks.composerProps.length = 0;
+    await openThread(CODEX_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('codex');
+  });
+
+  it('passes a non-Codex provider hint without substituting a built-in profile', async () => {
+    mocks.channelId = PRIME_DM_CHANNEL_ID;
+    mocks.channelTitle = 'Prime';
+    mocks.fetchWorkspaceTopic.mockResolvedValue({
+      id: PRIME_DM_CHANNEL_ID,
+      workspaceId: 'ws:local',
+      display: { title: 'Prime' },
+      routingDefaults: { providerId: 'prime-agent' },
+    });
+
+    await render(PRIME_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('prime-agent');
+    mocks.composerProps.length = 0;
+    await openThread(PRIME_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('prime-agent');
   });
 });

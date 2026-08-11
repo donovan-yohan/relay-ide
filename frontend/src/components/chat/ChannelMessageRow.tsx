@@ -664,10 +664,26 @@ const MessageRowTrailer: React.FC<{
   queuedNotice = null,
 }) => {
   const truncationLabel = truncationLabelForMessage(message);
+  const attribution =
+    message.sender.kind === 'agent' ? message.agentAttribution : undefined;
   const showThreadChip =
     message.threadId === null && replyCount > 0 && onOpenThread !== undefined;
   return (
     <>
+      {attribution ? (
+        <span className="ch-msg__attribution" aria-label="agent configuration">
+          {attribution.model ? (
+            <span className="ch-msg__attribution-part">
+              model: {attribution.model}
+            </span>
+          ) : null}
+          {attribution.effort ? (
+            <span className="ch-msg__attribution-part">
+              effort: {attribution.effort}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
       {queuedNotice ? (
         // The one thing the durable row cannot say: this message reached a busy
         // agent and is waiting for its next turn. Steering intent is never

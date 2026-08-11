@@ -35,6 +35,11 @@ workflow.
   add controls, with an explicit project selector in New Chat (#1347)
 - `@agent/` opens a provider-aware command palette for channel controls,
   including Codex Fast Mode, model, and reasoning-effort changes (#1344)
+- In agent DMs and their thread composers, bare `/model` and `/effort` are
+  discovered generically from the DM provider's live exact-default-profile
+  catalog and apply to the exact DM profile without posting a channel message;
+  agent chat rows show immutable per-turn model and effort attribution when
+  exposed by the provider
 - Inspect provider-visible reasoning in provider-neutral collapsible turn details,
   with a persisted collapsed or expanded default for new summaries (#1361)
 - Publish canonical, exact-head pipeline handoff review evidence through the

@@ -296,6 +296,108 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
+  it('snapshots provider-neutral model and effort onto prose and detail rows', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:attribution',
+      agentFramework: 'prime-agent',
+      adapter,
+      store,
+      hub,
+      initialAgentAttribution: { model: 'prime/a', effort: 'low' },
+    });
+
+    adapter.broadcastPatch(assistantStarted('s', 'turn-1', 'answer-1'));
+    // A control change affects later turns only. The same turn's later detail
+    // row retains the first row's immutable config snapshot.
+    adapter.broadcastPatch({
+      type: 'agent-session-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      config: { model: 'prime/b', effort: 'high' },
+    });
+    adapter.broadcastPatch(reasoningStarted('s', 'turn-1', 'reason-1'));
+    adapter.broadcastPatch(assistantStarted('s', 'turn-2', 'answer-2'));
+
+    expect(store.history('topic:attribution')).toEqual([
+      expect.objectContaining({
+        agentAttribution: { model: 'prime/a', effort: 'low' },
+      }),
+      expect.objectContaining({
+        agentDetail: expect.any(Object),
+        agentAttribution: { model: 'prime/a', effort: 'low' },
+      }),
+      expect.objectContaining({
+        agentAttribution: { model: 'prime/b', effort: 'high' },
+      }),
+    ]);
+  });
+
+  it('keeps a delayed image row on its turn config after a later control change', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-image-config-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    let releaseIngest!: (part: ChannelImagePart) => void;
+    const attachmentStore = {
+      ingest: vi.fn(
+        () =>
+          new Promise<ChannelImagePart>((resolve) => {
+            releaseIngest = resolve;
+          })
+      ),
+    } as unknown as ChannelAttachmentStore;
+    bindSessionToChannel({
+      channelId: 'topic:image-config',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+      attachmentStore,
+      initialAgentAttribution: { model: 'gpt-5.6', effort: 'low' },
+    });
+
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-image',
+      item: {
+        type: 'imageView',
+        id: 'image-1',
+        source,
+        status: 'running',
+      },
+    });
+    await vi.waitFor(() => expect(attachmentStore.ingest).toHaveBeenCalled());
+    adapter.broadcastPatch(turnCompleted('s', 'turn-image'));
+    adapter.broadcastPatch({
+      type: 'agent-session-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      config: { model: 'gpt-5.6-fast', effort: 'high' },
+    });
+
+    releaseIngest({
+      type: 'image',
+      id: 'cha:delayed-config',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    });
+    await vi.waitFor(() =>
+      expect(store.history('topic:image-config')).toHaveLength(1)
+    );
+    expect(store.history('topic:image-config')[0]?.agentAttribution).toEqual({
+      model: 'gpt-5.6',
+      effort: 'low',
+    });
+  });
+
   it.each(
     (['completed', 'failed', 'interrupted'] as const).flatMap((turnStatus) =>
       (['completed', 'failed', 'cancelled'] as const).map((itemStatus) => [

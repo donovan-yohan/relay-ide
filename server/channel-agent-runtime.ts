@@ -5,6 +5,10 @@ import type {
   AgentSessionLiveStateV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS,
+  type ChannelAgentAttribution,
+} from '../shared/channel-chat-protocol.js';
+import {
   collaborationPromptAppendix,
   type AgentRole,
 } from '../shared/agent-roster.js';
@@ -86,6 +90,8 @@ export interface ChannelAgentRuntime {
   lastActivity: string;
   adapter: ProtocolAdapterV2;
   providerSession: Record<string, string>;
+  /** Last authoritative adapter config, reduced to durable row attribution. */
+  agentAttribution?: ChannelAgentAttribution | undefined;
 }
 
 /** Deliberately aggregate-only: safe for unauthenticated health reporting. */
@@ -156,6 +162,39 @@ function providerSessionFromPatch(
     return patch.session.providerSession;
   }
   return undefined;
+}
+
+function agentAttributionFromConfig(config: {
+  model?: string | undefined;
+  effort?: string | null | undefined;
+}): ChannelAgentAttribution | undefined {
+  const scalar = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim()
+      ? value.trim().slice(0, CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS)
+      : undefined;
+  const model = scalar(config.model);
+  const effort = scalar(config.effort);
+  return model || effort
+    ? {
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+      }
+    : undefined;
+}
+
+function agentAttributionFromPatch(
+  patch: AgentPatchV2,
+  prior: ChannelAgentAttribution | undefined
+): ChannelAgentAttribution | undefined {
+  if (patch.type === 'agent-session-snapshot-v2') {
+    return agentAttributionFromConfig(patch.session.config);
+  }
+  if (patch.type !== 'agent-session-updated-v2' || !patch.config) return prior;
+  return agentAttributionFromConfig({
+    model: patch.config.model !== undefined ? patch.config.model : prior?.model,
+    effort:
+      patch.config.effort !== undefined ? patch.config.effort : prior?.effort,
+  });
 }
 
 type ChannelAgentState = ChannelAgentRuntime['agentState'];
@@ -373,6 +412,12 @@ export class ChannelAgentRuntimeManager {
       processEnv
     );
 
+    const initialAgentAttribution = agentAttributionFromConfig({
+      ...(params.model ? { model: params.model } : {}),
+      ...(typeof params.extra?.['effort'] === 'string'
+        ? { effort: params.extra['effort'] }
+        : {}),
+    });
     const now = new Date().toISOString();
     const runtime: ChannelAgentRuntime = {
       id,
@@ -394,6 +439,9 @@ export class ChannelAgentRuntimeManager {
       lastActivity: now,
       adapter,
       providerSession: {},
+      ...(initialAgentAttribution
+        ? { agentAttribution: initialAgentAttribution }
+        : {}),
     };
     this.runtimes.set(id, runtime);
     this.captureOwnedProcessSnapshot(id, runtime);
@@ -403,6 +451,10 @@ export class ChannelAgentRuntimeManager {
       if (this.runtimes.get(id) !== runtime) return;
       this.captureOwnedProcessSnapshot(id, runtime);
       const providerSession = providerSessionFromPatch(patch);
+      runtime.agentAttribution = agentAttributionFromPatch(
+        patch,
+        runtime.agentAttribution
+      );
       if (providerSession) {
         runtime.providerSession = {
           ...runtime.providerSession,

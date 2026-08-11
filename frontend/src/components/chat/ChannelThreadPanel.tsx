@@ -37,6 +37,8 @@ interface ChannelThreadPanelProps {
   channelTitle: string;
   /** True when the channel is a DM (one agent, implicit routing). */
   isDm?: boolean;
+  /** Codex DM provider hint for bare `/command` syntax. */
+  implicitCommandProviderId?: string | undefined;
   rootId: ChannelMessageId;
   liveMessages: ChannelMessage[];
   onClose: () => void;
@@ -67,6 +69,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   channelId,
   channelTitle,
   isDm = false,
+  implicitCommandProviderId,
   rootId,
   liveMessages,
   onClose,
@@ -264,6 +267,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
         channelId={channelId}
         channelTitle={channelTitle}
         placeholder={isDm ? DM_THREAD_PLACEHOLDER : THREAD_PLACEHOLDER}
+        {...(implicitCommandProviderId ? { implicitCommandProviderId } : {})}
         onSend={onSend}
         {...(busyAgentLabels ? { busyAgentLabels } : {})}
         {...(busyAgentSteeringMode ? { busyAgentSteeringMode } : {})}
