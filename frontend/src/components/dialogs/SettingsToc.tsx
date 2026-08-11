@@ -9,25 +9,38 @@ interface Section {
 
 interface Props {
   sections: Section[];
-  contentEl?: HTMLElement;
+  /** The explicit Settings content scroll owner. Do not use scrollIntoView:
+   * it may mutate clipping-only modal ancestors as well as this pane. */
+  sectionsEl?: HTMLElement;
   open: boolean;
   onclose: () => void;
 }
 
-export default function SettingsToc({ sections, contentEl, open, onclose }: Props) {
+function scrollSectionIntoView(container: HTMLElement, section: HTMLElement) {
+  const top =
+    section.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop;
+  container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+
+export default function SettingsToc({
+  sections,
+  sectionsEl,
+  open,
+  onclose,
+}: Props) {
   function scrollToSection(id: string) {
-    const el = contentEl?.querySelector(`#${id}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
+    const section = sectionsEl?.querySelector<HTMLElement>(`#${id}`);
+    if (section && sectionsEl) {
+      scrollSectionIntoView(sectionsEl, section);
     }
     onclose();
   }
 
   return (
     <>
-      {open && (
-        <div className="toc-backdrop" onClick={onclose} />
-      )}
+      {open && <div className="toc-backdrop" onClick={onclose} />}
       <nav
         className={['toc-drawer', open ? 'open' : ''].filter(Boolean).join(' ')}
         aria-label="Settings navigation"

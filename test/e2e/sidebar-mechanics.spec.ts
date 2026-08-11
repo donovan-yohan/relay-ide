@@ -61,6 +61,32 @@ async function expectMobileSidebarClosed(page: Page): Promise<void> {
     .toBeLessThanOrEqual(0);
 }
 
+async function expectStructuralScrollAtOrigin(
+  dialog: Locator,
+  options: { includeBody?: boolean; includeSettingsContent?: boolean } = {}
+): Promise<void> {
+  expect(await dialog.evaluate((element) => element.scrollTop)).toBe(0);
+  expect(
+    await dialog
+      .locator('.dialog-shell__content')
+      .evaluate((element) => element.scrollTop)
+  ).toBe(0);
+  if (options.includeBody) {
+    expect(
+      await dialog
+        .locator('.dialog-shell__body')
+        .evaluate((element) => element.scrollTop)
+    ).toBe(0);
+  }
+  if (options.includeSettingsContent) {
+    expect(
+      await dialog
+        .locator('.settings-dialog-content')
+        .evaluate((element) => element.scrollTop)
+    ).toBe(0);
+  }
+}
+
 test.describe('smoke sidebar mechanics demotion (#1194)', () => {
   test('default rail keeps channels visible without task-room mechanics', async ({
     page,
@@ -107,6 +133,194 @@ test.describe('smoke sidebar mechanics demotion (#1194)', () => {
     await expect(page.getByTestId('evidence-route')).toHaveText(
       '/workspace/example:evidence'
     );
+  });
+
+  test('native Settings opening does not shift structural scroll boxes (#1384)', async ({
+    page,
+  }) => {
+    await openFixture(page);
+    await page.getByTestId('open-settings-top').click();
+
+    const settings = page.getByRole('dialog', { name: 'settings' });
+    await expect(settings).toBeVisible();
+    await expect(page.getByLabel('Search settings')).toBeFocused();
+    await expectStructuralScrollAtOrigin(settings, {
+      includeBody: true,
+      includeSettingsContent: true,
+    });
+    expect(
+      await settings
+        .locator('.settings-dialog-sections')
+        .evaluate((element) => element.scrollTop)
+    ).toBe(0);
+  });
+
+  test('modal navigation keeps scrolling in its explicit pane (#1384)', async ({
+    page,
+  }) => {
+    await openFixture(page);
+    await page.getByRole('button', { name: 'Settings' }).click();
+
+    const settings = page.getByRole('dialog', { name: 'settings' });
+    const sections = settings.locator('.settings-dialog-sections');
+    await expect(sections).toBeVisible();
+
+    await settings.locator('.toc-item', { hasText: /^advanced$/ }).click();
+    await expect
+      .poll(() => sections.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    const advancedScrollTop = await sections.evaluate(
+      (element) => element.scrollTop
+    );
+
+    await settings.locator('.toc-item', { hasText: /^about$/ }).click();
+    await expect
+      .poll(() => sections.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(advancedScrollTop);
+
+    await sections.hover();
+    const beforeWheel = await sections.evaluate((element) => element.scrollTop);
+    await page.mouse.wheel(0, -400);
+    await expect
+      .poll(() => sections.evaluate((element) => element.scrollTop))
+      .toBeLessThan(beforeWheel);
+
+    await expectStructuralScrollAtOrigin(settings, {
+      includeBody: true,
+      includeSettingsContent: true,
+    });
+
+    await settings.getByRole('button', { name: 'Close' }).click();
+    await page.getByTestId('open-add-project').click();
+    const addProject = page.getByRole('dialog', { name: 'add project' });
+    const tree = addProject.getByRole('tree', { name: 'File browser' });
+    await expect(tree.getByText('project-48', { exact: true })).toHaveCount(1);
+
+    await tree.hover();
+    await page.mouse.wheel(0, 600);
+    await expect
+      .poll(() => tree.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    await expectStructuralScrollAtOrigin(addProject);
+
+    await tree.hover();
+    await page.mouse.wheel(0, -1000);
+    await expect
+      .poll(() => tree.evaluate((element) => element.scrollTop))
+      .toBe(0);
+    await expectStructuralScrollAtOrigin(addProject);
+
+    const parent = tree
+      .locator('.tree-row')
+      .filter({ hasText: 'project-parent' })
+      .first();
+    await parent.getByRole('button', { name: 'Expand' }).click();
+    await expect(
+      tree.getByText('child-project', { exact: true })
+    ).toBeVisible();
+    await expectStructuralScrollAtOrigin(addProject);
+
+    const child = tree
+      .locator('.tree-row')
+      .filter({ hasText: 'child-project' });
+    await child.click();
+    await expect(child).toHaveClass(/\bselected\b/);
+    await expectStructuralScrollAtOrigin(addProject);
+
+    await tree.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(parent).toHaveClass(/\bfocused\b/);
+    await page.keyboard.press('ArrowLeft');
+    await expect(tree.getByText('child-project', { exact: true })).toHaveCount(
+      0
+    );
+    await expectStructuralScrollAtOrigin(addProject);
+
+    await page.keyboard.press('ArrowRight');
+    await expect(
+      tree.getByText('child-project', { exact: true })
+    ).toBeVisible();
+    await expectStructuralScrollAtOrigin(addProject);
+
+    await page.keyboard.press('ArrowDown');
+    await expect(child).toHaveClass(/\bfocused\b/);
+    await page.keyboard.press(' ');
+    await expect(child).not.toHaveClass(/\bselected\b/);
+    await expectStructuralScrollAtOrigin(addProject);
+
+    await parent.hover();
+    await parent
+      .getByRole('button', { name: 'new folder in project-parent' })
+      .click();
+    await expect(
+      addProject.getByLabel('new folder name in /workspace/project-parent')
+    ).toBeFocused();
+    await expect
+      .poll(() =>
+        addProject
+          .locator('.dialog-shell__body')
+          .evaluate((element) => element.scrollTop)
+      )
+      .toBeGreaterThan(0);
+    await expectStructuralScrollAtOrigin(addProject);
+  });
+
+  test('mobile drawer navigation keeps Settings scrolling in its sections pane (#1384)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 600 });
+    await openFixture(page);
+    await page.getByRole('button', { name: 'Settings' }).click();
+
+    const settings = page.getByRole('dialog', { name: 'settings' });
+    const sections = settings.locator('.settings-dialog-sections');
+    await expect(settings).toBeVisible();
+    await expect
+      .poll(() => sections.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    const advancedScrollTop = await sections.evaluate(
+      (element) => element.scrollTop
+    );
+    await expectStructuralScrollAtOrigin(settings, {
+      includeBody: true,
+      includeSettingsContent: true,
+    });
+
+    await settings.getByRole('button', { name: 'Navigation' }).click();
+    const drawer = settings.locator('.toc-drawer');
+    await expect(drawer).toHaveClass(/\bopen\b/);
+    await drawer.locator('.toc-item', { hasText: /^about$/ }).click();
+    await expect
+      .poll(() => sections.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(advancedScrollTop);
+    await expectStructuralScrollAtOrigin(settings, {
+      includeBody: true,
+      includeSettingsContent: true,
+    });
+  });
+
+  test('compact Add Project keeps its dialog body as the scroll owner (#1384)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 700, height: 360 });
+    await openFixture(page);
+    await page.getByTestId('open-add-project').click();
+
+    const addProject = page.getByRole('dialog', { name: 'add project' });
+    const body = addProject.locator('.dialog-shell__body');
+    await expect(
+      addProject.getByRole('tree', { name: 'File browser' })
+    ).toBeVisible();
+    await addProject
+      .getByText(
+        'browse for any folder on this machine. git repos get pr tracking + branch management automatically.'
+      )
+      .hover();
+    await page.mouse.wheel(0, 600);
+    await expect
+      .poll(() => body.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    await expectStructuralScrollAtOrigin(addProject);
   });
 
   test('channel selection and unread activity remain functional', async ({

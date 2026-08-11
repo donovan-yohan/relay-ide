@@ -241,12 +241,12 @@ interface SettingsDialogProps {
 const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
   function SettingsDialog({ onClose }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
-    const contentElRef = useRef<HTMLDivElement | null>(null);
+    const sectionsElRef = useRef<HTMLDivElement | null>(null);
     // The post-update restart wait can run for up to 90s; closing the dialog
     // must stop it rather than let it reload the page or set state later.
     const restartWaitRef = useRef<AbortController | null>(null);
     useEffect(() => () => restartWaitRef.current?.abort(), []);
-    const [contentEl, setContentEl] = useState<HTMLDivElement | undefined>(
+    const [sectionsEl, setSectionsEl] = useState<HTMLDivElement | undefined>(
       undefined
     );
     const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
@@ -276,9 +276,20 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
     // outside React (the browser's notification permission) take this instead.
     const [openNonce, setOpenNonce] = useState(0);
 
-    const contentRefCallback = useCallback((el: HTMLDivElement | null) => {
-      contentElRef.current = el;
-      setContentEl(el ?? undefined);
+    const sectionsRefCallback = useCallback((el: HTMLDivElement | null) => {
+      sectionsElRef.current = el;
+      setSectionsEl(el ?? undefined);
+    }, []);
+
+    const scrollToSection = useCallback((id: string) => {
+      const sections = sectionsElRef.current;
+      const section = sections?.querySelector<HTMLElement>(`#${id}`);
+      if (!sections || !section) return;
+      const top =
+        section.getBoundingClientRect().top -
+        sections.getBoundingClientRect().top +
+        sections.scrollTop;
+      sections.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     }, []);
 
     const configHandlers = useConfigHandlers(
@@ -339,11 +350,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
         void loadAllData();
         shellRef.current?.open();
         if (scrollToId)
-          requestAnimationFrame(() =>
-            contentElRef.current
-              ?.querySelector(`#${scrollToId}`)
-              ?.scrollIntoView({ behavior: 'smooth' })
-          );
+          requestAnimationFrame(() => scrollToSection(scrollToId));
       },
       close() {
         shellRef.current?.close();
@@ -447,15 +454,15 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
         headerExtra={headerExtra}
         onClose={onClose}
       >
-        <div className="settings-dialog-content" ref={contentRefCallback}>
+        <div className="settings-dialog-content">
           {error && <p className="error-msg">{error}</p>}
           <SettingsToc
             open={tocOpen}
             onclose={() => setTocOpen(false)}
-            {...(contentEl ? { contentEl } : {})}
+            {...(sectionsEl ? { sectionsEl } : {})}
             sections={TOC_SECTIONS}
           />
-          <div className="settings-dialog-sections">
+          <div className="settings-dialog-sections" ref={sectionsRefCallback}>
             <GeneralSection
               config={config}
               notifDescription={notifDescription}
