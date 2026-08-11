@@ -1998,6 +1998,24 @@ describe('channel routes — agent commands', () => {
     expect(archived.status).toBe(409);
     expect(calls).toHaveLength(0);
     h.topicStore.restore(h.channelId);
+    const unknown = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-commands`,
+      body: {
+        profileId: 'agent-profile:codex:default',
+        command: 'model',
+        threadId: 'chm:not-a-thread',
+      },
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error.code).toBe('NOT_FOUND');
+    expect(calls).toHaveLength(0);
+    const thread = h.store.createThread({
+      channelId: h.channelId,
+      title: 'Command scope',
+    });
+    const rowsBefore = h.store.history(h.channelId, { limit: 10 });
     const ok = await req<{ ok: boolean }>({
       port: h.port,
       method: 'POST',
@@ -2006,11 +2024,70 @@ describe('channel routes — agent commands', () => {
         profileId: 'agent-profile:codex:default',
         command: 'model',
         args: 'gpt-fast',
+        threadId: thread.rootMessageId,
       },
     });
     expect(ok.status).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(h.store.history(h.channelId, { limit: 10 })).toHaveLength(0);
+    expect(calls).toEqual([
+      [
+        h.channelId,
+        'agent-profile:codex:default',
+        'model',
+        'gpt-fast',
+        false,
+        thread.rootMessageId,
+      ],
+    ]);
+    expect(h.store.history(h.channelId, { limit: 10 })).toEqual(rowsBefore);
+  });
+
+  it('restarts only the requested conversation scope and refuses malformed scope', async () => {
+    const calls: unknown[] = [];
+    const h = await harness({
+      binder: {
+        restartScope: async (...args: unknown[]) => {
+          calls.push(args);
+          return { restarted: 2 };
+        },
+      },
+    });
+
+    const malformed = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-runtimes/restart`,
+      body: { threadId: '' },
+    });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(calls).toEqual([]);
+
+    const unknown = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-runtimes/restart`,
+      body: { threadId: 'chm:not-a-thread' },
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error.code).toBe('NOT_FOUND');
+    expect(calls).toEqual([]);
+
+    const thread = h.store.createThread({
+      channelId: h.channelId,
+      title: 'Apply scope',
+    });
+
+    const restarted = await req<{ ok: boolean; restarted: number }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agent-runtimes/restart`,
+      body: { threadId: thread.rootMessageId },
+    });
+    expect(restarted).toMatchObject({
+      status: 200,
+      body: { ok: true, restarted: 2 },
+    });
+    expect(calls).toEqual([[h.channelId, thread.rootMessageId]]);
   });
 
   const realControlBinder = ({
@@ -2470,6 +2547,40 @@ describe('channel routes — explicit idle agent release', () => {
     expect(res).toMatchObject({ status: 200, body: { ok: true } });
     expect(calls).toEqual([
       { channelId: h.channelId, agentId: 'agent-profile:codex:default' },
+    ]);
+  });
+
+  it('passes an explicit thread scope to the release control without falling back to root', async () => {
+    const calls: Array<{
+      channelId: string;
+      agentId: string;
+      threadId: string | null | undefined;
+    }> = [];
+    const h = await harness({
+      binder: {
+        release: async (
+          channelId: string,
+          agentId: string,
+          threadId?: string | null
+        ) => {
+          calls.push({ channelId, agentId, threadId });
+        },
+      },
+    });
+    const res = await req<{ ok: boolean }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/agents/mock/release`,
+      body: { threadId: 'chm:thread-one' },
+    });
+
+    expect(res).toMatchObject({ status: 200, body: { ok: true } });
+    expect(calls).toEqual([
+      {
+        channelId: h.channelId,
+        agentId: 'mock',
+        threadId: 'chm:thread-one',
+      },
     ]);
   });
 

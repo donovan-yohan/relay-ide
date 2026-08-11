@@ -54,6 +54,8 @@ workflow.
   FIFO queueing, nested child fan-in, and explicit-return de-duplication (#1359)
 - Reversibly archive idle channels from the active conversation header, with
   inline confirmation and the existing older-channel restore path (#1382)
+- Add durable named conversations with isolated thread-scoped agent runtimes,
+  controls, and recent activity navigation (#1386)
 
 #### Changed
 

@@ -1310,7 +1310,8 @@ function postAgentTurnRow(
   text: string,
   knownIds: string[],
   runtimeId = 'runtime:orchestrator',
-  sender: ChannelSenderRef = AGENT_SENDER
+  sender: ChannelSenderRef = AGENT_SENDER,
+  parentMessageId?: string
 ): ChannelMessage {
   const mentions = parseMentions(text, knownIds);
   const stream = store.beginStream({
@@ -1318,6 +1319,7 @@ function postAgentTurnRow(
     sender,
     source: { runtimeId, turnId, itemId },
     ...(mentions.length ? { mentions } : {}),
+    ...(parentMessageId ? { parentMessageId } : {}),
   });
   const message = store.finalizeStream(stream.id, {
     text,
@@ -2296,6 +2298,7 @@ function makeSessions(
         id,
         providerId: params.providerId,
         profileActorId: params.profileActorId,
+        threadId: params.threadId ?? null,
         ...(params.role !== undefined ? { role: params.role } : {}),
         status: 'active',
         adapter,
@@ -2529,6 +2532,49 @@ describe('channel-agent-binder — lifecycle', () => {
       liveRoster[0]?.commands?.find((command) => command.name === 'model')?.args
     ).toEqual([{ value: 'gpt-fast', label: 'GPT Fast' }]);
     expect(rows(store)).toHaveLength(0);
+  });
+
+  it('executes a provider command in its exact thread runtime without creating root state', async () => {
+    const commands: string[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, { mode: 'stall' });
+        Object.assign(adapter, {
+          getSlashCommands: () => [
+            { name: 'compact', dispatch: 'relay-control' },
+          ],
+          executeControlCommand: async ({ command }: { command: string }) => {
+            commands.push(command);
+            return {};
+          },
+        });
+        return adapter;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'conversation root',
+    });
+    const profileId = builtInAgentProfileId('mock');
+
+    await binder.executeCommand(
+      CH,
+      profileId,
+      'compact',
+      undefined,
+      undefined,
+      root.id
+    );
+
+    expect(commands).toEqual(['compact']);
+    expect(sessions.createParams()).toEqual([
+      expect.objectContaining({ threadId: root.id }),
+    ]);
+    expect(store.getBinding(CH, profileId)).toBeNull();
+    expect(store.getBinding(CH, profileId, root.id)?.runtimeId).toBeTruthy();
   });
 
   it('does not advertise unbound Prime controls and treats a connected empty catalog as authoritative', async () => {
@@ -3263,6 +3309,173 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(reply.parentMessageId).toBeNull();
   });
 
+  it('isolates one profile into concurrent thread runtimes and captures channel instructions at spawn', async () => {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({
+      id: CH,
+      workspaceId: 'ws:test',
+      title: 'threaded work',
+      promptDefaults: {
+        systemPrompt: 'You are working in a shared channel.',
+        instructions: 'Keep each conversation self-contained.',
+      },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore: topics,
+    });
+    const first = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'first root',
+    });
+    const second = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'second root',
+    });
+
+    post(store, binder, '@mock first thread', ['mock'], OPERATOR, first.id);
+    post(store, binder, '@mock second thread', ['mock'], OPERATOR, second.id);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+
+    expect(sessions.spawns()).toBe(2);
+    expect(sessions.createParams()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: first.id,
+          systemPrompt:
+            'You are working in a shared channel.\n\nKeep each conversation self-contained.',
+        }),
+        expect.objectContaining({
+          threadId: second.id,
+          systemPrompt:
+            'You are working in a shared channel.\n\nKeep each conversation self-contained.',
+        }),
+      ])
+    );
+    const profileId = builtInAgentProfileId('mock');
+    const firstBinding = store.getBinding(CH, profileId, first.id);
+    const secondBinding = store.getBinding(CH, profileId, second.id);
+    expect(firstBinding?.runtimeId).toBeTruthy();
+    expect(secondBinding?.runtimeId).toBeTruthy();
+    expect(firstBinding?.runtimeId).not.toBe(secondBinding?.runtimeId);
+    expect(agentReplies(store, 'mock').map((reply) => reply.threadId)).toEqual(
+      expect.arrayContaining([first.id, second.id])
+    );
+  });
+
+  it('keeps a live thread prompt stable until explicit apply, then restarts only that scope with the new prompt', async () => {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({
+      id: CH,
+      workspaceId: 'ws:test',
+      title: 'prompt apply',
+      promptDefaults: { systemPrompt: 'old shared instructions' },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore: topics,
+    });
+    const first = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'first root',
+    });
+    const second = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'second root',
+    });
+    post(store, binder, '@mock first', ['mock'], OPERATOR, first.id);
+    post(store, binder, '@mock second', ['mock'], OPERATOR, second.id);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    expect(sessions.createParams()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: first.id,
+          systemPrompt: 'old shared instructions',
+        }),
+        expect.objectContaining({
+          threadId: second.id,
+          systemPrompt: 'old shared instructions',
+        }),
+      ])
+    );
+
+    topics.update(CH, {
+      promptDefaults: { systemPrompt: 'new shared instructions' },
+    });
+    // Topic persistence alone never rewrites a live provider runtime.
+    expect(sessions.spawns()).toBe(2);
+    expect(sessions.createParams()[0]?.systemPrompt).toBe(
+      'old shared instructions'
+    );
+
+    await expect(binder.restartScope(CH, first.id)).resolves.toEqual({
+      restarted: 1,
+    });
+    expect(sessions.spawns()).toBe(3);
+    expect(sessions.createParams()[2]).toMatchObject({
+      threadId: first.id,
+      systemPrompt: 'new shared instructions',
+    });
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('mock'), second.id)?.runtimeId
+    ).toBeTruthy();
+    expect(sessions.destroyCalls()).toHaveLength(1);
+  });
+
+  it('refuses prompt apply while the selected thread has a live turn', async () => {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({
+      id: CH,
+      workspaceId: 'ws:test',
+      title: 'busy prompt apply',
+      promptDefaults: { systemPrompt: 'old instructions' },
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 80 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      topicStore: topics,
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'busy root',
+    });
+    post(store, binder, '@mock work', ['mock'], OPERATOR, root.id);
+    await waitFor(() =>
+      rows(store).some(
+        (message) =>
+          message.threadId === root.id &&
+          message.sender.providerId === 'mock' &&
+          message.status === 'streaming'
+      )
+    );
+    topics.update(CH, {
+      promptDefaults: { systemPrompt: 'new instructions' },
+    });
+
+    await expect(binder.restartScope(CH, root.id)).rejects.toMatchObject({
+      reasonCode: 'CHANNEL_AGENT_NOT_IDLE',
+    });
+    expect(sessions.spawns()).toBe(1);
+    expect(sessions.destroyCalls()).toEqual([]);
+    expect(sessions.createParams()[0]).toMatchObject({
+      threadId: root.id,
+      systemPrompt: 'old instructions',
+    });
+  });
+
   it.each([
     ['the routed turn id', false],
     ['the unambiguous Hermes turn-0 fallback', true],
@@ -3341,7 +3554,7 @@ describe('channel-agent-binder — lifecycle', () => {
     });
   });
 
-  it('fails closed when a turn-0 fallback could belong to multiple turns', async () => {
+  it('fails closed to the known conversation root when a turn-0 fallback is ambiguous', async () => {
     const { binder, store } = makeBinder({
       build: (agentType) => new LateOpeningReplyAdapter(agentType, true),
       targets: MOCK_TARGETS,
@@ -3352,17 +3565,14 @@ describe('channel-agent-binder — lifecycle', () => {
       sender: OPERATOR,
       text: 'root one',
     });
-    const rootTwo = store.appendComplete({
-      channelId: CH,
-      sender: OPERATOR,
-      text: 'root two',
-    });
     post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
-    post(store, binder, '@mock two', ['mock'], OPERATOR, rootTwo.id);
+    post(store, binder, '@mock two', ['mock'], OPERATOR, rootOne.id);
     await waitFor(() => agentReplies(store, 'mock').length === 2);
     for (const reply of agentReplies(store, 'mock')) {
-      expect(reply.threadId).toBeNull();
-      expect(reply.parentMessageId).toBeNull();
+      expect(reply.threadId).toBe(rootOne.id);
+      // The two provider fallback rows cannot safely borrow either trigger,
+      // but the runtime itself is scoped to this durable conversation.
+      expect(reply.parentMessageId).toBe(rootOne.id);
     }
   });
 
@@ -3401,16 +3611,6 @@ describe('channel-agent-binder — lifecycle', () => {
       sender: OPERATOR,
       text: 'root one',
     });
-    const rootTwo = store.appendComplete({
-      channelId: CH,
-      sender: OPERATOR,
-      text: 'root two',
-    });
-    const rootThree = store.appendComplete({
-      channelId: CH,
-      sender: OPERATOR,
-      text: 'root three',
-    });
     post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
     const triggerTwo = post(
       store,
@@ -3418,7 +3618,7 @@ describe('channel-agent-binder — lifecycle', () => {
       '@mock two',
       ['mock'],
       OPERATOR,
-      rootTwo.id
+      rootOne.id
     );
     await waitFor(() => sessions.spawns() === 1);
     const adapter = sessions.adapterFor(
@@ -3428,7 +3628,7 @@ describe('channel-agent-binder — lifecycle', () => {
     adapter.emitLate(adapter.sendCalls[1]!);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(agentReplies(store, 'mock')[0]).toMatchObject({
-      threadId: rootTwo.id,
+      threadId: rootOne.id,
       parentMessageId: triggerTwo.id,
     });
     // Exact terminal evidence identifies and releases B, clearing the overlap
@@ -3440,13 +3640,13 @@ describe('channel-agent-binder — lifecycle', () => {
       '@mock three',
       ['mock'],
       OPERATOR,
-      rootThree.id
+      rootOne.id
     );
     await waitFor(() => adapter.sendCalls.length === 3);
     adapter.emitLate('turn-0', 'valid fallback');
     await waitFor(() => agentReplies(store, 'mock').length === 2);
     expect(agentReplies(store, 'mock')[1]).toMatchObject({
-      threadId: rootThree.id,
+      threadId: rootOne.id,
       parentMessageId: triggerThree.id,
     });
   });
@@ -3462,13 +3662,8 @@ describe('channel-agent-binder — lifecycle', () => {
       sender: OPERATOR,
       text: 'root one',
     });
-    const rootTwo = store.appendComplete({
-      channelId: CH,
-      sender: OPERATOR,
-      text: 'root two',
-    });
     post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
-    post(store, binder, '@mock two', ['mock'], OPERATOR, rootTwo.id);
+    post(store, binder, '@mock two', ['mock'], OPERATOR, rootOne.id);
     await waitFor(() => sessions.spawns() === 1);
     const adapter = sessions.adapterFor(
       sessions.firstSessionId()
@@ -3479,8 +3674,8 @@ describe('channel-agent-binder — lifecycle', () => {
     adapter.emitLate('turn-0', 'stale reply');
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(agentReplies(store, 'mock')[0]).toMatchObject({
-      threadId: null,
-      parentMessageId: null,
+      threadId: rootOne.id,
+      parentMessageId: rootOne.id,
     });
   });
 
@@ -3490,20 +3685,8 @@ describe('channel-agent-binder — lifecycle', () => {
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
     });
-    const root = store.appendComplete({
-      channelId: CH,
-      sender: OPERATOR,
-      text: 'root',
-    });
     post(store, binder, '@mock first', ['mock']);
-    const successor = post(
-      store,
-      binder,
-      '@mock successor',
-      ['mock'],
-      OPERATOR,
-      root.id
-    );
+    post(store, binder, '@mock successor', ['mock']);
     await waitFor(() => sessions.spawns() === 1);
     const adapter = sessions.adapterFor(
       sessions.firstSessionId()
@@ -3520,8 +3703,8 @@ describe('channel-agent-binder — lifecycle', () => {
     adapter.emitLate(adapter.sendCalls[1]!, 'successor late reply');
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(agentReplies(store, 'mock')[0]).toMatchObject({
-      threadId: root.id,
-      parentMessageId: successor.id,
+      threadId: null,
+      parentMessageId: null,
     });
     adapter.emitCompleted(adapter.sendCalls[1]!);
     expect(binding.parentMessageIdByTurn.size).toBe(0);
@@ -3629,7 +3812,7 @@ describe('channel-agent-binder — lifecycle', () => {
     ).toHaveLength(0);
   });
 
-  it('queue overflow past the cap drops a non-coalescing message with a system row', async () => {
+  it('keeps queue caps isolated between conversations', async () => {
     const { binder, store } = makeBinder({
       build: () => new ScriptedAdapter('stall', { mode: 'stall' }),
       targets: [
@@ -3658,9 +3841,9 @@ describe('channel-agent-binder — lifecycle', () => {
       post(store, binder, `@stall a${i}`, ['stall'], OPERATOR, rootA.id);
     }
     await new Promise((r) => setTimeout(r, 120));
-    // A thread-B post cannot be represented by the thread-A tail, so the cap
-    // refuses it explicitly rather than silently losing it.
-    const overflow = post(
+    // Thread B owns an independent runtime/queue, so thread A's cap cannot
+    // drop its post.
+    const independent = post(
       store,
       binder,
       '@stall b0',
@@ -3668,16 +3851,15 @@ describe('channel-agent-binder — lifecycle', () => {
       OPERATOR,
       rootB.id
     );
-    await waitFor(() =>
-      systemRows(store).some((m) => m.body.text.includes('message dropped'))
+    await waitFor(
+      () =>
+        store.getBinding(CH, builtInAgentProfileId('stall'), rootB.id)
+          ?.runtimeId != null
     );
-    const dropped = systemRows(store).filter((m) =>
-      m.body.text.includes('message dropped')
-    );
-    expect(dropped).toHaveLength(1);
-    expect(dropped[0]!.body.text).toContain('has 8 messages pending');
-    expect(dropped[0]!.threadId).toBe(rootB.id);
-    expect(dropped[0]!.parentMessageId).toBe(overflow.id);
+    expect(
+      systemRows(store).filter((m) => m.body.text.includes('message dropped'))
+    ).toHaveLength(0);
+    expect(independent.threadId).toBe(rootB.id);
   });
 
   it('runtime death unbinds, clears the binding, and respawns on next mention', async () => {
@@ -4522,6 +4704,103 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     await waitFor(() => agentReplies(store).length > beforeReset, 6000);
     expect(agentReplies(store).length).toBeGreaterThan(beforeReset);
   });
+
+  it('isolates the autonomous-turn brake and its human reset by thread root', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const first = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'first root',
+    });
+    const second = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'second root',
+    });
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `first-${index}`,
+        'item-0',
+        '@mock continue first',
+        ['mock'],
+        'runtime:first',
+        AGENT_SENDER,
+        first.id
+      );
+    }
+    await waitFor(
+      () =>
+        agentReplies(store, 'mock').filter(
+          (message) => message.threadId === first.id
+        ).length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+    postAgentTurnRow(
+      store,
+      binder,
+      'first-cap',
+      'item-0',
+      '@mock pause first',
+      ['mock'],
+      'runtime:first',
+      AGENT_SENDER,
+      first.id
+    );
+    await waitFor(() =>
+      systemRows(store).some(
+        (message) =>
+          message.threadId === first.id &&
+          message.body.text.includes('Mention chain paused')
+      )
+    );
+
+    // A separate conversation still admits autonomous work, and a human there
+    // must not reset the paused chain above.
+    postAgentTurnRow(
+      store,
+      binder,
+      'second-first',
+      'item-0',
+      '@mock continue second',
+      ['mock'],
+      'runtime:second',
+      AGENT_SENDER,
+      second.id
+    );
+    await waitFor(() =>
+      agentReplies(store, 'mock').some(
+        (message) => message.threadId === second.id
+      )
+    );
+    post(store, binder, '@mock human second', ['mock'], OPERATOR, second.id);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const firstRepliesBefore = agentReplies(store, 'mock').filter(
+      (message) => message.threadId === first.id
+    ).length;
+    postAgentTurnRow(
+      store,
+      binder,
+      'first-still-paused',
+      'item-0',
+      '@mock remain paused',
+      ['mock'],
+      'runtime:first',
+      AGENT_SENDER,
+      first.id
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      agentReplies(store, 'mock').filter(
+        (message) => message.threadId === first.id
+      )
+    ).toHaveLength(firstRepliesBefore);
+  });
 });
 
 describe('channel-agent-binder — roster + availability', () => {
@@ -5024,6 +5303,53 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     await expect(binder.interrupt(CH, 'mock')).rejects.toThrow(); // idle
   });
+
+  it('interrupts only the selected thread runtime for a shared profile', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 80 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const first = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'first root',
+    });
+    const second = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'second root',
+    });
+    post(store, binder, '@mock first', ['mock'], OPERATOR, first.id);
+    post(store, binder, '@mock second', ['mock'], OPERATOR, second.id);
+    await waitFor(
+      () =>
+        rows(store).filter(
+          (message) =>
+            message.sender.providerId === 'mock' &&
+            message.status === 'streaming'
+        ).length >= 2
+    );
+    expect(sessions.spawns()).toBe(2);
+
+    await binder.interrupt(CH, 'mock', first.id);
+    await waitFor(() =>
+      rows(store).some(
+        (message) =>
+          message.sender.providerId === 'mock' &&
+          message.threadId === first.id &&
+          message.status === 'interrupted'
+      )
+    );
+    expect(
+      rows(store).some(
+        (message) =>
+          message.sender.providerId === 'mock' &&
+          message.threadId === second.id &&
+          message.status === 'interrupted'
+      )
+    ).toBe(false);
+  });
 });
 
 // ── #1180 review findings ─────────────────────────────────────────────────────
@@ -5189,7 +5515,7 @@ describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () 
     expect(failure.threadId).toBe(root.id);
     expect(failure.parentMessageId).toBe(failedTrigger.id);
     // Binding recovered (not stuck turn-active): the next mention delivers.
-    post(store, binder, '@mock two', ['mock']);
+    post(store, binder, '@mock two', ['mock'], OPERATOR, root.id);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(sessions.spawns()).toBe(1); // reused, not respawned/wedged
     expect(agentReplies(store, 'mock')).toHaveLength(1);
@@ -5337,7 +5663,13 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     expect(approvalRow.parentMessageId).toBe(trigger.id);
 
     const a = built[0]!;
-    await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
+    await binder.respondToApproval(
+      CH,
+      'mock',
+      requestId,
+      { kind: 'accept' },
+      root.id
+    );
     // Adapter received the mapped decision.
     expect(a.respondCalls).toHaveLength(1);
     expect(a.respondCalls[0]).toMatchObject({
@@ -6002,12 +6334,16 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
 
   it('keeps an implicit orchestrator reply in the triggering thread', async () => {
     const topics = makeProductTopics();
-    const adapter = new ScriptedAdapter('orchestrator', {
-      mode: 'reply',
-      text: 'threaded ack',
-    });
-    const { binder, store } = makeBinder({
-      build: () => adapter,
+    const adapters: ScriptedAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: () => {
+        const adapter = new ScriptedAdapter('orchestrator', {
+          mode: 'reply',
+          text: 'threaded ack',
+        });
+        adapters.push(adapter);
+        return adapter;
+      },
       targets: [TARGETS[0]!],
       knownProviderIds: ['orchestrator'],
       topicStore: topics,
@@ -6028,22 +6364,28 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
     );
 
     await waitFor(() => agentReplies(store, 'orchestrator').length === 1);
+    expect(sessions.spawns()).toBe(2);
+    expect(adapters).toHaveLength(2);
     expect(agentReplies(store, 'orchestrator')[0]).toMatchObject({
       threadId: root.id,
       parentMessageId: trigger.id,
     });
   });
 
-  it('preserves FIFO queue semantics for implicit turns', async () => {
+  it('preserves FIFO queue semantics for implicit thread turns', async () => {
     const topics = makeProductTopics();
-    const adapter = new ScriptedAdapter('orchestrator', { mode: 'stall' });
-    const { binder, store } = makeBinder({
-      build: () => adapter,
+    const adapters: ScriptedAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: () => {
+        const adapter = new ScriptedAdapter('orchestrator', { mode: 'stall' });
+        adapters.push(adapter);
+        return adapter;
+      },
       targets: [TARGETS[0]!],
       knownProviderIds: ['orchestrator'],
       topicStore: topics,
     });
-    const binding = await binder.ensureOrchestrator(CH, 'orchestrator');
+    await binder.ensureOrchestrator(CH, 'orchestrator');
     const root = store.appendComplete({
       channelId: CH,
       sender: OPERATOR,
@@ -6058,7 +6400,10 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
       OPERATOR,
       root.id
     );
-    await waitFor(() => adapter.sendCalls.length === 1);
+    await waitFor(
+      () => adapters.length === 2 && adapters[1]!.sendCalls.length === 1
+    );
+    const threadAdapter = adapters[1]!;
     post(
       store,
       binder,
@@ -6067,19 +6412,19 @@ describe('channel-agent-binder — orchestrator default-routing matrix', () => {
       OPERATOR,
       root.id
     );
-    await waitFor(() => binding.queue.length === 1);
-    const roster = await binder.rosterForChannel(CH);
-    expect(roster[0]?.binding?.queuedCount).toBe(1);
+    await waitFor(() =>
+      binder.archiveActivityForChannel(CH).reasons.includes('queued-turn')
+    );
+    expect(sessions.spawns()).toBe(2);
 
-    expect(adapter.sendInputs[0]?.turnId).toBe(
+    expect(threadAdapter.sendInputs[0]?.turnId).toBe(
       channelTurnId(first.id, builtInAgentProfileId('orchestrator'))
     );
-    expect(binding.parentMessageIdByTurn.get(adapter.sendCalls[0]!)).toBe(
-      first.id
-    );
-    expect(binding.queue.map((entry) => entry.trigger.threadId)).toEqual([
-      root.id,
-    ]);
+    expect(threadAdapter.sendCalls).toHaveLength(1);
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('orchestrator'), root.id)
+        ?.runtimeId
+    ).toBeTruthy();
   });
 });
 

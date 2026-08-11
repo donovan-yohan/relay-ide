@@ -13,6 +13,8 @@ import type { ChannelMessageId } from '../../shared/channel-chat-protocol.js';
 const mocks = vi.hoisted(() => ({
   fetchWorkspaceTopic: vi.fn(),
   fetchChannelRoster: vi.fn(),
+  interruptChannelAgent: vi.fn(),
+  restartChannelAgentRuntimes: vi.fn(),
 }));
 
 vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
@@ -22,6 +24,8 @@ vi.mock('../../frontend/src/lib/api.js', async (importOriginal) => {
     ...actual,
     fetchWorkspaceTopic: mocks.fetchWorkspaceTopic,
     fetchChannelRoster: mocks.fetchChannelRoster,
+    interruptChannelAgent: mocks.interruptChannelAgent,
+    restartChannelAgentRuntimes: mocks.restartChannelAgentRuntimes,
   };
 });
 
@@ -73,6 +77,8 @@ vi.mock('../../frontend/src/components/chat/ChannelThreadPanel.js', () => ({
 const { ChannelView } =
   await import('../../frontend/src/components/chat/ChannelView.js');
 const { useUiStore } = await import('../../frontend/src/lib/stores/ui.js');
+const { useChannelAgentStatusStore } =
+  await import('../../frontend/src/lib/stores/channel-agent-status.js');
 
 const CHANNEL_ID = 'topic:alpha';
 const OTHER_CHANNEL_ID = 'topic:beta';
@@ -116,6 +122,8 @@ function openThreadRoot(): string | null {
 beforeEach(() => {
   mocks.fetchWorkspaceTopic.mockReset();
   mocks.fetchChannelRoster.mockReset();
+  mocks.interruptChannelAgent.mockReset();
+  mocks.restartChannelAgentRuntimes.mockReset();
   mocks.fetchWorkspaceTopic.mockResolvedValue({
     id: CHANNEL_ID,
     workspaceId: 'ws:local',
@@ -123,6 +131,8 @@ beforeEach(() => {
     routingDefaults: {},
   });
   mocks.fetchChannelRoster.mockResolvedValue([]);
+  mocks.interruptChannelAgent.mockResolvedValue(undefined);
+  mocks.restartChannelAgentRuntimes.mockResolvedValue({ restarted: 1 });
   vi.stubGlobal('matchMedia', () => ({
     matches: false,
     addEventListener: () => {},
@@ -132,6 +142,15 @@ beforeEach(() => {
     activeChannelId: null,
     activeThreadRootId: null,
     pendingChannelThread: null,
+  });
+  useChannelAgentStatusStore.setState({
+    statusByChannelAgent: {},
+    runtimeByChannelAgent: {},
+    queuedCountByChannelAgent: {},
+    steeringCountByChannelAgent: {},
+    steerSupportedByChannelAgent: {},
+    queueDrainSeqByChannelAgent: {},
+    updatedAtByChannelAgent: {},
   });
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
@@ -222,5 +241,45 @@ describe('ChannelView thread-open intent (#1287 slice 5 item 18)', () => {
 
     expect(openThreadRoot()).toBeNull();
     expect(useUiStore.getState().activeThreadRootId).toBeNull();
+  });
+
+  it('keeps stop and instruction apply scoped to the open conversation', async () => {
+    useUiStore.getState().setActiveChannelId(CHANNEL_ID);
+    useUiStore.getState().requestChannelThread(CHANNEL_ID, ROOT_ID);
+    await render(CHANNEL_ID);
+    useChannelAgentStatusStore
+      .getState()
+      .recordStatus(
+        CHANNEL_ID,
+        'agent-profile:mock:default',
+        'streaming',
+        'runtime:thread',
+        0,
+        0,
+        false,
+        ROOT_ID
+      );
+    await flush();
+
+    const stop = container.querySelector<HTMLButtonElement>(
+      '.ch-agent-chip__stop'
+    );
+    expect(stop?.getAttribute('aria-label')).toContain('in conversation');
+    await act(async () => stop?.click());
+    expect(mocks.interruptChannelAgent).toHaveBeenCalledWith(
+      CHANNEL_ID,
+      'agent-profile:mock:default',
+      ROOT_ID
+    );
+
+    const apply = [
+      ...container.querySelectorAll<HTMLButtonElement>('button'),
+    ].find((button) => button.textContent === 'apply instructions');
+    await act(async () => apply?.click());
+    await flush();
+    expect(mocks.restartChannelAgentRuntimes).toHaveBeenCalledWith(
+      CHANNEL_ID,
+      ROOT_ID
+    );
   });
 });

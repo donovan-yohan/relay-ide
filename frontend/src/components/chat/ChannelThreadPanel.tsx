@@ -35,6 +35,7 @@ const DM_THREAD_PLACEHOLDER = 'reply in thread…  ·  shift+enter for newline';
 interface ChannelThreadPanelProps {
   channelId: string;
   channelTitle: string;
+  threadTitle?: string;
   /** True when the channel is a DM (one agent, implicit routing). */
   isDm?: boolean;
   /** Codex DM provider hint for bare `/command` syntax. */
@@ -42,6 +43,7 @@ interface ChannelThreadPanelProps {
   rootId: ChannelMessageId;
   liveMessages: ChannelMessage[];
   onClose: () => void;
+  onRename?: (title: string) => Promise<void>;
   onSend: (
     text: string,
     clientMessageId: string,
@@ -68,11 +70,13 @@ interface ChannelThreadPanelProps {
 export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   channelId,
   channelTitle,
+  threadTitle,
   isDm = false,
   implicitCommandProviderId,
   rootId,
   liveMessages,
   onClose,
+  onRename,
   onSend,
   busyAgentLabels,
   busyAgentSteeringMode,
@@ -92,7 +96,9 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
     loading,
     error,
     rootFloorRevision,
+    threadTitle: fetchedThreadTitle,
   } = useChannelThread(channelId, rootId, liveMessages);
+  const durableThreadTitle = threadTitle?.trim() || fetchedThreadTitle?.trim();
   const reasoningViewState = useReasoningDetailStateScope(
     `thread:${channelId}:${rootId}`
   );
@@ -149,7 +155,9 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
       }}
     >
       <header className="ch-thread__header">
-        <span className="ch-thread__title">thread</span>
+        <span className="ch-thread__title">
+          {durableThreadTitle || 'thread'}
+        </span>
         <span className="ch-thread__count">
           · {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
         </span>
@@ -166,6 +174,21 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
             ‹ back
           </span>
         </button>
+        {onRename ? (
+          <button
+            type="button"
+            className="ch-thread__rename"
+            onClick={() => {
+              const next = window.prompt(
+                'conversation title',
+                durableThreadTitle ?? ''
+              );
+              if (next?.trim()) void onRename(next);
+            }}
+          >
+            rename
+          </button>
+        ) : null}
       </header>
 
       <div className="ch-thread__root">
@@ -266,6 +289,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
       <ChannelComposer
         channelId={channelId}
         channelTitle={channelTitle}
+        threadId={rootId}
         placeholder={isDm ? DM_THREAD_PLACEHOLDER : THREAD_PLACEHOLDER}
         {...(implicitCommandProviderId ? { implicitCommandProviderId } : {})}
         onSend={onSend}

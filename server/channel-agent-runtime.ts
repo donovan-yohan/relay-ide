@@ -38,6 +38,8 @@ export interface CreateChannelAgentRuntimeParams {
   id?: string;
   /** Durable channel binding; required for an orchestrator actor lease. */
   channelId?: string;
+  /** Conversation scope for a channel runtime; null is the root channel. */
+  threadId?: string | null;
   providerId: string;
   profileActorId: string;
   role?: AgentRole;
@@ -66,6 +68,7 @@ export interface CreateChannelAgentRuntimeParams {
  */
 export interface ChannelAgentRuntime {
   id: string;
+  threadId?: string | null;
   providerId: string;
   profileActorId: string;
   role?: AgentRole;
@@ -421,6 +424,7 @@ export class ChannelAgentRuntimeManager {
     const now = new Date().toISOString();
     const runtime: ChannelAgentRuntime = {
       id,
+      threadId: params.threadId ?? null,
       providerId: params.providerId,
       profileActorId: params.profileActorId,
       ...(params.role ? { role: params.role } : {}),
@@ -510,11 +514,13 @@ export class ChannelAgentRuntimeManager {
         ? { resumeSessionId: savedResumeId }
         : {}),
       systemPromptAppendix: [
+        // Channel/profile material is provider-neutral but never gets to
+        // redefine Relay's runtime boundary: the Relay appendix comes last.
+        params.systemPrompt,
         collaborationPromptAppendix({
           provider: params.providerId,
           ...(params.role ? { role: params.role } : {}),
         }),
-        params.systemPrompt,
       ]
         .filter((part): part is string => Boolean(part?.trim()))
         .join('\n\n'),

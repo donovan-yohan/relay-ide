@@ -251,9 +251,17 @@ export interface ChannelAgentBinder {
     framework?: string,
     profileActorId?: string
   ): Promise<LiveBinding>;
-  interrupt(channelId: string, agentId: string): Promise<void>;
+  interrupt(
+    channelId: string,
+    agentId: string,
+    threadId?: string | null
+  ): Promise<void>;
   /** Explicit operator release; only an actually idle, unqueued binding may end. */
-  release(channelId: string, agentId: string): Promise<void>;
+  release(
+    channelId: string,
+    agentId: string,
+    threadId?: string | null
+  ): Promise<void>;
   /**
    * Apply steering to an ALREADY-persisted row (#1308 slice 4). Used by the post
    * route when `clientMessageId` idempotency returns an existing row: the
@@ -275,7 +283,8 @@ export interface ChannelAgentBinder {
     channelId: string,
     agentId: string,
     requestId: string,
-    decision: AgentApprovalDecisionV2
+    decision: AgentApprovalDecisionV2,
+    threadId?: string | null
   ): Promise<void>;
   rosterForChannel(channelId: string): Promise<ChannelAgentRosterEntry[]>;
   /**
@@ -288,8 +297,18 @@ export interface ChannelAgentBinder {
     profileActorId: string,
     command: string,
     args?: string,
-    confirmed?: boolean
+    confirmed?: boolean,
+    threadId?: string | null
   ): Promise<{ config?: Record<string, unknown> }>;
+  /**
+   * Recreate every idle runtime in exactly one conversation scope so its
+   * provider receives updated channel instructions at launch. A busy turn is
+   * never interrupted or silently reconfigured.
+   */
+  restartScope(
+    channelId: string,
+    threadId?: string | null
+  ): Promise<{ restarted: number }>;
   /** `channelId` permits DM-only bare controls without reserving group prose. */
   isControlMessage(text: string, channelId?: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
@@ -325,6 +344,8 @@ interface CallbackEdgeRequest {
 
 export interface LiveBinding {
   channelId: string;
+  /** Null is the root-channel execution scope. */
+  threadId: string | null;
   /** Actor id, not provider id: one profile owns one live channel runtime. */
   profileActorId: string;
   framework: string;
@@ -423,6 +444,25 @@ export class ChannelAgentReleaseRefusedError extends Error {
   }
 }
 
+/** A configuration apply never abandons an active or queued provider turn. */
+export class ChannelAgentRestartRefusedError extends Error {
+  constructor(
+    readonly channelId: string,
+    readonly threadId: string | null,
+    readonly profileActorId: string,
+    readonly status: ChannelAgentStatus,
+    readonly reasonCode:
+      | 'CHANNEL_AGENT_NOT_IDLE'
+      | 'CHANNEL_AGENT_QUEUE_NOT_EMPTY'
+      | 'CHANNEL_AGENT_WAITING_ON_OPERATOR'
+  ) {
+    super(
+      `agent ${profileActorId} cannot apply instructions while ${reasonCode}`
+    );
+    this.name = 'ChannelAgentRestartRefusedError';
+  }
+}
+
 /**
  * The row cannot be re-routed: it is not a retryable agent row, its turn id was
  * not binder-minted (a provider-labelled item), or the original trigger has
@@ -516,12 +556,26 @@ class BinderClosedError extends Error {
 
 const SYSTEM_SENDER = { kind: 'system', id: 'system' } as const;
 
-function bindingKey(channelId: string, profileActorId: string): string {
-  return `${channelId}\u0000${profileActorId}`;
+function bindingKey(
+  channelId: string,
+  profileActorId: string,
+  threadId: string | null = null
+): string {
+  // An explicit empty component is the root/channel scope. It keeps a thread
+  // queue, provider-session identity and controls from collapsing into root.
+  return `${channelId}\u0000${threadId ?? ''}\u0000${profileActorId}`;
+}
+
+/** Autonomous agent chains are isolated just like their runtime bindings. */
+function conversationScopeKey(
+  channelId: string,
+  threadId: string | null = null
+): string {
+  return `${channelId}\u0000${threadId ?? ''}`;
 }
 
 function bindingKeyPrefix(channelId: string): string {
-  return bindingKey(channelId, '');
+  return `${channelId}\u0000`;
 }
 
 export function createChannelAgentBinder(
@@ -536,6 +590,10 @@ export function createChannelAgentBinder(
 
   const live = new Map<string, LiveBinding>();
   const inflight = new Map<string, Promise<LiveBinding>>();
+  // An explicit instruction apply has a destructive middle (runtime teardown).
+  // Coalesce duplicate browser/API clicks for one conversation so two applies
+  // cannot both pass the idle preflight and recreate competing runtimes.
+  const restartInFlight = new Map<string, Promise<{ restarted: number }>>();
   // Designation is a channel-level invariant, not a (channel, profile) spawn.
   // Serialize competing profile requests before either can launch a loser.
   const orchestratorInflight = new Map<string, Promise<LiveBinding>>();
@@ -648,9 +706,15 @@ export function createChannelAgentBinder(
     turnId: string
   ): string | undefined {
     const key = parentKeyForTurn(binding, turnId);
-    return key === undefined
-      ? undefined
-      : (binding.parentMessageIdByTurn.get(key) ?? undefined);
+    const triggerParent =
+      key === undefined
+        ? undefined
+        : (binding.parentMessageIdByTurn.get(key) ?? undefined);
+    // An ambiguous provider fallback must not borrow a possibly wrong trigger,
+    // but a thread-scoped runtime still knows its durable conversation root.
+    // Keep its output in that conversation rather than leaking it to the root
+    // channel just because the immediate parent was deliberately withheld.
+    return triggerParent ?? binding.threadId ?? undefined;
   }
 
   function releaseTurnParent(binding: LiveBinding, turnId: string): void {
@@ -912,7 +976,12 @@ export function createChannelAgentBinder(
         );
         continue;
       }
-      void ensureProfileBinding(edge.channelId, profile)
+      void ensureProfileBinding(
+        edge.channelId,
+        profile,
+        undefined,
+        edge.threadId
+      )
         .then((binding) => {
           if (closed) return;
           if (!enqueueTurn(binding, trigger, undefined, false, edge)) {
@@ -1152,6 +1221,7 @@ export function createChannelAgentBinder(
     binding.emittedSteerSupported = steerSupported;
     statusBroadcaster?.('channel-agent-status', {
       channelId: binding.channelId,
+      threadId: binding.threadId,
       agentId: binding.profileActorId,
       status: binding.status,
       runtimeId: binding.runtimeId ?? null,
@@ -1199,10 +1269,12 @@ export function createChannelAgentBinder(
     channelId: string,
     profileActorId: string,
     framework: string,
-    displayName: string
+    displayName: string,
+    threadId: string | null = null
   ): LiveBinding {
     return {
       channelId,
+      threadId,
       profileActorId,
       framework,
       displayName,
@@ -1264,9 +1336,10 @@ export function createChannelAgentBinder(
     profileActorId: string,
     framework: string,
     senderDisplayName: string,
-    runtime: Pick<ChannelAgentRuntime, 'id' | 'adapter' | 'agentAttribution'>
+    runtime: Pick<ChannelAgentRuntime, 'id' | 'adapter' | 'agentAttribution'>,
+    threadId: string | null = null
   ): LiveBinding {
-    const key = bindingKey(channelId, profileActorId);
+    const key = bindingKey(channelId, profileActorId, threadId);
     const existing = live.get(key);
     // Tear down any prior wiring before re-binding a fresh adapter.
     existing?.unbind?.();
@@ -1286,7 +1359,14 @@ export function createChannelAgentBinder(
     }
     const binding =
       existing ??
-      newLiveBinding(channelId, profileActorId, framework, senderDisplayName);
+      newLiveBinding(
+        channelId,
+        profileActorId,
+        framework,
+        senderDisplayName,
+        threadId
+      );
+    binding.threadId = threadId;
     binding.profileActorId = profileActorId;
     binding.displayName = senderDisplayName;
     binding.runtimeId = runtime.id;
@@ -1323,7 +1403,8 @@ export function createChannelAgentBinder(
   function healthyRuntime(
     runtimeId: string | null,
     framework: string,
-    profileActorId: string
+    profileActorId: string,
+    threadId: string | null = null
   ): ChannelAgentRuntime | null {
     if (!runtimeId) return null;
     const runtime = deps.runtimes.get(runtimeId);
@@ -1331,6 +1412,7 @@ export function createChannelAgentBinder(
       runtime &&
       runtime.providerId === framework &&
       runtime.profileActorId === profileActorId &&
+      (runtime.threadId ?? null) === threadId &&
       runtime.status === 'active' &&
       runtime.adapter
     ) {
@@ -1346,6 +1428,28 @@ export function createChannelAgentBinder(
   ): string {
     const topic = topicStore?.get(channelId);
     return `#${topic?.display.title ?? channelId} · ${profile.displayName || framework}`;
+  }
+
+  /**
+   * One provider-neutral composition path for every channel runtime. Defaults
+   * are captured when a runtime is spawned/restarted; changing a topic never
+   * mutates a live provider context behind the operator's back.
+   */
+  function composedRuntimePrompt(
+    topic:
+      | ReturnType<NonNullable<ChannelAgentBinderDeps['topicStore']>['get']>
+      | undefined,
+    profile: AgentProfile
+  ): string | undefined {
+    const parts = [
+      topic?.promptDefaults.systemPrompt,
+      topic?.promptDefaults.instructions,
+      profile.systemPrompt,
+    ].filter(
+      (part): part is string =>
+        typeof part === 'string' && part.trim().length > 0
+    );
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
 
   function assertRuntimeRole(
@@ -1366,14 +1470,15 @@ export function createChannelAgentBinder(
   async function doEnsureBinding(
     channelId: string,
     profile: AgentProfile,
-    requiredRole?: 'orchestrator'
+    requiredRole?: 'orchestrator',
+    threadId: string | null = null
   ): Promise<LiveBinding> {
     if (closed) throw new BinderClosedError();
     const framework = profile.providerId;
     const profileActorId = profile.id;
-    const key = bindingKey(channelId, profileActorId);
+    const key = bindingKey(channelId, profileActorId, threadId);
     const runtimeDisplayName = displayNameFor(channelId, framework, profile);
-    const row = store.getBinding(channelId, profileActorId);
+    const row = store.getBinding(channelId, profileActorId, threadId);
     // Once a profile is durably designated, every recovery path preserves that
     // runtime role — including an explicit mention that happens after restart.
     const effectiveRole = requiredRole ?? row?.role ?? undefined;
@@ -1384,7 +1489,8 @@ export function createChannelAgentBinder(
       const runtime = healthyRuntime(
         existing.runtimeId,
         framework,
-        profileActorId
+        profileActorId,
+        threadId
       );
       if (runtime && runtime.adapter === existing.adapter) {
         assertRuntimeRole(channelId, framework, runtime, effectiveRole);
@@ -1407,7 +1513,8 @@ export function createChannelAgentBinder(
     const restored = healthyRuntime(
       row?.runtimeId ?? null,
       framework,
-      profileActorId
+      profileActorId,
+      threadId
     );
     if (restored) {
       assertRuntimeRole(channelId, framework, restored, effectiveRole);
@@ -1416,7 +1523,8 @@ export function createChannelAgentBinder(
         profileActorId,
         framework,
         senderDisplayName,
-        restored
+        restored,
+        threadId
       );
     }
 
@@ -1434,17 +1542,25 @@ export function createChannelAgentBinder(
 
     // 4. Spawn a fresh private runtime for this channel participant.
     const routing = topic?.routingDefaults ?? {};
+    const inheritedPrompt = composedRuntimePrompt(topic, profile);
     const cwd =
       routing.cwd ?? routing.worktreePath ?? routing.repoPath ?? os.homedir();
     const provisional =
       existing ??
-      newLiveBinding(channelId, profileActorId, framework, senderDisplayName);
+      newLiveBinding(
+        channelId,
+        profileActorId,
+        framework,
+        senderDisplayName,
+        threadId
+      );
     live.set(key, provisional);
     setStatus(provisional, 'spawning');
     let created: ChannelAgentRuntime;
     try {
       created = await deps.runtimes.create({
         channelId,
+        threadId,
         providerId: framework,
         profileActorId,
         cwd,
@@ -1462,8 +1578,8 @@ export function createChannelAgentBinder(
         ...(profile.envVars !== undefined
           ? { processEnv: profile.envVars }
           : {}),
-        ...(profile.systemPrompt !== undefined
-          ? { systemPrompt: profile.systemPrompt }
+        ...(inheritedPrompt !== undefined
+          ? { systemPrompt: inheritedPrompt }
           : {}),
         ...(profile.provider !== undefined || profile.effort !== undefined
           ? {
@@ -1517,10 +1633,12 @@ export function createChannelAgentBinder(
       profileActorId,
       framework,
       senderDisplayName,
-      created
+      created,
+      threadId
     );
     store.upsertBinding({
       channelId,
+      threadId,
       profileActorId,
       agentFramework: framework,
       runtimeId: created.id,
@@ -1549,7 +1667,12 @@ export function createChannelAgentBinder(
     requiredRole: 'orchestrator'
   ): void {
     const runtime = binding.runtimeId
-      ? healthyRuntime(binding.runtimeId, framework, binding.profileActorId)
+      ? healthyRuntime(
+          binding.runtimeId,
+          framework,
+          binding.profileActorId,
+          binding.threadId
+        )
       : null;
     if (runtime?.role === requiredRole) return;
     throw new ChannelAgentRoleConflictError(
@@ -1584,9 +1707,10 @@ export function createChannelAgentBinder(
   function ensureProfileBinding(
     channelId: string,
     profile: AgentProfile,
-    requiredRole?: 'orchestrator'
+    requiredRole?: 'orchestrator',
+    threadId: string | null = null
   ): Promise<LiveBinding> {
-    const key = bindingKey(channelId, profile.id);
+    const key = bindingKey(channelId, profile.id, threadId);
     const pending = inflight.get(key);
     if (pending) {
       if (!requiredRole) return pending;
@@ -1596,11 +1720,14 @@ export function createChannelAgentBinder(
       });
     }
     // Store before awaiting so concurrent mentions of one profile single-flight.
-    const promise = doEnsureBinding(channelId, profile, requiredRole).finally(
-      () => {
-        inflight.delete(key);
-      }
-    );
+    const promise = doEnsureBinding(
+      channelId,
+      profile,
+      requiredRole,
+      threadId
+    ).finally(() => {
+      inflight.delete(key);
+    });
     inflight.set(key, promise);
     return promise;
   }
@@ -1848,8 +1975,9 @@ export function createChannelAgentBinder(
 
   function isCurrentBinding(binding: LiveBinding): boolean {
     return (
-      live.get(bindingKey(binding.channelId, binding.profileActorId)) ===
-      binding
+      live.get(
+        bindingKey(binding.channelId, binding.profileActorId, binding.threadId)
+      ) === binding
     );
   }
 
@@ -2058,7 +2186,11 @@ export function createChannelAgentBinder(
   ): ResolvedMentionContextPacket {
     const topic = topicStore?.get(binding.channelId);
     const title = topic?.display.title ?? binding.channelId;
-    const row = store.getBinding(binding.channelId, binding.profileActorId);
+    const row = store.getBinding(
+      binding.channelId,
+      binding.profileActorId,
+      binding.threadId
+    );
     const lastDeliveredSeq =
       typeof row?.providerSession['lastDeliveredSeq'] === 'number'
         ? (row.providerSession['lastDeliveredSeq'] as number)
@@ -2242,14 +2374,15 @@ export function createChannelAgentBinder(
 
   function advanceCursor(binding: LiveBinding, trigger: ChannelMessage): void {
     if (closed) return; // never write to a closing store from an in-flight send
-    // Thread packets deliberately ignore the channel-global cursor. Advancing it
-    // here would make a later top-level mention skip intervening channel rows.
-    if (trigger.threadId !== null) return;
     const triggerSeq = trigger.seq;
     // Cursor advances only on send acceptance (§4): a failed send re-offers the
     // rows next mention (at-least-once). Never lower the cursor.
     try {
-      const row = store.getBinding(binding.channelId, binding.profileActorId);
+      const row = store.getBinding(
+        binding.channelId,
+        binding.profileActorId,
+        binding.threadId
+      );
       const prev = row?.providerSession ?? {};
       const current =
         typeof prev['lastDeliveredSeq'] === 'number'
@@ -2258,6 +2391,7 @@ export function createChannelAgentBinder(
       if (triggerSeq <= current) return;
       store.upsertBinding({
         channelId: binding.channelId,
+        threadId: binding.threadId,
         profileActorId: binding.profileActorId,
         agentFramework: binding.framework,
         providerSession: { ...prev, lastDeliveredSeq: triggerSeq },
@@ -2273,9 +2407,14 @@ export function createChannelAgentBinder(
   ): void {
     if (closed) return;
     try {
-      const row = store.getBinding(binding.channelId, binding.profileActorId);
+      const row = store.getBinding(
+        binding.channelId,
+        binding.profileActorId,
+        binding.threadId
+      );
       store.upsertBinding({
         channelId: binding.channelId,
+        threadId: binding.threadId,
         profileActorId: binding.profileActorId,
         agentFramework: binding.framework,
         providerSession: {
@@ -2311,7 +2450,12 @@ export function createChannelAgentBinder(
             `@${binding.displayName} could not receive the message: its profile no longer exists.`
           );
         }
-        const rebound = await ensureProfileBinding(binding.channelId, profile);
+        const rebound = await ensureProfileBinding(
+          binding.channelId,
+          profile,
+          undefined,
+          binding.threadId
+        );
         if (closed) return;
         if (rebound.adapter && rebound.activeTurnId === turnId) {
           // Same binding still owns this turn — redeliver identical content.
@@ -2892,7 +3036,8 @@ export function createChannelAgentBinder(
           binding = await ensureProfileBinding(
             trigger.channelId,
             profile,
-            requiredRole
+            requiredRole,
+            trigger.threadId
           );
         } catch (err) {
           if (err instanceof BinderClosedError) return; // shutdown — silent
@@ -3073,10 +3218,11 @@ export function createChannelAgentBinder(
       return;
     }
     const turnKey = agentTurnBrakeKey(message);
-    let state = consecutiveAgentTurns.get(message.channelId);
+    const scopeKey = conversationScopeKey(message.channelId, message.threadId);
+    let state = consecutiveAgentTurns.get(scopeKey);
     if (!state) {
       state = { count: 0, allowedTurnKeys: new Set(), paused: false };
-      consecutiveAgentTurns.set(message.channelId, state);
+      consecutiveAgentTurns.set(scopeKey, state);
     }
     // Pause is a per-dispatch safety check, not a turn-admission check. A turn
     // may legitimately finalize several assistant items, but none may route
@@ -3156,7 +3302,9 @@ export function createChannelAgentBinder(
     // Mechanics are explicit (epic #1308 rule): the steering intent comes from
     // the operator's choice on the post route, never inferred from the text.
     const steering = options?.steering;
-    consecutiveAgentTurns.delete(message.channelId);
+    consecutiveAgentTurns.delete(
+      conversationScopeKey(message.channelId, message.threadId)
+    );
     if (profiles.length === 0) {
       // A durable/pinned mention may no longer resolve after a profile deletion.
       // It is still explicit operator intent, so never fall through to a DM or
@@ -3210,7 +3358,9 @@ export function createChannelAgentBinder(
       profiles = [implicit.profile];
     }
     for (const profile of profiles) {
-      const binding = live.get(bindingKey(message.channelId, profile.id));
+      const binding = live.get(
+        bindingKey(message.channelId, profile.id, message.threadId)
+      );
       if (!binding) continue;
       // Never cancel the turn THIS message triggered. Between the two POSTs the
       // queued message may have drained, so the binding is now running the very
@@ -3446,6 +3596,7 @@ export function createChannelAgentBinder(
     try {
       store.upsertBinding({
         channelId: binding.channelId,
+        threadId: binding.threadId,
         profileActorId: binding.profileActorId,
         agentFramework: binding.framework,
         runtimeId: null,
@@ -3483,7 +3634,8 @@ export function createChannelAgentBinder(
         healthyRuntime(
           binding.runtimeId,
           binding.framework,
-          binding.profileActorId
+          binding.profileActorId,
+          binding.threadId
         )
       ) {
         continue;
@@ -3500,21 +3652,38 @@ export function createChannelAgentBinder(
 
   // ── control verbs ───────────────────────────────────────────────────────────
 
-  async function interrupt(channelId: string, agentId: string): Promise<void> {
-    const binding =
-      live.get(bindingKey(channelId, agentId)) ??
-      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
+  function controlBinding(
+    channelId: string,
+    agentId: string,
+    threadId: string | null
+  ): LiveBinding | undefined {
+    return (
+      live.get(bindingKey(channelId, agentId, threadId)) ??
+      live.get(bindingKey(channelId, builtInAgentProfileId(agentId), threadId))
+    );
+  }
+
+  async function interrupt(
+    channelId: string,
+    agentId: string,
+    threadId: string | null = null
+  ): Promise<void> {
+    const binding = controlBinding(channelId, agentId, threadId);
     if (!binding || !binding.adapter) throw new ChannelAgentNotFoundError();
     if (binding.activeTurnId === null)
       throw new ChannelAgentNoActiveTurnError();
     await binding.adapter.interrupt({ turnId: binding.activeTurnId });
   }
 
-  async function release(channelId: string, agentId: string): Promise<void> {
-    const key = bindingKey(channelId, agentId);
+  async function release(
+    channelId: string,
+    agentId: string,
+    threadId: string | null = null
+  ): Promise<void> {
+    const key = bindingKey(channelId, agentId, threadId);
     const binding =
       live.get(key) ??
-      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
+      live.get(bindingKey(channelId, builtInAgentProfileId(agentId), threadId));
     if (!binding || !binding.runtimeId) throw new ChannelAgentNotFoundError();
     if (binding.waitingOn !== null) {
       throw new ChannelAgentReleaseRefusedError(
@@ -3536,7 +3705,9 @@ export function createChannelAgentBinder(
       binding.status !== 'idle' ||
       binding.activeTurnId !== null ||
       binding.steeringInFlight ||
-      inflight.has(bindingKey(channelId, binding.profileActorId))
+      inflight.has(
+        bindingKey(channelId, binding.profileActorId, binding.threadId)
+      )
     ) {
       throw new ChannelAgentReleaseRefusedError(
         channelId,
@@ -3631,7 +3802,7 @@ export function createChannelAgentBinder(
     // Without the marker two retries in that window — two devices, or two failed
     // rows for the same profile — would both read an idle (or, on a cold
     // binding, absent) binding and both enqueue.
-    const key = bindingKey(channelId, profile.id);
+    const key = bindingKey(channelId, profile.id, trigger.threadId);
     const binding = live.get(key);
     if (
       binding &&
@@ -3689,11 +3860,10 @@ export function createChannelAgentBinder(
     channelId: string,
     agentId: string,
     requestId: string,
-    decision: AgentApprovalDecisionV2
+    decision: AgentApprovalDecisionV2,
+    threadId: string | null = null
   ): Promise<void> {
-    const binding =
-      live.get(bindingKey(channelId, agentId)) ??
-      live.get(bindingKey(channelId, builtInAgentProfileId(agentId)));
+    const binding = controlBinding(channelId, agentId, threadId);
     if (!binding || !binding.adapter) throw new ChannelAgentNotFoundError();
     await binding.adapter.respondToApproval({ requestId, decision });
   }
@@ -3773,7 +3943,8 @@ export function createChannelAgentBinder(
     profileActorId: string,
     command: string,
     args?: string,
-    confirmed?: boolean
+    confirmed?: boolean,
+    threadId: string | null = null
   ): Promise<{ config?: Record<string, unknown> }> {
     // Actor id is the sole authority boundary. Never resolve a display name here.
     const targets = await getTargets();
@@ -3802,7 +3973,7 @@ export function createChannelAgentBinder(
     if (!target?.available) {
       throw new ChannelAgentCommandError('agent is unavailable', 'UNAVAILABLE');
     }
-    let binding = live.get(bindingKey(channelId, profileActorId));
+    let binding = live.get(bindingKey(channelId, profileActorId, threadId));
     let preview =
       binding?.adapter?.getSlashCommands?.() ??
       relayControlCatalogForProvider(profile.providerId).filter(
@@ -3816,7 +3987,12 @@ export function createChannelAgentBinder(
     // require live discovery intentionally publish no static entry, so the
     // same path binds and reselects only after their catalog is authoritative.
     if (!selected && !binding) {
-      binding = await ensureProfileBinding(channelId, profile);
+      binding = await ensureProfileBinding(
+        channelId,
+        profile,
+        undefined,
+        threadId
+      );
       preview = binding.adapter?.getSlashCommands?.() ?? [];
       selected = preview.find(
         (entry) => entry.name === name || (entry.aliases ?? []).includes(name)
@@ -3840,7 +4016,12 @@ export function createChannelAgentBinder(
         'CONFIRMATION_REQUIRED'
       );
     }
-    binding ??= await ensureProfileBinding(channelId, profile);
+    binding ??= await ensureProfileBinding(
+      channelId,
+      profile,
+      undefined,
+      threadId
+    );
     if (!binding.adapter?.executeControlCommand) {
       throw new ChannelAgentCommandError(
         'provider command controls are unavailable',
@@ -3862,6 +4043,124 @@ export function createChannelAgentBinder(
       }
       throw error;
     }
+  }
+
+  function restartScope(
+    channelId: string,
+    threadId: string | null = null
+  ): Promise<{ restarted: number }> {
+    const scopeKey = conversationScopeKey(channelId, threadId);
+    const existing = restartInFlight.get(scopeKey);
+    if (existing) return existing;
+    const operation = restartScopeImpl(channelId, threadId);
+    restartInFlight.set(scopeKey, operation);
+    return operation.finally(() => {
+      if (restartInFlight.get(scopeKey) === operation) {
+        restartInFlight.delete(scopeKey);
+      }
+    });
+  }
+
+  async function restartScopeImpl(
+    channelId: string,
+    threadId: string | null
+  ): Promise<{ restarted: number }> {
+    const scoped = [...live.values()].filter(
+      (binding) =>
+        binding.channelId === channelId && binding.threadId === threadId
+    );
+    if (scoped.length === 0) return { restarted: 0 };
+
+    // Fail before changing anything: an instruction apply is explicit, but it
+    // must never discard a provider turn, queued operator intent, or approval.
+    for (const binding of scoped) {
+      if (binding.waitingOn !== null) {
+        throw new ChannelAgentRestartRefusedError(
+          channelId,
+          threadId,
+          binding.profileActorId,
+          binding.status,
+          'CHANNEL_AGENT_WAITING_ON_OPERATOR'
+        );
+      }
+      if (binding.queue.length > 0 || binding.steeringQueue.length > 0) {
+        throw new ChannelAgentRestartRefusedError(
+          channelId,
+          threadId,
+          binding.profileActorId,
+          binding.status,
+          'CHANNEL_AGENT_QUEUE_NOT_EMPTY'
+        );
+      }
+      if (
+        binding.status !== 'idle' ||
+        binding.activeTurnId !== null ||
+        binding.steeringInFlight ||
+        inflight.has(
+          bindingKey(channelId, binding.profileActorId, binding.threadId)
+        )
+      ) {
+        throw new ChannelAgentRestartRefusedError(
+          channelId,
+          threadId,
+          binding.profileActorId,
+          binding.status,
+          'CHANNEL_AGENT_NOT_IDLE'
+        );
+      }
+    }
+
+    const storedProfiles = deps.agentProfileStore?.list() ?? [];
+    const planned = scoped.map((binding) => {
+      const profile =
+        storedProfiles.find(
+          (candidate) => candidate.id === binding.profileActorId
+        ) ??
+        (binding.profileActorId === builtInAgentProfileId(binding.framework)
+          ? defaultProfileForProvider(binding.framework)
+          : null);
+      if (!profile) {
+        throw new ChannelBindingError(
+          `agent profile ${binding.profileActorId} no longer exists`,
+          `@${binding.displayName} cannot restart because its profile was removed.`
+        );
+      }
+      return {
+        binding,
+        profile,
+        role:
+          store.getBinding(channelId, binding.profileActorId, threadId)?.role ??
+          undefined,
+      };
+    });
+
+    for (const { binding, profile, role } of planned) {
+      const key = bindingKey(channelId, binding.profileActorId, threadId);
+      const runtimeId = binding.runtimeId;
+      if (!runtimeId) continue;
+      // Restart is a new provider conversation. Retaining a prior provider
+      // session could silently preserve the old provider-side instructions.
+      store.upsertBinding({
+        channelId,
+        threadId,
+        profileActorId: binding.profileActorId,
+        agentFramework: binding.framework,
+        runtimeId,
+        providerSession: {},
+      });
+      await deps.runtimes.destroy(runtimeId);
+      // Production runtime teardown broadcasts this synchronously, but own the
+      // state transition here too so a conservative runtime manager cannot make
+      // a restart accidentally reuse the just-destroyed adapter.
+      if (live.get(key) === binding) releaseBinding(key, binding);
+      await ensureProfileBinding(
+        channelId,
+        profile,
+        role === 'orchestrator' ? 'orchestrator' : undefined,
+        threadId
+      );
+    }
+    return { restarted: planned.length };
   }
 
   function isControlMessage(text: string, channelId?: string): boolean {
@@ -3976,6 +4275,7 @@ export function createChannelAgentBinder(
     rosterForChannel,
     archiveActivityForChannel,
     executeCommand,
+    restartScope,
     isControlMessage,
     recoverCompletionCallbacks,
     setStatusBroadcaster(broadcaster) {
@@ -4014,6 +4314,7 @@ export function createChannelAgentBinder(
       }
       live.clear();
       inflight.clear();
+      restartInFlight.clear();
       orchestratorInflight.clear();
       retryInFlight.clear();
       routingInFlightByChannel.clear();

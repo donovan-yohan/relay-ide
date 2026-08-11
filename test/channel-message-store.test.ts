@@ -168,9 +168,9 @@ describe('channel-message-store schema migration', () => {
       UPDATE schema_version SET version = 7;
       DELETE FROM channel_agent_bindings;
       INSERT INTO channel_agent_bindings VALUES
-        ('topic:ambiguous', 'profile:a', 'claude', 'runtime:a', 'orchestrator', '{"cursor":1}', '2026-08-01', '2026-08-02'),
-        ('topic:ambiguous', 'profile:b', 'codex', 'runtime:b', 'orchestrator', '{"cursor":2}', '2026-08-03', '2026-08-04'),
-        ('topic:valid', 'profile:c', 'claude', 'runtime:c', 'orchestrator', '{"cursor":3}', '2026-08-05', '2026-08-06');
+        ('topic:ambiguous', '', 'profile:a', 'claude', 'runtime:a', 'orchestrator', '{"cursor":1}', '2026-08-01', '2026-08-02'),
+        ('topic:ambiguous', '', 'profile:b', 'codex', 'runtime:b', 'orchestrator', '{"cursor":2}', '2026-08-03', '2026-08-04'),
+        ('topic:valid', '', 'profile:c', 'claude', 'runtime:c', 'orchestrator', '{"cursor":3}', '2026-08-05', '2026-08-06');
     `);
     legacy.close();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -525,7 +525,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(12);
+    ).toBe(13);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -634,13 +634,13 @@ describe('channel-message-store schema migration', () => {
         '2026-07-19T09:10:00.001Z'
       );
       INSERT INTO channel_agent_bindings VALUES (
-        'topic:stranded-heal', 'agent-profile:claude:default', 'claude',
+        'topic:stranded-heal', '', 'agent-profile:claude:default', 'claude',
         'runtime-stranded', NULL,
         '{"claudeSessionId":"runtime-stranded","lastDeliveredSeq":4}',
         '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
       );
       INSERT INTO channel_agent_bindings VALUES (
-        'topic:stranded-heal', 'agent-profile:claude:reviewer', 'claude',
+        'topic:stranded-heal', '', 'agent-profile:claude:reviewer', 'claude',
         'runtime-b', NULL,
         '{"claudeSessionId":"runtime-b","lastDeliveredSeq":2}',
         '2026-07-19T08:00:00.000Z', '2026-07-19T08:00:00.000Z'
@@ -713,7 +713,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(12);
+    ).toBe(13);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -2496,7 +2496,7 @@ describe('channel-message-store thread summaries', () => {
     expect(page.threadCount).toBe(page.threads.length);
   });
 
-  it('plans the channel-list thread aggregate as a channel-scoped index walk', () => {
+  it('plans channel-list conversations from the durable recent-thread index', () => {
     const p = dbPath();
     const s = store(p);
     const root = s.appendComplete({
@@ -2519,22 +2519,20 @@ describe('channel-message-store thread summaries', () => {
       .prepare(`EXPLAIN QUERY PLAN ${buildChannelThreadSummarySql()}`)
       .all({ channelId: 'topic:t', limit: 3 }) as Array<{ detail: string }>;
     const details = plan.map((row) => row.detail).join('\n');
-    expect(details).toContain('idx_chm_channel_seq');
-    // Never a full-table walk: both channel_messages references stay scoped to
-    // the one channel, so this costs the same order of work as the summary's
-    // own COUNT(*) no matter how many channels the hub holds.
-    expect(details).not.toMatch(/SCAN (?:channel_messages|root)\b/);
-    // Absence of the word SCAN is not enough. Drop the CROSS JOIN hint and
-    // SQLite drives from `root` instead, reported as
-    // `SEARCH root USING INDEX idx_chm_channel_seq (channel_id=?)` — a SEARCH
-    // bound on the channel alone is a range walk of EVERY message in the
-    // channel, and it pays for a transient index over `agg` on each execution.
-    // That plan is ~1.5x slower at 5k messages and diverges as transcripts
-    // grow, so assert the join shape: the page must be driven by the thread
-    // groups, with `root` reached by primary key.
+    // Durable conversations, including intentionally empty ones, drive the
+    // page by most-recent activity. Roots and replies remain point/index
+    // lookups rather than a channel_messages walk.
+    expect(details).toMatch(
+      /SEARCH thread USING INDEX idx_channel_threads_recent \(channel_id=\?\)/
+    );
     expect(details).toMatch(
       /SEARCH root USING (?:COVERING )?INDEX sqlite_autoindex_channel_messages_1 \(id=\?\)/
     );
+    expect(details).toMatch(
+      /SEARCH reply USING INDEX idx_chm_thread \(thread_id=\?\)/
+    );
+    expect(details).not.toContain('idx_chm_channel_seq');
+    expect(details).not.toMatch(/SCAN (?:channel_messages|root|reply)\b/);
     expect(details).not.toContain('AUTOMATIC COVERING INDEX');
   });
 
@@ -2558,9 +2556,95 @@ describe('channel-message-store thread summaries', () => {
       rootSenderKind: 'agent',
     });
   });
+
+  it('persists explicit conversation titles, including an empty conversation, across reopen', () => {
+    const file = dbPath();
+    const initial = store(file);
+    const created = initial.createThread({
+      channelId: 'topic:named',
+      title: 'Investigate provider resume semantics',
+    });
+    expect(created).toMatchObject({
+      title: 'Investigate provider resume semantics',
+      replyCount: 0,
+    });
+    expect(initial.listChannelThreadSummaries('topic:named')).toEqual({
+      threadCount: 1,
+      threads: [
+        expect.objectContaining({
+          rootMessageId: created.rootMessageId,
+          title: 'Investigate provider resume semantics',
+          replyCount: 0,
+        }),
+      ],
+    });
+
+    expect(
+      initial.renameThread({
+        channelId: 'topic:named',
+        rootMessageId: created.rootMessageId,
+        title: 'Provider restart notes',
+      })
+    ).toMatchObject({ title: 'Provider restart notes' });
+    initial.close();
+
+    const reopened = store(file);
+    expect(reopened.getThreadTitle('topic:named', created.rootMessageId)).toBe(
+      'Provider restart notes'
+    );
+    expect(
+      reopened.threadHistory('topic:named', created.rootMessageId)
+    ).toHaveLength(1);
+  });
 });
 
 describe('channel-message-store members and bindings', () => {
+  it('keeps one profile binding per thread scope without replacing its siblings', () => {
+    const s = store();
+    const first = s.createThread({ channelId: 'topic:scope', title: 'first' });
+    const second = s.createThread({
+      channelId: 'topic:scope',
+      title: 'second',
+    });
+    for (const [threadId, runtimeId] of [
+      [first.rootMessageId, 'runtime:first'],
+      [second.rootMessageId, 'runtime:second'],
+    ] as const) {
+      s.upsertBinding({
+        channelId: 'topic:scope',
+        threadId,
+        profileActorId: 'agent-profile:mock:default',
+        agentFramework: 'mock',
+        runtimeId,
+        providerSession: { providerThread: threadId },
+      });
+    }
+
+    expect(
+      s.getBinding(
+        'topic:scope',
+        'agent-profile:mock:default',
+        first.rootMessageId
+      )
+    ).toMatchObject({
+      runtimeId: 'runtime:first',
+      providerSession: { providerThread: first.rootMessageId },
+    });
+    expect(
+      s.getBinding(
+        'topic:scope',
+        'agent-profile:mock:default',
+        second.rootMessageId
+      )
+    ).toMatchObject({
+      runtimeId: 'runtime:second',
+      providerSession: { providerThread: second.rootMessageId },
+    });
+    expect(
+      s.getBinding('topic:scope', 'agent-profile:mock:default')
+    ).toBeNull();
+  });
+
   it('upserts and lists members and finds a DM channel', () => {
     const s = store();
     s.upsertMember({
@@ -3211,7 +3295,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(12);
+    expect(version.version).toBe(13);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {

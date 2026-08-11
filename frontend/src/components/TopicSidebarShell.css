@@ -1422,6 +1422,46 @@
     grid-column: 1 / -1;
   }
 
+  /* A newly named conversation is useful before it has replies, so the mobile
+     rail keeps one compact recent-thread target below its channel row. */
+  .topic-mobile-thread {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 32px;
+    padding: 5px 10px 6px calc(8px + var(--icon-slot-width));
+    border: 0;
+    border-top: 1px solid var(--border-subtle, var(--border));
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--font-size-xs);
+    text-align: left;
+    touch-action: manipulation;
+  }
+
+  .topic-mobile-thread:active,
+  .topic-mobile-thread:focus-visible {
+    background: var(--surface-hover);
+    color: var(--text);
+    outline: none;
+  }
+
+  .topic-mobile-thread__title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topic-mobile-thread__meta {
+    flex: 0 0 auto;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
   .topic-mobile-row.selected,
   .topic-mobile-row:active,
   .topic-mobile-row:focus-visible {

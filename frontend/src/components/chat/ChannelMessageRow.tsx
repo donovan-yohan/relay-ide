@@ -275,7 +275,8 @@ const ChannelSystemMessageRow: React.FC<{
                 channelId,
                 String(message.meta?.agentId),
                 String(message.meta?.approvalRequestId),
-                { kind: 'accept', scope: 'once' }
+                { kind: 'accept', scope: 'once' },
+                message.threadId
               ).catch(() => {})
             }
           >
@@ -289,7 +290,8 @@ const ChannelSystemMessageRow: React.FC<{
                 channelId,
                 String(message.meta?.agentId),
                 String(message.meta?.approvalRequestId),
-                { kind: 'decline' }
+                { kind: 'decline' },
+                message.threadId
               ).catch(() => {})
             }
           >

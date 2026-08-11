@@ -61,7 +61,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -82,6 +82,8 @@ const CHANNEL_SUMMARY_MENTION_SCAN_MAX_CHARS = 8_000;
  */
 export const CHANNEL_THREAD_SUMMARY_LIMIT = 3;
 const CHANNEL_THREAD_SUMMARY_MAX_LIMIT = 20;
+export const CHANNEL_THREAD_TITLE_MAX_CHARS = 160;
+const DEFAULT_THREAD_TITLE = 'untitled conversation';
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
@@ -290,30 +292,28 @@ export function buildChannelMentionContextRowsSql(
  * primary-key probe of `root` shape the query-plan test locks in.
  */
 export function buildChannelThreadSummarySql(): string {
-  return `SELECT root.id             AS root_id,
-                root.body_text      AS root_body,
-                root.sender_id      AS root_sender_id,
-                root.sender_kind    AS root_sender_kind,
-                root.sender_display AS root_sender_display,
-                root.meta_json      AS root_meta_json,
-                agg.reply_count     AS reply_count,
-                agg.last_reply_at   AS last_reply_at,
-                COUNT(*) OVER ()    AS thread_total
-           FROM (
-             SELECT thread_id,
-                    COUNT(*)        AS reply_count,
-                    MAX(created_at) AS last_reply_at,
-                    MAX(seq)        AS last_reply_seq
-               FROM channel_messages
-              WHERE channel_id = @channelId
-                AND thread_id IS NOT NULL
-                AND json_extract(meta_json, '$.agentDetail') IS NULL
-              GROUP BY thread_id
-           ) agg
-           CROSS JOIN channel_messages root
-             ON root.id = agg.thread_id AND root.channel_id = @channelId
-          ORDER BY agg.last_reply_seq DESC
-          LIMIT @limit`;
+  return `SELECT root.id                         AS root_id,
+                  root.body_text                  AS root_body,
+                  thread.title                    AS thread_title,
+                  root.sender_id                  AS root_sender_id,
+                  root.sender_kind                AS root_sender_kind,
+                  root.sender_display             AS root_sender_display,
+                  root.meta_json                  AS root_meta_json,
+                  (SELECT COUNT(*)
+                     FROM channel_messages reply INDEXED BY idx_chm_thread
+                    WHERE reply.thread_id = thread.root_message_id
+                      AND reply.channel_id = thread.channel_id
+                      AND json_extract(reply.meta_json, '$.agentDetail') IS NULL)
+                                                   AS reply_count,
+                  thread.updated_at               AS last_reply_at,
+                  COUNT(*) OVER ()                AS thread_total
+             FROM channel_threads thread
+             CROSS JOIN channel_messages root
+               ON root.id = thread.root_message_id
+              AND root.channel_id = thread.channel_id
+            WHERE thread.channel_id = @channelId
+            ORDER BY thread.updated_at DESC, root.seq DESC
+            LIMIT @limit`;
 }
 
 // ── full-text search index (#1308 slice 2 item 1) ───────────────────────────
@@ -766,6 +766,9 @@ CREATE TABLE IF NOT EXISTS channel_members (
 
 CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   channel_id            TEXT NOT NULL,
+  -- Empty is the explicit root-channel scope. SQLite composite primary keys do
+  -- not give NULL the conflict semantics this binding identity needs.
+  thread_scope_id       TEXT NOT NULL DEFAULT '',
   profile_actor_id      TEXT NOT NULL,
   agent_framework       TEXT NOT NULL,
   runtime_id            TEXT,
@@ -773,11 +776,22 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
   provider_session_json TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
-  PRIMARY KEY (channel_id, profile_actor_id)
+  PRIMARY KEY (channel_id, thread_scope_id, profile_actor_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chab_sole_orchestrator
   ON channel_agent_bindings(channel_id)
-  WHERE binding_role = 'orchestrator';
+  WHERE binding_role = 'orchestrator' AND thread_scope_id = '';
+
+CREATE TABLE IF NOT EXISTS channel_threads (
+  channel_id      TEXT NOT NULL,
+  root_message_id TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  PRIMARY KEY (channel_id, root_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_threads_recent
+  ON channel_threads(channel_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS channel_completion_callbacks (
   id                    TEXT PRIMARY KEY,
@@ -862,6 +876,7 @@ interface ChannelSearchRow {
 interface ThreadSummaryRow {
   root_id: string;
   root_body: string;
+  thread_title: string;
   root_sender_id: string;
   root_sender_kind: string;
   root_sender_display: string | null;
@@ -896,6 +911,7 @@ function readStateRowToState(row: ChannelReadStateRow): ChannelReadState {
 
 interface BindingRow {
   channel_id: string;
+  thread_scope_id: string;
   profile_actor_id: string;
   agent_framework: string;
   runtime_id: string | null;
@@ -1056,6 +1072,8 @@ type ChannelSenderKindLoose = ChannelSenderRef['kind'];
  */
 export interface ChannelThreadSummary {
   rootMessageId: ChannelMessageId;
+  /** Durable user title; old rows deterministically inherit their root prose. */
+  title: string;
   /**
    * Conversational replies only — the same exclusion `replyCountSql` applies, so
    * a rail row and the in-timeline "N replies" chip can never disagree.
@@ -1136,6 +1154,8 @@ export interface ChannelMessageSearchQuery {
 
 export interface ChannelBinding {
   channelId: string;
+  /** Null is the legacy/root-channel execution scope. */
+  threadId: string | null;
   /** Durable AgentProfile actor identity; binding/session ownership key. */
   profileActorId: string;
   /** Provider/framework spawn selector retained independently of the profile. */
@@ -1237,6 +1257,8 @@ export interface CompleteChildContinuationInput {
 
 export interface SoleOrchestratorDesignationInput {
   channelId: string;
+  /** Root/channel scope is null; retained here for the common binding writer. */
+  threadId?: string | null;
   profileActorId: string;
   agentFramework: string;
   runtimeId?: string | null;
@@ -1446,6 +1468,18 @@ export interface ChannelMessageStore {
     channelId: string,
     limit?: number
   ): ChannelThreadSummaryPage;
+  /** Creates an empty, named conversation without allocating an agent runtime. */
+  createThread(input: {
+    channelId: string;
+    title: string;
+  }): ChannelThreadSummary;
+  /** Renames a durable thread root. Existing unnamed roots are lazily claimed. */
+  renameThread(input: {
+    channelId: string;
+    rootMessageId: string;
+    title: string;
+  }): ChannelThreadSummary | null;
+  getThreadTitle(channelId: string, rootMessageId: string): string | null;
   upsertMember(input: {
     channelId: string;
     kind: 'human' | 'agent';
@@ -1454,7 +1488,11 @@ export interface ChannelMessageStore {
   }): ChannelMemberRef;
   listMembers(channelId: string): ChannelMemberRef[];
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
-  getBinding(channelId: string, profileActorId: string): ChannelBinding | null;
+  getBinding(
+    channelId: string,
+    profileActorId: string,
+    threadId?: string | null
+  ): ChannelBinding | null;
   /** Returns the one durable designation guaranteed by the partial unique index. */
   getSoleOrchestratorBinding(channelId: string): ChannelBinding | null;
   /**
@@ -1466,6 +1504,7 @@ export interface ChannelMessageStore {
   ): ChannelBinding;
   upsertBinding(input: {
     channelId: string;
+    threadId?: string | null;
     profileActorId: string;
     agentFramework: string;
     runtimeId?: string | null;
@@ -2820,6 +2859,67 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 12').run();
     })();
   }
+  if (current < 13) {
+    db.transaction(() => {
+      // A root-channel binding was the whole pre-#1386 contract. Preserve every
+      // one under the explicit empty scope before making thread identity part of
+      // the primary key; NULL would not make ON CONFLICT deterministic in SQLite.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_chab_sole_orchestrator;
+        CREATE TABLE channel_agent_bindings_v13 (
+          channel_id            TEXT NOT NULL,
+          thread_scope_id       TEXT NOT NULL DEFAULT '',
+          profile_actor_id      TEXT NOT NULL,
+          agent_framework       TEXT NOT NULL,
+          runtime_id            TEXT,
+          binding_role          TEXT,
+          provider_session_json TEXT NOT NULL DEFAULT '{}',
+          created_at            TEXT NOT NULL,
+          updated_at            TEXT NOT NULL,
+          PRIMARY KEY (channel_id, thread_scope_id, profile_actor_id)
+        );
+        INSERT INTO channel_agent_bindings_v13
+          (channel_id, thread_scope_id, profile_actor_id, agent_framework,
+           runtime_id, binding_role, provider_session_json, created_at, updated_at)
+        SELECT channel_id, '', profile_actor_id, agent_framework,
+               runtime_id, binding_role, provider_session_json, created_at, updated_at
+          FROM channel_agent_bindings;
+        DROP TABLE channel_agent_bindings;
+        ALTER TABLE channel_agent_bindings_v13 RENAME TO channel_agent_bindings;
+        CREATE UNIQUE INDEX idx_chab_sole_orchestrator
+          ON channel_agent_bindings(channel_id)
+          WHERE binding_role = 'orchestrator' AND thread_scope_id = '';
+
+        CREATE TABLE IF NOT EXISTS channel_threads (
+          channel_id      TEXT NOT NULL,
+          root_message_id TEXT NOT NULL,
+          title           TEXT NOT NULL,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL,
+          PRIMARY KEY (channel_id, root_message_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_channel_threads_recent
+          ON channel_threads(channel_id, updated_at DESC);
+
+        INSERT OR IGNORE INTO channel_threads
+          (channel_id, root_message_id, title, created_at, updated_at)
+        SELECT root.channel_id,
+               root.id,
+               COALESCE(NULLIF(TRIM(SUBSTR(root.body_text, 1, 160)), ''),
+                        '${DEFAULT_THREAD_TITLE}'),
+               root.created_at,
+               root.updated_at
+          FROM channel_messages root
+         WHERE root.thread_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM channel_messages reply
+              WHERE reply.channel_id = root.channel_id
+                AND reply.thread_id = root.id
+           );
+      `);
+      db.prepare('UPDATE schema_version SET version = 13').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -3160,6 +3260,67 @@ export function createChannelMessageStore(
   );
   // Compiled once: `GET /channels` runs this per channel per list fetch.
   const threadSummaryStmt = db.prepare(buildChannelThreadSummarySql());
+  const threadSummaryByRootStmt = db.prepare(
+    `SELECT root.id                         AS root_id,
+            root.body_text                  AS root_body,
+            thread.title                    AS thread_title,
+            root.sender_id                  AS root_sender_id,
+            root.sender_kind                AS root_sender_kind,
+            root.sender_display             AS root_sender_display,
+            root.meta_json                  AS root_meta_json,
+            (SELECT COUNT(*)
+               FROM channel_messages reply INDEXED BY idx_chm_thread
+              WHERE reply.thread_id = thread.root_message_id
+                AND reply.channel_id = thread.channel_id
+                AND json_extract(reply.meta_json, '$.agentDetail') IS NULL)
+                                             AS reply_count,
+            thread.updated_at               AS last_reply_at,
+            1                               AS thread_total
+       FROM channel_threads thread
+       JOIN channel_messages root
+         ON root.id = thread.root_message_id
+        AND root.channel_id = thread.channel_id
+      WHERE thread.channel_id = ? AND thread.root_message_id = ?`
+  );
+
+  function threadSummaryFromRow(row: ThreadSummaryRow): ChannelThreadSummary {
+    const meta = parseMeta(row.root_meta_json);
+    const providerId =
+      typeof meta?.['providerId'] === 'string'
+        ? (meta['providerId'] as string)
+        : undefined;
+    return {
+      rootMessageId: row.root_id as ChannelMessageId,
+      title: row.thread_title,
+      replyCount: row.reply_count,
+      lastReplyAt: row.last_reply_at,
+      preview: row.root_body.slice(0, CHANNEL_SUMMARY_PREVIEW_MAX_CHARS),
+      rootSenderId: row.root_sender_id,
+      rootSenderKind: row.root_sender_kind as ChannelSenderKindLoose,
+      ...(row.root_sender_display
+        ? { rootSenderDisplayName: row.root_sender_display }
+        : {}),
+      ...(providerId ? { providerId } : {}),
+    };
+  }
+
+  function listChannelThreadSummariesImpl(
+    channelId: string,
+    limit = CHANNEL_THREAD_SUMMARY_LIMIT
+  ): ChannelThreadSummaryPage {
+    const capped = Math.max(
+      1,
+      Math.min(CHANNEL_THREAD_SUMMARY_MAX_LIMIT, Math.floor(limit))
+    );
+    const rows = threadSummaryStmt.all({
+      channelId,
+      limit: capped,
+    }) as ThreadSummaryRow[];
+    return {
+      threads: rows.map(threadSummaryFromRow),
+      threadCount: rows[0]?.thread_total ?? 0,
+    };
+  }
   const selectCompletionCallbackById = db.prepare(
     'SELECT * FROM channel_completion_callbacks WHERE id = ?'
   );
@@ -3188,6 +3349,81 @@ export function createChannelMessageStore(
   function getMessageById(id: string): ChannelMessage | null {
     const row = selectById.get(id) as ChannelMessageRow | undefined;
     return row ? rowToMessage(row) : null;
+  }
+
+  function threadTitleFromRoot(root: ChannelMessageRow): string {
+    const compact = root.body_text.replace(/\s+/g, ' ').trim();
+    return (
+      compact.slice(0, CHANNEL_THREAD_TITLE_MAX_CHARS) || DEFAULT_THREAD_TITLE
+    );
+  }
+
+  function normalizeThreadTitle(title: string): string {
+    const compact = title.replace(/\s+/g, ' ').trim();
+    if (!compact) {
+      throw new ChannelMessageStoreError(
+        400,
+        'channel_thread_title_empty',
+        'thread title must not be empty'
+      );
+    }
+    if (compact.length > CHANNEL_THREAD_TITLE_MAX_CHARS) {
+      throw new ChannelMessageStoreError(
+        400,
+        'channel_thread_title_too_long',
+        `thread title must not exceed ${CHANNEL_THREAD_TITLE_MAX_CHARS} characters`,
+        { max: CHANNEL_THREAD_TITLE_MAX_CHARS }
+      );
+    }
+    return compact;
+  }
+
+  /** Claim a legacy root exactly once when it first becomes a real thread. */
+  function ensureThreadRecord(channelId: string, rootMessageId: string): void {
+    const root = selectById.get(rootMessageId) as ChannelMessageRow | undefined;
+    if (!root || root.channel_id !== channelId || root.thread_id !== null) {
+      throw new ChannelMessageStoreError(
+        404,
+        'thread_root_not_found',
+        'thread root not found',
+        { channelId, rootMessageId }
+      );
+    }
+    db.prepare(
+      `INSERT INTO channel_threads
+         (channel_id, root_message_id, title, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(channel_id, root_message_id) DO NOTHING`
+    ).run(
+      channelId,
+      rootMessageId,
+      threadTitleFromRoot(root),
+      root.created_at,
+      root.updated_at
+    );
+  }
+
+  function touchThreadRecord(
+    channelId: string,
+    rootMessageId: string,
+    updatedAt: string
+  ): void {
+    ensureThreadRecord(channelId, rootMessageId);
+    db.prepare(
+      `UPDATE channel_threads
+          SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+        WHERE channel_id = ? AND root_message_id = ?`
+    ).run(updatedAt, updatedAt, channelId, rootMessageId);
+  }
+
+  function threadSummaryForRoot(
+    channelId: string,
+    rootMessageId: string
+  ): ChannelThreadSummary | null {
+    const row = threadSummaryByRootStmt.get(channelId, rootMessageId) as
+      | ThreadSummaryRow
+      | undefined;
+    return row ? threadSummaryFromRow(row) : null;
   }
 
   function appendCompleteImpl(input: AppendCompleteInput): ChannelMessage {
@@ -3233,17 +3469,22 @@ export function createChannelMessageStore(
       updatedAt: now,
       completedAt: now,
     });
+    if (threadId !== null) touchThreadRecord(input.channelId, threadId, now);
     return rowToMessage(row);
   }
 
   function getBindingImpl(
     channelId: string,
-    profileActorId: string
+    profileActorId: string,
+    threadId: string | null = null
   ): ChannelBinding | null {
     const select = db.prepare(
-      'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+      `SELECT * FROM channel_agent_bindings
+        WHERE channel_id = ? AND thread_scope_id = ? AND profile_actor_id = ?`
     );
-    const row = select.get(channelId, profileActorId) as BindingRow | undefined;
+    const row = select.get(channelId, threadId ?? '', profileActorId) as
+      | BindingRow
+      | undefined;
     return row ? bindingRowToRecord(row) : null;
   }
 
@@ -3253,7 +3494,9 @@ export function createChannelMessageStore(
     const row = db
       .prepare(
         `SELECT * FROM channel_agent_bindings
-          WHERE channel_id = ? AND binding_role = 'orchestrator'`
+          WHERE channel_id = ?
+            AND thread_scope_id = ''
+            AND binding_role = 'orchestrator'`
       )
       .get(channelId) as BindingRow | undefined;
     return row ? bindingRowToRecord(row) : null;
@@ -3265,9 +3508,12 @@ export function createChannelMessageStore(
     const now = nowIso();
     const existing = db
       .prepare(
-        'SELECT * FROM channel_agent_bindings WHERE channel_id = ? AND profile_actor_id = ?'
+        `SELECT * FROM channel_agent_bindings
+          WHERE channel_id = ? AND thread_scope_id = ? AND profile_actor_id = ?`
       )
-      .get(input.channelId, input.profileActorId) as BindingRow | undefined;
+      .get(input.channelId, input.threadId ?? '', input.profileActorId) as
+      | BindingRow
+      | undefined;
     const providerSessionJson = JSON.stringify(
       input.providerSession ??
         (existing
@@ -3276,9 +3522,9 @@ export function createChannelMessageStore(
     );
     db.prepare(
       `INSERT INTO channel_agent_bindings
-         (channel_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
-       VALUES (@channelId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
-       ON CONFLICT(channel_id, profile_actor_id) DO UPDATE SET
+         (channel_id, thread_scope_id, profile_actor_id, agent_framework, runtime_id, binding_role, provider_session_json, created_at, updated_at)
+       VALUES (@channelId, @threadScopeId, @profileActorId, @agentFramework, @runtimeId, @bindingRole, @providerSessionJson, @createdAt, @updatedAt)
+       ON CONFLICT(channel_id, thread_scope_id, profile_actor_id) DO UPDATE SET
          agent_framework = excluded.agent_framework,
          runtime_id = excluded.runtime_id,
          binding_role = excluded.binding_role,
@@ -3286,6 +3532,7 @@ export function createChannelMessageStore(
          updated_at = excluded.updated_at`
     ).run({
       channelId: input.channelId,
+      threadScopeId: input.threadId ?? '',
       profileActorId: input.profileActorId,
       agentFramework: input.agentFramework,
       runtimeId:
@@ -3300,7 +3547,11 @@ export function createChannelMessageStore(
       createdAt: existing?.created_at ?? now,
       updatedAt: now,
     });
-    return getBindingImpl(input.channelId, input.profileActorId)!;
+    return getBindingImpl(
+      input.channelId,
+      input.profileActorId,
+      input.threadId ?? null
+    )!;
   }
 
   const createCompletionCallbackImpl = db.transaction(
@@ -3885,6 +4136,7 @@ export function createChannelMessageStore(
         updatedAt: now,
         completedAt: null,
       });
+      if (threadId !== null) touchThreadRecord(input.channelId, threadId, now);
       return rowToMessage(row);
     },
 
@@ -4554,41 +4806,50 @@ export function createChannelMessageStore(
       channelId,
       limit = CHANNEL_THREAD_SUMMARY_LIMIT
     ) {
-      const capped = Math.max(
-        1,
-        Math.min(CHANNEL_THREAD_SUMMARY_MAX_LIMIT, Math.floor(limit))
-      );
-      // Channel-scoped through idx_chm_channel_seq (see the query-plan test), so
-      // this walks the same rows the summary's COUNT(*) already does rather than
-      // the whole thread index.
-      const rows = threadSummaryStmt.all({
-        channelId,
-        limit: capped,
-      }) as ThreadSummaryRow[];
-      return {
-        threads: rows.map((row) => {
-          const meta = parseMeta(row.root_meta_json);
-          const providerId =
-            typeof meta?.['providerId'] === 'string'
-              ? (meta['providerId'] as string)
-              : undefined;
-          return {
-            rootMessageId: row.root_id as ChannelMessageId,
-            replyCount: row.reply_count,
-            lastReplyAt: row.last_reply_at,
-            preview: row.root_body.slice(0, CHANNEL_SUMMARY_PREVIEW_MAX_CHARS),
-            rootSenderId: row.root_sender_id,
-            rootSenderKind: row.root_sender_kind as ChannelSenderKindLoose,
-            ...(row.root_sender_display
-              ? { rootSenderDisplayName: row.root_sender_display }
-              : {}),
-            ...(providerId ? { providerId } : {}),
-          };
-        }),
-        // Every joined row shares the same window total; zero rows means zero
-        // threads with a resolvable root, which is what the page can show.
-        threadCount: rows[0]?.thread_total ?? 0,
-      };
+      return listChannelThreadSummariesImpl(channelId, limit);
+    },
+
+    createThread(input) {
+      const title = normalizeThreadTitle(input.title);
+      const root = appendCompleteImpl({
+        channelId: input.channelId,
+        kind: 'system',
+        sender: { kind: 'system', id: 'system' },
+        text: 'conversation created',
+        meta: { threadRoot: true },
+      });
+      const now = nowIso();
+      db.prepare(
+        `INSERT INTO channel_threads
+           (channel_id, root_message_id, title, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(input.channelId, root.id, title, now, now);
+      const summary = threadSummaryForRoot(input.channelId, root.id);
+      if (!summary) throw new Error('created thread was not readable');
+      return summary;
+    },
+
+    renameThread(input) {
+      const title = normalizeThreadTitle(input.title);
+      ensureThreadRecord(input.channelId, input.rootMessageId);
+      const changed = db
+        .prepare(
+          `UPDATE channel_threads SET title = ?, updated_at = ?
+            WHERE channel_id = ? AND root_message_id = ?`
+        )
+        .run(title, nowIso(), input.channelId, input.rootMessageId).changes;
+      if (changed === 0) return null;
+      return threadSummaryForRoot(input.channelId, input.rootMessageId);
+    },
+
+    getThreadTitle(channelId, rootMessageId) {
+      const row = db
+        .prepare(
+          `SELECT title FROM channel_threads
+            WHERE channel_id = ? AND root_message_id = ?`
+        )
+        .get(channelId, rootMessageId) as { title: string } | undefined;
+      return row?.title ?? null;
     },
 
     upsertMember(input) {
@@ -4634,8 +4895,8 @@ export function createChannelMessageStore(
       return row?.channel_id ?? null;
     },
 
-    getBinding(channelId, profileActorId) {
-      return getBindingImpl(channelId, profileActorId);
+    getBinding(channelId, profileActorId, threadId = null) {
+      return getBindingImpl(channelId, profileActorId, threadId);
     },
 
     getSoleOrchestratorBinding(channelId) {
@@ -4940,6 +5201,7 @@ function bindingRowToRecord(row: BindingRow): ChannelBinding {
   );
   return {
     channelId: row.channel_id,
+    threadId: row.thread_scope_id || null,
     profileActorId: row.profile_actor_id,
     agentFramework: row.agent_framework,
     runtimeId: row.runtime_id,

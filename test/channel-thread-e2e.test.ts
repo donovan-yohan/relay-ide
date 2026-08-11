@@ -155,6 +155,7 @@ function mockSessions(
         id,
         providerId: params.providerId,
         profileActorId: params.profileActorId,
+        threadId: params.threadId ?? null,
         status: 'active',
         adapter,
         cwd: params.cwd,
@@ -277,6 +278,98 @@ async function waitFor(condition: () => boolean, timeoutMs = 4_000) {
 }
 
 describe('channel thread mention round trip', () => {
+  it('creates, renames, and revisits a durable empty conversation', async () => {
+    const harness = await createHarness();
+    const create = await fetch(
+      `http://127.0.0.1:${harness.port}/channels/${encodeURIComponent(harness.channelId)}/threads`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ title: 'Runtime isolation audit' }),
+      }
+    );
+    expect(create.status).toBe(201);
+    const created = (await create.json()) as {
+      thread: { rootMessageId: string; title: string; replyCount: number };
+    };
+    expect(created.thread).toMatchObject({
+      title: 'Runtime isolation audit',
+      replyCount: 0,
+    });
+
+    const rename = await fetch(
+      `http://127.0.0.1:${harness.port}/channels/${encodeURIComponent(harness.channelId)}/threads/${encodeURIComponent(created.thread.rootMessageId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ title: 'Runtime isolation shipped' }),
+      }
+    );
+    expect(rename.status).toBe(200);
+    expect((await rename.json()) as { thread: { title: string } }).toEqual({
+      thread: expect.objectContaining({ title: 'Runtime isolation shipped' }),
+    });
+    const history = harness.store.threadHistory(
+      harness.channelId,
+      created.thread.rootMessageId
+    );
+    expect(history).toHaveLength(1);
+    expect(
+      harness.store.getThreadTitle(
+        harness.channelId,
+        created.thread.rootMessageId
+      )
+    ).toBe('Runtime isolation shipped');
+  });
+
+  it('runs one provider profile in independent concurrent thread runtimes', async () => {
+    const harness = await createHarness({
+      build: (provider) => new ThreadRecordingAdapter(provider, 'thread ack'),
+    });
+    const first = await post(harness, { text: 'first root' });
+    const second = await post(harness, { text: 'second root' });
+    await post(harness, {
+      text: '@mock inspect first scope',
+      threadId: first.message.id,
+    });
+    await post(harness, {
+      text: '@mock inspect second scope',
+      threadId: second.message.id,
+    });
+
+    await waitFor(() => harness.adapters().length === 2);
+    await waitFor(
+      () =>
+        harness.store
+          .history(harness.channelId, { limit: 30 })
+          .filter(
+            (message) =>
+              message.sender.id === builtInAgentProfileId('mock') &&
+              message.status === 'complete'
+          ).length === 2
+    );
+    const profileId = builtInAgentProfileId('mock');
+    const firstBinding = harness.store.getBinding(
+      harness.channelId,
+      profileId,
+      first.message.id
+    );
+    const secondBinding = harness.store.getBinding(
+      harness.channelId,
+      profileId,
+      second.message.id
+    );
+    expect(firstBinding?.runtimeId).toBeTruthy();
+    expect(secondBinding?.runtimeId).toBeTruthy();
+    expect(firstBinding?.runtimeId).not.toBe(secondBinding?.runtimeId);
+  });
+
   it('persists the human trigger and mock reply in one thread with a live root count', async () => {
     const harness = await createHarness();
     const root = await post(harness, { text: 'root needing an agent answer' });

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  executeChannelAgentCommand,
   fetchChannelThreadHistory,
   postChannelMessage,
+  restartChannelAgentRuntimes,
 } from '../../frontend/src/lib/api.js';
 import type {
   ChannelMessage,
@@ -39,6 +41,7 @@ describe('channel thread API client', () => {
           messages: [row()],
           hasMore: true,
           nextCursor: { beforeSeq: 40 },
+          thread: { rootMessageId: rootId, title: 'release work' },
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       )
@@ -59,6 +62,7 @@ describe('channel thread API client', () => {
       messages: [row()],
       hasMore: true,
       nextCursor: { beforeSeq: 40 },
+      thread: { rootMessageId: rootId, title: 'release work' },
     });
   });
 
@@ -84,5 +88,39 @@ describe('channel thread API client', () => {
       threadId: rootId,
     });
     expect(String(init.body)).not.toContain('parentMessageId');
+  });
+
+  it('serializes command and instruction-apply controls with the exact thread scope', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ restarted: 1 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await executeChannelAgentCommand('topic:eng', {
+      profileId: 'agent-profile:mock:default',
+      command: 'compact',
+      threadId: rootId,
+    });
+    await restartChannelAgentRuntimes('topic:eng', rootId);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1].body))).toEqual({
+      profileId: 'agent-profile:mock:default',
+      command: 'compact',
+      threadId: rootId,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1].body))).toEqual({
+      threadId: rootId,
+    });
   });
 });

@@ -161,6 +161,8 @@ export interface TopicNavNode {
  */
 export interface ChannelRailThreadSummary {
   rootMessageId: string;
+  /** Durable user title; optional for older hubs. */
+  title?: string;
   replyCount: number;
   lastReplyAt: string;
   preview: string;
@@ -305,7 +307,9 @@ export function selectRailRowThreads(summary: ChannelRailSummary | null): {
   threadCount: number;
 } {
   const threads = summary?.threads ?? [];
-  const shown = threads.filter((thread) => thread.replyCount > 0);
+  // Named conversations are deliberately visible before their first reply:
+  // creation is durable operator intent, not a transient composer draft.
+  const shown = threads;
   return {
     threads: shown,
     threadCount: Math.max(summary?.threadCount ?? 0, shown.length),

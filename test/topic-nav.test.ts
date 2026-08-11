@@ -1070,7 +1070,7 @@ describe('rail thread rows (#1287 slice 5 item 18)', () => {
     ).toEqual({ threads: [], threadCount: 0 });
   });
 
-  it('drops a zero-reply root and never under-reports the total', () => {
+  it('keeps a zero-reply conversation and never under-reports the total', () => {
     const shown = thread({ rootMessageId: 'chm:live' });
     const result = selectRailRowThreads(
       summary({
@@ -1078,7 +1078,10 @@ describe('rail thread rows (#1287 slice 5 item 18)', () => {
         threadCount: 2,
       })
     );
-    expect(result.threads.map((t) => t.rootMessageId)).toEqual(['chm:live']);
+    expect(result.threads.map((t) => t.rootMessageId)).toEqual([
+      'chm:live',
+      'chm:empty',
+    ]);
     expect(result.threadCount).toBe(2);
   });
 
