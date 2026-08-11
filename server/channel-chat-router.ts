@@ -595,9 +595,10 @@ function createAgentCommandsHandler(
 function rejectChannelControlMessage(
   res: Response,
   binder: ChannelAgentBinder | null | undefined,
-  text: string
+  text: string,
+  channelId?: string
 ): boolean {
-  if (!binder?.isControlMessage?.(text)) return false;
+  if (!binder?.isControlMessage?.(text, channelId)) return false;
   sendGatewayError(
     res,
     'INVALID_ARGUMENT',
@@ -1494,7 +1495,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
     // Provider-neutral binder catalog owns the recognition rule, including
     // exact profile identity and both @profile/command and @profile /command.
-    if (rejectChannelControlMessage(res, deps.binder, text)) return;
+    if (rejectChannelControlMessage(res, deps.binder, text, id)) return;
     let parts: import('../shared/channel-chat-protocol.js').ChannelMessagePart[] =
       [];
     if (body['parts'] !== undefined) {

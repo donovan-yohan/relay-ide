@@ -290,7 +290,8 @@ export interface ChannelAgentBinder {
     args?: string,
     confirmed?: boolean
   ): Promise<{ config?: Record<string, unknown> }>;
-  isControlMessage(text: string): boolean;
+  /** `channelId` permits DM-only bare controls without reserving group prose. */
+  isControlMessage(text: string, channelId?: string): boolean;
   setStatusBroadcaster(broadcaster: ChannelAgentStatusBroadcaster): void;
   /** Replays persisted callback work only after boot store sweeps complete. */
   recoverCompletionCallbacks(): Promise<void>;
@@ -3860,7 +3861,24 @@ export function createChannelAgentBinder(
     }
   }
 
-  function isControlMessage(text: string): boolean {
+  function isControlMessage(text: string, channelId?: string): boolean {
+    // A DM has an unambiguous provider target, so a raw Relay control cannot
+    // fall through to durable channel prose. Group channels deliberately keep
+    // bare slash text ordinary: no exact target has been supplied there.
+    const topic = channelId ? deps.topicStore?.get(channelId) : undefined;
+    const dmProviderId = topic ? isDmChannel(topic) : null;
+    const bareCommand = /^\s*\/([^\s]+)(?:\s|$)/.exec(text)?.[1]?.toLowerCase();
+    if (
+      dmProviderId &&
+      bareCommand &&
+      relayControlInputGuardCatalogForProvider(dmProviderId).some(
+        (entry) =>
+          entry.name === bareCommand ||
+          (entry.aliases ?? []).includes(bareCommand)
+      )
+    ) {
+      return true;
+    }
     const profiles =
       deps.agentProfileStore?.list() ??
       deps.knownProviderIds.map((providerId) =>

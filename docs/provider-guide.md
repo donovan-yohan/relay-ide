@@ -179,6 +179,17 @@ message or create a mention context packet. Normal posts that look like a
 targeted control (`@agent/command` or `@agent /command`) are rejected so they
 cannot accidentally route as prose.
 
+In a Codex direct message, Relay has one provider target, so its main and thread
+composers also accept bare `/model` and `/effort` through that same control lane.
+The palette resolves the exact current default profile from the live roster and
+then reads that profile's catalog: models and effort choices are never
+reconstructed from a UI display name or assumed built-in profile id. Unknown
+Codex slash input, including native `/skill` syntax, and all non-Codex DM slash
+input remain ordinary prompt text. A raw bare Codex control posted to a DM is
+rejected before persistence with `CHANNEL_COMMAND_REQUIRES_CONTROL_LANE`; a bare
+slash input in a group channel remains ordinary prose because it has no
+unambiguous target.
+
 Only advertise controls the live provider can execute. Where provider metadata
 lists models, service tiers, or reasoning efforts, derive command arguments
 from that metadata and refresh the catalog on a model change. A missing catalog
@@ -189,6 +200,11 @@ the stable `turn/start` override fields; Relay does not negotiate
 model and effort values are launch-time CLI settings, not live channel
 controls. Claude, OpenCode, and Hermes must not be presented as supporting a
 channel control until their own adapters expose and execute it.
+
+Codex model and effort choices are subsequent-turn overrides on the current
+channel runtime/thread. Relay does not create durable cross-runtime profile
+preferences for these controls; after the runtime or thread is replaced, the
+provider and current session configuration again determine the effective values.
 
 The #1375 provider audit found no equivalent advertise-then-fail path in Pi or
 OpenCode: Pi exposes no Relay-owned channel controls, and OpenCode exposes no

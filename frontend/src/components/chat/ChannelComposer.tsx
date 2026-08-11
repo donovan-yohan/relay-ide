@@ -20,6 +20,7 @@ import {
   type MentionContact,
 } from '../../../../shared/mention-contacts.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
+import { relayControlInputGuardCatalogForProvider } from '../../../../shared/agent-command-catalog.js';
 import { createBrowserId } from '../../lib/browserId.js';
 import {
   executeChannelAgentCommand,
@@ -74,11 +75,20 @@ function defaultSendLabel(steeringMode: BusyAgentSteeringMode): string {
 
 type CommandPhase = 'arguments' | 'confirm' | null;
 
-interface MentionCommandTrigger {
-  contact: MentionContact;
+interface CommandTarget {
+  profileId: string;
+  displayName: string;
+}
+
+interface CommandTrigger {
+  target: CommandTarget;
   rosterEntry: RosterEntry | undefined;
-  /** Includes the selected profile mention and immediately-adjacent `/`. */
-  commandStart: number;
+  /** True while a reserved bare Codex control awaits its live roster catalog. */
+  resolving?: boolean;
+  /** True when a reserved bare Codex control has no live executable catalog. */
+  unavailable?: boolean;
+  /** Span replaced when a palette command is chosen. */
+  replacementStart: number;
   /** End of the command-name token (before a possible argument). */
   commandEnd: number;
   commandQuery: string;
@@ -99,7 +109,7 @@ function detectMentionCommandTrigger(
   caret: number,
   contacts: readonly MentionContact[],
   roster: readonly RosterEntry[]
-): MentionCommandTrigger | null {
+): CommandTrigger | null {
   const beforeCaret = text.slice(0, caret);
   let best:
     | { contact: MentionContact; index: number; needle: string }
@@ -123,12 +133,112 @@ function detectMentionCommandTrigger(
   const commandQuery = nameMatch?.[1] ?? '';
   const commandEnd = best.index + best.needle.length + commandQuery.length;
   return {
-    contact: best.contact,
+    target: {
+      profileId: best.contact.id,
+      displayName: best.contact.displayName,
+    },
     rosterEntry: roster.find((entry) => entry.id === best.contact.id),
-    commandStart: best.index,
+    // This deliberately consumes the optional space between the mention and
+    // slash, preserving the established compact @agent/command form.
+    replacementStart: best.index + mentionInsertText(best.contact).length,
     commandEnd,
     commandQuery,
     argument: rest.slice(commandQuery.length).trim(),
+  };
+}
+
+/**
+ * A bare control is meaningful only in a DM that supplied its exact target.
+ * Do not make arbitrary group-channel slash prose a globally-reserved syntax.
+ */
+function detectImplicitCommandTrigger(
+  text: string,
+  caret: number,
+  providerId: string | undefined,
+  roster: readonly RosterEntry[] | undefined
+): CommandTrigger | null {
+  // Bare controls are intentionally a Codex DM affordance. Other providers'
+  // slash input remains ordinary prompt text until they independently expose a
+  // product contract for it.
+  if (providerId !== 'codex') return null;
+  const beforeCaret = text.slice(0, caret);
+  const match = /^\/(\S*)/.exec(beforeCaret);
+  if (!match) return null;
+  const commandQuery = match[1] ?? '';
+  const commandEnd = commandQuery.length + 1;
+  const rest = beforeCaret.slice(commandEnd);
+  if (/\n/.test(rest)) return null;
+  const reservedControls = relayControlInputGuardCatalogForProvider('codex');
+  const isReservedControl =
+    commandQuery.length === 0 ||
+    reservedControls.some((command) => commandMatches(command, commandQuery));
+  if (!isReservedControl) return null;
+  if (!roster) {
+    // A fast Enter must not fall through to the normal post path before the
+    // live default profile/catalog arrives. No profile id is available yet, so
+    // this trigger can only display loading and swallow palette navigation.
+    return {
+      target: { profileId: '', displayName: 'Codex' },
+      rosterEntry: undefined,
+      resolving: true,
+      replacementStart: 0,
+      commandEnd,
+      commandQuery,
+      argument: rest.trim(),
+    };
+  }
+  const rosterEntry = roster.find(
+    (entry) => entry.providerId === providerId && entry.isDefault
+  );
+  if (!rosterEntry) {
+    return {
+      target: { profileId: '', displayName: 'Codex' },
+      rosterEntry: undefined,
+      unavailable: true,
+      replacementStart: 0,
+      commandEnd,
+      commandQuery,
+      argument: rest.trim(),
+    };
+  }
+  const controls = (rosterEntry.commands ?? []).filter(
+    (command) => command.dispatch === 'relay-control'
+  );
+  // Until the exact live default profile supplies a matching control, this is
+  // native Codex slash input (for example `/skill`) or ordinary prose — never a
+  // blocked, empty command palette.
+  const commandAvailable =
+    controls.length > 0 &&
+    (commandQuery.length === 0 ||
+      controls.some((command) => commandMatches(command, commandQuery)));
+  if (!commandAvailable) {
+    // The reserved input must not become a normal post after a completed but
+    // empty/failed model-list discovery (or a missing default profile). That
+    // would only reach the server's control-lane rejection instead of giving
+    // the operator an actionable unavailable state.
+    return {
+      target: {
+        profileId: rosterEntry.id,
+        displayName: rosterEntry.displayName,
+      },
+      rosterEntry,
+      unavailable: true,
+      replacementStart: 0,
+      commandEnd,
+      commandQuery,
+      argument: rest.trim(),
+    };
+  }
+  return {
+    target: {
+      profileId: rosterEntry.id,
+      displayName: rosterEntry.displayName,
+    },
+    rosterEntry,
+    replacementStart: 0,
+    commandEnd,
+    commandQuery,
+    argument: rest.trim(),
   };
 }
 
@@ -168,6 +278,8 @@ interface ChannelComposerProps {
   placeholder?: string;
   /** Human channel members, folded into the @mention contact set (#1236). */
   members?: readonly ChannelMemberRef[];
+  /** Codex DM provider hint; the exact default profile resolves from the roster. */
+  implicitCommandProviderId?: string | undefined;
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
   onSend: (
     text: string,
@@ -196,6 +308,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   channelTitle,
   placeholder,
   members,
+  implicitCommandProviderId,
   onSend,
   busyAgentLabels,
   busyAgentSteeringMode = 'none',
@@ -344,11 +457,13 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   // mentions) — see slashTrigger.detectTrigger. Roster is fetched lazily on the
   // first @ per channel and cached 30s; TanStack dedupes with the header query.
   const trigger = detectTrigger(draft, caret, ['@']);
+  const implicitCommandDraft =
+    implicitCommandProviderId === 'codex' && /^\//.test(draft);
   const rosterQuery = useQuery({
     queryKey: ['channel-roster', channelId],
     queryFn: () => fetchChannelRoster(channelId),
     staleTime: 30_000,
-    enabled: trigger !== null,
+    enabled: trigger !== null || implicitCommandDraft,
     retry: false,
   });
   // Memoize on the query string + roster data + members so palette navigation
@@ -367,8 +482,15 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     [triggerQuery, contacts]
   );
   const commandTrigger = useMemo(
-    () => detectMentionCommandTrigger(draft, caret, contacts, rosterData ?? []),
-    [draft, caret, contacts, rosterData]
+    () =>
+      detectMentionCommandTrigger(draft, caret, contacts, rosterData ?? []) ??
+      detectImplicitCommandTrigger(
+        draft,
+        caret,
+        implicitCommandProviderId,
+        rosterData
+      ),
+    [draft, caret, contacts, implicitCommandProviderId, rosterData]
   );
   const commandEntries = useMemo(
     () =>
@@ -590,16 +712,16 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         setSelectedCommand(command);
         setCommandPhase('confirm');
         setCommandStatus(
-          `confirm /${command.name} for @${commandTrigger.contact.displayName}`
+          `confirm /${command.name} for @${commandTrigger.target.displayName}`
         );
         return;
       }
       setCommandPending(true);
       setCommandStatus(
-        `running /${command.name} for @${commandTrigger.contact.displayName}…`
+        `running /${command.name} for @${commandTrigger.target.displayName}…`
       );
       void executeChannelAgentCommand(channelId, {
-        profileId: commandTrigger.contact.id,
+        profileId: commandTrigger.target.profileId,
         command: command.name,
         ...(normalizedArgs ? { args: normalizedArgs } : {}),
         ...(confirmed ? { confirmed: true } : {}),
@@ -611,7 +733,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
             queryKey: ['channel-roster', channelId],
           });
           setCommandStatus(
-            `/${command.name} applied to @${commandTrigger.contact.displayName}`
+            `/${command.name} applied to @${commandTrigger.target.displayName}`
           );
           setDraft('');
           setCaret(0);
@@ -639,17 +761,10 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       if (!commandTrigger) return;
       const replacement = `/${command.name}`;
       const nextDraft =
-        draft.slice(
-          0,
-          commandTrigger.commandStart +
-            mentionInsertText(commandTrigger.contact).length
-        ) +
+        draft.slice(0, commandTrigger.replacementStart) +
         replacement +
         draft.slice(commandTrigger.commandEnd);
-      const nextCaret =
-        commandTrigger.commandStart +
-        mentionInsertText(commandTrigger.contact).length +
-        replacement.length;
+      const nextCaret = commandTrigger.replacementStart + replacement.length;
       setDraft(nextDraft);
       setCaret(nextCaret);
       setActiveIndex(0);
@@ -921,15 +1036,21 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           activeIndex={activeIndex}
           visible={commandPaletteVisible}
           disabled={commandPending}
-          label={`commands for ${commandTrigger?.contact.displayName ?? 'agent'}`}
+          label={`commands for ${commandTrigger?.target.displayName ?? 'agent'}`}
           emptyMessage={
             commandPhase === 'arguments' && selectedCommand
               ? commandTrigger?.argument
                 ? `press enter to use “${commandTrigger.argument}”`
                 : `type ${selectedCommand.argumentHint ?? 'a value'}`
-              : commandPending
-                ? 'applying command…'
-                : 'no commands available for this agent'
+              : commandTrigger?.resolving
+                ? rosterQuery.isError
+                  ? 'commands unavailable'
+                  : 'loading commands…'
+                : commandTrigger?.unavailable
+                  ? 'commands unavailable'
+                  : commandPending
+                    ? 'applying command…'
+                    : 'no commands available for this agent'
           }
           onSelect={activateCommandRow}
         />

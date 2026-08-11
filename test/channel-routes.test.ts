@@ -2073,6 +2073,48 @@ describe('channel routes — agent commands', () => {
     expect(res.status).toBe(400);
     expect(h.store.history(h.channelId, { limit: 10 })).toHaveLength(0);
   });
+
+  it.each(['/model gpt-5.6', '/effort high'])(
+    'rejects bare DM control %s before persistence',
+    async (text) => {
+      const h = await harness({ binderFactory: realControlBinder });
+      const dm = h.topicStore.create(
+        dmChannelCreateInput({
+          providerId: 'codex',
+          providerDisplayName: 'Codex',
+          workspaceId: 'ws:local',
+        })
+      );
+      const res = await req<{
+        error: { details?: { reasonCode?: string } };
+      }>({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${dm.id}/messages`,
+        body: { text },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.details?.reasonCode).toBe(
+        'CHANNEL_COMMAND_REQUIRES_CONTROL_LANE'
+      );
+      expect(h.store.history(dm.id, { limit: 10 })).toHaveLength(0);
+    }
+  );
+
+  it('keeps bare group-channel slash text as ordinary persisted prose', async () => {
+    const h = await harness({ binderFactory: realControlBinder });
+    const res = await req<{ message: { body: { text: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${h.channelId}/messages`,
+      body: { text: '/model gpt-5.6' },
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.message.body.text).toBe('/model gpt-5.6');
+    expect(h.store.history(h.channelId, { limit: 10 })).toHaveLength(1);
+  });
 });
 
 describe('channel routes — orchestrator designation (#1259)', () => {

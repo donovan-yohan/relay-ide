@@ -69,6 +69,12 @@ const DESIGNATE_ORCHESTRATOR_ROLE_CONFLICT =
 const DESIGNATE_ORCHESTRATOR_GENERIC_ERROR =
   'could not designate orchestrator — try again';
 
+function implicitCommandProviderForDm(
+  providerId: string | null
+): string | undefined {
+  return providerId === 'codex' ? providerId : undefined;
+}
+
 function designateOrchestratorErrorCopy(error: unknown): string {
   if (
     error instanceof HttpError &&
@@ -379,6 +385,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         providerId: dmProviderId,
       })
     : null;
+  // Only Codex DMs opt into bare controls. The composers resolve the exact
+  // current default profile from the live roster, matching binder DM routing.
+  const implicitCommandProviderId = implicitCommandProviderForDm(dmProviderId);
 
   // A DM addresses its one agent implicitly — the binder routes an unmentioned
   // message to it — so the composer must not tell you to type `@` at the very
@@ -1347,6 +1356,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             channelTitle={title}
             {...(dmPlaceholder ? { placeholder: dmPlaceholder } : {})}
             {...(channel?.members ? { members: channel.members } : {})}
+            implicitCommandProviderId={implicitCommandProviderId}
             onSend={handleSend}
             busyAgentLabels={busyAgentLabels}
             busyAgentSteeringMode={busyAgentSteeringMode}
@@ -1364,6 +1374,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             channelId={channelId}
             channelTitle={title}
             isDm={isDm}
+            implicitCommandProviderId={implicitCommandProviderId}
             rootId={activeThreadRootId}
             liveMessages={reducer.messages}
             onClose={() => setActiveThreadRootId(null)}
