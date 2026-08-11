@@ -110,6 +110,13 @@ human-emulation proof. Explicit
 `append_external_event` calls are a fallback for providers with no usable
 connector, not the normal mirroring architecture.
 
+For channel replies, the bridge consumes the stable
+`channels.subscribe --channel-id <id> --after-seq <N>` NDJSON contract. It keeps
+one background subscription for multiple outstanding posts and correlates
+authoritative message rows using their existing source/thread metadata. This
+removes per-message blocking waits, but it does not claim that MCP can wake an
+idle Codex Desktop task; host wake/injection support remains provider-owned.
+
 ### Thin falsification experiment before broad investment
 
 Build no transcript importer first. In a private isolated hub, implement only

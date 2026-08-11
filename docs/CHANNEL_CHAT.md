@@ -89,6 +89,27 @@ The hub coalesces text deltas and applies socket watermarks. A lagging client
 can reconnect from its last durable sequence instead of requiring an
 unbounded in-memory queue.
 
+External agents use the separate actor-authenticated NDJSON adapter:
+
+```sh
+relay-ide v1 channels subscribe --channel-id topic:general --after-seq 42 --json
+```
+
+It shares the hub's register-before-replay handoff and bounded subscriber set;
+there is no second replay ring. Each frame reports the last safe `durableSeq`.
+Only committed rows advance it, so text deltas can be rendered live without
+moving the reconnect cursor past their owning row. Exact `channelIds` scope and
+`context:read` are checked before registration, and revoked actor credentials
+terminate established streams on their next validation interval.
+
+The CLI output is a discriminated v1 frame stream: every `open`, `event`, and
+`closed` frame has `schemaVersion: 1`, `channelId`, `sequence`, `occurredAt`,
+and `durableSeq`;
+`event` frames carry a required versioned channel-event payload, and `closed`
+frames carry a required reason plus retryability. A bounded consumer stops
+parsing immediately after its `--max-events` frame and cancels the upstream
+reader; stdout backpressure is drained rather than treated as a dropped frame.
+
 ### Read state and unread
 
 Unread is derived client-side; the _marker_ it derives from converges through

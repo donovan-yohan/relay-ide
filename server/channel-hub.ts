@@ -64,8 +64,31 @@ export interface ChannelSocket {
   on(event: 'close' | 'error', handler: () => void): void;
 }
 
+/**
+ * Transport-neutral, server-to-client channel event sink.  The browser
+ * WebSocket lane is one adapter; HTTP streaming clients use the same handoff
+ * rather than reimplementing a second replay/live race window.
+ *
+ * `send` returns false when the transport cannot accept another frame.  This
+ * is intentionally stronger than Node's `ServerResponse.write()` convention:
+ * the hub must remove an abandoned subscriber immediately instead of allowing
+ * a response buffer to become an unbounded second event log.
+ */
+export interface ChannelEventSink {
+  readonly ready: boolean;
+  readonly bufferedAmount?: number;
+  send(event: ChannelEventV1): boolean;
+  close(reason: ChannelSubscriptionCloseReason): void;
+  onClose(handler: () => void): void;
+}
+
+export type ChannelSubscriptionCloseReason =
+  | { code: 'not-found' }
+  | { code: 'backpressure'; latestSeq: number }
+  | { code: 'transport-closed' };
+
 interface Subscriber {
-  ws: ChannelSocket;
+  sink: ChannelEventSink;
   channelId: string;
   /** live events queue here until the connect-time snapshot has been sent. */
   buffering: boolean;
@@ -132,6 +155,15 @@ export interface ChannelHub {
     ws: ChannelSocket,
     input: { channelId: string; sinceSeq: number | null }
   ): void;
+  /**
+   * Register a non-WebSocket transport. The subscriber is registered before
+   * its durable replay is read, exactly like `handleConnection`; call the
+   * returned cleanup when the owning HTTP response closes.
+   */
+  subscribe(
+    sink: ChannelEventSink,
+    input: { channelId: string; afterSeq: number | null }
+  ): () => void;
   broadcastCreated(
     message: ChannelMessage,
     mentions?: ChannelMention[],
@@ -178,16 +210,17 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     return new Date().toISOString();
   }
 
-  function bufferedAmount(ws: ChannelSocket): number {
-    return typeof ws.bufferedAmount === 'number' ? ws.bufferedAmount : 0;
+  function bufferedAmount(sink: ChannelEventSink): number {
+    return typeof sink.bufferedAmount === 'number' ? sink.bufferedAmount : 0;
   }
 
-  function rawSend(ws: ChannelSocket, event: ChannelEventV1): void {
-    if (ws.readyState !== WS_OPEN) return;
+  function rawSend(sink: ChannelEventSink, event: ChannelEventV1): boolean {
+    if (!sink.ready) return false;
     try {
-      ws.send(JSON.stringify(event));
+      return sink.send(event);
     } catch (err) {
       logger.warn('channel-hub send failed:', err);
+      return false;
     }
   }
 
@@ -228,16 +261,22 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
    *  - draining below 256KB clears lagging and emits `channel-resync-required-v1`.
    */
   function deliver(sub: Subscriber, event: ChannelEventV1): void {
-    const ws = sub.ws;
-    if (ws.readyState !== WS_OPEN) return;
-    const buffered = bufferedAmount(ws);
+    const sink = sub.sink;
+    if (!sink.ready) return;
+    const buffered = bufferedAmount(sink);
     if (buffered > HARD_LIMIT_BYTES) {
-      closeSubscriber(sub, CHANNEL_WS_BACKPRESSURE_CLOSE_CODE);
+      closeSubscriber(sub, {
+        code: 'backpressure',
+        latestSeq: latestSeqFor(sub.channelId),
+      });
       return;
     }
     if (sub.lagging && buffered < WATERMARK_LOW_BYTES) {
       sub.lagging = false;
-      rawSend(ws, resyncEvent(sub.channelId));
+      if (!rawSend(sink, resyncEvent(sub.channelId))) {
+        closeSubscriber(sub, { code: 'transport-closed' });
+        return;
+      }
     }
     if (event.type === 'channel-message-delta-v1') {
       if (sub.lagging) return; // suppress deltas while lagging
@@ -246,13 +285,18 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         return;
       }
     }
-    rawSend(ws, event);
+    if (!rawSend(sink, event)) {
+      closeSubscriber(sub, { code: 'transport-closed' });
+    }
   }
 
-  function closeSubscriber(sub: Subscriber, code: number): void {
+  function closeSubscriber(
+    sub: Subscriber,
+    reason: ChannelSubscriptionCloseReason
+  ): void {
     removeSubscriber(sub.channelId, sub);
     try {
-      sub.ws.close(code);
+      sub.sink.close(reason);
     } catch {
       /* ignore */
     }
@@ -268,7 +312,10 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
           sub.queue.length >= connectQueueMaxEvents ||
           sub.queueBytes + eventBytes > connectQueueMaxBytes
         ) {
-          closeSubscriber(sub, CHANNEL_WS_BACKPRESSURE_CLOSE_CODE);
+          closeSubscriber(sub, {
+            code: 'backpressure',
+            latestSeq: latestSeqFor(channelId),
+          });
           continue;
         }
         sub.queue.push(event);
@@ -488,71 +535,119 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     }
   }
 
+  function subscribe(
+    sink: ChannelEventSink,
+    { channelId, afterSeq }: { channelId: string; afterSeq: number | null }
+  ): () => void {
+    if (!store || !channelExists(channelId)) {
+      try {
+        sink.close({ code: 'not-found' });
+      } catch {
+        /* ignore */
+      }
+      return () => {};
+    }
+    const sub: Subscriber = {
+      sink,
+      channelId,
+      buffering: true,
+      queue: [],
+      queueBytes: 0,
+      snapshotLatestSeq: 0,
+      snapshotInFlight: new Map(),
+      lagging: false,
+    };
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      removeSubscriber(channelId, sub);
+    };
+    // Install the cleanup before registration: a response/socket that dies at
+    // the snapshot boundary must not remain retained in the hub.
+    sink.onClose(cleanup);
+
+    // Register FIRST so live events during snapshot build queue rather than
+    // race; better-sqlite3 reads are synchronous, so the queue + dedupe below
+    // is defense in depth.
+    addSubscriber(channelId, sub);
+
+    // Flush any pending accumulator text BEFORE reading the snapshot so the
+    // snapshot's recorded deltaIndex matches the overlaid text exactly; the
+    // flush delta queues on this buffering subscriber and is deduped below.
+    flushPendingForChannel(channelId);
+
+    const snapshot = buildSnapshot(channelId, afterSeq);
+    if (snapshot.type === 'channel-snapshot-v1') {
+      sub.snapshotLatestSeq = snapshot.latestSeq;
+      for (const ref of snapshot.inFlight) {
+        sub.snapshotInFlight.set(ref.messageId, ref.deltaIndex);
+      }
+    }
+    deliver(sub, snapshot);
+    if (!sink.ready) {
+      cleanup();
+      return cleanup;
+    }
+
+    // Flush queued live events with dedupe: drop committed events with
+    // seq <= snapshot endSeq; drop deltas with deltaIndex <= the snapshot's
+    // recorded index for that message (dedupe stream events by messageId +
+    // deltaIndex, NOT seq); always forward completed (idempotent replace-by-id).
+    const queued = sub.queue;
+    sub.queue = [];
+    sub.queueBytes = 0;
+    sub.buffering = false;
+    for (const event of queued) {
+      if (
+        event.type === 'channel-message-created-v1' &&
+        event.message.seq <= sub.snapshotLatestSeq
+      ) {
+        continue;
+      }
+      if (event.type === 'channel-message-delta-v1') {
+        const recorded = sub.snapshotInFlight.get(event.messageId);
+        if (recorded !== undefined && event.deltaIndex <= recorded) continue;
+      }
+      deliver(sub, event);
+      if (!sink.ready) break;
+    }
+    return cleanup;
+  }
+
   return {
     handleConnection(ws, { channelId, sinceSeq }) {
-      if (!store || !channelExists(channelId)) {
-        try {
-          ws.close(CHANNEL_WS_NOT_FOUND_CLOSE_CODE);
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
-      const sub: Subscriber = {
-        ws,
-        channelId,
-        buffering: true,
-        queue: [],
-        queueBytes: 0,
-        snapshotLatestSeq: 0,
-        snapshotInFlight: new Map(),
-        lagging: false,
-      };
-      // Register FIRST so live events during snapshot build queue rather than
-      // race; better-sqlite3 reads are synchronous, so the queue + dedupe below
-      // is defense in depth.
-      addSubscriber(channelId, sub);
-
-      // Flush any pending accumulator text BEFORE reading the snapshot so the
-      // snapshot's recorded deltaIndex matches the overlaid text exactly; the
-      // flush delta queues on this buffering socket and is deduped below.
-      flushPendingForChannel(channelId);
-
-      const snapshot = buildSnapshot(channelId, sinceSeq);
-      if (snapshot.type === 'channel-snapshot-v1') {
-        sub.snapshotLatestSeq = snapshot.latestSeq;
-        for (const ref of snapshot.inFlight) {
-          sub.snapshotInFlight.set(ref.messageId, ref.deltaIndex);
-        }
-      }
-      deliver(sub, snapshot);
-      if (ws.readyState !== WS_OPEN) return;
-
-      // Flush queued live events with dedupe: drop committed events with
-      // seq <= snapshot endSeq; drop deltas with deltaIndex <= the snapshot's
-      // recorded index for that message (dedupe stream events by messageId +
-      // deltaIndex, NOT seq); always forward completed (idempotent replace-by-id).
-      const queued = sub.queue;
-      sub.queue = [];
-      sub.queueBytes = 0;
-      sub.buffering = false;
-      for (const event of queued) {
-        if (
-          event.type === 'channel-message-created-v1' &&
-          event.message.seq <= sub.snapshotLatestSeq
-        ) {
-          continue;
-        }
-        if (event.type === 'channel-message-delta-v1') {
-          const recorded = sub.snapshotInFlight.get(event.messageId);
-          if (recorded !== undefined && event.deltaIndex <= recorded) continue;
-        }
-        deliver(sub, event);
-      }
-
-      ws.on('close', () => removeSubscriber(channelId, sub));
-      ws.on('error', () => removeSubscriber(channelId, sub));
+      subscribe(
+        {
+          get ready() {
+            return ws.readyState === WS_OPEN;
+          },
+          get bufferedAmount() {
+            return ws.bufferedAmount ?? 0;
+          },
+          send(event) {
+            ws.send(JSON.stringify(event));
+            return true;
+          },
+          close(reason) {
+            ws.close(
+              reason.code === 'not-found'
+                ? CHANNEL_WS_NOT_FOUND_CLOSE_CODE
+                : reason.code === 'backpressure'
+                  ? CHANNEL_WS_BACKPRESSURE_CLOSE_CODE
+                  : 1011
+            );
+          },
+          onClose(handler) {
+            ws.on('close', handler);
+            ws.on('error', handler);
+          },
+        },
+        { channelId, afterSeq: sinceSeq }
+      );
     },
+
+    subscribe,
 
     broadcastCreated(message, mentions, options) {
       broadcast(message.channelId, {

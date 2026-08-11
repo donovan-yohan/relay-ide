@@ -120,6 +120,16 @@ function schemaAcceptsCommandInput(
   return schemaMatches(commandSpec(commandName).inputSchema, value);
 }
 
+function schemaAcceptsChannelsSubscribeFrame(
+  value: Record<string, unknown>
+): boolean {
+  const output = commandSpec('channels.subscribe').outputSchema;
+  const data = output.properties?.['data'];
+  if (!data)
+    throw new Error('channels.subscribe output data schema is missing');
+  return schemaMatches(data, value);
+}
+
 function schemaAcceptsSessionWait(value: Record<string, unknown>): boolean {
   return schemaAcceptsCommandInput('sessions.wait', value);
 }
@@ -236,6 +246,7 @@ describe('CLI gateway contract', () => {
       'channels.list',
       'channels.get',
       'channels.history',
+      'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
       'channels.post',
@@ -257,11 +268,12 @@ describe('CLI gateway contract', () => {
     }
   });
 
-  it('declares the five channel read verbs as stable gateway commands', () => {
+  it('declares the channel read verbs as stable gateway commands', () => {
     const readVerbs = [
       'channels.list',
       'channels.get',
       'channels.history',
+      'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
     ] as const;
@@ -285,7 +297,11 @@ describe('CLI gateway contract', () => {
       ]) {
         expect(spec.errorCodes).toContain(code);
       }
-      if (verb === 'channels.history' || verb === 'channels.threads.history') {
+      if (
+        verb === 'channels.history' ||
+        verb === 'channels.subscribe' ||
+        verb === 'channels.threads.history'
+      ) {
         expect(spec.errorCodes).toContain('NOT_FOUND');
       }
     }
@@ -294,6 +310,108 @@ describe('CLI gateway contract', () => {
       'channels.threads.history'
     );
     expect(commandSpec('channels.post').name).toBe('channels.post');
+  });
+
+  it('models a bounded exclusive channel subscription cursor', () => {
+    expect(
+      schemaAcceptsCommandInput('channels.subscribe', {
+        channelId: 'channel-1',
+        afterSeq: 0,
+        maxEvents: 10,
+        idleTimeoutMs: 1000,
+      })
+    ).toBe(true);
+    for (const input of [
+      { channelId: 'channel-1', afterSeq: -1 },
+      { channelId: 'channel-1', maxEvents: 0 },
+      { channelId: 'channel-1', idleTimeoutMs: 300001 },
+      { channelId: 'channel-1', unknown: true },
+    ]) {
+      expect(schemaAcceptsCommandInput('channels.subscribe', input)).toBe(
+        false
+      );
+    }
+    expect(commandSpec('channels.subscribe').outputSchema).toMatchObject({
+      properties: {
+        data: {
+          oneOf: [
+            { properties: { frame: { const: 'open' } } },
+            { properties: { frame: { const: 'event' } } },
+            { properties: { frame: { const: 'closed' } } },
+          ],
+        },
+      },
+    });
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'open',
+        channelId: 'channel-1',
+        sequence: 0,
+        occurredAt: '2026-08-11T00:00:00.000Z',
+        durableSeq: 0,
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'event',
+        channelId: 'channel-1',
+        sequence: 1,
+        occurredAt: '2026-08-11T00:00:01.000Z',
+        durableSeq: 0,
+        payload: { type: 'channel-heartbeat-v1' },
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'closed',
+        channelId: 'channel-1',
+        sequence: 2,
+        occurredAt: '2026-08-11T00:00:02.000Z',
+        durableSeq: 0,
+        reason: 'transport-closed',
+        retryable: true,
+      })
+    ).toBe(true);
+    for (const invalidFrame of [
+      {
+        schemaVersion: 1,
+        frame: 'event',
+        channelId: 'channel-1',
+        sequence: 1,
+        occurredAt: '2026-08-11T00:00:01.000Z',
+        durableSeq: 0,
+      },
+      {
+        schemaVersion: 1,
+        frame: 'closed',
+        channelId: 'channel-1',
+        sequence: 2,
+        occurredAt: '2026-08-11T00:00:02.000Z',
+        durableSeq: 0,
+        reason: 'transport-closed',
+      },
+      {
+        schemaVersion: 1,
+        frame: 'open',
+        channelId: 'channel-1',
+        sequence: 0,
+        occurredAt: '2026-08-11T00:00:00.000Z',
+        durableSeq: 0,
+        payload: { type: 'channel-heartbeat-v1' },
+      },
+      {
+        frame: 'open',
+        channelId: 'channel-1',
+        sequence: 0,
+        occurredAt: '2026-08-11T00:00:00.000Z',
+        durableSeq: 0,
+      },
+    ]) {
+      expect(schemaAcceptsChannelsSubscribeFrame(invalidFrame)).toBe(false);
+    }
   });
 
   it('models channel pagination inputs and directional cursors exactly', () => {
