@@ -1035,6 +1035,7 @@ describe('channel-message-store streaming lifecycle', () => {
           content: 'inspect',
         },
       },
+      agentAttribution: { model: 'claude-sonnet', effort: 'high' },
     });
     const updated = first.updateAgentDetail(begun.id, {
       itemId: 'reason-1',
@@ -1083,6 +1084,7 @@ describe('channel-message-store streaming lifecycle', () => {
             content: 'inspect the channel bridge',
           }),
         }),
+        agentAttribution: { model: 'claude-sonnet', effort: 'high' },
       }),
     ]);
   });

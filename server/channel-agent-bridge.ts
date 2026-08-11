@@ -9,6 +9,7 @@ import {
   agentDetailCardForItem,
   type AgentDetailCardStatusV2,
   type AgentDetailCardV2,
+  type AgentSessionConfigV2,
   type AgentPatchV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import type { ChannelHub } from './channel-hub.js';
@@ -21,7 +22,9 @@ import { PACKET_IMAGE_DEGRADATION_META_KEY } from './channel-context-packet.js';
 import {
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_AGENT_DETAIL_MAX_BYTES,
+  CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS,
   type ChannelAgentDetail,
+  type ChannelAgentAttribution,
   type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
@@ -60,6 +63,25 @@ export const CHANNEL_BRIDGE_DETAIL_TITLE_MAX_CHARS = 1024;
 export const CHANNEL_BRIDGE_DETAIL_LANGUAGE_MAX_CHARS = 128;
 export const CHANNEL_BRIDGE_DETAIL_COMMAND_MAX_CHARS = 4096;
 export const CHANNEL_BRIDGE_DETAIL_PATH_MAX_CHARS = 4096;
+
+/** Keep provider-supplied model/effort display data small and inert. */
+function boundedAgentAttribution(config: {
+  model?: string | undefined;
+  effort?: string | null | undefined;
+}): ChannelAgentAttribution | undefined {
+  const scalar = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim()
+      ? value.trim().slice(0, CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS)
+      : undefined;
+  const model = scalar(config.model);
+  const effort = scalar(config.effort);
+  return model || effort
+    ? {
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+      }
+    : undefined;
+}
 
 function diffCounts(content: string): { additions: number; deletions: number } {
   let additions = 0;
@@ -270,6 +292,8 @@ export interface BindSessionToChannelInput {
    * regardless of caller.
    */
   profileActorId?: string;
+  /** Current adapter session config captured before this bridge attached. */
+  initialAgentAttribution?: ChannelAgentAttribution;
   /** Resolve the immediate parent for a routed turn, if it began in a thread. */
   parentMessageIdForTurn?: (turnId: string) => string | undefined;
   /**
@@ -315,6 +339,12 @@ export function bindSessionToChannel(
   const turnsWithRows = new Set<string>();
   const recentFinalizedItemKeys = new Set<string>();
   const turnImages = new Map<string, TurnImageState>();
+  // Config updates apply to future turns. The first row in a turn captures a
+  // copy so a later /model or /effort can never rewrite siblings or history.
+  const turnAttributions = new Map<string, ChannelAgentAttribution | null>();
+  let currentAttribution = input.initialAgentAttribution
+    ? { ...input.initialAgentAttribution }
+    : undefined;
   let closed = false;
 
   function itemSourceKey(
@@ -506,6 +536,38 @@ export function bindSessionToChannel(
     ...(input.displayName ? { displayName: input.displayName } : {}),
   };
 
+  function attributionForTurn(
+    turnId: string
+  ): ChannelAgentAttribution | undefined {
+    if (!turnAttributions.has(turnId)) {
+      turnAttributions.set(
+        turnId,
+        currentAttribution ? { ...currentAttribution } : null
+      );
+    }
+    const attribution = turnAttributions.get(turnId);
+    return attribution ? { ...attribution } : undefined;
+  }
+
+  function applySessionConfig(
+    config: Partial<Omit<AgentSessionConfigV2, 'cwd'>>,
+    replace: boolean
+  ): void {
+    const next = replace
+      ? boundedAgentAttribution(config)
+      : boundedAgentAttribution({
+          model:
+            config.model !== undefined
+              ? config.model
+              : currentAttribution?.model,
+          effort:
+            config.effort !== undefined
+              ? config.effort
+              : currentAttribution?.effort,
+        });
+    currentAttribution = next ? { ...next } : undefined;
+  }
+
   function openStream(
     turnId: string,
     canonicalItemId: string,
@@ -522,11 +584,13 @@ export function bindSessionToChannel(
       return null;
     }
     const parentMessageId = input.parentMessageIdForTurn?.(turnId);
+    const agentAttribution = attributionForTurn(turnId);
     const message = store.beginStream({
       channelId,
       sender,
       source: { runtimeId, turnId, itemId: canonicalItemId },
       ...(initialText ? { text: initialText } : {}),
+      ...(agentAttribution ? { agentAttribution } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
     if (message.status !== 'streaming') {
@@ -582,11 +646,13 @@ export function bindSessionToChannel(
     }
     const agentDetail = boundChannelAgentDetail(itemId, sourceCard);
     const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
+    const agentAttribution = attributionForTurn(patch.turnId);
     const message = store.beginStream({
       channelId,
       sender,
       source: { runtimeId: patch.sessionId, turnId: patch.turnId, itemId },
       agentDetail,
+      ...(agentAttribution ? { agentAttribution } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
     if (message.status !== 'streaming') {
@@ -836,6 +902,7 @@ export function bindSessionToChannel(
         invokeAssistantFinalized(turnId, deferred);
       }
       turnImages.delete(turnId);
+      turnAttributions.delete(turnId);
     }
   }
 
@@ -854,6 +921,7 @@ export function bindSessionToChannel(
       invokeAssistantFinalized(turnId, message);
     }
     turnImages.delete(turnId);
+    turnAttributions.delete(turnId);
   }
 
   function markTurnImagesTerminal(turnId: string | undefined): void {
@@ -869,6 +937,7 @@ export function bindSessionToChannel(
         invokeAssistantFinalized(id, message);
       }
       turnImages.delete(id);
+      turnAttributions.delete(id);
     }
   }
 
@@ -880,12 +949,14 @@ export function bindSessionToChannel(
   ): boolean {
     if (closed) return false;
     const itemId = canonicalAssistantItemId(patch.item);
+    const agentAttribution = attributionForTurn(patch.turnId);
     const started = store.beginStream({
       channelId,
       sender,
       source: { runtimeId: patch.sessionId, turnId: patch.turnId, itemId },
       text,
       ...(parts.length > 0 ? { parts } : {}),
+      ...(agentAttribution ? { agentAttribution } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
     if (started.status !== 'streaming') return true;
@@ -1058,11 +1129,20 @@ export function bindSessionToChannel(
     }
     if (turnId === undefined) {
       turnsWithRows.clear();
+      // A disconnect can still have image ingestion in flight. Keep those
+      // snapshots until their own settlement path emits (or drops) the row.
+      for (const id of turnAttributions.keys()) {
+        if (!turnImages.has(id)) turnAttributions.delete(id);
+      }
       assistantItemAliases.clear();
       detailItemAliases.clear();
       reportRetention();
     } else {
       turnsWithRows.delete(turnId);
+      // Delayed image ingest creates its durable image row after the provider
+      // terminal boundary. Its model/effort must remain the turn's original
+      // snapshot rather than whatever a later control selected meanwhile.
+      if (!turnImages.has(turnId)) turnAttributions.delete(turnId);
       for (const [itemId, alias] of assistantItemAliases) {
         if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
       }
@@ -1077,8 +1157,20 @@ export function bindSessionToChannel(
 
   function handlePatch(patch: AgentPatchV2): void {
     switch (patch.type) {
+      case 'agent-session-snapshot-v2': {
+        applySessionConfig(patch.session.config, true);
+        break;
+      }
+      case 'agent-session-updated-v2': {
+        if (patch.config) applySessionConfig(patch.config, false);
+        break;
+      }
       case 'agent-item-started-v2': {
         if (patch.item.type === 'imageView') {
+          // Ingestion is asynchronous, but the provider item marks the turn's
+          // durable image-row boundary now. Capture before any later control
+          // update can change the current session config.
+          attributionForTurn(patch.turnId);
           const state = imageState(patch.turnId);
           const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
           if (state.admitted >= CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN) {

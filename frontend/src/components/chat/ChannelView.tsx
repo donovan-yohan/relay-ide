@@ -72,7 +72,7 @@ const DESIGNATE_ORCHESTRATOR_GENERIC_ERROR =
 function implicitCommandProviderForDm(
   providerId: string | null
 ): string | undefined {
-  return providerId === 'codex' ? providerId : undefined;
+  return providerId ?? undefined;
 }
 
 function designateOrchestratorErrorCopy(error: unknown): string {
@@ -385,8 +385,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         providerId: dmProviderId,
       })
     : null;
-  // Only Codex DMs opt into bare controls. The composers resolve the exact
-  // current default profile from the live roster, matching binder DM routing.
+  // A DM supplies one exact provider target. The composers resolve that
+  // provider's current default profile and live control catalog from the
+  // roster, matching binder DM routing without a vendor-specific UI branch.
   const implicitCommandProviderId = implicitCommandProviderForDm(dmProviderId);
 
   // A DM addresses its one agent implicitly — the binder routes an unmentioned

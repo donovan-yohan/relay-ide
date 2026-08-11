@@ -9,6 +9,7 @@ import type { AgentRole } from '../shared/agent-roster.js';
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
   CHANNEL_AGENT_DETAIL_MAX_BYTES,
+  CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS,
   CHANNEL_DELETED_AT_META_KEY,
   CHANNEL_EDITED_AT_META_KEY,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
@@ -26,6 +27,7 @@ import {
   isChannelAgentDetail,
   parseMentions,
   type ChannelAgentDetail,
+  type ChannelAgentAttribution,
   type ChannelMessageSearchHit,
   type ChannelSearchUnavailableReason,
   type ChannelBodyFormat,
@@ -934,6 +936,7 @@ export interface ChannelMessageMeta {
   /** Legacy UI marker reserved exclusively for the 256KB size limit. */
   truncated?: boolean;
   agentDetail?: ChannelAgentDetail;
+  agentAttribution?: ChannelAgentAttribution;
   /** Internal lifecycle marker; stripped before rows cross the wire. */
   agentDetailTerminalAuthority?: 'provisional' | 'explicit';
   [key: string]: unknown;
@@ -963,6 +966,8 @@ export interface BeginStreamInput {
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
   agentDetail?: ChannelAgentDetail;
+  /** Immutable provider config snapshot for an agent-authored row. */
+  agentAttribution?: ChannelAgentAttribution;
 }
 
 export interface FinalizeStreamInput {
@@ -1599,6 +1604,35 @@ function assertAgentDetail(detail: ChannelAgentDetail | undefined): void {
   }
 }
 
+function isAgentAttribution(value: unknown): value is ChannelAgentAttribution {
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (candidate.model !== undefined || candidate.effort !== undefined) &&
+    (candidate.model === undefined ||
+      (typeof candidate.model === 'string' &&
+        candidate.model.length <= CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS)) &&
+    (candidate.effort === undefined ||
+      (typeof candidate.effort === 'string' &&
+        candidate.effort.length <= CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS))
+  );
+}
+
+function assertAgentAttribution(
+  attribution: ChannelAgentAttribution | undefined
+): void {
+  if (attribution === undefined) return;
+  if (!isAgentAttribution(attribution)) {
+    throw new ChannelMessageStoreError(
+      400,
+      'channel_agent_attribution_invalid',
+      'channel agent attribution is invalid or exceeds the display cap'
+    );
+  }
+}
+
 function assertMessagePayloadSize(
   text: string,
   detail: ChannelAgentDetail | undefined
@@ -1697,6 +1731,9 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   if (isChannelAgentDetail(meta?.agentDetail)) {
     message.agentDetail = meta.agentDetail;
   }
+  if (isAgentAttribution(meta?.agentAttribution)) {
+    message.agentAttribution = meta.agentAttribution;
+  }
   // Surface app-level meta (e.g. #1167 approval payloads) while keeping the
   // internal routing keys off the wire — providerId rides `sender.providerId`,
   // mentions/truncated have dedicated fields above.
@@ -1706,6 +1743,7 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
       mentions: _m,
       parts: _parts,
       agentDetail: _agentDetail,
+      agentAttribution: _agentAttribution,
       agentDetailTerminalAuthority: _agentDetailTerminalAuthority,
       truncated: _t,
       ...rest
@@ -1755,6 +1793,7 @@ function buildMeta(input: {
 }): string | null {
   assertMessageParts(input.extra?.parts);
   assertAgentDetail(input.extra?.agentDetail);
+  assertAgentAttribution(input.extra?.agentAttribution);
   assertMessageParts(input.parts);
   const meta: ChannelMessageMeta = { ...(input.extra ?? {}) };
   if (input.mentions && input.mentions.length > 0)
@@ -3802,6 +3841,7 @@ export function createChannelMessageStore(
 
       const initialText = input.text ?? '';
       assertMessagePayloadSize(initialText, input.agentDetail);
+      assertAgentAttribution(input.agentAttribution);
       assertMessageParts(input.parts);
       const threadId = resolveThread(input.channelId, input.parentMessageId);
       const now = nowIso();
@@ -3821,8 +3861,17 @@ export function createChannelMessageStore(
         metaJson: buildMeta({
           ...(input.mentions ? { mentions: input.mentions } : {}),
           ...(input.parts ? { parts: input.parts } : {}),
-          ...(input.agentDetail
-            ? { extra: { agentDetail: input.agentDetail } }
+          ...(input.agentDetail || input.agentAttribution
+            ? {
+                extra: {
+                  ...(input.agentDetail
+                    ? { agentDetail: input.agentDetail }
+                    : {}),
+                  ...(input.agentAttribution
+                    ? { agentAttribution: input.agentAttribution }
+                    : {}),
+                },
+              }
             : {}),
           ...(input.sender.providerId
             ? { providerId: input.sender.providerId }

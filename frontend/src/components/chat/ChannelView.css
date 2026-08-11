@@ -809,6 +809,23 @@
 }
 
 /* trailing status tags — interrupted / failed / truncated */
+.ch-msg__attribution {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  opacity: 0.8;
+}
+
+.ch-msg__attribution-part + .ch-msg__attribution-part::before {
+  content: '·';
+  margin-right: 6px;
+}
+
 .ch-msg__tag {
   font-family: var(--font-mono);
   font-size: 0.7rem;

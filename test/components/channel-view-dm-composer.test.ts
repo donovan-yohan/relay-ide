@@ -21,6 +21,7 @@ import { dmChannelTopicId } from '../../shared/dm-channels.js';
 
 const DM_CHANNEL_ID = dmChannelTopicId('claude', 'ws:local');
 const CODEX_DM_CHANNEL_ID = dmChannelTopicId('codex', 'ws:local');
+const PRIME_DM_CHANNEL_ID = dmChannelTopicId('prime-agent', 'ws:local');
 const GROUP_CHANNEL_ID = 'topic:general';
 
 const mocks = vi.hoisted(() => ({
@@ -209,7 +210,7 @@ describe('ChannelView composer copy', () => {
     // The DM routes implicitly — never prompt for the `@` it does not need.
     expect(placeholder as string).not.toContain('to mention');
     expect(placeholder as string).not.toContain('#');
-    expect(latestCommandProviderHint()).toBeUndefined();
+    expect(latestCommandProviderHint()).toBe('claude');
   });
 
   it('leaves a multi-party channel on the default `#channel` copy', async () => {
@@ -251,7 +252,7 @@ describe('ChannelView composer copy', () => {
     expect(placeholders().some((copy) => copy.includes('to mention'))).toBe(
       false
     );
-    expect(latestCommandProviderHint()).toBeUndefined();
+    expect(latestCommandProviderHint()).toBe('claude');
   });
 
   it('keeps the mention hint on a multi-party thread composer', async () => {
@@ -275,7 +276,7 @@ describe('ChannelView composer copy', () => {
     expect(latestCommandProviderHint()).toBeUndefined();
   });
 
-  it('passes only the Codex DM provider hint to main and thread composers', async () => {
+  it('passes the DM provider hint to main and thread composers', async () => {
     mocks.channelId = CODEX_DM_CHANNEL_ID;
     mocks.channelTitle = 'Codex';
     mocks.fetchWorkspaceTopic.mockResolvedValue({
@@ -290,5 +291,22 @@ describe('ChannelView composer copy', () => {
     mocks.composerProps.length = 0;
     await openThread(CODEX_DM_CHANNEL_ID);
     expect(latestCommandProviderHint()).toBe('codex');
+  });
+
+  it('passes a non-Codex provider hint without substituting a built-in profile', async () => {
+    mocks.channelId = PRIME_DM_CHANNEL_ID;
+    mocks.channelTitle = 'Prime';
+    mocks.fetchWorkspaceTopic.mockResolvedValue({
+      id: PRIME_DM_CHANNEL_ID,
+      workspaceId: 'ws:local',
+      display: { title: 'Prime' },
+      routingDefaults: { providerId: 'prime-agent' },
+    });
+
+    await render(PRIME_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('prime-agent');
+    mocks.composerProps.length = 0;
+    await openThread(PRIME_DM_CHANNEL_ID);
+    expect(latestCommandProviderHint()).toBe('prime-agent');
   });
 });

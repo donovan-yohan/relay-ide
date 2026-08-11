@@ -117,6 +117,36 @@ const codexRoster: RosterEntry[] = [
   },
 ];
 
+const primeRoster: RosterEntry[] = [
+  {
+    id: 'agent-profile:prime-agent:default',
+    displayName: 'Prime',
+    providerId: 'prime-agent',
+    isDefault: true,
+    isBuiltIn: true,
+    kind: 'framework',
+    available: true,
+    reason: null,
+    binding: null,
+    commands: [
+      {
+        id: 'relay:prime-agent:thinking',
+        name: 'thinking',
+        aliases: ['effort'],
+        description: 'Set Prime Agent reasoning depth',
+        args: [
+          { value: 'low', label: 'low' },
+          { value: 'high', label: 'high' },
+        ],
+        source: 'builtin',
+        sourceLabel: 'Prime Agent',
+        dispatch: 'relay-control',
+        collisionKey: 'thinking',
+      },
+    ],
+  },
+];
+
 interface RenderOpts {
   onSend?: (
     text: string,
@@ -704,6 +734,36 @@ describe('ChannelComposer (#1178)', () => {
     });
     expect(onSend).not.toHaveBeenCalled();
     expect(ta.value).toBe('');
+  });
+
+  it('uses the exact non-Codex DM provider profile and live control catalog', async () => {
+    vi.mocked(fetchChannelRoster).mockResolvedValue(primeRoster);
+    const onSend = vi.fn(async () => {});
+    await renderComposer({
+      onSend,
+      implicitCommandProviderId: 'prime-agent',
+    });
+    const ta = container.querySelector(
+      '.ch-composer__ta'
+    ) as HTMLTextAreaElement;
+    await act(async () => setNativeValue(ta, '/effort'));
+    await settleRoster();
+
+    expect(
+      container.querySelector(
+        '[role="listbox"][aria-label="commands for Prime"]'
+      )?.textContent
+    ).toContain('/thinking');
+    await pressKey('Enter');
+    await pressKey('ArrowDown');
+    await pressKey('Enter');
+
+    expect(executeChannelAgentCommand).toHaveBeenCalledWith('topic:general', {
+      profileId: 'agent-profile:prime-agent:default',
+      command: 'thinking',
+      args: 'high',
+    });
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('keeps a bare group-channel slash draft as ordinary prose', async () => {

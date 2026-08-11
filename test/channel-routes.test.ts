@@ -2102,6 +2102,34 @@ describe('channel routes — agent commands', () => {
     }
   );
 
+  it.each(['/model prime/a', '/thinking high', '/effort high'])(
+    'rejects bare Prime DM control %s before persistence',
+    async (text) => {
+      const h = await harness({ binderFactory: realControlBinder });
+      const dm = h.topicStore.create(
+        dmChannelCreateInput({
+          providerId: 'prime-agent',
+          providerDisplayName: 'Prime Agent',
+          workspaceId: 'ws:local',
+        })
+      );
+      const res = await req<{
+        error: { details?: { reasonCode?: string } };
+      }>({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${dm.id}/messages`,
+        body: { text },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.details?.reasonCode).toBe(
+        'CHANNEL_COMMAND_REQUIRES_CONTROL_LANE'
+      );
+      expect(h.store.history(dm.id, { limit: 10 })).toHaveLength(0);
+    }
+  );
+
   it('keeps bare group-channel slash text as ordinary persisted prose', async () => {
     const h = await harness({ binderFactory: realControlBinder });
     const res = await req<{ message: { body: { text: string } } }>({

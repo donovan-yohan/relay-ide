@@ -1264,7 +1264,7 @@ export function createChannelAgentBinder(
     profileActorId: string,
     framework: string,
     senderDisplayName: string,
-    runtime: { id: string; adapter: ProtocolAdapterV2 }
+    runtime: Pick<ChannelAgentRuntime, 'id' | 'adapter' | 'agentAttribution'>
   ): LiveBinding {
     const key = bindingKey(channelId, profileActorId);
     const existing = live.get(key);
@@ -1304,6 +1304,9 @@ export function createChannelAgentBinder(
       // label. One private runtime belongs to one profile.
       profileActorId,
       displayName: senderDisplayName,
+      ...(runtime.agentAttribution
+        ? { initialAgentAttribution: runtime.agentAttribution }
+        : {}),
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
       onAssistantMessageFinalized: (message) =>
         handleAssistantFinalized(binding, message),

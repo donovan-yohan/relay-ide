@@ -157,10 +157,7 @@ function detectImplicitCommandTrigger(
   providerId: string | undefined,
   roster: readonly RosterEntry[] | undefined
 ): CommandTrigger | null {
-  // Bare controls are intentionally a Codex DM affordance. Other providers'
-  // slash input remains ordinary prompt text until they independently expose a
-  // product contract for it.
-  if (providerId !== 'codex') return null;
+  if (!providerId) return null;
   const beforeCaret = text.slice(0, caret);
   const match = /^\/(\S*)/.exec(beforeCaret);
   if (!match) return null;
@@ -168,7 +165,7 @@ function detectImplicitCommandTrigger(
   const commandEnd = commandQuery.length + 1;
   const rest = beforeCaret.slice(commandEnd);
   if (/\n/.test(rest)) return null;
-  const reservedControls = relayControlInputGuardCatalogForProvider('codex');
+  const reservedControls = relayControlInputGuardCatalogForProvider(providerId);
   const isReservedControl =
     commandQuery.length === 0 ||
     reservedControls.some((command) => commandMatches(command, commandQuery));
@@ -178,7 +175,7 @@ function detectImplicitCommandTrigger(
     // live default profile/catalog arrives. No profile id is available yet, so
     // this trigger can only display loading and swallow palette navigation.
     return {
-      target: { profileId: '', displayName: 'Codex' },
+      target: { profileId: '', displayName: providerId },
       rosterEntry: undefined,
       resolving: true,
       replacementStart: 0,
@@ -192,7 +189,7 @@ function detectImplicitCommandTrigger(
   );
   if (!rosterEntry) {
     return {
-      target: { profileId: '', displayName: 'Codex' },
+      target: { profileId: '', displayName: providerId },
       rosterEntry: undefined,
       unavailable: true,
       replacementStart: 0,
@@ -204,16 +201,15 @@ function detectImplicitCommandTrigger(
   const controls = (rosterEntry.commands ?? []).filter(
     (command) => command.dispatch === 'relay-control'
   );
-  // Until the exact live default profile supplies a matching control, this is
-  // native Codex slash input (for example `/skill`) or ordinary prose — never a
-  // blocked, empty command palette.
+  // Until the exact live default profile supplies a matching reserved control,
+  // native provider slash input and ordinary prose stay sendable.
   const commandAvailable =
     controls.length > 0 &&
     (commandQuery.length === 0 ||
       controls.some((command) => commandMatches(command, commandQuery)));
   if (!commandAvailable) {
-    // The reserved input must not become a normal post after a completed but
-    // empty/failed model-list discovery (or a missing default profile). That
+    // Reserved input must not become a normal post after a completed but empty
+    // or failed discovery (or a missing default profile). That
     // would only reach the server's control-lane rejection instead of giving
     // the operator an actionable unavailable state.
     return {
@@ -278,7 +274,7 @@ interface ChannelComposerProps {
   placeholder?: string;
   /** Human channel members, folded into the @mention contact set (#1236). */
   members?: readonly ChannelMemberRef[];
-  /** Codex DM provider hint; the exact default profile resolves from the roster. */
+  /** DM provider hint; the exact default profile resolves from the live roster. */
   implicitCommandProviderId?: string | undefined;
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
   onSend: (
@@ -458,7 +454,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   // first @ per channel and cached 30s; TanStack dedupes with the header query.
   const trigger = detectTrigger(draft, caret, ['@']);
   const implicitCommandDraft =
-    implicitCommandProviderId === 'codex' && /^\//.test(draft);
+    implicitCommandProviderId !== undefined && /^\//.test(draft);
   const rosterQuery = useQuery({
     queryKey: ['channel-roster', channelId],
     queryFn: () => fetchChannelRoster(channelId),
