@@ -51,7 +51,13 @@ function useDialogControls(
     dialogRef.current.showModal();
     requestAnimationFrame(() => {
       if (!dialogRef.current) return;
-      dialogRef.current.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
+      // A dialog can be opened while an ancestor is scrolled. Focusing its
+      // first control must not ask the browser to scroll every containing box
+      // (including the dialog's clipping-only structural layers) in order to
+      // reveal it.
+      dialogRef.current
+        .querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+        ?.focus({ preventScroll: true });
       const body = dialogRef.current.querySelector('.dialog-shell__body');
       if (body) setScrolledBottom(body.scrollHeight <= body.clientHeight);
     });

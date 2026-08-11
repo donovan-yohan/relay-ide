@@ -10,7 +10,10 @@
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 0;
-  overflow: hidden;
+  /* This shell establishes the dialog's visual boundary, not a scroll owner.
+     `hidden` still has a programmatic scroll box, so scrollIntoView/focus can
+     strand its contents at an unreachable offset. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
 }
@@ -82,7 +85,8 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  /* Only an explicit dialog body (or a child pane) may own scrolling. */
+  overflow: clip;
   position: relative;
 }
 
@@ -144,6 +148,8 @@
   max-width: none;
   width: 100%;
   box-sizing: border-box;
+  /* Fullscreen layouts such as Settings supply their own named scroll pane. */
+  overflow: clip;
 }
 
 /* Scroll fade indicator */

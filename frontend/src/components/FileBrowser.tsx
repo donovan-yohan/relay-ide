@@ -77,7 +77,10 @@ function mergeCreatedEntry(
   entries: BrowseEntry[],
   createdEntry?: BrowseEntry
 ): BrowseEntry[] {
-  if (!createdEntry || entries.some((entry) => entry.path === createdEntry.path)) {
+  if (
+    !createdEntry ||
+    entries.some((entry) => entry.path === createdEntry.path)
+  ) {
     return entries;
   }
   return [...entries, createdEntry].sort((a, b) =>
@@ -125,6 +128,24 @@ function flattenVisible(nodes: BrowseNode[], filter: string): BrowseNode[] {
       result.push(...flattenVisible(node.children, filter));
   }
   return result;
+}
+
+/** Reveal an element in the one scroll owner that owns it, without allowing
+ * native focus scrolling to walk outward into modal structural wrappers. */
+function revealWithinScrollOwner(container: HTMLElement, target: HTMLElement) {
+  const containerRect = container.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  if (
+    targetRect.top >= containerRect.top &&
+    targetRect.bottom <= containerRect.bottom
+  )
+    return;
+  const top =
+    targetRect.top -
+    containerRect.top +
+    container.scrollTop -
+    container.clientTop;
+  container.scrollTo({ top: Math.max(0, top) });
 }
 
 interface TreeRowProps {
@@ -334,7 +355,13 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
   }, [loadRoot]);
 
   useEffect(() => {
-    if (folderParentPath) folderNameInputRef.current?.focus();
+    // The editor appears inside the Add Project dialog's explicit body
+    // scroller. Keep focus local, then reveal it in that owner only.
+    const input = folderNameInputRef.current;
+    if (!folderParentPath || !input) return;
+    input.focus({ preventScroll: true });
+    const body = input.closest<HTMLElement>('.dialog-shell__body');
+    if (body) revealWithinScrollOwner(body, input);
   }, [folderParentPath]);
 
   useImperativeHandle(ref, () => ({
@@ -396,9 +423,8 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     );
     node.hasChildren = node.children.length > 0;
     const total = Math.max(data.total, entries.length);
-    node.truncatedInfo = total > entries.length
-      ? { shown: entries.length, total }
-      : null;
+    node.truncatedInfo =
+      total > entries.length ? { shown: entries.length, total } : null;
     node.expanded = true;
     syncTree(treeRef.current);
   }

@@ -59,6 +59,8 @@ workflow.
 
 #### Fixed
 
+- Keep Settings and Add Project scrolling inside their intended panes so modal
+  content cannot become displaced in an unreachable hidden scroll offset (#1384)
 - Make reasoning status styling exhaustive, distinguish nested-only designation
   conflicts from unknown 409s, and lock every channel provider to a shared
   launch-command, profile-PATH, and environment-sanitization matrix (#1368)

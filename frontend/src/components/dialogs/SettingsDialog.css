@@ -9,6 +9,11 @@
   flex-direction: column;
   gap: 32px;
   position: relative;
+  height: 100%;
+  min-height: 0;
+  /* The content wrapper lays out the TOC and sections; it must not become an
+     unreachable scroll box when a section is programmatically revealed. */
+  overflow: clip;
 }
 
 .settings-dialog-sections {
@@ -17,7 +22,10 @@
   gap: 32px;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   padding: 16px 20px;
+  /* This is the only Settings content scroll owner at every viewport size. */
+  overflow-y: auto;
 }
 
 /* Desktop: side-by-side TOC + scrollable content */
@@ -25,23 +33,19 @@
   .settings-dialog-content {
     flex-direction: row;
     gap: 0;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .settings-dialog-sections {
-    overflow-y: auto;
   }
 }
 
 .settings-dialog-section {
-  transition: opacity 200ms ease, max-height 200ms ease;
+  transition:
+    opacity 200ms ease,
+    max-height 200ms ease;
 }
 
 .settings-dialog-section.dimmed {
   opacity: 0.3;
   max-height: 0;
-  overflow: hidden;
+  overflow: clip;
   padding: 0;
   margin: 0;
 }
