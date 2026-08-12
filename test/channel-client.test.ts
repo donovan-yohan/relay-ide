@@ -163,6 +163,10 @@ describe('relay-ide/channel-client', () => {
     const headers = new Headers(requests[0]?.init?.headers);
     expect(headers.get('authorization')).toBe('Bearer secret-never-in-input');
     expect(headers.get('x-relay-cli-actor-token')).toBeNull();
+    for (const { url, init } of requests) {
+      expect(url).not.toContain('secret-never-in-input');
+      expect(String(init?.body ?? '')).not.toContain('secret-never-in-input');
+    }
     expect(JSON.stringify(requests)).not.toContain('secret-never-in-input');
   });
 
@@ -525,12 +529,92 @@ describe('relay-ide/channel-client', () => {
     const collected = await client.collect({
       channelId: 'topic:one',
       maxEvents: 2,
-      idleTimeoutMs: 1_000,
+      // Immediate upstream frames and the quiet deadline start in the same
+      // turn; max-events must win rather than report an idle timeout.
+      idleTimeoutMs: 1,
     });
 
     expect(collected.frames).toHaveLength(2);
     expect(collected.frames.map((frame) => frame.sequence)).toEqual([1, 2]);
     expect(collected.durableSeq).toBe(2);
+    expect(collected.stopReason).toBe('max-events');
+  });
+
+  it('uses a restartable quiet deadline while continuous accepted frames arrive', async () => {
+    let cancelled = false;
+    const client = createRelayChannelClient({
+      baseUrl: 'http://relay.test',
+      fetch: async (_url, init) => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let sequence = 0;
+            const emit = () => {
+              sequence += 1;
+              controller.enqueue(
+                enc.encode(
+                  `${JSON.stringify({
+                    schemaVersion: 1,
+                    frame: 'event',
+                    channelId: 'topic:one',
+                    sequence,
+                    occurredAt: `2026-08-12T00:00:0${sequence}.000Z`,
+                    durableSeq: sequence,
+                    payload: {
+                      type: 'channel-message-created-v1',
+                      channelId: 'topic:one',
+                      timestamp: `2026-08-12T00:00:0${sequence}.000Z`,
+                      message: message({
+                        id: `chm:${sequence}`,
+                        seq: sequence,
+                      }),
+                    },
+                  })}\n`
+                )
+              );
+              if (sequence < 3) setTimeout(emit, 10);
+            };
+            emit();
+            init?.signal?.addEventListener('abort', () => {
+              cancelled = true;
+              controller.close();
+            });
+          },
+        });
+        return new Response(stream);
+      },
+    });
+
+    const collected = await client.collect({
+      channelId: 'topic:one',
+      maxEvents: 3,
+      idleTimeoutMs: 18,
+    });
+    expect(collected.stopReason).toBe('max-events');
+    expect(collected.frames).toHaveLength(3);
+    expect(cancelled).toBe(true);
+  });
+
+  it('times out a quiet stream and clears its local abort timer', async () => {
+    let cancelled = false;
+    const client = createRelayChannelClient({
+      baseUrl: 'http://relay.test',
+      fetch: async (_url, init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () => {
+                cancelled = true;
+                controller.close();
+              });
+            },
+          })
+        ),
+    });
+
+    await expect(
+      client.collect({ channelId: 'topic:one', idleTimeoutMs: 10 })
+    ).resolves.toMatchObject({ stopReason: 'idle-timeout', frames: [] });
+    expect(cancelled).toBe(true);
   });
 
   it('rejects malformed frames before projection or reducer application', async () => {
@@ -757,6 +841,25 @@ describe('relay-ide/channel-client', () => {
       maximum: exactBytes - 1,
       observed: exactBytes,
       code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('does not turn short common provider values into global redaction needles', async () => {
+    const client = createRelayChannelClient({
+      baseUrl: 'http://relay.test',
+      fetch: async () =>
+        Response.json({
+          messages: [
+            providerMessage({
+              source: { runtimeId: '0', itemId: 'codex' },
+              meta: { diagnostic: 'codex 0 1 remains useful public prose' },
+            }),
+          ],
+        }),
+    });
+    const result = await client.history({ channelId: 'topic:one' });
+    expect(result.messages[0]?.meta).toEqual({
+      diagnostic: 'codex 0 1 remains useful public prose',
     });
   });
 });

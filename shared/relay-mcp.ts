@@ -24,8 +24,13 @@ import {
 import {
   createRelayChannelClient,
   RelayChannelClientError,
+  RelayChannelSubscriptionOverflowError,
   type RelayChannelClient,
 } from './channel-client.js';
+import {
+  isChannelSubscriptionFilter,
+  type ChannelSubscriptionFilter,
+} from './channel-chat-protocol.js';
 import { RELAY_COMMAND_MANIFEST } from './relay-command-manifest.js';
 
 /** The complete and intentionally non-extensible Relay MCP command set. */
@@ -68,6 +73,7 @@ const PRIVATE_PROVIDER_NORMALIZED_KEYS = new Set(
 );
 const SENSITIVE_ERROR_KEY =
   /(?:token|authorization|credential|secret|api[-_]?key|password)/i;
+const PRIVATE_REDACTION_MIN_CHARS = 8;
 
 export interface RelayMcpToolDefinition {
   command: RelayMcpChannelCommand;
@@ -228,7 +234,7 @@ function boundedSubscribeOutputSchema(
   };
 }
 
-export function relayMcpToolDefinitions(): readonly RelayMcpToolDefinition[] {
+function buildRelayMcpToolDefinitions(): readonly RelayMcpToolDefinition[] {
   return RELAY_MCP_CHANNEL_COMMANDS.map((command) => {
     const spec = commandSpec(command);
     return {
@@ -245,6 +251,14 @@ export function relayMcpToolDefinitions(): readonly RelayMcpToolDefinition[] {
           : publicOutputSchema(spec),
     };
   });
+}
+
+// The contract and manifest are process-static. Build once so each tool call
+// cannot allocate/clone eight schemas on its hot path.
+const RELAY_MCP_TOOL_DEFINITIONS = buildRelayMcpToolDefinitions();
+
+export function relayMcpToolDefinitions(): readonly RelayMcpToolDefinition[] {
+  return RELAY_MCP_TOOL_DEFINITIONS;
 }
 
 function invalid(
@@ -300,7 +314,8 @@ function privateProviderValues(value: unknown, values: Set<string>): void {
     if (
       isPrivateProviderKey(key) &&
       typeof nested === 'string' &&
-      nested.length > 0
+      nested.length >= PRIVATE_REDACTION_MIN_CHARS &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(nested)
     ) {
       values.add(nested);
     }
@@ -371,13 +386,25 @@ function canonicalErrorCode(value: unknown): RelayCliGatewayError['code'] {
 }
 
 function publicError(error: unknown): RelayCliGatewayError {
+  if (error instanceof RelayChannelSubscriptionOverflowError) {
+    return {
+      code: 'UPSTREAM_ERROR',
+      message: 'Relay subscription exceeded a local safety limit',
+      retryable: false,
+      details: publicData({
+        limit: error.limit,
+        maximum: error.maximum,
+        observed: error.observed,
+      }),
+    };
+  }
   if (error instanceof RelayChannelClientError) {
     const privateValues = new Set<string>();
     privateProviderValues(error.details, privateValues);
     return {
       code: canonicalErrorCode(error.code),
       message: redactProviderValues(error.message, privateValues),
-      retryable: error.retryable ?? true,
+      retryable: error.retryable ?? error.status >= 500,
       ...(error.details ? { details: publicData(error.details) } : {}),
     };
   }
@@ -420,7 +447,7 @@ function boundedSubscribeInput(input: JsonRecord):
       maxEvents: number;
       idleTimeoutMs: number;
       afterSeq?: number;
-      filter?: JsonRecord;
+      filter?: ChannelSubscriptionFilter;
     }
   | RelayMcpErrorEnvelope {
   const channelId = requireString(input, 'channelId');
@@ -459,8 +486,11 @@ function boundedSubscribeInput(input: JsonRecord):
       'afterSeq must be a non-negative integer'
     );
   const filter = input['filter'];
-  if (filter !== undefined && !isRecord(filter))
-    return invalid('channels.subscribe', 'filter must be an object');
+  if (filter !== undefined && !isChannelSubscriptionFilter(filter))
+    return invalid(
+      'channels.subscribe',
+      'filter must be a valid channel subscription predicate object'
+    );
   return {
     channelId,
     maxEvents,
@@ -603,11 +633,14 @@ async function executeSubscribeTool(
   return success(
     'channels.subscribe',
     await client.collect({
+      // Forward only shared, validated predicate fields. Authoritative MCP
+      // bounds and route identity are assigned afterwards, so a nested object
+      // can never shadow them through object spread order.
+      ...(bounded.filter ?? {}),
       channelId: bounded.channelId,
       maxEvents: bounded.maxEvents,
       idleTimeoutMs: bounded.idleTimeoutMs,
       ...(bounded.afterSeq === undefined ? {} : { afterSeq: bounded.afterSeq }),
-      ...(bounded.filter ?? {}),
     })
   );
 }
@@ -621,8 +654,10 @@ export async function executeRelayMcpTool(
   const definition = relayMcpToolDefinitions().find(
     (entry) => entry.command === command
   );
-  if (!definition || !isRecord(input))
-    return invalid(command, 'tool input must be an object');
+  // Do not reflect an unsupported command supplied through an unsafe cast into
+  // the public envelope or MCP logs. The advertised tuple remains closed.
+  if (!definition) return invalid('channels.list', 'tool is not supported');
+  if (!isRecord(input)) return invalid(command, 'tool input must be an object');
   const unexpected = assertOnlySchemaKeys(
     command,
     input,

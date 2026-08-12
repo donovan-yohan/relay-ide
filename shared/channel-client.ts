@@ -172,7 +172,7 @@ export class RelayChannelSubscriptionOverflowError extends RelayChannelClientErr
   ) {
     super(413, {
       code: 'UPSTREAM_ERROR',
-      retryable: true,
+      retryable: false,
       message: `Relay subscription exceeded ${limit} limit`,
       details: { limit, maximum, observed },
     });
@@ -330,6 +330,7 @@ export const RELAY_CHANNEL_SUBSCRIPTION_MAX_LINE_BYTES = 1024 * 1024;
 export const RELAY_CHANNEL_SUBSCRIPTION_MAX_STREAM_BYTES = 8 * 1024 * 1024;
 export const RELAY_CHANNEL_SUBSCRIPTION_MAX_COLLECTED_OUTPUT_BYTES =
   8 * 1024 * 1024;
+const PRIVATE_REDACTION_MIN_CHARS = 8;
 
 function isPrivateProviderKey(key: string): boolean {
   const normalized = key.replace(/[-_]/g, '').toLowerCase();
@@ -358,6 +359,18 @@ function isPrivateValueKey(key: string): boolean {
 }
 
 /**
+ * A provider locator is normally an opaque, punctuation-safe identifier. Do
+ * not turn ubiquitous short words (for example `codex`, `0`, or `1`) into
+ * global redaction needles merely because an upstream put one under `source`.
+ */
+function isRedactablePrivateValue(value: string): boolean {
+  return (
+    value.length >= PRIVATE_REDACTION_MIN_CHARS &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+}
+
+/**
  * First pass: keep the strings named by private fields even when they are
  * echoed under an otherwise harmless key somewhere else in the same envelope.
  * This deliberately runs before field removal; a source object can contain a
@@ -369,7 +382,7 @@ function collectPrivateStringValues(
   inheritedPrivate = false
 ): void {
   if (typeof value === 'string') {
-    if (inheritedPrivate && value.length > 0) values.add(value);
+    if (inheritedPrivate && isRedactablePrivateValue(value)) values.add(value);
     return;
   }
   if (Array.isArray(value)) {
@@ -552,6 +565,33 @@ function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
+function textBytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+/** Exact JSON byte length without repeatedly serializing retained frames. */
+function collectionOutputBytes(
+  frameBytes: number,
+  state: RelayChannelReducerState,
+  durableSeq: number,
+  stopReason: ChannelCollectedSubscription['stopReason']
+): number {
+  // Property order intentionally matches collectionOutput below. State is a
+  // generic reducer projection, so its exact current serialization remains the
+  // only safe cap authority; retained frames are incrementally accounted for.
+  return (
+    textBytes('{"frames":') +
+    frameBytes +
+    textBytes(',"state":') +
+    jsonBytes(state) +
+    textBytes(',"durableSeq":') +
+    jsonBytes(durableSeq) +
+    textBytes(',"stopReason":') +
+    jsonBytes(stopReason) +
+    1
+  );
+}
+
 function collectionOutput(
   frames: readonly ChannelSubscriptionFrame[],
   state: RelayChannelReducerState,
@@ -712,7 +752,7 @@ function isSubscriptionFrame(
 export function createRelayChannelClient(
   config: RelayChannelClientConfig = {}
 ): RelayChannelClient {
-  const env = config.env ?? process.env;
+  const env = config.env ?? (typeof process === 'undefined' ? {} : process.env);
   const baseUrl = trimBaseUrl(config.baseUrl ?? defaultBaseUrl(env));
   // A browser bearer is accepted by the ordinary HTTP auth lane.  Advertising
   // it as an actor credential would switch server-side scope semantics, so the
@@ -896,8 +936,18 @@ export function createRelayChannelClient(
         });
       }
       const parsed = frame;
-      if (parsed.frame === 'event' && isChannelEventV1(parsed.payload)) {
-        state = applyChannelEventV1(state, parsed.payload);
+      const publicPayload =
+        parsed.frame === 'event' && isChannelEventV1(parsed.payload)
+          ? projectChannelEvent(parsed.payload, token)
+          : undefined;
+      if (publicPayload) {
+        // State starts public and receives only the projected event. This keeps
+        // provider diagnostics out of reducer state and avoids reprojecting
+        // every retained row for each incoming delta.
+        state = applyChannelEventV1(
+          state,
+          publicPayload as unknown as ChannelEventV1
+        );
       }
       // durableSeq comes from the authoritative frame, never reducer state.
       durableSeq = Math.max(durableSeq, parsed.durableSeq);
@@ -907,13 +957,13 @@ export function createRelayChannelClient(
             ChannelSubscriptionFrame,
             'payload'
           >),
-          ...(parsed.payload && isChannelEventV1(parsed.payload)
-            ? { payload: projectChannelEvent(parsed.payload, token) }
+          ...(publicPayload
+            ? { payload: publicPayload }
             : parsed.payload
               ? { payload: parsed.payload }
               : {}),
         },
-        state: projectReducerState(state, token),
+        state: state as unknown as RelayChannelReducerState,
         durableSeq,
       };
     };
@@ -973,12 +1023,24 @@ export function createRelayChannelClient(
       'maxOutputBytes'
     );
     const controller = new AbortController();
-    const idleSignal =
-      idleTimeoutMs === undefined
-        ? undefined
-        : AbortSignal.timeout(idleTimeoutMs);
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimedOut = false;
+    const clearIdleTimer = () => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      }
+    };
+    const resetIdleTimer = () => {
+      clearIdleTimer();
+      if (idleTimeoutMs === undefined) return;
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        controller.abort();
+      }, idleTimeoutMs);
+    };
     const combined = AbortSignal.any(
-      [signal, controller.signal, idleSignal].filter(
+      [signal, controller.signal].filter(
         (value): value is AbortSignal => value !== undefined
       )
     );
@@ -988,47 +1050,63 @@ export function createRelayChannelClient(
       projectReducerState(initialChannelReducerState(subscribeInput.channelId));
     let durableSeq = subscribeInput.afterSeq ?? 0;
     let events = 0;
+    let serializedFrameBytes = 2; // `[]`
     let stopReason: ChannelCollectedSubscription['stopReason'] =
       'stream-closed';
-    for await (const update of subscribe({
-      ...subscribeInput,
-      signal: combined,
-    })) {
-      const nextEvents = events + (update.frame.frame === 'event' ? 1 : 0);
-      const nextStopReason =
-        maxEvents !== undefined && nextEvents >= maxEvents
-          ? 'max-events'
-          : 'stream-closed';
-      // Count the exact object returned to a caller, not fragments of it. That
-      // includes braces, property names, commas, durableSeq, and stopReason.
-      const nextOutputBytes = jsonBytes(
-        collectionOutput(
-          [...frames, update.frame],
+    resetIdleTimer();
+    try {
+      for await (const update of subscribe({
+        ...subscribeInput,
+        signal: combined,
+      })) {
+        const nextEvents = events + (update.frame.frame === 'event' ? 1 : 0);
+        const nextStopReason =
+          maxEvents !== undefined && nextEvents >= maxEvents
+            ? 'max-events'
+            : 'stream-closed';
+        const nextSerializedFrameBytes =
+          serializedFrameBytes +
+          (frames.length === 0 ? 0 : 1) +
+          jsonBytes(update.frame);
+        // Count the exact object returned to a caller, including wrappers and
+        // durable state, without reserializing all previously retained frames.
+        const nextOutputBytes = collectionOutputBytes(
+          nextSerializedFrameBytes,
           update.state,
           update.durableSeq,
           nextStopReason
-        )
-      );
-      if (nextOutputBytes > maxOutputBytes) {
-        controller.abort();
-        throw new RelayChannelSubscriptionOverflowError(
-          'collected-output-bytes',
-          maxOutputBytes,
-          nextOutputBytes
         );
+        if (nextOutputBytes > maxOutputBytes) {
+          controller.abort();
+          throw new RelayChannelSubscriptionOverflowError(
+            'collected-output-bytes',
+            maxOutputBytes,
+            nextOutputBytes
+          );
+        }
+        frames.push(update.frame);
+        serializedFrameBytes = nextSerializedFrameBytes;
+        state = update.state;
+        durableSeq = update.durableSeq;
+        events = nextEvents;
+        if (maxEvents !== undefined && events >= maxEvents) {
+          // Max-events is a successful local terminal condition. Clear the
+          // timer before aborting so a simultaneous deadline cannot win.
+          stopReason = 'max-events';
+          clearIdleTimer();
+          controller.abort();
+          break;
+        }
+        // Only an accepted update extends the quiet-stream deadline.
+        resetIdleTimer();
       }
-      frames.push(update.frame);
-      state = update.state;
-      durableSeq = update.durableSeq;
-      events = nextEvents;
-      if (maxEvents !== undefined && events >= maxEvents) {
-        stopReason = 'max-events';
-        controller.abort();
-        break;
-      }
+    } finally {
+      clearIdleTimer();
     }
-    if (idleSignal?.aborted) stopReason = 'idle-timeout';
-    else if (signal?.aborted) stopReason = 'aborted';
+    if (stopReason !== 'max-events') {
+      if (idleTimedOut) stopReason = 'idle-timeout';
+      else if (signal?.aborted) stopReason = 'aborted';
+    }
     return collectionOutput(frames, state, durableSeq, stopReason);
   };
 

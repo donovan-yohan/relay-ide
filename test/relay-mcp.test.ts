@@ -6,6 +6,7 @@ import { RELAY_CLI_GATEWAY_CONTRACT } from '../shared/cli-gateway-contract.js';
 import {
   createRelayChannelClient,
   RelayChannelClientError,
+  RelayChannelSubscriptionOverflowError,
   type RelayChannelClient,
 } from '../shared/channel-client.js';
 import {
@@ -140,9 +141,15 @@ async function openMcp(client: RelayChannelClient): Promise<{
     number,
     {
       resolve: (response: JsonRpcResponse) => void;
+      reject: (reason: Error) => void;
     }
   >();
   let nextId = 1;
+  const rejectPending = () => {
+    const error = new Error('MCP test transport closed before response');
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  };
   clientTransport.onmessage = (message) => {
     if (!isJsonRpcResponse(message)) return;
     const request = pending.get(message.id);
@@ -150,13 +157,15 @@ async function openMcp(client: RelayChannelClient): Promise<{
     pending.delete(message.id);
     request.resolve(message);
   };
+  clientTransport.onclose = rejectPending;
+  serverTransport.onclose = rejectPending;
   const request = async (
     method: string,
     params?: Record<string, unknown>
   ): Promise<JsonRpcResponse> => {
     const id = nextId++;
-    const response = new Promise<JsonRpcResponse>((resolve) => {
-      pending.set(id, { resolve });
+    const response = new Promise<JsonRpcResponse>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
     });
     try {
       await clientTransport.send({
@@ -189,7 +198,10 @@ async function openMcp(client: RelayChannelClient): Promise<{
   });
   return {
     request,
-    close: () => clientTransport.close(),
+    close: async () => {
+      rejectPending();
+      await Promise.all([clientTransport.close(), serverTransport.close()]);
+    },
   };
 }
 
@@ -250,9 +262,10 @@ describe('relay-mcp', () => {
     );
     expect(forbidden).toMatchObject({
       ok: false,
-      command: 'sessions.input',
+      command: 'channels.list',
       error: { code: 'INVALID_ARGUMENT' },
     });
+    expect(JSON.stringify(forbidden)).not.toContain('sessions.input');
   });
 
   it('requires bounded subscribe count and time before opening a stream', async () => {
@@ -329,6 +342,98 @@ describe('relay-mcp', () => {
         (spec) => spec.name === 'channels.subscribe'
       )?.outputSchema.properties?.['data']
     );
+  });
+
+  it('forwards only validated subscribe predicates before authoritative bounds and identity', async () => {
+    let received: Record<string, unknown> | undefined;
+    const client = fakeClient({
+      collect: async (input) => {
+        received = input as unknown as Record<string, unknown>;
+        return {
+          frames: [],
+          state: {} as never,
+          durableSeq: 7,
+          stopReason: 'max-events',
+        };
+      },
+    });
+    const malformed = await executeRelayMcpTool(
+      'channels.subscribe',
+      {
+        channelId: 'topic:one',
+        maxEvents: 2,
+        idleTimeoutMs: 100,
+        filter: { runId: 'chrun:one', channelId: 'topic:other' },
+      },
+      client
+    );
+    expect(malformed).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
+    expect(received).toBeUndefined();
+
+    await expect(
+      executeRelayMcpTool(
+        'channels.subscribe',
+        {
+          channelId: 'topic:one',
+          afterSeq: 4,
+          maxEvents: 2,
+          idleTimeoutMs: 100,
+          filter: { runId: 'chrun:one', terminalOnly: true },
+        },
+        client
+      )
+    ).resolves.toMatchObject({ ok: true });
+    expect(received).toEqual({
+      runId: 'chrun:one',
+      terminalOnly: true,
+      channelId: 'topic:one',
+      afterSeq: 4,
+      maxEvents: 2,
+      idleTimeoutMs: 100,
+    });
+  });
+
+  it('maps local overflow before generic client errors and derives generic retryability', async () => {
+    const overflow = await executeRelayMcpTool(
+      'channels.subscribe',
+      { channelId: 'topic:one', maxEvents: 1, idleTimeoutMs: 100 },
+      fakeClient({
+        collect: async () => {
+          throw new RelayChannelSubscriptionOverflowError('line-bytes', 8, 9);
+        },
+      })
+    );
+    expect(overflow).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UPSTREAM_ERROR',
+        retryable: false,
+        details: { limit: 'line-bytes', maximum: 8, observed: 9 },
+      },
+    });
+    const client4xx = await executeRelayMcpTool(
+      'channels.get',
+      { channelId: 'topic:one' },
+      fakeClient({
+        get: async () => {
+          throw new RelayChannelClientError(404, { code: 'NOT_FOUND' });
+        },
+      })
+    );
+    const client5xx = await executeRelayMcpTool(
+      'channels.get',
+      { channelId: 'topic:one' },
+      fakeClient({
+        get: async () => {
+          throw new RelayChannelClientError(502, { code: 'UPSTREAM_ERROR' });
+        },
+      })
+    );
+    expect(client4xx).toMatchObject({ error: { retryable: false } });
+    expect(client5xx).toMatchObject({ error: { retryable: true } });
   });
 
   it('registers valid bounded collection schemas and results through MCP tools/list and tools/call', async () => {
