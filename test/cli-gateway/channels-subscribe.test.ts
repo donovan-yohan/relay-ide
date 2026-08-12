@@ -101,10 +101,13 @@ describe('channels.subscribe CLI gateway command', () => {
 
   it.each([
     ['--thread-id', 'not-a-channel-message'],
+    ['--thread-id', 'chm:   '],
     ['--message-id', 'message:wrong-prefix'],
+    ['--message-id', 'chm:\t'],
     ['--status', 'unknown'],
     ['--terminal-only', '1'],
     ['--principal-only', 'TRUE'],
+    ['--run-id', 'chrun: \n'],
   ])(
     'rejects malformed bounded filter %s=%s before opening a stream',
     async (flag, value) => {

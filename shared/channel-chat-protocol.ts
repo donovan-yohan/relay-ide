@@ -318,7 +318,9 @@ function subscriptionFilterStringIsValid(
     value.trim().length > 0 &&
     value.length <= CHANNEL_SUBSCRIPTION_FILTER_ID_MAX_CHARS &&
     (prefix === undefined ||
-      (value.startsWith(prefix) && value.length > prefix.length))
+      (value.startsWith(prefix) &&
+        value.length > prefix.length &&
+        value.slice(prefix.length).trim().length > 0))
   );
 }
 

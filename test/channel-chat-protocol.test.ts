@@ -881,7 +881,10 @@ describe('ChannelSubscriptionFilter', () => {
     for (const filter of [
       { threadId: 'rooted' },
       { messageId: 'message:wrong-prefix' },
+      { threadId: 'chm:   ' },
+      { messageId: 'chm:\t' },
       { runId: 'run:wrong-prefix' },
+      { runId: 'chrun: \n' },
       { status: 'unknown' },
       { terminalOnly: 'true' },
       { extra: true },
@@ -889,6 +892,13 @@ describe('ChannelSubscriptionFilter', () => {
     ]) {
       expect(channelSubscriptionFilterValidationError(filter)).toBeDefined();
     }
+    expect(
+      channelSubscriptionFilterValidationError({
+        threadId: 'chm:root id',
+        messageId: 'chm:message id',
+        runId: 'chrun:run id',
+      })
+    ).toBeUndefined();
     // The aggregate runtime ceiling deliberately includes maximum-length
     // CJK/emoji values and their URL/JSON expansion, so schema-valid input
     // cannot be rejected later at the decoded boundary.

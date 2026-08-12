@@ -75,6 +75,9 @@ describe('channel subscription route', () => {
       'status=complete&status=failed',
       'unknownFilter=value',
       'terminalOnly=1',
+      'threadId=chm%3A%20%20%20',
+      'messageId=chm%3A%09',
+      'runId=chrun%3A%20%0A',
     ]) {
       const response = await fetch(
         `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?${query}`,

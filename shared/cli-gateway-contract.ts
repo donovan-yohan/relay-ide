@@ -3437,13 +3437,13 @@ const channelSubscriptionMessageIdSchema: RelayJsonSchema = {
   type: 'string',
   minLength: 5,
   maxLength: 512,
-  pattern: '^chm:.+',
+  pattern: '^chm:[\\s\\S]*\\S',
 };
 const channelSubscriptionRunIdSchema: RelayJsonSchema = {
   type: 'string',
   minLength: 7,
   maxLength: 512,
-  pattern: '^chrun:.+',
+  pattern: '^chrun:[\\s\\S]*\\S',
 };
 
 const channelSubscriptionFilterSchema: RelayJsonSchema = {

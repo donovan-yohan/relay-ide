@@ -350,7 +350,10 @@ describe('CLI gateway contract', () => {
       { channelId: 'channel-1', filter: { status: 'not-a-status' } },
       { channelId: 'channel-1', filter: { threadId: 'not-a-thread' } },
       { channelId: 'channel-1', filter: { messageId: 'chm:' } },
+      { channelId: 'channel-1', filter: { threadId: 'chm:   ' } },
+      { channelId: 'channel-1', filter: { messageId: 'chm:\t' } },
       { channelId: 'channel-1', filter: { runId: 'chrun:' } },
+      { channelId: 'channel-1', filter: { runId: 'chrun: \n' } },
       { channelId: 'channel-1', filter: { senderId: '   ' } },
       { channelId: 'channel-1', filter: { unknown: true } },
       { channelId: 'channel-1', unknown: true },
@@ -359,6 +362,12 @@ describe('CLI gateway contract', () => {
         false
       );
     }
+    expect(
+      schemaAcceptsCommandInput('channels.subscribe', {
+        channelId: 'channel-1',
+        filter: { messageId: 'chm:message id', runId: 'chrun:run id' },
+      })
+    ).toBe(true);
     expect(commandSpec('channels.subscribe').outputSchema).toMatchObject({
       properties: {
         data: {
