@@ -49,6 +49,9 @@ workflow.
 - Stream scoped channel replies through a durable, resumable
   `channels.subscribe` CLI gateway contract without per-message blocking waits
   (#1389)
+- Add a local stdio `relay-mcp` façade with a closed eight-command channel
+  allowlist, environment-only credentials, bounded subscriptions, and public
+  provider-diagnostic redaction (#1399)
 - Add bounded server-side semantic filters to durable channel subscriptions so
   agent consumers can wait for principal or terminal replies without receiving
   detail/tool traffic, while preserving safe resume cursors (#1390)

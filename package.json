@@ -4,9 +4,17 @@
   "description": "Channel-first workspace for collaborating with AI coding agents from any device",
   "type": "module",
   "main": "dist/server/index.js",
+  "exports": {
+    ".": "./dist/server/index.js",
+    "./channel-client": {
+      "types": "./dist/shared/channel-client.d.ts",
+      "import": "./dist/shared/channel-client.js"
+    }
+  },
   "bin": {
     "relay-ide": "dist/bin/relay-ide.js",
     "relay-ide-browser": "dist/scripts/agent-browser-cli.js",
+    "relay-mcp": "dist/bin/relay-mcp.js",
     "relayctl": "dist/bin/relayctl.js"
   },
   "files": [
@@ -18,7 +26,7 @@
     "lint": "eslint .",
     "typecheck:test": "tsc --noEmit -p test/tsconfig.json",
     "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json && npm run typecheck:test && npm run lint",
-    "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js dist/bin/relayctl.js dist/scripts/agent-browser-cli.js && vite build --config frontend/vite.config.ts",
+    "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js dist/bin/relay-mcp.js dist/bin/relayctl.js dist/scripts/agent-browser-cli.js && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "dev": "npm run build:server && node dist/scripts/dev.js",
@@ -87,6 +95,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@tanstack/react-query": "^5.96.1",
     "@tanstack/react-virtual": "^3.13.24",
     "@xterm/addon-fit": "^0.11.0",

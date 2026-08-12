@@ -128,6 +128,21 @@ The stable gateway exposes scoped list/get/history/thread-history/roster/post
 commands plus a durable `channels.subscribe` stream. Search and browser-only
 conveniences remain outside the gateway contract.
 
+### Local MCP channel facade (#1399)
+
+`relay-mcp` is an optional local stdio façade for hosts that speak MCP. It
+exposes only `channels.list`, `channels.get`, `channels.run.get`,
+`channels.history`, `channels.subscribe`, `channels.threads.history`,
+`channels.roster`, and `channels.post`; it does not inject unsolicited work
+into a Codex host and it cannot invoke shell, terminal, or provider-runtime
+commands. Configure the local Relay URL and credential only through process
+environment (`RELAY_IDE_URL`/`RELAY_IDE_PORT` and
+`RELAY_IDE_ACTOR_TOKEN` or `RELAY_IDE_BROWSER_TOKEN`), never MCP tool input.
+MCP subscribe calls must provide bounded `maxEvents` (≤100) and
+`idleTimeoutMs` (≤30,000); returned rows omit provider runtime, turn, and item
+identifiers while retaining Relay-owned run/target ids and server-derived
+sender metadata.
+
 `relay-ide v1 channels subscribe --channel-id <id> --after-seq <N> --json`
 emits one NDJSON envelope per versioned `open`, `event`, or `closed` frame.
 Every frame requires `schemaVersion: 1`, `channelId`, `sequence`, `occurredAt`,
