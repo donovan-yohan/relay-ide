@@ -49,6 +49,9 @@ workflow.
 - Stream scoped channel replies through a durable, resumable
   `channels.subscribe` CLI gateway contract without per-message blocking waits
   (#1389)
+- Add bounded server-side semantic filters to durable channel subscriptions so
+  agent consumers can wait for principal or terminal replies without receiving
+  detail/tool traffic, while preserving safe resume cursors (#1390)
 - Correlate concurrent routed channel posts, replies, and terminal lifecycle
   updates through durable provider-neutral asynchronous run and target ids;
   idempotent post retries return the original run (#1391)
