@@ -445,6 +445,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'workspace-topics.get',
     'channels.list',
     'channels.get',
+    'channels.run.get',
     'channels.history',
     'channels.subscribe',
     'channels.threads.history',

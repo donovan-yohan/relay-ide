@@ -2,6 +2,7 @@ import { createLogger } from './logger.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
   type ChannelEventV1,
+  type ChannelAsyncRun,
   type ChannelInFlightRef,
   type ChannelMemberRef,
   type ChannelMention,
@@ -43,6 +44,9 @@ const CATCHUP_MAX_ROWS = 500;
  * client paginates the remainder via `channels.history`.
  */
 const DEFAULT_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+/** Run projections are independently bounded; older runs remain individually queryable. */
+const SNAPSHOT_RUN_MAX = 100;
+const SNAPSHOT_RUN_MAX_BYTES = 256 * 1024;
 /**
  * Defense-in-depth bounds for events produced re-entrantly while a subscriber's
  * connect-time snapshot is being sent. In production the better-sqlite3 snapshot
@@ -164,6 +168,8 @@ export interface ChannelHub {
     sink: ChannelEventSink,
     input: { channelId: string; afterSeq: number | null }
   ): () => void;
+  /** Broadcast a durable run projection; it carries no message seq cursor. */
+  broadcastRunLifecycle(run: ChannelAsyncRun): void;
   broadcastCreated(
     message: ChannelMessage,
     mentions?: ChannelMention[],
@@ -466,12 +472,29 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       return message;
     });
 
+    const runs: ChannelAsyncRun[] = [];
+    let runBytes = 0;
+    // The store returns a stable oldest→newest projection. Pack from newest so
+    // one individually oversized old run cannot starve recent small status,
+    // then restore stable chronological order for reducer determinism.
+    const newestFirst = store
+      ? store.listAsyncRuns(channelId, SNAPSHOT_RUN_MAX).reverse()
+      : [];
+    for (const run of newestFirst) {
+      const bytes = Buffer.byteLength(JSON.stringify(run), 'utf8');
+      if (runBytes + bytes > SNAPSHOT_RUN_MAX_BYTES) continue;
+      runBytes += bytes;
+      runs.push(run);
+    }
+    runs.reverse();
+
     return {
       type: 'channel-snapshot-v1',
       channelId,
       timestamp: nowIso(),
       mode,
       messages,
+      runs,
       members,
       latestSeq: snapshotLatestSeq,
       inFlight,
@@ -665,6 +688,15 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
           logger.warn('onMessagePosted handler error:', err);
         }
       }
+    },
+
+    broadcastRunLifecycle(run) {
+      broadcast(run.channelId, {
+        type: 'channel-run-lifecycle-v1',
+        channelId: run.channelId,
+        timestamp: nowIso(),
+        run,
+      });
     },
 
     beginStreamBroadcast(message) {

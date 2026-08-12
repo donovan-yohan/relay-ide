@@ -145,6 +145,38 @@ stdout drain instead of dropping frames; a downstream closed pipe is treated as
 clean local cancellation and promptly cancels the upstream reader. The stream uses
 `context:read` plus the actor credential's exact `channelIds` scope.
 
+### Correlated async channel runs (#1391)
+
+`channels.post` returns an opaque Relay-owned `runId` for accepted routed work.
+Persist it with the returned request message. Principal replies expose that
+same `runId` plus their durable `targetId`; run lifecycle frames report each
+target and the aggregate state. These are the public request/reply contract for
+multiple outstanding posts on one subscription. Provider runtime, turn, and
+item identifiers are optional diagnostics only and must never be parsed for
+correlation.
+
+`relay-ide v1 channels run get --channel-id <id> --run-id <id>
+[--thread-id <root-or-thread-id>] --json` reads one opaque run with
+`context:read`. The actor must be scoped to the exact channel; when supplied,
+`threadId` must exactly equal the run's immutable scope or the command returns
+`NOT_FOUND`.
+
+Use a stable `clientMessageId` when retrying a post after an ambiguous
+transport outcome. The same `(channelId, authenticated sender,
+clientMessageId)` returns the original message and run without rerouting. On
+reconnect, resume with the last `durableSeq` and reapply full-row and lifecycle
+frames idempotently; replies and terminal state can arrive in any order across
+different runs. Per-target states are `queued`, `working`, `input-required`,
+`auth-required`, `completed`, `failed`, `cancelled`, and `rejected`; aggregate
+state is terminal only when every target is terminal. Approval fields support
+`requested`, `resolved`, and `expired`, while #1179 owns any approval-response
+command.
+
+At startup Relay cancels rather than redelivers unfinished persisted targets,
+using the inspectable `server-restarted` reason. Reconnect snapshots project
+runs within fixed count and byte budgets; lifecycle events and this run-get
+command provide the authoritative durable status outside that snapshot window.
+
 The former public agent-session and terminal hand-back contracts are
 superseded. Public terminals are always human-driven. `sessions.input` and
 `supervisor.*` control terminal programs; they are not an alternate agent

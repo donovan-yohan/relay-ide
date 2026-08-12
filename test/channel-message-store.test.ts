@@ -135,7 +135,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(14);
+    ).toBe(15);
     expect(
       (
         inspect
@@ -605,7 +605,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(14);
+    ).toBe(15);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -793,7 +793,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(14);
+    ).toBe(15);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1007,6 +1007,51 @@ describe('channel-message-store schema migration', () => {
       migrated.history('topic:wal-heal', { limit: 20 }).map((m) => m.id)
     ).toEqual(['chm:wal-keeper']);
     expect(migrated.getMessage('chm:wal-duplicate')).toBeNull();
+  });
+});
+
+describe('channel-message-store async-run migration (#1391)', () => {
+  it('upgrades a v14 store with its existing durable transcript intact', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    seeded.appendComplete({
+      channelId: 'topic:migrate-run',
+      sender: HUMAN,
+      text: 'existing durable row',
+    });
+    seeded.close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX idx_chart_run_state;
+      DROP INDEX idx_char_channel_thread_created;
+      DROP TABLE channel_async_run_targets;
+      DROP TABLE channel_async_runs;
+      UPDATE schema_version SET version = 14;
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    expect(migrated.history('topic:migrate-run')).toMatchObject([
+      { body: { text: 'existing durable row' } },
+    ]);
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(inspect.prepare('SELECT version FROM schema_version').get()).toEqual(
+      { version: 15 }
+    );
+    expect(
+      inspect
+        .prepare(
+          `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN
+               ('channel_async_runs', 'channel_async_run_targets')
+             ORDER BY name`
+        )
+        .all()
+    ).toEqual([
+      { name: 'channel_async_run_targets' },
+      { name: 'channel_async_runs' },
+    ]);
   });
 });
 
@@ -1729,6 +1774,164 @@ describe('channel-message-store streaming lifecycle', () => {
         .listResyncRows('topic:c', Number.MAX_SAFE_INTEGER, 500)
         .find((message) => message.id === root.id)?.replyCount
     ).toBe(4);
+  });
+});
+
+describe('channel-message-store async runs (#1391)', () => {
+  it('atomically creates and replays one requester post/run without re-routing', () => {
+    const file = dbPath();
+    const s = store(file);
+    const first = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:async',
+      sender: HUMAN,
+      text: '@a @b compare plans',
+      clientMessageId: 'client-async-1',
+      targetIds: ['agent-profile:b:default', 'agent-profile:a:default'],
+    });
+
+    expect(first).toMatchObject({
+      replayed: false,
+      message: {
+        channelId: 'topic:async',
+        clientMessageId: 'client-async-1',
+      },
+      run: {
+        id: expect.stringMatching(/^chrun:/),
+        channelId: 'topic:async',
+        requesterId: HUMAN.id,
+        state: 'submitted',
+        targets: [
+          { targetId: 'agent-profile:a:default', state: 'queued' },
+          { targetId: 'agent-profile:b:default', state: 'queued' },
+        ],
+      },
+    });
+    expect(first.run.requestMessageId).toBe(first.message.id);
+
+    const replay = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:async',
+      sender: HUMAN,
+      text: 'this replacement must not be persisted',
+      clientMessageId: 'client-async-1',
+      targetIds: ['agent-profile:unexpected:default'],
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.message).toEqual(first.message);
+    expect(replay.run).toEqual(first.run);
+    expect(s.history('topic:async')).toEqual([first.message]);
+    expect(s.getAsyncRun(first.run.id)).toEqual(first.run);
+    expect(s.getAsyncRunForRequestMessage(first.message.id)).toEqual(first.run);
+
+    // A reopen proves the correlation is a durable store projection rather
+    // than a router-local map and remains queryable from history/reconnect.
+    s.close();
+    const reopened = store(file);
+    expect(reopened.getAsyncRun(first.run.id)).toMatchObject({
+      id: first.run.id,
+      state: 'cancelled',
+      reason: 'server-restarted',
+      targets: [
+        { targetId: 'agent-profile:a:default', state: 'cancelled' },
+        { targetId: 'agent-profile:b:default', state: 'cancelled' },
+      ],
+    });
+  });
+
+  it('derives aggregate terminal state from durable per-target CAS outcomes', () => {
+    const s = store();
+    const { run } = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:async',
+      sender: HUMAN,
+      text: '@a @b investigate',
+      targetIds: ['agent-profile:a:default', 'agent-profile:b:default'],
+    });
+
+    const working = s.transitionAsyncRunTarget({
+      runId: run.id,
+      targetId: 'agent-profile:a:default',
+      state: 'working',
+    })!;
+    expect(working.state).toBe('working');
+    expect(working.targets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetId: 'agent-profile:a:default',
+          state: 'working',
+        }),
+      ])
+    );
+
+    s.transitionAsyncRunTarget({
+      runId: run.id,
+      targetId: 'agent-profile:a:default',
+      state: 'completed',
+    });
+    const awaitingInput = s.transitionAsyncRunTarget({
+      runId: run.id,
+      targetId: 'agent-profile:b:default',
+      state: 'input-required',
+      approvalState: 'requested',
+    })!;
+    expect(awaitingInput).toMatchObject({
+      state: 'input-required',
+      targets: expect.arrayContaining([
+        expect.objectContaining({
+          targetId: 'agent-profile:b:default',
+          state: 'input-required',
+          approvalState: 'requested',
+        }),
+      ]),
+    });
+
+    const failed = s.transitionAsyncRunTarget({
+      runId: run.id,
+      targetId: 'agent-profile:b:default',
+      state: 'rejected',
+      reason: 'target-revoked',
+    })!;
+    expect(failed).toMatchObject({
+      state: 'failed',
+      completedAt: expect.any(String),
+      targets: expect.arrayContaining([
+        expect.objectContaining({
+          targetId: 'agent-profile:a:default',
+          state: 'completed',
+          completedAt: expect.any(String),
+        }),
+        expect.objectContaining({
+          targetId: 'agent-profile:b:default',
+          state: 'rejected',
+          reason: 'target-revoked',
+          completedAt: expect.any(String),
+        }),
+      ]),
+    });
+
+    // A terminal target is a CAS fence: a late provider patch cannot rewrite
+    // its terminal result or alter the already-derived aggregate state.
+    expect(
+      s.transitionAsyncRunTarget({
+        runId: run.id,
+        targetId: 'agent-profile:b:default',
+        state: 'completed',
+      })
+    ).toEqual(failed);
+  });
+
+  it('rejects a run with no eligible target without inventing a provider identity', () => {
+    const s = store();
+    const { run } = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:async',
+      sender: HUMAN,
+      text: 'nobody eligible',
+      targetIds: [],
+    });
+    expect(run).toMatchObject({
+      state: 'rejected',
+      reason: 'no-eligible-target',
+      completedAt: expect.any(String),
+      targets: [],
+    });
   });
 });
 
@@ -3375,7 +3578,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(14);
+    expect(version.version).toBe(15);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -3773,6 +3976,28 @@ describe('channel-message-store read state (#1308 slice 3 item 1)', () => {
     expect(s.listReadState().map((row) => row.channelId)).toEqual([
       'topic:live',
     ]);
+  });
+
+  it('sweeps a channel whose only surviving durable rows are async runs', () => {
+    const file = dbPath();
+    const s = store(file);
+    const { run } = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:run-only',
+      sender: HUMAN,
+      text: 'orphaned request',
+      targetIds: ['agent-profile:mock:default'],
+    });
+    const raw = new Database(file);
+    raw
+      .prepare('DELETE FROM channel_messages WHERE channel_id = ?')
+      .run('topic:run-only');
+    raw.close();
+
+    expect(s.getAsyncRun(run.id)?.id).toBe(run.id);
+    expect(s.sweepOrphans(new Set()).channelsDeleted).toEqual([
+      'topic:run-only',
+    ]);
+    expect(s.getAsyncRun(run.id)).toBeNull();
   });
 
   it('survives a reopen and repairs a dropped read-state table', () => {

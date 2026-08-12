@@ -19,7 +19,20 @@ globalThis.fetch = async (url, init = {}) => {
     })
   );
   const data = String(url).includes('/channels/')
-    ? { message: { id: 'chm:test' } }
+    ? {
+        message: { id: 'chm:test' },
+        run: {
+          id: 'chrun:test',
+          channelId: 'topic:test',
+          threadId: null,
+          requestMessageId: 'chm:test',
+          requesterId: 'actor:test',
+          state: 'submitted',
+          targets: [],
+          createdAt: '2026-08-12T00:00:00.000Z',
+          updatedAt: '2026-08-12T00:00:00.000Z',
+        },
+      }
     : {
         id: 'worker-session',
         type: 'terminal',

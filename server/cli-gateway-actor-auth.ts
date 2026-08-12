@@ -71,6 +71,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'workspace-topics.get',
   'channels.list',
   'channels.get',
+  'channels.run.get',
   'channels.history',
   'channels.subscribe',
   'channels.threads.history',
@@ -351,6 +352,7 @@ export function cliGatewayActorCommandCapabilities(
   if (
     command === 'channels.list' ||
     command === 'channels.get' ||
+    command === 'channels.run.get' ||
     command === 'channels.history' ||
     command === 'channels.subscribe' ||
     command === 'channels.threads.history' ||

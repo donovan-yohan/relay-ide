@@ -425,6 +425,83 @@ describe('channel-hub fan-out', () => {
 });
 
 describe('channel-hub snapshot correctness', () => {
+  it('bounds durable run snapshots by count and byte budget', async () => {
+    const s = store();
+    for (let index = 0; index < 101; index += 1) {
+      s.appendCompleteWithAsyncRun({
+        channelId: 'topic:runs',
+        sender: HUMAN,
+        text: `request ${index}`,
+        targetIds: [`agent-profile:mock:${index}`],
+      });
+    }
+    const countHub = hubWith(s);
+    const countSocket = fakeSocket();
+    countHub.handleConnection(countSocket, {
+      channelId: 'topic:runs',
+      sinceSeq: null,
+    });
+    const countSnapshot = countSocket.sent[0];
+    if (countSnapshot?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+    expect(countSnapshot.runs).toHaveLength(100);
+
+    s.appendCompleteWithAsyncRun({
+      channelId: 'topic:large-run',
+      sender: HUMAN,
+      text: 'large projected run',
+      targetIds: Array.from(
+        { length: 300 },
+        (_, index) => `agent-profile:mock:${index}:${'x'.repeat(1024)}`
+      ),
+    });
+    const byteHub = hubWith(s);
+    const byteSocket = fakeSocket();
+    byteHub.handleConnection(byteSocket, {
+      channelId: 'topic:large-run',
+      sinceSeq: null,
+    });
+    const byteSnapshot = byteSocket.sent[0];
+    if (byteSnapshot?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+    expect(byteSnapshot.runs).toEqual([]);
+    expect(
+      Buffer.byteLength(JSON.stringify(byteSnapshot.runs), 'utf8')
+    ).toBeLessThanOrEqual(256 * 1024);
+
+    const oversizedOlder = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:fair-runs',
+      sender: HUMAN,
+      text: 'oversized old projection',
+      targetIds: Array.from(
+        { length: 300 },
+        (_, index) => `agent-profile:mock:older:${index}:${'x'.repeat(1024)}`
+      ),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const recentSmall = s.appendCompleteWithAsyncRun({
+      channelId: 'topic:fair-runs',
+      sender: HUMAN,
+      text: 'recent small projection',
+      targetIds: ['agent-profile:mock:recent'],
+    });
+    const fairHub = hubWith(s);
+    const fairSocket = fakeSocket();
+    fairHub.handleConnection(fairSocket, {
+      channelId: 'topic:fair-runs',
+      sinceSeq: null,
+    });
+    const fairSnapshot = fairSocket.sent[0];
+    if (fairSnapshot?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+    expect(fairSnapshot.runs.map((run) => run.id)).toEqual([
+      recentSmall.run.id,
+    ]);
+    expect(fairSnapshot.runs.map((run) => run.id)).not.toContain(
+      oversizedOlder.run.id
+    );
+  });
+
   it('does not duplicate pending accumulator text for a subscriber that connects mid-coalesce window', () => {
     vi.useFakeTimers();
     const s = store();

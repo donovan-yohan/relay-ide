@@ -2642,6 +2642,7 @@ async function main(): Promise<void> {
           ...(command === 'channels.list'
             ? { scopeForRequest: channelListScopeFromCredential }
             : command === 'channels.get' ||
+                command === 'channels.run.get' ||
                 command === 'channels.history' ||
                 command === 'channels.threads.history' ||
                 command === 'channels.roster'

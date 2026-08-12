@@ -1365,6 +1365,27 @@ function post(
   return message;
 }
 
+function postWithAsyncRun(
+  store: ChannelMessageStore,
+  binder: ChannelAgentBinder,
+  text: string,
+  knownIds: string[],
+  sender: ChannelSenderRef = OPERATOR,
+  parentMessageId?: string
+) {
+  const mentions = parseMentions(text, knownIds);
+  const result = store.appendCompleteWithAsyncRun({
+    channelId: CH,
+    sender,
+    text,
+    ...(mentions.length ? { mentions } : {}),
+    ...(parentMessageId ? { parentMessageId } : {}),
+    targetIds: mentions.map((mention) => builtInAgentProfileId(mention.id)),
+  });
+  binder.handleMessagePosted(result.message, result.message.mentions ?? []);
+  return result;
+}
+
 function postAgentTurnRow(
   store: ChannelMessageStore,
   binder: ChannelAgentBinder,
@@ -2460,6 +2481,7 @@ function makeBinder(cfg: {
   agentProfileStore?: AgentProfileStore | null;
   processEnv?: NodeJS.ProcessEnv;
   storePath?: string;
+  now?: () => number;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -2494,6 +2516,7 @@ function makeBinder(cfg: {
       : {}),
     ...(cfg.yolo !== undefined ? { yolo: cfg.yolo } : {}),
     ...(cfg.processEnv !== undefined ? { processEnv: cfg.processEnv } : {}),
+    ...(cfg.now !== undefined ? { now: cfg.now } : {}),
   });
   cleanup.push(() => binder.close());
   return { binder, store, hub, sessions };
@@ -3556,7 +3579,7 @@ describe('channel-agent-binder — lifecycle', () => {
         sender: OPERATOR,
         text: 'root',
       });
-      const trigger = post(
+      const { message: trigger, run } = postWithAsyncRun(
         store,
         binder,
         '@mock threaded',
@@ -3569,6 +3592,10 @@ describe('channel-agent-binder — lifecycle', () => {
       expect(trigger.threadId).toBe(root.id);
       expect(reply.threadId).toBe(root.id);
       expect(reply.parentMessageId).toBe(trigger.id);
+      expect(reply.asyncRun).toEqual({
+        runId: run.id,
+        targetId: builtInAgentProfileId('mock'),
+      });
     }
   );
 
@@ -3628,15 +3655,102 @@ describe('channel-agent-binder — lifecycle', () => {
       sender: OPERATOR,
       text: 'root one',
     });
-    post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
-    post(store, binder, '@mock two', ['mock'], OPERATOR, rootOne.id);
+    postWithAsyncRun(
+      store,
+      binder,
+      '@mock one',
+      ['mock'],
+      OPERATOR,
+      rootOne.id
+    );
+    postWithAsyncRun(
+      store,
+      binder,
+      '@mock two',
+      ['mock'],
+      OPERATOR,
+      rootOne.id
+    );
     await waitFor(() => agentReplies(store, 'mock').length === 2);
     for (const reply of agentReplies(store, 'mock')) {
       expect(reply.threadId).toBe(rootOne.id);
       // The two provider fallback rows cannot safely borrow either trigger,
       // but the runtime itself is scoped to this durable conversation.
       expect(reply.parentMessageId).toBe(rootOne.id);
+      expect(reply.asyncRun).toBeUndefined();
     }
+  });
+
+  it('retains a bounded exact-turn tombstone across a bare-idle successor', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const first = postWithAsyncRun(
+      store,
+      binder,
+      '@mock A',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    postWithAsyncRun(store, binder, '@mock B', ['mock'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 2);
+
+    // A bare idle terminalized A, then B started and displaced A from the live
+    // fallback slot. A late row with A's exact provider id must still carry A's
+    // public run reference; an anonymous turn-0 never gets this tombstone.
+    adapter.emitLate(adapter.sendCalls[0]!, 'late exact A');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]).toMatchObject({
+      parentMessageId: first.message.id,
+      asyncRun: {
+        runId: first.run.id,
+        targetId: builtInAgentProfileId('mock'),
+      },
+    });
+  });
+
+  it('expires an exact-turn tombstone without granting it to anonymous fallback', async () => {
+    let clock = 0;
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      now: () => clock,
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    postWithAsyncRun(store, binder, '@mock A', ['mock'], OPERATOR, root.id);
+    postWithAsyncRun(store, binder, '@mock B', ['mock'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 2);
+    clock = 60 * 1000 + 1;
+
+    adapter.emitLate(adapter.sendCalls[0]!, 'expired exact A');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]).toMatchObject({
+      parentMessageId: root.id,
+    });
+    expect(agentReplies(store, 'mock')[0]?.asyncRun).toBeUndefined();
+    const binding = await binder.ensureBinding(CH, 'mock', root.id);
+    expect(binding.exactTurnTombstones.has(adapter.sendCalls[0]!)).toBe(false);
   });
 
   it('bounds retained parents across many bare-idle turns', async () => {
@@ -3661,6 +3775,7 @@ describe('channel-agent-binder — lifecycle', () => {
     const binding = await binder.ensureBinding(CH, 'mock');
     expect(binding.activeTurnId).toBeNull();
     expect(binding.parentMessageIdByTurn.size).toBeLessThanOrEqual(1);
+    expect(binding.exactTurnTombstones.size).toBeLessThanOrEqual(16);
   });
 
   it('prunes predecessors so an exact late successor recovers from fallback poisoning', async () => {

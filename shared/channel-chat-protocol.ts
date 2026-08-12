@@ -30,6 +30,51 @@ export const CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS = 512;
 
 export type ChannelMessageId = `chm:${string}`;
 export type ChannelAttachmentId = `cha:${string}`;
+/** Opaque Relay-owned correlation id; never derived from a provider turn/item. */
+export type ChannelAsyncRunId = `chrun:${string}`;
+export type ChannelAsyncRunState =
+  | 'submitted'
+  | 'working'
+  | 'input-required'
+  | 'auth-required'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'rejected';
+/** Targets expose queued admission separately from aggregate run lifecycle. */
+export type ChannelAsyncRunTargetState = ChannelAsyncRunState | 'queued';
+export type ChannelAsyncRunApprovalState = 'requested' | 'resolved' | 'expired';
+
+/** Public, provider-neutral target projection. `targetId` is a Relay profile actor id. */
+export interface ChannelAsyncRunTarget {
+  targetId: string;
+  state: ChannelAsyncRunTargetState;
+  reason?: string;
+  approvalState?: ChannelAsyncRunApprovalState;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+/** One immutable requester post and its durable per-target outcomes. */
+export interface ChannelAsyncRun {
+  id: ChannelAsyncRunId;
+  channelId: string;
+  threadId: ChannelMessageId | null;
+  requestMessageId: ChannelMessageId;
+  requesterId: string;
+  state: ChannelAsyncRunState;
+  reason?: string;
+  targets: ChannelAsyncRunTarget[];
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+/** Principal prose references are stable public correlation, never provider diagnostics. */
+export interface ChannelAsyncRunReference {
+  runId: ChannelAsyncRunId;
+  targetId: string;
+}
 
 export type ChannelImageMime =
   | 'image/png'
@@ -175,6 +220,8 @@ export interface ChannelMessage {
   agentDetail?: ChannelAgentDetail;
   /** Model/effort snapshot for an agent-authored prose or detail row. */
   agentAttribution?: ChannelAgentAttribution;
+  /** Present on principal agent prose produced for a correlated async target. */
+  asyncRun?: ChannelAsyncRunReference;
   /**
    * Opaque row metadata surfaced to clients (#1167). System rows carry actionable
    * payloads here — e.g. an approval request `{ approvalRequestId, agentId,
@@ -735,6 +782,8 @@ export interface ChannelSnapshotEventV1 extends ChannelEventBaseV1 {
   mode: 'full' | 'catchup';
   /** seq-ascending; streaming rows carry accumulated in-memory text */
   messages: ChannelMessage[];
+  /** Durable current run projections; reconnect replaces this map when present. */
+  runs?: ChannelAsyncRun[];
   members: ChannelMemberRef[];
   latestSeq: number;
   inFlight: ChannelInFlightRef[];
@@ -806,6 +855,12 @@ export interface ChannelResyncRequiredEventV1 extends ChannelEventBaseV1 {
   latestSeq: number;
 }
 
+/** Authoritative durable run projection; clients replace it by `run.id`. */
+export interface ChannelRunLifecycleEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-run-lifecycle-v1';
+  run: ChannelAsyncRun;
+}
+
 export type ChannelEventV1 =
   | ChannelSnapshotEventV1
   | ChannelMessageCreatedEventV1
@@ -814,7 +869,8 @@ export type ChannelEventV1 =
   | ChannelMessageCompletedEventV1
   | ChannelMessageEditedEventV1
   | ChannelMessageDeletedEventV1
-  | ChannelResyncRequiredEventV1;
+  | ChannelResyncRequiredEventV1
+  | ChannelRunLifecycleEventV1;
 
 // ── runtime validators ──────────────────────────────────────────────────────
 
@@ -986,6 +1042,15 @@ export function isChannelMessage(value: unknown): value is ChannelMessage {
   ) {
     return false;
   }
+  if (
+    value.asyncRun !== undefined &&
+    (!isRecord(value.asyncRun) ||
+      typeof value.asyncRun.runId !== 'string' ||
+      !value.asyncRun.runId.startsWith('chrun:') ||
+      typeof value.asyncRun.targetId !== 'string')
+  ) {
+    return false;
+  }
   if (value.threadId !== null && typeof value.threadId !== 'string')
     return false;
   if (
@@ -1024,6 +1089,41 @@ function isInFlightArray(value: unknown): value is ChannelInFlightRef[] {
   );
 }
 
+export function isChannelAsyncRun(value: unknown): value is ChannelAsyncRun {
+  const runStates = new Set<string>([
+    'submitted',
+    'working',
+    'input-required',
+    'auth-required',
+    'completed',
+    'failed',
+    'cancelled',
+    'rejected',
+  ]);
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.startsWith('chrun:') &&
+    typeof value.channelId === 'string' &&
+    (value.threadId === null || typeof value.threadId === 'string') &&
+    typeof value.requestMessageId === 'string' &&
+    typeof value.requesterId === 'string' &&
+    typeof value.state === 'string' &&
+    runStates.has(value.state) &&
+    Array.isArray(value.targets) &&
+    value.targets.every(
+      (target) =>
+        isRecord(target) &&
+        typeof target.targetId === 'string' &&
+        typeof target.state === 'string' &&
+        (target.state === 'queued' || runStates.has(target.state)) &&
+        typeof target.updatedAt === 'string'
+    ) &&
+    typeof value.createdAt === 'string' &&
+    typeof value.updatedAt === 'string'
+  );
+}
+
 export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
   if (!isRecord(value)) return false;
   if (typeof value.type !== 'string') return false;
@@ -1034,6 +1134,8 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       return (
         (value.mode === 'full' || value.mode === 'catchup') &&
         isMessageArray(value.messages) &&
+        (value.runs === undefined ||
+          (Array.isArray(value.runs) && value.runs.every(isChannelAsyncRun))) &&
         Array.isArray(value.members) &&
         value.members.every(isMemberRef) &&
         typeof value.latestSeq === 'number' &&
@@ -1073,6 +1175,8 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       );
     case 'channel-resync-required-v1':
       return typeof value.latestSeq === 'number';
+    case 'channel-run-lifecycle-v1':
+      return isChannelAsyncRun(value.run);
     default:
       return false;
   }
@@ -1085,6 +1189,8 @@ export interface ChannelReducerState {
   /** seq-ordered */
   messages: ChannelMessage[];
   byId: Record<string, ChannelMessage>;
+  /** Provider-neutral correlated async runs, keyed by opaque run id. */
+  runs: Record<string, ChannelAsyncRun>;
   lastSeq: number;
   /** last applied deltaIndex per streaming message */
   inFlightDelta: Record<string, number>;
@@ -1101,6 +1207,7 @@ export function initialChannelReducerState(
     channelId,
     messages: [],
     byId: {},
+    runs: {},
     lastSeq: 0,
     inFlightDelta: {},
     quarantined: {},
@@ -1154,6 +1261,9 @@ export function applyChannelEventV1(
           channelId: state.channelId,
           messages,
           byId: rebuildById(messages),
+          runs: Object.fromEntries(
+            (event.runs ?? []).map((run) => [run.id, run])
+          ),
           lastSeq: event.latestSeq,
           inFlightDelta: inFlightFromRefs(event.inFlight),
           quarantined: {},
@@ -1171,6 +1281,10 @@ export function applyChannelEventV1(
         ...state,
         messages,
         byId: rebuildById(messages),
+        runs: {
+          ...state.runs,
+          ...Object.fromEntries((event.runs ?? []).map((run) => [run.id, run])),
+        },
         lastSeq: Math.max(state.lastSeq, event.latestSeq),
         inFlightDelta: inFlightFromRefs(event.inFlight),
         quarantined: {},
@@ -1316,6 +1430,12 @@ export function applyChannelEventV1(
 
     case 'channel-resync-required-v1':
       return { ...state, needsCatchup: true };
+
+    case 'channel-run-lifecycle-v1':
+      // Run updates intentionally do not touch the message sequence cursor:
+      // snapshots carry the durable projection after reconnect, and a replayed
+      // lifecycle notification is idempotent by opaque run id.
+      return { ...state, runs: { ...state.runs, [event.run.id]: event.run } };
 
     default:
       return state;

@@ -49,6 +49,9 @@ workflow.
 - Stream scoped channel replies through a durable, resumable
   `channels.subscribe` CLI gateway contract without per-message blocking waits
   (#1389)
+- Correlate concurrent routed channel posts, replies, and terminal lifecycle
+  updates through durable provider-neutral asynchronous run and target ids;
+  idempotent post retries return the original run (#1391)
 - Deliver durable, exactly-once upward completion callbacks for explicit
   agent-to-agent channel delegations, including restart recovery, busy-agent
   FIFO queueing, nested child fan-in, and explicit-return de-duplication (#1359)
