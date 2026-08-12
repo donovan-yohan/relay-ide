@@ -5,7 +5,7 @@ import * as path from 'node:path';
 
 import Database from 'better-sqlite3';
 import express from 'express';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
@@ -191,8 +191,8 @@ describe('channel-agent-binder — durable delegation completion callbacks', () 
     await waitFor(() => !binder.archiveActivityForChannel(CH).active);
   });
 
-  it('contains a synchronous callback release failure and retains the archive fence', async () => {
-    const { binder, store } = makeBinder({
+  it('terminalizes an unavailable requester once and releases the archive fence', async () => {
+    const { binder, store, sessions } = makeBinder({
       build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
       targets: callbackTargets,
       knownProviderIds: ['a', 'b', 'c', 'd'],
@@ -219,29 +219,92 @@ describe('channel-agent-binder — durable delegation completion callbacks', () 
       terminalReason: 'completed',
       messageDisposition: 'no-terminal-message',
     });
-    const originalRelease =
-      store.releaseDeliveredCompletionCallback.bind(store);
-    let releaseAttempts = 0;
-    store.releaseDeliveredCompletionCallback = (id) => {
-      releaseAttempts += 1;
-      if (releaseAttempts === 1) throw new Error('sqlite release failed');
-      return originalRelease(id);
+    const terminalize =
+      store.terminalizeDeliveredCompletionCallback.bind(store);
+    let terminalizeAttempts = 0;
+    store.terminalizeDeliveredCompletionCallback = (input) => {
+      terminalizeAttempts += 1;
+      return terminalize(input);
     };
 
     await binder.recoverCompletionCallbacks();
-    await waitFor(() => releaseAttempts >= 2);
-    expect(binder.archiveActivityForChannel(CH)).toMatchObject({
-      active: true,
-      reasons: expect.arrayContaining(['completion-callback']),
+    await waitFor(
+      () => store.getCompletionCallback(edge.id)?.state === 'undeliverable'
+    );
+    expect(store.getCompletionCallback(edge.id)).toMatchObject({
+      state: 'undeliverable',
+      terminalReason: 'completed',
+      deliveryReason: 'requester-profile-unavailable',
     });
-
-    // Close is the terminal cleanup for this intentionally undeliverable edge;
-    // its retry timer observes `closed` and cannot resurrect the marker.
-    binder.close();
     expect(binder.archiveActivityForChannel(CH)).toEqual({
       active: false,
       reasons: [],
     });
+    expect(sessions.spawns()).toBe(0); // never fabricate a requester runtime
+    await binder.recoverCompletionCallbacks();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(terminalizeAttempts).toBe(1);
+    expect(store.claimSatisfiedCompletionCallbacks()).toEqual([]);
+  });
+
+  it('bounds unavailable-requester terminalization persistence retries without clearing archive safety', async () => {
+    vi.useFakeTimers();
+    try {
+      const { binder, store } = makeBinder({
+        build: (provider) => new ScriptedAdapter(provider, { mode: 'stall' }),
+        targets: callbackTargets,
+        knownProviderIds: ['a', 'b', 'c', 'd'],
+      });
+      const trigger = store.appendComplete({
+        channelId: CH,
+        sender: OPERATOR,
+        text: 'persistence outage callback',
+      });
+      const edge = store.createCompletionCallback({
+        id: 'chcb:terminalization-storage-outage',
+        channelId: CH,
+        threadId: null,
+        triggerMessageId: trigger.id,
+        requesterProfileId: 'agent-profile:missing',
+        targetProfileId: builtInAgentProfileId('b'),
+        targetRuntimeId: 'runtime:b',
+        targetTurnId: 'turn:terminalization-storage-outage',
+      });
+      store.satisfyCompletionCallback({
+        channelId: edge.channelId,
+        targetProfileId: edge.targetProfileId,
+        targetTurnId: edge.targetTurnId,
+        terminalReason: 'completed',
+        messageDisposition: 'no-terminal-message',
+      });
+      let attempts = 0;
+      store.terminalizeDeliveredCompletionCallback = () => {
+        attempts += 1;
+        throw new Error('sqlite disk I/O error');
+      };
+
+      await binder.recoverCompletionCallbacks();
+      await vi.advanceTimersByTimeAsync(0); // first claim + failed CAS
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(25 + 50 + 100 + 200);
+      expect(attempts).toBe(5);
+      // The fifth failed CAS escalates in memory but must not pretend the
+      // durable row reached `undeliverable` or make the channel archivable.
+      expect(store.getCompletionCallback(edge.id)).toMatchObject({
+        state: 'delivered',
+      });
+      expect(binder.archiveActivityForChannel(CH)).toMatchObject({
+        active: true,
+        reasons: expect.arrayContaining([
+          'completion-callback',
+          'completion-callback-terminalization-failed',
+        ]),
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('wakes a silent successful delegator exactly once with a typed internal trigger', async () => {

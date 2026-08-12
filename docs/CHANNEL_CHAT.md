@@ -296,8 +296,12 @@ synthetic chat row.
 
 The directional invariant is: **delegation travels downward; completion travels
 upward; completion never creates a reverse delegation.** The one-shot lifecycle
-is `pending → satisfied → delivered → consumed`; guarded SQLite transitions make
-late or duplicate provider terminal patches inert. A delivered callback remains
+is `pending → satisfied → delivered → consumed`, with a separate terminal
+`delivered → undeliverable` outcome when Relay cannot ever deliver the internal
+callback; guarded SQLite transitions make late or duplicate provider terminal
+patches inert. `undeliverable` retains the delegatee's terminal reason plus a
+safe Relay delivery reason, is excluded from recovery/claims, and prunes under
+the same bounded settled-history policy. A delivered callback remains
 recoverable until the requester adapter resolves its typed-trigger acceptance;
 hub startup re-offers any such volatile FIFO offer. Relay uses the same
 deterministic recipient turn id and client-message id on every re-offer. Only
@@ -331,6 +335,23 @@ delegatee enters that FIFO; queue-cap rejection terminalizes that edge upward
 instead of silently losing it. The consecutive agent-turn brake remains in
 force for every normal mention route and admits child intent only after its
 turn passes the brake.
+
+An externally authenticated actor is not an installed requester profile. It
+observes a mentioned agent's reply through the authorized durable channel
+history/subscription surface; Relay does not provision a profile or launch a
+runtime for its provider id. If a legacy/internal automatic callback names an
+unavailable requester profile, Relay immediately terminalizes that callback as
+`undeliverable` with `requester-profile-unavailable` rather than retrying it.
+If SQLite cannot persist that terminal CAS, Relay makes a capped exponential
+storage-write retry (not a requester/profile retry), then leaves the durable
+row `delivered` and the channel archive-unsafe with an inspectable terminalization
+failure reason plus one final diagnostic. It never claims `undeliverable` unless
+the CAS actually landed.
+For nested delegation, any upward ancestry that depends on that impossible
+continuation terminalizes as `continuation-undeliverable`; Relay never invents
+a reverse delegation or acceptance. Transient binding/adapter failures remain
+on the recoverable delivery path. Correlated external run status is deliberately
+separate work (#1391).
 
 ## Threads
 

@@ -61,7 +61,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -809,14 +809,19 @@ CREATE TABLE IF NOT EXISTS channel_completion_callbacks (
   pending_child_intents INTEGER NOT NULL DEFAULT 0,
   continuation_completed_at TEXT,
   state                 TEXT NOT NULL
-                          CHECK (state IN ('pending','satisfied','delivered','consumed')),
+                          CHECK (state IN ('pending','satisfied','delivered','consumed','undeliverable')),
   terminal_reason       TEXT,
   terminal_message_id   TEXT,
   message_disposition   TEXT,
+  -- Delivery failure is deliberately separate from the delegatee terminal
+  -- reason: no requester accepted this callback, but the delegated turn may
+  -- still have completed normally.
+  delivery_reason       TEXT,
   created_at            TEXT NOT NULL,
   satisfied_at          TEXT,
   delivered_at          TEXT,
   consumed_at           TEXT,
+  undeliverable_at      TEXT,
   updated_at            TEXT NOT NULL,
   UNIQUE(channel_id, target_profile_id, target_turn_id)
 );
@@ -828,9 +833,9 @@ ON channel_completion_callbacks(channel_id, target_profile_id, target_turn_id);
 CREATE INDEX IF NOT EXISTS idx_chcc_continuation_parent
 ON channel_completion_callbacks(continuation_parent_callback_id)
 WHERE continuation_parent_callback_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_chcc_consumed_retention
-ON channel_completion_callbacks(consumed_at)
-WHERE state = 'consumed';
+CREATE INDEX IF NOT EXISTS idx_chcc_settled_retention
+ON channel_completion_callbacks(state, consumed_at, undeliverable_at)
+WHERE state IN ('consumed','undeliverable');
 `;
 
 interface ChannelMessageRow {
@@ -938,10 +943,12 @@ interface CompletionCallbackRow {
   terminal_reason: ChannelCompletionCallbackTerminalReason | null;
   terminal_message_id: string | null;
   message_disposition: ChannelCompletionCallbackMessageDisposition | null;
+  delivery_reason: ChannelCompletionCallbackDeliveryReason | null;
   created_at: string;
   satisfied_at: string | null;
   delivered_at: string | null;
   consumed_at: string | null;
+  undeliverable_at: string | null;
   updated_at: string;
 }
 
@@ -1173,7 +1180,9 @@ export type ChannelCompletionCallbackState =
   | 'pending'
   | 'satisfied'
   | 'delivered'
-  | 'consumed';
+  | 'consumed'
+  /** Callback delivery cannot ever reach its requester; never retry it. */
+  | 'undeliverable';
 
 /** Guarded terminal event that satisfied a delegated routed turn. */
 export type ChannelCompletionCallbackTerminalReason =
@@ -1188,6 +1197,11 @@ export type ChannelCompletionCallbackTerminalReason =
 export type ChannelCompletionCallbackMessageDisposition =
   | 'final-message'
   | 'no-terminal-message';
+
+/** Safe, Relay-owned reason for a non-delivery terminal disposition. */
+export type ChannelCompletionCallbackDeliveryReason =
+  | 'requester-profile-unavailable'
+  | 'continuation-undeliverable';
 
 /** Keep settled edge identities long enough for late provider patches to no-op. */
 const COMPLETION_CALLBACK_CONSUMED_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -1218,10 +1232,13 @@ export interface ChannelCompletionCallbackEdge {
   terminalReason: ChannelCompletionCallbackTerminalReason | null;
   terminalMessageId: string | null;
   messageDisposition: ChannelCompletionCallbackMessageDisposition | null;
+  /** Why Relay terminalized delivery without invoking a requester runtime. */
+  deliveryReason: ChannelCompletionCallbackDeliveryReason | null;
   createdAt: string;
   satisfiedAt: string | null;
   deliveredAt: string | null;
   consumedAt: string | null;
+  undeliverableAt: string | null;
   updatedAt: string;
 }
 
@@ -1560,6 +1577,17 @@ export interface ChannelMessageStore {
   ): ChannelCompletionCallbackEdge[];
   /** Return an undeliverable in-memory claim to durable retryable work. */
   releaseDeliveredCompletionCallback(id: string): boolean;
+  /**
+   * CAS a claimed callback into non-retryable delivery failure. If it belongs
+   * to a nested continuation, terminalize its unresolved ancestors too: there
+   * is no requester turn that could safely manufacture an upward return.
+   */
+  terminalizeDeliveredCompletionCallback(input: {
+    id: string;
+    channelId: string;
+    threadId: string | null;
+    deliveryReason: ChannelCompletionCallbackDeliveryReason;
+  }): ChannelCompletionCallbackEdge | null;
   /** CAS: records that the one typed internal trigger has begun its recipient turn. */
   consumeCompletionCallback(id: string): boolean;
   /**
@@ -2920,6 +2948,79 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 13').run();
     })();
   }
+  if (current < 14) {
+    db.transaction(() => {
+      // SQLite CHECK constraints cannot be widened in place. Rebuild the
+      // callback ledger atomically so existing recovery rows keep every durable
+      // identity and terminal fact while a new non-delivery terminal state is
+      // introduced. This is intentionally a state-machine migration, not a
+      // reinterpretation of `consumed`: no requester adapter accepted the
+      // callback, so claiming it consumed would fabricate an acknowledgement.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_chcc_recovery;
+        DROP INDEX IF EXISTS idx_chcc_target_turn;
+        DROP INDEX IF EXISTS idx_chcc_continuation_parent;
+        DROP INDEX IF EXISTS idx_chcc_consumed_retention;
+        DROP INDEX IF EXISTS idx_chcc_settled_retention;
+        CREATE TABLE channel_completion_callbacks_v14 (
+          id                    TEXT PRIMARY KEY,
+          channel_id            TEXT NOT NULL,
+          thread_id             TEXT,
+          trigger_message_id    TEXT NOT NULL,
+          requester_profile_id  TEXT NOT NULL,
+          target_profile_id     TEXT NOT NULL,
+          target_runtime_id     TEXT NOT NULL,
+          target_turn_id        TEXT NOT NULL,
+          continuation_parent_callback_id TEXT,
+          awaiting_child        INTEGER NOT NULL DEFAULT 0 CHECK (awaiting_child IN (0, 1)),
+          pending_child_intents INTEGER NOT NULL DEFAULT 0,
+          continuation_completed_at TEXT,
+          state                 TEXT NOT NULL
+                                CHECK (state IN ('pending','satisfied','delivered','consumed','undeliverable')),
+          terminal_reason       TEXT,
+          terminal_message_id   TEXT,
+          message_disposition   TEXT,
+          delivery_reason       TEXT,
+          created_at            TEXT NOT NULL,
+          satisfied_at          TEXT,
+          delivered_at          TEXT,
+          consumed_at           TEXT,
+          undeliverable_at      TEXT,
+          updated_at            TEXT NOT NULL,
+          UNIQUE(channel_id, target_profile_id, target_turn_id)
+        );
+        INSERT INTO channel_completion_callbacks_v14 (
+          id, channel_id, thread_id, trigger_message_id, requester_profile_id,
+          target_profile_id, target_runtime_id, target_turn_id,
+          continuation_parent_callback_id, awaiting_child, pending_child_intents,
+          continuation_completed_at, state, terminal_reason, terminal_message_id,
+          message_disposition, delivery_reason, created_at, satisfied_at,
+          delivered_at, consumed_at, undeliverable_at, updated_at
+        )
+        SELECT id, channel_id, thread_id, trigger_message_id, requester_profile_id,
+               target_profile_id, target_runtime_id, target_turn_id,
+               continuation_parent_callback_id, awaiting_child, pending_child_intents,
+               continuation_completed_at, state, terminal_reason, terminal_message_id,
+               message_disposition, NULL, created_at, satisfied_at,
+               delivered_at, consumed_at, NULL, updated_at
+          FROM channel_completion_callbacks;
+        DROP TABLE channel_completion_callbacks;
+        ALTER TABLE channel_completion_callbacks_v14 RENAME TO channel_completion_callbacks;
+        CREATE INDEX idx_chcc_recovery
+          ON channel_completion_callbacks(state, created_at)
+          WHERE state IN ('pending','satisfied','delivered');
+        CREATE INDEX idx_chcc_target_turn
+          ON channel_completion_callbacks(channel_id, target_profile_id, target_turn_id);
+        CREATE INDEX idx_chcc_continuation_parent
+          ON channel_completion_callbacks(continuation_parent_callback_id)
+          WHERE continuation_parent_callback_id IS NOT NULL;
+        CREATE INDEX idx_chcc_settled_retention
+          ON channel_completion_callbacks(state, consumed_at, undeliverable_at)
+          WHERE state IN ('consumed','undeliverable');
+      `);
+      db.prepare('UPDATE schema_version SET version = 14').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -3894,6 +3995,67 @@ export function createChannelMessageStore(
     );
   }
 
+  const terminalizeDeliveredCompletionCallbackImpl = db.transaction(
+    (input: {
+      id: string;
+      channelId: string;
+      threadId: string | null;
+      deliveryReason: ChannelCompletionCallbackDeliveryReason;
+    }): ChannelCompletionCallbackEdge | null => {
+      const timestamp = nowIso();
+      // `delivered` is the binder's durable claim. Limiting the first update to
+      // that state is the CAS boundary: a late missing-profile observation can
+      // neither overwrite a consumed acceptance nor re-terminalize a retry.
+      const terminalized = db
+        .prepare(
+          `UPDATE channel_completion_callbacks
+            SET state = 'undeliverable', delivery_reason = ?,
+                  undeliverable_at = ?, updated_at = ?
+            WHERE id = ? AND channel_id = ? AND thread_id IS ?
+              AND state = 'delivered'`
+        )
+        .run(
+          input.deliveryReason,
+          timestamp,
+          timestamp,
+          input.id,
+          input.channelId,
+          input.threadId
+        );
+      if (terminalized.changes === 0) return null;
+
+      const edge = selectCompletionCallbackById.get(input.id) as
+        | CompletionCallbackRow
+        | undefined;
+      if (!edge)
+        throw new Error('completion callback terminalization lost row');
+
+      // A nested child is the sole route by which its requester can produce the
+      // continuation that wakes each ancestor. Once delivery is impossible,
+      // preserve the directional invariant by terminalizing that unresolved
+      // upward ancestry too — never manufacture an adapter callback to pretend
+      // the absent requester accepted it.
+      let parentId = edge.continuation_parent_callback_id;
+      const seenAncestorIds = new Set<string>([edge.id]);
+      while (parentId && !seenAncestorIds.has(parentId)) {
+        seenAncestorIds.add(parentId);
+        const parent = selectCompletionCallbackById.get(parentId) as
+          | CompletionCallbackRow
+          | undefined;
+        if (!parent) break;
+        db.prepare(
+          `UPDATE channel_completion_callbacks
+              SET state = 'undeliverable',
+                  delivery_reason = 'continuation-undeliverable',
+                  undeliverable_at = ?, updated_at = ?
+            WHERE id = ? AND state IN ('pending','satisfied','delivered')`
+        ).run(timestamp, timestamp, parent.id);
+        parentId = parent.continuation_parent_callback_id;
+      }
+      return completionCallbackRowToRecord(edge);
+    }
+  );
+
   const pruneConsumedCompletionCallbacksImpl = db.transaction(
     (olderThanMs: number): number => {
       const cutoff = new Date(Date.now() - olderThanMs).toISOString();
@@ -3903,19 +4065,19 @@ export function createChannelMessageStore(
       return db
         .prepare(
           `DELETE FROM channel_completion_callbacks AS settled
-            WHERE settled.state = 'consumed'
-              AND settled.consumed_at IS NOT NULL
-              AND settled.consumed_at < @cutoff
+            WHERE settled.state IN ('consumed','undeliverable')
+              AND COALESCE(settled.consumed_at, settled.undeliverable_at) < @cutoff
               AND NOT EXISTS (
                 SELECT 1 FROM channel_completion_callbacks child
                  WHERE child.continuation_parent_callback_id = settled.id
-                   AND (child.state <> 'consumed'
-                        OR child.continuation_completed_at IS NULL)
+                   AND (child.state NOT IN ('consumed','undeliverable')
+                        OR (child.state = 'consumed'
+                            AND child.continuation_completed_at IS NULL))
               )
               AND NOT EXISTS (
                 SELECT 1 FROM channel_completion_callbacks parent
                  WHERE parent.id = settled.continuation_parent_callback_id
-                   AND parent.state <> 'consumed'
+                   AND parent.state NOT IN ('consumed','undeliverable')
               )`
         )
         .run({ cutoff }).changes;
@@ -4979,6 +5141,10 @@ export function createChannelMessageStore(
       return releaseDeliveredCompletionCallbackImpl(id);
     },
 
+    terminalizeDeliveredCompletionCallback(input) {
+      return terminalizeDeliveredCompletionCallbackImpl(input);
+    },
+
     consumeCompletionCallback(id) {
       const timestamp = nowIso();
       return (
@@ -5232,10 +5398,12 @@ function completionCallbackRowToRecord(
     terminalReason: row.terminal_reason,
     terminalMessageId: row.terminal_message_id,
     messageDisposition: row.message_disposition,
+    deliveryReason: row.delivery_reason,
     createdAt: row.created_at,
     satisfiedAt: row.satisfied_at,
     deliveredAt: row.delivered_at,
     consumedAt: row.consumed_at,
+    undeliverableAt: row.undeliverable_at,
     updatedAt: row.updated_at,
   };
 }

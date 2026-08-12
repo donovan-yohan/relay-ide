@@ -66,6 +66,10 @@ workflow.
 
 #### Fixed
 
+- Terminalize completion callbacks to unavailable requester profiles as durable,
+  inspectable `undeliverable` rows instead of repeatedly retrying or spawning a
+  fabricated external requester runtime; scoped external actors continue to
+  observe replies through durable channel history/subscriptions (#1392)
 - Keep Settings and Add Project scrolling inside their intended panes so modal
   content cannot become displaced in an unreachable hidden scroll offset (#1384)
 - Make reasoning status styling exhaustive, distinguish nested-only designation
