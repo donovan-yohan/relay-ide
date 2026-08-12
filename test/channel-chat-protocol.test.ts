@@ -129,6 +129,31 @@ describe('isChannelEventV1 validator matrix', () => {
     expect(isChannelEventV1(snapshot)).toBe(true);
     expect(
       isChannelEventV1({
+        ...snapshot,
+        mode: 'catchup',
+        stateReplacements: [{ message: message() }],
+      })
+    ).toBe(true);
+    expect(
+      isChannelEventV1({
+        ...snapshot,
+        stateReplacements: [{ message: message() }],
+      })
+    ).toBe(false);
+    expect(
+      isChannelEventV1({
+        ...snapshot,
+        mode: 'catchup',
+        stateReplacements: [
+          {
+            message: message({ status: 'complete' }),
+            inFlight: { messageId: 'chm:1', deltaIndex: 0 },
+          },
+        ],
+      })
+    ).toBe(false);
+    expect(
+      isChannelEventV1({
         type: 'channel-run-lifecycle-v1',
         channelId: CHANNEL,
         timestamp: 't',
@@ -551,6 +576,59 @@ describe('applyChannelEventV1 reducer', () => {
     state = applyChannelEventV1(state, catchup);
     expect(state.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
     expect(state.lastSeq).toBe(3);
+  });
+
+  it('applies catch-up state replacements in place without creating rows or advancing the cursor', () => {
+    const streaming = message({
+      id: 'chm:streaming' as ChannelMessageId,
+      seq: 4,
+      status: 'streaming',
+      body: { text: 'partial', format: 'markdown' },
+    });
+    let state = applyChannelEventV1(initialChannelReducerState(CHANNEL), {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'full',
+      messages: [streaming],
+      members: [],
+      latestSeq: 4,
+      inFlight: [{ messageId: streaming.id, deltaIndex: 2 }],
+      truncated: false,
+    });
+
+    const completed = message({
+      id: streaming.id,
+      seq: 4,
+      status: 'complete',
+      body: { text: 'complete answer', format: 'markdown' },
+    });
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'catchup',
+      messages: [],
+      stateReplacements: [
+        { message: completed },
+        {
+          message: message({
+            id: 'chm:unknown-replacement' as ChannelMessageId,
+            seq: 2,
+          }),
+        },
+      ],
+      members: [],
+      latestSeq: 4,
+      inFlight: [],
+      truncated: false,
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.byId[streaming.id]).toEqual(completed);
+    expect(state.lastSeq).toBe(4);
+    expect(state.inFlightDelta[streaming.id]).toBeUndefined();
+    expect(state.needsCatchup).toBe(false);
   });
 
   it('preserves omitted run projections but clears an explicit empty projection', () => {

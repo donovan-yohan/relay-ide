@@ -385,6 +385,9 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       : [];
     let mode: 'full' | 'catchup';
     let assembled: { rows: ChannelMessage[]; truncated: boolean };
+    // Replacements update rows the reconnecting client already acknowledges.
+    // They deliberately ride a separate snapshot field from fresh durable rows.
+    let resyncRows: ChannelMessage[] = [];
     // The head advertised to the client. Normally the true channel head; capped
     // to the last row actually delivered when a catch-up is byte-truncated, so
     // the reducer's `lastSeq` never skips undelivered rows.
@@ -440,10 +443,10 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         remainingBytes > 0
           ? assembleWithBudget(resync, 'tail', remainingBytes, false)
           : { rows: [], truncated: resync.length > 0, bytes: 0 };
+      resyncRows = resyncAssembled.rows;
       assembled = {
-        rows: [...resyncAssembled.rows, ...freshAssembled.rows].sort(
-          (a, b) => a.seq - b.seq
-        ),
+        // `messages` is exclusively durable progress after `sinceSeq`.
+        rows: freshAssembled.rows,
         truncated: freshAssembled.truncated || resyncAssembled.truncated,
       };
       // Only a fresh-row truncation leaves an undelivered seq above the cursor.
@@ -455,22 +458,34 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       }
     }
 
-    const rows = assembled.rows;
-
     // Overlay the hub's in-memory accumulated text onto streaming rows — it is
     // authoritative over the DB flush lag — and record each open stream's index.
     // Any pending (accumulated-but-unemitted) delta text was flushed before this
     // read (see flushPendingForChannel), so `acc.deltaIndex` is the exact index
     // whose text is already reflected in `acc.text`.
     const inFlight: ChannelInFlightRef[] = [];
-    const messages = rows.map((message) => {
+    const materialize = (
+      message: ChannelMessage
+    ): {
+      message: ChannelMessage;
+      inFlight?: ChannelInFlightRef;
+    } => {
       const acc = accumulators.get(message.id);
       if (acc && message.status === 'streaming') {
-        inFlight.push({ messageId: message.id, deltaIndex: acc.deltaIndex });
-        return { ...message, body: { ...message.body, text: acc.text } };
+        const ref = { messageId: message.id, deltaIndex: acc.deltaIndex };
+        return {
+          message: { ...message, body: { ...message.body, text: acc.text } },
+          inFlight: ref,
+        };
       }
-      return message;
+      return { message };
+    };
+    const messages = assembled.rows.map((row) => {
+      const materialized = materialize(row);
+      if (materialized.inFlight) inFlight.push(materialized.inFlight);
+      return materialized.message;
     });
+    const stateReplacements = resyncRows.map(materialize);
 
     const runs: ChannelAsyncRun[] = [];
     let runBytes = 0;
@@ -494,6 +509,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       timestamp: nowIso(),
       mode,
       messages,
+      ...(stateReplacements.length > 0 ? { stateReplacements } : {}),
       runs,
       members,
       latestSeq: snapshotLatestSeq,
@@ -605,6 +621,18 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       sub.snapshotLatestSeq = snapshot.latestSeq;
       for (const ref of snapshot.inFlight) {
         sub.snapshotInFlight.set(ref.messageId, ref.deltaIndex);
+      }
+      // Catch-up replacements deliberately stay out of `messages`, but an
+      // active replacement still carries the authoritative stream cursor. Seed
+      // the connect-time dedupe map from it too, otherwise the queued flush
+      // which caused the replacement is re-delivered after the snapshot.
+      for (const replacement of snapshot.stateReplacements ?? []) {
+        if (replacement.inFlight) {
+          sub.snapshotInFlight.set(
+            replacement.inFlight.messageId,
+            replacement.inFlight.deltaIndex
+          );
+        }
       }
     }
     deliver(sub, snapshot);

@@ -3486,7 +3486,7 @@ const channelSubscribeInputSchema: RelayJsonSchema = {
 const channelSubscribeFrameSchema: RelayJsonSchema = {
   title: 'ChannelsSubscribeFrameData',
   description:
-    'Versioned NDJSON frames. Discriminate on frame; event.payload is a ChannelEventV1 or channel-heartbeat-v1 payload.',
+    'Versioned NDJSON frames. Discriminate on frame; event.payload is a ChannelEventV1 or channel-heartbeat-v1 payload. On an explicit resume, channel-snapshot-v1.messages contains only seq greater than afterSeq; optional stateReplacements are non-delivery updates for already-acknowledged rows.',
   oneOf: [
     {
       title: 'ChannelsSubscribeOpenFrameV1',

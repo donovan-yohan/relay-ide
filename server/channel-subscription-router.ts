@@ -118,14 +118,32 @@ function projectEvent(
   event: ChannelEventV1,
   filter: ChannelSubscriptionFilter
 ): ChannelEventV1 | null {
-  if (filterIsEmpty(filter)) return event;
+  if (event.type !== 'channel-snapshot-v1' && filterIsEmpty(filter)) {
+    return event;
+  }
   switch (event.type) {
-    case 'channel-snapshot-v1':
+    case 'channel-snapshot-v1': {
+      if (filterIsEmpty(filter)) {
+        return event;
+      }
       return {
         ...event,
         messages: event.messages.filter((message) =>
           channelMessageMatchesSubscriptionFilter(message, filter)
         ),
+        ...(event.stateReplacements === undefined
+          ? {}
+          : {
+              // Replacements are state mutations, not new deliveries. They
+              // still obey semantic visibility, so a filtered consumer never
+              // receives a row it would not be allowed to observe.
+              stateReplacements: event.stateReplacements.filter((replacement) =>
+                channelMessageMatchesSubscriptionFilter(
+                  replacement.message,
+                  filter
+                )
+              ),
+            }),
         ...(event.runs === undefined
           ? {}
           : {
@@ -137,6 +155,7 @@ function projectEvent(
         // reference would point at rows the actor never received.
         inFlight: [],
       };
+    }
     case 'channel-message-created-v1':
     case 'channel-message-updated-v1':
     case 'channel-message-completed-v1':
