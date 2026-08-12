@@ -72,6 +72,9 @@ workflow.
 
 #### Fixed
 
+- Filtered channel subscriptions now resume without duplicate delivery by
+  applying streamed catch-up state replacements to already-known messages
+  (#1398)
 - Terminalize completion callbacks to unavailable requester profiles as durable,
   inspectable `undeliverable` rows instead of repeatedly retrying or spawning a
   fabricated external requester runtime; scoped external actors continue to
