@@ -1039,12 +1039,33 @@ interface ChannelEventBaseV1 {
   timestamp: string;
 }
 
+/**
+ * An authoritative in-place refresh for a row at or below a reconnect cursor.
+ *
+ * Catch-up `messages` are exclusively durable progress after that cursor. A
+ * state replacement instead updates a row the client already has (for example
+ * a stream that completed while it was away), so it must never create a new
+ * timeline item or advance the durable cursor.
+ */
+export interface ChannelSnapshotStateReplacementV1 {
+  /** Full current durable row, keyed by the row already held by the client. */
+  message: ChannelMessage;
+  /** Present only when the replacement is an active stream with a live delta cursor. */
+  inFlight?: ChannelInFlightRef;
+}
+
 export interface ChannelSnapshotEventV1 extends ChannelEventBaseV1 {
   type: 'channel-snapshot-v1';
   /** full: replace state; catchup: merge by seq/id */
   mode: 'full' | 'catchup';
   /** seq-ascending; streaming rows carry accumulated in-memory text */
   messages: ChannelMessage[];
+  /**
+   * Catch-up-only in-place row refreshes. Kept distinct from `messages` so an
+   * exclusive reconnect cursor cannot mistake a changed old row for a replayed
+   * durable delivery. Older hubs omit this optional additive field.
+   */
+  stateReplacements?: ChannelSnapshotStateReplacementV1[];
   /** Durable current run projections; reconnect replaces this map when present. */
   runs?: ChannelAsyncRun[];
   members: ChannelMemberRef[];
@@ -1367,6 +1388,21 @@ function isInFlightArray(value: unknown): value is ChannelInFlightRef[] {
   );
 }
 
+function isSnapshotStateReplacement(
+  value: unknown
+): value is ChannelSnapshotStateReplacementV1 {
+  return (
+    isRecord(value) &&
+    isChannelMessage(value.message) &&
+    (value.inFlight === undefined ||
+      (value.message.status === 'streaming' &&
+        isRecord(value.inFlight) &&
+        typeof value.inFlight.messageId === 'string' &&
+        typeof value.inFlight.deltaIndex === 'number' &&
+        value.inFlight.messageId === value.message.id))
+  );
+}
+
 export function isChannelAsyncRun(value: unknown): value is ChannelAsyncRun {
   return (
     isRecord(value) &&
@@ -1404,6 +1440,10 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       return (
         (value.mode === 'full' || value.mode === 'catchup') &&
         isMessageArray(value.messages) &&
+        (value.stateReplacements === undefined ||
+          (value.mode === 'catchup' &&
+            Array.isArray(value.stateReplacements) &&
+            value.stateReplacements.every(isSnapshotStateReplacement))) &&
         (value.runs === undefined ||
           (Array.isArray(value.runs) && value.runs.every(isChannelAsyncRun))) &&
         Array.isArray(value.members) &&
@@ -1512,6 +1552,48 @@ function inFlightFromRefs(
   return map;
 }
 
+function applySnapshotStateReplacements(
+  messages: ChannelMessage[],
+  byId: Record<string, ChannelMessage>,
+  existingById: Record<string, ChannelMessage>,
+  inFlightDelta: Record<string, number>,
+  quarantined: Record<string, true>,
+  replacements: ChannelSnapshotStateReplacementV1[]
+): Pick<
+  ChannelReducerState,
+  'messages' | 'byId' | 'inFlightDelta' | 'quarantined'
+> {
+  let nextMessages = messages;
+  let nextById = byId;
+  let nextInFlightDelta = inFlightDelta;
+  const nextQuarantined = { ...quarantined };
+  for (const replacement of replacements) {
+    const existing = existingById[replacement.message.id];
+    if (!existing || existing.seq !== replacement.message.seq) continue;
+    nextMessages = nextMessages.map((message) =>
+      message.id === replacement.message.id ? replacement.message : message
+    );
+    nextById = { ...nextById, [replacement.message.id]: replacement.message };
+    delete nextQuarantined[replacement.message.id];
+    if (replacement.inFlight) {
+      nextInFlightDelta = {
+        ...nextInFlightDelta,
+        [replacement.message.id]: replacement.inFlight.deltaIndex,
+      };
+      continue;
+    }
+    const withoutReplacement = { ...nextInFlightDelta };
+    delete withoutReplacement[replacement.message.id];
+    nextInFlightDelta = withoutReplacement;
+  }
+  return {
+    messages: nextMessages,
+    byId: nextById,
+    inFlightDelta: nextInFlightDelta,
+    quarantined: nextQuarantined,
+  };
+}
+
 /**
  * Pure reducer for `ChannelEventV1`. It is self-diagnosing: it can never silently
  * render a corrupted timeline. On any gap or unknown-id surprise it sets
@@ -1543,24 +1625,34 @@ export function applyChannelEventV1(
           needsCatchup: false,
         };
       }
-      // catchup: merge ascending
+      // catchup: merge durable progress ascending. State replacements are a
+      // separate lane: they only overwrite rows already present in local state
+      // and deliberately never alter `lastSeq` or create a new message.
       let messages = state.messages;
       for (const message of [...event.messages].sort((a, b) => a.seq - b.seq)) {
         if (state.byId[message.id] || message.seq > state.lastSeq) {
           messages = sortedInsert(messages, message);
         }
       }
+      const replacementState = applySnapshotStateReplacements(
+        messages,
+        rebuildById(messages),
+        state.byId,
+        inFlightFromRefs(event.inFlight),
+        state.quarantined,
+        event.stateReplacements ?? []
+      );
       return {
         ...state,
-        messages,
-        byId: rebuildById(messages),
+        messages: replacementState.messages,
+        byId: replacementState.byId,
         runs: {
           ...state.runs,
           ...Object.fromEntries((event.runs ?? []).map((run) => [run.id, run])),
         },
         lastSeq: Math.max(state.lastSeq, event.latestSeq),
-        inFlightDelta: inFlightFromRefs(event.inFlight),
-        quarantined: {},
+        inFlightDelta: replacementState.inFlightDelta,
+        quarantined: replacementState.quarantined,
         needsCatchup: false,
       };
     }

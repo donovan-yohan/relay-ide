@@ -155,7 +155,13 @@ selects terminal message or run state. A filtered-out committed row still
 advances the frame's `durableSeq`, so reconnecting from that value cannot skip
 a later matching row. Open, close, and heartbeat control frames are always
 delivered; snapshots retain their original truncation and cursor metadata while
-their message/run projections are filtered.
+their message/run projections are filtered. On an explicit resume,
+`channel-snapshot-v1.messages` contains only durable rows with `seq > afterSeq`.
+An optional `stateReplacements` collection carries authoritative updates for
+already-acknowledged rows (such as a stream that completed while disconnected);
+each entry is a state mutation, not a new delivery, and never advances
+`durableSeq`. Consumers that keep a timeline apply a replacement by existing
+message id/seq; consumers that only react to new work must read `messages`.
 
 ### Correlated async channel runs (#1391)
 

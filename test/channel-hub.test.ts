@@ -543,6 +543,65 @@ describe('channel-hub snapshot correctness', () => {
     expect(state.quarantined[streaming.id]).toBeUndefined();
   });
 
+  it('dedupes a pending coalesced delta against a catch-up state replacement cursor', () => {
+    vi.useFakeTimers();
+    const s = store();
+    const hub = hubWith(s, { coalesceMs: 50 });
+    const streaming = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { runtimeId: 'runtime' },
+    });
+    hub.beginStreamBroadcast(streaming);
+
+    // Establish the row/cursor the reconnecting reducer already holds.
+    const first = fakeSocket();
+    hub.handleConnection(first, { channelId: 'topic:c', sinceSeq: null });
+    let state = initialChannelReducerState('topic:c');
+    for (const event of first.sent) state = applyChannelEventV1(state, event);
+    first.emit('close');
+
+    // idx 0 flushes while disconnected. The next text is still pending when
+    // reconnect registration flushes it, creating the exact queue/snapshot race.
+    hub.pushDelta(streaming.id, 'Hello ');
+    vi.advanceTimersByTime(50);
+    hub.pushDelta(streaming.id, 'world');
+
+    const resumed = fakeSocket();
+    hub.handleConnection(resumed, { channelId: 'topic:c', sinceSeq: streaming.seq });
+    const snapshot = resumed.sent[0];
+    if (snapshot?.type !== 'channel-snapshot-v1') {
+      throw new Error('expected catch-up snapshot');
+    }
+    expect(snapshot.messages).toEqual([]);
+    expect(snapshot.stateReplacements).toMatchObject([
+      {
+        message: { id: streaming.id, body: { text: 'Hello world' } },
+        inFlight: { messageId: streaming.id, deltaIndex: 1 },
+      },
+    ]);
+    expect(
+      resumed.sent.filter((event) => event.type === 'channel-message-delta-v1')
+    ).toEqual([]);
+
+    for (const event of resumed.sent) state = applyChannelEventV1(state, event);
+
+    // A later coalesced delta is still delivered exactly once.
+    hub.pushDelta(streaming.id, '!');
+    vi.advanceTimersByTime(50);
+    const laterDeltas = resumed.sent.filter(
+      (event) => event.type === 'channel-message-delta-v1'
+    );
+    expect(laterDeltas).toMatchObject([
+      { messageId: streaming.id, deltaIndex: 2, delta: { text: '!' } },
+    ]);
+    for (const event of laterDeltas) state = applyChannelEventV1(state, event);
+
+    expect(state.byId[streaming.id]?.body.text).toBe('Hello world!');
+    expect(state.quarantined[streaming.id]).toBeUndefined();
+    expect(state.needsCatchup).toBe(false);
+  });
+
   it('heals a stream that finalized while the client was disconnected on reconnect', () => {
     const s = store();
     const hub = hubWith(s);
@@ -636,7 +695,7 @@ describe('channel-hub snapshot correctness', () => {
     expect(state.needsCatchup).toBe(false);
   });
 
-  it('trims resync rows nearest the cursor while emitting them in ascending sequence order', () => {
+  it('trims resync replacements nearest the cursor without replaying them as messages', () => {
     const s = store();
     for (let index = 0; index < 4; index++) {
       s.appendComplete({
@@ -663,7 +722,10 @@ describe('channel-hub snapshot correctness', () => {
       throw new Error('expected snapshot');
 
     expect(snap.truncated).toBe(true);
-    expect(snap.messages.map((message) => message.seq)).toEqual([3, 4]);
+    expect(snap.messages).toEqual([]);
+    expect(
+      snap.stateReplacements?.map((replacement) => replacement.message.seq)
+    ).toEqual([3, 4]);
     expect(snap.latestSeq).toBe(4);
   });
 
@@ -745,7 +807,7 @@ describe('channel-hub snapshot correctness', () => {
     ).toBeLessThanOrEqual(snapshotMaxBytes);
   });
 
-  it('keeps an under-budget resync plus fresh catch-up complete and ascending', () => {
+  it('keeps fresh catch-up rows exclusive while carrying under-budget replacements separately', () => {
     const s = store();
     for (let index = 0; index < 2; index++) {
       s.appendComplete({
@@ -772,7 +834,10 @@ describe('channel-hub snapshot correctness', () => {
     expect(snap.mode).toBe('catchup');
     expect(snap.truncated).toBe(false);
     expect(snap.latestSeq).toBe(fresh.seq);
-    expect(snap.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4]);
+    expect(snap.messages.map((message) => message.seq)).toEqual([3, 4]);
+    expect(
+      snap.stateReplacements?.map((replacement) => replacement.message.seq)
+    ).toEqual([1, 2]);
   });
 
   it('forces a full snapshot (client reset) when the cursor is ahead of the server head', () => {

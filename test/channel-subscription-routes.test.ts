@@ -1,16 +1,28 @@
 import * as http from 'node:http';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { attachAuthenticatedCliGatewayActorCredential } from '../server/cli-gateway-actor-auth.js';
+import { createChannelHub } from '../server/channel-hub.js';
+import { createChannelMessageStore } from '../server/channel-message-store.js';
 import { createChannelSubscriptionRouter } from '../server/channel-subscription-router.js';
 import type { ChannelEventSink, ChannelHub } from '../server/channel-hub.js';
-import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
+import {
+  applyChannelEventV1,
+  initialChannelReducerState,
+  type ChannelEventV1,
+  type ChannelMessage,
+} from '../shared/channel-chat-protocol.js';
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 
 const servers: http.Server[] = [];
+const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const server of servers.splice(0)) server.close();
+  while (cleanup.length > 0) cleanup.pop()?.();
 });
 
 async function listen(input: {
@@ -21,6 +33,7 @@ async function listen(input: {
   heartbeatMs?: number;
   drainTimeoutMs?: number;
   writeResponse?: (res: express.Response, data: string) => boolean;
+  hub?: ChannelHub;
 }): Promise<number> {
   const app = express();
   app.use((req, _res, next) => {
@@ -32,13 +45,18 @@ async function listen(input: {
     } as ScopedActorCredentialRecord);
     next();
   });
-  const hub = {
-    channelExists: (id: string) => id === 'topic:a' || id === 'topic:b',
-    subscribe: (sink: ChannelEventSink, value: { afterSeq: number | null }) => {
-      input.subscribe?.(sink, value.afterSeq);
-      return () => input.onUnsubscribe?.();
-    },
-  } as unknown as ChannelHub;
+  const hub =
+    input.hub ??
+    ({
+      channelExists: (id: string) => id === 'topic:a' || id === 'topic:b',
+      subscribe: (
+        sink: ChannelEventSink,
+        value: { afterSeq: number | null }
+      ) => {
+        input.subscribe?.(sink, value.afterSeq);
+        return () => input.onUnsubscribe?.();
+      },
+    } as unknown as ChannelHub);
   app.use(
     createChannelSubscriptionRouter({
       hub,
@@ -60,6 +78,31 @@ async function listen(input: {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('missing port');
   return address.port;
+}
+
+function createNdjsonReader(response: Response): () => Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('missing NDJSON response body');
+  const decoder = new TextDecoder();
+  let buffered = '';
+  return async () => {
+    while (true) {
+      const newline = buffered.indexOf('\n');
+      if (newline !== -1) {
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        if (line) return JSON.parse(line) as unknown;
+        continue;
+      }
+      const { done, value } = await reader.read();
+      if (done) throw new Error('NDJSON stream ended before the next frame');
+      buffered += decoder.decode(value, { stream: true });
+    }
+  };
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe('channel subscription route', () => {
@@ -198,6 +241,20 @@ describe('channel subscription route', () => {
               body: { text: 'answer', format: 'markdown' },
             },
           ] as ChannelMessage[],
+          stateReplacements: [
+            {
+              message: {
+                id: 'chm:stale-at-cursor',
+                seq: 3,
+                kind: 'message',
+                status: 'complete',
+                sender: { kind: 'agent', id: 'agent:one' },
+                threadId: null,
+                parentMessageId: null,
+                body: { text: 'stale answer', format: 'markdown' },
+              },
+            },
+          ],
           runs: [
             {
               id: 'chrun:included',
@@ -220,14 +277,14 @@ describe('channel subscription route', () => {
       },
     });
     const response = await fetch(
-      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?status=complete&terminalOnly=true`,
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=4&status=complete&terminalOnly=true&principalOnly=true`,
       { headers: { 'x-relay-cli-gateway': 'v1' } }
     );
     const frames = (await response.text())
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(frames.map((frame) => frame.durableSeq)).toEqual([0, 9, 9]);
+    expect(frames.map((frame) => frame.durableSeq)).toEqual([4, 9, 9]);
     expect(frames[1].payload).toMatchObject({
       type: 'channel-snapshot-v1',
       messages: [{ id: 'chm:matched' }],
@@ -236,6 +293,17 @@ describe('channel subscription route', () => {
       inFlight: [],
       truncated: false,
     });
+    expect(frames[1].payload.stateReplacements).toEqual([
+      {
+        message: expect.objectContaining({ id: 'chm:stale-at-cursor', seq: 3 }),
+      },
+    ]);
+    expect(
+      frames[1].payload.messages.map((message: ChannelMessage) => message.id)
+    ).toEqual(['chm:matched']);
+    expect(frames[1].payload.messages.every((message) => message.seq > 4)).toBe(
+      true
+    );
   });
 
   it('treats explicit false booleans as the exact unfiltered stream', async () => {
@@ -554,6 +622,214 @@ describe('channel subscription route', () => {
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(frames.map((frame) => frame.durableSeq)).toEqual([4, 6, 6]);
+  });
+
+  it('keeps at-cursor refreshes in the replacement lane through an explicit HTTP catch-up', async () => {
+    const port = await listen({
+      channelIds: ['topic:a'],
+      subscribe: (sink) => {
+        // The hub intentionally includes seq 3 to replace a row which changed
+        // in place while the client was away. It is not durable progress after
+        // the explicit cursor 4, so HTTP subscribers must not see it again.
+        sink.send({
+          type: 'channel-snapshot-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:00.000Z',
+          mode: 'catchup',
+          messages: [{ id: 'chm:fresh', seq: 5 } as ChannelMessage],
+          stateReplacements: [
+            {
+              message: { id: 'chm:resync', seq: 3 } as ChannelMessage,
+              inFlight: { messageId: 'chm:resync', deltaIndex: 1 },
+            },
+          ],
+          members: [],
+          latestSeq: 5,
+          inFlight: [{ messageId: 'chm:fresh', deltaIndex: 2 }],
+          truncated: false,
+        });
+        sink.close({ code: 'transport-closed' });
+      },
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=4`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    expect(frames.map((frame) => frame.durableSeq)).toEqual([4, 5, 5]);
+    expect(frames[1]?.payload).toMatchObject({
+      type: 'channel-snapshot-v1',
+      mode: 'catchup',
+      messages: [{ seq: 5 }],
+      latestSeq: 5,
+      inFlight: [{ messageId: 'chm:fresh', deltaIndex: 2 }],
+    });
+    expect(frames[1]?.payload.messages).toHaveLength(1);
+    expect(frames[1]?.payload.stateReplacements).toEqual([
+      {
+        message: { id: 'chm:resync', seq: 3 },
+        inFlight: { messageId: 'chm:resync', deltaIndex: 1 },
+      },
+    ]);
+  });
+
+  it('reconstructs an agent stream exactly across a real hub and HTTP resume handoff', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-subscribe-resume-')
+    );
+    const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+    const hub = createChannelHub({
+      store,
+      channelExists: (id) => id === 'topic:a',
+      coalesceMs: 5,
+    });
+    cleanup.push(() => hub.close());
+    cleanup.push(() => store.close());
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const streaming = store.beginStream({
+      channelId: 'topic:a',
+      sender: { kind: 'agent', id: 'agent:claude', providerId: 'claude' },
+      source: { runtimeId: 'resume-test' },
+    });
+    hub.beginStreamBroadcast(streaming);
+    const port = await listen({ channelIds: ['topic:a'], hub });
+    const headers = { 'x-relay-cli-gateway': 'v1' };
+
+    const firstAbort = new AbortController();
+    const firstResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=0`,
+      { headers, signal: firstAbort.signal }
+    );
+    const firstFrame = createNdjsonReader(firstResponse);
+    await firstFrame(); // open
+    const initial = (await firstFrame()) as {
+      payload: ChannelEventV1;
+      durableSeq: number;
+    };
+    expect(initial.payload.type).toBe('channel-snapshot-v1');
+    if (initial.payload.type !== 'channel-snapshot-v1')
+      throw new Error('expected initial snapshot');
+    expect(initial.payload.messages.map((message) => message.seq)).toEqual([
+      streaming.seq,
+    ]);
+    let state = applyChannelEventV1(
+      initialChannelReducerState('topic:a'),
+      initial.payload
+    );
+    expect(state.lastSeq).toBe(streaming.seq);
+    firstAbort.abort();
+    await pause(0);
+
+    // This flush happened while the first HTTP subscriber was disconnected.
+    hub.pushDelta(streaming.id, 'hello ');
+    await pause(15);
+
+    const resumedAbort = new AbortController();
+    const resumedResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=${state.lastSeq}`,
+      { headers, signal: resumedAbort.signal }
+    );
+    const resumedFrame = createNdjsonReader(resumedResponse);
+    await resumedFrame(); // open
+    const replacementFrame = (await resumedFrame()) as {
+      payload: ChannelEventV1;
+      durableSeq: number;
+    };
+    expect(replacementFrame.payload.type).toBe('channel-snapshot-v1');
+    if (replacementFrame.payload.type !== 'channel-snapshot-v1')
+      throw new Error('expected catch-up snapshot');
+    expect(replacementFrame.payload.messages).toEqual([]);
+    expect(replacementFrame.payload.stateReplacements).toEqual([
+      {
+        message: expect.objectContaining({
+          id: streaming.id,
+          seq: streaming.seq,
+          body: expect.objectContaining({ text: 'hello ' }),
+        }),
+        inFlight: { messageId: streaming.id, deltaIndex: 0 },
+      },
+    ]);
+    state = applyChannelEventV1(state, replacementFrame.payload);
+    expect(state.lastSeq).toBe(streaming.seq);
+    expect(state.byId[streaming.id]?.body.text).toBe('hello ');
+
+    hub.pushDelta(streaming.id, 'world');
+    await pause(15);
+    const final = store.finalizeStream(streaming.id, {
+      text: 'hello world',
+      status: 'complete',
+    });
+    if (!final) throw new Error('expected final stream row');
+    hub.completeStreamBroadcast(final);
+
+    const deltaFrame = (await resumedFrame()) as { payload: ChannelEventV1 };
+    const completedFrame = (await resumedFrame()) as {
+      payload: ChannelEventV1;
+    };
+    expect(deltaFrame.payload).toMatchObject({
+      type: 'channel-message-delta-v1',
+      messageId: streaming.id,
+      deltaIndex: 1,
+      delta: { text: 'world' },
+    });
+    expect(completedFrame.payload).toMatchObject({
+      type: 'channel-message-completed-v1',
+      message: { id: streaming.id, body: { text: 'hello world' } },
+    });
+    state = applyChannelEventV1(state, deltaFrame.payload);
+    state = applyChannelEventV1(state, completedFrame.payload);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.body.text).toBe('hello world');
+    expect(state.lastSeq).toBe(streaming.seq);
+    expect(state.needsCatchup).toBe(false);
+    resumedAbort.abort();
+  });
+
+  it('keeps full snapshots when the cursor is omitted or requires a reset', async () => {
+    const subscribe = (sink: ChannelEventSink) => {
+      sink.send({
+        type: 'channel-snapshot-v1',
+        channelId: 'topic:a',
+        timestamp: '2026-08-11T00:00:00.000Z',
+        mode: 'full',
+        messages: [{ seq: 3 } as ChannelMessage],
+        members: [],
+        latestSeq: 3,
+        inFlight: [],
+        truncated: false,
+      });
+      sink.close({ code: 'transport-closed' });
+    };
+    const [omittedPort, resetPort] = await Promise.all([
+      listen({ channelIds: ['topic:a'], subscribe }),
+      listen({ channelIds: ['topic:a'], subscribe }),
+    ]);
+    const headers = { 'x-relay-cli-gateway': 'v1' };
+    const [omitted, reset] = await Promise.all(
+      [
+        `http://127.0.0.1:${omittedPort}/channels/topic%3Aa/subscribe`,
+        `http://127.0.0.1:${resetPort}/channels/topic%3Aa/subscribe?afterSeq=4`,
+      ].map(async (url) => {
+        const response = await fetch(url, { headers });
+        return (await response.text())
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+      })
+    );
+
+    for (const frames of [omitted, reset]) {
+      expect(frames[1]?.payload).toMatchObject({
+        type: 'channel-snapshot-v1',
+        mode: 'full',
+        messages: [{ seq: 3 }],
+      });
+    }
   });
 
   it('flushes a large accepted snapshot after res.write signals backpressure', async () => {
