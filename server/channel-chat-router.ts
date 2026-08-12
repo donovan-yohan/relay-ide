@@ -972,8 +972,10 @@ function postToChannel(
       input.mentions,
       input.steering ? { steering: input.steering } : undefined
     );
-    hub.broadcastRunLifecycle(result.run);
   }
+  // A legacy request row can be replayed before its correlated run is created.
+  // Message replay is therefore not evidence that clients already saw lifecycle.
+  if (!result.runReplayed) hub.broadcastRunLifecycle(result.run);
   return result;
 }
 

@@ -135,7 +135,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(15);
+    ).toBe(16);
     expect(
       (
         inspect
@@ -605,7 +605,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(15);
+    ).toBe(16);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -793,7 +793,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(15);
+    ).toBe(16);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1023,7 +1023,7 @@ describe('channel-message-store async-run migration (#1391)', () => {
     const legacy = new Database(file);
     legacy.exec(`
       DROP INDEX idx_chart_run_state;
-      DROP INDEX idx_char_channel_thread_created;
+      DROP INDEX idx_char_channel_created;
       DROP TABLE channel_async_run_targets;
       DROP TABLE channel_async_runs;
       UPDATE schema_version SET version = 14;
@@ -1037,7 +1037,7 @@ describe('channel-message-store async-run migration (#1391)', () => {
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
     expect(inspect.prepare('SELECT version FROM schema_version').get()).toEqual(
-      { version: 15 }
+      { version: 16 }
     );
     expect(
       inspect
@@ -1822,10 +1822,12 @@ describe('channel-message-store async runs (#1391)', () => {
     expect(s.getAsyncRun(first.run.id)).toEqual(first.run);
     expect(s.getAsyncRunForRequestMessage(first.message.id)).toEqual(first.run);
 
-    // A reopen proves the correlation is a durable store projection rather
-    // than a router-local map and remains queryable from history/reconnect.
+    // An additional handle is not a restart owner and must not cancel live
+    // work. The boot owner performs the explicit, safe no-redelivery recovery.
     s.close();
     const reopened = store(file);
+    expect(reopened.getAsyncRun(first.run.id)?.state).toBe('submitted');
+    expect(reopened.recoverAsyncRuns()).toHaveLength(1);
     expect(reopened.getAsyncRun(first.run.id)).toMatchObject({
       id: first.run.id,
       state: 'cancelled',
@@ -3578,7 +3580,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(15);
+    expect(version.version).toBe(16);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {

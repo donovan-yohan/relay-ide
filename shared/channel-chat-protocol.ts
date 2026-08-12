@@ -42,7 +42,10 @@ export type ChannelAsyncRunState =
   | 'cancelled'
   | 'rejected';
 /** Targets expose queued admission separately from aggregate run lifecycle. */
-export type ChannelAsyncRunTargetState = ChannelAsyncRunState | 'queued';
+/** Targets are admitted locally before delivery; they are never independently submitted. */
+export type ChannelAsyncRunTargetState =
+  | Exclude<ChannelAsyncRunState, 'submitted'>
+  | 'queued';
 export type ChannelAsyncRunApprovalState = 'requested' | 'resolved' | 'expired';
 
 /** Public, provider-neutral target projection. `targetId` is a Relay profile actor id. */
@@ -1077,6 +1080,27 @@ function isMessageArray(value: unknown): value is ChannelMessage[] {
   return Array.isArray(value) && value.every(isChannelMessage);
 }
 
+const ASYNC_RUN_STATES = new Set<ChannelAsyncRunState>([
+  'submitted',
+  'working',
+  'input-required',
+  'auth-required',
+  'completed',
+  'failed',
+  'cancelled',
+  'rejected',
+]);
+const ASYNC_RUN_TARGET_STATES = new Set<ChannelAsyncRunTargetState>([
+  'queued',
+  'working',
+  'input-required',
+  'auth-required',
+  'completed',
+  'failed',
+  'cancelled',
+  'rejected',
+]);
+
 function isInFlightArray(value: unknown): value is ChannelInFlightRef[] {
   return (
     Array.isArray(value) &&
@@ -1090,16 +1114,6 @@ function isInFlightArray(value: unknown): value is ChannelInFlightRef[] {
 }
 
 export function isChannelAsyncRun(value: unknown): value is ChannelAsyncRun {
-  const runStates = new Set<string>([
-    'submitted',
-    'working',
-    'input-required',
-    'auth-required',
-    'completed',
-    'failed',
-    'cancelled',
-    'rejected',
-  ]);
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
@@ -1109,14 +1123,16 @@ export function isChannelAsyncRun(value: unknown): value is ChannelAsyncRun {
     typeof value.requestMessageId === 'string' &&
     typeof value.requesterId === 'string' &&
     typeof value.state === 'string' &&
-    runStates.has(value.state) &&
+    ASYNC_RUN_STATES.has(value.state as ChannelAsyncRunState) &&
     Array.isArray(value.targets) &&
     value.targets.every(
       (target) =>
         isRecord(target) &&
         typeof target.targetId === 'string' &&
         typeof target.state === 'string' &&
-        (target.state === 'queued' || runStates.has(target.state)) &&
+        ASYNC_RUN_TARGET_STATES.has(
+          target.state as ChannelAsyncRunTargetState
+        ) &&
         typeof target.updatedAt === 'string'
     ) &&
     typeof value.createdAt === 'string' &&
@@ -1261,9 +1277,12 @@ export function applyChannelEventV1(
           channelId: state.channelId,
           messages,
           byId: rebuildById(messages),
-          runs: Object.fromEntries(
-            (event.runs ?? []).map((run) => [run.id, run])
-          ),
+          // Old hubs legitimately omit this optional projection.  Omission is
+          // not an empty projection; an explicit [] is the authoritative clear.
+          runs:
+            event.runs === undefined
+              ? state.runs
+              : Object.fromEntries(event.runs.map((run) => [run.id, run])),
           lastSeq: event.latestSeq,
           inFlightDelta: inFlightFromRefs(event.inFlight),
           quarantined: {},

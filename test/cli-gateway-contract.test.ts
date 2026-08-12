@@ -368,10 +368,42 @@ describe('CLI gateway contract', () => {
           type: 'channel-run-lifecycle-v1',
           channelId: 'channel-1',
           timestamp: '2026-08-11T00:00:02.000Z',
-          run: { id: 'chrun:opaque' },
+          run: {
+            id: 'chrun:opaque',
+            channelId: 'channel-1',
+            threadId: null,
+            requestMessageId: 'chm:request',
+            requesterId: 'actor:external',
+            state: 'submitted',
+            targets: [
+              {
+                targetId: 'agent-profile:mock',
+                state: 'queued',
+                updatedAt: '2026-08-11T00:00:02.000Z',
+              },
+            ],
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:02.000Z',
+          },
         },
       })
     ).toBe(true);
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'event',
+        channelId: 'channel-1',
+        sequence: 3,
+        occurredAt: '2026-08-11T00:00:03.000Z',
+        durableSeq: 0,
+        payload: {
+          type: 'channel-run-lifecycle-v1',
+          channelId: 'channel-1',
+          timestamp: '2026-08-11T00:00:03.000Z',
+          run: { id: 'chrun:opaque' },
+        },
+      })
+    ).toBe(false);
     expect(
       schemaAcceptsChannelsSubscribeFrame({
         schemaVersion: 1,

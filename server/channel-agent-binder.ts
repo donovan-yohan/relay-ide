@@ -2506,15 +2506,19 @@ export function createChannelAgentBinder(
       turnId,
       parentForTrigger(trigger) ?? null
     );
-    binding.requestMessageIdByTurn.set(turnId, trigger.id);
-    const asyncRun = store.getAsyncRunForRequestMessage(trigger.id);
-    if (asyncRun) {
-      const changed = store.transitionAsyncRunTarget({
-        runId: asyncRun.id,
-        targetId: binding.profileActorId,
-        state: 'working',
-      });
-      if (changed) hub.broadcastRunLifecycle(changed);
+    // Completion callbacks travel upward only. They must never inherit the
+    // triggering requester run or make callback prose look like a reply to it.
+    if (!completionCallback) {
+      binding.requestMessageIdByTurn.set(turnId, trigger.id);
+      const asyncRun = store.getAsyncRunForRequestMessage(trigger.id);
+      if (asyncRun) {
+        const changed = store.transitionAsyncRunTarget({
+          runId: asyncRun.id,
+          targetId: binding.profileActorId,
+          state: 'working',
+        });
+        if (changed) hub.broadcastRunLifecycle(changed);
+      }
     }
     if (completionCallback?.continuationParentCallbackId) {
       binding.continuationByTurn.set(turnId, {

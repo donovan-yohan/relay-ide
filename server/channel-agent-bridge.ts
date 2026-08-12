@@ -654,13 +654,11 @@ export function bindSessionToChannel(
     const agentDetail = boundChannelAgentDetail(itemId, sourceCard);
     const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
     const agentAttribution = attributionForTurn(patch.turnId);
-    const asyncRun = input.asyncRunReferenceForTurn?.(patch.turnId);
     const message = store.beginStream({
       channelId,
       sender,
       source: { runtimeId: patch.sessionId, turnId: patch.turnId, itemId },
       agentDetail,
-      ...(asyncRun ? { meta: { asyncRun } } : {}),
       ...(agentAttribution ? { agentAttribution } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
@@ -959,7 +957,6 @@ export function bindSessionToChannel(
     if (closed) return false;
     const itemId = canonicalAssistantItemId(patch.item);
     const agentAttribution = attributionForTurn(patch.turnId);
-    const asyncRun = input.asyncRunReferenceForTurn?.(patch.turnId);
     const started = store.beginStream({
       channelId,
       sender,
@@ -967,7 +964,6 @@ export function bindSessionToChannel(
       text,
       ...(parts.length > 0 ? { parts } : {}),
       ...(agentAttribution ? { agentAttribution } : {}),
-      ...(asyncRun ? { meta: { asyncRun } } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
     if (started.status !== 'streaming') return true;

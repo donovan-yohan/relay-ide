@@ -547,6 +547,51 @@ describe('applyChannelEventV1 reducer', () => {
     expect(state.lastSeq).toBe(3);
   });
 
+  it('preserves omitted run projections but clears an explicit empty projection', () => {
+    const run = {
+      id: 'chrun:retained',
+      channelId: CHANNEL,
+      threadId: null,
+      requestMessageId: 'chm:request',
+      requesterId: 'human:operator',
+      state: 'submitted' as const,
+      targets: [],
+      createdAt: 't',
+      updatedAt: 't',
+    };
+    let state = applyChannelEventV1(initialChannelReducerState(CHANNEL), {
+      type: 'channel-run-lifecycle-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      run,
+    });
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'full',
+      messages: [],
+      members: [],
+      latestSeq: 0,
+      inFlight: [],
+      truncated: false,
+    });
+    expect(state.runs[run.id]).toEqual(run);
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'full',
+      messages: [],
+      runs: [],
+      members: [],
+      latestSeq: 0,
+      inFlight: [],
+      truncated: false,
+    });
+    expect(state.runs).toEqual({});
+  });
+
   it('is deterministic under replay', () => {
     const events: ChannelEventV1[] = [
       created(

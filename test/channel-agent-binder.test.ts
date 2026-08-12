@@ -1380,7 +1380,13 @@ function postWithAsyncRun(
     text,
     ...(mentions.length ? { mentions } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
-    targetIds: mentions.map((mention) => builtInAgentProfileId(mention.id)),
+    targetIds: mentions.flatMap((mention) =>
+      mention.profileId
+        ? [mention.profileId]
+        : mention.providerId
+          ? [builtInAgentProfileId(mention.providerId)]
+          : []
+    ),
   });
   binder.handleMessagePosted(result.message, result.message.mentions ?? []);
   return result;
@@ -3749,7 +3755,7 @@ describe('channel-agent-binder — lifecycle', () => {
       parentMessageId: root.id,
     });
     expect(agentReplies(store, 'mock')[0]?.asyncRun).toBeUndefined();
-    const binding = await binder.ensureBinding(CH, 'mock', root.id);
+    const binding = await binder.ensureBinding(CH, 'mock');
     expect(binding.exactTurnTombstones.has(adapter.sendCalls[0]!)).toBe(false);
   });
 

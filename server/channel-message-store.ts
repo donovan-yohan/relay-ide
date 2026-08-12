@@ -67,7 +67,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const ASYNC_RUN_SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
@@ -850,18 +850,18 @@ CREATE TABLE IF NOT EXISTS channel_async_runs (
   thread_id          TEXT,
   request_message_id TEXT NOT NULL UNIQUE,
   requester_id       TEXT NOT NULL,
-  state              TEXT NOT NULL,
+  state              TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
   reason             TEXT,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL,
   completed_at       TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_char_channel_thread_created
-  ON channel_async_runs(channel_id, thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_char_channel_created
+  ON channel_async_runs(channel_id, created_at, id);
 CREATE TABLE IF NOT EXISTS channel_async_run_targets (
   run_id             TEXT NOT NULL,
   target_id          TEXT NOT NULL,
-  state              TEXT NOT NULL,
+  state              TEXT NOT NULL CHECK (state IN ('queued','working','input-required','auth-required','completed','failed','cancelled','rejected')),
   reason             TEXT,
   approval_state     TEXT,
   updated_at         TEXT NOT NULL,
@@ -1416,6 +1416,8 @@ export interface ChannelMessageStore {
     message: ChannelMessage;
     run: ChannelAsyncRun;
     replayed: boolean;
+    /** True only when the durable run already existed before this call. */
+    runReplayed: boolean;
   };
   getAsyncRun(id: ChannelAsyncRunId): ChannelAsyncRun | null;
   getAsyncRunForRequestMessage(
@@ -1910,6 +1912,7 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
       agentDetail: _agentDetail,
       agentAttribution: _agentAttribution,
       agentDetailTerminalAuthority: _agentDetailTerminalAuthority,
+      asyncRun: _asyncRun,
       truncated: _t,
       ...rest
     } = meta;
@@ -3144,12 +3147,51 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 15').run();
     })();
   }
+  if (current < 16) {
+    db.transaction(() => {
+      // SQLite CHECK constraints and index key order require a rebuild. Keep
+      // the v15 rows verbatim while making illegal target states impossible.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_char_channel_thread_created;
+        CREATE TABLE channel_async_runs_v16 (
+          id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+          request_message_id TEXT NOT NULL UNIQUE, requester_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+          reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        INSERT INTO channel_async_runs_v16 SELECT * FROM channel_async_runs;
+        DROP TABLE channel_async_runs;
+        ALTER TABLE channel_async_runs_v16 RENAME TO channel_async_runs;
+        CREATE INDEX idx_char_channel_created
+          ON channel_async_runs(channel_id, created_at, id);
+        CREATE TABLE channel_async_run_targets_v16 (
+          run_id TEXT NOT NULL, target_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('queued','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+          reason TEXT, approval_state TEXT, updated_at TEXT NOT NULL,
+          completed_at TEXT, PRIMARY KEY(run_id, target_id)
+        );
+        INSERT INTO channel_async_run_targets_v16 SELECT * FROM channel_async_run_targets;
+        DROP TABLE channel_async_run_targets;
+        ALTER TABLE channel_async_run_targets_v16 RENAME TO channel_async_run_targets;
+        CREATE INDEX idx_chart_run_state
+          ON channel_async_run_targets(run_id, state);
+      `);
+      db.prepare('UPDATE schema_version SET version = 16').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
   configDir: string
 ): ChannelMessageStore {
-  return createChannelMessageStore(path.join(configDir, 'channel-chat.db'));
+  const store = createChannelMessageStore(
+    path.join(configDir, 'channel-chat.db')
+  );
+  // Only the hub owner observes a restart. Additional handles must not cancel
+  // work which is still live in the owner process.
+  store.recoverAsyncRuns();
+  return store;
 }
 
 export interface ChannelMessageStoreOptions {
@@ -3707,8 +3749,10 @@ export function createChannelMessageStore(
     'SELECT * FROM channel_async_run_targets WHERE run_id = ? ORDER BY target_id ASC'
   );
 
-  function asyncRunFromRow(row: AsyncRunRow): ChannelAsyncRun {
-    const targets = selectAsyncRunTargets.all(row.id) as AsyncRunTargetRow[];
+  function asyncRunFromRow(
+    row: AsyncRunRow,
+    targets = selectAsyncRunTargets.all(row.id) as AsyncRunTargetRow[]
+  ): ChannelAsyncRun {
     return {
       id: row.id as ChannelAsyncRunId,
       channelId: row.channel_id,
@@ -3784,7 +3828,12 @@ export function createChannelMessageStore(
         | AsyncRunRow
         | undefined;
       if (known) {
-        return { message, run: asyncRunFromRow(known), replayed: true };
+        return {
+          message,
+          run: asyncRunFromRow(known),
+          replayed: existing !== null,
+          runReplayed: true,
+        };
       }
       const now = nowIso();
       const targetIds = [...new Set(input.targetIds)].sort();
@@ -3819,6 +3868,7 @@ export function createChannelMessageStore(
         message,
         run: asyncRunFromRow(row),
         replayed: existing !== null,
+        runReplayed: false,
       };
     }
   );
@@ -4593,12 +4643,6 @@ export function createChannelMessageStore(
     }
   );
 
-  // Relay does not retain a process-owned delivery queue across a restart.
-  // Reconcile before exposing this store so snapshots can never advertise work
-  // that a fresh binder will not redeliver.
-  recoverAsyncRunsImpl();
-  pruneSettledAsyncRunsImpl(ASYNC_RUN_SETTLED_RETENTION_MS);
-
   return {
     close() {
       db.close();
@@ -4625,15 +4669,28 @@ export function createChannelMessageStore(
     },
 
     listAsyncRuns(channelId, limit = 100) {
-      return (
-        db
-          .prepare(
-            `SELECT * FROM channel_async_runs WHERE channel_id = ?
-             ORDER BY created_at DESC, id DESC LIMIT ?`
-          )
-          .all(channelId, Math.max(1, Math.floor(limit))) as AsyncRunRow[]
-      )
-        .map(asyncRunFromRow)
+      const rows = db
+        .prepare(
+          `SELECT * FROM channel_async_runs WHERE channel_id = ?
+           ORDER BY created_at DESC, id DESC LIMIT ?`
+        )
+        .all(channelId, Math.max(1, Math.floor(limit))) as AsyncRunRow[];
+      if (rows.length === 0) return [];
+      const targetRows = db
+        .prepare(
+          `SELECT * FROM channel_async_run_targets
+           WHERE run_id IN (${rows.map(() => '?').join(',')})
+           ORDER BY run_id ASC, target_id ASC`
+        )
+        .all(...rows.map((row) => row.id)) as AsyncRunTargetRow[];
+      const byRun = new Map<string, AsyncRunTargetRow[]>();
+      for (const target of targetRows) {
+        const targets = byRun.get(target.run_id) ?? [];
+        targets.push(target);
+        byRun.set(target.run_id, targets);
+      }
+      return rows
+        .map((row) => asyncRunFromRow(row, byRun.get(row.id) ?? []))
         .reverse();
     },
 

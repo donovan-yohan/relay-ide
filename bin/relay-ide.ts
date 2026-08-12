@@ -5553,7 +5553,15 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
     );
     const query = new URLSearchParams();
     const threadId = values.get('--thread-id');
-    if (threadId) query.set('threadId', threadId);
+    if (threadId !== undefined) {
+      const trimmedThreadId = threadId.trim();
+      if (!trimmedThreadId) {
+        gatewayInvalid('channels.run.get', '--thread-id must be non-empty', {
+          field: 'threadId',
+        });
+      }
+      query.set('threadId', trimmedThreadId);
+    }
     const result = await gatewayHttpJson({
       commandName: 'channels.run.get',
       pathName: `/channels/${encodeURIComponent(channelId)}/runs/${encodeURIComponent(runId)}${query.size ? `?${query}` : ''}`,

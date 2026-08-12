@@ -3313,7 +3313,6 @@ const channelAsyncRunTargetSchema: RelayJsonSchema = {
       type: 'string',
       enum: [
         'queued',
-        'submitted',
         'working',
         'input-required',
         'auth-required',
@@ -3476,10 +3475,33 @@ const channelSubscribeFrameSchema: RelayJsonSchema = {
         occurredAt: stringSchema,
         durableSeq: { type: 'integer', minimum: 0 },
         payload: {
-          type: 'object',
-          additionalProperties: true,
-          properties: { type: stringSchema },
-          required: ['type'],
+          oneOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                type: { const: 'channel-run-lifecycle-v1' },
+                channelId: stringSchema,
+                timestamp: stringSchema,
+                run: channelAsyncRunSchema,
+              },
+              required: ['type', 'channelId', 'timestamp', 'run'],
+            },
+            {
+              // Other event variants retain their established versioned
+              // validator in the protocol layer. Do not let this escape hatch
+              // silently accept a malformed lifecycle projection.
+              type: 'object',
+              additionalProperties: true,
+              properties: { type: stringSchema },
+              required: ['type'],
+              not: {
+                type: 'object',
+                properties: { type: { const: 'channel-run-lifecycle-v1' } },
+                required: ['type'],
+              },
+            },
+          ],
         },
       },
       required: [
