@@ -54,6 +54,7 @@ import {
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import {
+  channelTurnId,
   parseMentions,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
@@ -846,6 +847,84 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
           m.kind === 'system' && m.body.text.includes('Mention chain paused')
       );
     expect(paused).toHaveLength(1);
+  });
+
+  it('lets an external scoped actor observe the durable reply without a requester profile', async () => {
+    const registry = createCliGatewayActorRegistry();
+    const h = await harness(
+      (provider) => new RecordingAdapter(provider, 'durable external reply'),
+      { actorRegistry: registry }
+    );
+    // This is a real external actor identity, deliberately absent from the
+    // profile store and built-in provider catalog. The actor reads the target's
+    // durable channel reply; Relay must not create a faux requester runtime.
+    const issued = issueCliGatewayActorCredential(registry, {
+      actor: {
+        type: 'agent',
+        id: 'codex-desktop-dogfood',
+        displayName: 'Codex Desktop',
+      },
+      capabilities: ['context:read', 'context:write'],
+      scope: { channelIds: [h.channelId] },
+    });
+    const post = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock report back' },
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+      },
+    });
+    expect(post.status).toBe(201);
+    expect(post.body.message.sender).toMatchObject({
+      kind: 'agent',
+      id: 'agent:codex-desktop-dogfood',
+    });
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
+      body: { text: 'durable external reply' },
+      sender: { id: 'agent-profile:mock:default' },
+    });
+    // Verify the actor's real authorization surface, not the test's internal
+    // store: this is the durable history contract external requesters use to
+    // observe replies without acquiring an installed requester profile.
+    const history = await req<{ messages: ChannelMessage[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages?limit=20`,
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.history',
+      },
+    });
+    expect(history.status).toBe(200);
+    expect(history.body.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          body: expect.objectContaining({ text: 'durable external reply' }),
+          sender: expect.objectContaining({ id: 'agent-profile:mock:default' }),
+        }),
+      ])
+    );
+    const callbackId = `chcb:${channelTurnId(
+      post.body.message.id,
+      builtInAgentProfileId('mock')
+    )}`;
+    await waitFor(
+      () => h.store.getCompletionCallback(callbackId)?.state === 'undeliverable'
+    );
+    expect(h.store.getCompletionCallback(callbackId)).toMatchObject({
+      state: 'undeliverable',
+      deliveryReason: 'requester-profile-unavailable',
+      terminalReason: 'completed',
+    });
+    expect(h.adapters()).toHaveLength(1);
+    await h.binder.recoverCompletionCallbacks();
+    expect(h.store.claimSatisfiedCompletionCallbacks()).toEqual([]);
   });
 
   it('rejects a bogus bearer token (no fabricated credential accepted)', async () => {

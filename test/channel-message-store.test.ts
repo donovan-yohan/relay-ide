@@ -65,6 +65,86 @@ const AGENT: ChannelSenderRef = {
 };
 
 describe('channel-message-store schema migration', () => {
+  it('rebuilds a v13 callback ledger without losing recoverable rows', () => {
+    const file = dbPath();
+    const current = store(file);
+    current.createCompletionCallback({
+      id: 'chcb:v13-keeper',
+      channelId: 'topic:v13',
+      threadId: 'chm:thread-v13',
+      triggerMessageId: 'chm:trigger-v13',
+      requesterProfileId: 'agent-profile:external:default',
+      targetProfileId: 'agent-profile:mock:default',
+      targetRuntimeId: 'runtime:mock:v13',
+      targetTurnId: 'turn:v13',
+    });
+    current.close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      DROP INDEX IF EXISTS idx_chcc_recovery;
+      DROP INDEX IF EXISTS idx_chcc_target_turn;
+      DROP INDEX IF EXISTS idx_chcc_continuation_parent;
+      DROP INDEX IF EXISTS idx_chcc_settled_retention;
+      CREATE TABLE channel_completion_callbacks_v13 (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+        trigger_message_id TEXT NOT NULL, requester_profile_id TEXT NOT NULL,
+        target_profile_id TEXT NOT NULL, target_runtime_id TEXT NOT NULL,
+        target_turn_id TEXT NOT NULL, continuation_parent_callback_id TEXT,
+        awaiting_child INTEGER NOT NULL DEFAULT 0,
+        pending_child_intents INTEGER NOT NULL DEFAULT 0,
+        continuation_completed_at TEXT, state TEXT NOT NULL
+          CHECK (state IN ('pending','satisfied','delivered','consumed')),
+        terminal_reason TEXT, terminal_message_id TEXT, message_disposition TEXT,
+        created_at TEXT NOT NULL, satisfied_at TEXT, delivered_at TEXT,
+        consumed_at TEXT, updated_at TEXT NOT NULL,
+        UNIQUE(channel_id, target_profile_id, target_turn_id)
+      );
+      INSERT INTO channel_completion_callbacks_v13
+        (id, channel_id, thread_id, trigger_message_id, requester_profile_id,
+         target_profile_id, target_runtime_id, target_turn_id,
+         continuation_parent_callback_id, awaiting_child, pending_child_intents,
+         continuation_completed_at, state, terminal_reason, terminal_message_id,
+         message_disposition, created_at, satisfied_at, delivered_at, consumed_at,
+         updated_at)
+      SELECT id, channel_id, thread_id, trigger_message_id, requester_profile_id,
+             target_profile_id, target_runtime_id, target_turn_id,
+             continuation_parent_callback_id, awaiting_child, pending_child_intents,
+             continuation_completed_at, state, terminal_reason, terminal_message_id,
+             message_disposition, created_at, satisfied_at, delivered_at, consumed_at,
+             updated_at
+        FROM channel_completion_callbacks;
+      DROP TABLE channel_completion_callbacks;
+      ALTER TABLE channel_completion_callbacks_v13 RENAME TO channel_completion_callbacks;
+      UPDATE schema_version SET version = 13;
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    expect(migrated.getCompletionCallback('chcb:v13-keeper')).toMatchObject({
+      state: 'pending',
+      channelId: 'topic:v13',
+      threadId: 'chm:thread-v13',
+      deliveryReason: null,
+      undeliverableAt: null,
+    });
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(14);
+    expect(
+      (
+        inspect
+          .prepare('PRAGMA table_info(channel_completion_callbacks)')
+          .all() as Array<{ name: string }>
+      ).map((column) => column.name)
+    ).toEqual(expect.arrayContaining(['delivery_reason', 'undeliverable_at']));
+  });
+
   it('migrates a v2 binding to its built-in profile without changing durable fields on reopen', () => {
     const file = dbPath();
     const legacy = new Database(file);
@@ -525,7 +605,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(13);
+    ).toBe(14);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -713,7 +793,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(13);
+    ).toBe(14);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -3295,7 +3375,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(13);
+    expect(version.version).toBe(14);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -3791,6 +3871,105 @@ describe('channel completion callback edge store', () => {
 
     const reopened = store(file);
     expect(reopened.recoverCompletionCallbacks()).toEqual([]);
+  });
+
+  it('CAS-terminalizes an unavailable requester without recovery, while retaining bounded evidence', async () => {
+    const s = store();
+    const edge = s.createCompletionCallback(
+      edgeInput({ threadId: 'chm:thread-root' })
+    );
+    s.satisfyCompletionCallback({
+      channelId: edge.channelId,
+      targetProfileId: edge.targetProfileId,
+      targetTurnId: edge.targetTurnId,
+      terminalReason: 'completed',
+      terminalMessageId: 'chm:delegatee-final',
+      messageDisposition: 'final-message',
+    });
+    expect(s.claimSatisfiedCompletionCallbacks()).toHaveLength(1);
+    // Thread scope participates in the CAS; a root-scope caller cannot spend a
+    // claimed callback from a named conversation.
+    expect(
+      s.terminalizeDeliveredCompletionCallback({
+        id: edge.id,
+        channelId: edge.channelId,
+        threadId: null,
+        deliveryReason: 'requester-profile-unavailable',
+      })
+    ).toBeNull();
+    expect(
+      s.terminalizeDeliveredCompletionCallback({
+        id: edge.id,
+        channelId: edge.channelId,
+        threadId: edge.threadId,
+        deliveryReason: 'requester-profile-unavailable',
+      })
+    ).toMatchObject({
+      state: 'undeliverable',
+      terminalReason: 'completed',
+      deliveryReason: 'requester-profile-unavailable',
+      terminalMessageId: 'chm:delegatee-final',
+      undeliverableAt: expect.any(String),
+    });
+    expect(s.claimSatisfiedCompletionCallbacks()).toEqual([]);
+    expect(s.recoverCompletionCallbacks()).toEqual([]);
+    expect(
+      s.terminalizeDeliveredCompletionCallback({
+        id: edge.id,
+        channelId: edge.channelId,
+        threadId: edge.threadId,
+        deliveryReason: 'requester-profile-unavailable',
+      })
+    ).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(s.pruneConsumedCompletionCallbacks(0)).toBe(1);
+    expect(s.getCompletionCallback(edge.id)).toBeNull();
+  });
+
+  it('terminalizes unresolved continuation ancestry rather than fabricating an upward callback', () => {
+    const s = store();
+    const parent = s.createCompletionCallback(edgeInput({ id: 'chcb:parent' }));
+    s.deferCompletionCallbackForChild({
+      channelId: parent.channelId,
+      targetProfileId: parent.targetProfileId,
+      targetTurnId: parent.targetTurnId,
+      expectedChildCount: 1,
+    });
+    const child = s.createCompletionCallback(
+      edgeInput({
+        id: 'chcb:child',
+        requesterProfileId: parent.targetProfileId,
+        targetProfileId: 'agent-profile:hermes:default',
+        targetRuntimeId: 'runtime:hermes:1',
+        targetTurnId: 'turn:child',
+        continuationParentCallbackId: parent.id,
+      })
+    );
+    s.satisfyCompletionCallback({
+      channelId: child.channelId,
+      targetProfileId: child.targetProfileId,
+      targetTurnId: child.targetTurnId,
+      terminalReason: 'completed',
+      messageDisposition: 'no-terminal-message',
+    });
+    expect(s.claimSatisfiedCompletionCallbacks()).toMatchObject([
+      { id: child.id, state: 'delivered' },
+    ]);
+    s.terminalizeDeliveredCompletionCallback({
+      id: child.id,
+      channelId: child.channelId,
+      threadId: child.threadId,
+      deliveryReason: 'requester-profile-unavailable',
+    });
+    expect(s.getCompletionCallback(child.id)).toMatchObject({
+      state: 'undeliverable',
+      deliveryReason: 'requester-profile-unavailable',
+    });
+    expect(s.getCompletionCallback(parent.id)).toMatchObject({
+      state: 'undeliverable',
+      deliveryReason: 'continuation-undeliverable',
+    });
+    expect(s.recoverCompletionCallbacks()).toEqual([]);
   });
 
   it('recovers volatile delivery and terminalizes restart-orphaned pending turns from durable evidence only', () => {

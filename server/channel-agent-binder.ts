@@ -131,6 +131,8 @@ const TARGETS_TTL_MS = 5 * 1000;
 /** Claim in bounded pages so a large recovered outbox cannot strand its tail. */
 const COMPLETION_CALLBACK_BATCH_LIMIT = 100;
 const COMPLETION_CALLBACK_RETRY_MS = 25;
+const COMPLETION_CALLBACK_TERMINALIZATION_MAX_ATTEMPTS = 5;
+const COMPLETION_CALLBACK_TERMINALIZATION_MAX_RETRY_MS = 1_000;
 const COMPLETION_CALLBACK_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 const CALLBACK_NO_TERMINAL_MESSAGE = 'no-terminal-message' as const;
 const CALLBACK_UNEXPECTED_DISCONNECT = 'unexpected-disconnect' as const;
@@ -192,7 +194,9 @@ export type ChannelArchiveActivityReason =
   | 'orchestrator-in-flight'
   | 'routing-in-flight'
   | 'retry-in-flight'
-  | 'completion-callback';
+  | 'completion-callback'
+  /** SQLite could not persist a non-delivery terminal state after bounded retry. */
+  | 'completion-callback-terminalization-failed';
 
 /** Synchronous snapshot used by the topic archive mutation boundary. */
 export interface ChannelArchiveActivitySnapshot {
@@ -629,6 +633,14 @@ export function createChannelAgentBinder(
   // before the next-tick drain creates ordinary binding/routing state. Key by
   // callback id so repeated retry scheduling is idempotent and channel-local.
   const pendingCompletionCallbacks = new Map<string, string>();
+  // A persistence outage must not turn a deterministic missing-profile result
+  // into a 25ms hot loop. This is intentionally in-memory only: restart makes
+  // the durable delivered row recoverable again, while an exhausted live binder
+  // remains archive-unsafe rather than claiming a CAS it could not record.
+  const terminalizationRetryByCallbackId = new Map<
+    string,
+    { attempts: number; scheduled: boolean; exhausted: boolean }
+  >();
   let lastCompletionCallbackPruneAt: number | null = null;
   let closed = false;
 
@@ -934,6 +946,92 @@ export function createChannelAgentBinder(
     }
   }
 
+  /**
+   * A missing requester profile is a deterministic delivery failure, never a
+   * request to provision or retry that external actor. Only a failed SQLite CAS
+   * retries here, against the already-claimed row, so recovery cannot turn the
+   * deterministic classification into a provider/log loop.
+   */
+  function terminalizeUnavailableRequesterCallback(
+    edge: ChannelCompletionCallbackEdge
+  ): void {
+    if (closed) return;
+    const retry = terminalizationRetryByCallbackId.get(edge.id) ?? {
+      attempts: 0,
+      scheduled: false,
+      exhausted: false,
+    };
+    // A callback may be encountered through a timer and a caller in the same
+    // turn. One scheduled CAS sequence owns it; exhausted work remains visible
+    // through archive activity until an operator restarts or repairs storage.
+    if (retry.scheduled || retry.exhausted) return;
+    try {
+      const terminalized = store.terminalizeDeliveredCompletionCallback({
+        id: edge.id,
+        channelId: edge.channelId,
+        threadId: edge.threadId,
+        deliveryReason: 'requester-profile-unavailable',
+      });
+      pendingCompletionCallbacks.delete(edge.id);
+      terminalizationRetryByCallbackId.delete(edge.id);
+      if (terminalized) {
+        logger.warn(
+          'channel completion callback terminalized: requester profile unavailable',
+          {
+            callbackId: edge.id,
+            requesterProfileId: edge.requesterProfileId,
+            deliveryReason: terminalized.deliveryReason,
+          }
+        );
+        maybePruneCompletionCallbacks();
+      }
+    } catch (err) {
+      retry.attempts += 1;
+      if (retry.attempts >= COMPLETION_CALLBACK_TERMINALIZATION_MAX_ATTEMPTS) {
+        retry.exhausted = true;
+        terminalizationRetryByCallbackId.set(edge.id, retry);
+        // Final, deliberately singular escalation. The durable row is still
+        // delivered, so leave the archive fence intact and never say it became
+        // undeliverable merely because the intended CAS could not be written.
+        logger.error(
+          'channel completion callback unavailable-requester terminalization exhausted',
+          {
+            callbackId: edge.id,
+            requesterProfileId: edge.requesterProfileId,
+            attempts: retry.attempts,
+            error: errText(err),
+          }
+        );
+        return;
+      }
+      if (closed) return;
+      const delayMs = Math.min(
+        COMPLETION_CALLBACK_RETRY_MS * 2 ** (retry.attempts - 1),
+        COMPLETION_CALLBACK_TERMINALIZATION_MAX_RETRY_MS
+      );
+      retry.scheduled = true;
+      terminalizationRetryByCallbackId.set(edge.id, retry);
+      // Rate-limit diagnostics to the first failure and the single exhaustion
+      // event. The retry is a storage-write recovery, never a profile retry.
+      if (retry.attempts === 1) {
+        logger.warn(
+          'channel completion callback unavailable-requester terminalization delayed',
+          {
+            callbackId: edge.id,
+            requesterProfileId: edge.requesterProfileId,
+            retryInMs: delayMs,
+            error: errText(err),
+          }
+        );
+      }
+      const timer = setTimeout(() => {
+        retry.scheduled = false;
+        terminalizeUnavailableRequesterCallback(edge);
+      }, delayMs);
+      timer.unref?.();
+    }
+  }
+
   function claimAndRouteCompletionCallbacks(): void {
     if (closed) return;
     let edges: ChannelCompletionCallbackEdge[];
@@ -952,14 +1050,11 @@ export function createChannelAgentBinder(
       trackCompletionCallbacks([edge]);
       const profile = profileForActorId(edge.requesterProfileId);
       if (!profile) {
-        logger.warn(
-          'channel completion callback requester profile is unavailable',
-          { callbackId: edge.id, requesterProfileId: edge.requesterProfileId }
-        );
-        releaseClaimedCompletionCallback(
-          edge,
-          'channel completion callback unavailable-requester release failed:'
-        );
+        // The durable CAS is the terminal boundary. Do not re-offer an
+        // external actor as though it were an installed profile or invent a
+        // runtime for it; that actor still observes the delegatee's durable
+        // channel reply through its scoped subscription/history contract.
+        terminalizeUnavailableRequesterCallback(edge);
         continue;
       }
       const trigger =
@@ -4260,6 +4355,15 @@ export function createChannelAgentBinder(
     ) {
       reasons.add('completion-callback');
     }
+    for (const [callbackId, retry] of terminalizationRetryByCallbackId) {
+      if (
+        retry.exhausted &&
+        pendingCompletionCallbacks.get(callbackId) === channelId
+      ) {
+        reasons.add('completion-callback-terminalization-failed');
+        break;
+      }
+    }
     return { active: reasons.size > 0, reasons: Array.from(reasons) };
   }
 
@@ -4319,6 +4423,7 @@ export function createChannelAgentBinder(
       retryInFlight.clear();
       routingInFlightByChannel.clear();
       pendingCompletionCallbacks.clear();
+      terminalizationRetryByCallbackId.clear();
       consecutiveAgentTurns.clear();
       unavailableRowAt.clear();
       invalidateTargets();
