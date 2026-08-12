@@ -47,9 +47,12 @@ import {
   isChannelMessageDeleted,
   parseMentions,
   CHANNEL_RETRY_OF_META_KEY,
+  type ChannelAsyncRunApprovalState,
+  type ChannelAsyncRunTargetState,
   type ChannelMention,
   type ChannelMessage,
   type ChannelPostSteering,
+  type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 import type {
   AgentApprovalDecisionV2,
@@ -126,6 +129,12 @@ const DEFAULT_PRESENCE_SWEEP_MS = 30 * 1000;
 export const MAX_CONSECUTIVE_AGENT_TURNS = 4;
 /** Dedupe identical unavailable/cross-node system rows per (channel, agent). */
 const UNAVAILABLE_ROW_TTL_MS = 5 * 60 * 1000;
+/**
+ * Keep exact provider turn ids briefly after a bare-idle successor starts.
+ * These tombstones are deliberately never candidates for anonymous `turn-0`.
+ */
+const EXACT_TURN_TOMBSTONE_TTL_MS = 60 * 1000;
+const EXACT_TURN_TOMBSTONE_MAX = 16;
 /** How long a resolved framework-availability list is reused before re-probing. */
 const TARGETS_TTL_MS = 5 * 1000;
 /** Claim in bounded pages so a large recovered outbox cannot strand its tail. */
@@ -243,6 +252,17 @@ export interface ChannelAgentBinderDeps {
 }
 
 export interface ChannelAgentBinder {
+  /**
+   * Authoritative pre-persistence admission for a channel post. The router uses
+   * these profile actor ids in its one post+run transaction; routing below uses
+   * the same resolver, so a durable target is never invented or omitted.
+   */
+  resolvePostTargetIds(input: {
+    channelId: string;
+    sender: ChannelSenderRef;
+    text: string;
+    mentions: ChannelMention[];
+  }): string[];
   handleMessagePosted(
     message: ChannelMessage,
     mentions: ChannelMention[],
@@ -346,6 +366,12 @@ interface CallbackEdgeRequest {
   continuationParentCallbackId?: string;
 }
 
+interface ExactTurnTombstone {
+  parentMessageId: string | null;
+  requestMessageId: ChannelMessage['id'];
+  expiresAt: number;
+}
+
 export interface LiveBinding {
   channelId: string;
   /** Null is the root-channel execution scope. */
@@ -363,6 +389,10 @@ export interface LiveBinding {
   activeTurnId: string | null;
   /** Immediate thread parent keyed by routed turn; retained past binder idle. */
   parentMessageIdByTurn: Map<string, string | null>;
+  /** Exact accepted post that owns an async target turn (never provider-derived). */
+  requestMessageIdByTurn: Map<string, ChannelMessage['id']>;
+  /** Bounded exact-turn ancestry retained across a successor; never used by turn-0. */
+  exactTurnTombstones: Map<string, ExactTurnTombstone>;
   /** Last terminal prose row by turn, available before the terminal patch lands. */
   finalMessageByTurn: Map<string, ChannelMessage>;
   /** Child callback and ancestor edge awaited by its internal callback turn. */
@@ -699,6 +729,12 @@ export function createChannelAgentBinder(
     turnId: string
   ): string | undefined {
     if (binding.parentMessageIdByTurn.has(turnId)) return turnId;
+    // Exact provider turn ids can arrive after a bare-idle successor starts.
+    // Retain a bounded tombstone for that exact identity only; `turn-0` is an
+    // anonymous fallback label and must never borrow a predecessor tombstone.
+    if (turnId !== 'turn-0' && exactTurnTombstone(binding, turnId)) {
+      return turnId;
+    }
     // Hermes can label a late output item `turn-0` after clearing its current
     // turn. Use the retained parent only when there is exactly one possible
     // routed turn; ambiguity must fail closed rather than borrow a wrong thread.
@@ -713,6 +749,65 @@ export function createChannelAgentBinder(
     return undefined;
   }
 
+  function exactTurnTombstone(
+    binding: LiveBinding,
+    turnId: string
+  ): ExactTurnTombstone | undefined {
+    const tombstone = binding.exactTurnTombstones.get(turnId);
+    if (!tombstone) return undefined;
+    if (tombstone.expiresAt > now()) return tombstone;
+    binding.exactTurnTombstones.delete(turnId);
+    return undefined;
+  }
+
+  function parentMessageIdForTurnKey(
+    binding: LiveBinding,
+    turnId: string
+  ): string | null | undefined {
+    if (binding.parentMessageIdByTurn.has(turnId)) {
+      return binding.parentMessageIdByTurn.get(turnId);
+    }
+    return turnId === 'turn-0'
+      ? undefined
+      : exactTurnTombstone(binding, turnId)?.parentMessageId;
+  }
+
+  function requestMessageIdForTurnKey(
+    binding: LiveBinding,
+    turnId: string
+  ): ChannelMessage['id'] | undefined {
+    const active = binding.requestMessageIdByTurn.get(turnId);
+    if (active) return active;
+    return turnId === 'turn-0'
+      ? undefined
+      : exactTurnTombstone(binding, turnId)?.requestMessageId;
+  }
+
+  function retainExactTurnTombstones(binding: LiveBinding): void {
+    const expiresAt = now() + EXACT_TURN_TOMBSTONE_TTL_MS;
+    for (const [turnId, parentMessageId] of binding.parentMessageIdByTurn) {
+      const requestMessageId = binding.requestMessageIdByTurn.get(turnId);
+      // `turn-0` is a provider's anonymous fallback label, not a reliable
+      // exact identity. It is intentionally excluded from this retention lane.
+      if (turnId === 'turn-0' || !requestMessageId) continue;
+      binding.exactTurnTombstones.delete(turnId);
+      binding.exactTurnTombstones.set(turnId, {
+        parentMessageId,
+        requestMessageId,
+        expiresAt,
+      });
+    }
+    for (const [turnId, tombstone] of binding.exactTurnTombstones) {
+      if (tombstone.expiresAt <= now())
+        binding.exactTurnTombstones.delete(turnId);
+    }
+    while (binding.exactTurnTombstones.size > EXACT_TURN_TOMBSTONE_MAX) {
+      const oldest = binding.exactTurnTombstones.keys().next().value;
+      if (oldest === undefined) break;
+      binding.exactTurnTombstones.delete(oldest);
+    }
+  }
+
   function parentForTurn(
     binding: LiveBinding,
     turnId: string
@@ -721,7 +816,7 @@ export function createChannelAgentBinder(
     const triggerParent =
       key === undefined
         ? undefined
-        : (binding.parentMessageIdByTurn.get(key) ?? undefined);
+        : (parentMessageIdForTurnKey(binding, key) ?? undefined);
     // An ambiguous provider fallback must not borrow a possibly wrong trigger,
     // but a thread-scoped runtime still knows its durable conversation root.
     // Keep its output in that conversation rather than leaking it to the root
@@ -1380,6 +1475,8 @@ export function createChannelAgentBinder(
       status: 'idle',
       activeTurnId: null,
       parentMessageIdByTurn: new Map(),
+      requestMessageIdByTurn: new Map(),
+      exactTurnTombstones: new Map(),
       finalMessageByTurn: new Map(),
       continuationByTurn: new Map(),
       completionCallbackByTurn: new Map(),
@@ -1446,8 +1543,10 @@ export function createChannelAgentBinder(
       for (const turnId of existing.parentMessageIdByTurn.keys()) {
         if (turnId !== existing.activeTurnId) {
           existing.parentMessageIdByTurn.delete(turnId);
+          existing.requestMessageIdByTurn.delete(turnId);
         }
       }
+      existing.exactTurnTombstones.clear();
       // Removing the old adapter listeners establishes a hard boundary for
       // anonymous provider turn ids while retaining an exact active retry.
       existing.turnZeroFallbackUnsafe = false;
@@ -1483,6 +1582,20 @@ export function createChannelAgentBinder(
         ? { initialAgentAttribution: runtime.agentAttribution }
         : {}),
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
+      asyncRunReferenceForTurn: (turnId) => {
+        // Mirror the exact/fallback ancestry rules for the public run ref. A
+        // late Hermes `turn-0` can only borrow a retained generation when it is
+        // uniquely safe; ambiguity never leaks correlation across requests.
+        const key = parentKeyForTurn(binding, turnId);
+        const triggerId = key
+          ? requestMessageIdForTurnKey(binding, key)
+          : undefined;
+        if (!triggerId) return undefined;
+        const run = store.getAsyncRunForRequestMessage(triggerId);
+        return run
+          ? { runId: run.id, targetId: binding.profileActorId }
+          : undefined;
+      },
       onAssistantMessageFinalized: (message) =>
         handleAssistantFinalized(binding, message),
     });
@@ -2385,12 +2498,28 @@ export function createChannelAgentBinder(
       // safely; exact turn ids continue to work.
       binding.turnZeroFallbackUnsafe = true;
     }
+    retainExactTurnTombstones(binding);
     binding.parentMessageIdByTurn.clear();
+    binding.requestMessageIdByTurn.clear();
     binding.activeTurnId = turnId;
     binding.parentMessageIdByTurn.set(
       turnId,
       parentForTrigger(trigger) ?? null
     );
+    // Completion callbacks travel upward only. They must never inherit the
+    // triggering requester run or make callback prose look like a reply to it.
+    if (!completionCallback) {
+      binding.requestMessageIdByTurn.set(turnId, trigger.id);
+      const asyncRun = store.getAsyncRunForRequestMessage(trigger.id);
+      if (asyncRun) {
+        const changed = store.transitionAsyncRunTarget({
+          runId: asyncRun.id,
+          targetId: binding.profileActorId,
+          state: 'working',
+        });
+        if (changed) hub.broadcastRunLifecycle(changed);
+      }
+    }
     if (completionCallback?.continuationParentCallbackId) {
       binding.continuationByTurn.set(turnId, {
         childCallbackId: completionCallback.id,
@@ -2762,6 +2891,15 @@ export function createChannelAgentBinder(
   ): void {
     const terminalTurnId = binding.activeTurnId;
     if (terminalTurnId === null) return;
+    transitionAsyncRunTargetForTurn(
+      binding,
+      terminalTurnId,
+      terminalReason === 'completed' || terminalReason === 'safe-idle'
+        ? 'completed'
+        : terminalReason === 'interrupt'
+          ? 'cancelled'
+          : 'failed'
+    );
     terminalizeCompletionCallback(binding, terminalTurnId, terminalReason);
     const callback = binding.completionCallbackByTurn.get(terminalTurnId);
     if (
@@ -2993,12 +3131,44 @@ export function createChannelAgentBinder(
     }
   }
 
+  function transitionAsyncRunTargetForTurn(
+    binding: LiveBinding,
+    turnId: string,
+    state: ChannelAsyncRunTargetState,
+    options?: {
+      reason?: string;
+      approvalState?: ChannelAsyncRunApprovalState;
+    }
+  ): void {
+    const requestMessageId = binding.requestMessageIdByTurn.get(turnId);
+    if (!requestMessageId) return;
+    const run = store.getAsyncRunForRequestMessage(requestMessageId);
+    if (!run) return;
+    const changed = store.transitionAsyncRunTarget({
+      runId: run.id,
+      targetId: binding.profileActorId,
+      state,
+      ...options,
+    });
+    if (changed) hub.broadcastRunLifecycle(changed);
+  }
+
   function handleApprovalStarted(
     binding: LiveBinding,
     item: AgentApprovalItemV2
   ): void {
     if (binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.add(item.requestId);
+    if (binding.activeTurnId !== null) {
+      transitionAsyncRunTargetForTurn(
+        binding,
+        binding.activeTurnId,
+        'input-required',
+        {
+          approvalState: 'requested',
+        }
+      );
+    }
     postSystemRow(
       binding.channelId,
       `@${binding.displayName} requests approval: ${item.description} (${item.target})`,
@@ -3023,6 +3193,14 @@ export function createChannelAgentBinder(
     if (!binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.delete(item.requestId);
     const kind = item.decision?.kind ?? 'resolved';
+    if (binding.activeTurnId !== null) {
+      transitionAsyncRunTargetForTurn(
+        binding,
+        binding.activeTurnId,
+        'working',
+        { approvalState: 'resolved' }
+      );
+    }
     postSystemRow(
       binding.channelId,
       `@${binding.displayName} approval ${kind}`,
@@ -3083,11 +3261,23 @@ export function createChannelAgentBinder(
         }
       };
       try {
+        const rejectAsyncTarget = (reason: string) => {
+          const run = store.getAsyncRunForRequestMessage(trigger.id);
+          if (!run) return;
+          const changed = store.transitionAsyncRunTarget({
+            runId: run.id,
+            targetId: profile.id,
+            state: 'rejected',
+            reason,
+          });
+          if (changed) hub.broadcastRunLifecycle(changed);
+        };
         const framework = profile.providerId;
         const target = await resolveTarget(framework);
         if (closed) return; // close() raced the availability probe
         if (!target) {
           releaseDeferredParent();
+          rejectAsyncTarget('target-unavailable');
           // Not a known framework. In a multi-party channel an unroutable
           // @name stays silent (§1). In a DM there is nobody ELSE to answer the
           // HUMAN, so silence reads as the product being broken — say so.
@@ -3116,6 +3306,7 @@ export function createChannelAgentBinder(
         const availability = availabilityForProfile(profile, target);
         if (!availability.available) {
           releaseDeferredParent();
+          rejectAsyncTarget('target-unavailable');
           const senderDisplayName =
             profile.displayName || target.displayName || framework;
           postUnavailableRow(
@@ -3138,6 +3329,9 @@ export function createChannelAgentBinder(
           if (err instanceof BinderClosedError) return; // shutdown — silent
           if (err instanceof ChannelBindingError) {
             releaseDeferredParent();
+            rejectAsyncTarget(
+              err.unavailable ? 'target-unavailable' : 'target-binding-failed'
+            );
             if (err.unavailable) {
               postUnavailableRow(
                 trigger.channelId,
@@ -3177,9 +3371,20 @@ export function createChannelAgentBinder(
             releaseDeferredParent();
           }
         }
+        if (!admitted) rejectAsyncTarget('target-not-admitted');
       } catch (err) {
         if (closed || err instanceof BinderClosedError) return;
         releaseDeferredParent();
+        const run = store.getAsyncRunForRequestMessage(trigger.id);
+        if (run) {
+          const changed = store.transitionAsyncRunTarget({
+            runId: run.id,
+            targetId: profile.id,
+            state: 'failed',
+            reason: 'target-routing-failed',
+          });
+          if (changed) hub.broadcastRunLifecycle(changed);
+        }
         logger.warn('channel binder route failed:', err);
       }
     })().finally(() => {
@@ -3192,7 +3397,7 @@ export function createChannelAgentBinder(
 
   /** Eligible profile-resolved, non-self mentions in routing order. */
   function eligibleProfiles(
-    message: ChannelMessage,
+    message: Pick<ChannelMessage, 'sender'>,
     mentions: ChannelMention[]
   ): AgentProfile[] {
     const seen = new Set<string>();
@@ -3218,7 +3423,7 @@ export function createChannelAgentBinder(
   }
 
   function currentProfileMentions(
-    message: ChannelMessage,
+    message: Pick<ChannelMessage, 'body'>,
     supplied: ChannelMention[]
   ): ChannelMention[] {
     if (!deps.agentProfileStore) return supplied;
@@ -3283,6 +3488,19 @@ export function createChannelAgentBinder(
     prepareContinuation?: () => string | undefined
   ): void {
     if (profiles.length === 0) return;
+    const rejectPreAdmittedTargets = (reason: string) => {
+      const run = store.getAsyncRunForRequestMessage(message.id);
+      if (!run) return;
+      for (const profile of profiles) {
+        const changed = store.transitionAsyncRunTarget({
+          runId: run.id,
+          targetId: profile.id,
+          state: 'rejected',
+          reason,
+        });
+        if (changed) hub.broadcastRunLifecycle(changed);
+      }
+    };
     const sourceRuntime = message.source?.runtimeId
       ? deps.runtimes.get(message.source.runtimeId)
       : undefined;
@@ -3322,10 +3540,14 @@ export function createChannelAgentBinder(
     // Pause is a per-dispatch safety check, not a turn-admission check. A turn
     // may legitimately finalize several assistant items, but none may route
     // after another turn has paused the channel.
-    if (state.paused) return;
+    if (state.paused) {
+      rejectPreAdmittedTargets('mention-chain-paused');
+      return;
+    }
     if (!state.allowedTurnKeys.has(turnKey)) {
       if (state.count >= MAX_CONSECUTIVE_AGENT_TURNS) {
         state.paused = true;
+        rejectPreAdmittedTargets('mention-chain-paused');
         // Bounds total agent-token spend between human turns. Reset happens
         // on the next human (browser / gateway-human) post.
         postSystemRow(
@@ -3361,6 +3583,40 @@ export function createChannelAgentBinder(
     }
   }
 
+  /**
+   * One resolver serves both pre-persistence run admission and post-persistence
+   * delivery. Explicit pinned mentions win; only an unmentioned human post can
+   * select a DM default or durable sole orchestrator.
+   */
+  function resolvedPostTargets(
+    message: Pick<ChannelMessage, 'channelId' | 'sender' | 'body'>,
+    mentions: ChannelMention[]
+  ): Array<{ profile: AgentProfile; requiredRole?: 'orchestrator' }> {
+    const routingMentions = currentProfileMentions(message, mentions);
+    const profiles = eligibleProfiles(message, routingMentions);
+    if (profiles.length > 0) return profiles.map((profile) => ({ profile }));
+    if (message.sender.kind !== 'human' || routingMentions.length > 0)
+      return [];
+    const implicit = implicitHumanRecipient(message.channelId);
+    return implicit ? [implicit] : [];
+  }
+
+  function resolvePostTargetIds(input: {
+    channelId: string;
+    sender: ChannelSenderRef;
+    text: string;
+    mentions: ChannelMention[];
+  }): string[] {
+    return resolvedPostTargets(
+      {
+        channelId: input.channelId,
+        sender: input.sender,
+        body: { text: input.text, format: 'markdown' },
+      },
+      input.mentions
+    ).map(({ profile }) => profile.id);
+  }
+
   function handleMessagePosted(
     message: ChannelMessage,
     mentions: ChannelMention[],
@@ -3380,14 +3636,16 @@ export function createChannelAgentBinder(
     // Without this a bound agent posting via `relay-ide v1 channels.post` would
     // both bypass the increment AND reset the brake, defeating the sole
     // token-spend guard between human turns (#1167 P1).
-    const routingMentions = currentProfileMentions(message, mentions);
-    const profiles = eligibleProfiles(message, routingMentions);
+    const targets = resolvedPostTargets(message, mentions);
     if (message.sender.kind === 'agent') {
       // Steering is deliberately dropped here, not honored-then-braked: the
       // sender kind is server-derived, so this is the ONE place that can promise
       // an agent post — including a CLI-gateway actor post — can never cancel
       // another agent's live turn. Agent traffic keeps its existing brake.
-      routeWithBrake(message, profiles);
+      routeWithBrake(
+        message,
+        targets.map(({ profile }) => profile)
+      );
       return;
     }
     // A message-shaped system row is not a normal production shape, but sender
@@ -3400,16 +3658,8 @@ export function createChannelAgentBinder(
     consecutiveAgentTurns.delete(
       conversationScopeKey(message.channelId, message.threadId)
     );
-    if (profiles.length === 0) {
-      // A durable/pinned mention may no longer resolve after a profile deletion.
-      // It is still explicit operator intent, so never fall through to a DM or
-      // orchestrator default and silently address somebody else.
-      if (routingMentions.length > 0) return;
-      routeImplicitHumanMessage(message, steering);
-      return;
-    }
-    for (const profile of profiles) {
-      void routeOne(message, profile, steering);
+    for (const { profile, requiredRole } of targets) {
+      void routeOne(message, profile, steering, requiredRole);
     }
   }
 
@@ -3490,30 +3740,6 @@ export function createChannelAgentBinder(
     }
     const profile = designatedOrchestratorProfile(channelId);
     return profile ? { profile, requiredRole: 'orchestrator' } : null;
-  }
-
-  /**
-   * An unmentioned human post uses the same `routeOne` queue/steer path as an
-   * explicit mention. Sender-kind and explicit-mention gates live at the caller,
-   * so agent/system output cannot self-trigger and named intent cannot fan out.
-   */
-  function routeImplicitHumanMessage(
-    message: ChannelMessage,
-    steering?: ChannelPostSteering
-  ): void {
-    const recipient = implicitHumanRecipient(message.channelId);
-    if (!recipient) {
-      // Legitimate in a multi-party channel with no designated orchestrator.
-      // Logged, never announced — a system row here would spam #general.
-      logger.debug(
-        `message posted, 0 profiles routed, channel=${message.channelId} message=${message.id}`
-      );
-      return;
-    }
-    logger.debug(
-      `implicit human route, channel=${message.channelId} provider=${recipient.profile.providerId} profile=${recipient.profile.id}`
-    );
-    void routeOne(message, recipient.profile, steering, recipient.requiredRole);
   }
 
   function consumeAncestorExplicitReturn(
@@ -3674,6 +3900,8 @@ export function createChannelAgentBinder(
     binding.patchUnlisten = null;
     binding.activeTurnId = null;
     binding.parentMessageIdByTurn.clear();
+    binding.requestMessageIdByTurn.clear();
+    binding.exactTurnTombstones.clear();
     binding.finalMessageByTurn.clear();
     binding.continuationByTurn.clear();
     binding.completionCallbackByTurn.clear();
@@ -4382,6 +4610,7 @@ export function createChannelAgentBinder(
     restartScope,
     isControlMessage,
     recoverCompletionCallbacks,
+    resolvePostTargetIds,
     setStatusBroadcaster(broadcaster) {
       statusBroadcaster = broadcaster;
     },
@@ -4394,6 +4623,8 @@ export function createChannelAgentBinder(
         binding.unbind?.();
         binding.patchUnlisten?.();
         binding.parentMessageIdByTurn.clear();
+        binding.requestMessageIdByTurn.clear();
+        binding.exactTurnTombstones.clear();
         binding.finalMessageByTurn.clear();
         binding.continuationByTurn.clear();
         binding.completionCallbackByTurn.clear();

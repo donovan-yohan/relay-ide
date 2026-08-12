@@ -1595,6 +1595,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.archive',
   'channels.list',
   'channels.get',
+  'channels.run.get',
   'channels.history',
   'channels.subscribe',
   'channels.threads.history',
@@ -3508,6 +3509,7 @@ async function runGatewayWorkContexts(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('work-contexts.get', result), 0);
   }
+
   if (subcommand === 'resume') {
     const commandName: RelayCliGatewayCommand = 'work-contexts.resume';
     const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
@@ -5349,6 +5351,7 @@ async function runGatewayWorkspaceTopics(
 
 type ChannelCliValueFlag =
   | '--channel-id'
+  | '--run-id'
   | '--thread-id'
   | '--limit'
   | '--before-seq'
@@ -5396,12 +5399,17 @@ function parseChannelCliFlags(
 function requiredChannelCliString(
   commandName: RelayCliGatewayCommand,
   values: ReadonlyMap<ChannelCliValueFlag, string>,
-  flag: '--channel-id' | '--thread-id'
+  flag: '--channel-id' | '--thread-id' | '--run-id'
 ): string {
   const value = values.get(flag)?.trim() ?? '';
   if (!value) {
     gatewayInvalid(commandName, `${flag} is required`, {
-      field: flag === '--channel-id' ? 'channelId' : 'threadId',
+      field:
+        flag === '--channel-id'
+          ? 'channelId'
+          : flag === '--thread-id'
+            ? 'threadId'
+            : 'runId',
     });
   }
   return value;
@@ -5525,6 +5533,41 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
       capabilities: ['context:read'],
     });
     printGatewayEnvelope(gatewayOk('channels.get', result), 0);
+  }
+
+  if (subcommand === 'run' && channelArgs[0] === 'get') {
+    const values = parseChannelCliFlags(
+      'channels.run.get',
+      channelArgs.slice(1),
+      ['--channel-id', '--run-id', '--thread-id']
+    );
+    const channelId = requiredChannelCliString(
+      'channels.run.get',
+      values,
+      '--channel-id'
+    );
+    const runId = requiredChannelCliString(
+      'channels.run.get',
+      values,
+      '--run-id'
+    );
+    const query = new URLSearchParams();
+    const threadId = values.get('--thread-id');
+    if (threadId !== undefined) {
+      const trimmedThreadId = threadId.trim();
+      if (!trimmedThreadId) {
+        gatewayInvalid('channels.run.get', '--thread-id must be non-empty', {
+          field: 'threadId',
+        });
+      }
+      query.set('threadId', trimmedThreadId);
+    }
+    const result = await gatewayHttpJson({
+      commandName: 'channels.run.get',
+      pathName: `/channels/${encodeURIComponent(channelId)}/runs/${encodeURIComponent(runId)}${query.size ? `?${query}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('channels.run.get', result), 0);
   }
 
   if (subcommand === 'history') {

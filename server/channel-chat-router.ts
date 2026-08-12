@@ -936,9 +936,14 @@ function postToChannel(
      * an interrupt.
      */
     steering?: ChannelPostSteering;
+    targetIds: readonly string[];
   }
-): ChannelMessage {
-  const message = store.appendComplete({
+): {
+  message: ChannelMessage;
+  run: import('../shared/channel-chat-protocol.js').ChannelAsyncRun;
+  replayed: boolean;
+} {
+  const result = store.appendCompleteWithAsyncRun({
     channelId: input.channelId,
     sender: input.sender,
     text: input.text,
@@ -954,18 +959,24 @@ function postToChannel(
     ...(input.sourceRuntimeId
       ? { source: { runtimeId: input.sourceRuntimeId } }
       : {}),
+    targetIds: input.targetIds,
   });
-  store.upsertMember({
-    channelId: input.channelId,
-    kind: input.sender.kind === 'agent' ? 'agent' : 'human',
-    id: input.sender.id,
-  });
-  hub.broadcastCreated(
-    message,
-    input.mentions,
-    input.steering ? { steering: input.steering } : undefined
-  );
-  return message;
+  if (!result.replayed) {
+    store.upsertMember({
+      channelId: input.channelId,
+      kind: input.sender.kind === 'agent' ? 'agent' : 'human',
+      id: input.sender.id,
+    });
+    hub.broadcastCreated(
+      result.message,
+      input.mentions,
+      input.steering ? { steering: input.steering } : undefined
+    );
+  }
+  // A legacy request row can be replayed before its correlated run is created.
+  // Message replay is therefore not evidence that clients already saw lifecycle.
+  if (!result.runReplayed) hub.broadcastRunLifecycle(result.run);
+  return result;
 }
 
 export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
@@ -976,6 +987,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   const listAuth = deps.requireReadActorAuth?.('channels.list') ?? auth;
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
+  const runGetAuth = deps.requireReadActorAuth?.('channels.run.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
   // Search is a filtered read of the same durable message log `channels.history`
   // already grants, so it rides that verb rather than minting a new gateway
@@ -1315,6 +1327,51 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     } catch (error) {
       mapStoreError(res, error);
     }
+  });
+
+  router.get('/channels/:id/runs/:runId', runGetAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const store = storeOr503(res, deps.store);
+    if (!store) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (!requirePersistedChannel(req, res)) return;
+    const runId = req.params['runId'] ?? '';
+    if (!runId.startsWith('chrun:')) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'runId must be a Relay run id',
+        false,
+        {
+          field: 'runId',
+        }
+      );
+      return;
+    }
+    const run = store.getAsyncRun(
+      runId as import('../shared/channel-chat-protocol.js').ChannelAsyncRunId
+    );
+    if (!run || run.channelId !== id) {
+      sendGatewayError(res, 'NOT_FOUND', 'run not found', false, {
+        channelId: id,
+        runId,
+      });
+      return;
+    }
+    const requestedThreadId = req.query['threadId'];
+    if (
+      requestedThreadId !== undefined &&
+      (typeof requestedThreadId !== 'string' ||
+        run.threadId !== requestedThreadId)
+    ) {
+      sendGatewayError(res, 'NOT_FOUND', 'run not found in thread', false, {
+        channelId: id,
+        runId,
+      });
+      return;
+    }
+    res.json({ run });
   });
 
   router.post('/channels/:id/attachments', auth, (req, res) => {
@@ -1727,19 +1784,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     // swallowing it silently would report an interrupt-and-send that did
     // neither. `steerExisting` applies the cancellation half only, and is a
     // no-op when the addressed binding has no live turn.
-    if (clientMessageId) {
-      const existing = store.findByClientMessage(
-        id,
-        sender.id,
-        clientMessageId
-      );
-      if (existing) {
-        if (steering) deps.binder?.steerExisting(existing, steering);
-        res.status(200).json({ message: existing });
-        return;
-      }
-    }
-
     const providerIds = [
       ...knownProviderIds,
       ...(topic.routingDefaults.providerId
@@ -1747,9 +1791,23 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         : []),
     ];
     const mentions = parseMentions(text, providerIds);
+    // Binder admission is the single target resolver for both persistence and
+    // delivery. In particular, an unmentioned human post can durably target a
+    // DM default or designated orchestrator before its post+run transaction.
+    // No binder means no admitted target, so the run truthfully terminalizes
+    // `no-eligible-target` rather than fabricating a provider-derived id.
+    const targetIds =
+      typeof deps.binder?.resolvePostTargetIds === 'function'
+        ? deps.binder.resolvePostTargetIds({
+            channelId: id,
+            sender,
+            text,
+            mentions,
+          })
+        : [];
 
     try {
-      const message = postToChannel(store, deps.hub, {
+      const result = postToChannel(store, deps.hub, {
         channelId: id,
         sender,
         ...(sourceRuntimeId ? { sourceRuntimeId } : {}),
@@ -1758,10 +1816,17 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ...(parentMessageId ? { parentMessageId } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
         mentions,
+        targetIds,
         ...(parts.length ? { parts } : {}),
         ...(steering ? { steering } : {}),
       });
-      res.status(201).json({ message });
+      if (result.replayed && steering) {
+        deps.binder?.steerExisting(result.message, steering);
+      }
+      res.status(result.replayed ? 200 : 201).json({
+        message: result.message,
+        run: result.run,
+      });
     } catch (error) {
       mapStoreError(res, error);
     }

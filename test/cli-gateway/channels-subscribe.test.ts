@@ -92,10 +92,10 @@ describe('channels.subscribe CLI gateway command', () => {
         `${JSON.stringify({ schemaVersion: 1, frame: 'open', channelId: 'topic:test', sequence: 0, durableSeq: 4 })}\n`
       );
       res.write(
-        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 5, payload: { type: 'channel-message-created-v1' } })}\n`
+        `${JSON.stringify({ schemaVersion: 1, frame: 'event', channelId: 'topic:test', sequence: 1, occurredAt: '2026-08-11T00:00:01.000Z', durableSeq: 4, payload: { type: 'channel-run-lifecycle-v1', run: { id: 'chrun:test' } } })}\n`
       );
       res.end(
-        `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 5, reason: 'normal', retryable: false })}\n`
+        `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 2, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 4, reason: 'normal', retryable: false })}\n`
       );
     });
     await new Promise<void>((resolve) =>
@@ -136,12 +136,19 @@ describe('channels.subscribe CLI gateway command', () => {
         {
           ok: true,
           command: 'channels.subscribe',
-          data: { frame: 'event', durableSeq: 5 },
+          data: {
+            frame: 'event',
+            durableSeq: 4,
+            payload: {
+              type: 'channel-run-lifecycle-v1',
+              run: { id: 'chrun:test' },
+            },
+          },
         },
         {
           ok: true,
           command: 'channels.subscribe',
-          data: { frame: 'closed', durableSeq: 5 },
+          data: { frame: 'closed', durableSeq: 4 },
         },
       ]);
       expect(request?.url).toBe('/channels/topic%3Atest/subscribe?afterSeq=4');

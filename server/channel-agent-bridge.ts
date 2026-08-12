@@ -27,6 +27,7 @@ import {
   type ChannelAgentAttribution,
   type ChannelImagePart,
   type ChannelMessage,
+  type ChannelAsyncRunReference,
   type ChannelSenderRef,
   type ChannelTruncationReason,
 } from '../shared/channel-chat-protocol.js';
@@ -296,6 +297,10 @@ export interface BindSessionToChannelInput {
   initialAgentAttribution?: ChannelAgentAttribution;
   /** Resolve the immediate parent for a routed turn, if it began in a thread. */
   parentMessageIdForTurn?: (turnId: string) => string | undefined;
+  /** Stable Relay correlation for principal prose emitted by this routed turn. */
+  asyncRunReferenceForTurn?: (
+    turnId: string
+  ) => ChannelAsyncRunReference | undefined;
   /**
    * Invoked in `finalize()` after `completeStreamBroadcast` for `status ===
    * 'complete'` rows ONLY (#1167 §8). Bridge-authored replies bypass
@@ -585,12 +590,14 @@ export function bindSessionToChannel(
     }
     const parentMessageId = input.parentMessageIdForTurn?.(turnId);
     const agentAttribution = attributionForTurn(turnId);
+    const asyncRun = input.asyncRunReferenceForTurn?.(turnId);
     const message = store.beginStream({
       channelId,
       sender,
       source: { runtimeId, turnId, itemId: canonicalItemId },
       ...(initialText ? { text: initialText } : {}),
       ...(agentAttribution ? { agentAttribution } : {}),
+      ...(asyncRun ? { meta: { asyncRun } } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
     if (message.status !== 'streaming') {

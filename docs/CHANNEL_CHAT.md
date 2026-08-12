@@ -110,6 +110,44 @@ frames carry a required reason plus retryability. A bounded consumer stops
 parsing immediately after its `--max-events` frame and cancels the upstream
 reader; stdout backpressure is drained rather than treated as a dropped frame.
 
+### Correlated asynchronous runs
+
+An accepted external `channels.post` that can route work creates one opaque,
+Relay-owned `runId`. The returned post result carries that run, and the
+request message, principal replies, durable history, reconnect snapshots, and
+subscription lifecycle events retain the same public run reference. Clients
+must correlate with `runId` (and `targetId` for a particular intended agent),
+not by parsing provider runtime, turn, or item identifiers.
+
+`GET /channels/:channelId/runs/:runId` reads one run through the same scoped
+`context:read` lane as channel history. An optional `threadId` is an exact
+identity check, never a selector that can move a run between threads. Snapshots
+include the most recent run projections within explicit count and byte budgets;
+the lifecycle stream remains authoritative for subsequent changes.
+
+A run has immutable channel, canonical root-or-thread, requester, and request
+message scope. Its targets move independently through `queued`, `working`,
+`input-required`, `auth-required`, and one terminal state: `completed`,
+`failed`, `cancelled`, or `rejected`. The aggregate stays nonterminal while
+any target remains nonterminal; it completes only when all targets complete;
+failure wins mixed terminal results containing a failure or rejection; and a
+post without an eligible target is safely rejected. Approval metadata reserves
+`requested`, `resolved`, and `expired` without defining #1179's response API.
+
+Idempotent retries are keyed by `(channelId, server-derived sender,
+clientMessageId)`: a replay returns the original request message and run and
+does not route another target. A reconnecting client resumes from `durableSeq`
+and receives authoritative lifecycle state from the same durable log, so it may
+have many concurrent runs with no response-order assumption. Callback delivery
+to unavailable external requesters remains #1392's bounded `undeliverable`
+case; it must terminalize the affected run rather than create a requester
+runtime.
+
+Relay never redelivers a nonterminal run after process restart: recovery
+terminalizes its nonterminal targets as `cancelled` with `server-restarted`,
+preserving an inspectable outcome. Settled run rows have bounded retention and
+are removed with their channels during orphan cleanup.
+
 ### Read state and unread
 
 Unread is derived client-side; the _marker_ it derives from converges through

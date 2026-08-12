@@ -169,6 +169,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workspace-topics.archive': 'archive workspace topic',
   'channels.list': 'list channels',
   'channels.get': 'channel details',
+  'channels.run.get': 'correlated channel run',
   'channels.history': 'channel message history',
   'channels.subscribe': 'subscribe to channel messages',
   'channels.threads.history': 'channel thread history',

@@ -110,6 +110,48 @@ describe('channel subscription route', () => {
     ]);
   });
 
+  it('keeps the message cursor stable for a durable run lifecycle projection', async () => {
+    const port = await listen({
+      channelIds: ['topic:a'],
+      subscribe: (sink, afterSeq) => {
+        expect(afterSeq).toBe(4);
+        sink.send({
+          type: 'channel-run-lifecycle-v1',
+          channelId: 'topic:a',
+          timestamp: '2026-08-11T00:00:00.000Z',
+          run: {
+            id: 'chrun:opaque',
+            channelId: 'topic:a',
+            threadId: null,
+            requestMessageId: 'chm:request',
+            requesterId: 'actor:external',
+            state: 'working',
+            targets: [],
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:00.000Z',
+          },
+        });
+        sink.close({ code: 'transport-closed' });
+      },
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe?afterSeq=4`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    const frames = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(frames.map((frame) => frame.durableSeq)).toEqual([4, 4, 4]);
+    expect(frames[1]).toMatchObject({
+      frame: 'event',
+      payload: {
+        type: 'channel-run-lifecycle-v1',
+        run: { id: 'chrun:opaque' },
+      },
+    });
+  });
+
   it('closes before delivery when the actor is revoked mid-stream', async () => {
     let authorized = true;
     const port = await listen({

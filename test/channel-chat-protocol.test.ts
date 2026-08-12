@@ -121,6 +121,30 @@ describe('isChannelEventV1 validator matrix', () => {
       truncated: false,
     };
     expect(isChannelEventV1(snapshot)).toBe(true);
+    expect(
+      isChannelEventV1({
+        type: 'channel-run-lifecycle-v1',
+        channelId: CHANNEL,
+        timestamp: 't',
+        run: {
+          id: 'chrun:queued',
+          channelId: CHANNEL,
+          threadId: null,
+          requestMessageId: 'chm:request',
+          requesterId: 'human:operator',
+          state: 'submitted',
+          targets: [
+            {
+              targetId: 'agent-profile:mock:default',
+              state: 'queued',
+              updatedAt: 't',
+            },
+          ],
+          createdAt: 't',
+          updatedAt: 't',
+        },
+      })
+    ).toBe(true);
     expect(isChannelEventV1(created(message()))).toBe(true);
     expect(isChannelEventV1(delta('chm:1', 0, 'x'))).toBe(true);
     expect(isChannelEventV1(updated(message({ status: 'streaming' })))).toBe(
@@ -169,6 +193,30 @@ describe('isChannelEventV1 validator matrix', () => {
       isChannelEventV1(
         created({ ...message(), sender: { kind: 'ghost' } as never })
       )
+    ).toBe(false);
+    expect(
+      isChannelEventV1({
+        type: 'channel-run-lifecycle-v1',
+        channelId: CHANNEL,
+        timestamp: 't',
+        run: {
+          id: 'chrun:bad-target-state',
+          channelId: CHANNEL,
+          threadId: null,
+          requestMessageId: 'chm:request',
+          requesterId: 'human:operator',
+          state: 'submitted',
+          targets: [
+            {
+              targetId: 'agent-profile:mock:default',
+              state: 'not-a-run-state',
+              updatedAt: 't',
+            },
+          ],
+          createdAt: 't',
+          updatedAt: 't',
+        },
+      })
     ).toBe(false);
     expect(
       isChannelEventV1(created({ ...message(), body: { text: 1 } as never }))
@@ -497,6 +545,51 @@ describe('applyChannelEventV1 reducer', () => {
     state = applyChannelEventV1(state, catchup);
     expect(state.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
     expect(state.lastSeq).toBe(3);
+  });
+
+  it('preserves omitted run projections but clears an explicit empty projection', () => {
+    const run = {
+      id: 'chrun:retained',
+      channelId: CHANNEL,
+      threadId: null,
+      requestMessageId: 'chm:request',
+      requesterId: 'human:operator',
+      state: 'submitted' as const,
+      targets: [],
+      createdAt: 't',
+      updatedAt: 't',
+    };
+    let state = applyChannelEventV1(initialChannelReducerState(CHANNEL), {
+      type: 'channel-run-lifecycle-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      run,
+    });
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'full',
+      messages: [],
+      members: [],
+      latestSeq: 0,
+      inFlight: [],
+      truncated: false,
+    });
+    expect(state.runs[run.id]).toEqual(run);
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      mode: 'full',
+      messages: [],
+      runs: [],
+      members: [],
+      latestSeq: 0,
+      inFlight: [],
+      truncated: false,
+    });
+    expect(state.runs).toEqual({});
   });
 
   it('is deterministic under replay', () => {

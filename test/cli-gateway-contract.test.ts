@@ -245,6 +245,7 @@ describe('CLI gateway contract', () => {
       'workspace-topics.archive',
       'channels.list',
       'channels.get',
+      'channels.run.get',
       'channels.history',
       'channels.subscribe',
       'channels.threads.history',
@@ -272,6 +273,7 @@ describe('CLI gateway contract', () => {
     const readVerbs = [
       'channels.list',
       'channels.get',
+      'channels.run.get',
       'channels.history',
       'channels.subscribe',
       'channels.threads.history',
@@ -352,6 +354,56 @@ describe('CLI gateway contract', () => {
         durableSeq: 0,
       })
     ).toBe(true);
+    // Lifecycle is durable state, but carries no message sequence: consumers
+    // retain their last message cursor while replacing this run projection.
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'event',
+        channelId: 'channel-1',
+        sequence: 2,
+        occurredAt: '2026-08-11T00:00:02.000Z',
+        durableSeq: 0,
+        payload: {
+          type: 'channel-run-lifecycle-v1',
+          channelId: 'channel-1',
+          timestamp: '2026-08-11T00:00:02.000Z',
+          run: {
+            id: 'chrun:opaque',
+            channelId: 'channel-1',
+            threadId: null,
+            requestMessageId: 'chm:request',
+            requesterId: 'actor:external',
+            state: 'submitted',
+            targets: [
+              {
+                targetId: 'agent-profile:mock',
+                state: 'queued',
+                updatedAt: '2026-08-11T00:00:02.000Z',
+              },
+            ],
+            createdAt: '2026-08-11T00:00:00.000Z',
+            updatedAt: '2026-08-11T00:00:02.000Z',
+          },
+        },
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsChannelsSubscribeFrame({
+        schemaVersion: 1,
+        frame: 'event',
+        channelId: 'channel-1',
+        sequence: 3,
+        occurredAt: '2026-08-11T00:00:03.000Z',
+        durableSeq: 0,
+        payload: {
+          type: 'channel-run-lifecycle-v1',
+          channelId: 'channel-1',
+          timestamp: '2026-08-11T00:00:03.000Z',
+          run: { id: 'chrun:opaque' },
+        },
+      })
+    ).toBe(false);
     expect(
       schemaAcceptsChannelsSubscribeFrame({
         schemaVersion: 1,
@@ -412,6 +464,30 @@ describe('CLI gateway contract', () => {
     ]) {
       expect(schemaAcceptsChannelsSubscribeFrame(invalidFrame)).toBe(false);
     }
+  });
+
+  it('declares the Relay-owned async run returned by channels.post', () => {
+    const data = commandSpec('channels.post').outputSchema.properties?.['data'];
+    if (!data) throw new Error('channels.post output data schema is missing');
+    const run = {
+      id: 'chrun:opaque',
+      channelId: 'channel-1',
+      threadId: null,
+      requestMessageId: 'chm:request',
+      requesterId: 'actor:external',
+      state: 'submitted',
+      targets: [
+        {
+          targetId: 'agent-profile:mock:default',
+          state: 'queued',
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+      ],
+      createdAt: '2026-08-11T00:00:00.000Z',
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    };
+    expect(schemaMatches(data, { message: {}, run })).toBe(true);
+    expect(schemaMatches(data, { message: {} })).toBe(false);
   });
 
   it('models channel pagination inputs and directional cursors exactly', () => {

@@ -28,6 +28,12 @@ import {
   parseMentions,
   type ChannelAgentDetail,
   type ChannelAgentAttribution,
+  type ChannelAsyncRun,
+  type ChannelAsyncRunId,
+  type ChannelAsyncRunState,
+  type ChannelAsyncRunTarget,
+  type ChannelAsyncRunTargetState,
+  type ChannelAsyncRunApprovalState,
   type ChannelMessageSearchHit,
   type ChannelSearchUnavailableReason,
   type ChannelBodyFormat,
@@ -61,7 +67,8 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 16;
+const ASYNC_RUN_SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
@@ -836,6 +843,33 @@ WHERE continuation_parent_callback_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chcc_settled_retention
 ON channel_completion_callbacks(state, consumed_at, undeliverable_at)
 WHERE state IN ('consumed','undeliverable');
+
+CREATE TABLE IF NOT EXISTS channel_async_runs (
+  id                 TEXT PRIMARY KEY,
+  channel_id         TEXT NOT NULL,
+  thread_id          TEXT,
+  request_message_id TEXT NOT NULL UNIQUE,
+  requester_id       TEXT NOT NULL,
+  state              TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+  reason             TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  completed_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_char_channel_created
+  ON channel_async_runs(channel_id, created_at, id);
+CREATE TABLE IF NOT EXISTS channel_async_run_targets (
+  run_id             TEXT NOT NULL,
+  target_id          TEXT NOT NULL,
+  state              TEXT NOT NULL CHECK (state IN ('queued','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+  reason             TEXT,
+  approval_state     TEXT,
+  updated_at         TEXT NOT NULL,
+  completed_at       TEXT,
+  PRIMARY KEY(run_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chart_run_state
+  ON channel_async_run_targets(run_id, state);
 `;
 
 interface ChannelMessageRow {
@@ -952,6 +986,29 @@ interface CompletionCallbackRow {
   updated_at: string;
 }
 
+interface AsyncRunRow {
+  id: string;
+  channel_id: string;
+  thread_id: string | null;
+  request_message_id: string;
+  requester_id: string;
+  state: ChannelAsyncRunState;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+interface AsyncRunTargetRow {
+  run_id: string;
+  target_id: string;
+  state: ChannelAsyncRunTargetState;
+  reason: string | null;
+  approval_state: ChannelAsyncRunApprovalState | null;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export interface ChannelMessageMeta {
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
@@ -960,6 +1017,7 @@ export interface ChannelMessageMeta {
   truncated?: boolean;
   agentDetail?: ChannelAgentDetail;
   agentAttribution?: ChannelAgentAttribution;
+  asyncRun?: { runId: ChannelAsyncRunId; targetId: string };
   /** Internal lifecycle marker; stripped before rows cross the wire. */
   agentDetailTerminalAuthority?: 'provisional' | 'explicit';
   [key: string]: unknown;
@@ -980,6 +1038,11 @@ export interface AppendCompleteInput {
   source?: Pick<ChannelMessageSource, 'runtimeId'>;
 }
 
+export interface CreateChannelAsyncRunPostInput extends AppendCompleteInput {
+  /** Resolved Relay profile actors; provider ids are not persisted publicly. */
+  targetIds: readonly string[];
+}
+
 export interface BeginStreamInput {
   channelId: string;
   sender: ChannelSenderRef;
@@ -991,6 +1054,8 @@ export interface BeginStreamInput {
   agentDetail?: ChannelAgentDetail;
   /** Immutable provider config snapshot for an agent-authored row. */
   agentAttribution?: ChannelAgentAttribution;
+  /** Durable, public-safe correlation carried from the bound Relay turn. */
+  meta?: ChannelMessageMeta;
 }
 
 export interface FinalizeStreamInput {
@@ -1346,6 +1411,30 @@ export function createChannelOrchestratorConflictError(input: {
 export interface ChannelMessageStore {
   close(): void;
   appendComplete(input: AppendCompleteInput): ChannelMessage;
+  /** Atomically creates (or replays) one requester post and its public run. */
+  appendCompleteWithAsyncRun(input: CreateChannelAsyncRunPostInput): {
+    message: ChannelMessage;
+    run: ChannelAsyncRun;
+    replayed: boolean;
+    /** True only when the durable run already existed before this call. */
+    runReplayed: boolean;
+  };
+  getAsyncRun(id: ChannelAsyncRunId): ChannelAsyncRun | null;
+  getAsyncRunForRequestMessage(
+    messageId: ChannelMessageId
+  ): ChannelAsyncRun | null;
+  /** Current durable run projections for reconnect snapshots; no provider data. */
+  listAsyncRuns(channelId: string, limit?: number): ChannelAsyncRun[];
+  /** Startup-only safe disposition; nonterminal runs are never redelivered. */
+  recoverAsyncRuns(): ChannelAsyncRun[];
+  /** CAS one public target outcome and deterministically derives aggregate state. */
+  transitionAsyncRunTarget(input: {
+    runId: ChannelAsyncRunId;
+    targetId: string;
+    state: ChannelAsyncRunTargetState;
+    reason?: string;
+    approvalState?: ChannelAsyncRunApprovalState;
+  }): ChannelAsyncRun | null;
   beginStream(input: BeginStreamInput): ChannelMessage;
   updateStreamText(id: string, text: string): ChannelMessage | null;
   updateAgentDetail(
@@ -1801,6 +1890,17 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   if (isAgentAttribution(meta?.agentAttribution)) {
     message.agentAttribution = meta.agentAttribution;
   }
+  if (
+    meta?.asyncRun &&
+    typeof meta.asyncRun === 'object' &&
+    typeof meta.asyncRun.runId === 'string' &&
+    typeof meta.asyncRun.targetId === 'string'
+  ) {
+    message.asyncRun = {
+      runId: meta.asyncRun.runId as ChannelAsyncRunId,
+      targetId: meta.asyncRun.targetId,
+    };
+  }
   // Surface app-level meta (e.g. #1167 approval payloads) while keeping the
   // internal routing keys off the wire — providerId rides `sender.providerId`,
   // mentions/truncated have dedicated fields above.
@@ -1812,6 +1912,7 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
       agentDetail: _agentDetail,
       agentAttribution: _agentAttribution,
       agentDetailTerminalAuthority: _agentDetailTerminalAuthority,
+      asyncRun: _asyncRun,
       truncated: _t,
       ...rest
     } = meta;
@@ -3021,12 +3122,76 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 14').run();
     })();
   }
+  if (current < 15) {
+    db.transaction(() => {
+      // Run records are a separate durable projection: message sequence remains
+      // the subscription cursor, while lifecycle may change in place without
+      // inventing provider ids or a second transcript row.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS channel_async_runs (
+          id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+          request_message_id TEXT NOT NULL UNIQUE, requester_id TEXT NOT NULL,
+          state TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_char_channel_thread_created
+          ON channel_async_runs(channel_id, thread_id, created_at);
+        CREATE TABLE IF NOT EXISTS channel_async_run_targets (
+          run_id TEXT NOT NULL, target_id TEXT NOT NULL, state TEXT NOT NULL,
+          reason TEXT, approval_state TEXT, updated_at TEXT NOT NULL,
+          completed_at TEXT, PRIMARY KEY(run_id, target_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chart_run_state
+          ON channel_async_run_targets(run_id, state);
+      `);
+      db.prepare('UPDATE schema_version SET version = 15').run();
+    })();
+  }
+  if (current < 16) {
+    db.transaction(() => {
+      // SQLite CHECK constraints and index key order require a rebuild. Keep
+      // the v15 rows verbatim while making illegal target states impossible.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_char_channel_thread_created;
+        CREATE TABLE channel_async_runs_v16 (
+          id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_id TEXT,
+          request_message_id TEXT NOT NULL UNIQUE, requester_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('submitted','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+          reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        INSERT INTO channel_async_runs_v16 SELECT * FROM channel_async_runs;
+        DROP TABLE channel_async_runs;
+        ALTER TABLE channel_async_runs_v16 RENAME TO channel_async_runs;
+        CREATE INDEX idx_char_channel_created
+          ON channel_async_runs(channel_id, created_at, id);
+        CREATE TABLE channel_async_run_targets_v16 (
+          run_id TEXT NOT NULL, target_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('queued','working','input-required','auth-required','completed','failed','cancelled','rejected')),
+          reason TEXT, approval_state TEXT, updated_at TEXT NOT NULL,
+          completed_at TEXT, PRIMARY KEY(run_id, target_id)
+        );
+        INSERT INTO channel_async_run_targets_v16 SELECT * FROM channel_async_run_targets;
+        DROP TABLE channel_async_run_targets;
+        ALTER TABLE channel_async_run_targets_v16 RENAME TO channel_async_run_targets;
+        CREATE INDEX idx_chart_run_state
+          ON channel_async_run_targets(run_id, state);
+      `);
+      db.prepare('UPDATE schema_version SET version = 16').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
   configDir: string
 ): ChannelMessageStore {
-  return createChannelMessageStore(path.join(configDir, 'channel-chat.db'));
+  const store = createChannelMessageStore(
+    path.join(configDir, 'channel-chat.db')
+  );
+  // Only the hub owner observes a restart. Additional handles must not cancel
+  // work which is still live in the owner process.
+  store.recoverAsyncRuns();
+  return store;
 }
 
 export interface ChannelMessageStoreOptions {
@@ -3573,6 +3738,251 @@ export function createChannelMessageStore(
     if (threadId !== null) touchThreadRecord(input.channelId, threadId, now);
     return rowToMessage(row);
   }
+
+  const selectAsyncRun = db.prepare(
+    'SELECT * FROM channel_async_runs WHERE id = ?'
+  );
+  const selectAsyncRunForRequest = db.prepare(
+    'SELECT * FROM channel_async_runs WHERE request_message_id = ?'
+  );
+  const selectAsyncRunTargets = db.prepare(
+    'SELECT * FROM channel_async_run_targets WHERE run_id = ? ORDER BY target_id ASC'
+  );
+
+  function asyncRunFromRow(
+    row: AsyncRunRow,
+    targets = selectAsyncRunTargets.all(row.id) as AsyncRunTargetRow[]
+  ): ChannelAsyncRun {
+    return {
+      id: row.id as ChannelAsyncRunId,
+      channelId: row.channel_id,
+      threadId: row.thread_id as ChannelMessageId | null,
+      requestMessageId: row.request_message_id as ChannelMessageId,
+      requesterId: row.requester_id,
+      state: row.state,
+      ...(row.reason ? { reason: row.reason } : {}),
+      targets: targets.map(
+        (target): ChannelAsyncRunTarget => ({
+          targetId: target.target_id,
+          state: target.state,
+          ...(target.reason ? { reason: target.reason } : {}),
+          ...(target.approval_state
+            ? { approvalState: target.approval_state }
+            : {}),
+          updatedAt: target.updated_at,
+          ...(target.completed_at ? { completedAt: target.completed_at } : {}),
+        })
+      ),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    };
+  }
+
+  function aggregateAsyncRunState(
+    targets: readonly AsyncRunTargetRow[]
+  ): ChannelAsyncRunState {
+    if (targets.length === 0) return 'rejected';
+    if (
+      targets.some(
+        (target) =>
+          !['completed', 'failed', 'cancelled', 'rejected'].includes(
+            target.state
+          )
+      )
+    ) {
+      if (targets.some((target) => target.state === 'auth-required'))
+        return 'auth-required';
+      if (targets.some((target) => target.state === 'input-required'))
+        return 'input-required';
+      return targets.some((target) => target.state === 'working')
+        ? 'working'
+        : 'submitted';
+    }
+    if (targets.every((target) => target.state === 'completed'))
+      return 'completed';
+    if (targets.every((target) => target.state === 'rejected'))
+      return 'rejected';
+    if (
+      targets.some(
+        (target) => target.state === 'failed' || target.state === 'rejected'
+      )
+    )
+      return 'failed';
+    return 'cancelled';
+  }
+
+  const appendCompleteWithAsyncRunImpl = db.transaction(
+    (input: CreateChannelAsyncRunPostInput) => {
+      let existing: ChannelMessage | null = null;
+      if (input.clientMessageId) {
+        const row = selectByClientId.get({
+          channelId: input.channelId,
+          senderId: input.sender.id,
+          clientMessageId: input.clientMessageId,
+        }) as ChannelMessageRow | undefined;
+        if (row) existing = rowToMessage(row);
+      }
+      const message = existing ?? appendCompleteImpl(input);
+      const known = selectAsyncRunForRequest.get(message.id) as
+        | AsyncRunRow
+        | undefined;
+      if (known) {
+        return {
+          message,
+          run: asyncRunFromRow(known),
+          replayed: existing !== null,
+          runReplayed: true,
+        };
+      }
+      const now = nowIso();
+      const targetIds = [...new Set(input.targetIds)].sort();
+      const state: ChannelAsyncRunState =
+        targetIds.length === 0 ? 'rejected' : 'submitted';
+      const runId = `chrun:${crypto.randomUUID()}` as ChannelAsyncRunId;
+      db.prepare(
+        `INSERT INTO channel_async_runs
+           (id, channel_id, thread_id, request_message_id, requester_id, state, reason, created_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        runId,
+        message.channelId,
+        message.threadId,
+        message.id,
+        message.sender.id,
+        state,
+        targetIds.length === 0 ? 'no-eligible-target' : null,
+        now,
+        now,
+        targetIds.length === 0 ? now : null
+      );
+      const insertTarget = db.prepare(
+        `INSERT INTO channel_async_run_targets
+           (run_id, target_id, state, reason, approval_state, updated_at, completed_at)
+         VALUES (?, ?, ?, NULL, NULL, ?, NULL)`
+      );
+      for (const targetId of targetIds)
+        insertTarget.run(runId, targetId, 'queued', now);
+      const row = selectAsyncRun.get(runId) as AsyncRunRow;
+      return {
+        message,
+        run: asyncRunFromRow(row),
+        replayed: existing !== null,
+        runReplayed: false,
+      };
+    }
+  );
+
+  const transitionAsyncRunTargetImpl = db.transaction(
+    (input: {
+      runId: ChannelAsyncRunId;
+      targetId: string;
+      state: ChannelAsyncRunTargetState;
+      reason?: string;
+      approvalState?: ChannelAsyncRunApprovalState;
+    }): ChannelAsyncRun | null => {
+      const run = selectAsyncRun.get(input.runId) as AsyncRunRow | undefined;
+      if (!run) return null;
+      const now = nowIso();
+      const terminal = [
+        'completed',
+        'failed',
+        'cancelled',
+        'rejected',
+      ].includes(input.state);
+      const changed = db
+        .prepare(
+          `UPDATE channel_async_run_targets
+            SET state = ?, reason = ?, approval_state = ?, updated_at = ?,
+                completed_at = CASE WHEN ? THEN ? ELSE NULL END
+          WHERE run_id = ? AND target_id = ?
+            AND state NOT IN ('completed','failed','cancelled','rejected')`
+        )
+        .run(
+          input.state,
+          input.reason ?? null,
+          input.approvalState ?? null,
+          now,
+          terminal ? 1 : 0,
+          terminal ? now : null,
+          input.runId,
+          input.targetId
+        );
+      if (changed.changes === 0) return asyncRunFromRow(run);
+      const targets = selectAsyncRunTargets.all(
+        input.runId
+      ) as AsyncRunTargetRow[];
+      const state = aggregateAsyncRunState(targets);
+      const runTerminal = [
+        'completed',
+        'failed',
+        'cancelled',
+        'rejected',
+      ].includes(state);
+      db.prepare(
+        `UPDATE channel_async_runs SET state = ?, updated_at = ?,
+          completed_at = CASE WHEN ? THEN ? ELSE NULL END WHERE id = ?`
+      ).run(state, now, runTerminal ? 1 : 0, runTerminal ? now : null, run.id);
+      return asyncRunFromRow(selectAsyncRun.get(run.id) as AsyncRunRow);
+    }
+  );
+
+  const recoverAsyncRunsImpl = db.transaction((): ChannelAsyncRun[] => {
+    const rows = db
+      .prepare(
+        `SELECT * FROM channel_async_runs
+          WHERE state NOT IN ('completed','failed','cancelled','rejected')`
+      )
+      .all() as AsyncRunRow[];
+    if (rows.length === 0) return [];
+    const now = nowIso();
+    const cancelTarget = db.prepare(
+      `UPDATE channel_async_run_targets
+          SET state = 'cancelled', reason = 'server-restarted', updated_at = ?,
+              completed_at = ?
+        WHERE run_id = ?
+          AND state NOT IN ('completed','failed','cancelled','rejected')`
+    );
+    const updateRun = db.prepare(
+      `UPDATE channel_async_runs
+          SET state = ?, reason = 'server-restarted', updated_at = ?, completed_at = ?
+        WHERE id = ?`
+    );
+    for (const row of rows) {
+      cancelTarget.run(now, now, row.id);
+      const targets = selectAsyncRunTargets.all(row.id) as AsyncRunTargetRow[];
+      const state = aggregateAsyncRunState(targets);
+      updateRun.run(state, now, now, row.id);
+    }
+    return rows.map((row) =>
+      asyncRunFromRow(selectAsyncRun.get(row.id) as AsyncRunRow)
+    );
+  });
+
+  const pruneSettledAsyncRunsImpl = db.transaction(
+    (olderThanMs: number): number => {
+      const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+      const ids = db
+        .prepare(
+          `SELECT id FROM channel_async_runs
+          WHERE state IN ('completed','failed','cancelled','rejected')
+            AND completed_at IS NOT NULL AND completed_at < ?`
+        )
+        .all(cutoff) as Array<{ id: string }>;
+      if (ids.length === 0) return 0;
+      const deleteTargets = db.prepare(
+        'DELETE FROM channel_async_run_targets WHERE run_id = ?'
+      );
+      const deleteRun = db.prepare(
+        'DELETE FROM channel_async_runs WHERE id = ?'
+      );
+      for (const { id } of ids) {
+        deleteTargets.run(id);
+        deleteRun.run(id);
+      }
+      return ids.length;
+    }
+  );
 
   function getBindingImpl(
     channelId: string,
@@ -4242,6 +4652,58 @@ export function createChannelMessageStore(
       return appendCompleteImpl(input);
     },
 
+    appendCompleteWithAsyncRun(input) {
+      return appendCompleteWithAsyncRunImpl(input);
+    },
+
+    getAsyncRun(id) {
+      const row = selectAsyncRun.get(id) as AsyncRunRow | undefined;
+      return row ? asyncRunFromRow(row) : null;
+    },
+
+    getAsyncRunForRequestMessage(messageId) {
+      const row = selectAsyncRunForRequest.get(messageId) as
+        | AsyncRunRow
+        | undefined;
+      return row ? asyncRunFromRow(row) : null;
+    },
+
+    listAsyncRuns(channelId, limit = 100) {
+      const rows = db
+        .prepare(
+          `SELECT * FROM channel_async_runs WHERE channel_id = ?
+           ORDER BY created_at DESC, id DESC LIMIT ?`
+        )
+        .all(channelId, Math.max(1, Math.floor(limit))) as AsyncRunRow[];
+      if (rows.length === 0) return [];
+      const targetRows = db
+        .prepare(
+          `SELECT * FROM channel_async_run_targets
+           WHERE run_id IN (${rows.map(() => '?').join(',')})
+           ORDER BY run_id ASC, target_id ASC`
+        )
+        .all(...rows.map((row) => row.id)) as AsyncRunTargetRow[];
+      const byRun = new Map<string, AsyncRunTargetRow[]>();
+      for (const target of targetRows) {
+        const targets = byRun.get(target.run_id) ?? [];
+        targets.push(target);
+        byRun.set(target.run_id, targets);
+      }
+      return rows
+        .map((row) => asyncRunFromRow(row, byRun.get(row.id) ?? []))
+        .reverse();
+    },
+
+    recoverAsyncRuns() {
+      const recovered = recoverAsyncRunsImpl();
+      pruneSettledAsyncRunsImpl(ASYNC_RUN_SETTLED_RETENTION_MS);
+      return recovered;
+    },
+
+    transitionAsyncRunTarget(input) {
+      return transitionAsyncRunTargetImpl(input);
+    },
+
     beginStream(input) {
       // Fast replay path; the INSERT ... ON CONFLICT below is the atomic
       // cross-handle/process backstop when two writers observe a miss together.
@@ -4256,6 +4718,9 @@ export function createChannelMessageStore(
       assertMessagePayloadSize(initialText, input.agentDetail);
       assertAgentAttribution(input.agentAttribution);
       assertMessageParts(input.parts);
+      assertMessageParts(input.meta?.parts);
+      assertAgentDetail(input.meta?.agentDetail);
+      assertAgentAttribution(input.meta?.agentAttribution);
       const threadId = resolveThread(input.channelId, input.parentMessageId);
       const now = nowIso();
       const id = createMessageId();
@@ -4274,9 +4739,10 @@ export function createChannelMessageStore(
         metaJson: buildMeta({
           ...(input.mentions ? { mentions: input.mentions } : {}),
           ...(input.parts ? { parts: input.parts } : {}),
-          ...(input.agentDetail || input.agentAttribution
+          ...(input.meta || input.agentDetail || input.agentAttribution
             ? {
                 extra: {
+                  ...(input.meta ?? {}),
                   ...(input.agentDetail
                     ? { agentDetail: input.agentDetail }
                     : {}),
@@ -5244,6 +5710,7 @@ export function createChannelMessageStore(
         'channel_members',
         'channel_agent_bindings',
         'channel_completion_callbacks',
+        'channel_async_runs',
         // Read marks are swept for the same reason bindings are: a channel the
         // topic store no longer knows about is gone, and its marker would
         // otherwise be resurrected verbatim by a channel later created under the
@@ -5278,6 +5745,13 @@ export function createChannelMessageStore(
           db.prepare(
             'DELETE FROM channel_completion_callbacks WHERE channel_id = ?'
           ).run(id);
+          db.prepare(
+            `DELETE FROM channel_async_run_targets
+              WHERE run_id IN (SELECT id FROM channel_async_runs WHERE channel_id = ?)`
+          ).run(id);
+          db.prepare('DELETE FROM channel_async_runs WHERE channel_id = ?').run(
+            id
+          );
           db.prepare(
             `DELETE FROM ${CHANNEL_READ_STATE_TABLE} WHERE channel_id = ?`
           ).run(id);

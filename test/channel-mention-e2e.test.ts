@@ -56,6 +56,7 @@ import {
 import {
   channelTurnId,
   parseMentions,
+  type ChannelAsyncRun,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
 import type { ChannelAgentRuntime } from '../server/channel-agent-runtime.js';
@@ -253,6 +254,7 @@ function makeSessions(
         threadId: params.threadId ?? null,
         providerId: params.providerId,
         profileActorId: params.profileActorId,
+        role: params.role,
         status: 'active',
         adapter,
         cwd: params.cwd,
@@ -804,7 +806,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       'x-relay-cli-command': 'channels.post',
     };
     const postOnce = (text: string) =>
-      req<{ message: ChannelMessage }>({
+      req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
         port: h.port,
         method: 'POST',
         url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
@@ -828,9 +830,16 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
     // Brake accounting: further agent-sender posts count toward the cap. Posting
     // past MAX trips the pause row — a browser (human) sender never would, proving
     // the actor post is accounted as an agent turn end-to-end.
+    let pausedPost:
+      | {
+          status: number;
+          body: { message: ChannelMessage; run: ChannelAsyncRun };
+        }
+      | undefined;
     for (let i = 1; i <= 4; i++) {
       const res = await postOnce(`@mock brief ${i}`);
       expect(res.status).toBe(201);
+      if (i === 4) pausedPost = res;
     }
     await waitFor(() =>
       h.store
@@ -847,6 +856,173 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
           m.kind === 'system' && m.body.text.includes('Mention chain paused')
       );
     expect(paused).toHaveLength(1);
+    // The router admitted this target atomically with the message before the
+    // binder observed the cap. The brake must close that durable target, not
+    // strand a client-visible queued run forever.
+    await waitFor(
+      () =>
+        pausedPost !== undefined &&
+        h.store.getAsyncRun(pausedPost.body.run.id)?.state === 'rejected'
+    );
+    expect(h.store.getAsyncRun(pausedPost!.body.run.id)).toMatchObject({
+      state: 'rejected',
+      targets: [
+        {
+          targetId: builtInAgentProfileId('mock'),
+          state: 'rejected',
+          reason: 'mention-chain-paused',
+        },
+      ],
+    });
+  });
+
+  it('correlates concurrent scoped-actor requests with their durable replies and terminal runs', async () => {
+    const registry = createCliGatewayActorRegistry();
+    const h = await harness(undefined, { actorRegistry: registry });
+    const issued = issueCliGatewayActorCredential(registry, {
+      actor: { type: 'agent', id: 'concurrent-client' },
+      capabilities: ['context:read', 'context:write'],
+      scope: { channelIds: [h.channelId] },
+    });
+    const headers = {
+      authorization: `Bearer ${issued.token}`,
+      'x-relay-cli-actor-token': 'v1',
+      'x-relay-cli-command': 'channels.post',
+    };
+    const post = (clientMessageId: string) =>
+      req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+        body: { text: '@mock answer this', clientMessageId },
+        headers,
+      });
+
+    const [first, second] = await Promise.all([
+      post('concurrent-1'),
+      post('concurrent-2'),
+    ]);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(first.body.run.id).not.toBe(second.body.run.id);
+    expect(first.body.run.requestMessageId).toBe(first.body.message.id);
+    expect(second.body.run.requestMessageId).toBe(second.body.message.id);
+
+    await waitFor(() => agentReply(h.store, h.channelId).length === 2);
+    const replies = agentReply(h.store, h.channelId);
+    for (const run of [first.body.run, second.body.run]) {
+      expect(replies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            asyncRun: {
+              runId: run.id,
+              targetId: builtInAgentProfileId('mock'),
+            },
+          }),
+        ])
+      );
+      await waitFor(() => h.store.getAsyncRun(run.id)?.state === 'completed');
+    }
+
+    // Exercise the real external-client read surface: it can correlate the
+    // durable rows without a provider turn/item id or a requester profile.
+    const history = await req<{ messages: ChannelMessage[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages?limit=20`,
+      headers: { ...headers, 'x-relay-cli-command': 'channels.history' },
+    });
+    expect(history.status).toBe(200);
+    expect(
+      history.body.messages.filter((message) => message.asyncRun !== undefined)
+    ).toEqual(
+      expect.arrayContaining(
+        [first.body.run, second.body.run].map((run) =>
+          expect.objectContaining({
+            asyncRun: expect.objectContaining({ runId: run.id }),
+          })
+        )
+      )
+    );
+  });
+
+  it('admits a bare human post to its designated orchestrator and correlates its reply', async () => {
+    const h = await harness(
+      (provider) =>
+        new RecordingAdapter(provider, 'implicit orchestrator reply')
+    );
+    await h.binder.ensureOrchestrator(h.channelId, 'mock');
+
+    const post = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'continue the plan' },
+    });
+    expect(post.status).toBe(201);
+    expect(post.body.run).toMatchObject({
+      state: 'submitted',
+      requestMessageId: post.body.message.id,
+      targets: [{ targetId: builtInAgentProfileId('mock'), state: 'queued' }],
+    });
+
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
+      body: { text: 'implicit orchestrator reply' },
+      asyncRun: {
+        runId: post.body.run.id,
+        targetId: builtInAgentProfileId('mock'),
+      },
+    });
+    await waitFor(
+      () => h.store.getAsyncRun(post.body.run.id)?.state === 'completed'
+    );
+  });
+
+  it('terminalizes an unmentioned human post when no implicit recipient is designated', async () => {
+    const h = await harness();
+    const post = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'continue the plan' },
+    });
+    expect(post.status).toBe(201);
+    expect(post.body.run).toMatchObject({
+      state: 'rejected',
+      reason: 'no-eligible-target',
+      requestMessageId: post.body.message.id,
+      targets: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(agentReply(h.store, h.channelId)).toEqual([]);
+  });
+
+  it('terminalizes an admitted but unavailable target instead of leaving its run queued', async () => {
+    const h = await harness();
+    const post = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@codex continue the plan' },
+    });
+    expect(post.status).toBe(201);
+    expect(post.body.run.targets).toEqual([
+      expect.objectContaining({ targetId: builtInAgentProfileId('codex') }),
+    ]);
+    await waitFor(
+      () => h.store.getAsyncRun(post.body.run.id)?.state === 'rejected'
+    );
+    expect(h.store.getAsyncRun(post.body.run.id)).toMatchObject({
+      state: 'rejected',
+      targets: [
+        {
+          targetId: builtInAgentProfileId('codex'),
+          state: 'rejected',
+          reason: 'target-unavailable',
+        },
+      ],
+    });
   });
 
   it('lets an external scoped actor observe the durable reply without a requester profile', async () => {
@@ -867,7 +1043,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       capabilities: ['context:read', 'context:write'],
       scope: { channelIds: [h.channelId] },
     });
-    const post = await req<{ message: ChannelMessage }>({
+    const post = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
       port: h.port,
       method: 'POST',
       url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
@@ -883,11 +1059,30 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       kind: 'agent',
       id: 'agent:codex-desktop-dogfood',
     });
+    expect(post.body.run).toMatchObject({
+      id: expect.stringMatching(/^chrun:/),
+      requestMessageId: post.body.message.id,
+      requesterId: 'agent:codex-desktop-dogfood',
+      state: 'submitted',
+      targets: [
+        {
+          targetId: builtInAgentProfileId('mock'),
+          state: 'queued',
+        },
+      ],
+    });
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
     expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
       body: { text: 'durable external reply' },
       sender: { id: 'agent-profile:mock:default' },
+      asyncRun: {
+        runId: post.body.run.id,
+        targetId: builtInAgentProfileId('mock'),
+      },
     });
+    await waitFor(
+      () => h.store.getAsyncRun(post.body.run.id)?.state === 'completed'
+    );
     // Verify the actor's real authorization surface, not the test's internal
     // store: this is the durable history contract external requesters use to
     // observe replies without acquiring an installed requester profile.
@@ -907,9 +1102,41 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
         expect.objectContaining({
           body: expect.objectContaining({ text: 'durable external reply' }),
           sender: expect.objectContaining({ id: 'agent-profile:mock:default' }),
+          asyncRun: {
+            runId: post.body.run.id,
+            targetId: builtInAgentProfileId('mock'),
+          },
         }),
       ])
     );
+    const runStatus = await req<{ run: ChannelAsyncRun }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/runs/${encodeURIComponent(post.body.run.id)}`,
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.run.get',
+      },
+    });
+    expect(runStatus.status).toBe(200);
+    expect(runStatus.body.run).toMatchObject({
+      id: post.body.run.id,
+      channelId: h.channelId,
+      threadId: null,
+      state: 'completed',
+    });
+    const wrongThread = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/runs/${encodeURIComponent(post.body.run.id)}?threadId=chm:other`,
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.run.get',
+      },
+    });
+    expect(wrongThread.status).toBe(404);
     const callbackId = `chcb:${channelTurnId(
       post.body.message.id,
       builtInAgentProfileId('mock')

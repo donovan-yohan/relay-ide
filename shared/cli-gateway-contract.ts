@@ -97,6 +97,7 @@ export type RelayCliGatewayCommand =
   | 'workspace-topics.archive'
   | 'channels.list'
   | 'channels.get'
+  | 'channels.run.get'
   | 'channels.history'
   | 'channels.subscribe'
   | 'channels.threads.history'
@@ -3289,14 +3290,90 @@ const channelPostInputSchema: RelayJsonSchema = {
   required: ['channelId', 'text'],
 };
 
+const channelAsyncRunStateSchema: RelayJsonSchema = {
+  type: 'string',
+  enum: [
+    'submitted',
+    'working',
+    'input-required',
+    'auth-required',
+    'completed',
+    'failed',
+    'cancelled',
+    'rejected',
+  ],
+};
+
+const channelAsyncRunTargetSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    targetId: stringSchema,
+    state: {
+      type: 'string',
+      enum: [
+        'queued',
+        'working',
+        'input-required',
+        'auth-required',
+        'completed',
+        'failed',
+        'cancelled',
+        'rejected',
+      ],
+    },
+    reason: stringSchema,
+    approvalState: {
+      type: 'string',
+      enum: ['requested', 'resolved', 'expired'],
+    },
+    updatedAt: { type: 'string', format: 'date-time' },
+    completedAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['targetId', 'state', 'updatedAt'],
+};
+
+const channelAsyncRunSchema: RelayJsonSchema = {
+  title: 'ChannelAsyncRun',
+  description:
+    'Relay-owned opaque request correlation. targetId is a Relay profile actor id, never a provider turn/item id.',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    channelId: stringSchema,
+    threadId: nullableStringSchema,
+    requestMessageId: stringSchema,
+    requesterId: stringSchema,
+    state: channelAsyncRunStateSchema,
+    reason: stringSchema,
+    targets: { type: 'array', items: channelAsyncRunTargetSchema },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+    completedAt: { type: 'string', format: 'date-time' },
+  },
+  required: [
+    'id',
+    'channelId',
+    'threadId',
+    'requestMessageId',
+    'requesterId',
+    'state',
+    'targets',
+    'createdAt',
+    'updatedAt',
+  ],
+};
+
 const channelPostOutputDataSchema: RelayJsonSchema = {
   title: 'ChannelsPostData',
   type: 'object',
   additionalProperties: false,
   properties: {
     message: { type: 'object', additionalProperties: true },
+    run: channelAsyncRunSchema,
   },
-  required: ['message'],
+  required: ['message', 'run'],
 };
 
 const channelObjectSchema: RelayJsonSchema = {
@@ -3319,6 +3396,18 @@ const channelGetInputSchema: RelayJsonSchema = {
     channelId: stringSchema,
   },
   required: ['channelId'],
+};
+
+const channelRunGetInputSchema: RelayJsonSchema = {
+  title: 'ChannelRunGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    runId: stringSchema,
+    threadId: stringSchema,
+  },
+  required: ['channelId', 'runId'],
 };
 
 const channelHistoryInputSchema: RelayJsonSchema = {
@@ -3386,10 +3475,33 @@ const channelSubscribeFrameSchema: RelayJsonSchema = {
         occurredAt: stringSchema,
         durableSeq: { type: 'integer', minimum: 0 },
         payload: {
-          type: 'object',
-          additionalProperties: true,
-          properties: { type: stringSchema },
-          required: ['type'],
+          oneOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                type: { const: 'channel-run-lifecycle-v1' },
+                channelId: stringSchema,
+                timestamp: stringSchema,
+                run: channelAsyncRunSchema,
+              },
+              required: ['type', 'channelId', 'timestamp', 'run'],
+            },
+            {
+              // Other event variants retain their established versioned
+              // validator in the protocol layer. Do not let this escape hatch
+              // silently accept a malformed lifecycle projection.
+              type: 'object',
+              additionalProperties: true,
+              properties: { type: stringSchema },
+              required: ['type'],
+              not: {
+                type: 'object',
+                properties: { type: { const: 'channel-run-lifecycle-v1' } },
+                required: ['type'],
+              },
+            },
+          ],
         },
       },
       required: [
@@ -6523,6 +6635,41 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['context:read'],
     inputSchema: channelGetInputSchema,
     outputSchema: okOutput('ChannelsGetOutput', channelGetOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.run.get',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'run',
+      'get',
+      '--channel-id',
+      '<id>',
+      '--run-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Read one Relay-owned correlated channel run in an actor-scoped channel; optional threadId verifies its immutable scope.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelRunGetInputSchema,
+    outputSchema: okOutput('ChannelRunGetOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { run: channelAsyncRunSchema },
+      required: ['run'],
+    }),
     errorCodes: [
       'UNAUTHORIZED',
       'FORBIDDEN',

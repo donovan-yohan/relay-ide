@@ -169,7 +169,14 @@ describe('channels.post CLI gateway command', () => {
     expect(envelope).toMatchObject({
       ok: true,
       command: 'channels.post',
-      data: { message: { id: 'chm:test' } },
+      data: {
+        message: { id: 'chm:test' },
+        run: {
+          id: 'chrun:test',
+          requestMessageId: 'chm:test',
+          state: 'submitted',
+        },
+      },
     });
     expect(request).toMatchObject({
       method: 'POST',
@@ -191,6 +198,44 @@ describe('channels.post CLI gateway command', () => {
       },
     });
     expect(request.body).not.toHaveProperty('channelId');
+  });
+
+  it('gets one opaque run through the context-read actor lane', async () => {
+    const { envelope, request } = await runCli(
+      [
+        'v1',
+        'channels',
+        'run',
+        'get',
+        '--channel-id',
+        'product/main',
+        '--run-id',
+        'chrun:test',
+        '--thread-id',
+        'chm:root',
+        '--json',
+      ],
+      {
+        ...process.env,
+        RELAY_IDE_PORT: '4567',
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-actor.[REDACTED]',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      }
+    );
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'channels.run.get',
+      data: { run: { id: 'chrun:test' } },
+    });
+    expect(request).toMatchObject({
+      method: 'GET',
+      url: 'http://127.0.0.1:4567/channels/product%2Fmain/runs/chrun%3Atest?threadId=chm%3Aroot',
+      headers: expect.objectContaining({
+        'x-relay-cli-command': 'channels.run.get',
+        'x-relay-capabilities': 'context:read',
+      }),
+    });
   });
 
   it.each([
