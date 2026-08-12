@@ -78,10 +78,58 @@ describe('channels.subscribe CLI gateway command', () => {
         '<id>',
         '--after-seq',
         '<n>',
+        '--thread-id',
+        '<id|root>',
+        '--message-id',
+        '<id>',
+        '--sender-id',
+        '<id>',
+        '--mention-target-id',
+        '<id>',
+        '--status',
+        '<streaming|complete|truncated|interrupted|failed>',
+        '--run-id',
+        '<id>',
+        '--terminal-only',
+        '<true|false>',
+        '--principal-only',
+        '<true|false>',
         '--json',
       ],
     });
   });
+
+  it.each([
+    ['--thread-id', 'not-a-channel-message'],
+    ['--message-id', 'message:wrong-prefix'],
+    ['--status', 'unknown'],
+    ['--terminal-only', '1'],
+    ['--principal-only', 'TRUE'],
+  ])(
+    'rejects malformed bounded filter %s=%s before opening a stream',
+    async (flag, value) => {
+      await expect(
+        runCli(
+          [
+            'v1',
+            'channels',
+            'subscribe',
+            '--channel-id',
+            'topic:test',
+            flag,
+            value,
+            '--json',
+          ],
+          {
+            ...process.env,
+            RELAY_IDE_PORT: '1',
+            RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+            RELAY_IDE_BROWSER_TOKEN: '',
+          }
+        )
+      ).rejects.toThrow('INVALID_ARGUMENT');
+    }
+  );
 
   it('forwards frames incrementally with actor auth and an exclusive cursor', async () => {
     let request: http.IncomingMessage | undefined;
@@ -114,6 +162,12 @@ describe('channels.subscribe CLI gateway command', () => {
           'topic:test',
           '--after-seq',
           '4',
+          '--thread-id',
+          'root',
+          '--status',
+          'complete',
+          '--principal-only',
+          'true',
           '--json',
         ],
         {
@@ -151,13 +205,57 @@ describe('channels.subscribe CLI gateway command', () => {
           data: { frame: 'closed', durableSeq: 4 },
         },
       ]);
-      expect(request?.url).toBe('/channels/topic%3Atest/subscribe?afterSeq=4');
+      expect(request?.url).toBe(
+        '/channels/topic%3Atest/subscribe?afterSeq=4&threadId=root&status=complete&principalOnly=true'
+      );
       expect(request?.headers).toMatchObject({
         'x-relay-cli-gateway': 'v1',
         'x-relay-cli-command': 'channels.subscribe',
         'x-relay-cli-actor-token': 'v1',
         'x-relay-capabilities': 'context:read',
       });
+    } finally {
+      server.close();
+    }
+  });
+
+  it('omits false-only predicates so they retain the unfiltered subscription contract', async () => {
+    let request: http.IncomingMessage | undefined;
+    const server = http.createServer((req, res) => {
+      request = req;
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.end(
+        `${JSON.stringify({ schemaVersion: 1, frame: 'closed', channelId: 'topic:test', sequence: 0, occurredAt: '2026-08-11T00:00:02.000Z', durableSeq: 0, reason: 'normal', retryable: false })}\n`
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    try {
+      await runCli(
+        [
+          'v1',
+          'channels',
+          'subscribe',
+          '--channel-id',
+          'topic:test',
+          '--terminal-only',
+          'false',
+          '--principal-only',
+          'false',
+          '--json',
+        ],
+        {
+          ...process.env,
+          RELAY_IDE_PORT: String(address.port),
+          RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test.[REDACTED]',
+          RELAY_IDE_BROWSER_TOKEN: '',
+        }
+      );
+      expect(request?.url).toBe('/channels/topic%3Atest/subscribe');
     } finally {
       server.close();
     }

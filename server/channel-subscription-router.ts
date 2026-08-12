@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
 
-import type { ChannelEventV1 } from '../shared/channel-chat-protocol.js';
+import {
+  channelAsyncRunMatchesSubscriptionFilter,
+  channelMessageMatchesSubscriptionFilter,
+  channelSubscriptionFilterValidationError,
+  normalizeChannelSubscriptionFilter,
+  type ChannelEventV1,
+  type ChannelSubscriptionFilter,
+} from '../shared/channel-chat-protocol.js';
 import { authenticatedCliGatewayActorCredential } from './cli-gateway-actor-auth.js';
 import type {
   ChannelEventSink,
@@ -62,6 +69,93 @@ function queryAfterSeq(req: Request): number | null | 'invalid' {
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : 'invalid';
+}
+
+const SUBSCRIPTION_QUERY_KEYS = new Set([
+  'afterSeq',
+  'threadId',
+  'messageId',
+  'senderId',
+  'mentionTargetId',
+  'status',
+  'runId',
+  'terminalOnly',
+  'principalOnly',
+]);
+
+/** Decode the authenticated boundary once; duplicate/unknown keys fail closed. */
+function querySubscriptionFilter(
+  req: Request
+): ChannelSubscriptionFilter | 'invalid' {
+  const raw: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(req.query)) {
+    if (!SUBSCRIPTION_QUERY_KEYS.has(key) || Array.isArray(value))
+      return 'invalid';
+    if (key === 'afterSeq') continue;
+    if (typeof value !== 'string') return 'invalid';
+    if (key === 'terminalOnly' || key === 'principalOnly') {
+      if (value === 'true') raw[key] = true;
+      else if (value === 'false') raw[key] = false;
+      else return 'invalid';
+    } else {
+      raw[key] = value;
+    }
+  }
+  return channelSubscriptionFilterValidationError(raw) === undefined
+    ? normalizeChannelSubscriptionFilter(raw as ChannelSubscriptionFilter)
+    : 'invalid';
+}
+
+function filterIsEmpty(filter: ChannelSubscriptionFilter): boolean {
+  return Object.keys(filter).length === 0;
+}
+
+/**
+ * Preserve hub control and snapshot metadata while removing only row payloads.
+ * Cursor advancement happens before this function, from the original event.
+ */
+function projectEvent(
+  event: ChannelEventV1,
+  filter: ChannelSubscriptionFilter
+): ChannelEventV1 | null {
+  if (filterIsEmpty(filter)) return event;
+  switch (event.type) {
+    case 'channel-snapshot-v1':
+      return {
+        ...event,
+        messages: event.messages.filter((message) =>
+          channelMessageMatchesSubscriptionFilter(message, filter)
+        ),
+        ...(event.runs === undefined
+          ? {}
+          : {
+              runs: event.runs.filter((run) =>
+                channelAsyncRunMatchesSubscriptionFilter(run, filter)
+              ),
+            }),
+        // Semantic filters suppress deltas, so carrying an unfiltered in-flight
+        // reference would point at rows the actor never received.
+        inFlight: [],
+      };
+    case 'channel-message-created-v1':
+    case 'channel-message-updated-v1':
+    case 'channel-message-completed-v1':
+    case 'channel-message-edited-v1':
+    case 'channel-message-deleted-v1':
+      return channelMessageMatchesSubscriptionFilter(event.message, filter)
+        ? event
+        : null;
+    case 'channel-message-delta-v1':
+      // A delta has no durable row to evaluate and can expose provider/tool
+      // output, so a semantic projection never forwards it.
+      return null;
+    case 'channel-run-lifecycle-v1':
+      return channelAsyncRunMatchesSubscriptionFilter(event.run, filter)
+        ? event
+        : null;
+    case 'channel-resync-required-v1':
+      return event;
+  }
 }
 
 function requestHasContextRead(req: Request): boolean {
@@ -155,6 +249,16 @@ export function createChannelSubscriptionRouter(
           'INVALID_ARGUMENT',
           'afterSeq must be a non-negative safe integer',
           { field: 'afterSeq' }
+        );
+        return;
+      }
+      const filter = querySubscriptionFilter(req);
+      if (filter === 'invalid') {
+        sendError(
+          res,
+          400,
+          'INVALID_ARGUMENT',
+          'subscription filter has an invalid value'
         );
         return;
       }
@@ -328,14 +432,18 @@ export function createChannelSubscriptionRouter(
             finish('backpressure', undefined, true);
             return false;
           }
+          // This is intentionally before projection. A filtered subscription is
+          // a view over the same durable log, never a second cursor domain.
           durableSeq = advanceDurableCursor(durableSeq, event);
+          const projected = projectEvent(event, filter);
+          if (!projected) return true;
           return writeFrame({
             frame: 'event',
             schemaVersion: 1,
             channelId,
             sequence: sequence++,
             occurredAt: now().toISOString(),
-            payload: event,
+            payload: projected,
             durableSeq,
           });
         },

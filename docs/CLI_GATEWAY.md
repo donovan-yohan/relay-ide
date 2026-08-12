@@ -145,6 +145,18 @@ stdout drain instead of dropping frames; a downstream closed pipe is treated as
 clean local cancellation and promptly cancels the upstream reader. The stream uses
 `context:read` plus the actor credential's exact `channelIds` scope.
 
+Subscriptions can reduce semantic noise at the server boundary without changing
+their resume semantics: `--thread-id <id|root>`, `--message-id`, `--sender-id`,
+`--mention-target-id`, `--status`, `--run-id`, `--terminal-only`, and
+`--principal-only` combine with AND. `root` selects top-level message/run
+scope; a concrete thread id selects that canonical root and its replies.
+`principal-only` excludes agent detail and image/tool rows; `terminal-only`
+selects terminal message or run state. A filtered-out committed row still
+advances the frame's `durableSeq`, so reconnecting from that value cannot skip
+a later matching row. Open, close, and heartbeat control frames are always
+delivered; snapshots retain their original truncation and cursor metadata while
+their message/run projections are filtered.
+
 ### Correlated async channel runs (#1391)
 
 `channels.post` returns an opaque Relay-owned `runId` for accepted routed work.

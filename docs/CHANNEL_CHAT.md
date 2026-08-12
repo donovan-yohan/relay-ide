@@ -110,6 +110,15 @@ frames carry a required reason plus retryability. A bounded consumer stops
 parsing immediately after its `--max-events` frame and cancels the upstream
 reader; stdout backpressure is drained rather than treated as a dropped frame.
 
+Agent consumers may request a bounded server-side semantic projection with
+thread (`root` or canonical root id), exact message, sender, mention target,
+message status, run id, terminal, and principal-prose filters. Predicates are
+ANDed. Filtering happens after the authenticated subscription boundary receives
+the hub event: the underlying durable cursor advances from the original event
+before any projected message/run rows are omitted. This preserves the
+register-before-replay handoff, replay gap behavior, and backpressure bounds;
+control frames and liveness heartbeats remain visible even when no row matches.
+
 ### Correlated asynchronous runs
 
 An accepted external `channels.post` that can route work creates one opaque,

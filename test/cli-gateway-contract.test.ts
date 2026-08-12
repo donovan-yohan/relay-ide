@@ -75,6 +75,18 @@ function schemaNumberBoundsMatch(
   return aboveMinimum && belowMaximum;
 }
 
+function schemaStringBoundsMatch(
+  schema: RelayJsonSchema,
+  value: unknown
+): boolean {
+  if (schema.type !== 'string' || typeof value !== 'string') return true;
+  return (
+    (schema.minLength === undefined || value.length >= schema.minLength) &&
+    (schema.maxLength === undefined || value.length <= schema.maxLength) &&
+    (schema.pattern === undefined || new RegExp(schema.pattern).test(value))
+  );
+}
+
 function schemaObjectPropertiesMatch(
   schema: RelayJsonSchema,
   value: unknown
@@ -101,6 +113,7 @@ function schemaMatches(schema: RelayJsonSchema, value: unknown): boolean {
     (!schema.enum || schema.enum.includes(value as string)) &&
     schemaRequiredMatches(schema, value) &&
     schemaNumberBoundsMatch(schema, value) &&
+    schemaStringBoundsMatch(schema, value) &&
     schemaObjectPropertiesMatch(schema, value);
   if (!scalarMatches) return false;
   if (schema.anyOf?.some((branch) => schemaMatches(branch, value)) === false) {
@@ -321,12 +334,25 @@ describe('CLI gateway contract', () => {
         afterSeq: 0,
         maxEvents: 10,
         idleTimeoutMs: 1000,
+        filter: {
+          threadId: 'root',
+          senderId: 'agent-profile:codex:default',
+          status: 'complete',
+          terminalOnly: true,
+          principalOnly: true,
+        },
       })
     ).toBe(true);
     for (const input of [
       { channelId: 'channel-1', afterSeq: -1 },
       { channelId: 'channel-1', maxEvents: 0 },
       { channelId: 'channel-1', idleTimeoutMs: 300001 },
+      { channelId: 'channel-1', filter: { status: 'not-a-status' } },
+      { channelId: 'channel-1', filter: { threadId: 'not-a-thread' } },
+      { channelId: 'channel-1', filter: { messageId: 'chm:' } },
+      { channelId: 'channel-1', filter: { runId: 'chrun:' } },
+      { channelId: 'channel-1', filter: { senderId: '   ' } },
+      { channelId: 'channel-1', filter: { unknown: true } },
       { channelId: 'channel-1', unknown: true },
     ]) {
       expect(schemaAcceptsCommandInput('channels.subscribe', input)).toBe(

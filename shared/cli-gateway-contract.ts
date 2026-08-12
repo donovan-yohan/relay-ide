@@ -189,6 +189,9 @@ export interface RelayJsonSchema {
   oneOf?: readonly RelayJsonSchema[];
   not?: RelayJsonSchema;
   format?: string;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
   minimum?: number;
   maximum?: number;
   default?: unknown;
@@ -3424,6 +3427,48 @@ const channelHistoryInputSchema: RelayJsonSchema = {
   not: { required: ['beforeSeq', 'afterSeq'] },
 };
 
+const channelSubscriptionOpaqueIdSchema: RelayJsonSchema = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 512,
+  pattern: '\\S',
+};
+const channelSubscriptionMessageIdSchema: RelayJsonSchema = {
+  type: 'string',
+  minLength: 5,
+  maxLength: 512,
+  pattern: '^chm:.+',
+};
+const channelSubscriptionRunIdSchema: RelayJsonSchema = {
+  type: 'string',
+  minLength: 7,
+  maxLength: 512,
+  pattern: '^chrun:.+',
+};
+
+const channelSubscriptionFilterSchema: RelayJsonSchema = {
+  title: 'ChannelSubscriptionFilter',
+  description:
+    'Bounded semantic delivery filter. All supplied predicates are ANDed; omit for the rich unfiltered UI/diagnostics stream.',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    threadId: {
+      oneOf: [{ const: 'root' }, channelSubscriptionMessageIdSchema],
+    },
+    messageId: channelSubscriptionMessageIdSchema,
+    senderId: channelSubscriptionOpaqueIdSchema,
+    mentionTargetId: channelSubscriptionOpaqueIdSchema,
+    status: {
+      type: 'string',
+      enum: ['streaming', 'complete', 'truncated', 'interrupted', 'failed'],
+    },
+    runId: channelSubscriptionRunIdSchema,
+    terminalOnly: booleanSchema,
+    principalOnly: booleanSchema,
+  },
+};
+
 const channelSubscribeInputSchema: RelayJsonSchema = {
   title: 'ChannelsSubscribeInput',
   type: 'object',
@@ -3433,6 +3478,7 @@ const channelSubscribeInputSchema: RelayJsonSchema = {
     afterSeq: { type: 'integer', minimum: 0 },
     maxEvents: { type: 'integer', minimum: 1, maximum: 10000 },
     idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 300000 },
+    filter: channelSubscriptionFilterSchema,
   },
   required: ['channelId'],
 };
@@ -6725,10 +6771,26 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<id>',
       '--after-seq',
       '<n>',
+      '--thread-id',
+      '<id|root>',
+      '--message-id',
+      '<id>',
+      '--sender-id',
+      '<id>',
+      '--mention-target-id',
+      '<id>',
+      '--status',
+      '<streaming|complete|truncated|interrupted|failed>',
+      '--run-id',
+      '<id>',
+      '--terminal-only',
+      '<true|false>',
+      '--principal-only',
+      '<true|false>',
       '--json',
     ],
     summary:
-      'Stream durable channel events after an exclusive sequence cursor; ephemeral deltas never advance the resume cursor.',
+      'Stream durable channel events after an exclusive sequence cursor, optionally narrowed server-side to bounded semantic reply predicates; ephemeral deltas never advance the resume cursor.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,

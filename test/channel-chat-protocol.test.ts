@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyChannelEventV1,
+  channelAsyncRunMatchesSubscriptionFilter,
+  channelMessageMatchesSubscriptionFilter,
+  channelSubscriptionFilterValidationError,
+  normalizeChannelSubscriptionFilter,
+  CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES,
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   parseChannelSearchSnippet,
@@ -9,6 +14,7 @@ import {
   isChannelEventV1,
   parseMentions,
   type ChannelEventV1,
+  type ChannelAsyncRun,
   type ChannelMessage,
   type ChannelMessageId,
   type ChannelReducerState,
@@ -842,6 +848,206 @@ describe('channel-message-deleted-v1', () => {
     );
     expect(renumbered.needsCatchup).toBe(true);
     expect(renumbered.byId['chm:1']?.body.text).toBe('hi');
+  });
+});
+
+describe('ChannelSubscriptionFilter', () => {
+  const run = (overrides: Partial<ChannelAsyncRun> = {}): ChannelAsyncRun => ({
+    id: 'chrun:review' as ChannelAsyncRun['id'],
+    channelId: CHANNEL,
+    threadId: null,
+    requestMessageId: 'chm:request' as ChannelMessageId,
+    requesterId: 'human:operator',
+    state: 'completed',
+    targets: [],
+    createdAt: '2026-08-12T00:00:00.000Z',
+    updatedAt: '2026-08-12T00:00:00.000Z',
+    ...overrides,
+  });
+
+  it('validates the bounded canonical filter and rejects malformed metadata', () => {
+    expect(
+      channelSubscriptionFilterValidationError({
+        threadId: 'chm:root',
+        messageId: 'chm:reply',
+        senderId: 'agent-profile:codex:default',
+        mentionTargetId: 'codex',
+        status: 'complete',
+        runId: 'chrun:review',
+        terminalOnly: true,
+        principalOnly: false,
+      })
+    ).toBeUndefined();
+    for (const filter of [
+      { threadId: 'rooted' },
+      { messageId: 'message:wrong-prefix' },
+      { runId: 'run:wrong-prefix' },
+      { status: 'unknown' },
+      { terminalOnly: 'true' },
+      { extra: true },
+      { senderId: 'x'.repeat(513) },
+    ]) {
+      expect(channelSubscriptionFilterValidationError(filter)).toBeDefined();
+    }
+    // The aggregate runtime ceiling deliberately includes maximum-length
+    // CJK/emoji values and their URL/JSON expansion, so schema-valid input
+    // cannot be rejected later at the decoded boundary.
+    expect(
+      channelSubscriptionFilterValidationError({
+        threadId: `chm:${'界'.repeat(508)}`,
+        messageId: `chm:${'語'.repeat(508)}`,
+        senderId: '漢'.repeat(512),
+        mentionTargetId: '🧪'.repeat(256),
+        runId: `chrun:${'字'.repeat(506)}`,
+        terminalOnly: true,
+        principalOnly: true,
+      })
+    ).toBeUndefined();
+    expect(
+      channelSubscriptionFilterValidationError({
+        senderId: 'x'.repeat(CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES),
+      })
+    ).toContain('exceeds');
+    expect(
+      normalizeChannelSubscriptionFilter({
+        terminalOnly: false,
+        principalOnly: false,
+      })
+    ).toEqual({});
+  });
+
+  it('ANDs message predicates and keeps principal semantics provider-neutral', () => {
+    const principal = message({
+      id: 'chm:reply' as ChannelMessageId,
+      threadId: 'chm:root' as ChannelMessageId,
+      sender: { kind: 'agent', id: 'agent-profile:codex:default' },
+      mentions: [{ raw: '@Codex', providerId: 'codex' }],
+      asyncRun: {
+        runId: 'chrun:review' as ChannelAsyncRun['id'],
+        targetId: 'agent-profile:codex:default',
+      },
+    });
+    const filter = {
+      threadId: 'chm:root' as ChannelMessageId,
+      messageId: 'chm:reply' as ChannelMessageId,
+      senderId: 'agent-profile:codex:default',
+      mentionTargetId: 'codex',
+      status: 'complete' as const,
+      runId: 'chrun:review' as ChannelAsyncRun['id'],
+      terminalOnly: true,
+      principalOnly: true,
+    };
+    expect(channelMessageMatchesSubscriptionFilter(principal, filter)).toBe(
+      true
+    );
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({
+          ...principal,
+          agentDetail: { itemId: 'detail', card: {} } as never,
+        }),
+        filter
+      )
+    ).toBe(false);
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({ ...principal, status: 'streaming' }),
+        filter
+      )
+    ).toBe(false);
+  });
+
+  it('treats root consistently and fail-closes lifecycle projections for message filters', () => {
+    const root = message({ id: 'chm:root' as ChannelMessageId });
+    const reply = message({
+      id: 'chm:reply' as ChannelMessageId,
+      threadId: root.id,
+    });
+    const sibling = message({
+      id: root.id,
+      threadId: 'chm:other-root' as ChannelMessageId,
+    });
+    expect(
+      channelMessageMatchesSubscriptionFilter(root, { threadId: 'root' })
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(root, {
+        threadId: 'chm:root' as ChannelMessageId,
+      })
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(reply, { threadId: root.id })
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(sibling, { threadId: root.id })
+    ).toBe(false);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(
+        run({ requestMessageId: root.id }),
+        { threadId: root.id }
+      )
+    ).toBe(true);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(
+        run({
+          threadId: root.id,
+          requestMessageId: 'chm:other-request' as ChannelMessageId,
+        }),
+        { threadId: root.id }
+      )
+    ).toBe(true);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(
+        run({
+          threadId: 'chm:other-root' as ChannelMessageId,
+          requestMessageId: root.id,
+        }),
+        { threadId: root.id }
+      )
+    ).toBe(false);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(
+        run({ requestMessageId: root.id }),
+        { threadId: 'root' }
+      )
+    ).toBe(true);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(run(), { terminalOnly: true })
+    ).toBe(true);
+    expect(
+      channelAsyncRunMatchesSubscriptionFilter(run(), { principalOnly: false })
+    ).toBe(true);
+  });
+
+  it('only projects actual principal prose for created, completed, and deleted rows', () => {
+    const filter = { principalOnly: true };
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({ status: 'streaming' }),
+        filter
+      )
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({ status: 'complete' }),
+        filter
+      )
+    ).toBe(true);
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({
+          body: { text: '', format: 'markdown' },
+          meta: { deletedAt: '2026-08-12T00:00:00.000Z' },
+        }),
+        filter
+      )
+    ).toBe(false);
+    expect(
+      channelMessageMatchesSubscriptionFilter(
+        message({ body: { text: '   ', format: 'markdown' } }),
+        filter
+      )
+    ).toBe(false);
   });
 });
 

@@ -27,6 +27,17 @@ export const CHANNEL_MESSAGE_BODY_MAX_BYTES = 256 * 1024;
 export const CHANNEL_AGENT_DETAIL_MAX_BYTES = 256 * 1024;
 /** Bounded display scalars carried with one agent-authored row. */
 export const CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS = 512;
+/** Individual opaque filter identifiers remain bounded independently. */
+export const CHANNEL_SUBSCRIPTION_FILTER_ID_MAX_CHARS = 512;
+/**
+ * The public schema permits five independently bounded opaque strings. A
+ * JavaScript character may expand to three UTF-8 bytes in the URL, and percent
+ * encoding can expand each such byte to three URL bytes. Keep the decoded
+ * aggregate ceiling above that worst-case schema-valid query shape (plus keys
+ * and JSON framing), so the authenticated boundary cannot reject it later.
+ */
+export const CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES =
+  CHANNEL_SUBSCRIPTION_FILTER_ID_MAX_CHARS * 5 * 3 * 3 + 1024;
 
 export type ChannelMessageId = `chm:${string}`;
 export type ChannelAttachmentId = `cha:${string}`;
@@ -100,12 +111,20 @@ export type ChannelMessagePart = ChannelImagePart;
 
 export type ChannelSenderKind = 'human' | 'agent' | 'system';
 export type ChannelMessageKind = 'message' | 'system';
-export type ChannelMessageStatus =
-  | 'streaming'
-  | 'complete'
-  | 'truncated'
-  | 'interrupted'
-  | 'failed';
+export const CHANNEL_MESSAGE_STATUSES = [
+  'streaming',
+  'complete',
+  'truncated',
+  'interrupted',
+  'failed',
+] as const;
+export type ChannelMessageStatus = (typeof CHANNEL_MESSAGE_STATUSES)[number];
+export const CHANNEL_TERMINAL_MESSAGE_STATUSES = [
+  'complete',
+  'truncated',
+  'interrupted',
+  'failed',
+] as const satisfies readonly ChannelMessageStatus[];
 export type ChannelTruncationReason =
   | 'size-limit'
   | 'missing-terminal'
@@ -237,6 +256,245 @@ export interface ChannelMessage {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+}
+
+/**
+ * Server-enforced semantic narrowing for durable channel subscriptions.
+ *
+ * Every supplied predicate is ANDed. This is deliberately a flat, single-value
+ * filter: it keeps the URL/actor audit surface bounded and avoids turning the
+ * durable subscription lane into a query language. Omit it for the existing
+ * rich, unfiltered UI/diagnostics stream.
+ */
+export interface ChannelSubscriptionFilter {
+  /** A thread root id, or `'root'` for root-level messages and runs. */
+  threadId?: ChannelMessageId | 'root';
+  /** One exact durable message id. */
+  messageId?: ChannelMessageId;
+  /** One exact sender Actor id. */
+  senderId?: string;
+  /** One resolved profile Actor id or legacy provider id mentioned by a row. */
+  mentionTargetId?: string;
+  /** One exact message lifecycle state. */
+  status?: ChannelMessageStatus;
+  /** One Relay-owned correlated run id. */
+  runId?: ChannelAsyncRunId;
+  /** Keep only terminal message/run lifecycle states. */
+  terminalOnly?: boolean;
+  /** Keep principal prose rows, never detail/image activity rows. */
+  principalOnly?: boolean;
+}
+
+const CHANNEL_SUBSCRIPTION_FILTER_KEYS = new Set<
+  keyof ChannelSubscriptionFilter
+>([
+  'threadId',
+  'messageId',
+  'senderId',
+  'mentionTargetId',
+  'status',
+  'runId',
+  'terminalOnly',
+  'principalOnly',
+]);
+
+const TERMINAL_MESSAGE_STATUSES = new Set<ChannelMessageStatus>(
+  CHANNEL_TERMINAL_MESSAGE_STATUSES
+);
+const TERMINAL_RUN_STATES = new Set<ChannelAsyncRunState>([
+  'completed',
+  'failed',
+  'cancelled',
+  'rejected',
+]);
+
+function subscriptionFilterStringIsValid(
+  value: unknown,
+  prefix?: string
+): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.trim().length > 0 &&
+    value.length <= CHANNEL_SUBSCRIPTION_FILTER_ID_MAX_CHARS &&
+    (prefix === undefined ||
+      (value.startsWith(prefix) && value.length > prefix.length))
+  );
+}
+
+/**
+ * Returns a stable validation reason for the shared HTTP/CLI boundary.
+ * Callers must reject rather than silently discard malformed filter metadata.
+ */
+export function channelSubscriptionFilterValidationError(
+  value: unknown
+): string | undefined {
+  if (!isRecord(value)) return 'filter must be an object';
+  const unknown = Object.keys(value).find(
+    (key) =>
+      !CHANNEL_SUBSCRIPTION_FILTER_KEYS.has(
+        key as keyof ChannelSubscriptionFilter
+      )
+  );
+  if (unknown) return `${unknown} is not a supported subscription filter`;
+  const undefinedKey = Object.keys(value).find(
+    (key) => value[key] === undefined
+  );
+  if (undefinedKey) return `${undefinedKey} must not be undefined`;
+
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return 'filter metadata must be serializable';
+  }
+  if (
+    new TextEncoder().encode(encoded).byteLength >
+    CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES
+  ) {
+    return `filter metadata exceeds ${CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES} bytes`;
+  }
+
+  if (
+    value.threadId !== undefined &&
+    value.threadId !== 'root' &&
+    !subscriptionFilterStringIsValid(value.threadId, 'chm:')
+  ) {
+    return 'threadId must be root or a non-empty chm: id';
+  }
+  if (
+    value.messageId !== undefined &&
+    !subscriptionFilterStringIsValid(value.messageId, 'chm:')
+  ) {
+    return 'messageId must be a non-empty chm: id';
+  }
+  for (const key of ['senderId', 'mentionTargetId'] as const) {
+    if (
+      value[key] !== undefined &&
+      !subscriptionFilterStringIsValid(value[key])
+    ) {
+      return `${key} must be a bounded non-empty string`;
+    }
+  }
+  if (
+    value.status !== undefined &&
+    (typeof value.status !== 'string' ||
+      !CHANNEL_MESSAGE_STATUSES.includes(value.status as ChannelMessageStatus))
+  ) {
+    return `status must be one of: ${CHANNEL_MESSAGE_STATUSES.join(', ')}`;
+  }
+  if (
+    value.runId !== undefined &&
+    !subscriptionFilterStringIsValid(value.runId, 'chrun:')
+  ) {
+    return 'runId must be a non-empty chrun: id';
+  }
+  for (const key of ['terminalOnly', 'principalOnly'] as const) {
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') {
+      return `${key} must be boolean`;
+    }
+  }
+  return undefined;
+}
+
+export function isChannelSubscriptionFilter(
+  value: unknown
+): value is ChannelSubscriptionFilter {
+  return channelSubscriptionFilterValidationError(value) === undefined;
+}
+
+/**
+ * `false` means “do not narrow” for the two boolean predicates. Remove it
+ * before a subscription is classified, so an explicitly false-only filter is
+ * byte/event-equivalent to the unfiltered stream (including deltas).
+ */
+export function normalizeChannelSubscriptionFilter(
+  filter: ChannelSubscriptionFilter
+): ChannelSubscriptionFilter {
+  const { terminalOnly, principalOnly, ...predicates } = filter;
+  return {
+    ...predicates,
+    ...(terminalOnly === true ? { terminalOnly: true } : {}),
+    ...(principalOnly === true ? { principalOnly: true } : {}),
+  };
+}
+
+export function channelMessageIsPrincipalProse(
+  message: ChannelMessage
+): boolean {
+  return (
+    message.kind === 'message' &&
+    !isChannelMessageTombstone(message) &&
+    message.body.text.trim().length > 0 &&
+    message.agentDetail === undefined &&
+    (!message.parts || message.parts.length === 0)
+  );
+}
+
+export function channelMessageMatchesSubscriptionFilter(
+  message: ChannelMessage,
+  filter: ChannelSubscriptionFilter
+): boolean {
+  if (
+    filter.threadId !== undefined &&
+    (filter.threadId === 'root'
+      ? message.threadId !== null
+      : !(
+          (message.threadId === null && message.id === filter.threadId) ||
+          message.threadId === filter.threadId
+        ))
+  ) {
+    return false;
+  }
+  if (filter.messageId !== undefined && message.id !== filter.messageId)
+    return false;
+  if (filter.senderId !== undefined && message.sender.id !== filter.senderId)
+    return false;
+  if (
+    filter.mentionTargetId !== undefined &&
+    !message.mentions?.some(
+      (mention) =>
+        mention.profileId === filter.mentionTargetId ||
+        mention.providerId === filter.mentionTargetId
+    )
+  ) {
+    return false;
+  }
+  if (filter.status !== undefined && message.status !== filter.status)
+    return false;
+  if (filter.runId !== undefined && message.asyncRun?.runId !== filter.runId)
+    return false;
+  if (filter.terminalOnly && !TERMINAL_MESSAGE_STATUSES.has(message.status))
+    return false;
+  return !filter.principalOnly || channelMessageIsPrincipalProse(message);
+}
+
+/** Run projections never expose themselves through message-only filters. */
+export function channelAsyncRunMatchesSubscriptionFilter(
+  run: ChannelAsyncRun,
+  filter: ChannelSubscriptionFilter
+): boolean {
+  if (
+    filter.messageId !== undefined ||
+    filter.senderId !== undefined ||
+    filter.mentionTargetId !== undefined ||
+    filter.status !== undefined ||
+    filter.principalOnly === true
+  ) {
+    return false;
+  }
+  if (
+    filter.threadId !== undefined &&
+    (filter.threadId === 'root'
+      ? run.threadId !== null
+      : run.threadId === null
+        ? run.requestMessageId !== filter.threadId
+        : run.threadId !== filter.threadId)
+  ) {
+    return false;
+  }
+  if (filter.runId !== undefined && run.id !== filter.runId) return false;
+  return !filter.terminalOnly || TERMINAL_RUN_STATES.has(run.state);
 }
 
 export interface ChannelInFlightRef {
@@ -883,13 +1141,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const SENDER_KINDS = new Set<string>(['human', 'agent', 'system']);
 const MESSAGE_KINDS = new Set<string>(['message', 'system']);
-const MESSAGE_STATUSES = new Set<string>([
-  'streaming',
-  'complete',
-  'truncated',
-  'interrupted',
-  'failed',
-]);
+const MESSAGE_STATUSES = new Set<string>(CHANNEL_MESSAGE_STATUSES);
 const BODY_FORMATS = new Set<string>(['markdown', 'text']);
 const IMAGE_MIMES = new Set<string>([
   'image/png',

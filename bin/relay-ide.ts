@@ -73,6 +73,11 @@ import {
   type RelayCliGatewayEnvelope,
   type RelayCliGatewayErrorCode,
 } from '../shared/cli-gateway-contract.js';
+import {
+  channelSubscriptionFilterValidationError,
+  normalizeChannelSubscriptionFilter,
+  type ChannelSubscriptionFilter,
+} from '../shared/channel-chat-protocol.js';
 import { retainOutputPredicateSuffix } from '../shared/cli-gateway-sessions-wait.js';
 import {
   gatewayCliInvalidArgumentError,
@@ -5353,6 +5358,12 @@ type ChannelCliValueFlag =
   | '--channel-id'
   | '--run-id'
   | '--thread-id'
+  | '--message-id'
+  | '--sender-id'
+  | '--mention-target-id'
+  | '--status'
+  | '--terminal-only'
+  | '--principal-only'
   | '--limit'
   | '--before-seq'
   | '--after-seq'
@@ -5440,6 +5451,51 @@ function validateChannelCliPagination(
       });
     }
   }
+}
+
+function readChannelSubscriptionFilter(
+  values: ReadonlyMap<ChannelCliValueFlag, string>
+): ChannelSubscriptionFilter | undefined {
+  const filter: ChannelSubscriptionFilter = {};
+  const stringFlags = [
+    ['--thread-id', 'threadId'],
+    ['--message-id', 'messageId'],
+    ['--sender-id', 'senderId'],
+    ['--mention-target-id', 'mentionTargetId'],
+    ['--status', 'status'],
+    ['--run-id', 'runId'],
+  ] as const;
+  for (const [flag, key] of stringFlags) {
+    const raw = values.get(flag);
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    if (!value) {
+      gatewayInvalid('channels.subscribe', `${flag} must be non-empty`, {
+        field: key,
+      });
+    }
+    Object.assign(filter, { [key]: value });
+  }
+  for (const [flag, key] of [
+    ['--terminal-only', 'terminalOnly'],
+    ['--principal-only', 'principalOnly'],
+  ] as const) {
+    const value = values.get(flag);
+    if (value === undefined) continue;
+    if (value !== 'true' && value !== 'false') {
+      gatewayInvalid('channels.subscribe', `${flag} must be true or false`, {
+        field: key,
+        value,
+      });
+    }
+    Object.assign(filter, { [key]: value === 'true' });
+  }
+  if (Object.keys(filter).length === 0) return undefined;
+  const validationError = channelSubscriptionFilterValidationError(filter);
+  if (validationError) {
+    gatewayInvalid('channels.subscribe', validationError, { field: 'filter' });
+  }
+  return normalizeChannelSubscriptionFilter(filter);
 }
 
 function validateChannelPostCliInput(input: Record<string, unknown>): void {
@@ -5607,6 +5663,14 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
       '--after-seq',
       '--max-events',
       '--idle-timeout-ms',
+      '--thread-id',
+      '--message-id',
+      '--sender-id',
+      '--mention-target-id',
+      '--status',
+      '--run-id',
+      '--terminal-only',
+      '--principal-only',
     ]);
     const channelId = requiredChannelCliString(
       'channels.subscribe',
@@ -5636,11 +5700,13 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
     const afterSeq = readBoundedInt('--after-seq', 0, Number.MAX_SAFE_INTEGER);
     const maxEvents = readBoundedInt('--max-events', 1, 10000);
     const idleTimeoutMs = readBoundedInt('--idle-timeout-ms', 1, 300000);
+    const filter = readChannelSubscriptionFilter(values);
     return runGatewayChannelsSubscribe({
       channelId,
       ...(afterSeq !== undefined ? { afterSeq } : {}),
       ...(maxEvents !== undefined ? { maxEvents } : {}),
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      ...(filter ? { filter } : {}),
     });
   }
 
@@ -5731,6 +5797,7 @@ async function runGatewayChannelsSubscribe(input: {
   afterSeq?: number;
   maxEvents?: number;
   idleTimeoutMs?: number;
+  filter?: ChannelSubscriptionFilter;
 }): Promise<void> {
   const commandName = 'channels.subscribe' as const;
   const token = gatewayRequiredToken(commandName);
@@ -5738,6 +5805,11 @@ async function runGatewayChannelsSubscribe(input: {
   const query = new URLSearchParams();
   if (input.afterSeq !== undefined)
     query.set('afterSeq', String(input.afterSeq));
+  if (input.filter) {
+    for (const [key, value] of Object.entries(input.filter)) {
+      query.set(key, String(value));
+    }
+  }
   const controller = new AbortController();
   const stop = (): void => controller.abort();
   process.once('SIGINT', stop);
@@ -5745,7 +5817,7 @@ async function runGatewayChannelsSubscribe(input: {
   let res: Response;
   try {
     res = await fetch(
-      `http://127.0.0.1:${gatewayWsPort()}/channels/${encodeURIComponent(input.channelId)}/subscribe?${query.toString()}`,
+      `http://127.0.0.1:${gatewayWsPort()}/channels/${encodeURIComponent(input.channelId)}/subscribe${query.size ? `?${query}` : ''}`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
