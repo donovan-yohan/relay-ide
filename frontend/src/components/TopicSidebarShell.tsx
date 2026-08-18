@@ -26,6 +26,7 @@ import {
   type ChannelMessageId,
   type ChannelMessageSearchResult,
 } from '../../../shared/channel-chat-protocol.js';
+import { parseChannelSearchQuery } from '../../../shared/channel-search-query.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -70,6 +71,7 @@ import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import { useChannelSearchPanelStore } from '../lib/stores/channel-search-panel.js';
 import {
   channelAgentStatusKey,
   channelThreadStatusSuffix,
@@ -2027,6 +2029,7 @@ function topicEmptyStateText(input: {
  */
 function messageEmptyStateText(input: {
   unavailableReason?: string | undefined;
+  scopeAlias?: string | undefined;
   searchQuery: string;
 }): string {
   if (input.unavailableReason === 'empty_query') {
@@ -2047,6 +2050,19 @@ function messageEmptyStateText(input: {
   }
   if (input.unavailableReason === 'search_timeout') {
     return 'search took too long — type more characters';
+  }
+  if (input.unavailableReason === 'scope_invalid') {
+    return 'finish the in: project or channel scope';
+  }
+  if (input.unavailableReason === 'scope_not_found') {
+    return input.scopeAlias
+      ? `no visible project or channel named “${input.scopeAlias}”`
+      : 'no visible project or channel matches that scope';
+  }
+  if (input.unavailableReason === 'scope_ambiguous') {
+    return input.scopeAlias
+      ? `“${input.scopeAlias}” matches more than one project or channel`
+      : 'that project or channel scope is ambiguous';
   }
   return `no message matches for “${input.searchQuery.trim()}”`;
 }
@@ -2435,6 +2451,7 @@ function TopicSearchPanel({
   messageError,
   messageTruncated,
   messageUnavailableReason,
+  messageScopeAlias,
   onSearchQueryChange,
   onSearchRetry,
   onSearchClear,
@@ -2457,6 +2474,7 @@ function TopicSearchPanel({
   messageError: boolean;
   messageTruncated: boolean;
   messageUnavailableReason?: string | undefined;
+  messageScopeAlias?: string | undefined;
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
@@ -2579,6 +2597,7 @@ function TopicSearchPanel({
               <div className="topic-search-section__empty">
                 {messageEmptyStateText({
                   unavailableReason: messageUnavailableReason,
+                  scopeAlias: messageScopeAlias,
                   searchQuery,
                 })}
               </div>
@@ -2588,6 +2607,64 @@ function TopicSearchPanel({
       ) : null}
     </>
   );
+}
+
+function TopicSearchTrigger({
+  alias,
+  channelId,
+  onOpen,
+}: {
+  alias?: string | undefined;
+  channelId?: string | undefined;
+  onOpen: (alias?: string, channelId?: string) => void;
+}) {
+  const searchPanelOpen = useChannelSearchPanelStore((state) => state.open);
+  return (
+    <button
+      type="button"
+      className="topic-search-trigger"
+      aria-label="search message history"
+      aria-expanded={searchPanelOpen}
+      aria-controls="channel-search-panel"
+      data-channel-search-trigger="true"
+      onClick={() => onOpen(alias, channelId)}
+    >
+      <span aria-hidden="true">/</span>
+      <span>search messages</span>
+      {alias ? (
+        <span className="topic-search-trigger__scope">in:{alias}</span>
+      ) : null}
+    </button>
+  );
+}
+
+function TopicSearchPlacement({
+  panel,
+  target,
+  onOpen,
+  children,
+}: {
+  panel: boolean;
+  target: { alias?: string; channelId?: string };
+  onOpen?: ((alias?: string, channelId?: string) => void) | undefined;
+  children: ReactNode;
+}) {
+  if (panel && onOpen) {
+    return <TopicSearchTrigger {...target} onOpen={onOpen} />;
+  }
+  return children;
+}
+
+function topicSearchTarget(input: {
+  activeChannelId: string | null;
+  topicsById: ReadonlyMap<string, WorkspaceTopic>;
+}): { alias?: string; channelId?: string } {
+  if (!input.activeChannelId) return {};
+  const activeTopic = input.topicsById.get(input.activeChannelId);
+  const channelAlias = activeTopic?.display.title.trim();
+  return channelAlias
+    ? { alias: channelAlias, channelId: input.activeChannelId }
+    : {};
 }
 
 const EMPTY_TOPICS: WorkspaceTopic[] = [];
@@ -2911,6 +2988,7 @@ export function TopicSidebarView({
   messageSearchError = false,
   messageSearchTruncated = false,
   messageSearchUnavailableReason,
+  messageSearchScopeAlias,
   surfacesError = false,
   onSearchQueryChange,
   onSearchRetry,
@@ -2927,6 +3005,8 @@ export function TopicSidebarView({
   showArchived = false,
   onToggleArchived,
   showAdvancedDetail = false,
+  searchPlacement = 'inline',
+  onOpenSearchPanel,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -2961,6 +3041,7 @@ export function TopicSidebarView({
   messageSearchError?: boolean;
   messageSearchTruncated?: boolean;
   messageSearchUnavailableReason?: string | undefined;
+  messageSearchScopeAlias?: string | undefined;
   surfacesError?: boolean;
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
@@ -2969,6 +3050,10 @@ export function TopicSidebarView({
   onSendInput?: TopicSendInput | undefined;
   onCreateTaskRoom?: (() => void) | undefined;
   showAdvancedDetail?: boolean | undefined;
+  searchPlacement?: 'inline' | 'panel';
+  onOpenSearchPanel?:
+    | ((alias?: string, channelId?: string) => void)
+    | undefined;
 }) {
   const model = useMemo(
     () => buildTopicNavModel({ topics, sessions, surfaces, derived, nodes }),
@@ -3436,6 +3521,10 @@ export function TopicSidebarView({
   };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
   const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
+  const searchTarget = topicSearchTarget({
+    activeChannelId,
+    topicsById,
+  });
   const selectedRepoPath = selectedTopic
     ? resolveTopicActiveContext(selectedTopic).repoPath
     : null;
@@ -3491,29 +3580,36 @@ export function TopicSidebarView({
           tree, and every channel row. Desktop is unchanged — the cockpit is
           `display: none` above 600px, so the visible desktop order stays
           header → search → older chats → tree. */}
-      <TopicSearchPanel
-        model={model}
-        searchQuery={searchQuery}
-        searchLoading={searchLoading}
-        searchError={searchError}
-        searchResults={searchResults}
-        searchTruncated={searchTruncated}
-        searchUnavailableReason={searchUnavailableReason}
-        messageResults={messageResults}
-        messageLoading={messageSearchLoading}
-        messageError={messageSearchError}
-        messageTruncated={messageSearchTruncated}
-        messageUnavailableReason={messageSearchUnavailableReason}
-        onSearchQueryChange={onSearchQueryChange}
-        onSearchRetry={onSearchRetry}
-        onSearchClear={onSearchClear}
-        onOpenTopic={openSearchResult}
-        onOpenMessage={openMessageResult}
-        searchScope={searchScope}
-        onToggleSearchScope={onToggleSearchScope}
-        canScope={activeWorkspaceId != null}
-        resumeTargetFor={searchResumeTargetFor}
-      />
+      <TopicSearchPlacement
+        panel={searchPlacement === 'panel'}
+        target={searchTarget}
+        onOpen={onOpenSearchPanel}
+      >
+        <TopicSearchPanel
+          model={model}
+          searchQuery={searchQuery}
+          searchLoading={searchLoading}
+          searchError={searchError}
+          searchResults={searchResults}
+          searchTruncated={searchTruncated}
+          searchUnavailableReason={searchUnavailableReason}
+          messageResults={messageResults}
+          messageLoading={messageSearchLoading}
+          messageError={messageSearchError}
+          messageTruncated={messageSearchTruncated}
+          messageUnavailableReason={messageSearchUnavailableReason}
+          messageScopeAlias={messageSearchScopeAlias}
+          onSearchQueryChange={onSearchQueryChange}
+          onSearchRetry={onSearchRetry}
+          onSearchClear={onSearchClear}
+          onOpenTopic={openSearchResult}
+          onOpenMessage={openMessageResult}
+          searchScope={searchScope}
+          onToggleSearchScope={onToggleSearchScope}
+          canScope={activeWorkspaceId != null}
+          resumeTargetFor={searchResumeTargetFor}
+        />
+      </TopicSearchPlacement>
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <TopicMobileCockpit
         tree={railTree}
@@ -3571,8 +3667,11 @@ export function TopicSidebarView({
 
 export function TopicSidebarShell({
   onSelectSession,
+  searchPlacement = 'panel',
 }: {
   onSelectSession?: ((id: string) => void) | undefined;
+  /** Test/embedded compatibility lane; production navigation uses the panel. */
+  searchPlacement?: 'inline' | 'panel';
 }) {
   const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
@@ -3638,8 +3737,13 @@ export function TopicSidebarShell({
   // whole corpus and — synchronous sqlite on the request path — freezes the hub
   // event loop while it does. The server refuses the same shape; this gate just
   // means the first keystroke costs no request at all.
+  const parsedMessageSearchQuery = useMemo(
+    () => parseChannelSearchQuery(normalizedSearchQuery),
+    [normalizedSearchQuery]
+  );
   const messageSearchEnabled =
-    normalizedSearchQuery.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
+    parsedMessageSearchQuery.invalidAlias === undefined &&
+    parsedMessageSearchQuery.text.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const messageSearchQuery = useQuery({
     queryKey: [
       'channel-message-search',
@@ -3781,8 +3885,13 @@ export function TopicSidebarShell({
   // debounce is still running on a third character the section must keep
   // showing the previous state rather than flashing "type 3 characters" for
   // one frame on its way to results.
+  const parsedTypedMessageSearchQuery = useMemo(
+    () => parseChannelSearchQuery(typedSearchQuery),
+    [typedSearchQuery]
+  );
   const messageSearchTooShort =
-    typedSearchQuery.length < CHANNEL_SEARCH_MIN_QUERY_CHARS;
+    parsedTypedMessageSearchQuery.invalidAlias === undefined &&
+    parsedTypedMessageSearchQuery.text.length < CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const messageResults = useMemo(
     () =>
       messageSearchTooShort
@@ -3862,9 +3971,15 @@ export function TopicSidebarShell({
       // sent is synthesized here — otherwise the section falls through to
       // "no message matches", a claim about a search that never ran.
       messageSearchUnavailableReason={
-        messageSearchTooShort
-          ? 'query_too_short'
-          : messageSearchData?.unavailableReason
+        parsedTypedMessageSearchQuery.invalidAlias !== undefined
+          ? 'scope_invalid'
+          : messageSearchTooShort
+            ? 'query_too_short'
+            : messageSearchData?.unavailableReason
+      }
+      messageSearchScopeAlias={
+        parsedTypedMessageSearchQuery.invalidAlias ??
+        messageSearchData?.scopeAlias
       }
       onSearchQueryChange={setSearchQuery}
       onSearchRetry={() => {
@@ -3872,6 +3987,15 @@ export function TopicSidebarShell({
         void messageSearchQuery.refetch();
       }}
       onSearchClear={() => setSearchQuery('')}
+      searchPlacement={searchPlacement}
+      onOpenSearchPanel={(alias, channelId) => {
+        const search = useChannelSearchPanelStore.getState();
+        if (search.open) {
+          document.getElementById('channel-search-panel-input')?.focus();
+          return;
+        }
+        search.openForAlias(alias, channelId);
+      }}
       onSelectSession={onSelectSession}
       onCreateTaskRoom={openTopicTaskRoom}
       showAdvancedDetail={!(surfacesQuery.isLoading && !surfacesQuery.data)}

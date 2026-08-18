@@ -153,6 +153,7 @@ async function render(
     loadOlder?: () => Promise<void>;
     fullSnapshotRevision?: number;
     lastReadSeq?: number | null;
+    collapseCompletedAgentActivity?: boolean;
   } = {}
 ): Promise<void> {
   await act(async () => {
@@ -168,6 +169,8 @@ async function render(
         fullSnapshotRevision: options.fullSnapshotRevision ?? 0,
         needsCatchup: false,
         onResync: () => {},
+        collapseCompletedAgentActivity:
+          options.collapseCompletedAgentActivity ?? false,
       })
     );
   });
@@ -212,6 +215,69 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     await render([message(1), message(2), message(3, 'large append')]);
     expect(timeline().scrollTop).toBe(2_000);
     expect(host.querySelector('.ch-new-messages')).toBeNull();
+  });
+
+  it('folds completed agent activity without hiding prose or live activity', async () => {
+    const liveDetail = {
+      ...detailMessage(4),
+      status: 'streaming' as const,
+      agentDetail: {
+        itemId: 'live-4',
+        card: {
+          kind: 'thought' as const,
+          title: 'thinking',
+          status: 'running' as const,
+          content: 'live reasoning',
+        },
+      },
+    };
+    await render(
+      [
+        message(1, 'assistant prose'),
+        detailMessage(2),
+        {
+          ...detailMessage(3),
+          agentDetail: {
+            itemId: 'tool-3',
+            card: {
+              kind: 'tool_call',
+              title: 'read file',
+              status: 'completed',
+              content: 'src/file.ts',
+            },
+          },
+        },
+        liveDetail,
+      ],
+      { collapseCompletedAgentActivity: true }
+    );
+
+    const summary = host.querySelector<HTMLButtonElement>('.ch-activity-run');
+    expect(summary?.textContent).toContain('2 agent events');
+    expect(summary?.textContent).toContain('1 output');
+    expect(summary?.textContent).toContain('1 tool call');
+    expect(summary?.getAttribute('aria-expanded')).toBe('false');
+    expect(summary?.getAttribute('data-channel-message-seq')).toBe('3');
+    expect(summary?.getAttribute('data-channel-activity-start-seq')).toBe('2');
+    expect(summary?.getAttribute('data-channel-activity-end-seq')).toBe('3');
+    const chevron = summary?.querySelector('svg');
+    expect(chevron?.getAttribute('aria-hidden')).toBe('true');
+    expect(chevron?.getAttribute('fill')).toBe('none');
+    expect(chevron?.getAttribute('stroke-width')).toBe('1.5');
+    expect(chevron?.getAttribute('stroke-linecap')).toBe('square');
+    expect(host.querySelector('[data-channel-message-id="chm:2"]')).toBeNull();
+    expect(host.querySelector('[data-channel-message-id="chm:3"]')).toBeNull();
+    expect(host.textContent).toContain('assistant prose');
+    expect(host.querySelector('[data-channel-message-id="chm:4"]')).not.toBeNull();
+    expect(host.textContent).toContain('reasoning…');
+
+    await act(async () => summary?.click());
+    expect(summary?.getAttribute('aria-expanded')).toBe('true');
+    expect(summary?.getAttribute('data-channel-message-seq')).toBe('3');
+    expect(summary?.getAttribute('data-channel-activity-start-seq')).toBe('2');
+    expect(summary?.getAttribute('data-channel-activity-end-seq')).toBe('3');
+    expect(host.querySelector('[data-channel-message-id="chm:2"]')).not.toBeNull();
+    expect(host.querySelector('[data-channel-message-id="chm:3"]')).not.toBeNull();
   });
 
   it('keeps scrollTop stable while up, counts appended rows, then jumps and clears', async () => {

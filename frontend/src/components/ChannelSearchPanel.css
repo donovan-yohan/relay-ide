@@ -1,0 +1,217 @@
+.channel-search-panel {
+  display: flex;
+  flex: 0 0 400px;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.channel-search-panel__header,
+.channel-search-panel__input-row,
+.channel-search-panel__options,
+.channel-search-panel__footer {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.channel-search-panel__header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.channel-search-panel button {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.channel-search-panel button:hover,
+.channel-search-panel button:focus-visible,
+.channel-search-panel button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.channel-search-panel__close,
+.channel-search-panel__input-row button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: var(--font-size-xs);
+}
+
+.channel-search-panel__input-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 12px;
+  color: var(--status-info);
+}
+
+.channel-search-panel__input-row input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.channel-search-panel__input-row:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.channel-search-panel__options {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.channel-search-panel__options button {
+  border: 0;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.channel-search-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.channel-search-panel__state {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.channel-search-panel__state.error {
+  color: var(--status-warning);
+}
+
+.channel-search-panel__state button {
+  padding: 4px 8px;
+}
+
+.channel-search-result {
+  display: grid;
+  width: 100%;
+  min-height: 64px;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+  text-align: left;
+}
+
+.channel-search-result:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.channel-search-result:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.channel-search-result__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.channel-search-result__channel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-search-result__sender,
+.channel-search-result__tag,
+.channel-search-result__time {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.channel-search-result__tag {
+  color: var(--status-info);
+}
+
+.channel-search-result__time {
+  margin-left: auto;
+}
+
+.channel-search-result__snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.channel-search-result__hit {
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+}
+
+.channel-search-panel__footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.channel-search-panel__footer kbd,
+.channel-search-panel__footer code {
+  color: var(--text);
+  font: inherit;
+}
+
+@media (max-width: 767px) {
+  .channel-search-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    width: auto;
+    height: 100dvh;
+    flex-basis: auto;
+    border-left: 0;
+  }
+}

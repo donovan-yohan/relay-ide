@@ -45,6 +45,7 @@ import type {
 } from '../frontend/src/lib/state/topic-nav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
+import { useChannelSearchPanelStore } from '../frontend/src/lib/stores/channel-search-panel.js';
 import { openTopicTaskRoom } from '../frontend/src/lib/topic-task-room.js';
 import {
   applyTopicActiveContext,
@@ -273,6 +274,13 @@ describe('TopicSidebarView', () => {
       activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
+    useChannelSearchPanelStore.setState({
+      open: false,
+      query: '',
+      autoSeeded: true,
+      seedPrefix: '',
+      boundChannelId: null,
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -305,6 +313,13 @@ describe('TopicSidebarView', () => {
       activityRaisedAtByChannel: {},
     });
     resetAgentStatusStore();
+    useChannelSearchPanelStore.setState({
+      open: false,
+      query: '',
+      autoSeeded: true,
+      seedPrefix: '',
+      boundChannelId: null,
+    });
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
 
@@ -4016,6 +4031,121 @@ describe('TopicSidebarView', () => {
     expect(input.value).toBe('apollo');
   });
 
+  it('seeds the global search trigger from the actual active channel, not the auto-selected rail row', async () => {
+    const onOpenSearchPanel = vi.fn();
+    const first = makeTopic({
+      id: 'topic:first',
+      display: { title: 'first row' },
+    });
+    const active = makeTopic({
+      id: 'topic:active-b',
+      display: { title: 'active channel b' },
+    });
+    useUiStore.setState({ activeChannelId: active.id });
+
+    await renderView({
+      topics: [first, active],
+      sessions: [],
+      surfaces: [],
+      searchPlacement: 'panel',
+      onOpenSearchPanel,
+    });
+
+    const trigger = container.querySelector(
+      '.topic-search-trigger'
+    ) as HTMLButtonElement;
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-controls')).toBe('channel-search-panel');
+    expect(trigger.textContent).toContain('in:active channel b');
+    await act(async () => trigger.click());
+    expect(onOpenSearchPanel).toHaveBeenCalledWith(
+      'active channel b',
+      'topic:active-b'
+    );
+  });
+
+  it('opens global search unscoped when no channel is active', async () => {
+    const onOpenSearchPanel = vi.fn();
+    useUiStore.setState({
+      activeChannelId: null,
+      activeWorkspaceId: 'workspace:alpha',
+    });
+    await renderView({
+      topics: [makeTopic({ display: { title: 'auto-selected row' } })],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'workspace:alpha',
+          name: 'workspace fallback must not seed',
+          order: 0,
+          defaultRepoPath: null,
+          defaultNodeId: null,
+        },
+      ],
+      activeWorkspaceId: 'workspace:alpha',
+      searchPlacement: 'panel',
+      onOpenSearchPanel,
+    });
+
+    const trigger = container.querySelector(
+      '.topic-search-trigger'
+    ) as HTMLButtonElement;
+    expect(trigger.textContent).not.toContain('in:');
+    await act(async () => trigger.click());
+    expect(onOpenSearchPanel).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('keeps the mobile drawer and exact search opener mounted while the panel opens', async () => {
+    const topic = makeTopic({
+      id: 'topic:active-mobile',
+      display: { title: 'active mobile' },
+    });
+    useUiStore.setState({
+      sidebarOpen: true,
+      activeChannelId: topic.id,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['workspace-topics'], {
+      topics: [topic],
+      truncated: false,
+      derived: false,
+    } satisfies WorkspaceTopicListResponse);
+    queryClient.setQueryData(['ia-workspaces'], []);
+    queryClient.setQueryData(['workspace-surfaces', 'topic-shell'], []);
+    queryClient.setQueryData(['hub-nodes'], []);
+    queryClient.setQueryData(['channels'], []);
+    queryClient.setQueryData(['channel-read-state'], []);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+
+    const trigger = container.querySelector(
+      '.topic-search-trigger'
+    ) as HTMLButtonElement;
+    trigger.focus();
+    await act(async () => trigger.click());
+
+    expect(useUiStore.getState().sidebarOpen).toBe(true);
+    expect(trigger.isConnected).toBe(true);
+    expect(useChannelSearchPanelStore.getState()).toMatchObject({
+      open: true,
+      query: 'in:"active mobile" ',
+      boundChannelId: 'topic:active-mobile',
+    });
+    queryClient.clear();
+  });
+
   it('keeps keyboard-visible focus styling for the search input', () => {
     const css = fs.readFileSync(
       'frontend/src/components/TopicSidebarShell.css',
@@ -4539,7 +4669,10 @@ describe('TopicSidebarView', () => {
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(TopicSidebarShell, { onSelectSession })
+          React.createElement(TopicSidebarShell, {
+            onSelectSession,
+            searchPlacement: 'inline',
+          })
         )
       );
     });
@@ -4822,7 +4955,10 @@ describe('TopicSidebarView', () => {
           React.createElement(
             QueryClientProvider,
             { client: queryClient },
-            React.createElement(TopicSidebarShell, { onSelectSession })
+            React.createElement(TopicSidebarShell, {
+              onSelectSession,
+              searchPlacement: 'inline',
+            })
           )
         );
       });
@@ -4925,7 +5061,10 @@ describe('TopicSidebarView', () => {
           React.createElement(
             QueryClientProvider,
             { client: queryClient },
-            React.createElement(TopicSidebarShell, { onSelectSession })
+            React.createElement(TopicSidebarShell, {
+              onSelectSession,
+              searchPlacement: 'inline',
+            })
           )
         );
       });

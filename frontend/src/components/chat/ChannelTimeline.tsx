@@ -29,6 +29,10 @@ import { ChannelMessageRow } from './ChannelMessageRow.js';
 import { useReasoningDetailStateScope } from './ReasoningDetailState.js';
 import { useFollowingScroll } from './useFollowingScroll.js';
 import { useLiveReplyGrowth } from './useLiveReplyGrowth.js';
+import {
+  activityRunContains,
+  buildAgentActivityFoldNodes,
+} from '../../lib/chat/channel-activity-folding.js';
 
 const RESYNC_BUTTON_DELAY_MS = 5_000;
 
@@ -129,6 +133,7 @@ interface ChannelTimelineProps {
   onDeleteMessage?: (message: ChannelMessage) => Promise<unknown>;
   /** Profile actor ids currently non-idle here — the retry storm brake. */
   busyAgentIds?: ReadonlySet<string>;
+  collapseCompletedAgentActivity?: boolean;
 }
 
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
@@ -152,6 +157,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   onEditMessage,
   onDeleteMessage,
   busyAgentIds,
+  collapseCompletedAgentActivity = false,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] =
@@ -162,6 +168,9 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   const [expandedSystemRuns, setExpandedSystemRuns] = useState<
     ReadonlySet<ChannelMessageId>
   >(() => new Set());
+  const [expandedActivityRuns, setExpandedActivityRuns] = useState<
+    ReadonlySet<ChannelMessageId>
+  >(() => new Set());
 
   const reasoningViewState = useReasoningDetailStateScope(
     `timeline:${channelId}`
@@ -169,6 +178,14 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
 
   const toggleSystemRun = useCallback((runKey: ChannelMessageId): void => {
     setExpandedSystemRuns((current) => {
+      const next = new Set(current);
+      if (!next.delete(runKey)) next.add(runKey);
+      return next;
+    });
+  }, []);
+
+  const toggleActivityRun = useCallback((runKey: ChannelMessageId): void => {
+    setExpandedActivityRuns((current) => {
       const next = new Set(current);
       if (!next.delete(runKey)) next.add(runKey);
       return next;
@@ -245,6 +262,22 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     }
     return null;
   }, [nodes, jumpMessageId]);
+  const jumpActivityRunKey = useMemo<ChannelMessageId | null>(() => {
+    if (jumpMessageId === null || !collapseCompletedAgentActivity) return null;
+    for (const node of nodes) {
+      if (node.kind !== 'group') continue;
+      const activityNodes = buildAgentActivityFoldNodes(node.messages, true);
+      for (const activity of activityNodes) {
+        if (
+          activity.kind === 'agent-activity-run' &&
+          activityRunContains(activity, jumpMessageId)
+        ) {
+          return activity.runKey;
+        }
+      }
+    }
+    return null;
+  }, [collapseCompletedAgentActivity, jumpMessageId, nodes]);
 
   useEffect(() => {
     if (jumpToken === null || jumpMessageId === null) return;
@@ -270,6 +303,13 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
         current.has(jumpRunKey) ? current : new Set(current).add(jumpRunKey)
       );
     }
+    if (jumpActivityRunKey !== null) {
+      setExpandedActivityRuns((current) =>
+        current.has(jumpActivityRunKey)
+          ? current
+          : new Set(current).add(jumpActivityRunKey)
+      );
+    }
     setHighlightedMessageId(jumpMessageId);
     const timer = setTimeout(() => {
       // Order matters: clear the emphasis FIRST. Consuming the request changes
@@ -282,7 +322,13 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
       jumpConsumedRef.current?.();
     }, JUMP_HIGHLIGHT_MS);
     return () => clearTimeout(timer);
-  }, [containerRef, jumpToken, jumpMessageId, jumpRunKey]);
+  }, [
+    containerRef,
+    jumpToken,
+    jumpMessageId,
+    jumpRunKey,
+    jumpActivityRunKey,
+  ]);
 
   useEffect(() => {
     if (!needsCatchup) {
@@ -440,6 +486,10 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 replyGrowth={replyGrowth}
                 highlightedMessageId={highlightedMessageId}
                 retriedMessageIds={retriedMessageIds}
+                collapseCompletedAgentActivity={collapseCompletedAgentActivity}
+                expandedActivityRuns={expandedActivityRuns}
+                forceExpandedActivityRunKey={jumpActivityRunKey}
+                onToggleActivityRun={toggleActivityRun}
                 {...(busyAgentIds ? { busyAgentIds } : {})}
                 {...(onRetryMessage ? { onRetryMessage } : {})}
                 {...(onEditMessage ? { onEditMessage } : {})}

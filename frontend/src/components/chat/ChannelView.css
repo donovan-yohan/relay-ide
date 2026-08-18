@@ -64,6 +64,31 @@
   margin-left: auto;
 }
 
+.ch-activity-toggle,
+.ch-search-toggle {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-activity-toggle:hover,
+.ch-activity-toggle:focus-visible,
+.ch-activity-toggle[aria-pressed='true'],
+.ch-search-toggle:hover,
+.ch-search-toggle:focus-visible,
+.ch-search-toggle[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Reversible channel lifecycle control (#1382). Confirmation stays inline in
    the header: no modal, no destructive fill, and no permanent-delete wording. */
 .ch-archive-channel {
@@ -501,6 +526,35 @@
 .ch-system-run:focus-visible {
   border-color: var(--text-muted);
   color: var(--text);
+}
+
+.ch-activity-run {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: left;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-activity-run:hover,
+.ch-activity-run:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.ch-activity-run__counts {
+  color: var(--text-muted);
 }
 
 /* approval controls on an actionable system row (#1167) */

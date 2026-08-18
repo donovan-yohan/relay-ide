@@ -2617,6 +2617,7 @@ async function main(): Promise<void> {
       attachmentStore: channelAttachmentStore,
       hub: channelHub,
       topicStore: workspaceTopicStore,
+      iaStore,
       binder: channelAgentBinder,
       knownProviderIds: Object.keys(v2Adapters),
       getRuntime: (runtimeId) => {

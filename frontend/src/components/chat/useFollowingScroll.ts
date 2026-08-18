@@ -20,6 +20,28 @@ interface ViewportAnchor {
   earliestSeqBefore: number | undefined;
 }
 
+function anchorElementForSeq(
+  container: HTMLDivElement,
+  seq: number
+): HTMLElement | null {
+  const activitySummary = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-channel-activity-run]')
+  ).find((summary) => {
+    const start = Number(summary.dataset.channelActivityStartSeq);
+    const end = Number(summary.dataset.channelActivityEndSeq);
+    return (
+      Number.isFinite(start) &&
+      Number.isFinite(end) &&
+      seq >= start &&
+      seq <= end
+    );
+  });
+  if (activitySummary) return activitySummary;
+  return container.querySelector<HTMLElement>(
+    `[data-channel-message-seq="${seq}"]`
+  );
+}
+
 function captureViewportAnchor(
   container: HTMLDivElement
 ): ViewportAnchor | null {
@@ -100,9 +122,7 @@ export function useFollowingScroll({
     const anchor = readerAnchorRef.current;
     anchorRef.current = null;
     if (container && anchor && !shouldFollowRef.current) {
-      const row = container.querySelector<HTMLElement>(
-        `[data-channel-message-seq="${anchor.seq}"]`
-      );
+      const row = anchorElementForSeq(container, anchor.seq);
       const target =
         row ??
         container.querySelector<HTMLElement>('[data-channel-unread-divider]');
@@ -180,9 +200,7 @@ export function useFollowingScroll({
       if (!shouldFollowRef.current) {
         const anchor = readerAnchorRef.current;
         if (anchor) {
-          const row = container.querySelector<HTMLElement>(
-            `[data-channel-message-seq="${anchor.seq}"]`
-          );
+          const row = anchorElementForSeq(container, anchor.seq);
           if (row) {
             const offsetTop =
               row.getBoundingClientRect().top -
@@ -232,9 +250,7 @@ export function useFollowingScroll({
     const anchor = anchorRef.current;
     if (!container || !anchor) return;
     if (earliestSeq !== anchor.earliestSeqBefore) {
-      const row = container.querySelector<HTMLElement>(
-        `[data-channel-message-seq="${anchor.seq}"]`
-      );
+      const row = anchorElementForSeq(container, anchor.seq);
       if (row) {
         const offsetTop =
           row.getBoundingClientRect().top -

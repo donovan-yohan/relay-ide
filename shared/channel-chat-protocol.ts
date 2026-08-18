@@ -905,7 +905,13 @@ export type ChannelSearchUnavailableReason =
   | 'query_too_short'
   | 'no_searchable_term'
   | 'search_query_too_broad'
-  | 'search_timeout';
+  | 'search_timeout'
+  /** An `in:` clause was malformed; the search did not broaden. */
+  | 'scope_invalid'
+  /** An authorized visible project/channel did not own this alias. */
+  | 'scope_not_found'
+  /** More than one authorized visible scope owns this exact alias. */
+  | 'scope_ambiguous';
 
 export interface ChannelSearchSnippetSegment {
   text: string;
@@ -986,6 +992,8 @@ export interface ChannelMessageSearchResponse {
    * "no matches" for text the server declined to look up.
    */
   unavailableReason?: ChannelSearchUnavailableReason;
+  /** The scope alias that made this request unavailable, if applicable. */
+  scopeAlias?: string;
 }
 
 /**

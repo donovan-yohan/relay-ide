@@ -50,6 +50,7 @@ import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
+import type { IaStore } from '../server/ia-store.js';
 import {
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
@@ -124,6 +125,7 @@ async function harness(
      * provable without a pathological corpus or a latency assertion.
      */
     searchTimeBudgetMs?: number;
+    iaStore?: Pick<IaStore, 'listWorkspaces'> | null;
     binderFactory?: (deps: {
       store: ChannelMessageStore;
       hub: ChannelHub;
@@ -196,6 +198,7 @@ async function harness(
         options.withAttachmentStore === false ? null : attachmentStore,
       hub,
       topicStore,
+      ...(options.iaStore ? { iaStore: options.iaStore } : {}),
       broadcastEvent: (type, data) => {
         broadcasts.push({ type, ...(data ? { data } : {}) });
       },
@@ -3216,6 +3219,7 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     }>;
     truncated: boolean;
     unavailableReason?: string;
+    scopeAlias?: string;
   }
 
   async function post(
@@ -3524,6 +3528,131 @@ describe('channel routes — message search (#1308 slice 2 item 1)', () => {
     expect(
       (await search(h, 'q=needle')).body.results.map((hit) => hit.messageId)
     ).toHaveLength(2);
+  });
+
+  it('resolves exact human project, channel, and repo aliases without widening', async () => {
+    const iaStore = {
+      listWorkspaces: () => [
+        { id: 'ws', name: 'Relay Project' },
+        { id: 'ws-other', name: 'Other Project' },
+      ],
+    } as unknown as Pick<IaStore, 'listWorkspaces'>;
+    const h = await harness({ iaStore });
+    const releaseNotes = h.topicStore.create({
+      workspaceId: 'ws',
+      title: 'Release Notes',
+      routingDefaults: { repoPath: '/projects/relay-ide' },
+    });
+    const elsewhere = h.topicStore.create({
+      workspaceId: 'ws-other',
+      title: 'Elsewhere',
+    });
+    const generalHit = await post(h, h.channelId, 'needle in general');
+    const releaseHit = await post(
+      h,
+      releaseNotes.id,
+      'needle in release notes'
+    );
+    await post(h, elsewhere.id, 'needle in another project');
+
+    const project = await search(
+      h,
+      `q=${encodeURIComponent('needle in:"relay project"')}`
+    );
+    expect(project.body.results.map((hit) => hit.messageId).sort()).toEqual(
+      [generalHit.id, releaseHit.id].sort()
+    );
+
+    const channel = await search(
+      h,
+      `q=${encodeURIComponent('needle in:"RELEASE NOTES"')}`
+    );
+    expect(channel.body.results.map((hit) => hit.messageId)).toEqual([
+      releaseHit.id,
+    ]);
+
+    const repo = await search(
+      h,
+      `q=${encodeURIComponent('needle in:RELAY-IDE')}`
+    );
+    expect(repo.body.results.map((hit) => hit.messageId)).toEqual([
+      releaseHit.id,
+    ]);
+
+    const nested = await search(
+      h,
+      `q=${encodeURIComponent('needle in:"relay project" in:"release notes"')}`
+    );
+    expect(nested.body).toMatchObject({
+      results: [expect.objectContaining({ messageId: releaseHit.id })],
+      truncated: false,
+    });
+
+    // Repeated valid aliases intersect. Disjoint scopes are a successful,
+    // explicitly empty search rather than a union or an authorization hint.
+    const disjoint = await search(
+      h,
+      `q=${encodeURIComponent('needle in:"relay project" in:elsewhere')}`
+    );
+    expect(disjoint.body).toEqual({
+      query: 'needle in:"relay project" in:elsewhere',
+      results: [],
+      truncated: false,
+    });
+
+    // Explicit scope parameters are still an outer narrowing boundary. A valid
+    // alias cannot reach around `channelId` and find a different transcript.
+    const constrained = await search(
+      h,
+      `q=${encodeURIComponent('needle in:"release notes"')}&channelId=${encodeURIComponent(h.channelId)}`
+    );
+    expect(constrained.body).toMatchObject({
+      results: [],
+      unavailableReason: 'scope_not_found',
+      scopeAlias: 'release notes',
+    });
+  });
+
+  it('answers unknown, ambiguous, and malformed aliases explicitly without broadening', async () => {
+    const h = await harness();
+    const first = h.topicStore.create({
+      workspaceId: 'ws',
+      title: 'Operations',
+    });
+    const second = h.topicStore.create({
+      workspaceId: 'ws',
+      title: 'Operations',
+    });
+    await post(h, h.channelId, 'needle in general');
+    await post(h, first.id, 'needle in first operations');
+    await post(h, second.id, 'needle in second operations');
+
+    const unknown = await search(
+      h,
+      `q=${encodeURIComponent('needle in:missing')}`
+    );
+    expect(unknown.body).toMatchObject({
+      results: [],
+      unavailableReason: 'scope_not_found',
+      scopeAlias: 'missing',
+    });
+
+    const ambiguous = await search(
+      h,
+      `q=${encodeURIComponent('needle in:operations')}`
+    );
+    expect(ambiguous.body).toMatchObject({
+      results: [],
+      unavailableReason: 'scope_ambiguous',
+      scopeAlias: 'operations',
+    });
+
+    const malformed = await search(h, `q=${encodeURIComponent('needle in:')}`);
+    expect(malformed.body).toMatchObject({
+      results: [],
+      unavailableReason: 'scope_invalid',
+      scopeAlias: '',
+    });
   });
 
   it('requires context:read and is reachable only past the auth gate', async () => {

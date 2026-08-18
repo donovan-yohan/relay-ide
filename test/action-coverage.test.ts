@@ -28,6 +28,7 @@ import {
   terminalScrollTop,
 } from '../frontend/src/lib/actions/definitions/terminal.js';
 import { navigationActions } from '../frontend/src/lib/actions/definitions/navigation.js';
+import { channelActions } from '../frontend/src/lib/actions/definitions/channel.js';
 import { cliGatewayCommandActions } from '../frontend/src/lib/actions/definitions/cli-gateway.js';
 import { workspaceOpenFileBrowser } from '../frontend/src/lib/actions/definitions/workspace-file-rpc.js';
 import { actionDescriptorFromMeta } from '../frontend/src/lib/actions/descriptors.js';
@@ -103,7 +104,7 @@ const ACTION_ALLOWLIST = [
   // Terminal (2)
   'terminal.scroll-top',
   'terminal.scroll-bottom',
-  // Navigation (9)
+  // Navigation (10)
   'navigation.previous-tab',
   'navigation.next-tab',
   'navigation.switch-to-tab',
@@ -113,6 +114,7 @@ const ACTION_ALLOWLIST = [
   'navigation.open-nodes-dashboard',
   'navigation.open-analytics',
   'navigation.open-active-work',
+  'navigation.toggle-agent-activity',
 ] as const;
 
 const ALL_META: ActionMeta[] = [
@@ -124,6 +126,7 @@ const ALL_META: ActionMeta[] = [
   ...dashboardActions,
   ...terminalActions,
   ...navigationActions,
+  ...channelActions,
 ];
 
 function toAction(meta: ActionMeta): Action {

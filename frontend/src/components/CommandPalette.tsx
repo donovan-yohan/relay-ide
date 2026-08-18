@@ -44,6 +44,7 @@ import {
   CHANNEL_SEARCH_MIN_QUERY_CHARS,
   type ChannelMessageSearchResult,
 } from '../../../shared/channel-chat-protocol.js';
+import { parseChannelSearchQuery } from '../../../shared/channel-search-query.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import { openChannelMessageSelection } from '../lib/topic-selection.js';
 import {
@@ -661,7 +662,11 @@ function useMessagePaletteResults(
   open: boolean
 ): MessagePaletteResult[] {
   const trimmed = debouncedQuery.trim();
-  const enabled = open && trimmed.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
+  const parsed = parseChannelSearchQuery(trimmed);
+  const enabled =
+    open &&
+    parsed.invalidAlias === undefined &&
+    parsed.text.length >= CHANNEL_SEARCH_MIN_QUERY_CHARS;
   const { data } = useQuery({
     queryKey: ['channel-message-search', 'palette', trimmed],
     queryFn: () =>
