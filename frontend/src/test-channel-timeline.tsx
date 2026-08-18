@@ -101,6 +101,8 @@ function Fixture(): React.ReactElement {
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [fullSnapshotRevision, setFullSnapshotRevision] = useState(0);
+  const [collapseCompletedAgentActivity, setCollapseCompletedAgentActivity] =
+    useState(false);
 
   const append = useCallback((count: number, large = false) => {
     setMessages((current) => {
@@ -273,6 +275,13 @@ function Fixture(): React.ReactElement {
           update detail row
         </button>
         <button
+          data-testid="toggle-agent-activity"
+          aria-pressed={collapseCompletedAgentActivity}
+          onClick={() => setCollapseCompletedAgentActivity((value) => !value)}
+        >
+          toggle agent activity
+        </button>
+        <button
           data-testid="snapshot-overlap"
           onClick={() => replaceSnapshot(true)}
         >
@@ -297,6 +306,7 @@ function Fixture(): React.ReactElement {
           fullSnapshotRevision={fullSnapshotRevision}
           needsCatchup={false}
           onResync={() => {}}
+          collapseCompletedAgentActivity={collapseCompletedAgentActivity}
         />
       </div>
     </div>

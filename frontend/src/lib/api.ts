@@ -1975,6 +1975,9 @@ export async function searchChannelMessages(args: {
     ...(data.unavailableReason
       ? { unavailableReason: data.unavailableReason }
       : {}),
+    ...(typeof data.scopeAlias === 'string' && data.scopeAlias.length > 0
+      ? { scopeAlias: data.scopeAlias }
+      : {}),
   };
 }
 

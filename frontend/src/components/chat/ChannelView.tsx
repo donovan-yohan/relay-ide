@@ -57,6 +57,11 @@ import {
   useChannelQueuedSendsStore,
 } from '../../lib/stores/channel-queued-sends.js';
 import { useUiStore } from '../../lib/stores/ui.js';
+import { useChannelActivityPresentationStore } from '../../lib/stores/channel-activity-presentation.js';
+import {
+  resolvedChannelSearchAlias,
+  useChannelSearchPanelStore,
+} from '../../lib/stores/channel-search-panel.js';
 import { showToast } from '../../lib/stores/toasts.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { TuiProgress } from '../TuiProgress.js';
@@ -488,6 +493,70 @@ function ChannelConnectionStatus({
   );
 }
 
+function ChannelSearchTrigger({
+  channelId,
+  searchAlias,
+}: {
+  channelId: string;
+  searchAlias: string | null;
+}) {
+  const searchPanelOpen = useChannelSearchPanelStore((state) => state.open);
+  const openSearchForAlias = useChannelSearchPanelStore(
+    (state) => state.openForAlias
+  );
+  const label = searchAlias
+    ? `search message history in ${searchAlias}`
+    : 'search all message history';
+
+  return (
+    <button
+      type="button"
+      className="ch-search-toggle"
+      aria-expanded={searchPanelOpen}
+      aria-controls="channel-search-panel"
+      aria-label={label}
+      data-channel-search-trigger="true"
+      title={searchAlias ? `search messages in ${searchAlias}` : label}
+      onClick={() => {
+        useUiStore.getState().closeSidebar();
+        if (searchPanelOpen) {
+          document.getElementById('channel-search-panel-input')?.focus();
+          return;
+        }
+        openSearchForAlias(searchAlias, searchAlias ? channelId : null);
+      }}
+    >
+      search
+    </button>
+  );
+}
+
+function ChannelActivityToggle() {
+  const presentation = useChannelActivityPresentationStore(
+    (state) => state.presentation
+  );
+  const togglePresentation = useChannelActivityPresentationStore(
+    (state) => state.togglePresentation
+  );
+  const collapsed = presentation === 'collapsed';
+  return (
+    <button
+      type="button"
+      className="ch-activity-toggle"
+      aria-pressed={collapsed}
+      aria-label={
+        collapsed
+          ? 'show completed agent activity'
+          : 'collapse completed agent activity'
+      }
+      title="toggle agent activity (mod+shift+a)"
+      onClick={togglePresentation}
+    >
+      activity: {collapsed ? 'collapsed' : 'shown'}
+    </button>
+  );
+}
+
 export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const {
     channel,
@@ -506,6 +575,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   } = useChannelChatSocket(channelId);
   const queryClient = useQueryClient();
   const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
+  const collapseCompletedAgentActivity = useChannelActivityPresentationStore(
+    (state) => state.presentation === 'collapsed'
+  );
   const activeThreadRootId = useUiStore((s) => s.activeThreadRootId);
   const setActiveThreadRootId = useUiStore((s) => s.setActiveThreadRootId);
   const pendingChannelThread = useUiStore((s) => s.pendingChannelThread);
@@ -560,6 +632,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       : null;
 
   const title = channel?.title ?? topicQuery.data?.display.title ?? channelId;
+  const searchAlias = resolvedChannelSearchAlias(
+    channel?.title,
+    topicQuery.data?.display.title
+  );
   const activeThreadTitle =
     channel?.threads?.find(
       (thread) => thread.rootMessageId === activeThreadRootId
@@ -1610,6 +1686,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           onDesignate={() => void handleDesignateOrchestrator()}
         />
         <span className="ch-header__spacer" />
+        <ChannelSearchTrigger channelId={channelId} searchAlias={searchAlias} />
+        <ChannelActivityToggle />
         <ChannelConversationActions
           visible={!isDm && !archived}
           applyPending={applyInstructionsPending}
@@ -1670,6 +1748,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
                     onDeleteMessage: handleDeleteMessage,
                   })}
               busyAgentIds={busyAgentIds}
+              collapseCompletedAgentActivity={collapseCompletedAgentActivity}
             />
           ) : (
             <div className="ch-empty">

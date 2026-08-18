@@ -14,10 +14,11 @@ export type ActionCategory =
   | 'gateway';
 
 export type ActionContext = {
-  view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';
+  view: 'workspace' | 'session' | 'chat' | 'dashboard' | 'settings' | 'org';
   workspacePath?: string;
   cwd?: string;
   sessionId?: string;
+  channelId?: string;
   agentRunning?: boolean;
   isMobile?: boolean;
   // TODO Phase 4: populate prState from workspace PR data

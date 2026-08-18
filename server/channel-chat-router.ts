@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 
 import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
@@ -39,7 +40,12 @@ import {
   type ChannelAgentBinder,
 } from './channel-agent-binder.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
+import type { IaStore } from './ia-store.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
+import {
+  normalizeChannelSearchAlias,
+  parseChannelSearchQuery,
+} from '../shared/channel-search-query.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   CHANNEL_POST_STEERING_VALUES,
@@ -145,6 +151,8 @@ export interface ChannelChatRouterDeps {
   attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
+  /** Human project names for `in:<project>` transcript scopes. */
+  iaStore?: Pick<IaStore, 'listWorkspaces'> | null;
   /** @-mention routing binder (#1167); roster/interrupt/approval routes 503 without it. */
   binder?: ChannelAgentBinder | null;
   /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
@@ -878,6 +886,92 @@ function parseSearchLimit(value: unknown): number {
   return Math.max(1, Math.min(CHANNEL_SEARCH_MAX_RESULTS, parsed));
 }
 
+type ChannelSearchScopeResolution =
+  | { channelIds: Set<string> }
+  | {
+      unavailableReason: 'scope_not_found' | 'scope_ambiguous';
+      scopeAlias: string;
+    };
+
+/** Human aliases a channel can own without exposing its opaque durable id. */
+function channelSearchAliases(topic: WorkspaceTopic): string[] {
+  const paths = [
+    topic.routingDefaults.repoPath,
+    topic.routingDefaults.worktreePath,
+    topic.routingDefaults.cwd,
+  ];
+  const aliases = [topic.display.title];
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    // Topic routing paths are local filesystem paths, but normalize separators
+    // first so an imported Windows workspace remains searchable on a Unix hub.
+    const basename = path.posix.basename(candidate.replaceAll('\\', '/'));
+    if (basename) aliases.push(basename);
+  }
+  return aliases.map(normalizeChannelSearchAlias).filter(Boolean);
+}
+
+/**
+ * Resolve every `in:` alias only against already-authorized, visible topics.
+ *
+ * A project alias identifies one IA workspace and can intentionally expand to
+ * its many visible channels. A channel title/path alias identifies exactly one
+ * channel. If an alias names more than one target, the route fails closed: a
+ * guessed expansion would make a typo or duplicate title search a transcript
+ * the operator did not ask for.
+ */
+function resolveChannelSearchScopes(
+  aliases: readonly string[],
+  visible: ReadonlyMap<string, WorkspaceTopic>,
+  iaStore: Pick<IaStore, 'listWorkspaces'> | null | undefined
+): ChannelSearchScopeResolution {
+  let selected: Set<string> | undefined;
+  if (aliases.length === 0) return { channelIds: new Set(visible.keys()) };
+
+  const workspaces = iaStore?.listWorkspaces({ includeArchived: true }) ?? [];
+  for (const alias of aliases) {
+    const workspaceTargets = new Map<string, Set<string>>();
+    for (const workspace of workspaces) {
+      if (normalizeChannelSearchAlias(workspace.name) !== alias) continue;
+      const channelIds = new Set(
+        [...visible.values()]
+          .filter((topic) => topic.workspaceId === workspace.id)
+          .map((topic) => topic.id)
+      );
+      // A workspace with no visible channels is not an authorized search
+      // target. Treat it as absent rather than leaking that it exists.
+      if (channelIds.size > 0)
+        workspaceTargets.set(`workspace:${workspace.id}`, channelIds);
+    }
+    // A project owns the bare alias when both it and one of its channels use
+    // the repo basename (the normal `in:relay-ide` shape). Without this
+    // precedence every project would make its own shorthand ambiguous.
+    const targets = workspaceTargets.size > 0 ? workspaceTargets : new Map();
+    if (workspaceTargets.size === 0) {
+      for (const topic of visible.values()) {
+        if (!channelSearchAliases(topic).includes(alias)) continue;
+        targets.set(`channel:${topic.id}`, new Set([topic.id]));
+      }
+    }
+    if (targets.size === 0) {
+      return { unavailableReason: 'scope_not_found', scopeAlias: alias };
+    }
+    if (targets.size > 1) {
+      return { unavailableReason: 'scope_ambiguous', scopeAlias: alias };
+    }
+    const resolved = targets.values().next().value ?? new Set<string>();
+    // Repeated `in:` clauses are conjunctive: a project plus one of its child
+    // channels narrows to that child, while two valid disjoint scopes produce
+    // an explicitly empty result. Union semantics would silently broaden a
+    // supposedly more-specific query as scopes were added.
+    selected =
+      selected === undefined
+        ? new Set(resolved)
+        : new Set([...selected].filter((channelId) => resolved.has(channelId)));
+  }
+  return { channelIds: selected ?? new Set() };
+}
+
 function channelSummaryView(
   store: ChannelMessageStore,
   topic: WorkspaceTopic
@@ -1074,25 +1168,22 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
     const rawQuery =
       parseStringQuery(req.query['q']) ?? parseStringQuery(req.query['query']);
-    const query = (rawQuery ?? '')
+    const acceptedQuery = (rawQuery ?? '')
       .slice(0, CHANNEL_SEARCH_QUERY_MAX_CHARS)
       .trim();
-    // Asked BEFORE any work: the store owns the predicate for what it will and
-    // will not run (blank text, no letter/digit, one term under the minimum
-    // searchable length), and answering from it keeps "refused" distinguishable
-    // from "consulted and empty". Without the distinction the client prints
-    // "no matches" for a query the index never saw.
-    const unavailableReason = channelSearchUnavailableReason(query);
-    if (unavailableReason) {
+    const parsedQuery = parseChannelSearchQuery(acceptedQuery);
+    if (parsedQuery.invalidAlias !== undefined) {
       const unavailable: ChannelMessageSearchResponse = {
-        query,
+        query: acceptedQuery,
         results: [],
         truncated: false,
-        unavailableReason,
+        unavailableReason: 'scope_invalid',
+        scopeAlias: parsedQuery.invalidAlias,
       };
       res.json(unavailable);
       return;
     }
+    const query = parsedQuery.text;
     const includeArchived = parseBooleanQuery(req.query['includeArchived']);
     const limit = parseSearchLimit(req.query['limit']);
     const scopeChannelId = parseStringQuery(req.query['channelId']);
@@ -1130,9 +1221,43 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         if (!includeArchived && topic.status === 'archived') continue;
         visible.set(topic.id, topic);
       }
-      if (visible.size === 0) {
+      const scope = resolveChannelSearchScopes(
+        parsedQuery.aliases,
+        visible,
+        deps.iaStore
+      );
+      if ('unavailableReason' in scope) {
+        const unavailable: ChannelMessageSearchResponse = {
+          query: acceptedQuery,
+          results: [],
+          truncated: false,
+          unavailableReason: scope.unavailableReason,
+          scopeAlias: scope.scopeAlias,
+        };
+        res.json(unavailable);
+        return;
+      }
+      // Asked before the FTS read: the store owns the predicate for what it
+      // will and will not run (blank text, no letter/digit, one term under the
+      // minimum searchable length). Alias resolution deliberately precedes this
+      // check so a mistyped `in:` never degrades into a broader, generic hint.
+      const unavailableReason = channelSearchUnavailableReason(query);
+      if (unavailableReason) {
+        const unavailable: ChannelMessageSearchResponse = {
+          query: acceptedQuery,
+          results: [],
+          truncated: false,
+          unavailableReason,
+        };
+        res.json(unavailable);
+        return;
+      }
+      const scopedVisible = new Map(
+        [...visible].filter(([channelId]) => scope.channelIds.has(channelId))
+      );
+      if (scopedVisible.size === 0) {
         const empty: ChannelMessageSearchResponse = {
-          query,
+          query: acceptedQuery,
           results: [],
           truncated: false,
         };
@@ -1143,21 +1268,25 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // second COUNT over the index. The extra row is never returned.
       const hits = store.searchMessages({
         query,
-        channelIds: [...visible.keys()],
+        channelIds: [...scopedVisible.keys()],
         limit: limit + 1,
       });
       const truncated = hits.length > limit;
       const results: ChannelMessageSearchResult[] = hits
         .slice(0, limit)
         .map((hit) => {
-          const topic = visible.get(hit.channelId);
+          const topic = scopedVisible.get(hit.channelId);
           return {
             ...hit,
             channelTitle: topic?.display.title ?? hit.channelId,
             archived: topic?.status === 'archived',
           };
         });
-      const body: ChannelMessageSearchResponse = { query, results, truncated };
+      const body: ChannelMessageSearchResponse = {
+        query: acceptedQuery,
+        results,
+        truncated,
+      };
       res.json(body);
     } catch (error) {
       // A cost refusal is an ANSWER, not a failure (#1316): the store either
@@ -1167,7 +1296,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // `results`) would make the client claim the transcript was searched.
       if (error instanceof ChannelSearchRefusedError) {
         const refused: ChannelMessageSearchResponse = {
-          query,
+          query: acceptedQuery,
           results: [],
           truncated: false,
           unavailableReason: error.reason,

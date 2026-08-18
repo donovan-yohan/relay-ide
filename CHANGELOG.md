@@ -22,6 +22,12 @@ workflow.
 
 #### Added
 
+- Search durable message history in a complementary right rail while channel
+  navigation and threads remain visible. Active channels with resolved human
+  metadata seed an editable exact `in:<channel>` scope; unresolved or global
+  entry points remain truthfully unscoped, and mobile search uses a dismissible
+  full-screen panel. Agent responses can also collapse completed activity into
+  compact summaries for a responses-first reading mode (#1402)
 - Route unmentioned human messages in product channels to the durably
   designated orchestrator, including cold resume after hub restart, through the
   existing queue and native-steer paths; explicit mentions remain authoritative

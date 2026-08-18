@@ -200,8 +200,24 @@ expression; terms with no letter or digit are dropped.
   cap is a rendering budget; using it silently made older channels unreachable.
 - `includeArchived`, `limit`, `channelId`, and `workspaceId` scope the search.
 
-The UI surfaces results in two sidebar sections (channels and messages), as a
-command-palette category, and as jump-to-message navigation into the timeline.
+The primary UI renders results in an App-level right rail, leaving the channel
+navigation and any open thread intact. It becomes a dismissible full-screen
+panel on mobile. The command palette remains a global search category, and a
+message result is jump-to-message navigation into the timeline.
+
+The query accepts Slack/Discord-style `in:<alias>` clauses. An alias is a
+human-readable project or channel name/path basename, matched case-insensitively
+against the authorized visible corpus; `in:relay-ide` is the usual project
+shorthand and quoted aliases can contain spaces. Opening from an active channel
+generates an editable channel-title prefix only when its human metadata has
+resolved in the available topic map, and also supplies that exact channel id
+while the generated prefix is unchanged. An unresolved active channel opens
+unscoped and never substitutes its opaque id. Appending terms retains the exact
+binding; editing/removing the prefix releases it to normal alias resolution.
+Global search with no resolved active channel opens unscoped, and a scope
+without search terms does not query FTS. Scope clauses are removed from the FTS
+text. Invalid, unknown, or ambiguous aliases fail closed with an explicit
+unavailable reason, so a typo cannot silently search every channel.
 
 ## Message mutation and retry
 
@@ -234,6 +250,17 @@ Resolving an anchor that is not in the loaded window walks older history pages,
 bounded by `ANCHOR_WALK_MAX_PAGES` (8) in `ChannelView.tsx`. Unbounded, a link
 to a deleted or foreign message id would walk the channel to `seq` 1 on every
 open; bounded, the worst case is a fixed number of page fetches and one toast.
+The main timeline starts at the newest page and requests older pages with an
+exclusive cursor as the reader scrolls upward. Prepend and deep-link operations
+retain the visible reader anchor. This behavior describes the channel timeline
+only; thread history remains a separate thread-scoped load and is not promised
+identical pagination behavior.
+
+The channel activity presentation is client-local. A header toggle or
+`mod+shift+a` folds completed contiguous agent tool/detail rows into a compact
+count, while expanding restores those rows in place. It is a presentation-only
+projection: live activity, messages, errors, and interrupted or truncated rows
+retain their durable identity and status.
 
 ## Notifications and badges
 

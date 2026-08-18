@@ -102,6 +102,8 @@ import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
   utilityRailRenderedWidth,
 } from './components/WorkspaceUtilityRail.js';
+import ChannelSearchPanel from './components/ChannelSearchPanel.js';
+import { useChannelSearchPanelStore } from './lib/stores/channel-search-panel.js';
 import type { FileTreeHandle } from './components/FileTree/index.js';
 
 import './App.css';
@@ -925,6 +927,8 @@ export default function App() {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
+  const channelSearchOpen = useChannelSearchPanelStore((s) => s.open);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
   const fullPageDiff = useUiStore((s) => s.fullPageDiff);
   const lastChangedFiles = useUiStore((s) => s.lastChangedFiles);
@@ -999,6 +1003,9 @@ export default function App() {
 
   // ── Action context ─────────────────────────────────────────────────────────
   const actionContext = useMemo<ActionContext>(() => {
+    if (activeChannelId) {
+      return { view: 'chat', channelId: activeChannelId };
+    }
     if (activeSessionId) {
       const ctx: ActionContext = {
         view: 'session',
@@ -1017,7 +1024,7 @@ export default function App() {
       return ctx;
     }
     return { view: 'dashboard' };
-  }, [activeSessionId, activeRepoPath, activeWorkspaceCwd]);
+  }, [activeChannelId, activeSessionId, activeRepoPath, activeWorkspaceCwd]);
 
   // Keep actionContext in a ref so registry callbacks (set up once on mount) always read current value
   const actionContextRef = useRef(actionContext);
@@ -1383,6 +1390,7 @@ export default function App() {
           onCloseSession={handleCloseSession}
           onSessionCreated={handleNewSessionCreated}
         />
+        {channelSearchOpen ? <ChannelSearchPanel open /> : null}
       </div>
 
       {/* Dialogs & overlays */}

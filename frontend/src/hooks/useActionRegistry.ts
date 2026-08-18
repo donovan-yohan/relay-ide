@@ -106,9 +106,11 @@ import {
   navOpenAnalytics,
   navOpenActiveWork,
 } from '../lib/actions/definitions/navigation.js';
+import { channelToggleAgentActivity } from '../lib/actions/definitions/channel.js';
 import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore, type OrgDashboardTab } from '../lib/stores/ui.js';
+import { useChannelActivityPresentationStore } from '../lib/stores/channel-activity-presentation.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import {
@@ -426,6 +428,11 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
     }));
 
     registerGlobal([
+      {
+        ...channelToggleAgentActivity,
+        handler: () =>
+          useChannelActivityPresentationStore.getState().togglePresentation(),
+      },
       // ── Session ─────────────────────────────────────────────────────────────
       { ...sessionNewAgent, handler: () => handleQuickAgent() },
       { ...sessionNewTerminal, handler: () => handleQuickTerminal() },

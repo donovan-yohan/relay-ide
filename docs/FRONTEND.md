@@ -48,8 +48,11 @@ ChatHome
 ### Timeline and rows
 
 `ChannelTimeline` owns grouping, date markers, unread markers, history prepend,
-bottom-follow behavior, and the new-message affordance. It renders only
-top-level rows; replies appear in `ChannelThreadPanel`.
+bottom-follow behavior, and the new-message affordance. Initial history is
+newest-first; scrolling toward the beginning requests older pages with an
+exclusive cursor and preserves the reader's prepend anchor. It renders only
+top-level rows; replies appear in `ChannelThreadPanel`, which remains a
+separately loaded surface rather than a claim of identical paging behavior.
 
 `ChannelMessageRow` is the acceptance host for agent output. It renders:
 
@@ -82,7 +85,15 @@ never inferred from message text.
 on failed rows. Links are `/channel/<segment>#msg-<message id>`, built and
 parsed by `frontend/src/lib/url-nav.ts`. Opening an anchor that is outside the
 loaded window walks older pages up to `ANCHOR_WALK_MAX_PAGES` before giving up
-with a toast.
+with a toast. The timeline centers and highlights the target while preserving
+the reader anchor.
+
+The channel header's activity control and `mod+shift+a` shortcut toggle a
+responses-first presentation. Completed contiguous non-message agent activity
+is folded into a count of tool/detail calls; expanding a fold is local
+presentation state only and never edits or removes durable rows. Live activity,
+errors, interrupted/truncated states, and the underlying message identity stay
+visible and intact.
 
 ## Notifications, badges, and update toast
 
@@ -107,10 +118,26 @@ unread state as the sidebar; they do not add a second source of truth.
 
 ## Search
 
-`TopicSidebarShell` renders search results in two sections — matching channels
-and matching messages — from `GET /channels/search`. The same query is a command
-palette category. Selecting a message result navigates to its channel and jumps
-to the row.
+`TopicSidebarShell` keeps the channel list stable and exposes a lightweight
+search trigger. Results live in an App-level right rail beside the active
+surface; a channel thread can remain open at the same time. On mobile the rail
+becomes a dismissible full-screen panel. Selecting a result navigates to its
+channel and jumps to the matching row. The command palette remains a second
+global entry point.
+
+Opening the rail from an active channel seeds an editable
+`in:<human-channel-title>` prefix only after that channel's human metadata has
+resolved in the available topic map, and binds the untouched prefix to that
+exact channel id so duplicate titles do not make the generated scope ambiguous.
+If the active channel is not yet in that map, search opens truthfully unscoped
+and never substitutes its opaque id.
+Appending search terms preserves that binding; editing or removing the prefix
+drops it and lets the server resolve the user's project/channel alias normally.
+From the dashboard, a terminal session, or any state without a resolved active
+channel, search opens unscoped. Scope-only input is guidance and never issues an
+FTS read. Quoted aliases may contain spaces. Unknown, malformed, or ambiguous
+aliases return an unavailable result and never broaden the search; the client
+does not present that state as an ordinary empty match.
 
 ## Data flow
 

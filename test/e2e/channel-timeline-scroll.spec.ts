@@ -113,6 +113,124 @@ test.describe('smoke channel timeline scroll UX (#1193)', () => {
     await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
   });
 
+  test('folds completed agent activity into an accessible responses-first summary', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    // Keep enough real content after the fold to position it at the viewport
+    // start without accidentally reaching the bottom-follow threshold.
+    await page.getByTestId('append-large').click();
+    const firstActivityRow = timeline.locator(
+      '[data-channel-message-id="chm:68"]'
+    );
+    await firstActivityRow.evaluate((element) => {
+      const timeline = element.closest<HTMLElement>('.ch-tl');
+      if (!timeline) throw new Error('missing timeline container');
+      timeline.scrollTop +=
+        element.getBoundingClientRect().top -
+        timeline.getBoundingClientRect().top;
+      timeline.dispatchEvent(new Event('scroll'));
+    });
+    await expect.poll(() => bottomDistance(timeline)).toBeGreaterThan(48);
+    const toggle = page.getByTestId('toggle-agent-activity');
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    const summary = timeline.locator('.ch-activity-run');
+    await expect(summary).toHaveCount(1);
+    await expect(summary).toContainText('3 agent events');
+    await expect(summary).toContainText('1 reasoning');
+    await expect(summary).toContainText('1 output');
+    await expect(summary).toContainText('1 diff');
+    await expect(summary).toHaveAttribute('aria-expanded', 'false');
+    await expect(summary).toHaveAccessibleName(
+      'expand 3 agent events: 1 reasoning · 1 output · 1 diff'
+    );
+    await expect(summary).toHaveAttribute('data-channel-message-seq', '70');
+    await expect(summary).toHaveAttribute(
+      'data-channel-activity-start-seq',
+      '68'
+    );
+    await expect(summary).toHaveAttribute(
+      'data-channel-activity-end-seq',
+      '70'
+    );
+    const chevron = summary.locator('svg');
+    await expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    await expect(chevron).toHaveAttribute('fill', 'none');
+    await expect(chevron).toHaveAttribute('stroke-width', '1.5');
+    await expect(chevron).toHaveAttribute('stroke-linecap', 'square');
+    await expect(
+      timeline.locator('[data-channel-message-id="chm:68"]')
+    ).toHaveCount(0);
+    const summaryTop = await summary.evaluate((element) => {
+      const timeline = element.closest<HTMLElement>('.ch-tl');
+      if (!timeline) throw new Error('missing timeline container');
+      return (
+        element.getBoundingClientRect().top -
+        timeline.getBoundingClientRect().top
+      );
+    });
+    await expect.poll(() => bottomDistance(timeline)).toBeGreaterThan(48);
+
+    await summary.press('Enter');
+    await expect(summary).toHaveAttribute('aria-expanded', 'true');
+    await expect(summary).toHaveAccessibleName(
+      'collapse 3 agent events: 1 reasoning · 1 output · 1 diff'
+    );
+    await expect(summary).toHaveAttribute('data-channel-message-seq', '70');
+    await expect(summary).toHaveAttribute(
+      'data-channel-activity-start-seq',
+      '68'
+    );
+    await expect(summary).toHaveAttribute(
+      'data-channel-activity-end-seq',
+      '70'
+    );
+    await expect(
+      timeline.locator('[data-channel-message-id="chm:68"]')
+    ).toHaveCount(1);
+    await expect(
+      timeline.locator('[data-channel-message-id="chm:70"]')
+    ).toHaveCount(1);
+    await expect
+      .poll(() =>
+        summary.evaluate((element) => {
+          const timeline = element.closest<HTMLElement>('.ch-tl');
+          if (!timeline) throw new Error('missing timeline container');
+          return (
+            element.getBoundingClientRect().top -
+            timeline.getBoundingClientRect().top
+          );
+        })
+      )
+      .toBeCloseTo(summaryTop, 0);
+    await expect.poll(() => bottomDistance(timeline)).toBeGreaterThan(48);
+
+    await summary.press('Enter');
+    await expect(summary).toHaveAttribute('aria-expanded', 'false');
+    await expect(summary).toHaveAccessibleName(
+      'expand 3 agent events: 1 reasoning · 1 output · 1 diff'
+    );
+    await expect(
+      timeline.locator('[data-channel-message-id="chm:68"]')
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        summary.evaluate((element) => {
+          const timeline = element.closest<HTMLElement>('.ch-tl');
+          if (!timeline) throw new Error('missing timeline container');
+          return (
+            element.getBoundingClientRect().top -
+            timeline.getBoundingClientRect().top
+          );
+        })
+      )
+      .toBeCloseTo(summaryTop, 0);
+    await expect.poll(() => bottomDistance(timeline)).toBeGreaterThan(48);
+  });
+
   test('rerenders an authoritative full-row streaming card update', async ({
     page,
   }) => {
