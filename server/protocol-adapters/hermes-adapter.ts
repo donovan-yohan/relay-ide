@@ -1,3 +1,4 @@
+import { reconnectWithStoredConfig } from './adapter-utils.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -811,11 +812,12 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   }
 
   async reconnect(): Promise<void> {
-    if (!this._config)
-      throw new Error('Cannot reconnect before initial connect');
-    const config = this._config;
-    await this.disconnect();
-    await this.connect(config);
+    await reconnectWithStoredConfig({
+      config: this._config,
+      notConnectedMessage: 'Cannot reconnect before initial connect',
+      disconnect: () => this.disconnect(),
+      connect: (config) => this.connect(config),
+    });
   }
 
   // ── User Actions ──────────────────────────────────────────────────────────

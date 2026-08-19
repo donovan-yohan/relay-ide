@@ -1,0 +1,58 @@
+name: Adapter generality
+
+# Backpressure for the adapter-generality rule in AGENTS.md and the PR template:
+# a PR that touches server/protocol-adapters/ must say which kind of change it
+# is. A harness-local quirk (event vocabulary, handshake, resume-id name,
+# permission-mode flag) stays in its own adapter and is never copied to a
+# sibling; shared choreography belongs in the shared utils layer instead of a
+# hand-duplicated third copy. The label is the escape hatch for PRs whose
+# classification was reviewed somewhere else.
+#
+# The paths filter means no check run exists on PRs outside this directory, so
+# this workflow cannot be a required status check as written -- a required but
+# never-created check leaves every other PR pending. To require it, drop the
+# paths filter and scope in-script the way changelog.yml does: checkout, then
+# `git merge-base` + `git diff --name-only`, and exit 0 when out of scope.
+
+on:
+  pull_request:
+    branches: [nightly, master]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    paths:
+      - 'server/protocol-adapters/**'
+
+permissions:
+  contents: read
+
+jobs:
+  classification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a quirk-or-choreography classification
+        env:
+          # Untrusted PR text stays in env vars; it is never interpolated into
+          # the script body.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          case ",${PR_LABELS}," in
+            *,adapter-generality-reviewed,*)
+              echo "Labelled adapter-generality-reviewed; body declaration not required."
+              exit 0
+              ;;
+          esac
+
+          # The declaration must lead its own line. A substring match would let
+          # any PR that merely quotes the rule -- this workflow's own PR, or any
+          # doc change describing it -- silently satisfy itself.
+          if printf '%s\n' "${PR_BODY:-}" \
+            | sed -E 's/^[[:space:]]*([-*+>][[:space:]]*)*(\[[ xX]\][[:space:]]*)?//; s/^[*_`]+//' \
+            | grep -qiE '^adapter generality:'; then
+            echo "PR body classifies the adapter change."
+            exit 0
+          fi
+
+          echo "::error::This PR touches server/protocol-adapters/ but never classifies the change. State whether it is a harness-local quirk (stays in its adapter, never copied to sibling adapters) or shared choreography (goes through the shared utils layer, not a per-adapter copy) by starting a line of the PR body with 'Adapter generality:' (see the /adapter-review skill), or apply the adapter-generality-reviewed label."
+          exit 1

@@ -1,4 +1,5 @@
 import { PRIME_AGENT_CHANNEL_COMMAND } from './launch-commands.js';
+import { reconnectWithStoredConfig } from './adapter-utils.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import {
@@ -289,17 +290,21 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   async reconnect(): Promise<void> {
-    if (!this.config) throw new Error('Cannot reconnect before connect');
-    const config = {
-      ...this.config,
-      ...(this.providerSessionId
-        ? { resumeSessionId: this.providerSessionId }
-        : {}),
-    };
-    this.resetForTransportSwitch('Prime Agent transport reconnected');
-    this._status = 'disconnected';
-    await this.teardownClient();
-    await this.connect(config);
+    await reconnectWithStoredConfig({
+      config: this.config,
+      transformConfig: (config) => ({
+        ...config,
+        ...(this.providerSessionId
+          ? { resumeSessionId: this.providerSessionId }
+          : {}),
+      }),
+      disconnect: async () => {
+        this.resetForTransportSwitch('Prime Agent transport reconnected');
+        this._status = 'disconnected';
+        await this.teardownClient();
+      },
+      connect: (config) => this.connect(config),
+    });
   }
 
   async resumeSession(sessionId: string): Promise<void> {

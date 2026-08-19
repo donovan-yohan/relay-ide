@@ -1,4 +1,5 @@
 import { OPENCODE_CHANNEL_COMMAND } from './launch-commands.js';
+import { reconnectWithStoredConfig } from './adapter-utils.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -195,11 +196,12 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   }
 
   async reconnect(): Promise<void> {
-    if (!this._config)
-      throw new Error('Cannot reconnect before initial connect');
-    const config = this._config;
-    await this.disconnect();
-    await this.connect(config);
+    await reconnectWithStoredConfig({
+      config: this._config,
+      notConnectedMessage: 'Cannot reconnect before initial connect',
+      disconnect: () => this.disconnect(),
+      connect: (config) => this.connect(config),
+    });
   }
 
   /**

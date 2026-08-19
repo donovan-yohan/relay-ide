@@ -41,6 +41,38 @@ provider to Relay's channel-first product.
 - Provider session ids are opaque resume state.
 - Never attribute visible messages to a transient runtime id.
 
+## Editing existing adapters
+
+Roughly half of `server/protocol-adapters/` is choreography repeated across
+adapters, so any edit to shared-looking logic is a classification decision
+before it is a code change.
+
+1. Grep the sibling adapters for the same concern before you change it.
+2. Classify the change:
+   - **QUIRK** — harness-specific: event vocabulary, protocol handshake,
+     resume-id name, permission-mode flag. Stays adapter-local. Never copy it
+     into another harness, and say why it is local in the PR.
+   - **CHOREOGRAPHY** — the same shape in three or more adapters: lifecycle
+     ordering, patch emission, id fallbacks, env sanitizing. Extend the shared
+     utils layer (`server/protocol-adapters/adapter-utils.ts`) instead of
+     writing copy N+1.
+3. When the shared shape almost fits, add a hook, not a fork. `reconnect()`
+   matches in claude/codex-native/hermes/opencode apart from the not-connected
+   wording, which the shared helper takes as a parameter; pi-agent and
+   prime-agent fold `providerSessionId` into config first — that is a
+   config-transform hook, not a reason to duplicate.
+4. Renaming or adding a provider also touches sites outside this directory: the
+   resume-id ladder in `server/channel-agent-runtime.ts` and the launch
+   contracts plus capability sets in `server/protocol-adapters/index.ts`.
+5. Every PR touching `server/protocol-adapters/**` starts a PR-body line with
+   `Adapter generality:` stating the classification and its reason. CI requires
+   the line (or the `adapter-generality-reviewed` label); the `adapter-review`
+   skill checks that it is true.
+
+Mass extraction of the repeated choreography is sequenced behind an adapter
+conformance suite. Until that lands, extend shared utils only for the concern
+you are already touching.
+
 ## Verification
 
 ```bash

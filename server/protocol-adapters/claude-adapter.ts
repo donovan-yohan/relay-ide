@@ -1,4 +1,5 @@
 import { CLAUDE_CHANNEL_COMMAND } from './launch-commands.js';
+import { reconnectWithStoredConfig } from './adapter-utils.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
@@ -866,10 +867,11 @@ export class ClaudeProtocolAdapter
   }
 
   async reconnect(): Promise<void> {
-    if (!this.config) throw new Error('Cannot reconnect before connect');
-    const config = this.config;
-    await this.disconnect();
-    await this.connect(config);
+    await reconnectWithStoredConfig({
+      config: this.config,
+      disconnect: () => this.disconnect(),
+      connect: (config) => this.connect(config),
+    });
   }
 
   /**

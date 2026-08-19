@@ -1,3 +1,4 @@
+import { reconnectWithStoredConfig } from './adapter-utils.js';
 import {
   AgentSteerRejectedError,
   BaseProtocolAdapterV2,
@@ -708,10 +709,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   async reconnect(): Promise<void> {
-    if (!this.config) throw new Error('Cannot reconnect before connect');
-    const config = this.config;
-    await this.disconnect();
-    await this.connect(config);
+    await reconnectWithStoredConfig({
+      config: this.config,
+      disconnect: () => this.disconnect(),
+      connect: (config) => this.connect(config),
+    });
   }
 
   // ── Message sending ───────────────────────────────────────────────────────
