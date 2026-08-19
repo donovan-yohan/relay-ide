@@ -7,14 +7,11 @@
  * (`isAgentPatchV2` throws on an invalid emit) and, for the happy path, reduced
  * through `applyAgentPatchV2` to assert reducer legality.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { PassThrough } from 'node:stream';
-import { EventEmitter } from 'node:events';
+import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ChildProcess } from 'node:child_process';
 import {
   ClaudeProtocolAdapter,
   ClaudeProcessRegistry,
@@ -23,6 +20,7 @@ import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 import claudeDetailFixture from '../../fixtures/agent-detail/claude.js';
+import { makeHarness } from './support/claude-child-double.js';
 import {
   applyAgentPatchV2,
   emptyAgentSessionV2,
@@ -30,121 +28,6 @@ import {
   type AgentPatchV2,
   type AgentSessionV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
-
-// ── Fake child + spawn harness ────────────────────────────────────────────────
-
-interface MockChild extends EventEmitter {
-  stdin: PassThrough;
-  stdout: PassThrough;
-  stderr: PassThrough;
-  kill: ReturnType<typeof vi.fn>;
-  pid: number;
-  closed: boolean;
-  serverWrite(obj: unknown): void;
-  emitClose(code: number | null, signal?: NodeJS.Signals | null): void;
-  emitStderr(text: string): void;
-  frames(): Record<string, unknown>[];
-  waitForFrames(
-    count: number,
-    timeoutMs?: number
-  ): Promise<Record<string, unknown>[]>;
-}
-
-function makeMockChild(options?: { closeOnStdinEnd?: boolean }): MockChild {
-  const child = new EventEmitter() as MockChild;
-  child.stdin = new PassThrough();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.pid = Math.floor(Math.random() * 100000);
-  child.closed = false;
-
-  const frames: Record<string, unknown>[] = [];
-  const waiters: Array<{
-    count: number;
-    resolve: (f: Record<string, unknown>[]) => void;
-  }> = [];
-  let buf = '';
-  child.stdin.on('data', (chunk: Buffer) => {
-    buf += chunk.toString();
-    let idx: number;
-    while ((idx = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (!line) continue;
-      try {
-        frames.push(JSON.parse(line) as Record<string, unknown>);
-      } catch {
-        frames.push({ __raw: line });
-      }
-      for (let i = waiters.length - 1; i >= 0; i--) {
-        if (frames.length >= waiters[i]!.count) {
-          waiters.splice(i, 1)[0]!.resolve([...frames]);
-        }
-      }
-    }
-  });
-
-  child.emitClose = (code, signal = null) => {
-    if (child.closed) return;
-    child.closed = true;
-    child.emit('close', code, signal);
-    child.stdout.push(null);
-  };
-  child.kill = vi.fn((_signal?: string) => true);
-  if (options?.closeOnStdinEnd !== false) {
-    child.stdin.on('finish', () =>
-      setImmediate(() => child.emitClose(0, null))
-    );
-  }
-  child.serverWrite = (obj) => child.stdout.push(JSON.stringify(obj) + '\n');
-  child.emitStderr = (text) =>
-    child.stderr.push(text.endsWith('\n') ? text : text + '\n');
-  child.frames = () => [...frames];
-  child.waitForFrames = (count, timeoutMs = 1000) => {
-    if (frames.length >= count) return Promise.resolve([...frames]);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () =>
-          reject(new Error(`timeout: ${frames.length}/${count} stdin frames`)),
-        timeoutMs
-      );
-      waiters.push({
-        count,
-        resolve: (f) => {
-          clearTimeout(timer);
-          resolve(f);
-        },
-      });
-    });
-  };
-  return child;
-}
-
-interface SpawnRecord {
-  command: string;
-  args: string[];
-  options: { cwd: string; env: Record<string, string>; stdio: 'pipe' };
-  child: MockChild;
-}
-
-function makeHarness() {
-  const spawns: SpawnRecord[] = [];
-  let nextOpts: { closeOnStdinEnd?: boolean } | undefined;
-  const spawnFn: ClaudeSpawnFn = (command, args, options) => {
-    const child = makeMockChild(nextOpts);
-    nextOpts = undefined;
-    spawns.push({ command, args, options, child });
-    return child as unknown as ChildProcess;
-  };
-  return {
-    spawnFn,
-    spawns,
-    latest: (): SpawnRecord => spawns[spawns.length - 1]!,
-    setNextChildOptions: (o: { closeOnStdinEnd?: boolean }) => {
-      nextOpts = o;
-    },
-  };
-}
 
 // A registry with no live GC timer — tests drive gcSweep() manually.
 function inertRegistry(): ClaudeProcessRegistry {
