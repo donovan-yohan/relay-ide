@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { LineFramer } from './line-framer.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('claude-stream-client');
@@ -31,11 +32,17 @@ export interface ClaudeStreamClientOptions {
   env: Record<string, string>;
   spawn?: ClaudeSpawnFn;
   /**
-   * Maximum characters buffered for a single stdout line before it is skipped
-   * (not fatal) with resync at the next newline. Default 32 MiB — huge `Edit`
+   * Maximum BYTES buffered for a single stdout line before it is skipped (not
+   * fatal) with resync at the next newline. Default 32 MiB — huge `Edit`
    * tool_use inputs are real.
+   *
+   * Was `maxLineChars` and measured in UTF-16 code units. The shared
+   * `LineFramer` buffers bytes so that a multi-byte character split across two
+   * stdout chunks is not corrupted, which makes bytes the only unit available
+   * before a line is decoded. Identical for ASCII; for other text the cap is
+   * now a true memory bound, which is what it was always meant to be.
    */
-  maxLineChars?: number;
+  maxLineBytes?: number;
   /** Number of stderr lines retained for crash diagnostics. Default 50. */
   stderrRingSize?: number;
   /**
@@ -56,7 +63,7 @@ interface PendingClaudeWrite {
   reject: (error: Error) => void;
 }
 
-const DEFAULT_MAX_LINE_CHARS = 32 * 1024 * 1024;
+const DEFAULT_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_STDERR_RING = 50;
 const DEFAULT_AFTER_STDIN_MS = 3000;
 const DEFAULT_AFTER_SIGTERM_MS = 5000;
@@ -82,7 +89,7 @@ export class ClaudeStreamClient extends EventEmitter {
   private readonly cwd: string;
   private readonly env: Record<string, string>;
   private readonly spawnFn: ClaudeSpawnFn;
-  private readonly maxLineChars: number;
+  private readonly maxLineBytes: number;
   private readonly stderrRingSize: number;
   private readonly afterStdinMs: number;
   private readonly afterSigtermMs: number;
@@ -91,8 +98,7 @@ export class ClaudeStreamClient extends EventEmitter {
   private started = false;
   private closed = false;
 
-  private lineBuffer = '';
-  private skipping = false;
+  private readonly framer: LineFramer;
 
   private readonly stderrRing: string[] = [];
   private writeQueue: PendingClaudeWrite[] = [];
@@ -107,7 +113,15 @@ export class ClaudeStreamClient extends EventEmitter {
     this.cwd = options.cwd;
     this.env = options.env;
     this.spawnFn = options.spawn ?? (nodeSpawn as unknown as ClaudeSpawnFn);
-    this.maxLineChars = options.maxLineChars ?? DEFAULT_MAX_LINE_CHARS;
+    this.maxLineBytes = options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+    this.framer = new LineFramer({
+      maxLineBytes: this.maxLineBytes,
+      // A line over the cap costs the framer its position in the stream, so it
+      // discards bytes until the next newline rather than emitting a truncated
+      // record. `oversized-line` carries the dropped byte count.
+      oversizedPolicy: 'skip-resync',
+      onOversized: (dropped) => this.emit('oversized-line', dropped),
+    });
     this.stderrRingSize = options.stderrRingSize ?? DEFAULT_STDERR_RING;
     this.afterStdinMs =
       options.teardownDelays?.afterStdinMs ?? DEFAULT_AFTER_STDIN_MS;
@@ -290,40 +304,7 @@ export class ClaudeStreamClient extends EventEmitter {
   }
 
   private onStdout(chunk: Buffer): void {
-    this.lineBuffer += chunk.toString('utf8');
-    for (;;) {
-      const idx = this.lineBuffer.indexOf('\n');
-      if (idx === -1) {
-        if (this.skipping) {
-          // Still inside an oversized line — discard the partial tail.
-          if (this.lineBuffer.length > 0) this.lineBuffer = '';
-          return;
-        }
-        if (this.lineBuffer.length > this.maxLineChars) {
-          // No newline yet and the buffer blew the cap — enter skip mode and
-          // resync at the next newline.
-          const dropped = this.lineBuffer.length;
-          this.skipping = true;
-          this.lineBuffer = '';
-          this.emit('oversized-line', dropped);
-        }
-        return;
-      }
-
-      const line = this.lineBuffer.slice(0, idx);
-      this.lineBuffer = this.lineBuffer.slice(idx + 1);
-
-      if (this.skipping) {
-        // This newline terminates the oversized line — resume normal parsing.
-        this.skipping = false;
-        continue;
-      }
-      if (line.length > this.maxLineChars) {
-        this.emit('oversized-line', line.length);
-        continue;
-      }
-      this.handleLine(line);
-    }
+    this.framer.push(chunk, (line) => this.handleLine(line));
   }
 
   private handleLine(raw: string): void {

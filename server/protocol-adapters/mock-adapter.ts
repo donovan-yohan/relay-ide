@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { nowIso } from './wire-values.js';
 import { BaseProtocolAdapter } from '../protocol-adapter.js';
 import type {
   AdapterConfig,
@@ -24,10 +25,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       { once: true }
     );
   });
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 interface ScenarioResult {

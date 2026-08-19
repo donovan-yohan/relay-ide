@@ -1,8 +1,23 @@
 import {
+  buildChildEnv,
+  createPatchSink,
+  emitLiveStatePatch,
+  emitProviderExtensionPatch,
+  createTurnQueue,
+  emitSessionUpdatePatch,
+  emitTurnCompletedPatch,
+  emitTurnStartedPatch,
   reconnectWithStoredConfig,
   resolveAbandonedApprovals,
   type AbandonedApprovalCardV2,
 } from './adapter-utils.js';
+import {
+  diffCounts,
+  isRecord,
+  nowIso,
+  safeJson,
+  stringField,
+} from './wire-values.js';
 import {
   AgentSteerRejectedError,
   BaseProtocolAdapterV2,
@@ -36,7 +51,6 @@ import { createLogger } from '../logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { relayControlCatalogForProvider } from '../../shared/agent-command-catalog.js';
-import { cleanEnv } from '../utils.js';
 import {
   captureOwnedProcessTree,
   reapOwnedProcessTree,
@@ -298,36 +312,8 @@ const CODEX_ELICITATION_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return '[unserializable]';
-  }
-}
-
-function stringField(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
-}
-
-function diffCounts(diff: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
-    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
-  }
-  return { additions, deletions };
-}
+// Wire-value coercions live in `./wire-values.js`; only codex-shaped helpers
+// remain below.
 
 /**
  * Flatten Codex's reasoning arrays into a single string. Current app-server
@@ -493,14 +479,6 @@ function codexDeclineResponse(meta: PendingApproval): Record<string, unknown> {
   }
 }
 
-// ── Queued message ────────────────────────────────────────────────────────
-
-interface QueuedCodexMessage {
-  input: AgentSendMessageInputV2;
-  resolve: () => void;
-  reject: (err: unknown) => void;
-}
-
 // ── Pending approval ──────────────────────────────────────────────────────
 
 type ApprovalKind = 'command' | 'patch' | 'permissions' | 'elicitation';
@@ -553,6 +531,11 @@ interface PendingNativeSteer {
 // ── Main adapter class ─────────────────────────────────────────────────────
 
 export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
+  /** Shared patch-emission conventions (adapter-utils). */
+  private readonly patchSink = createPatchSink(
+    () => this.sessionId,
+    (patch) => this.emitPatch(patch)
+  );
   readonly agentType = 'codex';
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CODEX_CAPABILITIES;
@@ -586,7 +569,36 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private pendingNativeSteer: PendingNativeSteer | null = null;
   private activeStartedAt: string | null = null;
   private completedActiveTurn = false;
-  private readonly queue: QueuedCodexMessage[] = [];
+  /**
+   * Shared send queue (adapter-utils). `canDrain` is the same gate the
+   * hand-written `drainQueue` opened with; entries still settle on start.
+   *
+   * ONE BEHAVIOR DELTA, deliberately taken: the shared queue keeps draining
+   * after a rejected start, where the hand-written `drainQueue` stopped and
+   * left the remaining entries queued until `rejectQueued` cleared them at
+   * teardown. `startTurn` rejects only on its `!this.config || !this.client`
+   * guard — `turn/start` RPC failures are swallowed inside it before any patch
+   * is emitted — so the window is narrow: a client nulled while `_status` is
+   * still `'connected'` now fails the rest of the queue immediately with
+   * `Cannot start Codex turn before connect` instead of holding it for the
+   * teardown error. Reject-and-continue is the queue's stated contract and
+   * strictly less wedging than stranding live entries, so codex adopts it
+   * rather than passing a no-continue `continueDrain` hook.
+   */
+  private readonly queue = createTurnQueue<AgentSendMessageInputV2>({
+    canDrain: () => this._status === 'connected' && this.activeTurnId === null,
+    startTurn: (input) => this.startTurn(input),
+    onLengthChange: (queueLength, reason) =>
+      this.emitLiveState(
+        reason === 'enqueued'
+          ? {
+              status: 'working',
+              activeTurnId: this.activeTurnId,
+              queueLength,
+            }
+          : { queueLength }
+      ),
+  });
   /** Runtime controls survive follow-up turns on this adapter, never raw prompts. */
   private pendingModelOverride: string | null = null;
   /** undefined = profile/default, null = explicit provider reset. */
@@ -808,14 +820,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     };
 
     if (this.activeTurnId !== null) {
-      return new Promise((resolve, reject) => {
-        this.queue.push({ input: rewrittenInput, resolve, reject });
-        this.emitLiveState({
-          status: 'working',
-          activeTurnId: this.activeTurnId,
-          queueLength: this.queue.length,
-        });
-      });
+      return this.queue.enqueue(rewrittenInput);
     }
 
     await this.startTurn(rewrittenInput);
@@ -957,18 +962,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.openReasoningByRelayId.clear();
     this.clearDeferredTurnCompletion();
 
-    this.emitPatch({
-      type: 'agent-turn-started-v2',
-      sessionId: this.config.sessionId,
-      timestamp: startedAt,
-      turn: {
-        id: input.turnId,
-        status: 'running',
-        inputMessageId: `user-${input.turnId}`,
-        items: [],
-        startedAt,
-      },
-    });
+    emitTurnStartedPatch(this.patchSink, { turnId: input.turnId, startedAt });
 
     this.emitPatch({
       type: 'agent-item-started-v2',
@@ -1039,16 +1033,13 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         ? Date.now() - Date.parse(this.activeStartedAt)
         : undefined);
 
-    this.emitPatch({
-      type: 'agent-turn-completed-v2',
-      sessionId: this.sessionId,
-      timestamp: completedAt,
+    emitTurnCompletedPatch(this.patchSink, {
       turnId,
       status,
       completedAt,
-      ...(durationMs !== undefined ? { durationMs } : {}),
-      ...(usage !== undefined ? { usage } : {}),
-      ...(error !== undefined ? { error } : {}),
+      durationMs,
+      usage,
+      error,
     });
 
     // These maps translate provider output ids only while the current turn is
@@ -1174,18 +1165,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private drainQueue(): void {
-    if (this._status !== 'connected' || this.activeTurnId !== null) return;
-    const queued = this.queue.shift();
-    if (!queued) return;
-    void this.startTurn(queued.input)
-      .then(() => queued.resolve())
-      .catch((err) => queued.reject(err));
+    this.queue.drain();
   }
 
   private rejectQueued(err: unknown): void {
-    const queued = this.queue.splice(0);
-    for (const message of queued) message.reject(err);
-    if (queued.length > 0) this.emitLiveState({ queueLength: 0 });
+    this.queue.rejectAll(err);
   }
 
   // ── Internal: client wiring ───────────────────────────────────────────────
@@ -1219,9 +1203,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       },
       optOutNotificationMethods: [],
       cwd: typeof extra['cwd'] === 'string' ? extra['cwd'] : config.cwd,
-      ...(config.processEnv
-        ? { env: { ...cleanEnv(), ...config.processEnv } }
-        : {}),
+      // ALWAYS set. This used to be conditional on a profile overlay existing,
+      // and with no overlay `CodexAppServerClient` fell back to raw
+      // `process.env` — no `cleanEnv()`, no nesting strip. The env is built the
+      // same way for every codex child now, overlay or not.
+      env: buildChildEnv({ processEnv: config.processEnv }),
     };
     if (Array.isArray(extra['args'])) opts.args = extra['args'] as string[];
     if (typeof extra['spawn'] === 'function') {
@@ -3431,56 +3417,26 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     config?: AgentSessionUpdatedPatchV2['config'];
     slashCommands?: AgentSlashCommandV2[];
   }): void {
-    this.emitPatch({
-      type: 'agent-session-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      ...(update.providerSession !== undefined
-        ? { providerSession: update.providerSession }
-        : {}),
-      ...(update.capabilities !== undefined
-        ? { capabilities: update.capabilities }
-        : {}),
-      ...(update.config !== undefined ? { config: update.config } : {}),
-      ...(update.slashCommands !== undefined
-        ? { slashCommands: update.slashCommands }
-        : {}),
-    });
+    emitSessionUpdatePatch(this.patchSink, update);
   }
 
   private emitProviderExtension(
     payload: Record<string, unknown>,
     visibility: 'normal' | 'debug' = 'normal'
   ): void {
+    // Guard stays here: the active turn is codex's own state.
     if (this.activeTurnId === null || !this.config) return;
-    const seq = ++this.providerExtensionSeq;
-    this.emitPatch({
-      type: 'agent-item-started-v2',
-      sessionId: this.config.sessionId,
-      timestamp: nowIso(),
+    emitProviderExtensionPatch(this.patchSink, {
       turnId: this.activeTurnId,
-      item: {
-        type: 'providerExtension',
-        id: `ext-codex-${this.activeTurnId}-${seq}`,
-        namespace: 'codex',
-        payload,
-        ...(visibility === 'debug'
-          ? { metadata: { eventVisibility: 'debug' } }
-          : {}),
-        status: 'completed',
-        startedAt: nowIso(),
-        completedAt: nowIso(),
-      },
+      namespace: 'codex',
+      seq: ++this.providerExtensionSeq,
+      payload,
+      visibility,
     });
   }
 
   private emitLiveState(live: Partial<AgentSessionLiveStateV2>): void {
-    this.emitPatch({
-      type: 'agent-live-state-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      live,
-    });
+    emitLiveStatePatch(this.patchSink, live);
   }
 
   private get sessionId(): string {

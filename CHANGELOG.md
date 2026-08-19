@@ -136,6 +136,10 @@ search`), and Claude channel agents get the Relay MCP facade mounted
 
 #### Fixed
 
+- Pi and Prime Agent no longer silently drop a message queued behind an active
+  turn when the session ends. The queued send now reports the failure instead of
+  reporting success, so the channel retries and re-offers the message rather
+  than marking it delivered and never sending it
 - Codex and Hermes agents now receive the profile system prompt and Relay's
   collaboration contract, so a channel agent behaves the same whichever harness
   runs it. Hermes sends that prompt as one byte-stable block on every turn;

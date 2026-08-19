@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { LineFramer } from './line-framer.js';
 
 export interface PiAgentRpcMessage extends Record<string, unknown> {
   type: string;
@@ -32,7 +33,7 @@ interface PendingCall {
 /** Strict-LF JSONL client for `pi --mode rpc`. */
 export class PiAgentRpcClient extends EventEmitter {
   private child: ChildProcess | null = null;
-  private buffer = Buffer.alloc(0);
+  private readonly framer: LineFramer;
   private stopPromise: Promise<void> | null = null;
   private nextId = 1;
   private readonly pending = new Map<string, PendingCall>();
@@ -43,6 +44,34 @@ export class PiAgentRpcClient extends EventEmitter {
 
   constructor(private readonly options: PiAgentRpcClientOptions = {}) {
     super();
+    const maxRecordBytes = options.maxRecordBytes ?? 8 * 1024 * 1024;
+    const maxBufferBytes = options.maxBufferBytes ?? 16 * 1024 * 1024;
+    this.framer = new LineFramer({
+      maxLineBytes: maxRecordBytes,
+      maxBufferBytes,
+      // pi writes LF, but a CRLF peer must not leave a stray CR inside the
+      // record handed to JSON.parse.
+      trimTrailingCr: true,
+      onOversized: () =>
+        this.emit(
+          'protocolError',
+          new Error(`pi RPC record exceeded ${maxRecordBytes} bytes`)
+        ),
+      onBufferOverflow: () => {
+        this.emit(
+          'protocolError',
+          new Error(`pi RPC input buffer exceeded ${maxBufferBytes} bytes`)
+        );
+        // Discarding an unterminated record loses framing. Stop rather than
+        // risk interpreting a later suffix as a fresh trusted record.
+        void this.stop().catch((stopError: unknown) =>
+          this.emit(
+            'error',
+            stopError instanceof Error ? stopError : new Error(String(stopError))
+          )
+        );
+      },
+    });
     // An EventEmitter `error` without a listener terminates Node. Transport
     // errors are still observable, but are safe during early process startup.
     this.on('error', () => undefined);
@@ -62,7 +91,7 @@ export class PiAgentRpcClient extends EventEmitter {
       }
     );
     this.child = child;
-    this.buffer = Buffer.alloc(0);
+    this.framer.reset();
     const onStdoutData = (chunk: Buffer | string) => this.consume(chunk);
     const onStderrData = (chunk: Buffer | string) =>
       this.emit('stderr', String(chunk));
@@ -207,95 +236,67 @@ export class PiAgentRpcClient extends EventEmitter {
     }
   }
 
+  /**
+   * Framing (LF splitting, partial-line buffering, the record and buffer caps)
+   * belongs to `LineFramer`; everything below is pi's own RPC dialect —
+   * JSON validation wording, response correlation, and event routing.
+   */
   private consume(chunk: Buffer | string): void {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    this.buffer = Buffer.concat([this.buffer, bytes]);
-    const maxBufferBytes = this.options.maxBufferBytes ?? 16 * 1024 * 1024;
-    let newline: number;
-    // Deliberately split only on ASCII LF. U+2028/U+2029 are JSON content.
-    while ((newline = this.buffer.indexOf(0x0a)) !== -1) {
-      let lineBytes = this.buffer.subarray(0, newline);
-      this.buffer = this.buffer.subarray(newline + 1);
-      if (lineBytes.at(-1) === 0x0d) lineBytes = lineBytes.subarray(0, -1);
-      if (lineBytes.length === 0) continue;
-      const maxRecordBytes = this.options.maxRecordBytes ?? 8 * 1024 * 1024;
-      if (lineBytes.length > maxRecordBytes) {
-        this.emit(
-          'protocolError',
-          new Error(`pi RPC record exceeded ${maxRecordBytes} bytes`)
-        );
-        continue;
-      }
-      const line = lineBytes.toString('utf8');
-      let value: unknown;
-      try {
-        value = JSON.parse(line);
-      } catch (error) {
-        this.emit(
-          'protocolError',
-          new Error(
-            `Invalid pi RPC JSON: ${error instanceof Error ? error.message : String(error)}`
-          )
-        );
-        continue;
-      }
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        this.emit(
-          'protocolError',
-          new Error('Invalid pi RPC record: expected object')
-        );
-        continue;
-      }
-      const message = value as PiAgentRpcMessage;
-      if (message.type === 'response' && typeof message.id === 'string') {
-        const pending = this.pending.get(message.id);
-        if (!pending) {
-          this.emit(
-            'protocolError',
-            new Error(`Uncorrelated pi RPC response id: ${message.id}`)
-          );
-          continue;
-        }
-        this.pending.delete(message.id);
-        clearTimeout(pending.timer);
-        if (message.command !== pending.command) {
-          pending.reject(
-            new Error(
-              `pi RPC response command mismatch: expected ${pending.command}, got ${String(message.command)}`
-            )
-          );
-        } else if (message.success !== true) {
-          pending.reject(
-            new Error(
-              typeof message.error === 'string'
-                ? message.error
-                : `${pending.command} failed`
-            )
-          );
-        } else {
-          pending.resolve(message);
-        }
-      } else {
-        this.emit('event', message);
-      }
-    }
+    this.framer.push(chunk, (line) => this.handleLine(line));
+  }
 
-    // Check again after consuming complete records: a chunk can contain valid
-    // lines followed by an oversized unterminated tail.
-    if (this.buffer.length > maxBufferBytes) {
-      this.buffer = Buffer.alloc(0);
-      const error = new Error(
-        `pi RPC input buffer exceeded ${maxBufferBytes} bytes`
-      );
-      this.emit('protocolError', error);
-      // Discarding an unterminated record loses framing. Stop rather than risk
-      // interpreting a later suffix as a fresh trusted record.
-      void this.stop().catch((stopError: unknown) =>
-        this.emit(
-          'error',
-          stopError instanceof Error ? stopError : new Error(String(stopError))
+  private handleLine(line: string): void {
+    if (line.length === 0) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch (error) {
+      this.emit(
+        'protocolError',
+        new Error(
+          `Invalid pi RPC JSON: ${error instanceof Error ? error.message : String(error)}`
         )
       );
+      return;
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      this.emit(
+        'protocolError',
+        new Error('Invalid pi RPC record: expected object')
+      );
+      return;
+    }
+    const message = value as PiAgentRpcMessage;
+    if (message.type === 'response' && typeof message.id === 'string') {
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        this.emit(
+          'protocolError',
+          new Error(`Uncorrelated pi RPC response id: ${message.id}`)
+        );
+        return;
+      }
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.command !== pending.command) {
+        pending.reject(
+          new Error(
+            `pi RPC response command mismatch: expected ${pending.command}, got ${String(message.command)}`
+          )
+        );
+      } else if (message.success !== true) {
+        pending.reject(
+          new Error(
+            typeof message.error === 'string'
+              ? message.error
+              : `${pending.command} failed`
+          )
+        );
+      } else {
+        pending.resolve(message);
+      }
+    } else {
+      this.emit('event', message);
     }
   }
 
@@ -345,7 +346,7 @@ export class PiAgentRpcClient extends EventEmitter {
 
   private resetTransportState(error: Error): void {
     this.rejectPending(error);
-    this.buffer = Buffer.alloc(0);
+    this.framer.reset();
     this.writes.length = 0;
     this.nextId = 1;
     this.detachDrainListener?.();

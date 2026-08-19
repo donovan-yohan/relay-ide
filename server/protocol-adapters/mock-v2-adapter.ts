@@ -1,4 +1,5 @@
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
+import { nowIso } from './wire-values.js';
 import type {
   AdapterConfig,
   AdapterStatus,
@@ -41,10 +42,6 @@ function queuedDisconnectError(count: number): Error {
   return new Error(
     `MockProtocolAdapterV2 disconnected with ${count} queued message(s)`
   );
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

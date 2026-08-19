@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { LineFramer } from './line-framer.js';
 import { createLogger } from './logger.js';
 import { CODEX_CHANNEL_COMMAND } from './protocol-adapters/launch-commands.js';
 
@@ -100,8 +101,14 @@ export class CodexAppServerClient extends EventEmitter {
   private writeQueue: string[] = [];
   private draining = false;
 
-  // Line-buffer for partial stdout reads
-  private lineBuffer = '';
+  /**
+   * Partial-stdout framing. No caps are configured: codex app-server output is
+   * bounded upstream and adding a cap here would be a new drop policy, not a
+   * refactor. Byte-based buffering means a multi-byte character split across
+   * two stdout chunks now survives — the old per-chunk `chunk.toString()`
+   * decoded each half separately and corrupted the line.
+   */
+  private readonly framer = new LineFramer();
   private stopPromise: Promise<void> | null = null;
 
   constructor(options: CodexAppServerClientOptions) {
@@ -165,13 +172,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     // Stdout → line-delimited JSON parser
     child.stdout?.on('data', (chunk: Buffer) => {
-      this.lineBuffer += chunk.toString();
-      let idx: number;
-      while ((idx = this.lineBuffer.indexOf('\n')) !== -1) {
-        const line = this.lineBuffer.slice(0, idx);
-        this.lineBuffer = this.lineBuffer.slice(idx + 1);
-        this.handleLine(line);
-      }
+      this.framer.push(chunk, (line) => this.handleLine(line));
     });
 
     child.on('close', (code) => {

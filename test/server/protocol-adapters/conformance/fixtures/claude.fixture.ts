@@ -12,10 +12,8 @@
  * production change. The fake child hands out a fixed pid so a replayed
  * transcript is byte-identical.
  */
-import {
-  ClaudeProcessRegistry,
-  ClaudeProtocolAdapter,
-} from '../../../../../server/protocol-adapters/claude-adapter.js';
+import { ClaudeProtocolAdapter } from '../../../../../server/protocol-adapters/claude-adapter.js';
+import { AdapterProcessRegistry } from '../../../../../server/protocol-adapters/adapter-utils.js';
 import {
   makeClaudeChildHarness,
   type MockChild,
@@ -86,7 +84,7 @@ const fixture: AdapterConformanceFixture = {
     // never wants a background GC sweep racing the transcript.
     const adapter = new ClaudeProtocolAdapter(
       harness.spawnFn,
-      new ClaudeProcessRegistry(1_000_000)
+      new AdapterProcessRegistry(1_000_000)
     );
 
     const currentChild = async (): Promise<MockChild> => {

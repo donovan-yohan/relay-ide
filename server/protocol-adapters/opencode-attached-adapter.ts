@@ -1,3 +1,4 @@
+import { readSseStream } from './adapter-utils.js';
 import { AttachedRuntimeAdapter } from './attached-runtime-adapter.js';
 import type { AdapterConfig, Attachment } from '../protocol-adapter.js';
 import { openCodeStatusType } from './opencode-shared.js';
@@ -163,33 +164,18 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     }
     if (!res.body) throw new Error('SSE response has no body');
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      let eventData = '';
-      for (const line of lines) {
-        if (line.startsWith('data:')) {
-          const dataLine = line.slice(5).trim();
-          eventData = eventData ? eventData + '\n' + dataLine : dataLine;
-        } else if (line.trim() === '' && eventData) {
-          try {
-            const data = JSON.parse(eventData) as OpenCodeEvent;
-            this.mapOpenCodeEvent(data);
-          } catch (err) {
-            logger.debug('Failed to parse SSE event:', err);
-          }
-          eventData = '';
-        }
+    // Framing belongs to `readSseStream`. This lane used to declare its
+    // `eventData` accumulator INSIDE the read loop, so an event whose `data:`
+    // line and terminating blank line landed in different chunks was dropped;
+    // the shared reader hoists it out, matching the other two lanes.
+    await readSseStream(res.body, (record) => {
+      try {
+        const data = JSON.parse(record.data) as OpenCodeEvent;
+        this.mapOpenCodeEvent(data);
+      } catch (err) {
+        logger.debug('Failed to parse SSE event:', err);
       }
-    }
+    });
   }
 
   /**

@@ -18,6 +18,19 @@ import {
   v2Adapters,
 } from '../server/protocol-adapters/index.js';
 
+/**
+ * The launch + sanitation matrix, spelled out by hand on purpose: this literal
+ * is the drift guard, so it must be edited deliberately when a contract really
+ * changes, never regenerated from the code it checks.
+ *
+ * Every command-backed provider denies the full agent-nesting set
+ * (`CLAUDECODE` + `CLAUDE_CODE_ENTRYPOINT`). That set used to read as claude's
+ * alone, which meant codex, pi, prime-agent, and opencode inherited a stale
+ * `CLAUDE_CODE_ENTRYPOINT` from whatever launched the hub. It is a property of
+ * Relay's spawn model — every harness is spawned as a peer, never nested — so
+ * `buildChildEnv` now owns the whole set for every provider and these rows
+ * record it. Gateway and embedded providers spawn nothing and deny nothing.
+ */
 const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
   mock: { kind: 'embedded', command: null, deny: [] },
   claude: {
@@ -25,18 +38,27 @@ const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
     command: 'claude',
     deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   },
-  codex: { kind: 'command', command: 'codex', deny: ['CLAUDECODE'] },
+  codex: {
+    kind: 'command',
+    command: 'codex',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
   'prime-agent': {
     kind: 'command',
     command: 'prime-agent',
-    deny: ['CLAUDECODE'],
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   },
-  pi: { kind: 'command', command: 'pi', deny: ['CLAUDECODE'] },
+  pi: {
+    kind: 'command',
+    command: 'pi',
+    deny: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+  },
   opencode: {
     kind: 'command',
     command: 'opencode',
     deny: [
       'CLAUDECODE',
+      'CLAUDE_CODE_ENTRYPOINT',
       'OPENCODE_SERVER_PASSWORD',
       'OPENCODE_SERVER_USERNAME',
     ],

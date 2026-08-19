@@ -9,6 +9,26 @@ import {
 import { PiAgentProtocolAdapter } from '../../../server/protocol-adapters/pi-agent-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
+type SendInput = Parameters<PiAgentProtocolAdapter['sendMessage']>[0];
+
+/**
+ * Start a send the adapter will QUEUE behind the active turn.
+ *
+ * A queued entry settles when its turn STARTS, not when it is accepted into
+ * the queue (see `createTurnQueue` in adapter-utils), so awaiting one here
+ * would block until a later `agent_settled` drains it. Tests hold the promise
+ * and assert on it explicitly; the attached no-op keeps a deliberate rejection
+ * from surfacing as an unhandled one.
+ */
+function queueSend(
+  adapter: { sendMessage: (input: SendInput) => Promise<void> },
+  input: SendInput
+): Promise<void> {
+  const pending = adapter.sendMessage(input);
+  void pending.catch(() => {});
+  return pending;
+}
+
 const config = {
   cwd: '/tmp',
   port: 1,
@@ -174,7 +194,7 @@ describe('PiAgentProtocolAdapter', () => {
     const { adapter, call } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
     await adapter.interrupt({ turnId: 't1' });
     expect(call.mock.calls.map(([type]) => type)).toEqual(['prompt', 'abort']);
   });
@@ -183,7 +203,7 @@ describe('PiAgentProtocolAdapter', () => {
     const { adapter, client, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
 
     client.emit('event', {
       type: 'queue_update',
@@ -216,8 +236,8 @@ describe('PiAgentProtocolAdapter', () => {
     const { adapter, client, call, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
-    await adapter.sendMessage({ turnId: 't3', content: 'three' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't3', content: 'three' });
 
     client.emit('event', { type: 'turn_end' });
     expect(
@@ -266,10 +286,12 @@ describe('PiAgentProtocolAdapter', () => {
     });
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    const queuedTwo = queueSend(adapter, { turnId: 't2', content: 'two' });
     client.emit('event', { type: 'agent_settled' });
 
     await vi.waitFor(() => expect(adapter.status).toBe('disconnected'));
+    // The ambiguous prompt is reported to whoever sent it, not swallowed.
+    await expect(queuedTwo).rejects.toThrow('prompt timed out');
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -278,6 +300,22 @@ describe('PiAgentProtocolAdapter', () => {
           status: 'failed',
         }),
       ])
+    );
+  });
+
+  it('reports a queued message that the transport died before sending', async () => {
+    const { adapter, client } = harness();
+    await adapter.connect(config);
+    await adapter.sendMessage({ turnId: 't1', content: 'one' });
+    const queued = queueSend(adapter, { turnId: 't2', content: 'two' });
+
+    client.emit('error', new Error('pi transport exploded'));
+
+    // Before the shared queue this promise had ALREADY resolved at enqueue and
+    // the array was silently emptied, so the binder advanced its delivery
+    // cursor over a message the provider never saw.
+    await expect(queued).rejects.toThrow(
+      'Pi session ended before this queued message was sent.'
     );
   });
 
@@ -345,12 +383,12 @@ describe('PiAgentProtocolAdapter', () => {
       const { adapter, client, call, patches } = harness();
       await adapter.connect(config);
       await adapter.sendMessage({ turnId: 't1', content: 'one' });
-      await adapter.sendMessage({
+      const queuedImage = queueSend(adapter, {
         turnId: 't2',
         content: 'image',
         attachments: [{ type: 'image', path, mimeType: 'image/png' }],
       });
-      await adapter.sendMessage({ turnId: 't3', content: 'three' });
+      queueSend(adapter, { turnId: 't3', content: 'three' });
       rmSync(path);
 
       client.emit('event', { type: 'agent_settled' });
@@ -362,6 +400,9 @@ describe('PiAgentProtocolAdapter', () => {
         ).toEqual(['one', 'three'])
       );
       expect(adapter.status).toBe('connected');
+      await expect(queuedImage).rejects.toThrow(
+        'Cannot read Pi image attachment'
+      );
       expect(patches).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

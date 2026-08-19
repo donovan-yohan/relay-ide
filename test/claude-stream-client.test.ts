@@ -160,7 +160,7 @@ describe('ClaudeStreamClient', () => {
 
   it('skips an oversized line and resyncs at the next newline', async () => {
     const child = makeMockChild();
-    const client = makeClient(child, { maxLineChars: 64 });
+    const client = makeClient(child, { maxLineBytes: 64 });
     const messages: Record<string, unknown>[] = [];
     const oversized: number[] = [];
     client.on('message', (m: Record<string, unknown>) => messages.push(m));

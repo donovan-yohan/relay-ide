@@ -12,10 +12,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  ClaudeProtocolAdapter,
-  ClaudeProcessRegistry,
-} from '../../../server/protocol-adapters/claude-adapter.js';
+import { ClaudeProtocolAdapter } from '../../../server/protocol-adapters/claude-adapter.js';
+import { AdapterProcessRegistry } from '../../../server/protocol-adapters/adapter-utils.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
@@ -30,8 +28,8 @@ import {
 } from '../../../shared/agent-chat-protocol-v2.js';
 
 // A registry with no live GC timer — tests drive gcSweep() manually.
-function inertRegistry(): ClaudeProcessRegistry {
-  return new ClaudeProcessRegistry(1_000_000);
+function inertRegistry(): AdapterProcessRegistry {
+  return new AdapterProcessRegistry(1_000_000);
 }
 
 function baseConfig(extra?: Record<string, unknown>): AdapterConfig {

@@ -24,10 +24,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
-import {
-  ClaudeProtocolAdapter,
-  ClaudeProcessRegistry,
-} from '../server/protocol-adapters/claude-adapter.js';
+import { ClaudeProtocolAdapter } from '../server/protocol-adapters/claude-adapter.js';
+import { AdapterProcessRegistry } from '../server/protocol-adapters/adapter-utils.js';
 import type { ClaudeSpawnFn } from '../server/claude-stream-client.js';
 import type { AdapterConfig } from '../server/protocol-adapter-v2.js';
 import {
@@ -110,7 +108,7 @@ async function replayToRows(lines: unknown[]) {
   const harness = makeHarness();
   const adapter = new ClaudeProtocolAdapter(
     harness.spawnFn,
-    new ClaudeProcessRegistry(1_000_000)
+    new AdapterProcessRegistry(1_000_000)
   );
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-claude-dup-'));
   const store: ChannelMessageStore = createChannelMessageStore(
