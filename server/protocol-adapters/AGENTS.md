@@ -33,16 +33,16 @@ fold `providerSessionId` into config — a config-transform hook, not a copy.
 - Capability flags are honest. A flag whose patch cannot render stays `false` —
   see the `telemetry: false` note on `hermes` in `index.ts`.
 
-## Scatter sites a new or renamed provider must also touch
+## One descriptor, no scatter sites
 
-- `server/channel-agent-runtime.ts` `providerResumeId` — the resume-state ladder
-  maps `providerId` to a resume key. **Missing it fails silently**: the provider
-  connects, then loses resume with no error.
-- `index.ts` — launch contract (`command` / `gateway` / `embedded`) and, for
-  bridged adapters, the hand-transcribed capability set.
-- `server/utils.ts` `cleanEnv` plus `index.ts` `sanitizeChannelAdapterProcessEnv`
-  own env stripping. Provider-specific keys go in the contract's
-  `processEnvDenylist`, never at spawn sites.
+`index.ts` `PROVIDER_DESCRIPTORS` is the single home for every provider fact code
+outside this directory needs by name: fill in a row, never re-derive a fact in
+the consumer. An adapter without a descriptor — or a descriptor without an
+adapter — is a COMPILE error, and `test/provider-registry-drift.test.ts` holds
+each consuming seam to the record. Claude-flavored defaults are NAMED fields
+(`yoloPermissionMode`, `isDefaultOrchestratorProvider`) with a value per
+provider; provider env keys go in `launch.processEnvDenylist`, never at spawn
+sites (`server/utils.ts` `cleanEnv` + `sanitizeChannelAdapterProcessEnv`).
 
 ## Sequencing
 

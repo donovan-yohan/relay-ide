@@ -7,6 +7,7 @@ import {
   resolveFramework,
 } from '../server/types.js';
 import type { AgentFramework, EventSourceType } from '../server/types.js';
+import { frameworkCapabilitiesWithChannelLane } from '../server/frameworks.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 
@@ -40,7 +41,13 @@ test('claude framework has correct values', () => {
 // round-trip, and one live hello-world proof.
 test('claude advertises the channel-agent capability (#1168)', () => {
   const claude = BUILTIN_FRAMEWORKS['claude'];
-  expect(claude.capabilities.supportsChannelAgents).toBe(true);
+  // The channel lane is declared once, on the provider descriptor
+  // (`server/protocol-adapters/index.ts`), and projected onto the framework
+  // capabilities — the catalog no longer carries its own boolean.
+  expect(claude.capabilities.supportsChannelAgents).toBeUndefined();
+  expect(
+    frameworkCapabilitiesWithChannelLane(claude).supportsChannelAgents
+  ).toBe(true);
 });
 
 test('codex framework has correct values', () => {
@@ -64,7 +71,9 @@ test('codex framework has correct values', () => {
   // #1169 (closes #301): Codex channel agents are advertised. The native
   // `codex app-server` adapter maps assistant text end-to-end and the
   // fake-app-server suite asserts prompt → text-delta → completion.
-  expect(codex.capabilities.supportsChannelAgents).toBe(true);
+  expect(
+    frameworkCapabilitiesWithChannelLane(codex).supportsChannelAgents
+  ).toBe(true);
 });
 
 test('opencode framework has correct values', () => {
@@ -96,7 +105,9 @@ test('hermes framework has correct values', () => {
   expect(hermes.capabilities.supportsYolo).toBe(true);
   expect(hermes.capabilities.supportsTelemetry).toBe(true);
   expect(hermes.capabilities.supportsAttachedRuntime).toBe(true);
-  expect(hermes.capabilities.supportsChannelAgents).toBe(true);
+  expect(
+    frameworkCapabilitiesWithChannelLane(hermes).supportsChannelAgents
+  ).toBe(true);
 });
 
 test('prime-agent framework exposes native channels and a generic PTY', () => {
@@ -114,8 +125,10 @@ test('prime-agent framework exposes native channels and a generic PTY', () => {
     supportsYolo: false,
     supportsTelemetry: true,
     supportsAttachedRuntime: false,
-    supportsChannelAgents: true,
   });
+  expect(
+    frameworkCapabilitiesWithChannelLane(prime).supportsChannelAgents
+  ).toBe(true);
 });
 
 test('pi framework exposes native channels and a generic PTY', () => {
@@ -133,8 +146,10 @@ test('pi framework exposes native channels and a generic PTY', () => {
     supportsYolo: false,
     supportsTelemetry: true,
     supportsAttachedRuntime: false,
-    supportsChannelAgents: true,
   });
+  expect(frameworkCapabilitiesWithChannelLane(pi).supportsChannelAgents).toBe(
+    true
+  );
 });
 
 test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', () => {

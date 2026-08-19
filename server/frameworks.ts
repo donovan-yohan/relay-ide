@@ -9,8 +9,13 @@ import {
 } from './types.js';
 import {
   channelAdapterLaunchRequirement,
+  providerDescriptor,
+  providerSupportsChannelAgents,
   type ChannelGatewayProbe,
 } from './protocol-adapters/index.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('frameworks');
 
 export interface FrameworkAvailability {
   installed: boolean;
@@ -92,9 +97,41 @@ export function getFrameworkAvailability(
   };
 }
 
+/** Framework ids already warned about, so a roster poll cannot spam the log. */
+const warnedChannelLaneOverrides = new Set<string>();
+
+/**
+ * `config.frameworks.<id>.capabilities.supportsChannelAgents` no longer decides
+ * anything, in EITHER direction: it cannot claim a channel lane for a framework
+ * with no registered adapter (it never legitimately could — the roster then
+ * failed at the launch-contract lookup), and it can no longer de-advertise a
+ * lane that a registered adapter serves. Both answers now come from the provider
+ * descriptor, which is the same registry that decides whether an adapter exists
+ * at all — one gate instead of two that could disagree.
+ *
+ * The disable direction did work before, undocumented and untested, so warn
+ * rather than ignore silently: a self-hoster who set it deserves to learn why it
+ * stopped taking effect.
+ */
+function warnOnIgnoredChannelLaneOverride(
+  frameworkId: string,
+  override: Partial<AgentFramework>
+): void {
+  if (override.capabilities?.supportsChannelAgents === undefined) return;
+  if (warnedChannelLaneOverrides.has(frameworkId)) return;
+  warnedChannelLaneOverrides.add(frameworkId);
+  log.warn(
+    `config frameworks.${frameworkId}.capabilities.supportsChannelAgents is ignored; ` +
+      `the channel lane is declared by that provider's descriptor in ` +
+      `server/protocol-adapters/index.ts.`
+  );
+}
+
 export function listConfiguredFrameworks(
   frameworkOverrides?: Record<string, Partial<AgentFramework>>
 ): AgentFramework[] {
+  for (const [id, override] of Object.entries(frameworkOverrides ?? {}))
+    warnOnIgnoredChannelLaneOverride(id, override);
   const ids = new Set([
     ...Object.keys(BUILTIN_FRAMEWORKS),
     ...Object.keys(frameworkOverrides ?? {}),
@@ -107,6 +144,27 @@ export function listConfiguredFrameworks(
   );
 }
 
+/**
+ * Framework capabilities with the channel lane answered by the provider
+ * descriptor rather than by the terminal framework catalog.
+ *
+ * `supportsChannelAgents` used to be a hand-written boolean per catalog entry AND
+ * a registered adapter with a launch contract — two registries that could
+ * disagree, one of them silent. `ProviderDescriptor.supportsChannelAgents`
+ * (`server/protocol-adapters/index.ts`) is now the only declaration; this
+ * projects it so the client payload shape is unchanged. A configured framework
+ * override can no longer claim — or de-advertise — a channel lane; see
+ * `warnOnIgnoredChannelLaneOverride` above for that deliberate delta.
+ */
+export function frameworkCapabilitiesWithChannelLane(
+  framework: AgentFramework
+): AgentFramework['capabilities'] {
+  return {
+    ...framework.capabilities,
+    supportsChannelAgents: providerSupportsChannelAgents(framework.id),
+  };
+}
+
 export function getFrameworkClientInfo(
   frameworkOverrides?: Record<string, Partial<AgentFramework>>,
   env: NodeJS.ProcessEnv = process.env
@@ -115,7 +173,7 @@ export function getFrameworkClientInfo(
     id: framework.id,
     displayName: framework.displayName,
     command: framework.command,
-    capabilities: framework.capabilities,
+    capabilities: frameworkCapabilitiesWithChannelLane(framework),
     eventSource: framework.eventSource,
     availability: getFrameworkAvailability(framework, env),
   }));
@@ -152,7 +210,21 @@ export async function getFrameworkChannelAvailability(
   env: NodeJS.ProcessEnv = process.env,
   options: FrameworkChannelAvailabilityOptions = {}
 ): Promise<FrameworkChannelAvailability> {
-  if (!framework.capabilities.supportsChannelAgents) {
+  // One gate, not two: a registered channel adapter is what makes a framework a
+  // channel lane, and its descriptor says whether that lane is offered. The
+  // terminal framework catalog no longer holds a second, independently-editable
+  // `supportsChannelAgents` boolean that could disagree with the registry — so a
+  // config framework override cannot toggle this lane in either direction
+  // (`warnOnIgnoredChannelLaneOverride`). A framework with no descriptor, custom
+  // or otherwise, fails closed here.
+  const descriptor = providerDescriptor(framework.id);
+  if (!descriptor) {
+    return {
+      available: false,
+      reason: `${framework.displayName} has no registered channel runtime.`,
+    };
+  }
+  if (!descriptor.supportsChannelAgents) {
     return {
       available: false,
       reason:
@@ -161,13 +233,7 @@ export async function getFrameworkChannelAvailability(
     };
   }
 
-  const requirement = channelAdapterLaunchRequirement(framework.id);
-  if (!requirement) {
-    return {
-      available: false,
-      reason: `${framework.displayName} has no registered channel runtime.`,
-    };
-  }
+  const requirement = descriptor.launch.requirement;
 
   if (requirement.kind === 'gateway') {
     const gatewayProbe =

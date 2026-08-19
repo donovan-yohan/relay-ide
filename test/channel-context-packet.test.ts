@@ -6,14 +6,15 @@ import * as path from 'node:path';
 import {
   buildMentionContextPacket,
   buildMentionContextPacketEnvelope,
-  CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES,
-  PACKET_FRAMEWORK_IMAGE_SUPPORT,
   PACKET_IMAGE_MAX_COUNT,
   PACKET_MAX_ROWS,
   PACKET_ROW_MAX_CHARS,
   PACKET_MAX_BYTES,
   resolveMentionContextPacket,
 } from '../server/channel-context-packet.js';
+// Image delivery and the raw-byte budget are per-provider descriptor fields
+// (`server/protocol-adapters/index.ts`), not local tables in the packet builder.
+import { providerDescriptor } from '../server/protocol-adapters/index.js';
 import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
 import type {
   ChannelAttachmentId,
@@ -197,8 +198,8 @@ describe('buildMentionContextPacket', () => {
       } as ChannelAttachmentStore
     );
 
-    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.opencode).toBe(false);
-    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.mock).toBe(true);
+    expect(providerDescriptor('opencode')?.deliversImages).toBe(false);
+    expect(providerDescriptor('mock')?.deliversImages).toBe(true);
     expect(storeReads).toBe(0);
     expect(resolved.attachments).toEqual([]);
     expect(resolved.content).toBe(
@@ -369,7 +370,9 @@ describe('buildMentionContextPacket', () => {
         }),
         store
       );
-      expect(CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES).toBe(6 * 1024 * 1024);
+      expect(providerDescriptor('claude')?.imageRawByteBudget).toBe(
+        6 * 1024 * 1024
+      );
       expect(
         resolved.attachments.map((item) => path.basename(item.path))
       ).toEqual(['trigger-large.png', 'context-fits.png']);

@@ -31,6 +31,10 @@ import type {
 } from './channel-agent-runtime.js';
 import { providerResumeId } from './channel-agent-runtime.js';
 import {
+  DEFAULT_ORCHESTRATOR_PROVIDER_ID,
+  providerDescriptor,
+} from './protocol-adapters/index.js';
+import {
   relayControlCatalogForProvider,
   relayControlInputGuardCatalogForProvider,
 } from '../shared/agent-command-catalog.js';
@@ -107,8 +111,24 @@ const logger = createLogger('channel-agent-binder');
  * approval ever arrives.
  */
 export const CHANNEL_BINDING_YOLO_DEFAULT = true;
-/** Permission mode that maps to yolo for channel adapters (claude → --dangerously-skip-permissions). */
-const YOLO_PERMISSION_MODE = 'bypassPermissions';
+
+/**
+ * Yolo is Relay's decision; the WORD for it belongs to the provider.
+ *
+ * Each descriptor names the permission mode its own adapter understands, or
+ * `null` for none (`server/protocol-adapters/index.ts`). `bypassPermissions` is
+ * Claude's vocabulary and used to be sent to every provider from one constant
+ * here, even though `claude-adapter.ts` is the only adapter that reads
+ * `config.permissionMode`.
+ */
+function yoloPermissionModeConfig(
+  providerId: string,
+  yolo: boolean
+): { permissionMode?: string } {
+  if (!yolo) return {};
+  const mode = providerDescriptor(providerId)?.yoloPermissionMode;
+  return mode ? { permissionMode: mode } : {};
+}
 
 /** Per-binding FIFO turn queue cap; overflow → system row, message dropped. */
 const QUEUE_CAP = 8;
@@ -1813,7 +1833,7 @@ export function createChannelAgentBinder(
         ...(effectiveRole ? { role: effectiveRole } : {}),
         ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
         ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
-        ...(yolo ? { permissionMode: YOLO_PERMISSION_MODE } : {}),
+        ...yoloPermissionModeConfig(framework, yolo),
         ...(profile.model !== undefined ? { model: profile.model } : {}),
         ...(profile.envVars !== undefined
           ? { processEnv: profile.envVars }
@@ -1982,7 +2002,7 @@ export function createChannelAgentBinder(
 
   async function ensureOrchestrator(
     channelId: string,
-    framework = 'claude',
+    framework = DEFAULT_ORCHESTRATOR_PROVIDER_ID,
     profileActorId?: string
   ): Promise<LiveBinding> {
     const profile = profileActorId

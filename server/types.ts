@@ -83,6 +83,15 @@ export interface AgentFramework {
     supportsYolo: boolean;
     supportsTelemetry: boolean;
     supportsAttachedRuntime: boolean;
+    /**
+     * Whether this framework is available as a channel agent lane.
+     *
+     * NOT declared here: `server/frameworks.ts` projects it from
+     * `ProviderDescriptor.supportsChannelAgents`
+     * (`server/protocol-adapters/index.ts`), which is the single home for that
+     * answer. A hand-written boolean here was a second registry that could
+     * disagree with whether an adapter is registered at all.
+     */
     supportsChannelAgents?: boolean;
   };
 }
@@ -102,12 +111,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      // Channel agents run the persistent-subprocess adapter over stream-json
-      // (server/protocol-adapters/claude-adapter.ts + server/claude-stream-client.ts).
-      // Re-enabled by #1168 (closes #300): no Agent SDK, real assistant-text
-      // streaming, fixture-replayed end-to-end round-trip, and one live
-      // hello-world proof. See the #1168 PR for verification evidence.
-      supportsChannelAgents: true,
     },
   },
   codex: {
@@ -124,16 +127,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
-      // Channel agents run the native `codex app-server` JSON-RPC adapter
-      // (server/protocol-adapters/codex-native-adapter.ts +
-      // server/codex-app-server-client.ts). Re-advertised by #1169 (closes
-      // #301): the adapter maps assistant text end-to-end
-      // (`item/agentMessage/delta` → `agent-item-delta-v2`, plus item
-      // started/completed and `turn/completed`), the fake-app-server unit suite
-      // asserts the prompt → text-delta → completion round-trip, and one live
-      // hello-world proof drove the built adapter through a real thread. The
-      // old `chat:text-delta` gap belonged to the retired hook-based adapter.
-      supportsChannelAgents: true,
     },
   },
   opencode: {
@@ -168,7 +161,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      supportsChannelAgents: true,
     },
   },
   hermes: {
@@ -185,7 +177,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      supportsChannelAgents: true,
     },
   },
   'prime-agent': {
@@ -204,7 +195,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: false,
       supportsTelemetry: true,
       supportsAttachedRuntime: false,
-      supportsChannelAgents: true,
     },
   },
   pi: {
@@ -223,7 +213,6 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: false,
       supportsTelemetry: true,
       supportsAttachedRuntime: false,
-      supportsChannelAgents: true,
     },
   },
 };

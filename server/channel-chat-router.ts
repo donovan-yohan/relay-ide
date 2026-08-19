@@ -64,17 +64,25 @@ import {
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
+import {
+  DEFAULT_ORCHESTRATOR_PROVIDER_ID,
+  defaultMentionableProviderIds,
+} from './protocol-adapters/index.js';
+
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
 
-const DEFAULT_KNOWN_PROVIDER_IDS = [
-  'claude',
-  'codex',
-  'opencode',
-  'hermes',
-  'prime-agent',
-  'pi',
-];
+/**
+ * Fallback mention roster for a router built without `deps.knownProviderIds`.
+ *
+ * The hub always passes `Object.keys(v2Adapters)` (`server/index.ts`), so this is
+ * the test/embedding default only. Derived from
+ * `ProviderDescriptor.mentionableByDefault` rather than hand-listed here: a
+ * provider missing from the old literal list was unmentionable on any surface
+ * that took the default, with nothing to say so.
+ */
+export const DEFAULT_KNOWN_PROVIDER_IDS: readonly string[] =
+  defaultMentionableProviderIds();
 
 /**
  * Byte budget for one REST history response. Rows are row-bounded (max 200) but
@@ -2220,7 +2228,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const framework =
       typeof requested === 'string' && requested.length > 0
         ? requested
-        : 'claude';
+        : DEFAULT_ORCHESTRATOR_PROVIDER_ID;
     binder
       .ensureOrchestrator(topic.id, framework)
       .then((binding) =>

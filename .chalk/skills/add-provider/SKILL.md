@@ -26,7 +26,8 @@ provider to Relay's channel-first product.
 4. Preserve stable native ids; use deterministic fallback ids only when needed.
 5. Declare exact capabilities for resume, queue, approvals, questions, images,
    and runtime environment refresh.
-6. Register the adapter in `server/protocol-adapters/index.ts`.
+6. Register the adapter AND its `ProviderDescriptor` row in
+   `server/protocol-adapters/index.ts` (one without the other will not compile).
 7. Map common output to canonical detail cards.
 8. Add a bounded provider extension only when canonical items are insufficient.
 9. Prove mention → private runtime → durable channel row through binder/bridge
@@ -61,9 +62,13 @@ before it is a code change.
    wording, which the shared helper takes as a parameter; pi-agent and
    prime-agent fold `providerSessionId` into config first — that is a
    config-transform hook, not a reason to duplicate.
-4. Renaming or adding a provider also touches sites outside this directory: the
-   resume-id ladder in `server/channel-agent-runtime.ts` and the launch
-   contracts plus capability sets in `server/protocol-adapters/index.ts`.
+4. Everything a provider's name means outside this directory — launch contract,
+   capability transcription, resume-state key, image lane, channel-lane
+   advertisement, allowlists, controls, process match, auth paths, yolo
+   permission mode — is ONE row in `PROVIDER_DESCRIPTORS`
+   (`server/protocol-adapters/index.ts`). Registering an adapter without that row
+   is a compile error; `test/provider-registry-drift.test.ts` holds each
+   consuming seam to it. Never re-derive a provider fact in the consumer.
 5. Every PR touching `server/protocol-adapters/**` starts a PR-body line with
    `Adapter generality:` stating the classification and its reason. CI requires
    the line (or the `adapter-generality-reviewed` label); the `adapter-review`

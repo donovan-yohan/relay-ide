@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FILE_RPC_OPERATIONS } from '../shared/file-rpc.js';
+import { providerDescriptor } from './protocol-adapters/index.js';
 import type {
   NodeCapabilityProbe,
   NodeCapabilityStatus,
@@ -169,51 +170,37 @@ export interface AgentAuthProbeDeps {
 /**
  * Probe auth status for an agent CLI.
  *
- * Strategy (best-effort, no secrets in output):
- * - claude: checks for the presence of ~/.claude/.credentials.json or
- *   ~/.config/claude/credentials.json. File presence → 'authed'. This is a
- *   heuristic — the file could be expired, but it's non-destructive and fast.
- * - All others: 'unknown'.
+ * Strategy (best-effort, no secrets in output): a provider that declares
+ * `authCredentialPaths` in its descriptor (`server/protocol-adapters/index.ts`)
+ * reports 'authed' when any one of those home-relative files is readable, and
+ * 'unauthed' otherwise. This is a heuristic — a present file could be expired —
+ * but it is non-destructive and fast. A provider that declares none, and any
+ * custom agent, reports 'unknown'.
  *
- * Never logs token values. Only reports the three-state enum.
+ * The paths used to be `if (agentId === …)` branches here, so a new provider had
+ * no way to answer the question without editing this module.
+ *
+ * Never reads or logs token values. Only reports the three-state enum.
  */
 export function probeAgentAuthStatus(
   agentId: string,
   deps: AgentAuthProbeDeps & { homeDir?: string } = {}
 ): NodeAgentAuthStatus {
   const homeDir = deps.homeDir ?? os.homedir();
+  const credentialPaths =
+    providerDescriptor(agentId)?.authCredentialPaths ?? [];
+  if (credentialPaths.length === 0) return 'unknown';
 
-  if (agentId === 'claude') {
-    // Check common credential file locations for Claude
-    const candidates = [
-      path.join(homeDir, '.claude', '.credentials.json'),
-      path.join(homeDir, '.config', 'claude', 'credentials.json'),
-    ];
-    for (const candidate of candidates) {
-      try {
-        fs.accessSync(candidate, fs.constants.R_OK);
-        return 'authed';
-      } catch {
-        // file absent or unreadable, try next
-      }
-    }
-    // No credential file found — likely unauthenticated
-    return 'unauthed';
-  }
-
-  if (agentId === 'codex') {
-    // Codex stores auth state in ~/.codex/auth.json
-    const codexAuthFile = path.join(homeDir, '.codex', 'auth.json');
+  for (const segments of credentialPaths) {
     try {
-      fs.accessSync(codexAuthFile, fs.constants.R_OK);
+      fs.accessSync(path.join(homeDir, ...segments), fs.constants.R_OK);
       return 'authed';
     } catch {
-      return 'unauthed';
+      // File absent or unreadable — try the next declared location.
     }
   }
-
-  // opencode, hermes, and custom agents: no reliable heuristic
-  return 'unknown';
+  // No credential file found — likely unauthenticated.
+  return 'unauthed';
 }
 
 /**

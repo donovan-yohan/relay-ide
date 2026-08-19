@@ -316,7 +316,10 @@ npm run build
 
 1. Inspect one real native event stream and redact a structural fixture.
 2. Implement or update the `ProtocolAdapterV2` adapter.
-3. Register it in `server/protocol-adapters/index.ts`.
+3. Register it in `server/protocol-adapters/index.ts` — the adapter factory AND
+   its `PROVIDER_DESCRIPTORS` row, which is where every provider fact the rest of
+   the server reads by name lives. An adapter without a descriptor (or the
+   reverse) is a compile error.
 4. Declare exact capabilities.
 5. Add mapping, lifecycle, resume, and error tests.
 6. Prove the channel binder/bridge path.

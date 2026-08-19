@@ -75,6 +75,10 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     plans: true,
     slashCommands: true,
     queue: true,
+    // The fixture double has no `steerMessage`, so this stays false even though
+    // every other flag is on: a declared-true flag with no implementation is the
+    // dishonest-capability case AGENTS.md forbids.
+    steer: false,
     interrupt: true,
     cancelQueued: true,
     resume: true,
@@ -84,7 +88,9 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     telemetry: true,
     rateLimits: true,
     streaming: true,
-  };
+    // `Required<...>`: a new protocol capability must be answered here rather
+    // than read as false by omission. See `Fidelity invariants` in AGENTS.md.
+  } satisfies Required<AgentCapabilitySetV2>;
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;

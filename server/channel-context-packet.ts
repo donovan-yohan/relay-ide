@@ -7,6 +7,10 @@ import {
 } from '../shared/channel-chat-protocol.js';
 import type { ChannelAttachmentStore } from './channel-attachments.js';
 import type { Attachment } from './protocol-adapter-v2.js';
+import {
+  GENERAL_IMAGE_RAW_BYTE_BUDGET,
+  providerDescriptor,
+} from './protocol-adapters/index.js';
 
 // Pure context-packet builder for @-mention routing (#1167, slice 4). No I/O:
 // store rows in, prompt string out — fully unit-testable. The binder fetches the
@@ -22,25 +26,34 @@ export const PACKET_ROW_MAX_CHARS = 2000;
 export const PACKET_MAX_BYTES = 16 * 1024;
 /** Provider turns receive at most four images, regardless of retained row count. */
 export const PACKET_IMAGE_MAX_COUNT = 4;
-/** General raw-image ceiling bounds synchronous adapter encoding work. */
-export const PACKET_IMAGE_MAX_RAW_BYTES = 10 * 1024 * 1024;
-/**
- * Claude frames images as base64 inside one JSONL stdin frame. Six raw MiB
- * expands to eight MiB, leaving over a MiB below its 9.5MB line ceiling for
- * packet text, JSON syntax, and per-block metadata.
- */
-export const CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES = 6 * 1024 * 1024;
 /** Transient callback-only metadata; never persisted by the image bridge. */
 export const PACKET_IMAGE_DEGRADATION_META_KEY = '__relayImageDegradationNotes';
-/** Adapter audit: only these framework lanes consume local image attachments. */
-export const PACKET_FRAMEWORK_IMAGE_SUPPORT: Readonly<Record<string, boolean>> =
-  Object.freeze({
-    claude: true,
-    codex: true,
-    hermes: true,
-    mock: true,
-    opencode: false,
-  });
+/**
+ * Image delivery is a per-provider fact declared once, beside the adapter.
+ *
+ * `deliversImages` and `imageRawByteBudget` come from `ProviderDescriptor`
+ * (`server/protocol-adapters/index.ts`). This module used to hold its own
+ * framework table, and a provider absent from it silently inherited "cannot
+ * receive images"; the descriptor is total over the adapter roster, so the
+ * question has to be answered before an adapter can register.
+ *
+ * The lookup is lower-cased because `packet.framework` is a persisted string.
+ * An unregistered framework keeps the pre-descriptor fallbacks: no images, and
+ * the general raw-byte ceiling. (Before the descriptor, an exactly-`'claude'`
+ * framework got Claude's smaller budget while `'Claude'` got the general one;
+ * both now resolve to the same descriptor.)
+ */
+function frameworkImageLane(framework: string): {
+  deliversImages: boolean;
+  rawByteBudget: number;
+} {
+  const descriptor = providerDescriptor(framework.toLowerCase());
+  return {
+    deliversImages: descriptor?.deliversImages === true,
+    rawByteBudget:
+      descriptor?.imageRawByteBudget ?? GENERAL_IMAGE_RAW_BYTE_BUDGET,
+  };
+}
 
 const OMITTED_MARKER = '[…earlier messages omitted]';
 const ROW_TRUNCATED_SUFFIX = '…[truncated]';
@@ -464,10 +477,8 @@ export function resolveMentionContextPacket(
 ): ResolvedMentionContextPacket {
   const attachments: Attachment[] = [];
   const notes: string[] = [];
-  const rawByteLimit =
-    packet.framework === 'claude'
-      ? CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES
-      : PACKET_IMAGE_MAX_RAW_BYTES;
+  const imageLane = frameworkImageLane(packet.framework);
+  const rawByteLimit = imageLane.rawByteBudget;
   let rawBytes = 0;
   const seenAttachmentIds = new Set<string>();
   for (const image of packet.images) {
@@ -477,9 +488,7 @@ export function resolveMentionContextPacket(
     // occurrence in packet priority order wins.
     if (seenAttachmentIds.has(part.id)) continue;
     seenAttachmentIds.add(part.id);
-    if (
-      PACKET_FRAMEWORK_IMAGE_SUPPORT[packet.framework.toLowerCase()] !== true
-    ) {
+    if (!imageLane.deliversImages) {
       notes.push(
         `[image attachment not deliverable to ${packet.framework}: ${part.alt?.trim() || part.id}, ${part.w}x${part.h}]`
       );

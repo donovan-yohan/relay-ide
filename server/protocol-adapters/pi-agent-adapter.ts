@@ -36,6 +36,8 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   plans: false,
   slashCommands: false,
   queue: true,
+  // No native mid-turn injection boundary, and no `steerMessage` implementation.
+  steer: false,
   cancelQueued: false,
   interrupt: true,
   resume: true,
@@ -45,7 +47,9 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   telemetry: true,
   rateLimits: false,
   streaming: true,
-};
+  // `Required<...>`: a new protocol capability must be answered here rather than
+  // read as false by omission. See `Fidelity invariants` in AGENTS.md.
+} satisfies Required<AgentCapabilitySetV2>;
 
 type ClientFactory = (options: PiAgentRpcClientOptions) => PiAgentRpcClient;
 type RpcRecord = Record<string, unknown>;
