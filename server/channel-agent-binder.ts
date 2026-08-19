@@ -29,6 +29,7 @@ import type {
   ChannelAgentRuntime,
   CreateChannelAgentRuntimeParams,
 } from './channel-agent-runtime.js';
+import { providerResumeId } from './channel-agent-runtime.js';
 import {
   relayControlCatalogForProvider,
   relayControlInputGuardCatalogForProvider,
@@ -354,7 +355,8 @@ interface QueuedTurn {
    * is BELOW the binding's delivery cursor (a newer turn already succeeded and
    * advanced it past this seq), so it can never survive coalescing as a context
    * row — `buildMentionContextPacketEnvelope` filters context rows with
-   * `seq > lastDeliveredSeq`. It must therefore always trigger its OWN turn,
+   * `seq > lastDeliveredSeq` in BOTH scopes since #1408, thread included. It
+   * must therefore always trigger its OWN turn,
    * where the packet footer renders it unconditionally. See `pump`.
    */
   reEnqueued?: true;
@@ -370,6 +372,26 @@ interface ExactTurnTombstone {
   parentMessageId: string | null;
   requestMessageId: ChannelMessage['id'];
   expiresAt: number;
+}
+
+/**
+ * Whether a persisted binding row carries provider RESUME state, as opposed to
+ * only Relay's own bookkeeping or an adapter's private scratch keys.
+ *
+ * `lastDeliveredSeq` is written by `advanceCursor` into the same blob adapters
+ * use for their resume handles, so a non-empty `providerSession` is not by
+ * itself evidence that a respawned runtime can replay the conversation — and
+ * neither is "some key other than the cursor". `runtimes.create()` resumes from
+ * exactly ONE provider-specific key (`providerResumeId`); an adapter that
+ * persists anything else (mock's `mockSessionId`, say) spawns an amnesiac
+ * process no matter how full the blob looks. Asking the runtime's own resume
+ * map is what keeps this predicate honest for future/custom adapters (#1408).
+ */
+function hasProviderResumeState(
+  framework: string,
+  providerSession: Record<string, unknown> | undefined
+): boolean {
+  return providerResumeId(framework, providerSession) !== undefined;
 }
 
 export interface LiveBinding {
@@ -414,6 +436,15 @@ export interface LiveBinding {
   >;
   /** Anonymous turn-0 cannot be associated safely after retained generations overlap. */
   turnZeroFallbackUnsafe: boolean;
+  /**
+   * Thread scope only (#1408): this runtime was spawned WITHOUT provider resume
+   * state, so it holds none of the thread even though the durable per-thread
+   * cursor says the rows were delivered to its predecessor. The next packet is
+   * therefore built at cursor 0 — root plus the newest orientation window —
+   * regardless of the stored cursor. Cleared by `advanceCursor` the moment a
+   * send is accepted, because the live provider conversation then holds it.
+   */
+  threadOrientationPending: boolean;
   /** Context packet for the active turn (kept so a retry re-sends identical content). */
   activeContent: string | null;
   /** Resolved local payloads retained with activeContent across retry/rebind. */
@@ -1482,6 +1513,7 @@ export function createChannelAgentBinder(
       completionCallbackByTurn: new Map(),
       deferredCompletionTerminalByTurn: new Map(),
       turnZeroFallbackUnsafe: false,
+      threadOrientationPending: false,
       activeContent: null,
       activeAttachments: [],
       sawStream: false,
@@ -1844,6 +1876,14 @@ export function createChannelAgentBinder(
       created,
       threadId
     );
+    // Orientation rule (#1408). Steps 2 and 3 above returned runtimes that still
+    // HOLD the thread conversation, so their packets honour the durable cursor.
+    // This one was just spawned: unless the provider handed back resume state
+    // that replays the prior conversation, it knows nothing about the thread and
+    // the stored cursor would silently starve it of its own root.
+    binding.threadOrientationPending =
+      threadId !== null &&
+      !hasProviderResumeState(framework, row?.providerSession);
     store.upsertBinding({
       channelId,
       threadId,
@@ -2218,7 +2258,11 @@ export function createChannelAgentBinder(
     const activeTurnId = binding.activeTurnId;
     let packet: ResolvedMentionContextPacket;
     try {
-      packet = buildPacket(binding, trigger);
+      // The live turn already read the header, counts, and scope marker; a
+      // steer is an interjection into that turn, not a fresh delivery. Interim
+      // context rows still ride along, because accepting this steer advances
+      // the delivery cursor past them (#1408).
+      packet = buildPacket(binding, trigger, { delivery: 'steer' });
     } catch (err) {
       logger.warn('channel binder steering packet build failed:', err);
       postSystemRow(
@@ -2321,7 +2365,9 @@ export function createChannelAgentBinder(
    * older ones are not lost — `buildPacket` reads every row between the delivery
    * cursor and the trigger straight out of the store, so they arrive as context
    * rows of that one packet. Three impatient messages therefore cost one turn,
-   * not three.
+   * not three. Since #1408 that holds identically in thread scope, whose packet
+   * window is bounded by the per-(binding, thread) cursor rather than replaying
+   * the whole thread.
    *
    * Two deliberate limits on the run:
    *   • thread scope — a threaded packet only carries its own thread, so a
@@ -2348,10 +2394,12 @@ export function createChannelAgentBinder(
     // A re-enqueued trigger neither STARTS a run nor JOINS one. It sits below
     // the binding's delivery cursor (the turn that displaced it already
     // advanced the cursor past its seq), and `buildPacket` selects context rows
-    // with `seq > lastDeliveredSeq` — so folded into someone else's packet it
-    // would be neither trigger nor context row and would vanish entirely, the
-    // exact loss coalescing exists to avoid. Alone it is the trigger, and the
-    // footer renders the trigger unconditionally.
+    // with `seq > lastDeliveredSeq` in either scope (#1408) — so folded into
+    // someone else's packet it would be neither trigger nor context row and
+    // would vanish entirely, the exact loss coalescing exists to avoid. This
+    // guard is unconditional rather than cursor-derived, so it also covers a
+    // thread binding still carrying `threadOrientationPending`. Alone it is the
+    // trigger, and the footer renders the trigger unconditionally.
     if (
       !head.reEnqueued &&
       head.completionCallback === undefined &&
@@ -2390,10 +2438,24 @@ export function createChannelAgentBinder(
 
   function buildPacket(
     binding: LiveBinding,
-    trigger: ChannelMessage
+    trigger: ChannelMessage,
+    options?: { delivery?: 'turn' | 'steer' }
   ): ResolvedMentionContextPacket {
     const topic = topicStore?.get(binding.channelId);
     const title = topic?.display.title ?? binding.channelId;
+    // Fails closed to the multi-party framing: without a topic row DM-ness is
+    // unprovable, and telling a group channel's agent it is in a private DM is
+    // the worse error of the two. A DM is also only a DM FOR ITS OWN AGENT — a
+    // human may explicitly @-mention a second profile inside one
+    // (`resolvedPostTargets`: pinned mentions win), and that guest genuinely
+    // shares the channel with the human AND the DM's agent, so it gets the
+    // multi-party header.
+    const dmProviderId = topic ? isDmChannel(topic) : null;
+    const channelKind =
+      dmProviderId !== null &&
+      defaultProfileForProvider(dmProviderId).id === binding.profileActorId
+        ? ('dm' as const)
+        : ('channel' as const);
     const row = store.getBinding(
       binding.channelId,
       binding.profileActorId,
@@ -2403,21 +2465,36 @@ export function createChannelAgentBinder(
       typeof row?.providerSession['lastDeliveredSeq'] === 'number'
         ? (row.providerSession['lastDeliveredSeq'] as number)
         : 0;
+    // #1408: thread packets carry only what arrived since this binding's last
+    // ACCEPTED turn, exactly as channel packets already did — the durable
+    // per-(channel, thread, profile) cursor is the same row `advanceCursor`
+    // writes. The one override is a runtime that cannot possibly hold the
+    // conversation the cursor implies (fresh spawn, no provider resume state):
+    // it is oriented from 0 so it still receives the root and the window.
+    const effectiveCursor =
+      binding.threadId !== null && binding.threadOrientationPending
+        ? 0
+        : lastDeliveredSeq;
     const context = store.mentionContext({
       channelId: binding.channelId,
       framework: binding.framework,
       triggerSeq: trigger.seq,
-      afterSeq: lastDeliveredSeq,
+      afterSeq: effectiveCursor,
       threadRootId: trigger.threadId,
       limit: PACKET_MAX_ROWS,
     });
     return resolveMentionContextPacket(
       buildMentionContextPacketEnvelope({
+        channelId: binding.channelId,
         channelTitle: title,
+        channelKind,
+        ...(options?.delivery ? { delivery: options.delivery } : {}),
         framework: binding.framework,
         rows: context.rows,
         trigger,
-        lastDeliveredSeq,
+        // Store and builder MUST agree byte-exactly: the summary counts come
+        // from the store's window, and the builder re-filters the same rows.
+        lastDeliveredSeq: effectiveCursor,
         summary: {
           totalCount: context.totalCount,
           activityFilteredCount: context.activityFilteredCount,
@@ -2602,6 +2679,11 @@ export function createChannelAgentBinder(
     // Cursor advances only on send acceptance (§4): a failed send re-offers the
     // rows next mention (at-least-once). Never lower the cursor.
     try {
+      // Acceptance is the orientation boundary too (#1408): the provider now
+      // holds this thread's window, so later turns follow the durable cursor.
+      // Cleared before the early return below — a re-delivered trigger at or
+      // below the cursor is still an accepted send.
+      binding.threadOrientationPending = false;
       const row = store.getBinding(
         binding.channelId,
         binding.profileActorId,
@@ -2651,6 +2733,50 @@ export function createChannelAgentBinder(
     }
   }
 
+  /**
+   * Rebuild the retained turn packet for a runtime that REPLACED the one it was
+   * built for (#1408).
+   *
+   * A retry normally redelivers byte-identical content. That is exactly right
+   * for a reused runtime, and wrong for a fresh thread process with no provider
+   * resume state: the retained packet was windowed at the durable cursor for a
+   * process that no longer exists, so it can be replies-only and would orient
+   * the new one by nothing. Content identity exists to protect a provider that
+   * already accepted the send, and a rejected `sendMessage` never accepted it.
+   *
+   * A failed rebuild keeps the retained packet — a slightly under-oriented retry
+   * beats losing the turn.
+   *
+   * KNOWN BOUND of the at-most-once steer rule. `drainSteering` advances the
+   * durable cursor the moment a steer is ACCEPTED, which is a different event
+   * from the owning turn's `sendMessage` resolving. If a runtime accepts a steer
+   * and then rejects (or has already rejected) the turn send, the rebuild below
+   * re-windows from the failed TURN trigger — so the steer instruction, and any
+   * rows between the trigger and it, reached only the dead process and are not
+   * redelivered. Both halves are pre-existing turn semantics (cursor advances on
+   * acceptance; steers are never retried); the reorientation here narrows the
+   * window rather than widening it. Closing it properly means holding the steer's
+   * cursor advance until its owning turn is also accepted — worth doing only if
+   * this is ever observed live, since it trades an at-most-once rule for a
+   * two-phase one.
+   */
+  function reorientRetainedPacket(
+    binding: LiveBinding,
+    trigger: ChannelMessage,
+    completionCallback?: ChannelCompletionCallbackEdge
+  ): void {
+    if (!binding.threadOrientationPending) return;
+    try {
+      const reoriented = completionCallback
+        ? buildCompletionCallbackPacket(binding, trigger, completionCallback)
+        : buildPacket(binding, trigger);
+      binding.activeContent = reoriented.content;
+      binding.activeAttachments = reoriented.attachments;
+    } catch (err) {
+      logger.warn('channel binder thread orientation rebuild failed:', err);
+    }
+  }
+
   async function handleSendFailure(
     binding: LiveBinding,
     trigger: ChannelMessage,
@@ -2664,6 +2790,7 @@ export function createChannelAgentBinder(
     // a single retry-after-rebind is safe — covers dead legacy-bridge transports.
     if (!binding.retriedTurns.has(turnId)) {
       binding.retriedTurns.add(turnId);
+      const priorRuntimeId = binding.runtimeId;
       try {
         const profile = deps.agentProfileStore
           ? deps.agentProfileStore.get(binding.profileActorId)
@@ -2682,7 +2809,11 @@ export function createChannelAgentBinder(
         );
         if (closed) return;
         if (rebound.adapter && rebound.activeTurnId === turnId) {
-          // Same binding still owns this turn — redeliver identical content.
+          // Same binding still owns this turn — redeliver identical content,
+          // except when the rebind replaced the runtime outright (#1408).
+          if (rebound.runtimeId !== priorRuntimeId) {
+            reorientRetainedPacket(rebound, trigger, completionCallback);
+          }
           deliver(
             rebound,
             rebound.adapter,

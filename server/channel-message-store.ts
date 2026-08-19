@@ -140,6 +140,11 @@ export const MENTION_CONTEXT_CANDIDATE_SCAN_BUDGET = 256;
  * window. One OFFSET read examines at most budget + 1 index entries; each
  * subsequent count/row statement is constrained to at most the newest budget
  * entries (at most `3 * budget + 1` visits across the three statements).
+ *
+ * Both scopes open the window at the caller's delivery cursor (#1408). A thread
+ * probe that started at seq 0 counted every reply ever posted to the thread
+ * toward the budget, so `candidateScanTruncated` reported truncation of history
+ * the caller had already been delivered.
  */
 export function buildChannelMentionContextBoundarySql(
   scope: ChannelMentionContextScope
@@ -148,6 +153,7 @@ export function buildChannelMentionContextBoundarySql(
     return `SELECT reply.seq
               FROM channel_messages reply INDEXED BY idx_chm_thread
              WHERE reply.thread_id = @threadRootId
+               AND reply.seq > @afterSeq
                AND reply.seq < @triggerSeq
              ORDER BY reply.seq DESC
              LIMIT 1 OFFSET @candidateBudget`;
@@ -169,6 +175,12 @@ export function buildChannelMentionContextBoundarySql(
  * budget; counts are exact within that window and carry an explicit truncation
  * bit when older candidates exist. Activity rows cost no JS allocations and
  * cannot make either SQL query scan an unbounded cursor range.
+ *
+ * Thread scope honours the same `@afterSeq` delivery cursor channel scope does
+ * (#1408). The root is structural rather than conversational, so it uses the
+ * raw cursor and not the truncation-narrowed `@candidateAfterSeq`: it belongs
+ * in the packet whenever the window reaches back past it (the orientation turn),
+ * and drops out once the agent has already been delivered it.
  */
 function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
   if (scope === 'thread') {
@@ -177,6 +189,7 @@ function mentionContextCandidateSql(scope: ChannelMentionContextScope): string {
         FROM channel_messages root
        WHERE root.id = @threadRootId
          AND root.channel_id = @channelId
+         AND root.seq > @afterSeq
          AND root.seq < @triggerSeq
       UNION ALL
       SELECT reply.*
@@ -253,11 +266,14 @@ export function buildChannelMentionContextRowsSql(
   }
   // The canonical root is structural regardless of its body/kind. Replies use
   // the ordinary prose predicate and their own PACKET_MAX_ROWS-1 limit, so the
-  // root cannot be displaced by a long or activity-heavy thread.
+  // root cannot be displaced by a long or activity-heavy thread. The root slot
+  // stays reserved either way: `@replyLimit` is `limit - 1` in both modes, so a
+  // cursor that has already delivered the root buys 15 replies, not 16.
   return `SELECT root.*
             FROM channel_messages root
            WHERE root.id = @threadRootId
              AND root.channel_id = @channelId
+             AND root.seq > @afterSeq
              AND root.seq < @triggerSeq
            UNION ALL
           SELECT newest_reply.*
@@ -1186,7 +1202,13 @@ export interface ChannelMentionContextQuery {
   channelId: string;
   framework: string;
   triggerSeq: number;
-  /** Channel delivery cursor; ignored for thread scope. */
+  /**
+   * Delivery cursor, honoured by BOTH scopes (#1408). For thread scope it is
+   * the per-(binding, thread) cursor, so a follow-up turn carries only replies
+   * posted since the agent's last accepted turn; the structural root drops out
+   * with them. Pass 0 to request the full orientation window (first turn in the
+   * thread, or a fresh runtime with no provider resume state).
+   */
   afterSeq: number;
   /** Canonical root id for thread scope, otherwise null. */
   threadRootId: string | null;
@@ -5100,8 +5122,12 @@ export function createChannelMessageStore(
         | { seq: number }
         | undefined;
       const candidateScanTruncated = boundary !== undefined;
-      const candidateAfterSeq =
-        boundary?.seq ?? (scope === 'channel' ? input.afterSeq : -1);
+      // Identical in both scopes (#1408): the window opens at the caller's
+      // delivery cursor and narrows only when the budget probe found older raw
+      // entries inside it. Thread scope used to open at -1, which re-served the
+      // whole thread on every turn and made `candidateScanTruncated` describe
+      // already-delivered history.
+      const candidateAfterSeq = boundary?.seq ?? input.afterSeq;
       const params = {
         ...baseParams,
         candidateAfterSeq,

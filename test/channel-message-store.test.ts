@@ -2456,6 +2456,146 @@ describe('channel-message-store mention context (#1358)', () => {
     ]);
   });
 
+  it('windows thread scope at the delivery cursor, dropping the already-sent root', () => {
+    const s = store();
+    const channelId = 'topic:thread-cursor';
+    const root = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'thread root',
+    });
+    const replies = Array.from({ length: 6 }, (_, index) =>
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `reply ${index}`,
+        parentMessageId: root.id,
+      })
+    );
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    // Orientation turn (cursor 0): root plus every reply.
+    const orientation = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: 0,
+      threadRootId: root.id,
+      limit: 16,
+    });
+    expect(orientation).toMatchObject({
+      totalCount: 7,
+      activityFilteredCount: 0,
+      candidateScanTruncated: false,
+      scope: 'thread',
+    });
+    expect(orientation.rows.map((row) => row.body.text)).toEqual([
+      'thread root',
+      'reply 0',
+      'reply 1',
+      'reply 2',
+      'reply 3',
+      'reply 4',
+      'reply 5',
+    ]);
+
+    // Follow-up turn: cursor sits on `reply 3`, so only 4 and 5 are new and the
+    // structural root drops out with the rest of the delivered history.
+    const followUp = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: replies[3]!.seq,
+      threadRootId: root.id,
+      limit: 16,
+    });
+    expect(followUp).toMatchObject({
+      totalCount: 2,
+      activityFilteredCount: 0,
+      candidateScanTruncated: false,
+      scope: 'thread',
+    });
+    expect(followUp.rows.map((row) => row.body.text)).toEqual([
+      'reply 4',
+      'reply 5',
+    ]);
+  });
+
+  it('truncates thread candidates relative to the cursor, not the whole thread', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanup.push(() => warnSpy.mockRestore());
+    const s = store(undefined, { mentionContextCandidateScanBudget: 3 });
+    const channelId = 'topic:thread-cursor-budget';
+    const root = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: 'thread root',
+    });
+    const replies = Array.from({ length: 8 }, (_, index) =>
+      s.appendComplete({
+        channelId,
+        sender: HUMAN,
+        text: `reply ${index}`,
+        parentMessageId: root.id,
+      })
+    );
+    const trigger = s.appendComplete({
+      channelId,
+      sender: HUMAN,
+      text: '@claude inspect',
+      parentMessageId: root.id,
+    });
+
+    // Cursor on `reply 4` leaves exactly 3 later replies — the budget covers
+    // them, so nothing is truncated even though the thread holds 8.
+    const withinBudget = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: replies[4]!.seq,
+      threadRootId: root.id,
+      limit: 16,
+    });
+    expect(withinBudget).toMatchObject({
+      totalCount: 3,
+      candidateScanTruncated: false,
+      scope: 'thread',
+    });
+    expect(withinBudget.rows.map((row) => row.body.text)).toEqual([
+      'reply 5',
+      'reply 6',
+      'reply 7',
+    ]);
+
+    // Cursor on `reply 2` leaves 5 later replies — now the budget truncates,
+    // and the count is a truthful lower bound over the newest 3 of THOSE.
+    const truncated = s.mentionContext({
+      channelId,
+      framework: 'claude',
+      triggerSeq: trigger.seq,
+      afterSeq: replies[2]!.seq,
+      threadRootId: root.id,
+      limit: 16,
+    });
+    expect(truncated).toMatchObject({
+      totalCount: 3,
+      activityFilteredCount: 0,
+      candidateScanBudget: 3,
+      candidateScanTruncated: true,
+      scope: 'thread',
+    });
+    expect(truncated.rows.map((row) => row.body.text)).toEqual([
+      'reply 5',
+      'reply 6',
+      'reply 7',
+    ]);
+  });
+
   it('bounds corrupt cross-channel thread collisions without leaking their rows', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     cleanup.push(() => warnSpy.mockRestore());
@@ -2581,7 +2721,7 @@ describe('channel-message-store mention context (#1358)', () => {
     expect(threadBoundarySql).not.toContain('channel_id');
     const threadBoundary = explain(threadBoundarySql);
     expect(threadBoundary).toMatch(
-      /SEARCH reply USING (?:COVERING )?INDEX idx_chm_thread \(thread_id=\? AND seq<\?\)/
+      /SEARCH reply USING (?:COVERING )?INDEX idx_chm_thread \(thread_id=\? AND seq>\? AND seq<\?\)/
     );
     expect(threadBoundary).not.toContain('USE TEMP B-TREE');
 

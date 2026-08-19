@@ -133,7 +133,18 @@ export function configureChannelAgentRuntimes(input: {
   orchestratorCredentialAuthority = input.orchestratorCredentials;
 }
 
-function providerResumeId(
+/**
+ * The ONE provider-session key a given provider can actually be resumed from.
+ *
+ * This is the whole resume contract: `create()` below hands the returned value
+ * to the adapter (as `resumeSessionId` or `resumeSession()`), and every other
+ * key in the blob — Relay's own `lastDeliveredSeq`, an adapter's private
+ * bookkeeping — is inert at spawn time. Exported so callers that must know
+ * whether a respawned runtime still holds its prior conversation ask THIS
+ * question rather than "is the blob non-empty" (#1408): a persisted key this
+ * map does not name replays nothing.
+ */
+export function providerResumeId(
   providerId: string,
   state: Record<string, unknown> | undefined
 ): string | undefined {
