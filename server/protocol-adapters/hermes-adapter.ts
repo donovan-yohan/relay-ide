@@ -652,6 +652,50 @@ export function buildRelayHermesSessionInstructions(input: {
   ].join('\n');
 }
 
+/**
+ * Compose the persistent system region one Hermes runtime sends on every
+ * `/v1/responses` call, in Relay's authority order:
+ *
+ * 1. Relay session context (inert labels: session id, cwd, workspace anchors).
+ * 2. Channel `promptDefaults` (`extra.instructions`, #1090).
+ * 3. `config.systemPromptAppendix` — the profile system prompt plus Relay's
+ *    collaboration contract (`server/channel-agent-runtime.ts`), LAST so
+ *    channel-authored material cannot redefine Relay's runtime boundary.
+ *
+ * Hermes QUIRK: the gateway has no separate system-prompt slot, and the
+ * Responses API's `instructions` field IS the system region — so #1409's
+ * "deliver the appendix" is a fold into this block, not a new request field.
+ * Pure and total over its input, so `connect()` composes it once and every turn
+ * replays the identical bytes: the prefix-cache invariant holds by construction
+ * rather than by every caller re-deriving the same string. Returns null when
+ * there is nothing to send.
+ */
+export function composeHermesPersistentInstructions(input: {
+  sessionId?: string | null | undefined;
+  cwd?: string | null | undefined;
+  metadata?: Record<string, string> | undefined;
+  channelInstructions?: unknown;
+  systemPromptAppendix?: string | null | undefined;
+}): string | null {
+  const parts: string[] = [];
+  const relayContext = buildRelayHermesSessionInstructions({
+    sessionId: input.sessionId,
+    cwd: input.cwd,
+    metadata: input.metadata,
+  });
+  if (relayContext) parts.push(relayContext);
+  if (
+    typeof input.channelInstructions === 'string' &&
+    input.channelInstructions.trim()
+  ) {
+    parts.push(input.channelInstructions.trim());
+  }
+  if (input.systemPromptAppendix?.trim()) {
+    parts.push(input.systemPromptAppendix.trim());
+  }
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -740,6 +784,34 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _currentTurnId: string | null = null;
   private _apiKey: string | null = null;
   private _lastResponseId: string | null = null;
+  /**
+   * The last response id the gateway actually FINISHED — `response.completed`
+   * (the one persisted as `hermesResponseId`), the `response.incomplete` the
+   * adapter already treats as chainable, or an id restored by `resumeSession`.
+   *
+   * Distinct from `_lastResponseId`, which `response.created` advances to the
+   * in-flight id the moment a turn starts. An interrupted turn's in-flight
+   * response was never finished upstream, so it is not a legal
+   * `previous_response_id` and must never be resurrected — but the last
+   * finished one still is. Dropping the chain to null on abort (pre-#1409) made
+   * every turn after a user interrupt start a fresh, context-free conversation.
+   */
+  private _lastChainableResponseId: string | null = null;
+  /**
+   * The Hermes system region for this runtime, composed ONCE in `connect()` by
+   * `composeHermesPersistentInstructions` and replayed verbatim on every
+   * `/v1/responses` call. Prefix-cache invariant (#1409): the instructions
+   * prefix must be byte-stable across every turn of one runtime, so it is built
+   * from the immutable `AdapterConfig` at connect instead of being recomposed
+   * per turn. The one-shot ticket kickoff below is the single deliberate
+   * exception and is appended after this block, on the first turn only.
+   */
+  private _persistentInstructions: string | null = null;
+  /**
+   * `metadata` for every `/v1/responses` call, sanitized once at connect from
+   * the same immutable config — same reason as `_persistentInstructions`.
+   */
+  private _responsesMetadata: Record<string, string> | null = null;
   // One-shot delivery for `extra.initialInstructions` (e.g. a ticket-launch
   // kickoff prompt, #1062): unlike `extra.instructions` (channel promptDefaults,
   // resent every turn — #1090), this is folded into `instructions` for the
@@ -778,11 +850,25 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = null;
     this._currentTurnId = null;
     this._lastResponseId = null;
+    this._lastChainableResponseId = null;
     this._turnCounter = 0;
     this._initialInstructionsSent = false;
     this._pendingToolCalls.clear();
     this._reasoningBuffer = '';
     this._assistantEmittedThisTurn = false;
+
+    // Compose the system region and metadata once per runtime, from the config
+    // this connect generation was handed. Every turn below replays these exact
+    // bytes (prefix-cache invariant, #1409).
+    this._responsesMetadata =
+      sanitizeResponsesMetadata(config.extra?.['metadata']) ?? null;
+    this._persistentInstructions = composeHermesPersistentInstructions({
+      sessionId: config.sessionId,
+      cwd: config.cwd,
+      ...(this._responsesMetadata ? { metadata: this._responsesMetadata } : {}),
+      channelInstructions: config.extra?.['instructions'],
+      systemPromptAppendix: config.systemPromptAppendix,
+    });
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
@@ -805,6 +891,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = null;
     this._currentTurnId = null;
     this._lastResponseId = null;
+    this._lastChainableResponseId = null;
+    this._persistentInstructions = null;
+    this._responsesMetadata = null;
     this._pendingToolCalls.clear();
     this._reasoningBuffer = '';
     this._assistantEmittedThisTurn = false;
@@ -859,34 +948,20 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     if (this._lastResponseId) {
       body['previous_response_id'] = this._lastResponseId;
     }
-    const metadata = sanitizeResponsesMetadata(
-      this._config?.extra?.['metadata']
-    );
-    if (metadata) {
-      body['metadata'] = metadata;
+    if (this._responsesMetadata) {
+      body['metadata'] = this._responsesMetadata;
     }
-    // `instructions` (channel promptDefaults, #1090) is persistent system
-    // framing resent on every turn. `initialInstructions` (ticket-launch
-    // kickoff, #1062) is one-shot: fold it in only for the first turn of this
-    // adapter instance, then drop it, so it doesn't linger as system framing
-    // and cause the model to re-anchor on a one-time kickoff instruction
-    // mid-conversation.
-    const persistentInstructions = this._config?.extra?.['instructions'];
+    // `_persistentInstructions` (Relay session context + channel promptDefaults
+    // #1090 + `systemPromptAppendix` #1409) is the byte-stable system region,
+    // composed at connect and resent unchanged on every turn.
+    // `initialInstructions` (ticket-launch kickoff, #1062) is one-shot: fold it
+    // in only for the first turn of this adapter instance, then drop it, so it
+    // doesn't linger as system framing and cause the model to re-anchor on a
+    // one-time kickoff instruction mid-conversation.
     const oneShotInstructions = this._config?.extra?.['initialInstructions'];
-    const relayContextInstructions = buildRelayHermesSessionInstructions({
-      sessionId,
-      cwd: this._config?.cwd,
-      metadata,
-    });
     const instructionParts: string[] = [];
-    if (relayContextInstructions) {
-      instructionParts.push(relayContextInstructions);
-    }
-    if (
-      typeof persistentInstructions === 'string' &&
-      persistentInstructions.trim()
-    ) {
-      instructionParts.push(persistentInstructions.trim());
+    if (this._persistentInstructions) {
+      instructionParts.push(this._persistentInstructions);
     }
     if (
       !this._initialInstructionsSent &&
@@ -932,7 +1007,12 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
-        this._lastResponseId = null;
+        // Re-anchor, do not drop (#1409). The interrupted response was never
+        // finished upstream, so `response.created`'s in-flight id is not a
+        // legal `previous_response_id` — but the last response the gateway DID
+        // finish still is, and it is what the next turn must chain from.
+        // Nulling here broke conversation continuity on every user interrupt.
+        this._lastResponseId = this._lastChainableResponseId;
         this.fire({
           type: 'chat:turn-completed',
           turnId,
@@ -1030,6 +1110,10 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     // only reinstate the chaining anchor here.
     if (providerSessionId) {
       this._lastResponseId = providerSessionId;
+      // A persisted `hermesResponseId` is by construction a COMPLETED response,
+      // so it is also the fallback anchor if the first turn after resume is
+      // interrupted (#1409).
+      this._lastChainableResponseId = providerSessionId;
     }
   }
 
@@ -1378,6 +1462,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     const responseId = response?.['id'];
     if (typeof responseId === 'string') {
       this._lastResponseId = responseId;
+      // The gateway finished this response, so it is the anchor an interrupted
+      // or failed later turn falls back to (#1409).
+      this._lastChainableResponseId = responseId;
       // Persist the completed response id so a resumed session (after a
       // Relay restart) can continue the conversation via
       // `previous_response_id`. Only completed responses are chainable.
@@ -1438,7 +1525,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       | Record<string, unknown>
       | undefined;
     const error = response?.['error'] as Record<string, unknown> | undefined;
-    this._lastResponseId = null;
+    // Same re-anchor as the abort path (#1409): a failed response is not
+    // chainable, but the conversation before it still is.
+    this._lastResponseId = this._lastChainableResponseId;
     this.failCurrentTurn(
       String(error?.['message'] ?? 'Hermes response failed'),
       'failed'
@@ -1447,7 +1536,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
   private handleResponseError(event: SseEvent): void {
     const message = event.data['message'];
-    this._lastResponseId = null;
+    // Same re-anchor as the abort path (#1409): an errored response is not
+    // chainable, but the conversation before it still is.
+    this._lastResponseId = this._lastChainableResponseId;
     this.failCurrentTurn(
       typeof message === 'string' ? message : 'Hermes response error',
       'failed'
@@ -1461,8 +1552,11 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     const responseId = response?.['id'];
     if (typeof responseId === 'string') {
       // Incomplete responses are still chainable via `previous_response_id`,
-      // so keep the anchor for the next turn.
+      // so keep the anchor for the next turn — and for a later interrupt to
+      // fall back to (#1409); the gateway did finish this response, it just
+      // ran out of room.
       this._lastResponseId = responseId;
+      this._lastChainableResponseId = responseId;
     }
     const details = response?.['incomplete_details'] as
       | Record<string, unknown>

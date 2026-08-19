@@ -9,11 +9,11 @@
  *   (`response.created`, `reasoning_summary_text.delta/.done`,
  *   `output_item.added/.done` for `run_command` and `apply_patch`).
  * - `test/server/protocol-adapters/hermes-adapter.test.ts` — the v0.18.2
- *   `message` output-item reply shape (lines 838-873), the
- *   `function_call_arguments.delta/.done` buffering shape (lines 463-540), the
- *   `apply_patch` unified-diff shape (lines 542-580), the `response.error`
- *   failure shape (lines 348-379) and the `response.completed` usage payload
- *   (lines 777-809).
+ *   `message` output-item reply shape (lines 839-874), the
+ *   `function_call_arguments.delta/.done` buffering shape (lines 464-541), the
+ *   `apply_patch` unified-diff shape (lines 543-581), the `response.error`
+ *   failure shape (lines 349-380) and the `response.completed` usage payload
+ *   (lines 778-810).
  *
  * DELIBERATELY ABSENT: `response.output_text.delta`. The adapter maps it and
  * `hermes-adapter.test.ts` scripts it, but the shipping Hermes gateway
@@ -359,8 +359,10 @@ const fixture: AdapterConformanceFixture = {
   interruptedTurn: {
     // A turn cut in flight: the model has streamed a partial reasoning summary
     // and nothing else when the operator interrupts. The adapter's abort path
-    // (`hermes-adapter.ts` ~line 933) owns the terminal patch, and `interrupt()`
-    // additionally posts `/session/:id/abort` (~line 978); the stub answers
+    // (`hermes-adapter.ts` ~line 1008 — the path that also re-anchors the
+    // `previous_response_id` chain to the last finished response, #1409) owns
+    // the terminal patch, and `interrupt()` additionally posts
+    // `/session/:id/abort` (~line 1053); the stub answers
     // that route, which is what lets the harness's `guard(interrupt())` resolve
     // rather than time out.
     steps: [
@@ -412,7 +414,7 @@ const fixture: AdapterConformanceFixture = {
       // — the SSE hardening tests never exercise `permission.requested`. The
       // payload is therefore transcribed field-for-field from the only
       // authority available, `HermesProtocolAdapter.handlePermissionRequested`
-      // (`hermes-adapter.ts` ~line 1535), using its primary key spellings
+      // (`hermes-adapter.ts` ~line 1629), using its primary key spellings
       // (`requestID`, `permission.tool/description/target`) rather than its
       // fallbacks. Treat it as derived, not recorded, until a live capture
       // lands.
@@ -474,16 +476,16 @@ const fixture: AdapterConformanceFixture = {
   ],
 
   knownGaps: {
-    'a-terminal': {
-      issue: '#1411',
-      reason:
-        "the error turn emits TWO agent-turn-completed-v2 patches for conf-error: mapChatEventToAgentPatchV2 synthesizes one from chat:error (it carries a turnId) and hermes's failCurrentTurn then fires its own chat:turn-completed. Every hermes failure path fires both events, so no fixture can script a single-terminal failed turn. The simple and interrupted turns DO emit exactly one terminal patch each — that half stays asserted through expect.requiredPatchTypes on every segment",
-    },
-    'b-abandoned-approval': {
-      issue: '#1407',
-      reason:
-        'LegacyProtocolAdapterV2Bridge.onDisconnect unsubscribes from the inner adapter BEFORE calling inner.disconnect(), so the abort-driven chat:turn-completed and idle chat:session-status that would drain the approval are mapped to nothing. Same family as the claude/mock/codex gaps: the wire side is fine, the patch stream keeps a permanently actionable approval card',
-    },
+    // (a) is NOT gapped any more. #1411 is fixed: the terminal patch has a
+    // single owner in `LegacyProtocolAdapterV2Bridge`, which drops the second
+    // completion hermes's `failCurrentTurn` produces (`chat:error` +
+    // `chat:turn-completed`) and carries the error text onto the one that
+    // survives. This fixture's error turn — `response.error` mid-stream — is
+    // the exact repro from the issue, so invariant (a) now runs hard on it.
+    // `b-abandoned-approval` is NOT gapped any more either. #1407 is fixed in
+    // the same bridge seam: it keeps an approval ledger of its own and resolves
+    // whatever is outstanding on teardown, so it no longer depends on an inner
+    // teardown event arriving after it has unsubscribed.
     'e-capability-drift': {
       issue: '#1305',
       // Scoped: only the `streaming` row is gapped, so `fixtureErrors` and the

@@ -125,6 +125,25 @@ workflow.
 
 #### Fixed
 
+- Codex and Hermes agents now receive the profile system prompt and Relay's
+  collaboration contract, so a channel agent behaves the same whichever harness
+  runs it. Hermes sends that prompt as one byte-stable block on every turn;
+  OpenCode profiles still cannot be given one on this transport, and Relay no
+  longer implies otherwise (#1409)
+- Interrupting a Hermes agent no longer wipes the conversation: the next message
+  continues from the last completed response instead of starting a
+  context-free one (#1409)
+- OpenCode channels no longer claim to resume after a restart. A restarted
+  OpenCode session reports the truth up front rather than silently answering
+  from an empty history (#1409)
+- A failed turn now ends exactly once on Hermes, OpenCode, and attached
+  OpenCode, carrying its error text, instead of leaving a turn that never
+  visibly finishes or finishes twice (#1411, #1412)
+- Tool approvals no longer stay actionable forever when an agent session
+  disconnects while one is outstanding. Every provider now cancels the
+  outstanding request on its own wire and marks the approval card cancelled with
+  the reason, so a reopened channel never shows live-looking Allow/Deny controls
+  for a session that is gone (#1407)
 - Reap owned agent process trees after channel-runtime failure or replacement,
   report aggregate runtime resource health, and let operators explicitly release
   idle channel agents (#1019)

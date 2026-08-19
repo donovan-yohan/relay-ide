@@ -1,4 +1,8 @@
-import { reconnectWithStoredConfig } from './adapter-utils.js';
+import {
+  reconnectWithStoredConfig,
+  resolveAbandonedApprovals,
+  type AbandonedApprovalCardV2,
+} from './adapter-utils.js';
 import {
   AgentSteerRejectedError,
   BaseProtocolAdapterV2,
@@ -470,6 +474,25 @@ function codexPermissionsResponse(
   return { scope, permissions: originalPermissions };
 }
 
+/**
+ * The decline envelope for an approval nobody will ever answer (#1407). Each
+ * kind has its own response shape, so the mapping is a codex QUIRK even though
+ * the "release the provider on teardown" rule it serves is shared.
+ */
+function codexDeclineResponse(meta: PendingApproval): Record<string, unknown> {
+  const declined: AgentApprovalDecisionV2 = { kind: 'decline' };
+  switch (meta.kind) {
+    case 'command':
+      return codexCommandDecisionResponse(declined);
+    case 'patch':
+      return codexFileDecisionResponse(declined);
+    case 'permissions':
+      return codexPermissionsResponse(declined, meta.permissions ?? []);
+    case 'elicitation':
+      return { action: 'decline' };
+  }
+}
+
 // ── Queued message ────────────────────────────────────────────────────────
 
 interface QueuedCodexMessage {
@@ -486,6 +509,10 @@ interface PendingApproval {
   kind: ApprovalKind;
   nativeRequestId: number | string;
   permissions?: string[];
+  /** Turn the card lives in, so teardown can address it (#1407). */
+  turnId: string;
+  /** The card as published, minus how it ends — see `adapter-utils`. */
+  card: AbandonedApprovalCardV2;
 }
 
 // ── Pending input request ─────────────────────────────────────────────────
@@ -634,6 +661,43 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+  /**
+   * Relay's system-prompt appendix, in the one app-server channel that carries
+   * it as a system region rather than as conversation.
+   *
+   * Codex QUIRK — the wire vocabulary is codex's own, and the choice between
+   * its two instruction slots is a correctness decision, not a style one:
+   *
+   * - `baseInstructions` REPLACES codex's built-in operating prompt. It is the
+   *   model's base prompt template (the app-server errors with "` is missing
+   *   both `base_instructions` and `model_messages.instructions_template`" when
+   *   a model definition supplies neither, and rollout `SessionMeta` persists
+   *   it as thread identity). Writing Relay's appendix there would delete the
+   *   harness's own instructions.
+   * - `developerInstructions` is the additive layer codex itself uses for
+   *   personas: it is a `config.toml` key, and the bundled agent-role files
+   *   (`awaiter.toml`, `explorer.toml`) define a role purely as
+   *   `developer_instructions="""You are an awaiter. ..."""`. Same shape as a
+   *   Relay profile prompt plus collaboration contract.
+   *
+   * Prefix-cache invariant: this is a thread-scoped field. `ThreadStartParams`
+   * and `ThreadResumeParams` accept it; `TurnStartParams` and `TurnSteerParams`
+   * do NOT (verified against `codex app-server generate-ts --experimental`,
+   * codex-cli 0.147.0). So it is sent exactly once per client generation, from
+   * the same stored `config`, and the system region is byte-stable across every
+   * turn of one runtime — a resume or reconnect replays the identical string.
+   *
+   * An older app-server that predates the field ignores it: serde skips unknown
+   * params, which the adapter already relies on for `persistExtendedHistory`
+   * (absent from the 0.147.0 schema and accepted in practice).
+   */
+  private threadInstructionParams(
+    config: AdapterConfig
+  ): { developerInstructions: string } | Record<string, never> {
+    const appendix = config.systemPromptAppendix?.trim();
+    return appendix ? { developerInstructions: appendix } : {};
+  }
+
   async connect(config: AdapterConfig): Promise<void> {
     const catalogGeneration = ++this.catalogGeneration;
     this.config = config;
@@ -656,11 +720,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       ? await client.call<{ thread: { id: string } }>('thread/resume', {
           threadId: config.resumeSessionId,
           excludeTurns: false,
+          // Replayed, not re-derived: the resumed thread keeps the same profile
+          // prompt and collaboration contract the original thread/start sent.
+          ...this.threadInstructionParams(config),
         })
       : await client.call<{ thread: { id: string } }>('thread/start', {
           cwd: config.cwd,
           experimentalRawEvents: false,
           persistExtendedHistory: false,
+          ...this.threadInstructionParams(config),
           ...(config.model || this.pendingModelOverride
             ? { model: this.pendingModelOverride ?? config.model }
             : {}),
@@ -1199,6 +1267,36 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     ++this.catalogGeneration;
     this.modelCatalogReady = Promise.resolve();
     this.rejectQueued(new Error('Codex adapter disconnecting'));
+
+    // #1407: answer every outstanding approval on the app-server wire and
+    // publish its terminal card BEFORE the client goes away. Clearing the maps
+    // alone left `handleCommandApprovalRequest` awaiting a promise nobody would
+    // ever settle, so no decision reached the provider and no patch resolved
+    // the card. Synchronous by contract — `disconnect()` drops its patch
+    // handlers as soon as `onDisconnect()` resolves.
+    const liveClient = this.client;
+    resolveAbandonedApprovals({
+      sessionId: this.sessionId,
+      approvals: [...this.approvalMeta].map(([requestId, meta]) => ({
+        requestId,
+        turnId: meta.turnId,
+        card: meta.card,
+      })),
+      emitPatch: (patch) => this.emitPatch(patch),
+      // QUIRK: codex answers a JSON-RPC server request, and each approval kind
+      // has its own decline envelope.
+      denyOnWire: ({ requestId }) => {
+        const meta = this.approvalMeta.get(requestId);
+        if (!liveClient || !meta) return;
+        liveClient.respondToServerRequest(
+          meta.nativeRequestId,
+          codexDeclineResponse(meta)
+        );
+      },
+    });
+    // Settle the awaiting handlers so their promises cannot leak; each one
+    // returns early now that `this.client` is about to be null.
+    const abandonedResolvers = [...this.pendingApprovals.values()];
     this.pendingApprovals.clear();
     this.pendingInputRequests.clear();
     this.approvalMeta.clear();
@@ -1220,6 +1318,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     const client = this.client;
     this.client = null;
+    // Ordering matters: the resolvers run their continuations in a microtask,
+    // by which point `this.client` is null and each handler bails out instead
+    // of re-answering a wire that is already closed (#1407).
+    for (const resolve of abandonedResolvers) resolve({ kind: 'cancel' });
     if (client) {
       try {
         await this.stopOwnedClient(client, 'adapter teardown');
@@ -2303,11 +2405,25 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.approvalMeta.set(requestId, {
       kind: 'command',
       nativeRequestId,
+      turnId,
+      card: {
+        id: itemId,
+        kind: 'command',
+        description: `Run command: ${command}`,
+        target: command,
+        details: { kind: 'command', command, cwd, commandActions },
+        supported: CODEX_COMMAND_APPROVAL_SUPPORT,
+      },
     });
 
     const decision = await new Promise<AgentApprovalDecisionV2>((resolve) => {
       this.pendingApprovals.set(requestId, resolve);
     });
+
+    // Teardown settles this promise too, after it has already answered the wire
+    // and published the cancelled card (#1407). The client is gone by then, so
+    // the resolution path below must not run a second time.
+    if (!this.client) return;
 
     const nativeResponse = codexCommandDecisionResponse(decision);
     this.client.respondToServerRequest(nativeRequestId, nativeResponse);
@@ -2381,11 +2497,26 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
     });
 
-    this.approvalMeta.set(requestId, { kind: 'patch', nativeRequestId });
+    this.approvalMeta.set(requestId, {
+      kind: 'patch',
+      nativeRequestId,
+      turnId,
+      card: {
+        id: itemId,
+        kind: 'patch',
+        description: `Apply file changes (${changes.length} file${changes.length !== 1 ? 's' : ''})`,
+        target: changes.map((c) => c.path).join(', ') || 'unknown',
+        details: { kind: 'patch', changes },
+        supported: CODEX_PATCH_APPROVAL_SUPPORT,
+      },
+    });
 
     const decision = await new Promise<AgentApprovalDecisionV2>((resolve) => {
       this.pendingApprovals.set(requestId, resolve);
     });
+
+    // See handleCommandApprovalRequest — teardown already resolved this card.
+    if (!this.client) return;
 
     const nativeResponse = codexFileDecisionResponse(decision);
     this.client.respondToServerRequest(nativeRequestId, nativeResponse);
@@ -2463,11 +2594,23 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       kind: 'permissions',
       nativeRequestId,
       permissions,
+      turnId,
+      card: {
+        id: itemId,
+        kind: 'permissionsGrant',
+        description: `Grant permissions: ${permissions.join(', ')}`,
+        target: permissions.join(', ') || 'unknown',
+        details: { kind: 'permissionsGrant', permissions },
+        supported: CODEX_PERMISSIONS_APPROVAL_SUPPORT,
+      },
     });
 
     const decision = await new Promise<AgentApprovalDecisionV2>((resolve) => {
       this.pendingApprovals.set(requestId, resolve);
     });
+
+    // See handleCommandApprovalRequest — teardown already resolved this card.
+    if (!this.client) return;
 
     const response = codexPermissionsResponse(decision, permissions);
     this.client.respondToServerRequest(nativeRequestId, response);
@@ -2641,11 +2784,32 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
     });
 
-    this.approvalMeta.set(requestId, { kind: 'elicitation', nativeRequestId });
+    this.approvalMeta.set(requestId, {
+      kind: 'elicitation',
+      nativeRequestId,
+      turnId,
+      card: {
+        id: itemId,
+        kind: 'elicitation',
+        description: `MCP elicitation from ${serverName}: ${message}`,
+        target: serverName,
+        details: {
+          kind: 'elicitation',
+          serverName,
+          mode,
+          message,
+          requestedSchema,
+        },
+        supported: CODEX_ELICITATION_APPROVAL_SUPPORT,
+      },
+    });
 
     const decision = await new Promise<AgentApprovalDecisionV2>((resolve) => {
       this.pendingApprovals.set(requestId, resolve);
     });
+
+    // See handleCommandApprovalRequest — teardown already resolved this card.
+    if (!this.client) return;
 
     // Elicitation response: { action: 'accept'|'decline', content? }
     const elicitAction = decision.kind === 'accept' ? 'accept' : 'decline';

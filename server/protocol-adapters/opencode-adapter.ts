@@ -1,5 +1,6 @@
 import { OPENCODE_CHANNEL_COMMAND } from './launch-commands.js';
 import { reconnectWithStoredConfig } from './adapter-utils.js';
+import { openCodeStatusType } from './opencode-shared.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -436,8 +437,30 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     return this._config?.sessionId ?? crypto.randomBytes(8).toString('hex');
   }
 
-  async resumeSession(_sessionId: string): Promise<void> {
-    // no-op; the OpenCode REST session is created on connect.
+  /**
+   * Resume honesty (#1409). This used to be a silent no-op, which reads as
+   * "the prior conversation is restored" to every caller. It never was: the
+   * OpenCode REST session is created in `connect()` via `createOpenCodeSession`
+   * (`POST /session`), and the surface this adapter speaks —
+   * `/session/<id>/message`, `/session/<id>/abort`,
+   * `/session/<id>/permissions/<id>`, `/question/<id>/reply`, `/global/health`,
+   * `/global/event` — has no route to rebind a session id from a previous
+   * process. A resumed runtime is therefore amnesiac.
+   *
+   * That is why `PROVIDER_DESCRIPTORS.opencode.resumeStateKey` is `null` and
+   * `bridgedCapabilities.resume` is `false`. Because `providerResumeId()` reads
+   * that same key, `channel-agent-binder` classifies a respawned opencode
+   * runtime as holding nothing and re-orients it from cursor 0 — the bounded
+   * root-plus-window packet from #1408, never a history dump — instead of
+   * withholding rows a fresh session was assumed to remember.
+   *
+   * Failing loudly keeps the ladder honest: reaching here means a caller
+   * bypassed the capability flag, and a silent success would hide the bypass.
+   */
+  async resumeSession(sessionId: string): Promise<void> {
+    throw new Error(
+      `opencode cannot resume session ${sessionId}: the REST transport creates a fresh session in connect() and exposes no rebind route (capabilities.resume is false).`
+    );
   }
 
   async forkSession(_sessionId: string): Promise<string> {
@@ -478,6 +501,19 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     throw new Error(`OpenCode server did not become ready within 10s`);
   }
 
+  /**
+   * `config.systemPromptAppendix` is NOT delivered to OpenCode, and cannot be
+   * on this transport (#1409, documented impossibility). The two routes that
+   * could carry it take neither an instructions nor a system field: session
+   * create is `POST /session { title }`, and a prompt is
+   * `POST /session/<id>/message { parts, model? }` where every part is a user
+   * part. OpenCode takes its agent instructions from `AGENTS.md` and its own
+   * config files in the working directory, which Relay must not write into a
+   * user's repo. Folding the appendix into `parts` would move Relay's runtime
+   * contract into the operator's message on every turn — outside the system
+   * region the prefix-cache invariant is stated over, and misattributed.
+   * Delivering it needs a system/instructions field on one of those two routes.
+   */
   private async createOpenCodeSession(): Promise<string> {
     const title = this._config?.sessionId
       ? `Relay ${this._config.sessionId}`
@@ -644,7 +680,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   }
 
   private handleSessionStatus(event: OpenCodeEvent): void {
-    const status = this.statusType(event.properties?.['status']);
+    const status = openCodeStatusType(event.properties?.['status']);
     if (status === 'active' || status === 'busy') {
       this.fire({ type: 'chat:session-status', status: 'active' });
       return;
@@ -694,15 +730,6 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       this._currentTurnId = null;
     }
     this.fire({ type: 'chat:session-status', status: 'idle' });
-  }
-
-  private statusType(status: unknown): string | undefined {
-    if (typeof status === 'string') return status;
-    if (status && typeof status === 'object') {
-      const type = (status as Record<string, unknown>)['type'];
-      return typeof type === 'string' ? type : undefined;
-    }
-    return undefined;
   }
 
   private handleMessageUpdated(event: OpenCodeEvent): void {

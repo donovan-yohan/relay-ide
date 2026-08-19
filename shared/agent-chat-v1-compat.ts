@@ -119,6 +119,17 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
         },
       ];
 
+    // #1411: this case used to ALSO synthesize an `agent-turn-completed-v2`
+    // whenever the event carried a turnId. That made the terminal patch
+    // ownerless — hermes, whose every failure path fires `chat:error` AND
+    // `chat:turn-completed`, emitted two terminals for one turn, while
+    // opencode's toast path emitted one and opencode-attached none. A pure
+    // event->patches mapper cannot tell those apart because it holds no turn
+    // state. Terminal ownership therefore lives one layer up, in
+    // `LegacyProtocolAdapterV2Bridge`, which sees the whole event stream:
+    // it emits exactly one terminal per turn, preferring the adapter's own
+    // completion (which carries the honest `reason`) and synthesizing a failed
+    // one only when the adapter never completes the errored turn.
     case 'chat:error':
       return [
         {
@@ -127,19 +138,6 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
           timestamp: event.timestamp,
           message: event.message,
         },
-        ...(event.turnId
-          ? [
-              {
-                type: 'agent-turn-completed-v2' as const,
-                sessionId: event.sessionId,
-                timestamp: event.timestamp,
-                turnId: event.turnId,
-                status: 'failed' as const,
-                completedAt: event.timestamp,
-                error: event.message,
-              },
-            ]
-          : []),
       ];
 
     case 'chat:text-delta':

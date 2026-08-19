@@ -166,7 +166,13 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
-  it('maps v1 errors to v2 session and failed-turn patches', () => {
+  // #1411 (inverted): this test used to pin the DEFECT — a `chat:error`
+  // carrying a turnId mapped to an error patch AND a synthesized terminal, so a
+  // hermes failure (which also fires `chat:turn-completed`) ended one turn
+  // twice. The mapper is now a faithful one-event-to-its-own-patches function;
+  // `LegacyProtocolAdapterV2Bridge` owns the single terminal patch, and
+  // `test/server/protocol-adapters/legacy-v2-bridge.test.ts` holds it to that.
+  it('maps a v1 error to an error patch only — never a terminal turn patch', () => {
     const event: ChatEvent = {
       type: 'chat:error',
       sessionId: 'session-1',
@@ -184,15 +190,6 @@ describe('Agent Chat v1 compatibility bridge', () => {
         sessionId: 'session-1',
         timestamp,
         message: 'OpenCode failed',
-      },
-      {
-        type: 'agent-turn-completed-v2',
-        sessionId: 'session-1',
-        timestamp,
-        turnId: 'turn-1',
-        status: 'failed',
-        completedAt: timestamp,
-        error: 'OpenCode failed',
       },
     ]);
   });

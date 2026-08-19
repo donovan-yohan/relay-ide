@@ -268,13 +268,11 @@ const fixture: AdapterConformanceFixture = {
     },
   ],
 
-  knownGaps: {
-    'b-abandoned-approval': {
-      issue: '#1407',
-      reason:
-        'onDisconnect writes the deny control_response to the child (correct on the wire) but emits no agent-item-updated-v2 resolving the approval item and no live-state patch draining activeRequestIds, so the reduced session keeps a permanently actionable approval card',
-    },
-  },
+  // No known gaps. #1407 is fixed: `onDisconnect` still writes the deny
+  // control_response to the child, but the wire deny and the terminal card are
+  // now one dance in `adapter-utils.resolveAbandonedApprovals`, so teardown
+  // also publishes the cancelled `agent-item-updated-v2` and drains
+  // `live.activeRequestIds`. `b-abandoned-approval` runs hard here.
 
   exercised: ['reasoning', 'commandExecution', 'streaming', 'telemetry'],
 

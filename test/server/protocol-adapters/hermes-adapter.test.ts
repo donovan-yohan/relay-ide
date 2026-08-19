@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createAdapterV2 } from '../../../server/protocol-adapters/index.js';
 import { LegacyProtocolAdapterV2Bridge } from '../../../server/protocol-adapters/legacy-v2-bridge.js';
 import {
+  buildRelayHermesSessionInstructions,
   HermesProtocolAdapter,
   resolveHermesGatewaySettings,
 } from '../../../server/protocol-adapters/hermes-adapter.js';
@@ -979,5 +980,320 @@ describe('Hermes assistant reply finalization (#1181)', () => {
     const completes = assistantCompletes(events);
     expect(completes).toHaveLength(1);
     expect(completes[0]).toMatchObject({ content: 'ok' });
+  });
+});
+
+/**
+ * #1409 (1): Hermes has no separate system-prompt slot — the Responses API's
+ * `instructions` field IS the system region — so `config.systemPromptAppendix`
+ * (the profile prompt + Relay's collaboration contract, assembled in
+ * `server/channel-agent-runtime.ts`) must be folded into the instructions block
+ * the adapter already sends per `/v1/responses` call. Before this it was
+ * silently dropped and hermes profiles ran with no profile prompt at all.
+ *
+ * The second assertion in each case is the prefix-cache invariant: the system
+ * region must be byte-identical across every turn of one runtime, which is why
+ * the adapter composes it once at connect instead of per turn.
+ */
+describe('Hermes systemPromptAppendix delivery (#1409)', () => {
+  const APPENDIX =
+    'You are the ebi profile.\n\nRelay collaboration contract: report back in the channel.';
+
+  let gateway: InlineGateway | undefined;
+  let adapter: HermesProtocolAdapter | undefined;
+
+  afterEach(async () => {
+    if (adapter) {
+      await adapter.disconnect().catch(() => {});
+      adapter = undefined;
+    }
+    if (gateway) {
+      await new Promise<void>((resolve) =>
+        gateway!.server.close(() => resolve())
+      );
+      gateway = undefined;
+    }
+  });
+
+  async function startCompletingGateway(): Promise<InlineGateway> {
+    let turn = 0;
+    return startInlineGateway((send, res) => {
+      const id = `resp_appendix_${++turn}`;
+      send({ type: 'response.created', response: { id } });
+      send({ type: 'response.output_text.done', text: 'ok' });
+      send({
+        type: 'response.completed',
+        response: { id, status: 'completed' },
+      });
+      res.end();
+    });
+  }
+
+  it('folds the appendix into instructions after the channel prompt, byte-identically on every turn', async () => {
+    gateway = await startCompletingGateway();
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect({
+      ...configFor(gateway.endpoint, 'sess-appendix-1'),
+      systemPromptAppendix: APPENDIX,
+      extra: {
+        endpoint: gateway.endpoint,
+        apiToken: 'inline-key',
+        instructions: 'Prefer terse answers.',
+      },
+    });
+    await adapter.sendMessage('turn-1', 'hello');
+    await adapter.sendMessage('turn-2', 'again');
+
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-appendix-1',
+      cwd: process.cwd(),
+    });
+    expect(gateway.requests).toHaveLength(2);
+    // Relay session context, then channel promptDefaults, then the Relay
+    // appendix LAST so channel-authored text cannot redefine the boundary.
+    expect(gateway.requests[0]?.['instructions']).toBe(
+      `${relayContext}\n\nPrefer terse answers.\n\n${APPENDIX}`
+    );
+    expect(gateway.requests[1]?.['instructions']).toBe(
+      gateway.requests[0]?.['instructions']
+    );
+  });
+
+  it('delivers the appendix when the channel has no promptDefaults of its own', async () => {
+    gateway = await startCompletingGateway();
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect({
+      ...configFor(gateway.endpoint, 'sess-appendix-2'),
+      systemPromptAppendix: APPENDIX,
+    });
+    await adapter.sendMessage('turn-1', 'hello');
+
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-appendix-2',
+      cwd: process.cwd(),
+    });
+    expect(gateway.requests[0]?.['instructions']).toBe(
+      `${relayContext}\n\n${APPENDIX}`
+    );
+  });
+
+  it('keeps the one-shot ticket kickoff after the appendix and drops it on later turns', async () => {
+    gateway = await startCompletingGateway();
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect({
+      ...configFor(gateway.endpoint, 'sess-appendix-3'),
+      systemPromptAppendix: APPENDIX,
+      extra: {
+        endpoint: gateway.endpoint,
+        apiToken: 'inline-key',
+        initialInstructions: 'You are working on ticket GH-42.',
+      },
+    });
+    await adapter.sendMessage('turn-1', 'hello');
+    await adapter.sendMessage('turn-2', 'again');
+
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-appendix-3',
+      cwd: process.cwd(),
+    });
+    expect(gateway.requests[0]?.['instructions']).toBe(
+      `${relayContext}\n\n${APPENDIX}\n\nYou are working on ticket GH-42.`
+    );
+    // The persistent region stays byte-stable; only the one-shot kickoff drops.
+    expect(gateway.requests[1]?.['instructions']).toBe(
+      `${relayContext}\n\n${APPENDIX}`
+    );
+  });
+
+  it('ignores a whitespace-only appendix instead of padding the system region', async () => {
+    gateway = await startCompletingGateway();
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect({
+      ...configFor(gateway.endpoint, 'sess-appendix-4'),
+      systemPromptAppendix: '   \n  ',
+    });
+    await adapter.sendMessage('turn-1', 'hello');
+
+    expect(gateway.requests[0]?.['instructions']).toBe(
+      buildRelayHermesSessionInstructions({
+        sessionId: 'sess-appendix-4',
+        cwd: process.cwd(),
+      })
+    );
+  });
+});
+
+/**
+ * #1409 (2): a user interrupt used to null `_lastResponseId`, so the turn after
+ * ANY interrupt posted without `previous_response_id` and Hermes started a
+ * fresh, context-free conversation. The next turn must re-anchor to the last
+ * response the gateway actually finished — and must never resurrect the
+ * in-flight id of the response that was aborted.
+ */
+describe('Hermes interrupt chain re-anchor (#1409)', () => {
+  let gateway: InlineGateway | undefined;
+  let adapter: HermesProtocolAdapter | undefined;
+
+  afterEach(async () => {
+    if (adapter) {
+      await adapter.disconnect().catch(() => {});
+      adapter = undefined;
+    }
+    if (gateway) {
+      await new Promise<void>((resolve) =>
+        gateway!.server.close(() => resolve())
+      );
+      gateway = undefined;
+    }
+  });
+
+  async function waitFor(
+    predicate: () => boolean,
+    what: string
+  ): Promise<void> {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+
+  it('chains the turn after an interrupt from the last completed response, not the aborted one', async () => {
+    let turn = 0;
+    gateway = await startInlineGateway((send, res) => {
+      turn += 1;
+      if (turn === 2) {
+        // The interrupted turn: the response is created and starts thinking,
+        // then the stream stays open until the client aborts it. Its id is
+        // never finished upstream, so it must not become the next anchor.
+        send({
+          type: 'response.created',
+          response: { id: 'resp_interrupted_2' },
+        });
+        send({
+          type: 'response.reasoning_summary_text.delta',
+          delta: 'thinking...',
+        });
+        return;
+      }
+      const id = `resp_completed_${turn}`;
+      send({ type: 'response.created', response: { id } });
+      send({ type: 'response.output_text.done', text: 'ok' });
+      send({
+        type: 'response.completed',
+        response: { id, status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-interrupt-1'));
+    await adapter.sendMessage('turn-1', 'remember 42');
+
+    const interrupted = adapter.sendMessage('turn-2', 'and then?');
+    // Wait until the adapter has really consumed `response.created` for the
+    // in-flight response, so this test proves the re-anchor rather than an
+    // anchor that was never advanced.
+    await waitFor(
+      () => events.some((event) => event.type === 'chat:reasoning'),
+      'the interrupted turn to start streaming'
+    );
+    await adapter.interrupt('turn-2');
+    await interrupted;
+
+    const completed = events.filter(
+      (event) => event.type === 'chat:turn-completed'
+    );
+    expect(completed.at(-1)).toMatchObject({
+      turnId: 'turn-2',
+      reason: 'interrupted',
+    });
+
+    await adapter.sendMessage('turn-3', 'continue');
+    expect(gateway.requests).toHaveLength(3);
+    expect(gateway.requests[2]?.['previous_response_id']).toBe(
+      'resp_completed_1'
+    );
+  });
+
+  it('re-anchors to the resumed response id when the first turn after resume is interrupted', async () => {
+    let turn = 0;
+    gateway = await startInlineGateway((send, res) => {
+      turn += 1;
+      if (turn === 1) {
+        send({
+          type: 'response.created',
+          response: { id: 'resp_interrupted_1' },
+        });
+        send({
+          type: 'response.reasoning_summary_text.delta',
+          delta: 'thinking...',
+        });
+        return;
+      }
+      send({ type: 'response.created', response: { id: 'resp_after' } });
+      send({
+        type: 'response.completed',
+        response: { id: 'resp_after', status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-interrupt-2'));
+    await adapter.resumeSession('resp_restored_from_disk');
+
+    const interrupted = adapter.sendMessage('turn-1', 'continue');
+    await waitFor(
+      () => events.some((event) => event.type === 'chat:reasoning'),
+      'the interrupted turn to start streaming'
+    );
+    await adapter.interrupt('turn-1');
+    await interrupted;
+
+    await adapter.sendMessage('turn-2', 'again');
+    expect(gateway.requests[1]?.['previous_response_id']).toBe(
+      'resp_restored_from_disk'
+    );
+  });
+
+  it('re-anchors after a failed response instead of dropping the chain', async () => {
+    let turn = 0;
+    gateway = await startInlineGateway((send, res) => {
+      turn += 1;
+      if (turn === 2) {
+        send({ type: 'response.created', response: { id: 'resp_failed_2' } });
+        send({ type: 'response.error', message: 'gateway blew up' });
+        res.end();
+        return;
+      }
+      const id = `resp_completed_${turn}`;
+      send({ type: 'response.created', response: { id } });
+      send({
+        type: 'response.completed',
+        response: { id, status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-interrupt-3'));
+    await adapter.sendMessage('turn-1', 'remember 42');
+    await adapter.sendMessage('turn-2', 'boom');
+    await adapter.sendMessage('turn-3', 'continue');
+
+    expect(gateway.requests).toHaveLength(3);
+    expect(gateway.requests[2]?.['previous_response_id']).toBe(
+      'resp_completed_1'
+    );
   });
 });

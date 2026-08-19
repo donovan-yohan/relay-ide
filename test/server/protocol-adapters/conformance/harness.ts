@@ -40,12 +40,6 @@ const QUIESCENCE_POLLS = 3;
 const QUIESCENCE_BUDGET_MS = 250;
 /** Upper bound on any single `waitFor` predicate. */
 const WAIT_TIMEOUT_MS = 3_000;
-/**
- * Shorter budget for a wait the fixture has already told us will fail (a cited
- * `a-terminal` gap). Spending the full budget four times per run, twice per
- * determinism check, is pure wall clock — nothing is asserted on the result.
- */
-const GAPPED_WAIT_TIMEOUT_MS = 500;
 /** Upper bound on one whole lifecycle run. */
 export const LIFECYCLE_TIMEOUT_MS = 30_000;
 
@@ -438,42 +432,20 @@ export async function runLifecycle(
   };
 
   /**
-   * Invariant (a) is the one gap that can abort the whole run: an adapter that
-   * never ends a turn stalls every later segment. When the fixture cites an
-   * `a-terminal` gap the harness keeps going, so the remaining invariants stay
-   * assessable instead of collapsing into one un-diagnosable timeout. Any other
-   * adapter still fails here, loudly.
+   * A missing terminal aborts the whole run: an adapter that never ends a turn
+   * stalls every later segment, so there is nothing honest to report past it.
+   * This used to carry an escape for a fixture citing an `a-terminal` gap —
+   * `opencode-attached` was its only user, and #1412 closed that hole, so the
+   * wait is unconditional again and every adapter fails here, loudly.
    */
-  const terminalGapped = fixture.knownGaps?.['a-terminal'] !== undefined;
-  const turnBudgetMs = terminalGapped
-    ? GAPPED_WAIT_TIMEOUT_MS
-    : WAIT_TIMEOUT_MS;
-
   const awaitTerminal = async (
     segment: TurnSegmentName,
     turnId: string
   ): Promise<void> => {
-    try {
-      await waitFor(
-        () => hasTerminal(patches, turnId),
-        `${segment} terminal turn patch (${turnId})`,
-        turnBudgetMs
-      );
-    } catch (err) {
-      if (!terminalGapped) throw err;
-    }
-  };
-
-  /** Same tolerance for the promises a never-ending turn can strand. */
-  const guardTurnPromise = async (
-    promise: Promise<unknown>,
-    label: string
-  ): Promise<void> => {
-    try {
-      await guard(promise, label, turnBudgetMs);
-    } catch (err) {
-      if (!terminalGapped) throw err;
-    }
+    await waitFor(
+      () => hasTerminal(patches, turnId),
+      `${segment} terminal turn patch (${turnId})`
+    );
   };
 
   const runTurnSegment = async (
@@ -512,9 +484,8 @@ export async function runLifecycle(
     }
 
     await awaitTerminal(segment, turnId);
-    if (interrupted)
-      await guardTurnPromise(interrupted, `${segment} interrupt()`);
-    await guardTurnPromise(send, `${segment} sendMessage()`);
+    if (interrupted) await guard(interrupted, `${segment} interrupt()`);
+    await guard(send, `${segment} sendMessage()`);
     await settle();
     segments[segment] = patches.slice(start);
   };
@@ -562,7 +533,7 @@ export async function runLifecycle(
     }
 
     await awaitTerminal(segment, turnId);
-    await guardTurnPromise(send, `${segment} sendMessage()`);
+    await guard(send, `${segment} sendMessage()`);
     await settle();
     segments[segment] = patches.slice(start);
   };
@@ -1228,7 +1199,9 @@ export function describeAdapterConformance(
   );
 
   // The harder half: tear down while an approval is still outstanding. A
-  // fixture without an approvalFlow has nothing to abandon.
+  // fixture without an approvalFlow has nothing to abandon — which is only a
+  // legitimate answer when the registry does not claim approvals at all, so
+  // the else-branch below refuses to let a declared capability go unprobed.
   if (fixture.approvalFlow) {
     invariant(
       'b-abandoned-approval',
@@ -1245,6 +1218,17 @@ export function describeAdapterConformance(
           `[${adapterId}] disconnecting on a live approval left live.activeRequestIds populated`
         ).toEqual([]);
       }
+    );
+  } else {
+    it(
+      '(b) an adapter that declares approvals scripts one to abandon',
+      () => {
+        expect(
+          registeredAdapter(adapterId).capabilities.approvals === true,
+          `[${adapterId}] registry declares approvals:true but the fixture has no approvalFlow, so the abandoned-approval invariant (#1407) cannot run`
+        ).toBe(false);
+      },
+      LIFECYCLE_TIMEOUT_MS
     );
   }
 
