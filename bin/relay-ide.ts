@@ -76,6 +76,8 @@ import {
 import {
   channelSubscriptionFilterValidationError,
   normalizeChannelSubscriptionFilter,
+  CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_QUERY_MAX_CHARS,
   type ChannelSubscriptionFilter,
 } from '../shared/channel-chat-protocol.js';
 import { retainOutputPredicateSuffix } from '../shared/cli-gateway-sessions-wait.js';
@@ -1605,6 +1607,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'channels.subscribe',
   'channels.threads.history',
   'channels.roster',
+  'channels.search',
   'channels.post',
   'cockpit.list',
   'cockpit.get',
@@ -5369,6 +5372,9 @@ type ChannelCliValueFlag =
   | '--after-seq'
   | '--max-events'
   | '--idle-timeout-ms'
+  | '--query'
+  | '--workspace-id'
+  | '--include-archived'
   | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
@@ -5558,6 +5564,82 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
       { field: 'threadId' }
     );
   }
+}
+
+/**
+ * `channels search` (#1410): the handle-dereference companion to
+ * `channels history`. `--channel-id` narrows to one channel; omitting it
+ * searches exactly the channels the credential is scoped to — the hub refuses
+ * a scope-less actor credential outright rather than widening to every channel.
+ */
+async function runGatewayChannelsSearch(
+  channelArgs: string[]
+): Promise<void> {
+  const values = parseChannelCliFlags('channels.search', channelArgs, [
+    '--query',
+    '--channel-id',
+    '--workspace-id',
+    '--include-archived',
+    '--limit',
+  ]);
+  const query = values.get('--query')?.trim() ?? '';
+  if (!query) {
+    gatewayInvalid('channels.search', '--query is required', { field: 'q' });
+  }
+  if (query.length > CHANNEL_SEARCH_QUERY_MAX_CHARS) {
+    gatewayInvalid('channels.search', '--query is too long', {
+      field: 'q',
+      maxChars: CHANNEL_SEARCH_QUERY_MAX_CHARS,
+    });
+  }
+  const search = new URLSearchParams({ q: query });
+  for (const [flag, key] of [
+    ['--channel-id', 'channelId'],
+    ['--workspace-id', 'workspaceId'],
+  ] as const) {
+    const raw = values.get(flag);
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    if (!value) {
+      gatewayInvalid('channels.search', `${flag} must be non-empty`, {
+        field: key,
+      });
+    }
+    search.set(key, value);
+  }
+  const includeArchived = values.get('--include-archived');
+  if (includeArchived !== undefined) {
+    if (includeArchived !== 'true' && includeArchived !== 'false') {
+      gatewayInvalid(
+        'channels.search',
+        '--include-archived must be true or false',
+        { field: 'includeArchived', value: includeArchived }
+      );
+    }
+    search.set('includeArchived', includeArchived);
+  }
+  const limit = values.get('--limit');
+  if (limit !== undefined) {
+    const parsed = Number(limit);
+    if (
+      !limit.trim() ||
+      !Number.isSafeInteger(parsed) ||
+      parsed < 1 ||
+      parsed > CHANNEL_SEARCH_MAX_RESULTS
+    ) {
+      gatewayInvalid('channels.search', '--limit has an invalid value', {
+        field: 'limit',
+        value: limit,
+      });
+    }
+    search.set('limit', limit);
+  }
+  const result = await gatewayHttpJson({
+    commandName: 'channels.search',
+    pathName: `/channels/search?${search}`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('channels.search', result), 0);
 }
 
 async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
@@ -5762,6 +5844,8 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
     });
     printGatewayEnvelope(gatewayOk('channels.roster', result), 0);
   }
+
+  if (subcommand === 'search') await runGatewayChannelsSearch(channelArgs);
 
   if (subcommand === 'post') {
     const values = parseChannelCliFlags('channels.post', channelArgs, [

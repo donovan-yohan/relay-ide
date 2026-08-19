@@ -3,6 +3,8 @@ import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credent
 import {
   ORCHESTRATOR_ACTOR_CAPABILITIES,
   ORCHESTRATOR_ACTOR_CREDENTIAL_TTL_MS,
+  READONLY_RUNTIME_ACTOR_CAPABILITIES,
+  RUNTIME_ACTOR_CREDENTIAL_TTL_MS,
   startOrchestratorCredentialLifecycle,
   type OrchestratorCredentialLifecycleDeps,
 } from '../server/orchestrator-credential-lifecycle.js';
@@ -99,6 +101,9 @@ describe('OrchestratorCredentialLifecycle', () => {
         profileActorId: 'agent-profile:test',
         port: 4567,
         displayName: 'Product orchestrator',
+        leaseKind: 'orchestrator',
+        capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
       },
       h.deps
     );
@@ -137,6 +142,9 @@ describe('OrchestratorCredentialLifecycle', () => {
         channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
+        leaseKind: 'orchestrator',
+        capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
       },
       h.deps
     );
@@ -186,6 +194,9 @@ describe('OrchestratorCredentialLifecycle', () => {
         channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
+        leaseKind: 'orchestrator',
+        capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
       },
       h.deps
     );
@@ -217,6 +228,9 @@ describe('OrchestratorCredentialLifecycle', () => {
           channelId: 'channel-A',
           profileActorId: 'agent-profile:test',
           port: 4567,
+          leaseKind: 'orchestrator',
+          capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+          rotation: 'refresh',
         },
         h.deps
       )
@@ -228,6 +242,9 @@ describe('OrchestratorCredentialLifecycle', () => {
           channelId: 'channel-A',
           profileActorId: 'agent-profile:test',
           port: 4567,
+          leaseKind: 'orchestrator',
+          capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+          rotation: 'refresh',
         },
         h.deps
       );
@@ -250,6 +267,9 @@ describe('OrchestratorCredentialLifecycle', () => {
         channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
+        leaseKind: 'orchestrator',
+        capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
       },
       h.deps
     );
@@ -291,6 +311,9 @@ describe('OrchestratorCredentialLifecycle', () => {
         channelId: 'channel-A',
         profileActorId: 'agent-profile:test',
         port: 4567,
+        leaseKind: 'orchestrator',
+        capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
       },
       h.deps
     );
@@ -313,5 +336,160 @@ describe('OrchestratorCredentialLifecycle', () => {
 
     releaseApply?.();
     lease.stop();
+  });
+});
+
+describe('read-only runtime credential lease (#1410)', () => {
+  it('mints exactly the read bits, pinned to its own channel and nothing else', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START_MS);
+    const h = harness();
+
+    const lease = startOrchestratorCredentialLifecycle(
+      {
+        runtimeId: 'runtime-collaborator',
+        channelId: 'channel-A',
+        profileActorId: 'agent-profile:codex:default',
+        port: 4567,
+        displayName: '#eng · Codex',
+        leaseKind: 'channel-runtime-read',
+        capabilities: [...READONLY_RUNTIME_ACTOR_CAPABILITIES],
+        rotation: 'static',
+      },
+      h.deps
+    );
+
+    expect(READONLY_RUNTIME_ACTOR_CAPABILITIES).toEqual([
+      'session:read',
+      'context:read',
+    ]);
+    expect(h.issueCredential).toHaveBeenCalledWith({
+      actor: {
+        type: 'agent',
+        id: 'agent-profile:codex:default',
+        displayName: '#eng · Codex',
+      },
+      issuer: { id: 'relay-ide', displayName: 'Relay' },
+      capabilities: ['session:read', 'context:read'],
+      // Channel and NOTHING else. `validateCredentialScope` denies any
+      // credential dimension a request does not name, and a channel HTTP
+      // request names no session — a `sessionIds` pin here would make the lease
+      // unusable on every `channels.*` route it exists for. Confinement is not
+      // lost: that same rule means a channel-only credential is accepted ONLY by
+      // routes that request `channelIds`.
+      scope: { channelIds: ['channel-A'] },
+      ttlMs: 15 * 60 * 1000,
+    });
+    const issued = h.issueCredential.mock.calls[0]?.[0];
+    expect(issued.capabilities).not.toContain('context:write');
+    expect(issued.capabilities).not.toContain('session:create:terminal');
+    expect(issued.scope.sessionIds).toBeUndefined();
+    expect(lease.processEnv).toEqual({
+      RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-1.secret-1',
+      RELAY_IDE_PORT: '4567',
+      RELAY_IDE_RUNTIME_ID: 'runtime-collaborator',
+    });
+
+    lease.stop();
+  });
+
+  it('never rotates a static lease and lets the credential expire', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START_MS);
+    const h = harness();
+    const lease = startOrchestratorCredentialLifecycle(
+      {
+        runtimeId: 'runtime-collaborator',
+        channelId: 'channel-A',
+        profileActorId: 'agent-profile:codex:default',
+        port: 4567,
+        leaseKind: 'channel-runtime-read',
+        capabilities: [...READONLY_RUNTIME_ACTOR_CAPABILITIES],
+        rotation: 'static',
+      },
+      h.deps
+    );
+
+    await vi.advanceTimersByTimeAsync(RUNTIME_ACTOR_CREDENTIAL_TTL_MS * 4);
+    // An adapter with no `refreshRuntimeEnv` cannot receive a replacement
+    // token, so re-minting one would only revoke a working credential.
+    await lease.refreshNow();
+
+    expect(h.issueCredential).toHaveBeenCalledTimes(1);
+    expect(h.applyRuntimeEnv).not.toHaveBeenCalled();
+    expect(h.revokeCredential).not.toHaveBeenCalled();
+    expect(h.failClosed).not.toHaveBeenCalled();
+    expect(h.events).toEqual(['issue:credential-1']);
+
+    lease.stop();
+    expect(h.revokeCredential).toHaveBeenCalledWith('credential-1', {
+      revokedBy: 'relay-ide',
+      reason: 'channel-runtime-read-ended',
+    });
+  });
+
+  it('rotates a refresh-capable read lease under its own audit reasons', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START_MS);
+    const h = harness();
+    const lease = startOrchestratorCredentialLifecycle(
+      {
+        runtimeId: 'runtime-collaborator',
+        channelId: 'channel-A',
+        profileActorId: 'agent-profile:claude:default',
+        port: 4567,
+        leaseKind: 'channel-runtime-read',
+        capabilities: [...READONLY_RUNTIME_ACTOR_CAPABILITIES],
+        rotation: 'refresh',
+      },
+      h.deps
+    );
+
+    await vi.advanceTimersByTimeAsync(7.5 * 60 * 1000);
+
+    expect(h.events).toEqual([
+      'issue:credential-1',
+      'issue:credential-2',
+      'apply',
+      'revoke:credential-1',
+    ]);
+    // A read lease must never borrow the orchestrator's audit identity.
+    expect(h.revokeCredential).toHaveBeenCalledWith('credential-1', {
+      revokedBy: 'relay-ide',
+      reason: 'channel-runtime-read-rotated',
+    });
+    expect(
+      h.issueCredential.mock.calls.map(([input]) => input.capabilities)
+    ).toEqual([
+      ['session:read', 'context:read'],
+      ['session:read', 'context:read'],
+    ]);
+
+    lease.stop();
+  });
+
+  it('keeps failure text free of orchestrator identity and credential material', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START_MS);
+    const h = harness({
+      issueError: new Error(
+        'issuer failed around relay-sac-v1.private.secret-material'
+      ),
+    });
+
+    expect(() =>
+      startOrchestratorCredentialLifecycle(
+        {
+          runtimeId: 'runtime-collaborator',
+          channelId: 'channel-A',
+          profileActorId: 'agent-profile:codex:default',
+          port: 4567,
+          leaseKind: 'channel-runtime-read',
+          capabilities: [...READONLY_RUNTIME_ACTOR_CAPABILITIES],
+          rotation: 'static',
+        },
+        h.deps
+      )
+    ).toThrowError('Failed to provision channel runtime read actor credential');
   });
 });

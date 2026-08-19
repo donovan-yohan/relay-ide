@@ -14,6 +14,7 @@ import {
   type ChannelEventV1,
   type ChannelMessage,
   type ChannelMessageId,
+  type ChannelMessageSearchResponse,
   type ChannelReducerState,
   type ChannelSenderRef,
   type ChannelSnapshotEventV1,
@@ -292,6 +293,19 @@ export interface RelayChannelClient {
   roster(input: {
     channelId: string;
   }): Promise<{ roster: ChannelRosterEntry[] }>;
+  /**
+   * Search the durable message log (#1410). Omitting `channelId` searches the
+   * credential's own channel scope, not every channel: a scope-less actor
+   * credential is refused by the hub, and an out-of-scope `channelId` is
+   * rejected before any read.
+   */
+  search(input: {
+    q: string;
+    channelId?: string;
+    workspaceId?: string;
+    includeArchived?: boolean;
+    limit?: number;
+  }): Promise<ChannelMessageSearchResponse>;
   post(input: ChannelPostInput): Promise<ChannelPostResult>;
   subscribe(
     input: ChannelSubscribeInput
@@ -1155,6 +1169,17 @@ export function createRelayChannelClient(
       request(
         'channels.roster',
         `/channels/${encodeURIComponent(channelId)}/roster`
+      ),
+    search: ({ q, channelId, workspaceId, includeArchived, limit }) =>
+      request<ChannelMessageSearchResponse>(
+        'channels.search',
+        pathWithQuery('/channels/search', {
+          q,
+          channelId,
+          workspaceId,
+          includeArchived,
+          limit,
+        })
       ),
     post: ({ channelId, ...body }) =>
       request<Omit<ChannelPostResult, 'message'> & { message: ChannelMessage }>(

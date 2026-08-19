@@ -9,6 +9,7 @@ import {
   cliGatewayActorCommandCapabilities,
   cliGatewayActorFailure,
   classifyCliGatewayCredentialLane,
+  issueChannelRuntimeReadCliGatewayActorCredential,
   issueCliGatewayActorCredential,
   issueCliGatewayActorCredentialWithGrant,
   issuePersistentOrchestratorCliGatewayActorCredential,
@@ -178,6 +179,168 @@ test('reserves the persistent-orchestrator reason for the internal lease issuer'
   expect(internal.credential.metadata).toEqual({
     reason: 'persistent-orchestrator',
   });
+});
+
+test('reserves the channel-runtime-read reason for the internal read-lease issuer', () => {
+  const scopedRegistry = registry();
+  const ordinary = issueCliGatewayActorCredential(scopedRegistry, {
+    metadata: {
+      reason: 'channel-runtime-read',
+      trace: 'ordinary',
+    },
+  });
+  expect(ordinary.credential.metadata?.reason).toBeUndefined();
+
+  const grants = grantRegistry();
+  const grantBacked = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-runtime-read-reason'),
+        'runtime-read-reason'
+      ),
+      metadata: {
+        reason: 'channel-runtime-read',
+        trace: 'grant',
+      },
+    }
+  );
+  expect(grantBacked.credential.metadata?.reason).toBeUndefined();
+
+  const internal = issueChannelRuntimeReadCliGatewayActorCredential(
+    scopedRegistry,
+    {
+      actor: { type: 'agent', id: 'collaborator-runtime' },
+      issuer: { id: 'relay-ide' },
+      capabilities: ['session:read', 'context:read'],
+      scope: {
+        sessionIds: ['collaborator-runtime'],
+        channelIds: ['channel-A'],
+      },
+    }
+  );
+  // The marker is an audit breadcrumb only: it must never buy the
+  // orchestrator's verbatim-sender / agent-brake-bypass identity.
+  expect(internal.credential.metadata).toEqual({
+    reason: 'channel-runtime-read',
+  });
+  expect(internal.credential.capabilities).toEqual([
+    'session:read',
+    'context:read',
+  ]);
+});
+
+test('resolves channel read verbs to context:read for a read-lease credential', () => {
+  for (const command of [
+    'channels.list',
+    'channels.get',
+    'channels.history',
+    'channels.threads.history',
+    'channels.run.get',
+    'channels.roster',
+    'channels.subscribe',
+    'channels.search',
+  ]) {
+    expect(cliGatewayActorCommandCapabilities(command)).toEqual([
+      'context:read',
+    ]);
+  }
+  // The standing lease carries no write bit, so this verb can never authorize.
+  expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
+    'context:write',
+  ]);
+});
+
+test('a read-only channel-scoped credential can search its own channel and can never post', () => {
+  const scopedRegistry = registry();
+  // The scope shape the channel routes actually validate against: the
+  // middleware derives `channelIds` from the request, and nothing else — a
+  // channel request names no session, repo, or WorkContext.
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['session:read', 'context:read'],
+    scope: { channelIds: ['A'] },
+  });
+
+  // (a) search inside the credential's own channel authorizes.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: cliGatewayActorCommandCapabilities('channels.search'),
+      scope: { channelIds: ['A'] },
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['context:read'] });
+
+  // (b) search aimed at another channel fails closed on scope.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: cliGatewayActorCommandCapabilities('channels.search'),
+      scope: { channelIds: ['B'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+
+  // (c) the write verb is unreachable: the credential holds no context:write
+  // bit, so opening search never buys a post.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: cliGatewayActorCommandCapabilities('channels.post'),
+      scope: { channelIds: ['A'] },
+    })
+  ).toMatchObject({
+    ok: false,
+    reason: 'insufficient_capability',
+    deniedBits: ['context:write'],
+  });
+
+  // (d) a credential with no channel dimension at all cannot search: the
+  // channel rule is `requiredWhenRequested`, so absence denies rather than
+  // skips.
+  const unscoped = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['session:read', 'context:read'],
+    scope: { workContextIds: ['wc:allowed'] },
+  });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: unscoped.token,
+      capabilities: cliGatewayActorCommandCapabilities('channels.search'),
+      scope: { channelIds: ['A'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+});
+
+test('search is a named actor read verb, not a POST or an unnamed request', () => {
+  const token = 'relay-sac-v1.credential-id.[REDACTED]';
+  // The actor lane authorizes by the command header. A search request that
+  // names no command, or names a different verb, is not on the lane at all.
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }),
+      'channels.search'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'channels.history',
+      }),
+      'channels.search'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'channels.search',
+      }),
+      'channels.search'
+    )
+  ).toBe('unsupported-route');
 });
 
 test('validates WorkContext-scoped actor credentials against exact artifact read scopes', () => {
@@ -450,6 +613,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.subscribe',
     'channels.threads.history',
     'channels.roster',
+    'channels.search',
     'context.get',
     'context.list',
     'inbox.list',
@@ -492,6 +656,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.subscribe',
     'channels.threads.history',
     'channels.roster',
+    'channels.search',
   ] as const) {
     expect(
       classifyCliGatewayCredentialLane(

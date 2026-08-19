@@ -11,6 +11,8 @@ import type {
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
 import {
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  issueChannelRuntimeReadCliGatewayActorCredential,
   issuePersistentOrchestratorCliGatewayActorCredential,
   validateCliGatewayActorCredential,
 } from '../server/cli-gateway-actor-auth.js';
@@ -274,6 +276,109 @@ describe('channel runtime orchestrator credential integration', () => {
     ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
   });
 
+  // Regression guard for #1419, recorded here so the defect cannot hide behind
+  // the hand-built both-dimensions-named shape the rotation test above uses.
+  //
+  // Every assertion below uses the scope a REAL route derives from the request:
+  //  - channel routes (`channelScopeFromParams`, `channelListScopeFromCredential`,
+  //    `channelSearchScopeFromRequest`, the `channels.subscribe` revalidation)
+  //    request `{ channelIds }` and nothing else;
+  //  - sessions / command-center routes (`commandCenterActorCredentialScopeFor`)
+  //    request `{ sessionIds, globalSessionIds }` and nothing else.
+  //
+  // The orchestrator lease pins BOTH dimensions, and `validateCredentialScope`
+  // denies any dimension the request leaves unnamed, so it is currently refused
+  // on both lanes. This test asserts that deny AS THE CURRENT BEHAVIOR: it is
+  // fail-closed (no escalation), and #1419 owns making the lease usable. Flip
+  // these expectations there — do not delete them.
+  it('is denied on every real route scope shape today (#1419)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-08-18T00:00:00.000Z');
+    const credentialRegistry = new ScopedActorCredentialRegistry({
+      now: () => new Date(Date.now()),
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
+      orchestratorCredentials: {
+        issueCredential: (input) =>
+          issuePersistentOrchestratorCliGatewayActorCredential(
+            credentialRegistry,
+            input
+          ),
+        revokeCredential: (id, input) => credentialRegistry.revoke(id, input),
+      },
+    });
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'orchestrator-session',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      role: 'orchestrator',
+      profileActorId: 'agent-profile:test',
+      cwd: '/tmp',
+      displayName: 'Product orchestrator',
+      port: 4567,
+      configDir: '/tmp',
+    });
+    const token = connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN;
+    expect(credentialRegistry.listCredentials()[0]!.scope).toMatchObject({
+      sessionIds: ['orchestrator-session'],
+      channelIds: ['channel-A'],
+    });
+
+    // Channel lane: the credential's own channel, requested the way the router
+    // requests it. The unnamed `sessionIds` pin is what denies it.
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+    // Same lane, write verb (`channels.post`), same deny.
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: token!,
+        capabilities: ['context:write'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+    // Session lane: the credential's OWN runtime id, requested the way the
+    // command-center scope resolver requests it. The unnamed `channelIds` pin
+    // is what denies it.
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: token!,
+        capabilities: ['session:read'],
+        scope: { sessionIds: ['orchestrator-session'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: token!,
+        capabilities: ['session:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          globalSessionIds: ['orchestrator-session'],
+        },
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+    // The read lease shape #1410 ships — channel only — is the one that works,
+    // which is why the read lane could drop its session pin and this one cannot
+    // (the router binds the orchestrator's brake bypass to `scope.sessionIds`).
+    expect(
+      validateCliGatewayActorCredential(credentialRegistry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: {
+          sessionIds: ['orchestrator-session'],
+          channelIds: ['channel-A'],
+        },
+      })
+    ).toMatchObject({ ok: true });
+  });
+
   it('fails before adapter connect when initial minting fails', async () => {
     const runtimes = await import('../server/channel-agent-runtime.js');
     runtimes.configureChannelAgentRuntimes({
@@ -461,5 +566,360 @@ describe('channel runtime orchestrator credential integration', () => {
       revokedBy: 'relay-ide',
       reason: 'orchestrator-runtime-ended',
     });
+  });
+});
+
+describe('standing read-only credential for ordinary bound agents (#1410)', () => {
+  beforeEach(() => {
+    connect.mockReset().mockResolvedValue();
+    disconnect.mockReset().mockResolvedValue();
+    refreshRuntimeEnv.mockReset().mockResolvedValue();
+    supportsRuntimeEnvRefresh = false;
+    adapterStatus = 'connected';
+  });
+
+  afterEach(async () => {
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    await runtimes.channelAgentRuntimes.close();
+    runtimes.configureChannelAgentRuntimes({});
+    vi.useRealTimers();
+  });
+
+  async function configureReadAuthority(
+    registry: ScopedActorCredentialRegistry
+  ): Promise<typeof import('../server/channel-agent-runtime.js')> {
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    runtimes.configureChannelAgentRuntimes({
+      runtimeReadCredentials: {
+        issueCredential: (input) =>
+          issueChannelRuntimeReadCliGatewayActorCredential(registry, input),
+        revokeCredential: (id, input) => registry.revoke(id, input),
+      },
+    });
+    return runtimes;
+  }
+
+  function fixedRegistry(): ScopedActorCredentialRegistry {
+    return new ScopedActorCredentialRegistry({
+      now: () => new Date(Date.now()),
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+  }
+
+  it('injects a read-only channel-pinned credential and denies channel B', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-08-18T00:00:00.000Z');
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    const runtime = await runtimes.channelAgentRuntimes.create({
+      id: 'collaborator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    expect(runtime.role).toBeUndefined();
+    const injected = connect.mock.calls[0]?.[0].processEnv;
+    expect(injected).toEqual({
+      RELAY_IDE_ACTOR_TOKEN: expect.stringMatching(/^relay-sac-v1\./),
+      RELAY_IDE_PORT: '4567',
+      RELAY_IDE_RUNTIME_ID: 'collaborator-runtime',
+    });
+    const token = injected?.RELAY_IDE_ACTOR_TOKEN;
+
+    const record = registry.listCredentials()[0]!;
+    expect(record.capabilities).toEqual(['session:read', 'context:read']);
+    // Channel and nothing else. Every validation below uses the scope a channel
+    // route actually derives from the request — `{ channelIds }` — because a
+    // credential dimension the request does not name is denied `missing_scope`.
+    // A session pin here would therefore deny every `channels.*` call the lease
+    // exists to make.
+    // `taskRefs` is the permissive read marker every `session:read` credential
+    // is stamped with, and validation supplies it on every request. The only
+    // dimension that decides reach here is `channelIds`.
+    expect(record.scope).toEqual({
+      channelIds: ['channel-A'],
+      taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+    });
+    expect(record.metadata).toMatchObject({ reason: 'channel-runtime-read' });
+    expect(Date.parse(record.expiresAt) - Date.parse(record.issuedAt)).toBe(
+      15 * 60 * 1000
+    );
+
+    // Own channel reads pass.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: true });
+    // Failing direction: another channel is denied even with the right bit.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-B'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+    // Failing direction: no write bit, so `channels.post` can never authorize.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:write'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'insufficient_capability' });
+    // Failing direction, and the property that replaces a session pin: a route
+    // that addresses something other than a channel never names `channelIds`,
+    // so the credential is refused there. `sessions.get` is the sharp case —
+    // the lease carries `session:read`, and only this rule keeps it off other
+    // runtimes' sessions.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['session:read'],
+        scope: { sessionId: 'other-runtime' },
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+    // Same rule for an unscoped request: no channel named, no access.
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: {},
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+
+    await runtimes.channelAgentRuntimes.destroy(runtime.id);
+    expect(registry.getCredential(record.id)).toMatchObject({
+      revokedAt: expect.any(String),
+    });
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: false });
+  });
+
+  it('expires a static lease instead of rotating it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-08-18T00:00:00.000Z');
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'collaborator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 4567,
+      configDir: '/tmp',
+    });
+    const token = connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN;
+
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 1_000);
+
+    expect(refreshRuntimeEnv).not.toHaveBeenCalled();
+    expect(registry.listCredentials()).toHaveLength(1);
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: token!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-A'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'expired' });
+    // The runtime survives its credential expiring: read access is additive.
+    expect(
+      runtimes.channelAgentRuntimes.get('collaborator-runtime')
+    ).toBeDefined();
+  });
+
+  it('rotates the read lease when the adapter can re-receive env', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-08-18T00:00:00.000Z');
+    supportsRuntimeEnvRefresh = true;
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'collaborator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:claude:default',
+      cwd: '/tmp',
+      displayName: '#eng · Claude',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    await vi.advanceTimersByTimeAsync(7.5 * 60 * 1000);
+
+    const rotated = refreshRuntimeEnv.mock.calls[0]?.[0];
+    expect(rotated?.RELAY_IDE_RUNTIME_ID).toBe('collaborator-runtime');
+    const records = registry.listCredentials();
+    expect(records).toHaveLength(2);
+    expect(records.map((record) => record.capabilities)).toEqual([
+      ['session:read', 'context:read'],
+      ['session:read', 'context:read'],
+    ]);
+    expect(records.map((record) => record.scope.channelIds)).toEqual([
+      ['channel-A'],
+      ['channel-A'],
+    ]);
+    expect(
+      validateCliGatewayActorCredential(registry, {
+        token: rotated!.RELAY_IDE_ACTOR_TOKEN!,
+        capabilities: ['context:read'],
+        scope: { channelIds: ['channel-B'] },
+      })
+    ).toMatchObject({ ok: false, reason: 'wrong_channel_scope' });
+  });
+
+  it('mints nothing for a gateway-launched provider with no child env', async () => {
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'hermes-runtime',
+      channelId: 'channel-A',
+      providerId: 'hermes',
+      profileActorId: 'agent-profile:hermes:default',
+      cwd: '/tmp',
+      displayName: '#eng · Hermes',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    expect(registry.listCredentials()).toHaveLength(0);
+    expect(
+      connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN
+    ).toBeUndefined();
+  });
+
+  it('mints nothing for a runtime with no bound channel to scope reads to', async () => {
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'unbound-runtime',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: 'unbound',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    expect(registry.listCredentials()).toHaveLength(0);
+    expect(
+      connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN
+    ).toBeUndefined();
+  });
+
+  it('refuses to let a profile env shadow the injected actor token', async () => {
+    const registry = fixedRegistry();
+    const runtimes = await configureReadAuthority(registry);
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'collaborator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 4567,
+      configDir: '/tmp',
+      processEnv: {
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.forged.attacker-supplied',
+        RELAY_IDE_PORT: '9999',
+        RELAY_IDE_RUNTIME_ID: 'someone-elses-runtime',
+      },
+    });
+
+    const injected = connect.mock.calls[0]?.[0].processEnv;
+    expect(injected?.RELAY_IDE_ACTOR_TOKEN).not.toBe(
+      'relay-sac-v1.forged.attacker-supplied'
+    );
+    expect(injected?.RELAY_IDE_PORT).toBe('4567');
+    expect(injected?.RELAY_IDE_RUNTIME_ID).toBe('collaborator-runtime');
+  });
+
+  it('spawns without a credential when minting fails', async () => {
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    const revokeCredential = vi.fn();
+    runtimes.configureChannelAgentRuntimes({
+      runtimeReadCredentials: {
+        issueCredential: () => {
+          throw new Error('issuer failed around secret material');
+        },
+        revokeCredential,
+      },
+    });
+
+    const runtime = await runtimes.channelAgentRuntimes.create({
+      id: 'collaborator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      profileActorId: 'agent-profile:codex:default',
+      cwd: '/tmp',
+      displayName: '#eng · Codex',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    expect(runtime.status).toBe('active');
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(
+      connect.mock.calls[0]?.[0].processEnv?.RELAY_IDE_ACTOR_TOKEN
+    ).toBeUndefined();
+  });
+
+  it('leaves the orchestrator lease on its own privileged lane', async () => {
+    const registry = fixedRegistry();
+    supportsRuntimeEnvRefresh = true;
+    const runtimes = await import('../server/channel-agent-runtime.js');
+    const readIssue = vi.fn((input) =>
+      issueChannelRuntimeReadCliGatewayActorCredential(registry, input)
+    );
+    runtimes.configureChannelAgentRuntimes({
+      orchestratorCredentials: {
+        issueCredential: (input) =>
+          issuePersistentOrchestratorCliGatewayActorCredential(registry, input),
+        revokeCredential: (id, input) => registry.revoke(id, input),
+      },
+      runtimeReadCredentials: {
+        issueCredential: readIssue,
+        revokeCredential: (id, input) => registry.revoke(id, input),
+      },
+    });
+
+    await runtimes.channelAgentRuntimes.create({
+      id: 'orchestrator-runtime',
+      channelId: 'channel-A',
+      providerId: 'mock',
+      role: 'orchestrator',
+      profileActorId: 'agent-profile:test',
+      cwd: '/tmp',
+      displayName: 'Product orchestrator',
+      port: 4567,
+      configDir: '/tmp',
+    });
+
+    expect(readIssue).not.toHaveBeenCalled();
+    const record = registry.listCredentials()[0]!;
+    expect(record.metadata).toMatchObject({
+      reason: 'persistent-orchestrator',
+    });
+    expect(record.capabilities).toContain('context:write');
   });
 });

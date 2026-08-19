@@ -158,6 +158,26 @@ describe('channel read CLI gateway runtime wiring', () => {
       'channels.roster',
       '/channels/product%2Fmain/roster',
     ],
+    [
+      ['search', '--query', 'needle'],
+      'channels.search',
+      '/channels/search?q=needle',
+    ],
+    [
+      [
+        'search',
+        '--query',
+        'needle in haystack',
+        '--channel-id',
+        'product/main',
+        '--include-archived',
+        'true',
+        '--limit',
+        '10',
+      ],
+      'channels.search',
+      '/channels/search?q=needle+in+haystack&channelId=product%2Fmain&includeArchived=true&limit=10',
+    ],
   ] as const)(
     'maps %j to %s and its declared REST route',
     async (channelArgs, command, route) => {
@@ -224,6 +244,24 @@ describe('channel read CLI gateway runtime wiring', () => {
     [
       ['roster', '--channel-id', 'one', '--channel-id', 'two', '--json'],
       'channels.roster',
+    ],
+    [['search', '--json'], 'channels.search'],
+    [['search', '--query', '   ', '--json'], 'channels.search'],
+    [
+      ['search', '--query', 'needle', '--limit', '0', '--json'],
+      'channels.search',
+    ],
+    [
+      ['search', '--query', 'needle', '--limit', '51', '--json'],
+      'channels.search',
+    ],
+    [
+      ['search', '--query', 'needle', '--include-archived', 'yes', '--json'],
+      'channels.search',
+    ],
+    [
+      ['search', '--query', 'needle', '--after-seq', '3', '--json'],
+      'channels.search',
     ],
   ] as const)(
     'rejects malformed stable command argv %j',

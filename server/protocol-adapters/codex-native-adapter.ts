@@ -1190,6 +1190,25 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   // ── Internal: client wiring ───────────────────────────────────────────────
 
+  /**
+   * Codex deliberately does NOT mount `config.relayMcp` (#1410).
+   *
+   * The app-server accepts the mount itself — `-c mcp_servers.relay.command=…`
+   * plus `-c mcp_servers.relay.args=[…]` merges a `relay` server alongside the
+   * operator's own (verified on codex-cli 0.147.0 via `codex mcp list`). What it
+   * does not do is give that child the credential: codex spawns MCP servers with
+   * a fixed core environment (HOME, LANG, LOGNAME, PATH, SHELL, TERM, USER —
+   * measured by starting a probe server through `thread/start`), and
+   * `shell_environment_policy.inherit=all` does not change it. So
+   * `RELAY_IDE_ACTOR_TOKEN` never reaches the facade, and the only remaining
+   * delivery paths are `mcp_servers.relay.env.*` (a token in argv, readable by
+   * `ps`) or writing the operator's `config.toml`. Both are refused.
+   *
+   * Mounting anyway would hand the agent a Relay tool that answers 401 on every
+   * call. Codex runtimes keep the credential in their OWN process env and reach
+   * Relay through `relay-ide v1 channels …`. Re-evaluate when codex gains
+   * per-server env inheritance.
+   */
   private createClient(config: AdapterConfig): CodexAppServerClient {
     const extra = isRecord(config.extra) ? config.extra : {};
     const opts: CodexAppServerClientOptions = {

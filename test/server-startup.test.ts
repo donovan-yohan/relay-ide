@@ -22,6 +22,18 @@ if (!fs.existsSync(SERVER_SCRIPT)) {
   throw new Error('dist/server/index.js missing — run npm run build first');
 }
 
+/** The stdio MCP facade an agent's provider mounts (#1410). */
+const RELAY_MCP_SCRIPT = path.resolve(
+  import.meta.dirname,
+  '..',
+  'dist',
+  'bin',
+  'relay-mcp.js'
+);
+if (!fs.existsSync(RELAY_MCP_SCRIPT)) {
+  throw new Error('dist/bin/relay-mcp.js missing — run npm run build first');
+}
+
 interface StartServerOpts {
   env: Record<string, string>;
 }
@@ -100,6 +112,86 @@ async function waitForChildExit(
       resolve(code);
     });
   });
+}
+
+interface StdioMcpResponse {
+  id: number;
+  result?: Record<string, unknown>;
+  error?: Record<string, unknown>;
+}
+
+/** Minimal JSON-RPC client for a spawned stdio MCP server. */
+function openStdioMcp(child: ChildProcess): {
+  initialize: () => Promise<void>;
+  request: (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<StdioMcpResponse>;
+} {
+  const pending = new Map<
+    number,
+    { resolve: (value: StdioMcpResponse) => void; reject: (err: Error) => void }
+  >();
+  let buffer = '';
+  let nextId = 1;
+  child.stdout?.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let index: number;
+    while ((index = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      const message = JSON.parse(line) as StdioMcpResponse;
+      const waiter = typeof message.id === 'number' && pending.get(message.id);
+      if (!waiter) continue;
+      pending.delete(message.id);
+      waiter.resolve(message);
+    }
+  });
+  child.once('exit', () => {
+    for (const waiter of pending.values())
+      waiter.reject(new Error('relay-mcp exited before responding'));
+    pending.clear();
+  });
+  const send = (payload: Record<string, unknown>): void => {
+    child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', ...payload })}\n`);
+  };
+  const request = (
+    method: string,
+    params?: Record<string, unknown>
+  ): Promise<StdioMcpResponse> => {
+    const id = nextId++;
+    return new Promise<StdioMcpResponse>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`relay-mcp ${method} timed out`)),
+        10_000
+      );
+      pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      send({ id, method, ...(params ? { params } : {}) });
+    });
+  };
+  return {
+    request,
+    initialize: async () => {
+      const ready = await request('initialize', {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'relay-facade-test', version: '0.0.0' },
+      });
+      if (ready.error)
+        throw new Error(`initialize failed: ${JSON.stringify(ready.error)}`);
+      send({ method: 'notifications/initialized' });
+    },
+  };
 }
 
 function cookieFromSetCookie(headers: Headers): string {
@@ -711,6 +803,69 @@ test('real channel middleware enforces registry-issued channel leases and preser
     });
     expect(missingHistory.status).toBe(404);
 
+    // #1410: `channels.search` over the real middleware. An in-scope search
+    // answers, an explicitly out-of-scope channelId is refused, and the verb
+    // must be named honestly — the history command header is a different
+    // route as far as the actor lane is concerned.
+    expect(
+      (
+        await fetch(`${base}/channels/search?q=anything`, {
+          headers: actorHeaders('channels.search'),
+        })
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await fetch(
+          `${base}/channels/search?q=anything&channelId=${encodeURIComponent(channelA)}`,
+          { headers: actorHeaders('channels.search') }
+        )
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await fetch(
+          `${base}/channels/search?q=anything&channelId=${encodeURIComponent(channelB)}`,
+          { headers: actorHeaders('channels.search') }
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${base}/channels/search?q=anything`, {
+          headers: {
+            ...actorHeaders('channels.search'),
+            'x-relay-cli-command': 'channels.history',
+          },
+        })
+      ).status
+    ).toBe(401);
+
+    // Repeated `channelId` — Express hands the route an ARRAY. The actor-scope
+    // middleware and the route's own `denyOutOfScopeChannel` must parse it
+    // identically (first element wins), or the middleware authorizes one
+    // channel while the route enforces another. The reason code pins WHICH
+    // layer denied: `CLI_ACTOR_WRONG_CHANNEL_SCOPE` means the middleware saw
+    // the same out-of-scope channel the route would have; a route-level
+    // `CHANNEL_OUT_OF_SCOPE` here would mean the two layers disagreed again.
+    const repeatedOutOfScope = await fetch(
+      `${base}/channels/search?q=anything&channelId=${encodeURIComponent(channelB)}&channelId=${encodeURIComponent(channelA)}`,
+      { headers: actorHeaders('channels.search') }
+    );
+    expect(repeatedOutOfScope.status).toBe(403);
+    expect(
+      ((await repeatedOutOfScope.json()) as { error: { reasonCode?: string } })
+        .error.reasonCode
+    ).toBe('CLI_ACTOR_WRONG_CHANNEL_SCOPE');
+    expect(
+      (
+        await fetch(
+          `${base}/channels/search?q=anything&channelId=${encodeURIComponent(channelA)}&channelId=${encodeURIComponent(channelB)}`,
+          { headers: actorHeaders('channels.search') }
+        )
+      ).status
+    ).toBe(200);
+
     const grantRevocation = await fetch(
       `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/revoke`,
       {
@@ -1067,5 +1222,229 @@ test('scoped actor sessions.create launches only in-scope terminals and rejects 
     );
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * #1410 — the standing read lease, end to end through the MCP facade.
+ *
+ * This is the whole delivery contract in one test: a runtime is handed three
+ * environment variables and a launch path, and the agent's MCP host must be
+ * able to read its own channel's history from that alone — with no Relay URL,
+ * no config file, and no token anywhere but the environment.
+ *
+ * The credential is minted through the operator grant lane because that is the
+ * only issuance surface reachable from outside the process; its capabilities
+ * and scope are exactly `READONLY_RUNTIME_ACTOR_CAPABILITIES` and the
+ * channel-only scope `OrchestratorCredentialLifecycle` mints for a read lease.
+ */
+test('the Relay MCP facade answers a spawned runtime from its injected environment alone (#1410)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mcp-facade-'));
+  const configPath = path.join(tmpDir, 'config.json');
+  const pin = '778899';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+  const child = startServer({
+    env: { RELAY_IDE_CONFIG: configPath, RELAY_IDE_PORT: '0', HOME: tmpDir },
+  });
+  let facade: ChildProcess | undefined;
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+    const login = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    await expectJsonStatus<{ ok: true }>(login, 200, 'PIN login');
+    const cookie = cookieFromSetCookie(login.headers);
+    const own = (
+      await expectJsonStatus<{ topic: { id: string } }>(
+        await fetch(`${base}/workspace-topics`, {
+          method: 'POST',
+          headers: {
+            cookie,
+            'content-type': 'application/json',
+            'x-relay-capabilities': 'context:write',
+          },
+          body: JSON.stringify({
+            workspaceId: 'workspace:local',
+            title: 'Facade own',
+          }),
+        }),
+        201,
+        'create own channel'
+      )
+    ).topic.id;
+    const other = (
+      await expectJsonStatus<{ topic: { id: string } }>(
+        await fetch(`${base}/workspace-topics`, {
+          method: 'POST',
+          headers: {
+            cookie,
+            'content-type': 'application/json',
+            'x-relay-capabilities': 'context:write',
+          },
+          body: JSON.stringify({
+            workspaceId: 'workspace:local',
+            title: 'Facade other',
+          }),
+        }),
+        201,
+        'create other channel'
+      )
+    ).topic.id;
+    await expectJsonStatus(
+      await fetch(`${base}/channels/${encodeURIComponent(own)}/messages`, {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ text: 'handle deref target' }),
+      }),
+      201,
+      'seed own channel history'
+    );
+
+    // Mint the read lease's credential shape: read bits, channel-only scope.
+    const grant = await expectJsonStatus<{ grant: { id: string } }>(
+      await fetch(`${base}/hub/operator-handshake-grants`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actor: { type: 'agent', id: 'agent-profile:claude:default' },
+          issuer: { id: 'relay-ide' },
+          audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+          capabilities: ['session:read', 'context:read'],
+          scope: { channelIds: [own] },
+          ttlMs: 60_000,
+        }),
+      }),
+      201,
+      'read lease grant request'
+    );
+    const approved = await expectJsonStatus<{ handle: string }>(
+      await fetch(
+        `${base}/hub/operator-handshake-grants/${encodeURIComponent(grant.grant.id)}/approve`,
+        {
+          method: 'POST',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ approvedBy: { id: 'browser-operator-test' } }),
+        }
+      ),
+      200,
+      'read lease grant approval'
+    );
+    const issued = await expectJsonStatus<{ token: string }>(
+      await fetch(`${base}/cli-gateway/actor-credentials`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          grantHandle: approved.handle,
+          audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+          actor: { type: 'agent', id: 'agent-profile:claude:default' },
+          capabilities: ['session:read', 'context:read'],
+          scope: { channelIds: [own] },
+          ttlMs: 60_000,
+        }),
+      }),
+      201,
+      'read lease credential mint'
+    );
+
+    // Exactly what ChannelAgentRuntime injects, and nothing else: no
+    // RELAY_IDE_URL, no config directory, no cookie.
+    facade = spawn(process.execPath, [RELAY_MCP_SCRIPT], {
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: tmpDir,
+        RELAY_IDE_ACTOR_TOKEN: issued.token,
+        RELAY_IDE_PORT: String(port),
+        RELAY_IDE_RUNTIME_ID: 'channel-runtime-facade',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const mcp = openStdioMcp(facade);
+    await mcp.initialize();
+
+    const tools = await mcp.request('tools/list');
+    expect(
+      (tools.result?.['tools'] as Array<{ name: string }>).map(
+        (tool) => tool.name
+      )
+    ).toEqual([
+      'relay_channels_list',
+      'relay_channels_get',
+      'relay_channels_run_get',
+      'relay_channels_history',
+      'relay_channels_subscribe',
+      'relay_channels_threads_history',
+      'relay_channels_roster',
+      'relay_channels_post',
+    ]);
+
+    const history = await mcp.request('tools/call', {
+      name: 'relay_channels_history',
+      arguments: { channelId: own },
+    });
+    const historyEnvelope = history.result?.['structuredContent'] as {
+      ok: boolean;
+      data: { messages: Array<{ body: { text: string } }> };
+    };
+    expect(historyEnvelope.ok).toBe(true);
+    expect(
+      historyEnvelope.data.messages.map((message) => message.body.text)
+    ).toContain('handle deref target');
+    // Provider-runtime locators never cross the facade.
+    const historyJson = JSON.stringify(historyEnvelope);
+    expect(historyJson).not.toContain('runtimeId');
+    expect(historyJson).not.toContain('sessionId');
+    expect(historyJson).not.toContain('relay-sac-v1');
+
+    // Out of scope stays out of scope, even for a tool the agent may call.
+    const crossChannel = await mcp.request('tools/call', {
+      name: 'relay_channels_history',
+      arguments: { channelId: other },
+    });
+    expect(crossChannel.result).toMatchObject({
+      isError: true,
+      structuredContent: { ok: false, error: { code: 'FORBIDDEN' } },
+    });
+
+    // The read lease can never post: the facade keeps the write tool, and the
+    // gateway refuses it for a credential with no write bit.
+    const post = await mcp.request('tools/call', {
+      name: 'relay_channels_post',
+      arguments: { channelId: own, text: 'should never land' },
+    });
+    expect(post.result).toMatchObject({
+      isError: true,
+      structuredContent: { ok: false, error: { code: 'FORBIDDEN' } },
+    });
+    const after = await expectJsonStatus<{
+      messages: Array<{ body: { text: string } }>;
+    }>(
+      await fetch(`${base}/channels/${encodeURIComponent(own)}/messages`, {
+        headers: { cookie, 'x-relay-capabilities': 'context:read' },
+      }),
+      200,
+      'history after refused post'
+    );
+    expect(after.messages.map((message) => message.body.text)).not.toContain(
+      'should never land'
+    );
+  } finally {
+    facade?.kill('SIGKILL');
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

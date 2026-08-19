@@ -17,9 +17,14 @@ import type {
   OrchestratorCredentialLifecycle,
   OrchestratorCredentialLifecycleDeps,
 } from './orchestrator-credential-lifecycle.js';
-import { startOrchestratorCredentialLifecycle } from './orchestrator-credential-lifecycle.js';
+import {
+  ORCHESTRATOR_ACTOR_CAPABILITIES,
+  READONLY_RUNTIME_ACTOR_CAPABILITIES,
+  startOrchestratorCredentialLifecycle,
+} from './orchestrator-credential-lifecycle.js';
 import type { AdapterConfig } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
+import { relayMcpLaunchSpec } from './relay-mcp-launch.js';
 import {
   createAdapterV2,
   providerDescriptor,
@@ -118,20 +123,26 @@ export interface ChannelAgentRuntimeManagerOptions {
 
 type RuntimeEndHandler = (runtimeId: string) => void;
 
-let orchestratorCredentialAuthority:
-  | Pick<
-      OrchestratorCredentialLifecycleDeps,
-      'issueCredential' | 'revokeCredential'
-    >
-  | undefined;
+type RuntimeCredentialAuthority = Pick<
+  OrchestratorCredentialLifecycleDeps,
+  'issueCredential' | 'revokeCredential'
+>;
+
+let orchestratorCredentialAuthority: RuntimeCredentialAuthority | undefined;
+let runtimeReadCredentialAuthority: RuntimeCredentialAuthority | undefined;
 
 export function configureChannelAgentRuntimes(input: {
-  orchestratorCredentials?: Pick<
-    OrchestratorCredentialLifecycleDeps,
-    'issueCredential' | 'revokeCredential'
-  >;
+  /** Read/write lease for the persistent channel orchestrator. */
+  orchestratorCredentials?: RuntimeCredentialAuthority;
+  /**
+   * Read-only lease every other bound agent runtime carries (#1410). Kept a
+   * separate issuer, not a flag on the orchestrator one, so the two lanes have
+   * distinct audit markers and neither can be reached by mistake.
+   */
+  runtimeReadCredentials?: RuntimeCredentialAuthority;
 }): void {
   orchestratorCredentialAuthority = input.orchestratorCredentials;
+  runtimeReadCredentialAuthority = input.runtimeReadCredentials;
 }
 
 /**
@@ -362,6 +373,92 @@ export class ChannelAgentRuntimeManager {
     return () => this.endHandlers.delete(handler);
   }
 
+  /**
+   * Standing read-only actor lease for one ordinary bound agent runtime (#1410).
+   *
+   * Three adapter classes, one rule each:
+   * - `refreshRuntimeEnv` present (claude today) -> rotating lease, same
+   *   machinery the orchestrator uses.
+   * - `command`/`embedded` launch without `refreshRuntimeEnv` -> one static
+   *   TTL-bounded token injected at spawn; it expires and the next spawn mints
+   *   a fresh one.
+   * - `gateway` launch (hermes, opencode-attached) -> NO credential. There is no
+   *   child process to inject into, and the only other delivery path would be
+   *   channel-visible prompt text, which the credential contract forbids.
+   *
+   * Read access is additive, so a mint failure is a warning and an
+   * uncredentialed spawn. Only the orchestrator lease is spawn-fatal.
+   */
+  private startRuntimeReadLease(
+    id: string,
+    adapter: ProtocolAdapterV2,
+    params: CreateChannelAgentRuntimeParams
+  ): OrchestratorCredentialLifecycle | undefined {
+    const channelId = params.channelId?.trim();
+    // Unbound runtime: there is no channel to scope reads to, and an unscoped
+    // credential is denied by the router's deny-without-scope guard anyway.
+    if (!channelId) return undefined;
+    const authority = runtimeReadCredentialAuthority;
+    if (!authority) return undefined;
+    const launchKind = providerDescriptor(params.providerId)?.launch.requirement
+      .kind;
+    if (launchKind !== 'command' && launchKind !== 'embedded') {
+      logger.debug('channel runtime launch has no env to inject a lease into', {
+        runtimeId: id,
+        providerId: params.providerId,
+        launchKind: launchKind ?? 'unknown',
+      });
+      return undefined;
+    }
+    try {
+      return startOrchestratorCredentialLifecycle(
+        {
+          runtimeId: id,
+          channelId,
+          profileActorId: params.profileActorId,
+          port: params.port,
+          ...(params.displayName ? { displayName: params.displayName } : {}),
+          leaseKind: 'channel-runtime-read',
+          capabilities: [...READONLY_RUNTIME_ACTOR_CAPABILITIES],
+          rotation: adapter.refreshRuntimeEnv ? 'refresh' : 'static',
+        },
+        {
+          ...authority,
+          applyRuntimeEnv: async (nextEnv) => {
+            const runtime = this.runtimes.get(id);
+            if (
+              !runtime ||
+              runtime.status !== 'active' ||
+              !runtime.adapter.refreshRuntimeEnv
+            ) {
+              throw new Error(
+                'Channel runtime unavailable during credential refresh'
+              );
+            }
+            await runtime.adapter.refreshRuntimeEnv(nextEnv);
+          },
+          failClosed: () => {
+            // Fail closed on the CREDENTIAL, not on the runtime: revoke and stop
+            // leasing, but never destroy a healthy agent over a read handle.
+            logger.warn('channel runtime read credential lease ended early', {
+              runtimeId: id,
+              providerId: params.providerId,
+            });
+            this.leases.get(id)?.stop();
+            this.leases.delete(id);
+          },
+        }
+      );
+    } catch {
+      // Never log the issuer error: it can carry credential material.
+      logger.warn('channel runtime starts without a read credential', {
+        runtimeId: id,
+        providerId: params.providerId,
+      });
+      return undefined;
+    }
+  }
+
   async create(
     params: CreateChannelAgentRuntimeParams
   ): Promise<ChannelAgentRuntime> {
@@ -395,6 +492,9 @@ export class ChannelAgentRuntimeManager {
           profileActorId: params.profileActorId,
           port: params.port,
           ...(params.displayName ? { displayName: params.displayName } : {}),
+          leaseKind: 'orchestrator',
+          capabilities: [...ORCHESTRATOR_ACTOR_CAPABILITIES],
+          rotation: 'refresh',
         },
         {
           ...orchestratorCredentialAuthority,
@@ -418,11 +518,33 @@ export class ChannelAgentRuntimeManager {
         }
       );
       processEnv = { ...processEnv, ...lease.processEnv };
+    } else {
+      lease = this.startRuntimeReadLease(id, adapter, params);
+      // Lease env is merged LAST on purpose: a named profile's `processEnv` must
+      // not be able to shadow RELAY_IDE_ACTOR_TOKEN with a token of its own.
+      if (lease) processEnv = { ...processEnv, ...lease.processEnv };
     }
     processEnv = sanitizeChannelAdapterProcessEnv(
       params.providerId,
       processEnv
     );
+
+    // The MCP facade is a VIEW of the credential this runtime already carries,
+    // never a second grant: mount it only when a lease was actually started, so
+    // an uncredentialed runtime (gateway launch, unbound runtime, mint failure)
+    // cannot be handed a Relay tool it could never authenticate. The facade
+    // child inherits the agent process env, which is where the token lives — the
+    // spec below is a path, and adapters must keep it that way.
+    const relayMcp = lease ? relayMcpLaunchSpec() : undefined;
+    if (lease && !relayMcp) {
+      logger.debug(
+        'relay MCP facade not found; runtime keeps CLI access only',
+        {
+          runtimeId: id,
+          providerId: params.providerId,
+        }
+      );
+    }
 
     const initialAgentAttribution = agentAttributionFromConfig({
       ...(params.model ? { model: params.model } : {}),
@@ -534,6 +656,7 @@ export class ChannelAgentRuntimeManager {
         .filter((part): part is string => Boolean(part?.trim()))
         .join('\n\n'),
       ...(Object.keys(processEnv).length > 0 ? { processEnv } : {}),
+      ...(relayMcp ? { relayMcp } : {}),
       ...(params.permissionMode
         ? { permissionMode: params.permissionMode }
         : {}),

@@ -17,6 +17,10 @@ import {
   relayCommandDefinitionsForSurface,
 } from '../shared/relay-command-manifest.js';
 import {
+  CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_QUERY_MAX_CHARS,
+} from '../shared/channel-chat-protocol.js';
+import {
   HIGH_RISK_CAPABILITIES,
   LEGACY_DEFAULT_ALLOWED_CAPABILITIES,
   RELAY_CAPABILITY_BITS,
@@ -263,6 +267,7 @@ describe('CLI gateway contract', () => {
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
+      'channels.search',
       'channels.post',
       'cockpit.list',
       'cockpit.get',
@@ -291,6 +296,7 @@ describe('CLI gateway contract', () => {
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
+      'channels.search',
     ] as const;
     const names = new Set(stableCommandNames());
     for (const verb of readVerbs) {
@@ -579,6 +585,48 @@ describe('CLI gateway contract', () => {
     expect(
       cursorSchema && schemaMatches(cursorSchema, { afterSeq: 4, extra: true })
     ).toBe(false);
+  });
+
+  it('models the channels.search input as a bounded, query-required read', () => {
+    expect(schemaAcceptsCommandInput('channels.search', { q: 'needle' })).toBe(
+      true
+    );
+    expect(
+      schemaAcceptsCommandInput('channels.search', {
+        q: 'needle',
+        channelId: 'channel-1',
+        workspaceId: 'ws-1',
+        includeArchived: true,
+        limit: CHANNEL_SEARCH_MAX_RESULTS,
+      })
+    ).toBe(true);
+    // The query is the whole command; an omitted or empty one is refused
+    // rather than silently answered with every message in scope.
+    expect(schemaAcceptsCommandInput('channels.search', {})).toBe(false);
+    expect(schemaAcceptsCommandInput('channels.search', { q: '' })).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('channels.search', {
+        q: 'x'.repeat(CHANNEL_SEARCH_QUERY_MAX_CHARS + 1),
+      })
+    ).toBe(false);
+    for (const limit of [0, CHANNEL_SEARCH_MAX_RESULTS + 1, 1.5, '5']) {
+      expect(
+        schemaAcceptsCommandInput('channels.search', { q: 'needle', limit })
+      ).toBe(false);
+    }
+    // No undeclared knob may ride along into the hub query string.
+    expect(
+      schemaAcceptsCommandInput('channels.search', {
+        q: 'needle',
+        beforeSeq: 4,
+      })
+    ).toBe(false);
+    // Search reads; it must never be classified as a write or a stream.
+    expect(relayCommandDefinition('channels.search')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      scopeKinds: ['work-context', 'session'],
+    });
   });
 
   it('keeps cockpit limit validation aligned with its schema', () => {

@@ -7,6 +7,7 @@
 
 import { createLogger } from './logger.js';
 import type { ChatEvent } from '../shared/chat-events.js';
+import type { RelayMcpLaunchSpec } from './relay-mcp-launch.js';
 
 const logger = createLogger('protocol-adapter');
 
@@ -41,6 +42,18 @@ export interface AdapterConfig {
    * field into their provider-specific launch argument.
    */
   systemPromptAppendix?: string;
+  /**
+   * Launch spec for the local stdio Relay MCP facade, present only when this
+   * runtime actually holds an actor credential lease (#1410).
+   *
+   * Shared choreography, provider-specific mount: adapters that can declare an
+   * MCP server natively translate this into their own launch surface. It is a
+   * command plus arguments and NOTHING else — the facade authenticates from the
+   * environment the agent process passes to its MCP child, so a token must
+   * never be written here. MCP mounts land in provider argv or config, which is
+   * readable by any process on the box.
+   */
+  relayMcp?: RelayMcpLaunchSpec;
   /** Additional agent-specific configuration */
   extra?: Record<string, unknown>;
 }

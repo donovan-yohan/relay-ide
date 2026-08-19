@@ -76,6 +76,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'channels.subscribe',
   'channels.threads.history',
   'channels.roster',
+  'channels.search',
   'context.get',
   'context.list',
   'inbox.list',
@@ -145,6 +146,16 @@ export interface CliGatewayActorIssueInput {
 }
 
 export type PersistentOrchestratorCredentialIssueInput = Omit<
+  CliGatewayActorIssueInput,
+  'metadata'
+>;
+
+/**
+ * Input for the standing read-only runtime lease (#1410). `metadata` is omitted
+ * for the same reason as the orchestrator lease: the reason marker is stamped by
+ * the trusted issuer, never carried in from a caller.
+ */
+export type ChannelRuntimeReadCredentialIssueInput = Omit<
   CliGatewayActorIssueInput,
   'metadata'
 >;
@@ -349,6 +360,9 @@ export function cliGatewayActorCommandCapabilities(
   // Channel conversation verbs (#1165): reads gate on context:read, the single
   // post write gates on context:write. Mounting the router alone is not enough —
   // the capability map must resolve or gateway auth fails at runtime.
+  // `channels.search` (#1410) is a read of the same durable message log, so it
+  // gates on the same bit; its blast radius is bounded by the credential's
+  // `channelIds` scope, not by this capability row.
   if (
     command === 'channels.list' ||
     command === 'channels.get' ||
@@ -356,7 +370,8 @@ export function cliGatewayActorCommandCapabilities(
     command === 'channels.history' ||
     command === 'channels.subscribe' ||
     command === 'channels.threads.history' ||
-    command === 'channels.roster'
+    command === 'channels.roster' ||
+    command === 'channels.search'
   )
     return ['context:read'];
   if (command === 'channels.post') return ['context:write'];
@@ -474,12 +489,34 @@ export function cliGatewayActorFailure(input: {
   };
 }
 
+/**
+ * Reason markers only the trusted in-process issuers below may stamp.
+ *
+ * These are security-weighted: `persistent-orchestrator` reaches the verbatim
+ * sender-id branch and the agent-brake bypass in the channel router, and
+ * `channel-runtime-read` marks the standing read lease (#1410) so a later
+ * consumer can tell an internally minted read handle from an operator-issued
+ * one. Every externally supplied metadata blob is stripped of them, so no
+ * caller can forge either marker through the issue/grant surface.
+ */
+const TRUSTED_INTERNAL_CREDENTIAL_REASONS = [
+  'persistent-orchestrator',
+  'channel-runtime-read',
+] as const;
+
+type TrustedInternalCredentialReason =
+  (typeof TRUSTED_INTERNAL_CREDENTIAL_REASONS)[number];
+
 function credentialIssueMetadata(
   metadata: unknown
 ): Record<string, unknown> | undefined {
   if (!isRecord(metadata)) return undefined;
   const sanitized = { ...metadata };
-  if (sanitized['reason'] === 'persistent-orchestrator') {
+  const reason = sanitized['reason'];
+  if (
+    typeof reason === 'string' &&
+    (TRUSTED_INTERNAL_CREDENTIAL_REASONS as readonly string[]).includes(reason)
+  ) {
     delete sanitized['reason'];
   }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
@@ -488,13 +525,13 @@ function credentialIssueMetadata(
 function issueCliGatewayActorCredentialInternal(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorIssueInput,
-  persistentOrchestrator: boolean
+  trustedReason: TrustedInternalCredentialReason | null
 ): { token: string; credential: ScopedActorCredentialRecord } {
   const scope = coerceScope(input.scope);
   const capabilities = coerceCapabilities(input.capabilities);
   const ttlMs = typeof input.ttlMs === 'number' ? input.ttlMs : 5 * 60 * 1000;
-  const metadata = persistentOrchestrator
-    ? { reason: 'persistent-orchestrator' }
+  const metadata = trustedReason
+    ? { reason: trustedReason }
     : credentialIssueMetadata(input.metadata);
   return registry.issue({
     actor: coerceActor(input.actor),
@@ -517,7 +554,7 @@ export function issueCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorIssueInput = {}
 ): { token: string; credential: ScopedActorCredentialRecord } {
-  return issueCliGatewayActorCredentialInternal(registry, input, false);
+  return issueCliGatewayActorCredentialInternal(registry, input, null);
 }
 
 /**
@@ -528,7 +565,33 @@ export function issuePersistentOrchestratorCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: PersistentOrchestratorCredentialIssueInput
 ): { token: string; credential: ScopedActorCredentialRecord } {
-  return issueCliGatewayActorCredentialInternal(registry, input, true);
+  return issueCliGatewayActorCredentialInternal(
+    registry,
+    input,
+    'persistent-orchestrator'
+  );
+}
+
+/**
+ * Trusted in-process issuer for the standing read-only lease every bound agent
+ * runtime carries (#1410).
+ *
+ * The marker is an audit breadcrumb, NOT a privilege: nothing branches on it,
+ * and the credential's actual reach is decided by the capability bits and the
+ * channel scope the caller pins. It exists so this lane is distinguishable from
+ * `persistent-orchestrator` — a read lease must never land on the verbatim
+ * sender-id / agent-brake-bypass path — and so the reason cannot be forged from
+ * outside once something does branch on it.
+ */
+export function issueChannelRuntimeReadCliGatewayActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  input: ChannelRuntimeReadCredentialIssueInput
+): { token: string; credential: ScopedActorCredentialRecord } {
+  return issueCliGatewayActorCredentialInternal(
+    registry,
+    input,
+    'channel-runtime-read'
+  );
 }
 
 export function issueCliGatewayActorCredentialWithGrant(

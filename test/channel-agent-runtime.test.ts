@@ -15,6 +15,7 @@ import type {
 } from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../server/protocol-adapters/index.js';
+import { relayMcpLaunchSpec } from '../server/relay-mcp-launch.js';
 import {
   scheduleRelayProcessTreeReap,
   type ProcessInfo,
@@ -192,8 +193,10 @@ async function runtimeModule() {
 }
 
 afterEach(async () => {
-  const { channelAgentRuntimes } = await runtimeModule();
+  const { channelAgentRuntimes, configureChannelAgentRuntimes } =
+    await runtimeModule();
   await channelAgentRuntimes.close();
+  configureChannelAgentRuntimes({});
   adapterState.last = null;
   adapterState.all.length = 0;
   adapterState.onConnect = null;
@@ -558,6 +561,133 @@ describe('ChannelAgentRuntimeManager', () => {
         expect(connectedEnv).not.toHaveProperty(key);
       }
     }
+  });
+
+  it('injects the standing read lease into every command/embedded launch and nothing else (#1410)', async () => {
+    const { channelAgentRuntimes, configureChannelAgentRuntimes } =
+      await runtimeModule();
+    const issued: {
+      capabilities: unknown;
+      scope: unknown;
+      ttlMs: unknown;
+    }[] = [];
+    let issueCount = 0;
+    configureChannelAgentRuntimes({
+      runtimeReadCredentials: {
+        issueCredential: (input) => {
+          issueCount++;
+          issued.push({
+            capabilities: input.capabilities,
+            scope: input.scope,
+            ttlMs: input.ttlMs,
+          });
+          const issuedAt = Date.now();
+          return {
+            token: `relay-sac-v1.credential-${issueCount}.redacted`,
+            credential: {
+              id: `credential-${issueCount}`,
+              actor: { type: 'agent', id: 'agent-profile:test' },
+              issuer: { id: 'relay-ide' },
+              audience: 'relay:cli-gateway:v1',
+              capabilities: ['session:read', 'context:read'],
+              scope: {
+                sessionIds: [`channel-runtime-${issueCount}`],
+                channelIds: ['channel-A'],
+              },
+              metadata: { reason: 'channel-runtime-read' },
+              issuedAt: new Date(issuedAt).toISOString(),
+              expiresAt: new Date(issuedAt + 15 * 60 * 1000).toISOString(),
+              correlationId: `correlation-${issueCount}`,
+            },
+          };
+        },
+        revokeCredential: vi.fn(),
+      },
+    });
+
+    for (const [providerId, contract] of Object.entries(
+      CHANNEL_ADAPTER_LAUNCH_CONTRACTS
+    )) {
+      const before = issueCount;
+      await channelAgentRuntimes.create({
+        id: `channel-runtime-${providerId}`,
+        channelId: 'channel-A',
+        providerId,
+        profileActorId: `agent-profile:${providerId}:named`,
+        cwd: '/tmp',
+        displayName: `#eng · ${providerId}`,
+        port: 3456,
+        configDir: '/tmp',
+      });
+      const connectedConfig = adapterState.last!.connectConfigs[0]!;
+      const connectedEnv = connectedConfig.processEnv;
+      const spawnsChild =
+        contract.requirement.kind === 'command' ||
+        contract.requirement.kind === 'embedded';
+
+      // #1410: the MCP facade is a view of the credential, so the mount and the
+      // token travel together in BOTH directions. A mount without a credential
+      // would hand the agent a Relay tool that can only answer 401.
+      expect(Boolean(connectedConfig.relayMcp)).toBe(
+        spawnsChild && Boolean(relayMcpLaunchSpec())
+      );
+      if (connectedConfig.relayMcp) {
+        expect(Object.keys(connectedConfig.relayMcp).sort()).toEqual([
+          'args',
+          'command',
+        ]);
+        expect(JSON.stringify(connectedConfig.relayMcp)).not.toContain(
+          'relay-sac-v1'
+        );
+      }
+
+      if (spawnsChild) {
+        // A denylist that stripped the token would silently disable every
+        // handle deref for that provider, with no error anywhere.
+        expect(connectedEnv?.RELAY_IDE_ACTOR_TOKEN).toMatch(/^relay-sac-v1\./);
+        expect(connectedEnv?.RELAY_IDE_PORT).toBe('3456');
+        expect(connectedEnv?.RELAY_IDE_RUNTIME_ID).toBe(
+          `channel-runtime-${providerId}`
+        );
+        expect(issueCount).toBe(before + 1);
+      } else {
+        // Gateway launches have no child env; the only other delivery path
+        // would be channel-visible text, which the contract forbids.
+        expect(connectedEnv?.RELAY_IDE_ACTOR_TOKEN).toBeUndefined();
+        expect(issueCount).toBe(before);
+      }
+    }
+
+    expect(issued.length).toBeGreaterThan(0);
+    for (const call of issued) {
+      expect(call.capabilities).toEqual(['session:read', 'context:read']);
+      expect(call.ttlMs).toBe(15 * 60 * 1000);
+      // Channel and nothing else: a dimension the channel routes never name
+      // (a session pin) makes every `channels.*` request fail `missing_scope`.
+      expect(call.scope).toEqual({ channelIds: ['channel-A'] });
+    }
+  });
+
+  it('mounts no MCP facade for a runtime that holds no credential (#1410)', async () => {
+    const { channelAgentRuntimes, configureChannelAgentRuntimes } =
+      await runtimeModule();
+    // No read-credential authority configured: nothing to lease, so nothing to
+    // mount. Same shape as a mint failure or an unbound runtime.
+    configureChannelAgentRuntimes({});
+    await channelAgentRuntimes.create({
+      id: 'channel-runtime-uncredentialed',
+      channelId: 'channel-A',
+      providerId: 'claude',
+      profileActorId: 'agent-profile:claude:default',
+      cwd: '/tmp',
+      displayName: '#eng · Claude',
+      port: 3456,
+      configDir: '/tmp',
+    });
+
+    const connectedConfig = adapterState.last!.connectConfigs[0]!;
+    expect(connectedConfig.relayMcp).toBeUndefined();
+    expect(connectedConfig.processEnv?.RELAY_IDE_ACTOR_TOKEN).toBeUndefined();
   });
 
   it('resumes from the channel binding provider session and remains outside the public session registry', async () => {

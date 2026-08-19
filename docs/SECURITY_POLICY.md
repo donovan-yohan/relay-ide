@@ -120,6 +120,14 @@ Lane separation is fail-closed:
 
 Typed CLI actor denials use stable reason codes such as `CLI_ACTOR_CREDENTIAL_MISSING`, `CLI_ACTOR_BROWSER_COOKIE_REJECTED`, `CLI_ACTOR_NODE_CREDENTIAL_REJECTED`, `CLI_ACTOR_ROUTE_UNSUPPORTED`, `CLI_ACTOR_MALFORMED_CREDENTIAL`, `CLI_ACTOR_WRONG_AUDIENCE`, `CLI_ACTOR_EXPIRED`, `CLI_ACTOR_REVOKED`, `CLI_ACTOR_MISSING_SCOPE`, `CLI_ACTOR_WRONG_SESSION_SCOPE`, `CLI_ACTOR_WRONG_GLOBAL_SESSION_SCOPE`, `CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE`, `CLI_ACTOR_UNKNOWN_CAPABILITY`, and `CLI_ACTOR_INSUFFICIENT_CAPABILITY`. Failure payloads may include safe credential ids, denied bits, the expected audience, and correlation ids, but never raw bearer strings, browser cookies, node credential material, or secret hashes.
 
+### Standing runtime leases for bound agents (#1410)
+
+Every bound channel agent runtime that Relay spawns as a child process carries a standing scoped actor credential, minted per `(channel, profile)` runtime by `server/orchestrator-credential-lifecycle.ts`. Ordinary bound agents get `session:read` + `context:read` only, pinned to their own `channelIds` and nothing else; the persistent channel orchestrator keeps its separate read/write lease. There is no `context:write` on the read lease — a bound agent answers through the channel bridge, never by posting with its own credential — and no `session:create:terminal`, which would turn a read handle into process execution. The lease is TTL-bounded by the registry clamp (15 minutes), rotates only when the adapter can re-receive environment (`refreshRuntimeEnv`), and is revoked when the runtime ends.
+
+Delivery is environment injection into the spawned agent process (`RELAY_IDE_ACTOR_TOKEN`, `RELAY_IDE_PORT`, `RELAY_IDE_RUNTIME_ID`) and nothing else. A credential must never reach an agent through channel-visible text, prompt content, argv, or a provider config file. Gateway-launch providers with no child process therefore get no credential.
+
+The stdio MCP facade mounted into such a runtime is a view of that same credential, never a second grant: it authenticates purely from inherited environment, and the mount spec carries a path and arguments only. Two accepted residual risks follow from that delivery mechanism and are recorded in `docs/MCP_HARNESS_RELAY_BRIDGE.md` § "Accepted residual risks": provider environment inheritance is indiscriminate, so every other MCP server that agent mounts also inherits the lease token; and self-hosted development resolves the facade from the checkout's own `dist/`, which agents can edit. Both are bounded by the same-OS-user trust domain this policy already declines to claim isolation within.
+
 Relay issue `#177` remains the first-load/PIN explanation ticket. These docs clarify the security boundary, but closing `#177` should wait until the visible browser first-load copy also explains where the PIN comes from and how to reset it.
 
 ## Trust tiers

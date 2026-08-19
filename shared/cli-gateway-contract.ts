@@ -7,6 +7,10 @@ import {
   CONTEXT_PACKET_KINDS,
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
+import {
+  CHANNEL_SEARCH_MAX_RESULTS,
+  CHANNEL_SEARCH_QUERY_MAX_CHARS,
+} from './channel-chat-protocol.js';
 import { SUPERVISOR_SEND_KEY_NAMES } from './supervisor-actions.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
@@ -102,6 +106,7 @@ export type RelayCliGatewayCommand =
   | 'channels.subscribe'
   | 'channels.threads.history'
   | 'channels.roster'
+  | 'channels.search'
   | 'channels.post'
   | 'cockpit.list'
   | 'cockpit.get'
@@ -3631,6 +3636,31 @@ const channelRosterInputSchema: RelayJsonSchema = {
   required: ['channelId'],
 };
 
+/**
+ * `channels.search` (#1410) is its OWN verb rather than a filtered ride on
+ * `channels.history`. The actor lane authorizes by the `x-relay-cli-command`
+ * header, so a credential that searched under the history command name would
+ * be lying about the operation in the audit trail; a distinct verb gets its own
+ * schema, capability row, and revocable allowlist entry.
+ *
+ * `channelId` narrows the search to one channel. Omitting it does NOT widen an
+ * actor beyond its credential: the route searches exactly the actor's scoped
+ * channels (`channelIds`), and a scope-less actor credential is denied.
+ */
+const channelSearchInputSchema: RelayJsonSchema = {
+  title: 'ChannelsSearchInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    q: { type: 'string', minLength: 1, maxLength: CHANNEL_SEARCH_QUERY_MAX_CHARS },
+    channelId: stringSchema,
+    workspaceId: stringSchema,
+    includeArchived: booleanSchema,
+    limit: { type: 'integer', minimum: 1, maximum: CHANNEL_SEARCH_MAX_RESULTS },
+  },
+  required: ['q'],
+};
+
 const channelListOutputDataSchema: RelayJsonSchema = {
   title: 'ChannelsListData',
   type: 'object',
@@ -3683,6 +3713,25 @@ const channelRosterOutputDataSchema: RelayJsonSchema = {
     roster: { type: 'array', items: channelObjectSchema },
   },
   required: ['roster'],
+};
+
+/**
+ * `unavailableReason` is load-bearing: a refused query and a consulted-but-empty
+ * index must never look alike, or a caller reports "no matches" for text the
+ * server declined to look up.
+ */
+const channelSearchOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsSearchData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    query: stringSchema,
+    results: { type: 'array', items: channelObjectSchema },
+    truncated: booleanSchema,
+    unavailableReason: stringSchema,
+    scopeAlias: stringSchema,
+  },
+  required: ['query', 'results', 'truncated'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -6875,6 +6924,39 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'FORBIDDEN',
       'INVALID_ARGUMENT',
       'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.search',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'search',
+      '--query',
+      '<text>',
+      '--channel-id',
+      '<id>',
+      '--limit',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Search durable channel messages inside the actor’s channel scope; an unscoped credential is denied and an out-of-scope channelId is rejected.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelSearchInputSchema,
+    outputSchema: okOutput(
+      'ChannelsSearchOutput',
+      channelSearchOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
       'SERVER_UNAVAILABLE',
     ],
   },
