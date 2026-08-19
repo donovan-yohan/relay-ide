@@ -258,17 +258,21 @@ describe('conformance harness self-tests', () => {
     );
   });
 
-  it('(b) the abandoned-approval probe reports the stranded approval claude leaves (#1407)', async () => {
-    // Red-to-green pin for #1407. The probe is otherwise dead code today (every
-    // approval-bearing fixture gaps `b-abandoned-approval`), so this is the one
-    // place it actually runs — and it must SEE the defect, not shrug at it.
-    // When #1407 lands, this expectation flips to `toEqual([])` and the
-    // per-fixture `b-abandoned-approval` gaps come out.
+  it('(b) the abandoned-approval probe sees claude resolve the stranded approval (#1407)', async () => {
+    // Inverted when #1407 landed: this used to pin the DEFECT (at least one
+    // approval left pending) because every approval-bearing fixture gapped
+    // `b-abandoned-approval` and the probe ran nowhere else. The per-fixture
+    // gaps are gone now, so the invariant bites for real on every adapter and
+    // this test holds the same line at the probe level.
     const abandoned = await runAbandonedApprovalProbe(claudeFixture);
     expect(
-      pendingApprovalIds(abandoned).length,
-      'claude disconnects with the approval still pending — if this is now empty, #1407 is fixed: drop the knownGaps entries and invert this test'
-    ).toBeGreaterThan(0);
+      pendingApprovalIds(abandoned),
+      'claude must resolve outstanding approvals on disconnect (#1407)'
+    ).toEqual([]);
+    expect(
+      abandoned.live.activeRequestIds,
+      'claude must drain live.activeRequestIds on disconnect (#1407)'
+    ).toEqual([]);
   }, 30_000);
 
   it('(b) the probe fails loudly when a transcript surfaces no approval at all', async () => {

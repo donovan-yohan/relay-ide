@@ -490,13 +490,10 @@ const fixture: AdapterConformanceFixture = {
     },
   ],
 
-  knownGaps: {
-    'b-abandoned-approval': {
-      issue: '#1407',
-      reason:
-        'teardownState() clears pendingApprovals/approvalMeta without settling the resolver, so handleCommandApprovalRequest never resumes: no native decision reaches the app-server and no agent-item-updated-v2 resolves the approval item. completeActiveTurn does drain live.activeRequestIds, but the reduced session keeps a permanently actionable approval card — the same shape as the claude gap',
-    },
-  },
+  // No known gaps. #1407 is fixed: `teardownState()` now answers each
+  // outstanding server request with its kind's decline envelope, publishes the
+  // cancelled card through the shared helper, and THEN settles the resolver so
+  // `handleCommandApprovalRequest` unwinds instead of awaiting forever.
 
   exercised: [
     'reasoning',

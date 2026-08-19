@@ -1,5 +1,11 @@
 import { CLAUDE_CHANNEL_COMMAND } from './launch-commands.js';
-import { reconnectWithStoredConfig } from './adapter-utils.js';
+import {
+  ABANDONED_APPROVAL_REASON,
+  TURN_ENDED_APPROVAL_REASON,
+  reconnectWithStoredConfig,
+  resolveAbandonedApprovals,
+  type AbandonedApprovalV2,
+} from './adapter-utils.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
@@ -833,13 +839,22 @@ export class ClaudeProtocolAdapter
       new Error('Claude adapter disconnected during runtime env refresh')
     );
 
-    // Auto-deny outstanding approvals before the child is killed (§7.4).
-    for (const requestId of [...this.pendingApprovals.keys()]) {
-      this.writeControlResponse(requestId, {
-        behavior: 'deny',
-        message: 'Denied (session closing)',
-      });
-    }
+    // Auto-deny outstanding approvals before the child is killed (§7.4) AND
+    // resolve their cards in the patch stream — the wire deny alone left a
+    // permanently actionable approval in every consumer's reduced session
+    // (#1407). Synchronous: `disconnect()` drops its handlers the moment this
+    // returns.
+    resolveAbandonedApprovals({
+      sessionId: this.sessionId,
+      approvals: this.abandonedApprovals(),
+      emitPatch: (patch) => this.emitPatch(patch),
+      reason: ABANDONED_APPROVAL_REASON,
+      denyOnWire: ({ requestId }) =>
+        this.writeControlResponse(requestId, {
+          behavior: 'deny',
+          message: 'Denied (session closing)',
+        }),
+    });
     this.clearPendingApprovals();
     this.approvalWaitStartedMs = null;
     this.suppressInterruptedTail = false;
@@ -2452,36 +2467,42 @@ export class ClaudeProtocolAdapter
   }
 
   /**
+   * QUIRK: the claude vocabulary for an outstanding approval card. The terminal
+   * state it wears on the way out is choreography and lives in `adapter-utils`.
+   */
+  private abandonedApprovals(): AbandonedApprovalV2[] {
+    return [...this.pendingApprovals].map(([requestId, pending]) => ({
+      requestId,
+      turnId: pending.turnId,
+      card: {
+        id: `approval-${requestId}`,
+        kind: 'permission',
+        description: `Claude wants to use ${pending.toolName}`,
+        target: pending.target,
+        ...(pending.detail ? { detail: pending.detail } : {}),
+        supported: CLAUDE_APPROVAL_SUPPORT,
+      },
+    }));
+  }
+
+  /**
    * Resolve any approval cards still outstanding when a turn ends abnormally
    * (crash / timeout / interrupt). Without this the started `approval` item stays
    * `status:'pending'` forever, showing live-looking Allow/Deny controls inside a
    * dead turn whose respondToApproval would no-op (§7). Emits a terminal update
    * per item before the pending map is cleared; a no-op on a clean completion
    * (approvals always resolve before a successful `result`).
+   *
+   * No `denyOnWire` here: the turn is already over and the child that owned the
+   * control_request is dead or dying. Only teardown speaks on the wire.
    */
   private cancelPendingApprovalItems(): void {
-    for (const [requestId, pending] of this.pendingApprovals) {
-      this.emitPatch({
-        type: 'agent-item-updated-v2',
-        sessionId: this.sessionId,
-        timestamp: nowIso(),
-        turnId: pending.turnId,
-        item: {
-          type: 'approval',
-          id: `approval-${requestId}`,
-          requestId,
-          kind: 'permission',
-          description: `Claude wants to use ${pending.toolName}`,
-          target: pending.target,
-          ...(pending.detail ? { detail: pending.detail } : {}),
-          supported: CLAUDE_APPROVAL_SUPPORT,
-          decision: { kind: 'decline' },
-          respondedBy: 'timeout',
-          status: 'cancelled',
-          completedAt: nowIso(),
-        },
-      });
-    }
+    resolveAbandonedApprovals({
+      sessionId: this.sessionId,
+      approvals: this.abandonedApprovals(),
+      emitPatch: (patch) => this.emitPatch(patch),
+      reason: TURN_ENDED_APPROVAL_REASON,
+    });
   }
 
   // ── Turn completion / queue ────────────────────────────────────────────────

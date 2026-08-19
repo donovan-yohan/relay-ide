@@ -20,10 +20,12 @@ must audit the sibling adapters for the same concern before landing it:
   (`adapter-utils.ts`, `../utils.ts`), never a third hand-written copy.
 
 Default posture is quirk containment. Propagating a fix into a sibling needs
-proof of the same underlying behavior, not the same-looking code. `reconnect()`
-matches across claude, codex-native, hermes, and opencode apart from the
-not-connected wording the shared helper parameterizes; pi-agent and prime-agent
-fold `providerSessionId` into config — a config-transform hook, not a copy.
+proof of the same behavior, not the same-looking code. `reconnect()` matches
+across claude, codex-native, hermes, and opencode apart from the not-connected
+wording the shared helper parameterizes; pi-agent and prime-agent fold
+`providerSessionId` into config — a config-transform hook, not a copy. Two lanes
+onto ONE provider share that provider's wire vocabulary from a provider-scoped
+module (`opencode-shared.ts`), never a second copy, never `adapter-utils.ts`.
 
 ## Fidelity invariants
 

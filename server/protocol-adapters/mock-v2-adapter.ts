@@ -15,6 +15,11 @@ import type {
   AgentTurnV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
+import {
+  TURN_ENDED_APPROVAL_REASON,
+  resolveAbandonedApprovals,
+  type AbandonedApprovalV2,
+} from './adapter-utils.js';
 
 export interface MockProtocolAdapterV2Delays {
   connectMs: number;
@@ -101,6 +106,8 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     string,
     (decision: AgentApprovalDecisionV2) => void
   >();
+  /** Cards still awaiting a human, so teardown can resolve them (#1407). */
+  private readonly approvalCards = new Map<string, AbandonedApprovalV2>();
   private readonly delays: MockProtocolAdapterV2Delays;
   private connectGeneration = 0;
   /**
@@ -153,6 +160,16 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   protected async onDisconnect(): Promise<void> {
     this.connectGeneration++;
     this.rejectQueuedMessages();
+    // #1407: emit the resolution HERE rather than leaning on the aborted turn
+    // to do it. `runTurn`'s abort path fires a microtask later, by which point
+    // `disconnect()` has already dropped every patch handler — the resolution
+    // was real and unobservable, which is the worst of both.
+    resolveAbandonedApprovals({
+      sessionId: this.sessionId,
+      approvals: [...this.approvalCards.values()],
+      emitPatch: (patch) => this.emitPatch(patch),
+    });
+    this.approvalCards.clear();
     this.activeController?.abort();
     this.pendingApprovals.clear();
     this.activeTurnId = null;
@@ -250,6 +267,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     }
 
     this.pendingApprovals.delete(input.requestId);
+    this.approvalCards.delete(input.requestId);
     resolver(input.decision);
   }
 
@@ -497,6 +515,19 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const approvalId = `approval-${scope}`;
     const toolId = `tool-${scope}`;
 
+    this.approvalCards.set(approvalId, {
+      requestId: approvalId,
+      turnId,
+      card: {
+        id: approvalId,
+        kind: 'command',
+        description: 'Run mock command',
+        target: 'npm test',
+        detail: 'Mock v2 approval scenario',
+        metadata: { toolId },
+      },
+    });
+
     this.emitItemStarted(turnId, {
       type: 'approval',
       id: approvalId,
@@ -560,6 +591,16 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         'abort',
         () => {
           this.pendingApprovals.delete(requestId);
+          // An interrupt kills the turn under the card too. Teardown clears
+          // `approvalCards` before it aborts, so this never double-resolves.
+          const abandoned = this.approvalCards.get(requestId);
+          this.approvalCards.delete(requestId);
+          resolveAbandonedApprovals({
+            sessionId: this.sessionId,
+            approvals: abandoned ? [abandoned] : [],
+            emitPatch: (patch) => this.emitPatch(patch),
+            reason: TURN_ENDED_APPROVAL_REASON,
+          });
           reject(new DOMException('aborted', 'AbortError'));
         },
         { once: true }

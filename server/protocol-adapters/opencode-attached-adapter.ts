@@ -1,5 +1,6 @@
 import { AttachedRuntimeAdapter } from './attached-runtime-adapter.js';
 import type { AdapterConfig, Attachment } from '../protocol-adapter.js';
+import { openCodeStatusType } from './opencode-shared.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-attached');
@@ -54,11 +55,34 @@ interface OpenCodeEvent {
   properties?: Record<string, unknown>;
 }
 
+/** Why the active turn stopped, in this adapter's own vocabulary. */
+type OpenCodeTurnEndReason = 'completed' | 'failed' | 'interrupted';
+
 /**
  * Attached runtime adapter for OpenCode.
  *
  * Connects to a running `opencode serve` or `opencode web` instance via HTTP
  * and consumes the SSE `/event` stream for real-time updates.
+ *
+ * Turn lifecycle (#1412). This adapter used to start turns and never end them:
+ * no handler fired `chat:turn-completed`, so `agent-turn-completed-v2` was
+ * unreachable in `completed`, `failed`, and `interrupted` form alike and the
+ * channel binder had to finalize every turn from a bare idle live-state — a
+ * compensation it deliberately skips while an approval is outstanding. The turn
+ * now ends from three places, all of them local QUIRK (this harness's own event
+ * vocabulary and abort semantics):
+ *
+ *  - `session.status` idle/error — the server told us the run stopped.
+ *  - `session.error` — carried on the `chat:error` as a turnId so the failure
+ *    binds to the turn instead of floating at session level.
+ *  - `interrupt()` — `prompt_async` returns immediately, so unlike the spawned
+ *    `OpenCodeProtocolAdapter` there is no in-flight POST whose `AbortError`
+ *    could signal the stop; a SUCCESSFUL abort ack is the evidence, and an
+ *    abort the server refused ends nothing.
+ *
+ * "Exactly one terminal per turn" is CHOREOGRAPHY and stays where #1411 put it,
+ * in `LegacyProtocolAdapterV2Bridge`: this adapter only has to end the turn
+ * honestly, and a redundant completion is deduped one layer up.
  */
 export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
   readonly agentType = 'opencode';
@@ -68,9 +92,30 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
   private _messageAbortController: AbortController | null = null;
   private _turnCounter = 0;
   private _currentTurnId: string | null = null;
+  /**
+   * Turn the operator asked to abort. Read when the server settles back to
+   * idle, so a stop is reported as `interrupted` rather than `completed` even
+   * when the idle beats the abort POST's own ack.
+   */
+  private _interruptedTurnId: string | null = null;
+  /**
+   * Turn each outstanding approval was asked in, keyed by the provider's
+   * request id. Recorded when the request arrives rather than read back at
+   * response time: now that idle closes the turn and clears `_currentTurnId`
+   * (#1412), an approval answered after that idle would otherwise bind its
+   * response to the fabricated `turn-0` while its card lives in the real turn,
+   * leaving the card pending forever in the reduced session.
+   */
+  private readonly _approvalTurnIds = new Map<string, string>();
 
   protected async onConnect(config: AdapterConfig): Promise<void> {
     this._endpoint = resolveOpenCodeAttachedEndpoint(config.extra);
+    // A re-attach starts from no turn: leaving a stale id here would let the
+    // first `session.status` of the new stream close a turn that is gone.
+    this._currentTurnId = null;
+    this._interruptedTurnId = null;
+    // Approvals belong to the session that asked them; a re-attach replaces it.
+    this._approvalTurnIds.clear();
 
     // Verify the server is reachable
     const healthRes = await fetch(`${this._endpoint}/global/health`).catch(
@@ -147,6 +192,18 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     }
   }
 
+  /**
+   * `config.systemPromptAppendix` is NOT delivered here, and cannot be on this
+   * transport (#1409, documented impossibility). The attached adapter owns no
+   * session: `opencode serve` / `opencode web` created it, with whatever agent
+   * instructions that process was started with, and the only route this adapter
+   * has into it is `POST /session/<id>/prompt_async { text }` — a user turn,
+   * not a system region. Folding the appendix into `text` would put Relay's
+   * runtime contract in the operator's message on every turn, which is both a
+   * lie about who said it and outside the system region the prefix-cache
+   * invariant is stated over. Delivering it would need an instructions field on
+   * the prompt route or a session-create route this adapter never calls.
+   */
   async sendMessage(
     turnId: string,
     content: string,
@@ -182,13 +239,37 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     const sessionId = this._config?.sessionId;
     if (!sessionId) return;
 
+    // Record the intent before the await: the server may emit `session.status`
+    // idle while the abort POST is still in flight, and that idle must close
+    // the turn as `interrupted`, not `completed`.
+    this._interruptedTurnId = this._currentTurnId;
+
     const url = `${this._endpoint}/session/${encodeURIComponent(sessionId)}/abort`;
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       ...(this._messageAbortController
         ? { signal: this._messageAbortController.signal }
         : {}),
-    }).catch(() => {});
+    }).catch(() => null);
+
+    // `prompt_async` left no in-flight request to abort, so the ack is the only
+    // synchronous evidence the run stopped — and it has to be a real ack. An
+    // abort the server refused or never received leaves the run going, so
+    // completing here would close a live turn and strand every later
+    // `message.part.updated` on a finished one. The intent recorded above still
+    // stands: whenever the server does settle, that idle reports `interrupted`.
+    if (!res || !res.ok) {
+      logger.warn(
+        `OpenCode abort for session ${sessionId} was not accepted${
+          res ? `: HTTP ${res.status}` : ''
+        }; leaving the turn for the server's own idle or error to end`
+      );
+      return;
+    }
+
+    // If the idle already closed the turn this is a no-op; if the server never
+    // idles, the turn still ends here on the ack.
+    this.completeCurrentTurn('interrupted');
   }
 
   async respondToApproval(
@@ -197,12 +278,59 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
   ): Promise<void> {
     const allow = decision === 'allow' || decision === 'allow-always';
     const url = `${this._endpoint}/permission/${encodeURIComponent(requestId)}/${allow ? 'allow' : 'deny'}`;
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       ...(this._messageAbortController
         ? { signal: this._messageAbortController.signal }
         : {}),
-    }).catch(() => {});
+    }).catch(() => null);
+
+    // Only claim the approval resolved when the server accepted the decision;
+    // announcing it on a failed POST would strand the UI on a lie. On success
+    // the response patch is what moves the approval item out of `pending` and
+    // drains `live.activeRequestIds` (#1412).
+    if (!res || !res.ok) {
+      logger.warn(
+        `OpenCode permission ${decision} for ${requestId} was not accepted${
+          res ? `: HTTP ${res.status}` : ''
+        }`
+      );
+      return;
+    }
+    // The turn the request was ASKED in, not whatever turn is live now: the
+    // approval may well be answered after the idle that closed its turn, and
+    // the response has to land on the same turn as the card it resolves.
+    const turnId =
+      this._approvalTurnIds.get(requestId) ?? this._currentTurnId ?? 'turn-0';
+    this._approvalTurnIds.delete(requestId);
+    this.fire({
+      type: 'chat:approval-response',
+      requestId,
+      decision,
+      respondedBy: 'user',
+      turnId,
+    });
+  }
+
+  /**
+   * Resume honesty (#1409). The base attached adapter treats `resumeSession`
+   * as a silent success, which reads as "the conversation is restored" to every
+   * caller. It is not: this adapter addresses the external server's session by
+   * `config.sessionId`, handed to it at connect, and Relay never learns an
+   * OpenCode-side conversation id it could rebind to later. That is why
+   * `PROVIDER_DESCRIPTORS['opencode-attached'].resumeStateKey` is `null` and
+   * `bridgedCapabilities.resume` is `false` — and why `providerResumeId()`
+   * returns nothing for this provider, so `channel-agent-binder` re-orients a
+   * respawned runtime from its bounded context window (#1408) instead of
+   * assuming provider memory it does not have.
+   *
+   * Failing loudly keeps that ladder honest: a caller that reaches here has
+   * bypassed the capability flag, and a silent no-op would hide the bypass.
+   */
+  override async resumeSession(sessionId: string): Promise<void> {
+    throw new Error(
+      `opencode-attached cannot resume session ${sessionId}: the attached session id comes from connect() and the server exposes no route to rebind a prior conversation (capabilities.resume is false).`
+    );
   }
 
   async respondToInput(
@@ -232,18 +360,51 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     }
   }
 
+  /**
+   * End the active turn, once. Clearing `_currentTurnId` first makes every
+   * caller idempotent, so the abort ack and a racing idle cannot both fire.
+   */
+  private completeCurrentTurn(reason: OpenCodeTurnEndReason): void {
+    const turnId = this._currentTurnId;
+    this._currentTurnId = null;
+    this._interruptedTurnId = null;
+    if (!turnId) return;
+    this.fire({
+      type: 'chat:turn-completed',
+      turnId,
+      reason,
+      durationMs: 0,
+      toolCallCount: 0,
+      messageCount: 0,
+    });
+  }
+
   private readonly _eventHandlers: Record<
     string,
     ((event: OpenCodeEvent) => void) | undefined
   > = {
     'session.status': (event) => {
-      const status = event.properties?.['status'];
-      if (status === 'idle') {
-        this.fire({ type: 'chat:session-status', status: 'idle' });
-      } else if (status === 'active') {
+      // Decoded by the shared OpenCode helper, not a local copy: both lanes read
+      // the same server's `{ type: 'idle' }` / bare-string encoding, and the
+      // #1412 defect was this lane's copy drifting from it.
+      const status = openCodeStatusType(event.properties?.['status']);
+      if (status === 'active' || status === 'busy') {
         this.fire({ type: 'chat:session-status', status: 'active' });
-      } else if (status === 'error') {
+        return;
+      }
+      if (status === 'error') {
+        this.completeCurrentTurn('failed');
         this.fire({ type: 'chat:session-status', status: 'error' });
+        return;
+      }
+      if (status === 'idle') {
+        // A stop the operator asked for reports as `interrupted`; anything else
+        // reaching idle ran to the end.
+        const interrupted =
+          this._currentTurnId !== null &&
+          this._interruptedTurnId === this._currentTurnId;
+        this.completeCurrentTurn(interrupted ? 'interrupted' : 'completed');
+        this.fire({ type: 'chat:session-status', status: 'idle' });
       }
     },
 
@@ -262,10 +423,15 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
 
     'permission.asked': (event) => {
       const props = event.properties ?? {};
+      const requestId = String(props['requestID'] ?? 'req-0');
+      const turnId = this._currentTurnId ?? 'turn-0';
+      // Remember which turn owns this card, so the eventual response binds to
+      // the same turn even if the turn has closed by then.
+      this._approvalTurnIds.set(requestId, turnId);
       this.fire({
         type: 'chat:approval-request',
-        turnId: this._currentTurnId ?? 'turn-0',
-        requestId: String(props['requestID'] ?? 'req-0'),
+        turnId,
+        requestId,
         kind: 'permission',
         toolName: String(props['toolName'] ?? 'unknown'),
         description: String(props['description'] ?? ''),
@@ -326,12 +492,18 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
 
     'session.error': (event) => {
       const error = event.properties?.['error'];
+      const turnId = this._currentTurnId;
       this.fire({
         type: 'chat:error',
         kind: 'unknown',
         message: String(error ?? 'Unknown error'),
         retryable: true,
+        // Bind the failure to the turn it killed. Without this the bridge sees
+        // a session-level error it cannot attribute, and the failed terminal
+        // below would carry no message (#1412).
+        ...(turnId ? { turnId } : {}),
       });
+      this.completeCurrentTurn('failed');
     },
   };
 }

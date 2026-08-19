@@ -354,6 +354,143 @@ describe('CodexNativeProtocolAdapter — connect', () => {
   });
 });
 
+// ── System-prompt appendix (#1409) ────────────────────────────────────────────
+
+/**
+ * Relay's profile system prompt + collaboration contract reach codex through
+ * the app-server's thread-scoped `developerInstructions`.
+ *
+ * Slot choice is load-bearing and asserted, not assumed: `baseInstructions`
+ * REPLACES codex's own operating prompt, so it must never carry Relay text.
+ *
+ * Prefix-cache invariant: `ThreadStartParams`/`ThreadResumeParams` accept the
+ * field and `TurnStartParams`/`TurnSteerParams` do not (codex-cli 0.147.0,
+ * `codex app-server generate-ts --experimental`). The appendix is therefore
+ * sent once per client generation and the system region stays byte-stable
+ * across every turn of one runtime.
+ */
+describe('CodexNativeProtocolAdapter — systemPromptAppendix', () => {
+  const APPENDIX =
+    'You are Relay profile "reviewer".\n\nrole: collaborator. Reply in the channel.';
+
+  it('sends the appendix as thread/start developerInstructions, never baseInstructions', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-appendix' },
+    });
+
+    await adapter.connect({ ...config, systemPromptAppendix: APPENDIX });
+
+    const threadStart = factory.lastClient!.calls.find(
+      (call) => call.method === 'thread/start'
+    );
+    expect(threadStart?.params).toMatchObject({
+      developerInstructions: APPENDIX,
+    });
+    // `baseInstructions` is codex's own prompt template; writing Relay text
+    // there would delete the harness's operating instructions.
+    expect(threadStart?.params).not.toHaveProperty('baseInstructions');
+
+    await adapter.disconnect();
+  });
+
+  it('never repeats the appendix per turn — turn/start and turn/steer stay user-region only', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-appendix' },
+    });
+
+    await adapter.connect({ ...config, systemPromptAppendix: APPENDIX });
+    const client = factory.lastClient!;
+
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'first prompt' });
+    client.feedNotification('turn/started', { turn: { id: 'native-1' } });
+    client.serverResponses.set('turn/steer', { turnId: 'native-2' });
+    await adapter.steerMessage({
+      turnId: 'turn-1',
+      content: 'second prompt',
+    });
+
+    const turnCalls = client.calls.filter(
+      (call) => call.method === 'turn/start' || call.method === 'turn/steer'
+    );
+    expect(turnCalls).toHaveLength(2);
+    for (const call of turnCalls) {
+      expect(call.params).not.toHaveProperty('developerInstructions');
+      expect(call.params).not.toHaveProperty('baseInstructions');
+      // Not smuggled into the user turn region either: the input carries the
+      // operator's text and nothing else.
+      expect(call.params).toMatchObject({
+        input: [{ type: 'text', text: expect.not.stringContaining('Relay') }],
+      });
+    }
+    // Exactly one system-region write for the whole runtime.
+    expect(
+      client.calls.filter(
+        (call) =>
+          (call.params as Record<string, unknown> | null)?.[
+            'developerInstructions'
+          ] !== undefined
+      )
+    ).toHaveLength(1);
+
+    await adapter.disconnect();
+  });
+
+  it('replays the byte-identical appendix on thread/resume', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-appendix' },
+    });
+
+    await adapter.connect({ ...config, systemPromptAppendix: APPENDIX });
+    const startParams = factory.lastClient!.calls.find(
+      (call) => call.method === 'thread/start'
+    )?.params as Record<string, unknown>;
+
+    factory.lastClient!.serverResponses.set('thread/resume', {
+      thread: { id: 'thread-appendix' },
+    });
+    await adapter.resumeSession('thread-appendix');
+
+    const resumeParams = factory.lastClient!.calls.find(
+      (call) => call.method === 'thread/resume'
+    )?.params as Record<string, unknown>;
+    expect(resumeParams).toMatchObject({ developerInstructions: APPENDIX });
+    expect(resumeParams['developerInstructions']).toBe(
+      startParams['developerInstructions']
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('omits the field entirely when the appendix is absent or blank', async () => {
+    for (const appendix of [undefined, '', '   \n  ']) {
+      const factory = makeStubFactory();
+      const adapter = new CodexNativeProtocolAdapter(factory);
+      factory.lastClient?.serverResponses.set('thread/start', {
+        thread: { id: 'thread-plain' },
+      });
+
+      await adapter.connect(
+        appendix === undefined
+          ? config
+          : { ...config, systemPromptAppendix: appendix }
+      );
+
+      const threadStart = factory.lastClient!.calls.find(
+        (call) => call.method === 'thread/start'
+      );
+      expect(threadStart?.params).not.toHaveProperty('developerInstructions');
+
+      await adapter.disconnect();
+    }
+  });
+});
+
 // ── Resume ────────────────────────────────────────────────────────────────────
 
 describe('CodexNativeProtocolAdapter — resumeSession', () => {

@@ -394,7 +394,7 @@ const fixture: AdapterConformanceFixture = {
     {
       capability: 'reasoning',
       reason:
-        'SUSPECTED REGISTRY DRIFT, not a fixture gap: `OpenCodeProtocolAdapter` never fires `chat:reasoning` on any code path (`handleMessagePartUpdated` returns early unless `part.type === "text"`), so no transcript over this transport can manifest it. Reported as UNKNOWN rather than DRIFT because the harness cannot distinguish "adapter has no path" from "fixture did not drive it" — see the fixture notes on #1407-adjacent capability honesty.',
+        'SUSPECTED REGISTRY DRIFT, not a fixture gap: `OpenCodeProtocolAdapter` never fires `chat:reasoning` on any code path (`handleMessagePartUpdated` returns early unless `part.type === "text"`), so no transcript over this transport can manifest it. Reported as UNKNOWN rather than DRIFT because the harness cannot distinguish "adapter has no path" from "fixture did not drive it".',
     },
     {
       capability: 'fileChanges',
@@ -423,13 +423,11 @@ const fixture: AdapterConformanceFixture = {
     },
   ],
 
-  knownGaps: {
-    'b-abandoned-approval': {
-      issue: '#1407',
-      reason:
-        'opencode variant of the shared teardown gap: `LegacyProtocolAdapterV2Bridge.onDisconnect` unsubscribes from the inner adapter BEFORE awaiting `inner.disconnect()`, so the `chat:turn-completed` + idle `chat:session-status` the aborted message POST produces are mapped by nobody. The pending approval item and `live.activeRequestIds` survive into the reduced session.',
-    },
-  },
+  // No known gaps. #1407 is fixed for the whole legacy family at once:
+  // `LegacyProtocolAdapterV2Bridge` keeps its own approval ledger — fed by the
+  // patches it publishes, so it needs no opencode vocabulary — and resolves
+  // whatever is still outstanding on teardown instead of hoping an inner
+  // teardown event it has already unsubscribed from would do it.
 };
 
 export default fixture;

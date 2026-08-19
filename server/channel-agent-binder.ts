@@ -3160,10 +3160,15 @@ export function createChannelAgentBinder(
         {
           const activeTurnId = binding.activeTurnId;
           if (activeTurnId !== null && patch.turnId === undefined) {
-            // Legacy chat:error dispatches its paired turn-0 completion only
-            // after this handler returns. The queued successor can bare-idle
-            // synchronously while finishTurn pumps it, so mark the anonymous
-            // namespace unsafe before that successor starts.
+            // The completion paired with a legacy chat:error no longer rides
+            // the mapper: since #1411 it is owned by
+            // LegacyProtocolAdapterV2Bridge, which arms it one microtask later
+            // and fires it only when the adapter did not end the errored turn
+            // itself — so it lands after this handler returns, or not at all.
+            // The queued successor can bare-idle synchronously while finishTurn
+            // pumps it, so mark the anonymous namespace unsafe before that
+            // successor starts; a window that is wider than strictly needed is
+            // the safe direction here.
             binding.turnZeroFallbackUnsafe = true;
           }
           const terminalTurnId = patch.turnId ?? binding.activeTurnId;

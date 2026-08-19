@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { reconnectWithStoredConfig } from '../../../server/protocol-adapters/adapter-utils.js';
+import {
+  ABANDONED_APPROVAL_REASON,
+  reconnectWithStoredConfig,
+  resolveAbandonedApprovals,
+  type AbandonedApprovalV2,
+} from '../../../server/protocol-adapters/adapter-utils.js';
+import type { AgentPatchV2 } from '../../../shared/agent-chat-protocol-v2.js';
 import { ClaudeProtocolAdapter } from '../../../server/protocol-adapters/claude-adapter.js';
 import { CodexNativeProtocolAdapter } from '../../../server/protocol-adapters/codex-native-adapter.js';
 import { HermesProtocolAdapter } from '../../../server/protocol-adapters/hermes-adapter.js';
@@ -110,6 +116,142 @@ describe('reconnectWithStoredConfig', () => {
         },
       })
     ).rejects.toThrow('transport refused');
+  });
+});
+
+describe('resolveAbandonedApprovals (#1407)', () => {
+  const approval = (
+    requestId: string,
+    turnId = 'turn-1'
+  ): AbandonedApprovalV2 => ({
+    requestId,
+    turnId,
+    card: {
+      id: `approval-${requestId}`,
+      kind: 'permission',
+      description: 'Agent wants to use Bash',
+      target: 'rm -rf /',
+    },
+  });
+
+  it('publishes a terminal card per approval, then one live-state drain', () => {
+    const patches: AgentPatchV2[] = [];
+    resolveAbandonedApprovals({
+      sessionId: 'session-1',
+      approvals: [approval('req-a'), approval('req-b', 'turn-2')],
+      emitPatch: (patch) => patches.push(patch),
+    });
+
+    expect(patches.map((patch) => patch.type)).toEqual([
+      'agent-item-updated-v2',
+      'agent-item-updated-v2',
+      'agent-live-state-updated-v2',
+    ]);
+
+    const first = patches[0];
+    expect(first?.type === 'agent-item-updated-v2' && first.item).toMatchObject(
+      {
+        type: 'approval',
+        id: 'approval-req-a',
+        requestId: 'req-a',
+        status: 'cancelled',
+        respondedBy: 'timeout',
+        decision: { kind: 'cancel' },
+        error: ABANDONED_APPROVAL_REASON,
+      }
+    );
+    expect(first?.type === 'agent-item-updated-v2' && first.turnId).toBe(
+      'turn-1'
+    );
+    const second = patches[1];
+    expect(second?.type === 'agent-item-updated-v2' && second.turnId).toBe(
+      'turn-2'
+    );
+
+    const drain = patches[2];
+    expect(drain?.type === 'agent-live-state-updated-v2' && drain.live).toEqual(
+      {
+        waitingOn: null,
+        activeRequestIds: [],
+      }
+    );
+  });
+
+  // The transcript must never claim a resolution the wire refused to carry, so
+  // the provider is released first and the card follows.
+  it('releases the wire before publishing the card', () => {
+    const order: string[] = [];
+    resolveAbandonedApprovals({
+      sessionId: 'session-1',
+      approvals: [approval('req-a')],
+      emitPatch: (patch) => order.push(patch.type),
+      denyOnWire: ({ requestId }) => order.push(`deny:${requestId}`),
+    });
+
+    expect(order).toEqual([
+      'deny:req-a',
+      'agent-item-updated-v2',
+      'agent-live-state-updated-v2',
+    ]);
+  });
+
+  it('emits nothing at all when no approval was outstanding', () => {
+    const emitPatch = vi.fn();
+    resolveAbandonedApprovals({
+      sessionId: 'session-1',
+      approvals: [],
+      emitPatch,
+      denyOnWire: emitPatch,
+    });
+    expect(emitPatch).not.toHaveBeenCalled();
+  });
+
+  it('carries the caller-supplied reason instead of the disconnect default', () => {
+    const patches: AgentPatchV2[] = [];
+    resolveAbandonedApprovals({
+      sessionId: 'session-1',
+      approvals: [approval('req-a')],
+      emitPatch: (patch) => patches.push(patch),
+      reason: 'Approval cancelled: the turn ended before it was answered.',
+    });
+    const card = patches[0];
+    expect(card?.type === 'agent-item-updated-v2' && card.item.error).toBe(
+      'Approval cancelled: the turn ended before it was answered.'
+    );
+  });
+
+  // Provider vocabulary is copied through untouched — the helper only owns how
+  // the card ENDS.
+  it('preserves the harness-shaped card fields', () => {
+    const patches: AgentPatchV2[] = [];
+    resolveAbandonedApprovals({
+      sessionId: 'session-1',
+      approvals: [
+        {
+          requestId: 'cmd-7',
+          turnId: 'turn-1',
+          card: {
+            id: 'approval-cmd-7',
+            kind: 'command',
+            description: 'Run command: ls',
+            target: 'ls',
+            details: { kind: 'command', command: 'ls', cwd: '/tmp' },
+            supported: {
+              scopes: ['once'],
+              amendmentTypes: [],
+              canCancel: true,
+            },
+          },
+        },
+      ],
+      emitPatch: (patch) => patches.push(patch),
+    });
+    const card = patches[0];
+    expect(card?.type === 'agent-item-updated-v2' && card.item).toMatchObject({
+      kind: 'command',
+      details: { kind: 'command', command: 'ls', cwd: '/tmp' },
+      supported: { scopes: ['once'], amendmentTypes: [], canCancel: true },
+    });
   });
 });
 

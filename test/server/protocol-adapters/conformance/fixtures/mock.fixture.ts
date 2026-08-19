@@ -88,13 +88,10 @@ const fixture: AdapterConformanceFixture = {
     'streaming',
   ],
 
-  knownGaps: {
-    'b-abandoned-approval': {
-      issue: '#1407',
-      reason:
-        'onDisconnect aborts the turn controller and runTurn DOES emit the resolution, but BaseProtocolAdapterV2.disconnect() clears its handler set first, so no onPatch subscriber ever sees it — the approval stays pending for every consumer, not just this suite',
-    },
-  },
+  // No known gaps. #1407 is fixed: `onDisconnect` no longer leans on the
+  // aborted turn to publish the resolution a microtask later — where
+  // `BaseProtocolAdapterV2.disconnect()` had already dropped every handler —
+  // and resolves the card synchronously instead.
 
   unexercisable: [
     {
