@@ -124,9 +124,14 @@ a public session id, identifies an agent in a conversation. Public session and
 inbox commands operate on terminal execution records or WorkContexts; they do not
 launch, resume, or address private channel runtimes.
 
-The stable gateway exposes scoped list/get/history/thread-history/roster/post
-commands plus a durable `channels.subscribe` stream. Search and browser-only
-conveniences remain outside the gateway contract.
+The stable gateway exposes scoped
+list/get/history/thread-history/roster/search/post commands plus a durable
+`channels.subscribe` stream. `channels.search` (#1410) searches only the
+channels the credential is scoped to: an actor credential with no `channelIds`
+scope is refused, and a `channelId` outside the scope is rejected before any
+read. Browser-only conveniences (attachments, agent commands, interrupt,
+approvals, read-state) remain outside the gateway contract and stay closed to
+scoped actors.
 
 ### Local MCP channel facade (#1399)
 

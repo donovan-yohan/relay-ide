@@ -240,6 +240,11 @@ describe('relay-mcp', () => {
   it('fails closed for commands and tool inputs outside the allowlist', async () => {
     expect(RELAY_MCP_CHANNEL_COMMANDS).not.toContain('sessions.input');
     expect(RELAY_MCP_CHANNEL_COMMANDS).not.toContain('files.read');
+    // #1410 opened `channels.search` to in-scope actors on the CLI gateway and
+    // deliberately did NOT widen this tuple. Auto-mounting the facade into every
+    // credentialed runtime makes the tuple the reach of every bound agent's MCP
+    // host, so growing it is a separate decision with its own review.
+    expect(RELAY_MCP_CHANNEL_COMMANDS).not.toContain('channels.search');
     const result = await executeRelayMcpTool(
       'channels.get',
       { channelId: 'topic:one', token: 'never-accepted' },
@@ -266,6 +271,50 @@ describe('relay-mcp', () => {
       error: { code: 'INVALID_ARGUMENT' },
     });
     expect(JSON.stringify(forbidden)).not.toContain('sessions.input');
+  });
+
+  it('turns a read-only lease post refusal into a typed FORBIDDEN envelope (#1410)', async () => {
+    // The facade keeps `relay_channels_post` for credentials that hold the write
+    // bit (the orchestrator lease). A standing read lease reaches the same tool
+    // and must be refused by the GATEWAY, with nothing about the credential in
+    // the answer the MCP host gets to see.
+    const mcp = await openMcp(
+      fakeClient({
+        post: async () => {
+          throw new RelayChannelClientError(403, {
+            code: 'FORBIDDEN',
+            message: 'scoped actor credential lacks context:write',
+            details: {
+              reasonCode: 'CLI_ACTOR_INSUFFICIENT_CAPABILITY',
+              deniedBits: ['context:write'],
+              token: 'relay-sac-v1.credential-1.secret',
+            },
+          });
+        },
+      })
+    );
+    try {
+      const refused = await mcp.request('tools/call', {
+        name: 'relay_channels_post',
+        arguments: { channelId: 'topic:one', text: 'should never land' },
+      });
+      expect(refused.error).toBeUndefined();
+      expect(refused.result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          ok: false,
+          command: 'channels.post',
+          error: {
+            code: 'FORBIDDEN',
+            retryable: false,
+            details: { reasonCode: 'CLI_ACTOR_INSUFFICIENT_CAPABILITY' },
+          },
+        },
+      });
+      expect(JSON.stringify(refused.result)).not.toContain('relay-sac-v1');
+    } finally {
+      await mcp.close();
+    }
   });
 
   it('requires bounded subscribe count and time before opening a stream', async () => {

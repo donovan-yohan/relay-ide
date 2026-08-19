@@ -29,6 +29,7 @@ import {
 } from '../server/channel-hub.js';
 import {
   authenticatedSourceRuntimeId,
+  channelSearchRequestedChannelId,
   createChannelChatRouter,
 } from '../server/channel-chat-router.js';
 import {
@@ -132,6 +133,7 @@ async function harness(
       topicStore: WorkspaceTopicStore;
     }) => ChannelAgentBinder;
     requireWriteActorAuth?: (command: string) => RequestHandler;
+    requireReadActorAuth?: (command: string) => RequestHandler;
   } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
@@ -213,6 +215,9 @@ async function harness(
         : {}),
       ...(options.requireWriteActorAuth
         ? { requireWriteActorAuth: options.requireWriteActorAuth as never }
+        : {}),
+      ...(options.requireReadActorAuth
+        ? { requireReadActorAuth: options.requireReadActorAuth as never }
         : {}),
       ...(options.historyMaxBytes !== undefined
         ? { historyMaxBytes: options.historyMaxBytes }
@@ -1731,6 +1736,138 @@ describe('channel routes — gateway capability mapping', () => {
       'context:write',
     ]);
   });
+
+  // #1410: search opened to in-scope actors under its OWN verb. The actor lane
+  // authorizes by the `x-relay-cli-command` header, so if the route asked for
+  // `channels.history` here, any history-capable credential could search while
+  // naming the wrong operation in the audit trail.
+  it('registers channels.search as its own read verb rather than riding channels.history', () => {
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.search');
+    expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).not.toContain(
+      'channels.search' as never
+    );
+    expect(cliGatewayActorCommandCapabilities('channels.search')).toEqual([
+      'context:read',
+    ]);
+  });
+
+  it('authorizes GET /channels/search through the channels.search middleware', async () => {
+    const commands: string[] = [];
+    const h = await harness({
+      requireReadActorAuth: (command) => (_req, _res, next) => {
+        commands.push(command);
+        next();
+      },
+    });
+    const res = await req<{ results: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=anything',
+    });
+    expect(res.status).toBe(200);
+    expect(commands).toEqual(['channels.search']);
+  });
+
+  // One parser, two layers. `server/index.ts` builds the requested actor scope
+  // from this helper and the route enforces `denyOutOfScopeChannel` on the same
+  // value, so the middleware can never authorize a different channel than the
+  // route enforces. Express turns `?channelId=A&channelId=B` into an array — a
+  // bare `typeof === 'string'` check reads that as "no channel named".
+  it('parses the searched channelId identically for the middleware and the route', () => {
+    expect(channelSearchRequestedChannelId({ channelId: 'topic:a' })).toBe(
+      'topic:a'
+    );
+    expect(
+      channelSearchRequestedChannelId({ channelId: ['topic:b', 'topic:a'] })
+    ).toBe('topic:b');
+    expect(
+      channelSearchRequestedChannelId({ channelId: ['topic:a', 'topic:b'] })
+    ).toBe('topic:a');
+    expect(channelSearchRequestedChannelId({ channelId: '' })).toBeUndefined();
+    expect(channelSearchRequestedChannelId({ channelId: [] })).toBeUndefined();
+    expect(channelSearchRequestedChannelId({})).toBeUndefined();
+    expect(channelSearchRequestedChannelId(undefined)).toBeUndefined();
+    // A nested/object value is not a channel name and must not become one.
+    expect(
+      channelSearchRequestedChannelId({ channelId: { $ne: 'x' } })
+    ).toBeUndefined();
+  });
+});
+
+describe('channel routes — private routes stay closed to the standing read lease (#1410)', () => {
+  it('denies every private channel route for a channel-scoped actor', async () => {
+    const h = await harness({
+      binder: {
+        interrupt: async () => {
+          throw new Error('binder must never be reached');
+        },
+        respondToApproval: async () => {
+          throw new Error('binder must never be reached');
+        },
+      },
+    });
+    const actorHeaders = {
+      'x-test-actor-id': 'agent-profile:claude:default',
+      'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
+      'x-relay-capabilities': 'context:read,context:write',
+    };
+    // Opening search moved exactly one deny. Enumerate the rest so a future
+    // "just drop denyScopedActorPrivateRoute" cannot pass silently.
+    for (const [method, url] of [
+      ['POST', `/channels/${encodeURIComponent(h.channelId)}/attachments`],
+      [
+        'GET',
+        `/channels/${encodeURIComponent(h.channelId)}/attachments/att-1`,
+      ],
+      ['POST', `/channels/${encodeURIComponent(h.channelId)}/agent-commands`],
+      [
+        'POST',
+        `/channels/${encodeURIComponent(h.channelId)}/agent-runtimes/restart`,
+      ],
+      [
+        'POST',
+        `/channels/${encodeURIComponent(h.channelId)}/agents/claude/interrupt`,
+      ],
+      [
+        'POST',
+        `/channels/${encodeURIComponent(h.channelId)}/agents/claude/approvals`,
+      ],
+    ] as const) {
+      const denied = await req<{
+        error: { code: string; details?: Record<string, unknown> };
+      }>({
+        port: h.port,
+        method,
+        url,
+        body: method === 'POST' ? {} : undefined,
+        headers: actorHeaders,
+      });
+      expect([method, url, denied.status]).toEqual([method, url, 403]);
+      expect(denied.body.error.details?.['reasonCode']).toBe(
+        'CHANNEL_PRIVATE_ROUTE_ACTOR_FORBIDDEN'
+      );
+    }
+
+    // Read state is operator-only through a different guard, and stays so.
+    for (const [method, url] of [
+      ['GET', '/channels/read-state'],
+      ['PUT', `/channels/${encodeURIComponent(h.channelId)}/read-state`],
+    ] as const) {
+      const denied = await req<{
+        error: { details?: Record<string, unknown> };
+      }>({
+        port: h.port,
+        method,
+        url,
+        body: method === 'PUT' ? { lastReadSeq: 1 } : undefined,
+        headers: actorHeaders,
+      });
+      expect([url, denied.status]).toEqual([url, 403]);
+      expect(denied.body.error.details?.['reasonCode']).toBe(
+        'CHANNEL_READ_STATE_HUMAN_ONLY'
+      );
+    }
+  });
 });
 
 describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
@@ -1792,13 +1929,46 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
       body: { text: 'quarantine leak marker' },
     });
     expect(seededB.status).toBe(201);
-    const globalSearch = await req<{ results: unknown[] }>({
+    // #1410: an in-scope actor MAY search, but an unnamed search reaches only
+    // its own channels. B's row is indexed and matching, and must still not
+    // appear — search is scope-narrowed at the candidate set, not filtered
+    // after the index answered.
+    const globalSearch = await req<{ results: Array<{ channelId: string }> }>({
       port: h.port,
       method: 'GET',
       url: '/channels/search?q=quarantine',
       headers: actorHeaders(a, 'GET'),
     });
-    expect(globalSearch.status).toBe(403);
+    expect(globalSearch.status).toBe(200);
+    expect(globalSearch.body.results).toEqual([]);
+    const seededA = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(a)}/messages`,
+      body: { text: 'quarantine marker in scope' },
+    });
+    expect(seededA.status).toBe(201);
+    const ownSearch = await req<{ results: Array<{ channelId: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=quarantine',
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(ownSearch.status).toBe(200);
+    expect(ownSearch.body.results.map((hit) => hit.channelId)).toEqual([a]);
+    // An explicit out-of-scope channelId is refused before the store is read.
+    const crossSearch = await req<{
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/search?q=quarantine&channelId=${encodeURIComponent(b)}`,
+      headers: actorHeaders(a, 'GET'),
+    });
+    expect(crossSearch.status).toBe(403);
+    expect(crossSearch.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_OUT_OF_SCOPE'
+    );
 
     // (b) Every channel-B read/write is 403 FORBIDDEN before touching the store.
     for (const [method, url] of [
@@ -1845,10 +2015,11 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
       });
       expect(denied.status).toBe(403);
       expect(denied.body.error.code).toBe('FORBIDDEN');
+      // #1410 opened search to in-scope actors via `channels.search`. A
+      // credential with NO channel scope still cannot enumerate or search:
+      // the deny simply names the missing scope instead of the private route.
       expect(denied.body.error.details?.['reasonCode']).toBe(
-        url === '/channels'
-          ? 'CHANNEL_SCOPE_REQUIRED'
-          : 'CHANNEL_PRIVATE_ROUTE_ACTOR_FORBIDDEN'
+        'CHANNEL_SCOPE_REQUIRED'
       );
     }
 
@@ -1933,7 +2104,7 @@ describe('channel routes — agent commands', () => {
     expect(h.store.history(h.channelId, { limit: 10 })).toEqual([]);
   });
 
-  it('denies actor search, interrupt, and approval with no store or binder side effect', async () => {
+  it('lets an in-scope actor search while interrupt and approval stay denied with no binder side effect', async () => {
     const calls: string[] = [];
     const h = await harness({
       binder: {
@@ -1955,7 +2126,9 @@ describe('channel routes — agent commands', () => {
       'x-test-actor-id': 'agent-profile:codex:scoped',
       'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId] }),
     };
-    const search = await req<{ error: unknown }>({
+    // #1410: search is the ONE surface this slice opened. It reads the same
+    // durable log `channels.history` already grants, inside the same scope.
+    const search = await req<{ results: Array<{ channelId: string }> }>({
       port: h.port,
       method: 'GET',
       url: `/channels/search?q=private&channelId=${encodeURIComponent(h.channelId)}`,
@@ -1976,7 +2149,10 @@ describe('channel routes — agent commands', () => {
       body: { requestId: 'approval-1', decision: { kind: 'accept' } },
     });
     expect([search.status, interrupt.status, approval.status]).toEqual([
-      403, 403, 403,
+      200, 403, 403,
+    ]);
+    expect(search.body.results.map((hit) => hit.channelId)).toEqual([
+      h.channelId,
     ]);
     expect(calls).toEqual([]);
     expect(h.store.history(h.channelId, { limit: 10 })).toEqual(rowsBefore);

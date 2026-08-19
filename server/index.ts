@@ -248,7 +248,10 @@ import {
   type ChannelAttachmentStore,
 } from './channel-attachments.js';
 import { createChannelHub, type ChannelHub } from './channel-hub.js';
-import { createChannelChatRouter } from './channel-chat-router.js';
+import {
+  channelSearchRequestedChannelId,
+  createChannelChatRouter,
+} from './channel-chat-router.js';
 import { createChannelSubscriptionRouter } from './channel-subscription-router.js';
 import {
   createChannelAgentBinder,
@@ -372,6 +375,7 @@ import {
   createCliGatewayActorRegistry,
   createCliGatewayHandshakeGrantRegistry,
   isCliGatewayActorTokenRequest,
+  issueChannelRuntimeReadCliGatewayActorCredential,
   issueCliGatewayActorCredential,
   issueCliGatewayActorCredentialWithGrant,
   issuePersistentOrchestratorCliGatewayActorCredential,
@@ -2611,6 +2615,27 @@ async function main(): Promise<void> {
     const channelIds = credential?.scope?.channelIds;
     return channelIds && channelIds.length > 0 ? { channelIds } : undefined;
   };
+  // `channels.search` (#1410) names its channel in the QUERY string, not in a
+  // `:id` path param, so it needs its own resolver. A search that names a
+  // channel requests exactly that channel (the middleware rejects it when the
+  // credential is not scoped to it, before the route runs); an unnamed search
+  // requests the credential's OWN channel scope, exactly like `channels.list`,
+  // and the route then searches only those channels. Middleware defense in
+  // depth: the route repeats both checks.
+  //
+  // The channel id comes from `channelSearchRequestedChannelId`, the SAME parser
+  // the route's `denyOutOfScopeChannel` and candidate set use. Parsing it twice
+  // is how a middleware/route divergence becomes a bypass: Express hands
+  // `?channelId=A&channelId=B` through as an array, and a local
+  // `typeof === 'string'` check would read that as *no channel named* while the
+  // route enforced the first element.
+  const channelSearchScopeFromRequest = (
+    req: express.Request
+  ): { channelIds?: string[] } | undefined => {
+    const channelId = channelSearchRequestedChannelId(req.query);
+    if (channelId) return { channelIds: [channelId] };
+    return channelListScopeFromCredential(req);
+  };
   app.use(
     createChannelChatRouter({
       store: channelMessageStore,
@@ -2642,13 +2667,15 @@ async function main(): Promise<void> {
         requireCliGatewayAuthForActorCommand(command, {
           ...(command === 'channels.list'
             ? { scopeForRequest: channelListScopeFromCredential }
-            : command === 'channels.get' ||
-                command === 'channels.run.get' ||
-                command === 'channels.history' ||
-                command === 'channels.threads.history' ||
-                command === 'channels.roster'
-              ? { scopeForRequest: channelScopeFromParams }
-              : {}),
+            : command === 'channels.search'
+              ? { scopeForRequest: channelSearchScopeFromRequest }
+              : command === 'channels.get' ||
+                  command === 'channels.run.get' ||
+                  command === 'channels.history' ||
+                  command === 'channels.threads.history' ||
+                  command === 'channels.roster'
+                ? { scopeForRequest: channelScopeFromParams }
+                : {}),
           ...(options ?? {}),
         }),
       requireWriteActorAuth: (command, options) =>
@@ -3224,6 +3251,15 @@ async function main(): Promise<void> {
     orchestratorCredentials: {
       issueCredential: (input) =>
         issuePersistentOrchestratorCliGatewayActorCredential(
+          cliGatewayActorRegistry,
+          input
+        ),
+      revokeCredential: (credentialId, input) =>
+        cliGatewayActorRegistry.revoke(credentialId, input),
+    },
+    runtimeReadCredentials: {
+      issueCredential: (input) =>
+        issueChannelRuntimeReadCliGatewayActorCredential(
           cliGatewayActorRegistry,
           input
         ),

@@ -123,6 +123,17 @@ workflow.
 
 ### Agent runtimes
 
+#### Added
+
+- Agents can now look up channel history themselves. Every bound agent runtime
+  receives a scoped read-only credential for its own channel, channel search is
+  available to in-scope agents through the gateway (`relay-ide v1 channels
+search`), and Claude channel agents get the Relay MCP facade mounted
+  automatically so history, threads, and roster lookups work without asking a
+  human to paste context. Codex agents get the same credential for the CLI;
+  their MCP mount is deliberately skipped because Codex starts MCP servers with
+  a stripped environment the credential cannot reach (#1410)
+
 #### Fixed
 
 - Codex and Hermes agents now receive the profile system prompt and Relay's

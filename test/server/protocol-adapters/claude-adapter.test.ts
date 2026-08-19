@@ -242,6 +242,60 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     await adapter.disconnect();
   });
 
+  it('mounts the Relay MCP facade from config.relayMcp without a token or strict mode (#1410)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect({
+      ...baseConfig({ claudeArgs: ['--keep-me'] }),
+      processEnv: {
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.credential-1.redacted',
+        RELAY_IDE_PORT: '3000',
+        RELAY_IDE_RUNTIME_ID: 'channel-runtime-1',
+      },
+      relayMcp: { command: '/usr/bin/node', args: ['/opt/relay/relay-mcp.js'] },
+    });
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+
+    const { args, options } = harness.latest();
+    const flagIndex = args.indexOf('--mcp-config');
+    expect(flagIndex).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(args[flagIndex + 1] as string)).toEqual({
+      mcpServers: {
+        relay: {
+          type: 'stdio',
+          command: '/usr/bin/node',
+          args: ['/opt/relay/relay-mcp.js'],
+        },
+      },
+    });
+    // The facade authenticates from the inherited environment. A token written
+    // into the mount would land in argv, which any process on the box can read.
+    expect(args[flagIndex + 1]).not.toContain('relay-sac-v1');
+    expect(args.join(' ')).not.toContain('relay-sac-v1');
+    expect(options.env.RELAY_IDE_ACTOR_TOKEN).toBe(
+      'relay-sac-v1.credential-1.redacted'
+    );
+    // `--mcp-config` is variadic: the next token must be a flag, or it would be
+    // swallowed as a second config.
+    expect(args[flagIndex + 2]).toBe('--permission-mode');
+    // Never strict: that would silently drop the operator's own MCP servers.
+    expect(args).not.toContain('--strict-mcp-config');
+    expect(args).toContain('--keep-me');
+
+    await adapter.disconnect();
+  });
+
+  it('mounts no MCP facade when the runtime holds no credential lease (#1410)', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+
+    expect(harness.latest().args).not.toContain('--mcp-config');
+
+    await adapter.disconnect();
+  });
+
   it('interrupts and requeues a long active turn before refreshing runtime env', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());

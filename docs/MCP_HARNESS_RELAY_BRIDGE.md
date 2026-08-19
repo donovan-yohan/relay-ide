@@ -406,19 +406,77 @@ Slice 0 makes only the following current manifest commands candidates for MCP
 exposure in Slice 3; the transport must not infer visibility from a similarly
 authenticated HTTP route:
 
-| Surface                                                                                               | MCP status   | Required actor-channel behavior                                                                                                                             |
-| ----------------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `channels.list`                                                                                       | Candidate    | Actor requires a non-empty `channelIds` scope; response is filtered to it.                                                                                  |
-| `channels.get`, `channels.history`, `channels.threads.history`, `channels.roster`, `channels.post`    | Candidate    | The requested channel id must be in `channelIds`; otherwise reject before read/write. `post` uses only its declared command body, not browser conveniences. |
-| `channels.search`                                                                                     | **Excluded** | It has no stable command-manifest entry and scoped actors are denied on the private route. Do not expose it merely because transcript read exists.          |
-| Channel attachment upload/download                                                                    | **Excluded** | These are private actor-denied HTTP operations with no stable command contract. A future exposure needs its own bounded content/redaction/scope design.     |
-| Read state, agent commands, approval/interrupt, runtime steering, browser-cookie and node-link routes | **Excluded** | They are operator/private control or browser lanes, not external-harness MCP operations.                                                                    |
+| Surface                                                                                               | MCP status   | Required actor-channel behavior                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channels.list`                                                                                       | Candidate    | Actor requires a non-empty `channelIds` scope; response is filtered to it.                                                                                                                                                                                                                                                                                             |
+| `channels.get`, `channels.history`, `channels.threads.history`, `channels.roster`, `channels.post`    | Candidate    | The requested channel id must be in `channelIds`; otherwise reject before read/write. `post` uses only its declared command body, not browser conveniences.                                                                                                                                                                                                            |
+| `channels.search`                                                                                     | **Excluded** | Since #1410 it IS a stable manifest command reachable by an in-scope actor over the CLI gateway (candidate channels come from `channelIds`; a scope-less credential is refused). It stays out of the MCP tuple anyway — the eight-verb facade is deliberately closed, and CLI covers search. Adding it is a separate decision, not an implication of the gateway verb. |
+| Channel attachment upload/download                                                                    | **Excluded** | These are private actor-denied HTTP operations with no stable command contract. A future exposure needs its own bounded content/redaction/scope design.                                                                                                                                                                                                                |
+| Read state, agent commands, approval/interrupt, runtime steering, browser-cookie and node-link routes | **Excluded** | They are operator/private control or browser lanes, not external-harness MCP operations.                                                                                                                                                                                                                                                                               |
 
 This matrix is intentionally stronger than route authentication: every future
 MCP-visible row must have a manifest command, explicit channel/workspace/
 WorkContext authorization, and negative sibling-channel tests. It also rejects
 the stale claim that operator grants cannot carry `channelIds`: Slice 0 grants
 and scoped actor credentials both carry and validate that dimension.
+
+#### Shipped: auto-mounting the stdio facade into channel runtimes (#1410)
+
+Every bound agent runtime that holds a credential lease also receives
+`AdapterConfig.relayMcp` — a `{ command, args }` launch spec for
+`dist/bin/relay-mcp.js`, resolved by `server/relay-mcp-launch.ts`. The mount and
+the credential travel together: no lease, no mount, so an agent is never handed
+a Relay tool it could only get 401s from.
+
+The spec carries a path and nothing else. Credentials reach the facade **only**
+by environment inheritance from the agent process Relay spawned
+(`RELAY_IDE_ACTOR_TOKEN`, `RELAY_IDE_PORT`). An MCP mount is written into
+provider argv or config files, both readable by any process on the box, so a
+token must never be placed there.
+
+Adapter support is a per-provider quirk, not shared choreography:
+
+| Provider                        | Mount               | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`                        | `--mcp-config` JSON | Inline stdio server named `relay`, no `env` block, and never `--strict-mcp-config` (which would drop the operator's own servers). Verified on CLI 2.1.235: a `--mcp-config` stdio child inherits the full parent environment, so the lease token reaches the facade.                                                                                                                                                                                                       |
+| `codex`                         | **None**            | `-c mcp_servers.relay.command=…` / `.args=[…]` merges correctly (verified on codex-cli 0.147.0), but codex starts MCP servers with a fixed core environment (`HOME`, `LANG`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) that `shell_environment_policy.inherit=all` does not widen. The remaining delivery paths are a token in argv (`mcp_servers.relay.env.*`) or writing the operator's `config.toml`; both are refused. Codex runtimes use `relay-ide v1 channels …`. |
+| `pi`, `prime-agent`, `opencode` | **Not yet**         | The credential is injected; a native mount is a follow-up per adapter.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `hermes`, `opencode-attached`   | **None**            | Gateway launches have no child process, therefore no credential and nothing to mount.                                                                                                                                                                                                                                                                                                                                                                                      |
+
+The mounted tuple is exactly the closed eight in `shared/relay-mcp.ts`.
+Auto-mounting makes that tuple the reach of every credentialed agent's MCP host,
+so widening it is a separate decision with its own review — `channels.search`
+became a gateway verb in the same slice and deliberately stayed out.
+
+##### Accepted residual risks
+
+These are inside Relay's stated threat model (the hub, the agent processes it
+spawns, and their MCP children all run as the same OS user, and any same-user
+process can already read `/proc/<pid>/environ`). They are recorded so the next
+reviewer meets them as decisions, not as discoveries.
+
+- **Env inheritance is indiscriminate.** The delivery mechanism the claude mount
+  relies on — the CLI passing its full environment to every `--mcp-config` stdio
+  child — applies to _every_ MCP server that agent has configured, including the
+  operator's own user-level and project `.mcp.json` servers. Since #1410 that
+  means every MCP server a claude bound agent mounts inherits
+  `RELAY_IDE_ACTOR_TOKEN`, so a compromised third-party MCP package can read and
+  subscribe to that channel's transcript for the remainder of the lease (≤15
+  minutes, read-only for ordinary bound agents). Before #1410 the same exposure
+  existed for orchestrator runtimes only, with the read/write lease. Narrowing it
+  needs a wrapper launcher that scrubs `RELAY_IDE_*` from the environment of
+  non-Relay MCP children; no provider offers per-server env control today.
+- **`dev:self` trusts the checkout's build output.** In self-hosted development
+  the resolver's second candidate is `<repo>/dist/bin/relay-mcp.js`, inside a
+  working tree the agents themselves can edit. An agent that rewrites that file
+  gets its code executed inside every other channel runtime's MCP child, with
+  that runtime's lease token in the environment — a cross-channel path that only
+  the same-user trust domain bounds. Packaged installs do not have this: the
+  first candidate is the installed `dist/bin/relay-mcp.js` beside the server.
+  Every candidate the resolver returns is an absolute path checked at resolve
+  time; relative `PATH` entries are skipped rather than resolved, because the
+  provider — not Relay — spawns the command and would resolve a relative one
+  against the agent's cwd.
 
 ### Completion and event contract
 

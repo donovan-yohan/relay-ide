@@ -1399,6 +1399,39 @@ export class ClaudeProtocolAdapter
     args.push('--include-partial-messages');
     args.push('--permission-prompt-tool', 'stdio');
 
+    // Relay MCP facade mount (#1410) — a claude QUIRK for the shared
+    // `config.relayMcp` choreography. Three rules this must keep:
+    //  - inline JSON, no `env` block: the facade authenticates from the env this
+    //    process passes to its MCP children (verified on CLI 2.1.235: a
+    //    `--mcp-config` stdio child inherits the full parent environment), and a
+    //    token in argv would be readable through `ps`.
+    //  - NO `--strict-mcp-config`: that flag would ignore every other MCP
+    //    configuration, silently removing the operator's own servers.
+    //  - emitted before the operator's `claudeArgs` and immediately followed by
+    //    a flag, because `--mcp-config <configs...>` is variadic and would
+    //    otherwise swallow the next bare token.
+    //
+    // Accepted, documented consequence: that same full-environment inheritance
+    // is indiscriminate, so EVERY other MCP server this agent has configured
+    // (user config, project `.mcp.json`) also receives RELAY_IDE_ACTOR_TOKEN.
+    // See docs/MCP_HARNESS_RELAY_BRIDGE.md § "Accepted residual risks" — it is
+    // inside the same-OS-user trust domain, and narrowing it needs a wrapper
+    // launcher that scrubs RELAY_IDE_* for non-Relay MCP children.
+    if (config.relayMcp) {
+      args.push(
+        '--mcp-config',
+        JSON.stringify({
+          mcpServers: {
+            relay: {
+              type: 'stdio',
+              command: config.relayMcp.command,
+              args: config.relayMcp.args,
+            },
+          },
+        })
+      );
+    }
+
     const mode = permissionMode(config.permissionMode) ?? 'default';
     args.push('--permission-mode', mode);
 

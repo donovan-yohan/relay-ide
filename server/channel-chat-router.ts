@@ -882,6 +882,30 @@ function parseStringQuery(value: unknown): string | undefined {
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
+/**
+ * The channel a `/channels/search` request names, parsed ONCE for both layers.
+ *
+ * The actor-scope middleware in `server/index.ts` decides which channel the
+ * credential is validated against, and the route below enforces
+ * `denyOutOfScopeChannel` plus the candidate set on the same value. If the two
+ * parsed the query differently — Express turns `?channelId=A&channelId=B` into
+ * an array, which a bare `typeof === 'string'` check reads as *absent* — the
+ * middleware would authorize a different requested scope than the route
+ * enforces. That divergence is not exploitable while both guards are in place,
+ * but it is exactly the seam that becomes a bypass when either side is later
+ * refactored alone. One exported helper removes it permanently: import this in
+ * the middleware rather than re-deriving the value.
+ */
+export function channelSearchRequestedChannelId(
+  query: unknown
+): string | undefined {
+  const record =
+    typeof query === 'object' && query !== null
+      ? (query as Record<string, unknown>)
+      : {};
+  return parseStringQuery(record['channelId']);
+}
+
 /** Same truthiness the `/workspace-topics` search route uses for its flags. */
 function parseBooleanQuery(value: unknown): boolean {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -1091,13 +1115,20 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const runGetAuth = deps.requireReadActorAuth?.('channels.run.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
-  // Search is a filtered read of the same durable message log `channels.history`
-  // already grants, so it rides that verb rather than minting a new gateway
-  // command: a credential that may read a channel's transcript may search it,
-  // and one that may not, cannot. When a scoped actor supplies a `channelId` the
-  // requested scope is that single channel; a scope-less search is denied by the
-  // actor lane (browser searches keep their existing authority).
-  const searchAuth = auth;
+  // Search is a filtered read of the same durable message log, but it gets its
+  // OWN gateway verb (#1410) rather than riding `channels.history`. The actor
+  // lane authorizes by the `x-relay-cli-command` header, so reusing the history
+  // command name would let any history-capable credential search while naming
+  // the wrong operation in the audit trail. A distinct verb carries its own
+  // contract schema, capability row, and revocable allowlist entry.
+  //
+  // Opening the verb is NOT a loosening of the private-route deny: the route
+  // below still runs `denyMissingCapability(CONTEXT_READ)`,
+  // `denyChannelReadWithoutScope` (a scope-less credential cannot search at
+  // all) and `denyOutOfScopeChannel` on an explicit `channelId`, and the
+  // candidate set for an unnamed search is exactly the credential's
+  // `channelIds`. Browser searches keep their existing authority.
+  const searchAuth = deps.requireReadActorAuth?.('channels.search') ?? auth;
   const threadHistoryAuth =
     deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
@@ -1166,7 +1197,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // ids are all `topic:`-prefixed, so `search` can never BE a channel id — the
   // ordering is about routing, not about a namespace collision.)
   router.get('/channels/search', searchAuth, (req, res) => {
-    if (denyScopedActorPrivateRoute(req, res)) return;
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     if (denyChannelReadWithoutScope(req, res)) return;
     const store = storeOr503(res, deps.store);
@@ -1194,7 +1224,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const query = parsedQuery.text;
     const includeArchived = parseBooleanQuery(req.query['includeArchived']);
     const limit = parseSearchLimit(req.query['limit']);
-    const scopeChannelId = parseStringQuery(req.query['channelId']);
+    // Same helper the actor-scope middleware uses, so the channel the
+    // credential was validated against is the channel enforced here.
+    const scopeChannelId = channelSearchRequestedChannelId(req.query);
     if (scopeChannelId && denyOutOfScopeChannel(req, res, scopeChannelId))
       return;
     const scopeWorkspaceId = parseStringQuery(req.query['workspaceId']);
