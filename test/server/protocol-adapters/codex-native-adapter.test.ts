@@ -25,6 +25,7 @@ import {
   emptyAgentSessionV2,
   type AgentPatchV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
+import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 import codexDetailFixture from '../../fixtures/agent-detail/codex.js';
 import {
   CODEX_TERMINAL_ORDERING_FIXTURES,
@@ -294,6 +295,39 @@ describe('CodexNativeProtocolAdapter — connect', () => {
       PATH: '/profile/bin',
       RELAY_PROFILE_TEST: 'yes',
     });
+    await adapter.disconnect();
+  });
+
+  it('sanitizes the child env with no profile overlay instead of inheriting raw process.env', async () => {
+    // Regression: `env` used to be set ONLY when `config.processEnv` existed.
+    // With no overlay the option was omitted and `CodexAppServerClient` fell
+    // back to `process.env` verbatim — no `cleanEnv()`, no nesting strip — so a
+    // hub launched from inside another agent handed both nesting markers to the
+    // codex child. `buildChildEnv` now runs on every path.
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thread-env-bare' },
+    });
+
+    process.env.CLAUDECODE = '1';
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+    process.env.RELAY_CODEX_ENV_WITNESS = 'inherited';
+    try {
+      await adapter.connect({ ...config });
+    } finally {
+      delete process.env.CLAUDECODE;
+      delete process.env.CLAUDE_CODE_ENTRYPOINT;
+      delete process.env.RELAY_CODEX_ENV_WITNESS;
+    }
+
+    expect(factory.lastOptions?.env).toBeDefined();
+    // The hub's own environment still reaches the child — only the denied keys go.
+    expect(factory.lastOptions?.env?.RELAY_CODEX_ENV_WITNESS).toBe('inherited');
+    for (const key of CHANNEL_ADAPTER_LAUNCH_CONTRACTS.codex
+      .processEnvDenylist) {
+      expect(factory.lastOptions?.env).not.toHaveProperty(key);
+    }
     await adapter.disconnect();
   });
 

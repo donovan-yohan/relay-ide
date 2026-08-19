@@ -1,4 +1,8 @@
-import { reconnectWithStoredConfig } from './adapter-utils.js';
+import {
+  readSseStream,
+  reconnectWithStoredConfig,
+} from './adapter-utils.js';
+import { diffCounts } from './wire-values.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -469,16 +473,6 @@ function isUnifiedDiffOutput(output: string): boolean {
     (/(^|\n)--- (?:a\/|\/dev\/null)/.test(output) &&
       /(^|\n)\+\+\+ (?:b\/|\/dev\/null)/.test(output))
   );
-}
-
-function diffCounts(diff: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) additions++;
-    if (line.startsWith('-') && !line.startsWith('---')) deletions++;
-  }
-  return { additions, deletions };
 }
 
 type HermesDiffKind = 'added' | 'modified' | 'deleted';
@@ -1157,41 +1151,23 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     );
   }
 
+  /**
+   * SSE framing belongs to `readSseStream`; the Responses-API envelope shape
+   * and its dispatch table are hermes's own.
+   */
   private async consumeResponsesSse(
     body: ReadableStream<Uint8Array>
   ): Promise<void> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let eventName: string | undefined;
-    let eventData = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          const dataLine = line.slice(5).trim();
-          eventData = eventData ? eventData + '\n' + dataLine : dataLine;
-        } else if (line.trim() === '' && eventData) {
-          try {
-            const data = JSON.parse(eventData) as Record<string, unknown>;
-            this.mapResponsesEvent(
-              eventName ? { event: eventName, data } : { data }
-            );
-          } catch (err) {
-            logger.debug('Failed to parse Hermes SSE event:', err);
-          }
-          eventName = undefined;
-          eventData = '';
-        }
+    await readSseStream(body, (record) => {
+      try {
+        const data = JSON.parse(record.data) as Record<string, unknown>;
+        this.mapResponsesEvent(
+          record.event ? { event: record.event, data } : { data }
+        );
+      } catch (err) {
+        logger.debug('Failed to parse Hermes SSE event:', err);
       }
-    }
+    });
   }
 
   private mapResponsesEvent(event: SseEvent): void {

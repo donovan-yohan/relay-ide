@@ -1,31 +1,34 @@
 # server/protocol-adapters
 
-One `ProtocolAdapterV2` implementation per provider, plus its registration in
-`index.ts` (`v2Adapters` factory and `CHANNEL_ADAPTER_LAUNCH_CONTRACTS`).
-Nothing here owns conversation identity, history, or routing.
+One `ProtocolAdapterV2` per provider, registered in `index.ts` (`v2Adapters`,
+`CHANNEL_ADAPTER_LAUNCH_CONTRACTS`). No conversation identity, history, routing.
 
 > Map, not manual. Keep under 60 lines. `CLAUDE.md` symlinks to this file.
 
 ## Quirk vs choreography
 
-About half of this directory is choreography repeated across adapters, with
-known drift. Every edit to one adapter is therefore a classification, and you
-must audit the sibling adapters for the same concern before landing it:
+Much of this directory is choreography once repeated per adapter, so every edit
+is a classification — audit the siblings for the concern before landing it:
 
 - **QUIRK** — harness-specific: event vocabularies, protocol handshakes,
   resume-id names, permission-mode flags, availability probes. Stays
   adapter-local and is **never** copied to a sibling harness for symmetry.
 - **CHOREOGRAPHY** — provider-agnostic sequencing: turn lifecycle, patch
-  emission order, teardown, env sanitizing. Goes through the shared utils layer
-  (`adapter-utils.ts`, `../utils.ts`), never a third hand-written copy.
+  emission order, teardown, env sanitizing, stream framing. Goes through the
+  shared layer (`adapter-utils.ts`, `wire-values.ts`, `provider-env.ts`,
+  `../line-framer.ts`, `../utils.ts`), never a third hand-written copy.
 
 Default posture is quirk containment. Propagating a fix into a sibling needs
-proof of the same behavior, not the same-looking code. `reconnect()` matches
-across claude, codex-native, hermes, and opencode apart from the not-connected
-wording the shared helper parameterizes; pi-agent and prime-agent fold
-`providerSessionId` into config — a config-transform hook, not a copy. Two lanes
-onto ONE provider share that provider's wire vocabulary from a provider-scoped
-module (`opencode-shared.ts`), never a second copy, never `adapter-utils.ts`.
+proof of the same behavior, not the same-looking code, and a hook per
+difference is not sharing: extract only what is already identical.
+`reconnect()` and the turn-started/turn-completed patches qualify; the
+user-message item and live-state payload do not — key order, attachment rules,
+and arity differ per adapter. Providers sharing ONE wire vocabulary share it
+from a provider-scoped module (`opencode-shared.ts`, `pi-rpc-shared.ts`), never
+`adapter-utils.ts`, whose doc comments hold the turn-lifecycle rationale:
+`createTurnQueue`'s one settlement semantic (settle on turn START, reject a
+failed start, keep draining), plus `AdapterProcessRegistry` and claude-only
+`TurnGuardrails` — clocks and policy, never child kills or patches.
 
 ## Fidelity invariants
 
@@ -37,25 +40,20 @@ module (`opencode-shared.ts`), never a second copy, never `adapter-utils.ts`.
 
 ## One descriptor, no scatter sites
 
-`index.ts` `PROVIDER_DESCRIPTORS` is the single home for every provider fact code
-outside this directory needs by name: fill in a row, never re-derive a fact in
-the consumer. An adapter without a descriptor — or a descriptor without an
-adapter — is a COMPILE error, and `test/provider-registry-drift.test.ts` holds
-each consuming seam to the record. Claude-flavored defaults are NAMED fields
-(`yoloPermissionMode`, `isDefaultOrchestratorProvider`) with a value per
-provider; provider env keys go in `launch.processEnvDenylist`, never at spawn
-sites (`server/utils.ts` `cleanEnv` + `sanitizeChannelAdapterProcessEnv`).
+`index.ts` `PROVIDER_DESCRIPTORS` is the single home for every provider fact
+code outside this directory needs by name: fill in a row, never re-derive it in
+the consumer. A descriptor without an adapter, or the reverse, is a COMPILE
+error; `test/provider-registry-drift.test.ts` holds each consuming seam to the
+record. Claude-flavored defaults are NAMED fields (`yoloPermissionMode`); env
+keys are constants in `provider-env.ts`, read by BOTH
+`launch.processEnvDenylist` and `buildChildEnv`.
 
-## Sequencing
+## Sequencing and PR rule
 
-No mass choreography extraction until an adapter conformance suite exists —
-without it a shared rewrite silently reshapes five harnesses at once. Small
-helpers proven identical may move into `adapter-utils.ts` with tests now.
-
-## PR rule
-
-Every PR touching this directory states its classification in the body on a line
-starting with `Adapter generality:`, or takes the `adapter-generality-reviewed`
-label. CI checks for the line; reviewers validate the claim, not its presence.
-Tests live in `test/server/protocol-adapters/`. See `docs/provider-guide.md`,
-`/add-provider`, `/adapter-review`.
+Extraction is gated on the conformance suite
+(`test/server/protocol-adapters/conformance/`), the arbiter that a rewrite did
+not reshape a harness: red means revert the step, never loosen the fixture.
+Every PR here states its classification in a body line starting with `Adapter
+generality:`, or takes `adapter-generality-reviewed`; CI checks the line,
+reviewers validate the claim. Tests: `test/server/protocol-adapters/`. See
+`docs/provider-guide.md`, `/add-provider`, `/adapter-review`.

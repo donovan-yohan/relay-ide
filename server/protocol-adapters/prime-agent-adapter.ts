@@ -1,6 +1,32 @@
 import { PRIME_AGENT_CHANNEL_COMMAND } from './launch-commands.js';
-import { reconnectWithStoredConfig } from './adapter-utils.js';
-import * as fs from 'node:fs';
+import {
+  buildChildEnv,
+  createPatchSink,
+  createTurnQueue,
+  emitErrorPatch,
+  emitLiveStatePatch,
+  emitProviderExtensionPatch,
+  emitSessionUpdatePatch,
+  emitTurnCompletedPatch,
+  emitTurnStartedPatch,
+  reconnectWithStoredConfig,
+} from './adapter-utils.js';
+import {
+  nowIso,
+  objectField as record,
+  queueCount,
+  stringField as string,
+} from './wire-values.js';
+import {
+  AnonymousToolIdTracker,
+  accumulateRpcUsage,
+  isCommandTool,
+  isFileTool,
+  readValidatedImages,
+  resultText,
+  toolArguments,
+  type RpcRecord,
+} from './pi-rpc-shared.js';
 import { spawn as nodeSpawn } from 'node:child_process';
 import {
   AgentControlUnavailableError,
@@ -24,7 +50,6 @@ import type {
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { primeAgentControlDefinitions } from '../../shared/agent-command-catalog.js';
-import { cleanEnv } from '../utils.js';
 import {
   PrimeAgentRpcClient,
   PrimeAgentRpcResponseError,
@@ -58,98 +83,24 @@ const CAPABILITIES: AgentCapabilitySetV2 = {
   // read as false by omission. See `Fidelity invariants` in AGENTS.md.
 } satisfies Required<AgentCapabilitySetV2>;
 
+/**
+ * Why a queued message failed when the session went away underneath it. The
+ * hand-written code simply emptied the array, so `sendMessage` had already
+ * resolved and the message vanished without a trace; this reaches the caller.
+ */
+const QUEUE_ABANDONED_MESSAGE =
+  'Prime Agent session ended before this queued message was sent.';
+
 type ClientFactory = (
   options: PrimeAgentRpcClientOptions
 ) => PrimeAgentRpcClient;
-type RpcRecord = Record<string, unknown>;
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-function record(value: unknown): RpcRecord {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as RpcRecord)
-    : {};
-}
-function string(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
-}
-function queueCount(value: unknown): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : 0;
-}
-function resultText(value: unknown): string {
-  const content = record(value).content;
-  if (!Array.isArray(content)) return typeof value === 'string' ? value : '';
-  return content
-    .map((part) => string(record(part).text))
-    .filter(Boolean)
-    .join('\n');
-}
-function toolArguments(value: unknown): RpcRecord {
-  if (value && typeof value === 'object' && !Array.isArray(value))
-    return value as RpcRecord;
-  if (typeof value === 'string') {
-    try {
-      return record(JSON.parse(value));
-    } catch {
-      return { raw: value };
-    }
-  }
-  return {};
-}
-function stableToolArgs(value: unknown): string {
-  if (Array.isArray(value))
-    return `[${value.map((entry) => stableToolArgs(entry)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const object = value as RpcRecord;
-    return `{${Object.keys(object)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableToolArgs(object[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'undefined';
-}
-function toolIdentityKey(name: string, args: RpcRecord): string {
-  return `${name}\0${stableToolArgs(args)}`;
-}
-function isCommandTool(name: string): boolean {
-  return /^(bash|shell|exec|terminal)$/i.test(name);
-}
-function isFileTool(name: string): boolean {
-  return /^(edit|write|patch|apply_patch|create|delete|move)/i.test(name);
-}
-
-const MAX_IMAGE_COUNT = 4;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_IMAGE_TOTAL_BYTES = MAX_IMAGE_COUNT * MAX_IMAGE_BYTES;
-const SUPPORTED_IMAGE_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-]);
-
-function matchesImageSignature(bytes: Buffer, mimeType: string): boolean {
-  if (mimeType === 'image/png')
-    return bytes
-      .subarray(0, 8)
-      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  if (mimeType === 'image/jpeg')
-    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  if (mimeType === 'image/gif') {
-    const signature = bytes.subarray(0, 6).toString('ascii');
-    return signature === 'GIF87a' || signature === 'GIF89a';
-  }
-  return (
-    mimeType === 'image/webp' &&
-    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  );
-}
 
 export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
+  /** Shared patch-emission conventions (adapter-utils). */
+  private readonly patchSink = createPatchSink(
+    () => this.sessionId,
+    (patch) => this.emitPatch(patch)
+  );
   readonly agentType = 'prime-agent';
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CAPABILITIES;
@@ -167,10 +118,34 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private assistantMessageSequence = -1;
   private turnUsage: AgentUsageV2 | undefined;
   private clientGeneration = 0;
-  private readonly queued: AgentSendMessageInputV2[] = [];
-  private toolFallbackSequence = 0;
-  private readonly anonymousToolIds = new Map<string, string[]>();
-  private readonly pendingAnonymousToolIds = new Map<string, string[]>();
+  /**
+   * Shared send queue (adapter-utils). Entries now settle when their turn
+   * STARTS, where the hand-written array resolved `sendMessage` the moment the
+   * message was pushed — see `createTurnQueue` for why that had to change.
+   */
+  private readonly queued = createTurnQueue<AgentSendMessageInputV2>({
+    canDrain: () =>
+      !this.queueAdvanceInFlight &&
+      this.activeTurnId === null &&
+      this._status === 'connected',
+    startTurn: (input) => this.runQueuedTurn(input),
+    // Teardown already publishes the live state that covers an emptied queue
+    // (`handleTransportClose`), and a disconnecting adapter has no live state
+    // left to describe. A bare depth patch here would be new noise in the
+    // stream, so only an arriving message announces itself.
+    onLengthChange: (queueLength, reason) => {
+      if (reason === 'enqueued')
+        this.emitLive({
+          status: 'working',
+          activeTurnId: this.activeTurnId,
+          queueLength,
+        });
+    },
+  });
+  private readonly anonymousToolIds = new AnonymousToolIdTracker({
+    activeTurnId: () => this.activeTurnId,
+    assistantSeq: () => this.assistantMessageSequence,
+  });
   private queueAdvanceInFlight = false;
   private providerExtensionSequence = 0;
   private readonly items = new Map<string, AgentItemV2>();
@@ -215,8 +190,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     if (config.systemPromptAppendix)
       args.push('--append-system-prompt', config.systemPromptAppendix);
     if (config.resumeSessionId) args.push('--resume', config.resumeSessionId);
-    const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
-    delete env['CLAUDECODE'];
+    const env = buildChildEnv({ processEnv: config.processEnv });
     const client = this.clientFactory({
       command: PRIME_AGENT_CHANNEL_COMMAND,
       args,
@@ -277,12 +251,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this._status = 'disconnected';
     await this.teardownClient();
     this.activeTurnId = null;
-    this.queued.length = 0;
+    this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this.clearControlDiscovery();
     this.items.clear();
     this.anonymousToolIds.clear();
-    this.pendingAnonymousToolIds.clear();
   }
 
   private async teardownClient(): Promise<void> {
@@ -332,13 +305,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       // Prime `steer` stays inside the current native agent run and therefore
       // has no separate agent_end boundary that Relay can attribute to this
       // turn. Keep Relay turns local and submit a fresh prompt after agent_end.
-      this.queued.push(input);
-      this.emitLive({
-        status: 'working',
-        activeTurnId: this.activeTurnId,
-        queueLength: this.queued.length,
-      });
-      return;
+      return this.queued.enqueue(input);
     }
 
     this.startTurn(input);
@@ -473,7 +440,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
             : 'completed',
         this.turnFailure ?? undefined
       );
-      void this.advanceQueuedTurn();
+      this.advanceQueuedTurn();
       return;
     }
     if (type === 'message_update') {
@@ -728,46 +695,8 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private captureUsage(message: RpcRecord): void {
-    if (message.role !== 'assistant') return;
-    const usage = record(message.usage);
-    const cost = record(usage.cost);
-    const number = (value: unknown): number | undefined =>
-      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-    const inputTokens = number(usage.input);
-    const outputTokens = number(usage.output);
-    const cacheReadTokens = number(usage.cacheRead);
-    const cacheWriteTokens = number(usage.cacheWrite);
-    const costUsd = number(cost.total);
-    const previous = this.turnUsage ?? {};
-    const add = (
-      prior: number | undefined,
-      next: number | undefined
-    ): number | undefined => (next === undefined ? prior : (prior ?? 0) + next);
-    const accumulatedInput = add(previous.inputTokens, inputTokens);
-    const accumulatedOutput = add(previous.outputTokens, outputTokens);
-    const accumulatedCacheRead = add(previous.cacheReadTokens, cacheReadTokens);
-    const accumulatedCacheWrite = add(
-      previous.cacheWriteTokens,
-      cacheWriteTokens
-    );
-    const accumulatedCost = add(previous.costUsd ?? undefined, costUsd);
-    this.turnUsage = {
-      ...(accumulatedInput !== undefined
-        ? { inputTokens: accumulatedInput }
-        : {}),
-      ...(accumulatedOutput !== undefined
-        ? { outputTokens: accumulatedOutput }
-        : {}),
-      ...(accumulatedCacheRead !== undefined
-        ? { cacheReadTokens: accumulatedCacheRead }
-        : {}),
-      ...(accumulatedCacheWrite !== undefined
-        ? { cacheWriteTokens: accumulatedCacheWrite }
-        : {}),
-      ...(accumulatedCost !== undefined ? { costUsd: accumulatedCost } : {}),
-    };
+    this.turnUsage = accumulateRpcUsage(this.turnUsage, message);
   }
-
   private async submitNativeInput(
     client: PrimeAgentRpcClient,
     input: AgentSendMessageInputV2,
@@ -776,40 +705,58 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     await client.call('prompt', payload);
   }
 
-  private async advanceQueuedTurn(): Promise<void> {
-    if (
-      this.queueAdvanceInFlight ||
-      this.activeTurnId ||
-      this.queued.length === 0 ||
-      this._status !== 'connected'
-    ) {
-      return;
-    }
-    const next = this.queued.shift();
-    if (!next) return;
+  private advanceQueuedTurn(): void {
+    this.queued.drain();
+  }
+
+  /**
+   * Start one queued turn. Failure handling is unchanged — a dead transport
+   * still closes the transport, and a bad attachment still fails only its own
+   * turn — but the error now also propagates so the queue can reject the
+   * waiting `sendMessage` caller instead of leaving it resolved on a message
+   * that never ran.
+   */
+  private async runQueuedTurn(next: AgentSendMessageInputV2): Promise<void> {
     this.queueAdvanceInFlight = true;
     this.startTurn(next);
+    let attributedLocally = false;
     try {
       const payload: RpcRecord = { message: next.content };
-      const images = this.readImages(next.attachments);
-      if (images.length) payload.images = images;
       try {
-        await this.submitNativeInput(this.requireClient(), next, payload);
+        const images = this.readImages(next.attachments);
+        if (images.length) payload.images = images;
       } catch (error) {
-        this.handleTransportClose(
-          error instanceof Error ? error : new Error(String(error))
-        );
+        // Attachment files are Relay-local input. A file can be removed or
+        // invalidated after enqueue, which must fail only this attributed turn;
+        // the provider transport remains usable for later queued messages.
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        attributedLocally = true;
+        this.emitError(failure.message);
+        this.completeTurn('failed', failure.message);
+        throw failure;
       }
+      // `requireClient()` is evaluated here on purpose: a disconnected adapter
+      // is a transport failure, not an attachment one.
+      await this.submitNativeInput(this.requireClient(), next, payload);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
-      // Attachment files are Relay-local input. A file can be removed or
-      // invalidated after enqueue, which must fail only this attributed turn;
-      // the provider transport remains usable for later queued messages.
-      this.emitError(failure.message);
-      this.completeTurn('failed', failure.message);
+      // Anything not already attributed to this turn above is the transport
+      // going down, which fails the turn and rejects the rest of the queue.
+      if (!attributedLocally) this.handleTransportClose(failure);
+      throw failure;
     } finally {
       this.queueAdvanceInFlight = false;
-      if (!this.activeTurnId) void this.advanceQueuedTurn();
+      // This drain runs BEFORE the thrown failure reaches the queue's
+      // `onRejected`, which drains a second time. Both are gated by
+      // `canDrain` (`queueAdvanceInFlight`, no active turn, connected), so the
+      // second is a no-op and no turn can start twice. The ordering that
+      // follows is the invariant to preserve: on a locally attributed failure
+      // the NEXT queued turn starts before the failed entry's `sendMessage`
+      // promise rejects, so the binder observes turn N+1's start-side effects
+      // ahead of turn N's delivery failure. Loosening `canDrain`, or adding a
+      // `continueDrain` hook here, changes both properties.
+      if (!this.activeTurnId) this.advanceQueuedTurn();
     }
   }
 
@@ -821,21 +768,11 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.assistantMessageSequence = -1;
     this.turnUsage = undefined;
     this.items.clear();
-    this.toolFallbackSequence = 0;
-    this.anonymousToolIds.clear();
-    this.pendingAnonymousToolIds.clear();
+    this.anonymousToolIds.reset();
     const timestamp = nowIso();
-    this.emitPatch({
-      type: 'agent-turn-started-v2',
-      sessionId: this.sessionId,
-      timestamp,
-      turn: {
-        id: input.turnId,
-        status: 'running',
-        inputMessageId: `user-${input.turnId}`,
-        items: [],
-        startedAt: timestamp,
-      },
+    emitTurnStartedPatch(this.patchSink, {
+      turnId: input.turnId,
+      startedAt: timestamp,
     });
     this.ensureItem(`user-${input.turnId}`, {
       type: 'userMessage',
@@ -874,16 +811,14 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
           : 'failed',
       error
     );
-    this.emitPatch({
-      type: 'agent-turn-completed-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
+    emitTurnCompletedPatch(this.patchSink, {
       turnId,
       status,
       completedAt: nowIso(),
       durationMs: Date.now() - this.activeStartedMs,
-      ...(this.turnUsage ? { usage: this.turnUsage } : {}),
-      ...(error ? { error } : {}),
+      usage: this.turnUsage,
+      // Truthiness, not `!== undefined`: an empty error string stays omitted.
+      error: error || undefined,
     });
     this.activeTurnId = null;
     this.items.clear();
@@ -891,7 +826,6 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     this.turnFailure = null;
     this.turnUsage = undefined;
     this.anonymousToolIds.clear();
-    this.pendingAnonymousToolIds.clear();
     this.emitLive({
       status: this.queued.length ? 'working' : 'idle',
       activeTurnId: null,
@@ -912,63 +846,19 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
   private fallbackToolId(index?: number): string {
-    return `${this.activeTurnId}-tool-fallback-${this.assistantMessageSequence}-${index ?? 'none'}-${++this.toolFallbackSequence}`;
+    return this.anonymousToolIds.fallbackId(index);
   }
   private toolIdForStart(event: RpcRecord): string {
-    const providerId = string(event.toolCallId).trim();
-    if (providerId) return providerId;
-    const name = string(event.toolName, 'tool');
-    const key = toolIdentityKey(name, toolArguments(event.args));
-    const pending = this.pendingAnonymousToolIds.get(key);
-    const id = pending?.shift() ?? this.fallbackToolId();
-    if (pending?.length === 0) this.pendingAnonymousToolIds.delete(key);
-    this.anonymousToolIds.set(key, [
-      ...(this.anonymousToolIds.get(key) ?? []),
-      id,
-    ]);
-    return id;
+    return this.anonymousToolIds.idForStart(event);
   }
   private toolIdForUpdate(event: RpcRecord): string {
-    const providerId = string(event.toolCallId).trim();
-    if (providerId) return providerId;
-    const name = string(event.toolName, 'tool');
-    const args = toolArguments(event.args);
-    const exact = this.anonymousToolIds.get(toolIdentityKey(name, args))?.[0];
-    if (exact) return exact;
-    // If args are absent, concurrent same-name events are indistinguishable;
-    // FIFO is the only truthful fallback available from the provider stream.
-    if (Object.keys(args).length === 0) {
-      for (const [key, ids] of this.anonymousToolIds) {
-        if (key.startsWith(`${name}\0`) && ids[0]) return ids[0];
-      }
-    }
-    return this.toolIdForStart(event);
+    return this.anonymousToolIds.idForUpdate(event);
   }
   private toolIdForPreview(toolCall: RpcRecord, index: number): string {
-    const providerId = string(toolCall.id).trim();
-    if (providerId) return providerId;
-    const name = string(toolCall.name, 'tool');
-    const key = toolIdentityKey(
-      name,
-      toolArguments(toolCall.arguments ?? toolCall.args)
-    );
-    const id = this.fallbackToolId(index);
-    this.pendingAnonymousToolIds.set(key, [
-      ...(this.pendingAnonymousToolIds.get(key) ?? []),
-      id,
-    ]);
-    return id;
+    return this.anonymousToolIds.reserveForPreview(toolCall, index);
   }
   private forgetAnonymousToolId(event: RpcRecord, id: string): void {
-    if (string(event.toolCallId).trim()) return;
-    for (const [key, ids] of this.anonymousToolIds) {
-      const remaining = ids.filter((candidate) => candidate !== id);
-      if (remaining.length !== ids.length) {
-        if (remaining.length) this.anonymousToolIds.set(key, remaining);
-        else this.anonymousToolIds.delete(key);
-        return;
-      }
-    }
+    this.anonymousToolIds.forget(event, id);
   }
   private emitDelta(
     id: string,
@@ -1009,57 +899,33 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
       });
   }
   private emitError(message: string): void {
-    this.emitPatch({
-      type: 'agent-error-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      message,
-      ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
-    });
+    emitErrorPatch(this.patchSink, message, this.activeTurnId);
   }
   private emitProviderExtension(
     payload: Record<string, unknown>,
     visibility: 'normal' | 'debug' = 'normal'
   ): void {
+    // Guard stays here: the active turn is this adapter's own state.
     if (!this.activeTurnId) return;
-    const sequence = ++this.providerExtensionSequence;
-    const timestamp = nowIso();
-    this.emitPatch({
-      type: 'agent-item-started-v2',
-      sessionId: this.sessionId,
-      timestamp,
+    emitProviderExtensionPatch(this.patchSink, {
       turnId: this.activeTurnId,
-      item: {
-        type: 'providerExtension',
-        id: `ext-prime-agent-${this.activeTurnId}-${sequence}`,
-        namespace: 'prime-agent',
-        payload,
-        ...(visibility === 'debug'
-          ? { metadata: { eventVisibility: 'debug' } }
-          : {}),
-        status: 'completed',
-        startedAt: timestamp,
-        completedAt: timestamp,
-      },
+      namespace: 'prime-agent',
+      seq: ++this.providerExtensionSequence,
+      payload,
+      visibility,
     });
   }
 
   private resetForTransportSwitch(reason: string): void {
     if (this.activeTurnId) this.completeTurn('failed', reason);
-    this.queued.length = 0;
+    this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this.items.clear();
     this.anonymousToolIds.clear();
-    this.pendingAnonymousToolIds.clear();
   }
 
   private emitLive(live: Partial<AgentSessionLiveStateV2>): void {
-    this.emitPatch({
-      type: 'agent-live-state-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      live,
-    });
+    emitLiveStatePatch(this.patchSink, live);
   }
 
   private async refreshControlCommands(
@@ -1165,10 +1031,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private emitSessionUpdate(): void {
-    this.emitPatch({
-      type: 'agent-session-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
+    emitSessionUpdatePatch(this.patchSink, {
       providerSession: this.providerSession,
       config: this.currentControlConfig(),
       slashCommands: this.getSlashCommands(),
@@ -1290,7 +1153,7 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private handleTransportClose(error: Error): void {
     if (this._status === 'disconnected') return;
     if (this.activeTurnId) this.completeTurn('failed', error.message);
-    this.queued.length = 0;
+    this.queued.rejectAll(new Error(QUEUE_ABANDONED_MESSAGE));
     this.queueAdvanceInFlight = false;
     this._status = 'disconnected';
     const client = this.client;
@@ -1309,51 +1172,6 @@ export class PrimeAgentProtocolAdapter extends BaseProtocolAdapterV2 {
   private readImages(
     attachments: AgentSendMessageInputV2['attachments'] = []
   ): RpcRecord[] {
-    const imageAttachments = attachments.filter(
-      (attachment) => attachment.type === 'image'
-    );
-    if (imageAttachments.length > MAX_IMAGE_COUNT) {
-      throw new Error(`Prime Agent accepts at most ${MAX_IMAGE_COUNT} images`);
-    }
-    const images: RpcRecord[] = [];
-    let totalBytes = 0;
-    for (const attachment of imageAttachments) {
-      const mimeType = attachment.mimeType ?? '';
-      if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
-        throw new Error(
-          `Unsupported Prime Agent image MIME type: ${mimeType || 'missing'}`
-        );
-      }
-      try {
-        const stat = fs.lstatSync(attachment.path);
-        if (!stat.isFile() || stat.isSymbolicLink())
-          throw new Error('attachment must be a regular non-symlink file');
-        if (stat.size > MAX_IMAGE_BYTES)
-          throw new Error(`attachment exceeds ${MAX_IMAGE_BYTES} bytes`);
-        totalBytes += stat.size;
-        if (totalBytes > MAX_IMAGE_TOTAL_BYTES)
-          throw new Error(
-            `attachments exceed ${MAX_IMAGE_TOTAL_BYTES} aggregate bytes`
-          );
-        const bytes = fs.readFileSync(attachment.path);
-        if (
-          bytes.length > MAX_IMAGE_BYTES ||
-          !matchesImageSignature(bytes, mimeType)
-        ) {
-          throw new Error('attachment bytes do not match the declared image');
-        }
-        images.push({
-          type: 'image',
-          data: bytes.toString('base64'),
-          mimeType,
-        });
-      } catch (error) {
-        throw new Error(
-          `Cannot read Prime Agent image attachment ${attachment.path}: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error }
-        );
-      }
-    }
-    return images;
+    return readValidatedImages(attachments, { providerLabel: 'Prime Agent' });
   }
 }

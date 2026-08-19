@@ -11,6 +11,26 @@ import { AgentControlUnavailableError } from '../../../server/protocol-adapter-v
 import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
 
+type SendInput = Parameters<PrimeAgentProtocolAdapter['sendMessage']>[0];
+
+/**
+ * Start a send the adapter will QUEUE behind the active turn.
+ *
+ * A queued entry settles when its turn STARTS, not when it is accepted into
+ * the queue (see `createTurnQueue` in adapter-utils), so awaiting one here
+ * would block until a later `agent_end` drains it. Tests hold the promise and
+ * assert on it explicitly; the attached no-op keeps a deliberate rejection
+ * from surfacing as an unhandled one.
+ */
+function queueSend(
+  adapter: { sendMessage: (input: SendInput) => Promise<void> },
+  input: SendInput
+): Promise<void> {
+  const pending = adapter.sendMessage(input);
+  void pending.catch(() => {});
+  return pending;
+}
+
 const config = {
   cwd: '/tmp',
   port: 1,
@@ -562,7 +582,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     const { adapter, call } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
     await adapter.interrupt({ turnId: 't1' });
     expect(call.mock.calls.map(([type]) => type)).toEqual([
       'get_available_models',
@@ -586,7 +606,7 @@ describe('PrimeAgentProtocolAdapter', () => {
     });
 
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
     client.emit('event', {
       type: 'session_action_update',
       actions: { queuedCount: 'not-a-number' },
@@ -609,8 +629,8 @@ describe('PrimeAgentProtocolAdapter', () => {
     const { adapter, client, call, patches } = harness();
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
-    await adapter.sendMessage({ turnId: 't3', content: 'three' });
+    queueSend(adapter, { turnId: 't2', content: 'two' });
+    queueSend(adapter, { turnId: 't3', content: 'three' });
 
     client.emit('event', { type: 'turn_end' });
     expect(
@@ -659,10 +679,12 @@ describe('PrimeAgentProtocolAdapter', () => {
     });
     await adapter.connect(config);
     await adapter.sendMessage({ turnId: 't1', content: 'one' });
-    await adapter.sendMessage({ turnId: 't2', content: 'two' });
+    const queuedTwo = queueSend(adapter, { turnId: 't2', content: 'two' });
     client.emit('event', { type: 'agent_end' });
 
     await vi.waitFor(() => expect(adapter.status).toBe('disconnected'));
+    // The ambiguous prompt is reported to whoever sent it, not swallowed.
+    await expect(queuedTwo).rejects.toThrow('prompt timed out');
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -740,12 +762,12 @@ describe('PrimeAgentProtocolAdapter', () => {
       const { adapter, client, call, patches } = harness();
       await adapter.connect(config);
       await adapter.sendMessage({ turnId: 't1', content: 'one' });
-      await adapter.sendMessage({
+      const queuedImage = queueSend(adapter, {
         turnId: 't2',
         content: 'image',
         attachments: [{ type: 'image', path, mimeType: 'image/png' }],
       });
-      await adapter.sendMessage({ turnId: 't3', content: 'three' });
+      queueSend(adapter, { turnId: 't3', content: 'three' });
       rmSync(path);
 
       client.emit('event', { type: 'agent_end' });
@@ -757,6 +779,9 @@ describe('PrimeAgentProtocolAdapter', () => {
         ).toEqual(['one', 'three'])
       );
       expect(adapter.status).toBe('connected');
+      await expect(queuedImage).rejects.toThrow(
+        'Cannot read Prime Agent image attachment'
+      );
       expect(patches).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

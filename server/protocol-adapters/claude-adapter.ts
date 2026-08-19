@@ -1,11 +1,31 @@
 import { CLAUDE_CHANNEL_COMMAND } from './launch-commands.js';
 import {
   ABANDONED_APPROVAL_REASON,
+  AdapterProcessRegistry,
   TURN_ENDED_APPROVAL_REASON,
+  TurnGuardrails,
+  adapterProcessRegistry,
+  type AdapterProcessRegistryEntry,
+  buildChildEnv,
+  createPatchSink,
+  createTurnQueue,
+  emitLiveStatePatch,
+  emitProviderExtensionPatch,
+  emitSessionUpdatePatch,
+  emitTurnCompletedPatch,
+  emitTurnStartedPatch,
   reconnectWithStoredConfig,
   resolveAbandonedApprovals,
   type AbandonedApprovalV2,
 } from './adapter-utils.js';
+import {
+  isRecord,
+  nowIso,
+  numberOr,
+  objectField,
+  safeJson,
+  stringField,
+} from './wire-values.js';
 import * as fs from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
@@ -27,7 +47,6 @@ import type {
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
-import { cleanEnv } from '../utils.js';
 import { createLogger } from '../logger.js';
 import {
   ClaudeStreamClient,
@@ -107,7 +126,6 @@ const DEFAULT_IDLE_TTL_MS = 900_000; // 15 min
 const DEFAULT_TURN_TIMEOUT_MS = 600_000; // 10 min
 const DEFAULT_APPROVAL_STALL_MS = 600_000;
 const DEFAULT_INTERRUPT_ACK_MS = 5_000;
-const DEFAULT_GC_INTERVAL_MS = 30_000;
 
 // Crash-loop breaker (§6): max 3 respawns per 5 min per session.
 const CRASH_BREAKER_WINDOW_MS = 5 * 60_000;
@@ -153,12 +171,6 @@ interface ClaudePermissionResponse {
   updatedPermissions?: unknown[];
 }
 
-interface QueuedClaudeMessage {
-  input: AgentSendMessageInputV2;
-  resolve: () => void;
-  reject: (err: unknown) => void;
-}
-
 interface PendingApproval {
   turnId: string;
   toolName: string;
@@ -168,34 +180,8 @@ interface PendingApproval {
 }
 
 // ── Pure helpers (ported verbatim / near-verbatim from the SDK adapter) ───────
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return '[unserializable]';
-  }
-}
-
-function stringField(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
-}
-
-function objectField(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
-}
-
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
+// Wire-value coercions live in `./wire-values.js`; only claude-shaped helpers
+// remain below.
 
 function normalizeCommandName(name: string): string {
   const trimmed = name.trim();
@@ -518,74 +504,6 @@ function mimeForAttachment(path: string, declared: string | undefined): string {
   return EXT_MIME[path.slice(dot).toLowerCase()] ?? '';
 }
 
-// ── Process registry (cross-cutting: GC sweep + shutdown kill-all) ───────────
-
-interface ClaudeRegistryEntry {
-  readonly registrySessionId: string;
-  gcSweep(now: number): void;
-  forceStop(): Promise<void>;
-}
-
-/**
- * Module-level registry (§6). The adapter owns its child 1:1; the registry only
- * drives the periodic GC sweep (idle eviction + turn timeout) and relay-shutdown
- * kill-all. The interval is unref'd and started on first insert, stopped when
- * empty.
- */
-export class ClaudeProcessRegistry {
-  private readonly entries = new Map<string, ClaudeRegistryEntry>();
-  private timer: NodeJS.Timeout | null = null;
-
-  constructor(private readonly gcIntervalMs: number = DEFAULT_GC_INTERVAL_MS) {}
-
-  register(entry: ClaudeRegistryEntry): void {
-    this.entries.set(entry.registrySessionId, entry);
-    this.ensureTimer();
-  }
-
-  unregister(sessionId: string): void {
-    this.entries.delete(sessionId);
-    if (this.entries.size === 0) this.stopTimer();
-  }
-
-  size(): number {
-    return this.entries.size;
-  }
-
-  private ensureTimer(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.sweep(), this.gcIntervalMs);
-    this.timer.unref?.();
-  }
-
-  private stopTimer(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-  }
-
-  private sweep(): void {
-    const now = Date.now();
-    for (const entry of [...this.entries.values()]) {
-      try {
-        entry.gcSweep(now);
-      } catch (err) {
-        logger.warn('claude registry gc sweep failed:', err);
-      }
-    }
-  }
-
-  /** Relay shutdown: tear every child down via the ladder. */
-  async killAll(): Promise<void> {
-    const entries = [...this.entries.values()];
-    this.entries.clear();
-    this.stopTimer();
-    await Promise.all(entries.map((e) => e.forceStop().catch(() => undefined)));
-  }
-}
-
-export const claudeProcessRegistry = new ClaudeProcessRegistry();
-
 // ── Adapter ──────────────────────────────────────────────────────────────────
 
 /**
@@ -599,9 +517,15 @@ export const claudeProcessRegistry = new ClaudeProcessRegistry();
  */
 export class ClaudeProtocolAdapter
   extends BaseProtocolAdapterV2
-  implements ClaudeRegistryEntry
+  implements AdapterProcessRegistryEntry
 {
   readonly agentType = 'claude';
+  /** Shared patch-emission conventions (adapter-utils). */
+  private readonly patchSink = createPatchSink(
+    () => this.sessionId,
+    (patch) => this.emitPatch(patch)
+  );
+
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities = CLAUDE_CAPABILITIES;
 
@@ -620,16 +544,49 @@ export class ClaudeProtocolAdapter
   private activeTurnId: string | null = null;
   private activeTurnInput: AgentSendMessageInputV2 | null = null;
   private activeStartedAt: string | null = null;
-  private turnStartedAtMs: number | null = null;
   private completedActiveTurn = false;
-  private lastActivityAt = Date.now();
+  /**
+   * Turn-timeout, idle-eviction, and crash-loop clocks (adapter-utils). Limits
+   * are read through thunks so `applyRuntimeParams` keeps owning the
+   * `config.extra` overrides and the values stay claude's exactly.
+   */
+  private readonly guardrails = new TurnGuardrails({
+    turnTimeoutMs: () => this.turnTimeoutMs,
+    idleTtlMs: () => this.idleTtlMs,
+    crashWindowMs: CRASH_BREAKER_WINDOW_MS,
+    maxRespawns: CRASH_BREAKER_MAX_RESPAWNS,
+  });
 
   private slashCommandsEmitted = false;
   private providerExtensionSeq = 0;
   private interruptSeq = 0;
   private runtimeEnvRefreshTurnSeq = 0;
 
-  private readonly queue: QueuedClaudeMessage[] = [];
+  /**
+   * Shared send queue (adapter-utils). `canDrain` carries the runtime-env
+   * refresh interlock as well as the connected/idle gate, and `continueDrain`
+   * routes the poisoned-message retry back through `drainQueue` — whose
+   * refresh branch APPLIES a due refresh rather than merely gating on one.
+   */
+  private readonly queue = createTurnQueue<AgentSendMessageInputV2>({
+    canDrain: () =>
+      this._status === 'connected' &&
+      this.activeTurnId === null &&
+      !this.runtimeEnvRefreshApplying &&
+      this.pendingRuntimeEnvRefresh === undefined,
+    startTurn: (input) => this.startTurn(input),
+    onLengthChange: (queueLength, reason) =>
+      this.emitLiveState(
+        reason === 'enqueued'
+          ? {
+              status: 'working',
+              activeTurnId: this.activeTurnId,
+              queueLength,
+            }
+          : { queueLength }
+      ),
+    continueDrain: () => this.drainQueue(),
+  });
   private pendingRuntimeEnvRefresh:
     | {
         processEnv: Record<string, string>;
@@ -643,12 +600,6 @@ export class ClaudeProtocolAdapter
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly approvalStallTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingInterrupts = new Map<string, () => void>();
-
-  // Wall-clock start of the current waiting-approval sub-state (null when no
-  // approval is outstanding). Its elapsed time is excluded from the turn-timeout
-  // budget so a human deliberating on an approval never trips the stuck-turn
-  // kill (§3, §6).
-  private approvalWaitStartedMs: number | null = null;
 
   // Set after an interrupt ack keeps the child warm while a follow-up turn is
   // queued: the aborted turn's trailing wire lines must be dropped so they are
@@ -686,11 +637,6 @@ export class ClaudeProtocolAdapter
     }
   >();
 
-  // Crash-loop breaker state: timestamps of *unexpected* child exits / spawn
-  // failures only. Initial spawns and deliberate kills (interrupt ladder, turn
-  // timeout, idle eviction) never land here (§6).
-  private readonly crashTimestamps: number[] = [];
-
   // Tunables (defaults from §6, overridable via config.extra).
   private idleTtlMs = DEFAULT_IDLE_TTL_MS;
   private turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS;
@@ -701,11 +647,11 @@ export class ClaudeProtocolAdapter
     | undefined;
 
   private readonly spawnFn: ClaudeSpawnFn;
-  private readonly registry: ClaudeProcessRegistry;
+  private readonly registry: AdapterProcessRegistry;
 
   constructor(
     spawnFn: ClaudeSpawnFn = nodeSpawn as unknown as ClaudeSpawnFn,
-    registry: ClaudeProcessRegistry = claudeProcessRegistry
+    registry: AdapterProcessRegistry = adapterProcessRegistry
   ) {
     super();
     this.spawnFn = spawnFn;
@@ -742,9 +688,7 @@ export class ClaudeProtocolAdapter
     this._status = 'connected';
     this.claudeSessionId = null;
     this.slashCommandsEmitted = false;
-    this.lastActivityAt = Date.now();
-    this.crashTimestamps.length = 0;
-    this.approvalWaitStartedMs = null;
+    this.guardrails.reset();
     this.suppressInterruptedTail = false;
 
     this.registry.register(this);
@@ -818,13 +762,9 @@ export class ClaudeProtocolAdapter
       true
     );
     if (interrupted) {
-      this.queue.unshift({
-        input: {
-          ...activeInput,
-          turnId: `${activeInput.turnId}-credential-refresh-${++this.runtimeEnvRefreshTurnSeq}`,
-        },
-        resolve: () => {},
-        reject: () => {},
+      this.queue.requeueFront({
+        ...activeInput,
+        turnId: `${activeInput.turnId}-credential-refresh-${++this.runtimeEnvRefreshTurnSeq}`,
       });
       this.drainQueue();
     }
@@ -856,7 +796,7 @@ export class ClaudeProtocolAdapter
         }),
     });
     this.clearPendingApprovals();
-    this.approvalWaitStartedMs = null;
+    this.guardrails.noteTurnEnd();
     this.suppressInterruptedTail = false;
     this.pendingInterrupts.clear();
     this.activeToolUses.clear();
@@ -866,7 +806,6 @@ export class ClaudeProtocolAdapter
     this.activeTurnId = null;
     this.activeTurnInput = null;
     this.activeStartedAt = null;
-    this.turnStartedAtMs = null;
     this.completedActiveTurn = false;
     this.claudeSessionId = null;
     this.slashCommandsEmitted = false;
@@ -902,7 +841,7 @@ export class ClaudeProtocolAdapter
 
     this.rejectQueued(new Error('Claude adapter resuming'));
     this.clearPendingApprovals();
-    this.approvalWaitStartedMs = null;
+    this.guardrails.noteTurnEnd();
     this.suppressInterruptedTail = false;
     this.pendingInterrupts.clear();
     this.activeToolUses.clear();
@@ -912,7 +851,6 @@ export class ClaudeProtocolAdapter
     this.activeTurnId = null;
     this.activeTurnInput = null;
     this.activeStartedAt = null;
-    this.turnStartedAtMs = null;
     this.completedActiveTurn = false;
     this.slashCommandsEmitted = false;
     this.streamedTextItems.clear();
@@ -924,7 +862,7 @@ export class ClaudeProtocolAdapter
 
     this.claudeSessionId = sessionId;
     this._status = 'connected';
-    this.lastActivityAt = Date.now();
+    this.guardrails.noteActivity();
     if (dead)
       await this.stopOwnedClient(dead, 'session resume').catch(() => undefined);
     const effort = configuredClaudeEffort(config);
@@ -967,21 +905,14 @@ export class ClaudeProtocolAdapter
     if (this._status !== 'connected') {
       throw new Error('Cannot send a Claude message before connect');
     }
-    this.lastActivityAt = Date.now();
+    this.guardrails.noteActivity();
 
     if (
       this.activeTurnId !== null ||
       this.pendingRuntimeEnvRefresh !== undefined ||
       this.runtimeEnvRefreshApplying
     ) {
-      return new Promise<void>((resolve, reject) => {
-        this.queue.push({ input, resolve, reject });
-        this.emitLiveState({
-          status: 'working',
-          activeTurnId: this.activeTurnId,
-          queueLength: this.queue.length,
-        });
-      });
+      return this.queue.enqueue(input);
     }
 
     this.startTurn(input);
@@ -1007,7 +938,7 @@ export class ClaudeProtocolAdapter
     ) {
       throw new Error('Cannot steer Claude without an active turn');
     }
-    this.lastActivityAt = Date.now();
+    this.guardrails.noteActivity();
     await client.writeAccepted({
       type: 'user',
       message: { role: 'user', content: this.buildUserContent(input) },
@@ -1125,9 +1056,8 @@ export class ClaudeProtocolAdapter
     // settleApprovalWait().
     if (
       this.activeTurnId !== null &&
-      this.turnStartedAtMs !== null &&
       this.pendingApprovals.size === 0 &&
-      now - this.turnStartedAtMs > this.turnTimeoutMs
+      this.guardrails.isTurnOverdue(now)
     ) {
       const turnId = this.activeTurnId;
       const message = `Claude turn exceeded ${this.turnTimeoutMs}ms without completing; the subprocess was terminated.`;
@@ -1153,7 +1083,7 @@ export class ClaudeProtocolAdapter
       this.activeTurnId === null &&
       this.client &&
       this.client.running &&
-      now - this.lastActivityAt > this.idleTtlMs
+      this.guardrails.isIdle(now)
     ) {
       const dead = this.client;
       this.client = null;
@@ -1194,9 +1124,8 @@ export class ClaudeProtocolAdapter
     this.activeTurnId = input.turnId;
     this.activeTurnInput = input;
     this.activeStartedAt = startedAt;
-    this.turnStartedAtMs = Date.now();
     this.completedActiveTurn = false;
-    this.lastActivityAt = Date.now();
+    this.guardrails.noteTurnStart();
 
     const attachmentMeta = (input.attachments ?? []).map((a) => ({
       type: a.type,
@@ -1204,18 +1133,7 @@ export class ClaudeProtocolAdapter
       ...(a.mimeType ? { mimeType: a.mimeType } : {}),
     }));
 
-    this.emitPatch({
-      type: 'agent-turn-started-v2',
-      sessionId: this.config.sessionId,
-      timestamp: startedAt,
-      turn: {
-        id: input.turnId,
-        status: 'running',
-        inputMessageId: `user-${input.turnId}`,
-        items: [],
-        startedAt,
-      },
-    });
+    emitTurnStartedPatch(this.patchSink, { turnId: input.turnId, startedAt });
     this.emitPatch({
       type: 'agent-item-started-v2',
       sessionId: this.config.sessionId,
@@ -1313,35 +1231,12 @@ export class ClaudeProtocolAdapter
   private ensureClient(): void {
     if (this.client && this.client.running) return;
 
-    this.pruneCrashWindow(Date.now());
-    if (this.crashTimestamps.length >= CRASH_BREAKER_MAX_RESPAWNS) {
+    if (this.guardrails.isCrashLooping()) {
       throw new Error(
         'Claude subprocess is crash-looping (3 respawns within 5 minutes); not respawning. Use "Continue here" to start a fresh session.'
       );
     }
     this.spawnClient();
-  }
-
-  private pruneCrashWindow(now: number): void {
-    const windowStart = now - CRASH_BREAKER_WINDOW_MS;
-    while (
-      this.crashTimestamps.length > 0 &&
-      this.crashTimestamps[0]! < windowStart
-    ) {
-      this.crashTimestamps.shift();
-    }
-  }
-
-  /**
-   * Record an *unexpected* child failure for the crash-loop breaker. Only
-   * reached from `handleClientClose`/`handleSpawnError`, which fire solely when
-   * `this.client` still points at the failing child — deliberate kills detach
-   * first, so interrupt-ladder/turn-timeout/idle evictions never count here.
-   */
-  private recordCrash(): void {
-    const now = Date.now();
-    this.pruneCrashWindow(now);
-    this.crashTimestamps.push(now);
   }
 
   private spawnClient(): void {
@@ -1470,13 +1365,9 @@ export class ClaudeProtocolAdapter
   }
 
   private buildEnv(): Record<string, string> {
-    const env = {
-      ...cleanEnv(),
-      ...(this.config?.processEnv ?? {}),
-    };
-    delete env.CLAUDECODE; // preserve the nesting rule across trusted overlays
-    delete env.CLAUDE_CODE_ENTRYPOINT; // avoid inheriting a stale value
-    return env;
+    // The nesting strip (CLAUDECODE + CLAUDE_CODE_ENTRYPOINT) is applied by
+    // `buildChildEnv` for every provider; claude adds nothing on top.
+    return buildChildEnv({ processEnv: this.config?.processEnv });
   }
 
   // ── Close / crash handling ─────────────────────────────────────────────────
@@ -1491,7 +1382,9 @@ export class ClaudeProtocolAdapter
     // This handler only runs for an unexpected exit (deliberate kills detach
     // `this.client` first and are filtered out by the caller's identity guard),
     // so every close reaching here is a crash for the breaker.
-    this.recordCrash();
+    // Unexpected failure only: deliberate kills detach the client first, so
+    // the interrupt ladder, turn timeout, and idle eviction never land here.
+    this.guardrails.recordCrash();
 
     if (this.activeTurnId !== null && !this.completedActiveTurn) {
       const turnId = this.activeTurnId;
@@ -1531,7 +1424,9 @@ export class ClaudeProtocolAdapter
 
   private handleSpawnError(err: Error): void {
     this.client = null;
-    this.recordCrash();
+    // Unexpected failure only: deliberate kills detach the client first, so
+    // the interrupt ladder, turn timeout, and idle eviction never land here.
+    this.guardrails.recordCrash();
     const enoent =
       /ENOENT/.test(err.message) ||
       (err as NodeJS.ErrnoException).code === 'ENOENT';
@@ -1679,7 +1574,7 @@ export class ClaudeProtocolAdapter
     } else {
       this.completeActiveTurn('completed', usage);
     }
-    this.lastActivityAt = Date.now();
+    this.guardrails.noteActivity();
     this.drainQueue();
   }
 
@@ -2323,12 +2218,7 @@ export class ClaudeProtocolAdapter
     // Entering the waiting-approval sub-state — start the wait clock on the
     // transition from zero outstanding approvals so its elapsed time can later be
     // excluded from the turn-timeout budget (§6).
-    if (
-      this.pendingApprovals.size === 0 &&
-      this.approvalWaitStartedMs === null
-    ) {
-      this.approvalWaitStartedMs = Date.now();
-    }
+    if (this.pendingApprovals.size === 0) this.guardrails.enterApprovalWait();
     this.pendingApprovals.set(requestId, {
       turnId,
       toolName,
@@ -2491,12 +2381,7 @@ export class ClaudeProtocolAdapter
    * (§6). No-op while approvals are still outstanding.
    */
   private settleApprovalWait(): void {
-    if (this.approvalWaitStartedMs === null) return;
-    if (this.pendingApprovals.size > 0) return;
-    if (this.turnStartedAtMs !== null) {
-      this.turnStartedAtMs += Date.now() - this.approvalWaitStartedMs;
-    }
-    this.approvalWaitStartedMs = null;
+    this.guardrails.settleApprovalWait(this.pendingApprovals.size);
   }
 
   /**
@@ -2557,22 +2442,19 @@ export class ClaudeProtocolAdapter
       ? Date.now() - Date.parse(this.activeStartedAt)
       : undefined;
 
-    this.emitPatch({
-      type: 'agent-turn-completed-v2',
-      sessionId: this.sessionId,
-      timestamp: completedAt,
+    emitTurnCompletedPatch(this.patchSink, {
       turnId,
       status,
       completedAt,
-      ...(durationMs !== undefined ? { durationMs } : {}),
-      ...(usage !== undefined ? { usage } : {}),
-      ...(error !== undefined ? { error } : {}),
+      durationMs,
+      usage,
+      error,
     });
 
     this.activeTurnId = null;
     this.activeTurnInput = null;
     this.activeStartedAt = null;
-    this.turnStartedAtMs = null;
+    this.guardrails.noteTurnEnd();
     this.streamedTextItems.clear();
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
@@ -2581,7 +2463,6 @@ export class ClaudeProtocolAdapter
     this.streamFallbackMessageSeq = 0;
     this.activeToolUses.clear();
     this.clearPendingApprovals();
-    this.approvalWaitStartedMs = null;
 
     this.emitLiveState({
       status: this.queue.length > 0 ? 'working' : 'idle',
@@ -2615,23 +2496,14 @@ export class ClaudeProtocolAdapter
       );
       return;
     }
-    const queued = this.queue.shift();
-    if (!queued) return;
-    try {
-      this.startTurn(queued.input);
-      queued.resolve();
-    } catch (err) {
-      queued.reject(err);
-      // A crash-loop breaker trip fails this turn; try the next queued one so a
-      // single poisoned message does not wedge the queue.
-      this.drainQueue();
-    }
+    // A crash-loop breaker trip fails one turn; the shared queue's
+    // reject-and-continue rule then tries the next so a single poisoned
+    // message does not wedge the rest.
+    this.queue.drain();
   }
 
   private rejectQueued(err: unknown): void {
-    const queued = this.queue.splice(0);
-    for (const message of queued) message.reject(err);
-    if (queued.length > 0) this.emitLiveState({ queueLength: 0 });
+    this.queue.rejectAll(err);
   }
 
   private async applyRuntimeEnvRefresh(
@@ -2701,21 +2573,7 @@ export class ClaudeProtocolAdapter
     config?: AgentSessionUpdatedPatchV2['config'];
     slashCommands?: AgentSlashCommandV2[];
   }): void {
-    this.emitPatch({
-      type: 'agent-session-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      ...(update.providerSession !== undefined
-        ? { providerSession: update.providerSession }
-        : {}),
-      ...(update.capabilities !== undefined
-        ? { capabilities: update.capabilities }
-        : {}),
-      ...(update.config !== undefined ? { config: update.config } : {}),
-      ...(update.slashCommands !== undefined
-        ? { slashCommands: update.slashCommands }
-        : {}),
-    });
+    emitSessionUpdatePatch(this.patchSink, update);
   }
 
   private emitCompaction(message: Record<string, unknown>): void {
@@ -2763,34 +2621,17 @@ export class ClaudeProtocolAdapter
     payload: Record<string, unknown>,
     visibility: ClaudeEventVisibility = 'normal'
   ): void {
-    const seq = ++this.providerExtensionSeq;
-    this.emitPatch({
-      type: 'agent-item-started-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
+    emitProviderExtensionPatch(this.patchSink, {
       turnId,
-      item: {
-        type: 'providerExtension',
-        id: `ext-claude-${turnId}-${seq}`,
-        namespace: 'claude',
-        payload,
-        ...(visibility === 'normal'
-          ? {}
-          : { metadata: { eventVisibility: visibility } }),
-        status: 'completed',
-        startedAt: nowIso(),
-        completedAt: nowIso(),
-      },
+      namespace: 'claude',
+      seq: ++this.providerExtensionSeq,
+      payload,
+      visibility,
     });
   }
 
   private emitLiveState(live: Partial<AgentSessionLiveStateV2>): void {
-    this.emitPatch({
-      type: 'agent-live-state-updated-v2',
-      sessionId: this.sessionId,
-      timestamp: nowIso(),
-      live,
-    });
+    emitLiveStatePatch(this.patchSink, live);
   }
 
   private applyRuntimeParams(config: AdapterConfig): void {

@@ -1,5 +1,10 @@
 import { OPENCODE_CHANNEL_COMMAND } from './launch-commands.js';
-import { reconnectWithStoredConfig } from './adapter-utils.js';
+import {
+  buildChildEnv,
+  readSseStream,
+  reconnectWithStoredConfig,
+} from './adapter-utils.js';
+import { OPENCODE_EXTRA_ENV_DENYLIST } from './provider-env.js';
 import { openCodeStatusType } from './opencode-shared.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -14,7 +19,6 @@ import type {
 } from '../protocol-adapter.js';
 import type { ChatEvent, ChatEventSource } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
-import { cleanEnv } from '../utils.js';
 
 const logger = createLogger('opencode-adapter');
 const MAX_TRACKED_USER_MESSAGES = 100;
@@ -121,10 +125,10 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       (config.extra?.['args'] as string[] | undefined) ?? defaultArgs
     ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
 
-    const env = { ...cleanEnv(), ...(config.processEnv ?? {}) };
-    delete env['CLAUDECODE'];
-    delete env['OPENCODE_SERVER_PASSWORD'];
-    delete env['OPENCODE_SERVER_USERNAME'];
+    const env = buildChildEnv({
+      processEnv: config.processEnv,
+      denylist: OPENCODE_EXTRA_ENV_DENYLIST,
+    });
 
     this._process = this.spawnFn(command, args, {
       cwd: config.cwd,
@@ -565,28 +569,11 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     }
     if (!res.body) throw new Error('SSE response has no body');
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let eventData = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (line.startsWith('data:')) {
-          const dataLine = line.slice(5).trim();
-          eventData = eventData ? eventData + '\n' + dataLine : dataLine;
-        } else if (line.trim() === '' && eventData) {
-          this.handleSseEventData(eventData);
-          eventData = '';
-        }
-      }
-    }
+    // Framing belongs to `readSseStream`; OpenCode sends no `event:` field, so
+    // only the data payload is meaningful here.
+    await readSseStream(res.body, (record) =>
+      this.handleSseEventData(record.data)
+    );
   }
 
   private handleSseEventData(eventData: string): void {

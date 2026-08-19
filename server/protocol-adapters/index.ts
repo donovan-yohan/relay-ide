@@ -22,6 +22,13 @@ import { CodexNativeProtocolAdapter } from './codex-native-adapter.js';
 import { PrimeAgentProtocolAdapter } from './prime-agent-adapter.js';
 import { PiAgentProtocolAdapter } from './pi-agent-adapter.js';
 import {
+  CLAUDE_ENV_DENYLIST,
+  CODEX_ENV_DENYLIST,
+  OPENCODE_ENV_DENYLIST,
+  PI_AGENT_ENV_DENYLIST,
+  PRIME_AGENT_ENV_DENYLIST,
+} from './provider-env.js';
+import {
   CLAUDE_CHANNEL_COMMAND,
   CODEX_CHANNEL_COMMAND,
   OPENCODE_CHANNEL_COMMAND,
@@ -225,7 +232,7 @@ export const PROVIDER_DESCRIPTORS = {
     terminalFrameworkId: 'claude',
     launch: {
       requirement: { kind: 'command', command: CLAUDE_CHANNEL_COMMAND },
-      processEnvDenylist: ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+      processEnvDenylist: CLAUDE_ENV_DENYLIST,
     },
     bridgedCapabilities: null,
     // Channel agents run the persistent-subprocess adapter over stream-json
@@ -253,7 +260,7 @@ export const PROVIDER_DESCRIPTORS = {
     terminalFrameworkId: 'codex',
     launch: {
       requirement: { kind: 'command', command: CODEX_CHANNEL_COMMAND },
-      processEnvDenylist: ['CLAUDECODE'],
+      processEnvDenylist: CODEX_ENV_DENYLIST,
     },
     bridgedCapabilities: null,
     // Channel agents run the native `codex app-server` JSON-RPC adapter
@@ -280,7 +287,7 @@ export const PROVIDER_DESCRIPTORS = {
     terminalFrameworkId: 'prime-agent',
     launch: {
       requirement: { kind: 'command', command: PRIME_AGENT_CHANNEL_COMMAND },
-      processEnvDenylist: ['CLAUDECODE'],
+      processEnvDenylist: PRIME_AGENT_ENV_DENYLIST,
     },
     bridgedCapabilities: null,
     supportsChannelAgents: true,
@@ -304,7 +311,7 @@ export const PROVIDER_DESCRIPTORS = {
     terminalFrameworkId: 'pi',
     launch: {
       requirement: { kind: 'command', command: PI_AGENT_CHANNEL_COMMAND },
-      processEnvDenylist: ['CLAUDECODE'],
+      processEnvDenylist: PI_AGENT_ENV_DENYLIST,
     },
     bridgedCapabilities: null,
     supportsChannelAgents: true,
@@ -326,11 +333,7 @@ export const PROVIDER_DESCRIPTORS = {
     terminalFrameworkId: 'opencode',
     launch: {
       requirement: { kind: 'command', command: OPENCODE_CHANNEL_COMMAND },
-      processEnvDenylist: [
-        'CLAUDECODE',
-        'OPENCODE_SERVER_PASSWORD',
-        'OPENCODE_SERVER_USERNAME',
-      ],
+      processEnvDenylist: OPENCODE_ENV_DENYLIST,
     },
     bridgedCapabilities: {
       text: true,
