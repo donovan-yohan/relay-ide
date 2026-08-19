@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  frameworkCapabilitiesWithChannelLane,
   getFrameworkAvailability,
   getFrameworkChannelAvailability,
   getFrameworkClientInfo,
+  listConfiguredFrameworks,
   resolveExecutablePath,
 } from '../server/frameworks.js';
 import type { AgentFramework } from '../server/types.js';
@@ -223,6 +225,38 @@ describe('framework CLI availability', () => {
       available: false,
       reason: 'future-agent has no registered channel runtime.',
     });
+  });
+
+  it('ignores a config override that tries to toggle the channel lane', async () => {
+    // Deliberate delta: the provider descriptor is the ONE channel-lane gate, so
+    // `config.frameworks.<id>.capabilities.supportsChannelAgents` decides nothing
+    // in either direction. The claim direction is pinned by the fail-closed test
+    // above (a custom framework with no descriptor stays unavailable); this pins
+    // the disable direction, which the old deep-merged catalog boolean honored.
+    const disabled = listConfiguredFrameworks({
+      claude: {
+        capabilities: {
+          supportsHooks: true,
+          supportsContinue: true,
+          supportsYolo: true,
+          supportsTelemetry: true,
+          supportsAttachedRuntime: true,
+          supportsChannelAgents: false,
+        },
+      },
+    }).find((framework) => framework.id === 'claude');
+
+    expect(disabled?.capabilities.supportsChannelAgents).toBe(false);
+    expect(
+      frameworkCapabilitiesWithChannelLane(disabled!).supportsChannelAgents
+    ).toBe(true);
+    await expect(
+      getFrameworkChannelAvailability(
+        disabled!,
+        { PATH: '' },
+        { probeLaunchCommand: false }
+      )
+    ).resolves.toEqual({ available: true, command: 'claude' });
   });
 
   it('includes custom future frameworks in the client list', () => {

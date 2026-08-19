@@ -36,6 +36,13 @@ test/git-watcher.test.ts
 test/workspace-divergence-api.test.ts
 "
 
+# Git exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE into hook processes.
+# Tests that validate arbitrary repo paths (e.g. workspace-groups
+# terminal cwd) then resolve against THIS repo instead of their temp
+# repos and fail — only inside hooks, never standalone (#1416). Scrub
+# them so vitest sees the same env as a normal `npm test`.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 PREPUSH_VITEST_EXCLUDES=""
 for file in $PREPUSH_EXCLUDE_FILES; do
   PREPUSH_VITEST_EXCLUDES="$PREPUSH_VITEST_EXCLUDES --exclude $file"

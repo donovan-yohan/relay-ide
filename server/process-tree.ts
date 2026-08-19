@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 
+import { providerDescriptors } from './protocol-adapters/index.js';
+
 export type LanguageServerKind =
   | 'tsserver'
   | 'typescript-language-server'
@@ -331,6 +333,67 @@ export function scheduleRelayProcessTreeReap(
   return summary;
 }
 
+/** Relay's own entrypoints. Provider CLI names come from the descriptors. */
+const RELAY_ENTRYPOINT_COMMAND_LINE_PATTERN = /relay-ide|relayctl/i;
+
+interface RelayOwnershipPatterns {
+  commandLine: RegExp;
+  commandBasename: RegExp | null;
+}
+
+let relayOwnershipPatterns: RelayOwnershipPatterns | null = null;
+
+/**
+ * Built on first use, not at module load: `claude-adapter.ts` and
+ * `codex-native-adapter.ts` import THIS module, so reading the adapter registry
+ * at module scope would be a temporal-dead-zone crash whenever the registry
+ * happens to load first. By call time both modules are initialized.
+ */
+function ownershipPatterns(): RelayOwnershipPatterns {
+  if (relayOwnershipPatterns) return relayOwnershipPatterns;
+  const substrings = [
+    RELAY_ENTRYPOINT_COMMAND_LINE_PATTERN.source,
+    ...providerDescriptors().flatMap((descriptor) =>
+      descriptor.processMatch.commandLineSubstrings.map(escapeForRegExp)
+    ),
+  ];
+  const basenames = providerDescriptors().flatMap((descriptor) =>
+    descriptor.processMatch.commandBasenames.map(escapeForRegExp)
+  );
+  relayOwnershipPatterns = {
+    commandLine: new RegExp(substrings.join('|'), 'i'),
+    commandBasename: basenames.length
+      ? new RegExp(`(?:^|/)(?:${basenames.join('|')})$`, 'i')
+      : null,
+  };
+  return relayOwnershipPatterns;
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Heuristic: does this process look like Relay or one of its agent CLIs?
+ *
+ * The provider names come from `ProviderDescriptor.processMatch`
+ * (`server/protocol-adapters/index.ts`), so a new provider's CLI is recognized as
+ * soon as it registers. This used to be a hand-maintained regex, and a provider
+ * missing from it had its language-server children silently attributed to nobody.
+ * Command-line matching is substring-based on purpose (paths, wrappers, args);
+ * names too short for that — `pi` — match the command basename instead.
+ */
+export function isRelayOwnedAgentProcess(candidate: {
+  command: string;
+  commandLine: string;
+}): boolean {
+  const patterns = ownershipPatterns();
+  return (
+    patterns.commandLine.test(candidate.commandLine) ||
+    patterns.commandBasename?.test(candidate.command) === true
+  );
+}
+
 export function collectLanguageServerDiagnostics(
   options: ProcessTableOptions = {}
 ): LanguageServerDiagnostics {
@@ -340,13 +403,9 @@ export function collectLanguageServerDiagnostics(
     .filter((proc) => proc.languageServerKind)
     .map((proc) => {
       const ancestors = ancestorsOf(proc, byPid);
-      const relayOwnedLikely = [proc, ...ancestors].some((candidate) => {
-        return (
-          /relay-ide|relayctl|claude|codex|opencode|hermes|prime-agent/i.test(
-            candidate.commandLine
-          ) || /(?:^|\/)pi$/i.test(candidate.command)
-        );
-      });
+      const relayOwnedLikely = [proc, ...ancestors].some((candidate) =>
+        isRelayOwnedAgentProcess(candidate)
+      );
       return {
         pid: proc.pid,
         ppid: proc.ppid,

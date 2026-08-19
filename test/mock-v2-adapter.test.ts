@@ -550,7 +550,7 @@ describe('MockProtocolAdapterV2', () => {
     expect(createAdapterV2('mock')).toBeInstanceOf(MockProtocolAdapterV2);
   });
 
-  it('advertises the full v2 UI capability superset', () => {
+  it('advertises every v2 UI capability it can actually back', () => {
     const adapter = new MockProtocolAdapterV2(zeroDelays);
 
     expect(adapter.capabilities).toEqual({
@@ -564,6 +564,9 @@ describe('MockProtocolAdapterV2', () => {
       plans: true,
       slashCommands: true,
       queue: true,
+      // The one exception to "everything on": there is no `steerMessage` here, so
+      // a true flag would be a capability the double cannot honor.
+      steer: false,
       interrupt: true,
       cancelQueued: true,
       resume: true,
@@ -610,7 +613,9 @@ describe('MockProtocolAdapterV2', () => {
 
     await adapter.resumeSession('mock-session-abc');
 
-    const snapshot = patches.find((p) => p.type === 'agent-session-snapshot-v2');
+    const snapshot = patches.find(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
     expect(snapshot).toMatchObject({
       type: 'agent-session-snapshot-v2',
       session: expect.objectContaining({

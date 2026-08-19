@@ -22,6 +22,7 @@ import type { AdapterConfig } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import {
   createAdapterV2,
+  providerDescriptor,
   sanitizeChannelAdapterProcessEnv,
 } from './protocol-adapters/index.js';
 import { createLogger } from './logger.js';
@@ -141,26 +142,23 @@ export function configureChannelAgentRuntimes(input: {
  * key in the blob — Relay's own `lastDeliveredSeq`, an adapter's private
  * bookkeeping — is inert at spawn time. Exported so callers that must know
  * whether a respawned runtime still holds its prior conversation ask THIS
- * question rather than "is the blob non-empty" (#1408): a persisted key this
- * map does not name replays nothing.
+ * question rather than "is the blob non-empty" (#1408): a persisted key the
+ * descriptor does not name replays nothing.
+ *
+ * The key comes from `ProviderDescriptor.resumeStateKey`
+ * (`server/protocol-adapters/index.ts`), keyed by registry provider id and NOT by
+ * `adapter.agentType` — the bridged `opencode-attached` adapter reports
+ * `agentType: 'opencode'`, while resume state is per registered provider. This
+ * used to be a hand-maintained ladder here, and a provider missing from it failed
+ * SILENTLY: it connected, then never resumed, with no error, no type error, and
+ * no test.
  */
 export function providerResumeId(
   providerId: string,
   state: Record<string, unknown> | undefined
 ): string | undefined {
   if (!state) return undefined;
-  const key =
-    providerId === 'claude'
-      ? 'claudeSessionId'
-      : providerId === 'codex'
-        ? 'threadId'
-        : providerId === 'hermes'
-          ? 'hermesResponseId'
-          : providerId === 'prime-agent'
-            ? 'primeAgentSessionId'
-            : providerId === 'pi'
-              ? 'piSessionId'
-              : undefined;
+  const key = providerDescriptor(providerId)?.resumeStateKey;
   if (!key) return undefined;
   const value = state[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;

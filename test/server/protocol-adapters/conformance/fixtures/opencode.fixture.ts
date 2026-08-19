@@ -20,7 +20,8 @@
  * Rig shape: the registry builds `LegacyProtocolAdapterV2Bridge(new
  * OpenCodeProtocolAdapter(), <capability literal>)`, so the rig builds the same
  * pair with the spawn seam injected. The capability object is hand-copied from
- * `server/protocol-adapters/index.ts` lines 58-79 and the suite's registry
+ * `PROVIDER_DESCRIPTORS.opencode.bridgedCapabilities`
+ * (`server/protocol-adapters/index.ts`) and the suite's registry
  * parity test guards the copy against drift.
  *
  * Turn boundary quirk: an OpenCode turn is bounded by the message POST, not by
@@ -42,10 +43,12 @@ import type {
 } from '../fixture-types.js';
 
 /**
- * Hand-copied from `v2Adapters.opencode` in `server/protocol-adapters/index.ts`
- * (lines 58-79). The suite's `registry parity` test asserts this equals the
- * registered set, so a registry edit that skips this file fails there rather
- * than silently reconciling against a stale literal.
+ * Hand-copied from `PROVIDER_DESCRIPTORS.opencode.bridgedCapabilities` in
+ * `server/protocol-adapters/index.ts`.
+ * The suite's `registry parity` test asserts this equals the registered set, so
+ * a registry edit that skips this file fails there rather than silently
+ * reconciling against a stale literal. The registry transcription is total over
+ * `AgentCapabilitySetV2`, so this twin is too.
  */
 const OPENCODE_BRIDGE_CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -54,12 +57,19 @@ const OPENCODE_BRIDGE_CAPABILITIES: AgentCapabilitySetV2 = {
   commandExecution: true,
   fileChanges: true,
   approvals: true,
+  questions: false,
+  plans: false,
   slashCommands: false,
   queue: false,
+  steer: false,
   interrupt: true,
   cancelQueued: false,
   resume: false,
+  fork: false,
+  rollback: false,
+  compact: false,
   telemetry: true,
+  rateLimits: false,
   streaming: true,
 };
 

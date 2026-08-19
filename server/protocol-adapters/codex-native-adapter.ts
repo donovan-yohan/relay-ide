@@ -130,7 +130,9 @@ const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {
   telemetry: true,
   rateLimits: true,
   streaming: true,
-};
+  // `Required<...>`: a new protocol capability must be answered here rather than
+  // read as false by omission. See `Fidelity invariants` in AGENTS.md.
+} satisfies Required<AgentCapabilitySetV2>;
 
 // ── Relay-owned bake-ins ───────────────────────────────────────────────────
 

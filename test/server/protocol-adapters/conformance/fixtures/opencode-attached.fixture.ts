@@ -5,7 +5,9 @@
  * Transport: no spawn. The rig builds the same two-plane twin the registry
  * builds — inner `new OpenCodeAttachedAdapter()` pointed at
  * `config.extra.endpoint`, wrapped in the bridge with the capability set
- * transcribed from `server/protocol-adapters/index.ts` lines 80-98 — and hands
+ * transcribed from
+ * `PROVIDER_DESCRIPTORS['opencode-attached'].bridgedCapabilities`
+ * (`server/protocol-adapters/index.ts`) — and hands
  * it an offline `fetch` double (`../stubs/opencode-attached.stub.ts`) serving
  * `/global/health` plus a held-open `/event` SSE stream.
  *
@@ -76,9 +78,12 @@ const NO_TERMINAL_TURN_PATCH =
   'OpenCodeAttachedAdapter never fires chat:turn-completed (its session.status handler only re-broadcasts chat:session-status, unlike OpenCodeProtocolAdapter.handleSessionStatus which closes the turn) and its chat:error carries no turnId, so the compat bridge cannot synthesize a failed terminal either. No scripted transcript can end a turn, so every invariant that reads a terminal patch is unevaluable.';
 
 /**
- * Capability set transcribed from `index.ts` lines 80-98. The registry-parity
- * test compares this against the real factory, so any registry edit that is not
- * mirrored here fails loudly instead of quietly weakening the floor.
+ * Capability set transcribed from
+ * `PROVIDER_DESCRIPTORS['opencode-attached'].bridgedCapabilities` in
+ * `server/protocol-adapters/index.ts`. The registry-parity test compares this
+ * against the real factory, so any registry edit that is not mirrored here fails
+ * loudly instead of quietly weakening the floor. The registry transcription is
+ * total over `AgentCapabilitySetV2`, so this twin is too.
  */
 const REGISTERED_CAPABILITIES = {
   text: true,
@@ -87,12 +92,19 @@ const REGISTERED_CAPABILITIES = {
   commandExecution: true,
   fileChanges: true,
   approvals: true,
+  questions: false,
+  plans: false,
   slashCommands: false,
   queue: false,
+  steer: false,
   interrupt: true,
   cancelQueued: false,
   resume: false,
+  fork: false,
+  rollback: false,
+  compact: false,
   telemetry: true,
+  rateLimits: false,
   streaming: true,
 } as const;
 

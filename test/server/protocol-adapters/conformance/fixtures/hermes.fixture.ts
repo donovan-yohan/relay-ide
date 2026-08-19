@@ -46,9 +46,11 @@ const SESSION = 'conf-hermes';
 
 /**
  * Hand-transcribed twin of the `hermes` capability block in
- * `server/protocol-adapters/index.ts` (lines 99-119), including the
+ * `PROVIDER_DESCRIPTORS.hermes.bridgedCapabilities`
+ * (`server/protocol-adapters/index.ts`), including the
  * `telemetry: false` honesty note. The suite's registry-parity test compares
- * this against the registered factory, so a drifted copy fails loudly.
+ * this against the registered factory, so a drifted copy fails loudly. The
+ * registry set is total over `AgentCapabilitySetV2`, so this twin is too.
  */
 const HERMES_CAPABILITIES = {
   text: true,
@@ -57,16 +59,26 @@ const HERMES_CAPABILITIES = {
   commandExecution: true,
   fileChanges: true,
   approvals: true,
+  questions: false,
+  plans: false,
   slashCommands: false,
   queue: false,
+  steer: false,
   interrupt: true,
   cancelQueued: false,
   resume: true,
+  fork: false,
+  rollback: false,
+  compact: false,
   // `HermesProtocolAdapter` emits `chat:telemetry`, but
   // `mapChatEventToAgentPatchV2` has no case for it, so the bridge drops it
   // before the V2 stream (#1104). The flag stays false until that mapping
   // exists; this fixture drives a real `usage` payload to keep that honest.
   telemetry: false,
+  rateLimits: false,
+  // Unset in the registry until the gateway emits `response.output_text.delta`
+  // (#1305); stated here because the transcription is total.
+  streaming: false,
 } as const;
 
 /** Captured `apply_patch` output: a created-file unified diff. */

@@ -408,7 +408,18 @@ const SECRET_KEY_PATTERN =
 const SECRET_VALUE_PATTERN =
   /(bearer\s+[A-Za-z0-9._~+/=-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|relay-sac-v1\.|BEGIN [A-Z ]*PRIVATE KEY)/i;
 const CUSTOM_PROVIDER_PATTERN = /^custom:[A-Za-z0-9._-]{1,80}$/;
-const BUILTIN_PROVIDER_IDS = new Set([
+/**
+ * Provider ids a topic's `routingDefaults.providerId` may name without the
+ * `custom:` prefix. `terminal` is the non-agent routing lane, not an adapter.
+ *
+ * The declaration of record is `ProviderDescriptor.allowedAsTopicRoutingDefault`
+ * (`server/protocol-adapters/index.ts`). This set has to be restated here because
+ * `shared/` must not import from `server/` and the topic validator runs on both
+ * sides; `test/provider-registry-drift.test.ts` binds the two in both directions,
+ * so a registered provider missing here (its topic routing default REJECTED by
+ * `assertProviderId`) or a name no adapter serves fails the drift suite.
+ */
+export const BUILTIN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'claude',
   'codex',
   'opencode',

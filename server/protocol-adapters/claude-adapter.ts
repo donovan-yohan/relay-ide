@@ -61,7 +61,9 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   telemetry: true,
   rateLimits: true,
   streaming: true,
-};
+  // `Required<...>`: a new protocol capability must be answered here rather than
+  // read as false by omission. See `Fidelity invariants` in AGENTS.md.
+} satisfies Required<AgentCapabilitySetV2>;
 
 // Claude stream-json has no mapped runtime-control transport. Keep its catalog
 // provider-native until an executable control contract exists; advertising a
