@@ -110,6 +110,7 @@ describe('buildMentionContextPacket', () => {
     };
 
     const packet = buildMentionContextPacketEnvelope({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -293,6 +294,7 @@ describe('buildMentionContextPacket', () => {
     try {
       const resolved = resolveMentionContextPacket(
         buildMentionContextPacketEnvelope({
+          channelId: 'general',
           channelTitle: 'general',
           framework: 'hermes',
           rows,
@@ -358,6 +360,7 @@ describe('buildMentionContextPacket', () => {
     try {
       const resolved = resolveMentionContextPacket(
         buildMentionContextPacketEnvelope({
+          channelId: 'general',
           channelTitle: 'general',
           framework: 'claude',
           rows: [row],
@@ -399,6 +402,7 @@ describe('buildMentionContextPacket', () => {
       msg(5, HERMES, 'real agent prose'),
     ];
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -418,6 +422,7 @@ describe('buildMentionContextPacket', () => {
 
   it('labels bounded candidate counts as lower bounds', () => {
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [
@@ -454,6 +459,7 @@ describe('buildMentionContextPacket', () => {
       '@claude please fix the flaky channel-hub test'
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -463,6 +469,7 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[relay channel-id=general trigger-seq=5]',
         '3 messages since your last turn (2 shown, 1 activity rows filtered).',
         'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
         'operator: hey team, the build is red',
@@ -497,15 +504,17 @@ describe('buildMentionContextPacket', () => {
       streaming.id
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [root, reply, system, streaming, unrelated],
       trigger,
-      lastDeliveredSeq: 999,
+      lastDeliveredSeq: 0,
     });
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[relay channel-id=general trigger-seq=6]',
         '4 prior thread rows (3 shown, 1 activity rows filtered).',
         '[Thread scope — only this thread is shown; its root message is always included]',
         'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
@@ -537,15 +546,17 @@ describe('buildMentionContextPacket', () => {
       humanReply.id
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [root, ownReply, humanReply],
       trigger,
-      lastDeliveredSeq: 999,
+      lastDeliveredSeq: 0,
     });
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[relay channel-id=general trigger-seq=4]',
         '2 prior thread rows (2 shown, 0 activity rows filtered).',
         '[Thread scope — only this thread is shown; its root message is always included]',
         'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
@@ -576,6 +587,7 @@ describe('buildMentionContextPacket', () => {
       targetReply.id
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [root, targetReply, otherReply],
@@ -586,7 +598,7 @@ describe('buildMentionContextPacket', () => {
     expect(packet).not.toContain('different-thread detail');
   });
 
-  it('keeps an own-agent root despite a high cursor and retains only newest replies', () => {
+  it('keeps an own-agent root on the orientation turn and retains only newest replies', () => {
     const root = { ...msg(1, CLAUDE, 'load-bearing root'), id: 'chm:root' };
     const rows = [root];
     for (let seq = 2; seq <= 25; seq++) {
@@ -600,11 +612,12 @@ describe('buildMentionContextPacket', () => {
       rows.at(-1)!.id
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
       trigger,
-      lastDeliveredSeq: 999,
+      lastDeliveredSeq: 0,
     });
     expect(packet).toContain('claude [agent]: load-bearing root');
     expect(packet).toContain('[…earlier messages omitted]');
@@ -627,6 +640,206 @@ describe('buildMentionContextPacket', () => {
     expect(contextLines).toHaveLength(PACKET_MAX_ROWS);
   });
 
+  it('honors the thread delivery cursor: replies-only, no root', () => {
+    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: 'chm:root' };
+    const rows = [root];
+    for (let seq = 2; seq <= 26; seq++) {
+      rows.push(
+        inThread(msg(seq, OPERATOR, `thread line ${seq}`), root.id, root.id)
+      );
+    }
+    const trigger = inThread(
+      msg(27, OPERATOR, '@claude continue'),
+      root.id,
+      rows.at(-1)!.id
+    );
+    // Cursor on `thread line 21` — the agent's previous turn in this thread.
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 21,
+    });
+    expect(packet).toBe(
+      [
+        '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[relay channel-id=general trigger-seq=27]',
+        '5 thread rows since your last turn (5 shown, 0 activity rows filtered).',
+        // Rootless window: the marker must not promise a root that is not here,
+        // or the agent reads `thread line 22` as the question it is answering.
+        '[Thread scope — only this thread is shown; its root was delivered on an earlier turn]',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
+        'operator: thread line 22',
+        'operator: thread line 23',
+        'operator: thread line 24',
+        'operator: thread line 25',
+        'operator: thread line 26',
+        '',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
+        '@claude continue',
+      ].join('\n')
+    );
+  });
+
+  // #1408. The scope marker is the only line telling an agent what the context
+  // block IS, so it must track whether the root is actually in the block. A
+  // quiet follow-up turn renders it with zero rows, which is exactly where a
+  // stale "root is always included" promise would be read as "row 1 is the
+  // root" on the next turn that does carry rows.
+  it('swaps the thread scope marker for the rootless follow-up shape', () => {
+    const root = {
+      ...msg(1, OPERATOR, 'the load-bearing question'),
+      id: 'chm:root',
+    };
+    const trigger = inThread(
+      msg(9, OPERATOR, '@claude anything yet?'),
+      root.id,
+      root.id
+    );
+    const orientation = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [root],
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(orientation).toContain(
+      '[Thread scope — only this thread is shown; its root message is always included]'
+    );
+    expect(orientation).toContain('operator: the load-bearing question');
+
+    // Same thread, one accepted turn later: nothing new arrived at all.
+    const followUp = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [root],
+      trigger,
+      lastDeliveredSeq: 8,
+    });
+    expect(followUp).toBe(
+      [
+        '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[relay channel-id=general trigger-seq=9]',
+        '[Thread scope — only this thread is shown; its root was delivered on an earlier turn]',
+        '',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
+        '@claude anything yet?',
+      ].join('\n')
+    );
+    expect(followUp).not.toContain('always included');
+    expect(followUp).not.toContain('the load-bearing question');
+  });
+
+  it('throws when the ORIENTATION window cannot resolve its thread root', () => {
+    const root = {
+      ...msg(1, OPERATOR, 'root that was not fetched'),
+      id: 'chm:root',
+    };
+    const reply = inThread(msg(2, OPERATOR, 'orphan reply'), root.id, root.id);
+    const trigger = inThread(
+      msg(3, OPERATOR, '@claude continue'),
+      root.id,
+      reply.id
+    );
+    expect(() =>
+      buildMentionContextPacket({
+        channelId: 'general',
+        channelTitle: 'general',
+        framework: 'claude',
+        rows: [reply],
+        trigger,
+        lastDeliveredSeq: 0,
+      })
+    ).toThrow('thread context root missing: chm:root');
+    // Above the cursor the same row set is a legitimate replies-only packet.
+    expect(
+      buildMentionContextPacket({
+        channelId: 'general',
+        channelTitle: 'general',
+        framework: 'claude',
+        rows: [reply],
+        trigger,
+        lastDeliveredSeq: 1,
+      })
+    ).toContain('operator: orphan reply');
+  });
+
+  it('caps a rootless thread packet at PACKET_MAX_ROWS-1 replies', () => {
+    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: 'chm:root' };
+    const rows: ChannelMessage[] = [];
+    for (let seq = 2; seq <= 40; seq++) {
+      rows.push(
+        inThread(msg(seq, OPERATOR, `thread line ${seq}`), root.id, root.id)
+      );
+    }
+    const trigger = inThread(
+      msg(41, OPERATOR, '@claude continue'),
+      root.id,
+      rows.at(-1)!.id
+    );
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 1,
+    });
+    expect(packet).not.toContain('delivered long ago');
+    const contextLines = packet
+      .split('\n')
+      .filter((line) => line.startsWith('operator: thread line'));
+    expect(contextLines).toHaveLength(PACKET_MAX_ROWS - 1);
+    expect(contextLines[0]).toBe('operator: thread line 26');
+    expect(contextLines.at(-1)).toBe('operator: thread line 40');
+    // Channel-style marker placement: nothing structural is pinned to line 1.
+    expect(packet.indexOf('[…earlier messages omitted]')).toBeLessThan(
+      packet.indexOf('operator: thread line 26')
+    );
+  });
+
+  it('byte-trims a rootless thread packet from row 0 — nothing is pinned', () => {
+    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: 'chm:root' };
+    const rows: ChannelMessage[] = [];
+    for (let seq = 2; seq <= 20; seq++) {
+      rows.push(
+        inThread(
+          msg(seq, OPERATOR, `${seq}:` + 'z'.repeat(1900)),
+          root.id,
+          root.id
+        )
+      );
+    }
+    const trigger = inThread(
+      msg(21, OPERATOR, '@claude continue'),
+      root.id,
+      rows.at(-1)!.id
+    );
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 1,
+    });
+    expect(Buffer.byteLength(packet, 'utf8')).toBeLessThanOrEqual(
+      PACKET_MAX_BYTES
+    );
+    expect(packet).not.toContain('delivered long ago');
+    // Row cap retains seq 6..20; the byte cap then eats from the FRONT. With no
+    // structural root there is no protected index 0, so the oldest retained
+    // reply is trimmed away rather than pinned the way a thread root is.
+    expect(packet).not.toContain('operator: 6:');
+    expect(packet).toContain('operator: 20:');
+    expect(packet).toContain('[…earlier messages omitted]');
+    expect(packet).toContain('@claude continue');
+  });
+
   it('drops oldest thread replies to meet the byte cap but never drops the root', () => {
     const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: 'chm:root' };
     const rows = [root];
@@ -645,6 +858,7 @@ describe('buildMentionContextPacket', () => {
       rows.at(-1)!.id
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -664,6 +878,7 @@ describe('buildMentionContextPacket', () => {
   it('tags an AGENT-authored trigger in the footer (attribution, not impersonation)', () => {
     const trigger = msg(5, HERMES, '@claude take a look at my bisect');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [],
@@ -673,7 +888,7 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
-        '0 messages since your last turn (0 shown, 0 activity rows filtered).',
+        '[relay channel-id=general trigger-seq=5]',
         '',
         '[hermes [agent:hermes] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude take a look at my bisect',
@@ -682,6 +897,7 @@ describe('buildMentionContextPacket', () => {
     // A human mention is unambiguously distinguishable from the agent one above.
     const humanTrigger = msg(6, OPERATOR, '@claude and you look too');
     const humanPacket = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [],
@@ -698,6 +914,7 @@ describe('buildMentionContextPacket', () => {
       rows.push(msg(seq, OPERATOR, `line ${seq}`));
     const trigger = msg(26, OPERATOR, '@claude look');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'c',
       framework: 'claude',
       rows,
@@ -720,6 +937,7 @@ describe('buildMentionContextPacket', () => {
     const rows = [msg(1, OPERATOR, big)];
     const trigger = msg(2, OPERATOR, '@claude go');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'c',
       framework: 'claude',
       rows,
@@ -738,6 +956,7 @@ describe('buildMentionContextPacket', () => {
     }
     const trigger = msg(21, OPERATOR, '@claude go');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'c',
       framework: 'claude',
       rows,
@@ -759,6 +978,7 @@ describe('buildMentionContextPacket', () => {
     ];
     const trigger = msg(4, OPERATOR, '@claude go');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'c',
       framework: 'claude',
       rows,
@@ -770,19 +990,22 @@ describe('buildMentionContextPacket', () => {
     expect(packet).toContain('operator: interim three');
   });
 
-  it('reused session with no interim rows → header + footer only', () => {
+  it('reused session with no interim rows → header + handle + footer only', () => {
     const trigger = msg(10, OPERATOR, '@claude go');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows: [],
       trigger,
       lastDeliveredSeq: 9,
     });
+    // Nothing shown, nothing omitted, nothing filtered: the counts line is pure
+    // overhead and disappears (#1408).
     expect(packet).toBe(
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
-        '0 messages since your last turn (0 shown, 0 activity rows filtered).',
+        '[relay channel-id=general trigger-seq=10]',
         '',
         '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude go',
@@ -791,10 +1014,181 @@ describe('buildMentionContextPacket', () => {
     expect(packet).not.toContain('Recent messages');
   });
 
+  it('keeps the counts line when nothing is shown but rows were filtered', () => {
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [
+        msg(8, SYSTEM, 'activity one', 'system'),
+        msg(9, SYSTEM, 'activity two', 'system'),
+      ],
+      trigger: msg(10, OPERATOR, '@claude go'),
+      lastDeliveredSeq: 7,
+    });
+    // "0 shown, 2 filtered" is real information — two rows happened and the
+    // agent is not seeing them. Only the all-zero statement is suppressed.
+    expect(packet).toContain(
+      '2 messages since your last turn (0 shown, 2 activity rows filtered).'
+    );
+  });
+
+  it('addresses a DM as a direct conversation, not a multi-party chat', () => {
+    const trigger = msg(3, OPERATOR, 'what broke the build?');
+    const packet = buildMentionContextPacket({
+      channelId: 'topic:workspace-local~dm~claude',
+      channelTitle: 'Claude',
+      channelKind: 'dm',
+      framework: 'claude',
+      rows: [msg(2, OPERATOR, 'morning')],
+      trigger,
+      lastDeliveredSeq: 1,
+    });
+    expect(packet).toBe(
+      [
+        '[Relay DM #Claude — you are @claude]',
+        '[relay channel-id=topic:workspace-local~dm~claude trigger-seq=3]',
+        '1 messages since your last turn (1 shown, 0 activity rows filtered).',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
+        'operator: morning',
+        '',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
+        'what broke the build?',
+      ].join('\n')
+    );
+    expect(packet).not.toContain('multi-party chat');
+  });
+
+  it('renders a steer packet as handle + rows + instruction, no envelope', () => {
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      channelKind: 'channel',
+      delivery: 'steer',
+      framework: 'claude',
+      rows: [msg(5, OPERATOR, 'interim note the agent has not seen')],
+      trigger: msg(6, OPERATOR, 'actually check the other branch first'),
+      lastDeliveredSeq: 4,
+    });
+    expect(packet).toBe(
+      [
+        '[relay channel-id=general trigger-seq=6]',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
+        'operator: interim note the agent has not seen',
+        '',
+        '[operator [human] — new instruction for your current turn]',
+        'actually check the other branch first',
+      ].join('\n')
+    );
+    // The live turn already read the envelope; repeating it is pure token cost.
+    expect(packet).not.toContain('Relay channel #');
+    expect(packet).not.toContain('since your last turn');
+  });
+
+  // #1408. Accepting a steer advances the delivery cursor past every interim
+  // row, so those rows are never offered again. Dropping the counts line is
+  // only safe while nothing was omitted: a truncated scan whose eligible rows
+  // all filtered away renders no rows, no omitted marker, and would otherwise
+  // carry no disclosure at all.
+  it('keeps the counts line on a steer whose interim window was truncated', () => {
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      delivery: 'steer',
+      framework: 'claude',
+      rows: [],
+      trigger: msg(900, OPERATOR, 'stop and check the other branch'),
+      lastDeliveredSeq: 4,
+      summary: {
+        totalCount: 400,
+        activityFilteredCount: 400,
+        candidateScanBudget: 400,
+        candidateScanTruncated: true,
+        scope: 'channel',
+      },
+    });
+    expect(packet).toBe(
+      [
+        '[relay channel-id=general trigger-seq=900]',
+        'At least 400 messages since your last turn (0 shown; activity rows filtered: at least 400; newest 400 raw candidates scanned).',
+        '',
+        '[operator [human] — new instruction for your current turn]',
+        'stop and check the other branch',
+      ].join('\n')
+    );
+    // Still no envelope: only the omission disclosure comes back.
+    expect(packet).not.toContain('[Relay channel #');
+  });
+
+  it('drops the counts line on an ordinary steer with nothing omitted', () => {
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      delivery: 'steer',
+      framework: 'claude',
+      rows: [msg(5, OPERATOR, 'interim note')],
+      trigger: msg(6, OPERATOR, 'redirect'),
+      lastDeliveredSeq: 4,
+    });
+    expect(packet).not.toContain('since your last turn');
+    expect(packet).toContain('operator: interim note');
+  });
+
+  it('keeps a steer packet envelope-free in thread scope too', () => {
+    const root = { ...msg(1, OPERATOR, 'thread root'), id: 'chm:root' };
+    const trigger = inThread(
+      msg(4, OPERATOR, 'narrow it to the flaky test'),
+      root.id,
+      root.id
+    );
+    const packet = buildMentionContextPacket({
+      channelId: 'general',
+      channelTitle: 'general',
+      delivery: 'steer',
+      framework: 'claude',
+      rows: [root],
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(packet).toBe(
+      [
+        '[relay channel-id=general trigger-seq=4]',
+        'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
+        'operator: thread root',
+        '',
+        '[operator [human] — new instruction for your current turn]',
+        'narrow it to the flaky test',
+      ].join('\n')
+    );
+    expect(packet).not.toContain('[Thread scope —');
+  });
+
+  it('emits a parseable handle carrying the channel id and trigger seq only', () => {
+    const packet = buildMentionContextPacket({
+      channelId: 'topic:relay-ide-3f9',
+      channelTitle: 'relay-ide',
+      framework: 'claude',
+      rows: [],
+      trigger: msg(412, OPERATOR, '@claude go'),
+      lastDeliveredSeq: 411,
+    });
+    const handleLine = packet.split('\n')[1]!;
+    const match = /^\[relay channel-id=(\S+) trigger-seq=(\d+)\]$/.exec(
+      handleLine
+    );
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe('topic:relay-ide-3f9');
+    expect(match![2]).toBe('412');
+    // Channel-visible text carries the durable channel address and the message
+    // sequence — never a runtime, provider-session, or turn id.
+    expect(packet).not.toMatch(/runtime|session|turnId/i);
+  });
+
   it('indents multi-line row bodies under the sender line', () => {
     const rows = [msg(1, OPERATOR, 'first line\nsecond line')];
     const trigger = msg(2, OPERATOR, '@claude go');
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'c',
       framework: 'claude',
       rows,
@@ -815,6 +1209,7 @@ describe('buildMentionContextPacket', () => {
     ];
     const trigger = msg(4, OPERATOR, '@claude go');
     const envelope = buildMentionContextPacketEnvelope({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -841,6 +1236,7 @@ describe('buildMentionContextPacket', () => {
     ];
     const trigger = msg(2, OPERATOR, '@claude go');
     const envelope = buildMentionContextPacketEnvelope({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,
@@ -866,6 +1262,7 @@ describe('buildMentionContextPacket', () => {
       'chm:row-2'
     );
     const packet = buildMentionContextPacket({
+      channelId: 'general',
       channelTitle: 'general',
       framework: 'claude',
       rows,

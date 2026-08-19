@@ -2470,6 +2470,17 @@ const MOCK_TARGETS: MentionTarget[] = [
   },
 ];
 
+/** Only a real built-in provider id has a `providerResumeId` key (#1408). */
+const CLAUDE_TARGETS: MentionTarget[] = [
+  {
+    id: 'claude',
+    displayName: 'Claude',
+    kind: 'framework',
+    available: true,
+    reason: null,
+  },
+];
+
 function makeBinder(cfg: {
   build: (agentType: string) => ProtocolAdapterV2;
   targets: MentionTarget[];
@@ -4521,6 +4532,245 @@ describe('channel-agent-binder — delivery + idempotency', () => {
       ]
     ).toBe(trigger.seq);
   });
+
+  it('delivers only post-cursor rows on a follow-up thread turn (#1408)', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const profileId = builtInAgentProfileId('mock');
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root question',
+    });
+    store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'early thread detail',
+      parentMessageId: root.id,
+    });
+
+    const first = post(
+      store,
+      binder,
+      '@mock start here',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    // Turn 1 is the orientation window: root plus the prior reply.
+    expect(adapter.sendInputs[0]!.content).toContain(
+      'operator: thread root question'
+    );
+    expect(adapter.sendInputs[0]!.content).toContain(
+      'operator: early thread detail'
+    );
+    // The cursor lands on the THREAD-scoped row, not the channel-scoped one.
+    await waitFor(
+      () =>
+        store.getBinding(CH, profileId, root.id)?.providerSession[
+          'lastDeliveredSeq'
+        ] === first.seq
+    );
+    expect(store.getBinding(CH, profileId)).toBeNull();
+
+    store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'later thread detail',
+      parentMessageId: root.id,
+    });
+    const second = post(
+      store,
+      binder,
+      '@mock and now this',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => adapter.sendInputs.length === 2);
+    const packet = adapter.sendInputs[1]!.content;
+    expect(packet).toContain('operator: later thread detail');
+    expect(packet).not.toContain('thread root question');
+    expect(packet).not.toContain('early thread detail');
+    expect(packet).not.toContain('@mock start here');
+    expect(packet).toContain('@mock and now this');
+    expect(sessions.spawns()).toBe(1);
+    await waitFor(
+      () =>
+        store.getBinding(CH, profileId, root.id)?.providerSession[
+          'lastDeliveredSeq'
+        ] === second.seq
+    );
+  });
+
+  it('re-orients a respawned thread runtime that holds no provider resume state', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root question',
+    });
+    const delivered = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'already delivered detail',
+      parentMessageId: root.id,
+    });
+    // A predecessor runtime consumed the thread and died. Only Relay's own
+    // cursor survives — no adapter resume handle.
+    store.upsertBinding({
+      channelId: CH,
+      threadId: root.id,
+      profileActorId: builtInAgentProfileId('mock'),
+      agentFramework: 'mock',
+      providerSession: { lastDeliveredSeq: delivered.seq },
+    });
+
+    post(store, binder, '@mock continue', ['mock'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    const packet = adapter.sendInputs[0]!.content;
+    expect(packet).toContain('operator: thread root question');
+    expect(packet).toContain('operator: already delivered detail');
+  });
+
+  it('honors the stored thread cursor when the runtime resumes provider state', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('claude', { mode: 'reply', text: 'ok' }),
+      targets: CLAUDE_TARGETS,
+      knownProviderIds: ['claude'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root question',
+    });
+    const delivered = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'already delivered detail',
+      parentMessageId: root.id,
+    });
+    const fresh = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'brand new detail',
+      parentMessageId: root.id,
+    });
+    // Same row, but the adapter kept claude's RESUME handle beside the cursor,
+    // so the respawned process replays the conversation itself.
+    store.upsertBinding({
+      channelId: CH,
+      threadId: root.id,
+      profileActorId: builtInAgentProfileId('claude'),
+      agentFramework: 'claude',
+      providerSession: {
+        claudeSessionId: 'resume-me',
+        lastDeliveredSeq: delivered.seq,
+      },
+    });
+
+    post(store, binder, '@claude continue', ['claude'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()?.providerSession).toMatchObject({
+      claudeSessionId: 'resume-me',
+    });
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    const packet = adapter.sendInputs[0]!.content;
+    expect(packet).toContain('operator: brand new detail');
+    expect(packet).not.toContain('thread root question');
+    expect(packet).not.toContain('already delivered detail');
+    expect(fresh.seq).toBeGreaterThan(delivered.seq);
+  });
+
+  // #1408. Resume is attempted from ONE provider-specific key. A blob that is
+  // non-empty but carries no key this provider resumes from (mock persists
+  // `mockSessionId`) spawns an amnesiac process, so it must still be oriented —
+  // otherwise a custom adapter with private bookkeeping silently defeats the
+  // orientation rule and the agent gets a replies-only packet with no root.
+  it('re-orients when the stored provider state is not a resume handle for this provider', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reply', text: 'ok' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root question',
+    });
+    const delivered = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'already delivered detail',
+      parentMessageId: root.id,
+    });
+    store.upsertBinding({
+      channelId: CH,
+      threadId: root.id,
+      profileActorId: builtInAgentProfileId('mock'),
+      agentFramework: 'mock',
+      providerSession: {
+        // Real key the mock adapter persists — and one `providerResumeId`
+        // does not map, so `runtimes.create` never resumes from it.
+        mockSessionId: 'mock-session-abc',
+        // Claude's key on a mock binding is inert too: resume is per provider.
+        claudeSessionId: 'not-mine',
+        lastDeliveredSeq: delivered.seq,
+      },
+    });
+
+    post(store, binder, '@mock continue', ['mock'], OPERATOR, root.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendInputs.length === 1);
+    const packet = adapter.sendInputs[0]!.content;
+    expect(packet).toContain('operator: thread root question');
+    expect(packet).toContain('operator: already delivered detail');
+  });
+
+  it('never advances the thread cursor when the send is rejected', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new ScriptedAdapter('mock', { mode: 'reject' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'thread root question',
+    });
+    post(store, binder, '@mock please', ['mock'], OPERATOR, root.id);
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('could not receive the message')
+      )
+    );
+    expect(
+      store.getBinding(CH, builtInAgentProfileId('mock'), root.id)
+        ?.providerSession['lastDeliveredSeq']
+    ).toBeUndefined();
+  });
 });
 
 describe('channel-agent-binder — agent-to-agent brake', () => {
@@ -6141,6 +6391,83 @@ describe('channel-agent-binder — DM implicit routing', () => {
     });
   });
 
+  // #1408: a DM has exactly one agent profile, so the multi-party framing was
+  // both false and paid for on every single turn.
+  it('addresses the DM agent directly instead of as one of many participants', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapter = new ScriptedAdapter('hermes', {
+      mode: 'reply',
+      text: 'on it',
+    });
+    const { binder, store } = makeBinder({
+      build: () => adapter,
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    const trigger = postTo(
+      store,
+      binder,
+      DM_CH,
+      'what is the state of the build?'
+    );
+    await waitFor(() => adapter.sendInputs.length === 1);
+
+    const lines = adapter.sendInputs[0]!.content.split('\n');
+    expect(lines[0]).toBe('[Relay DM #Hermes — you are @hermes]');
+    expect(adapter.sendInputs[0]!.content).not.toContain('multi-party chat');
+
+    // The handle is the DM's durable channel id — never the private runtime id.
+    expect(lines[1]).toBe(
+      `[relay channel-id=${DM_CH} trigger-seq=${trigger.seq}]`
+    );
+  });
+
+  // #1408. "DM" is a claim about who else is here, and it is only true for the
+  // DM's OWN agent. An explicitly @-mentioned guest shares the channel with the
+  // human AND the DM agent, so promising it a private 1:1 is the over-claim the
+  // fail-closed default exists to avoid.
+  it('keeps the multi-party header for an explicitly mentioned guest in a DM', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const adapters = new Map<string, ScriptedAdapter>();
+    const { binder, store } = makeBinder({
+      build: (agentType) => {
+        const adapter = new ScriptedAdapter(agentType, {
+          mode: 'reply',
+          text: 'ack',
+        });
+        adapters.set(agentType, adapter);
+        return adapter;
+      },
+      targets: [...HERMES_TARGETS, ...MOCK_TARGETS],
+      knownProviderIds: ['hermes', 'mock'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'settle the build question', OPERATOR, [
+      'hermes',
+    ]);
+    await waitFor(() => adapters.get('hermes')?.sendInputs.length === 1);
+    postTo(store, binder, DM_CH, '@mock second opinion?', OPERATOR, [
+      'hermes',
+      'mock',
+    ]);
+    await waitFor(() => adapters.get('mock')?.sendInputs.length === 1);
+
+    const guest = adapters.get('mock')!.sendInputs[0]!.content;
+    expect(guest.split('\n')[0]).toBe(
+      `[Relay channel #Hermes — you are @mock, one participant in a multi-party chat]`
+    );
+    expect(guest).not.toContain('[Relay DM #');
+    // The DM's own agent keeps the direct framing in the same channel.
+    expect(adapters.get('hermes')!.sendInputs[0]!.content.split('\n')[0]).toBe(
+      '[Relay DM #Hermes — you are @hermes]'
+    );
+  });
+
   it('does not double-route an explicit @mention in a DM', async () => {
     const topics = makeTopics();
     createDmTopic(topics);
@@ -7066,6 +7393,70 @@ describe('channel-agent-binder — mid-turn steering (#1308 slice 4)', () => {
     await waitFor(() => adapter.steerInputs.length === 1);
     expect(adapter.steerInputs[0]?.content).toContain(
       'second implicit instruction'
+    );
+  });
+
+  // #1408: the live turn already read the envelope. A steer is an interjection
+  // into that turn, so it ships the handle, any interim rows, and the
+  // instruction — and still advances the delivery cursor on acceptance.
+  it('ships a steer as handle + instruction with no envelope, and still advances the cursor', async () => {
+    const topics = createWorkspaceTopicStore({ dbPath: ':memory:' });
+    cleanup.push(() => topics.close());
+    topics.create({ id: CH, workspaceId: 'ws:local', title: 'product' });
+    const harness = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+      topicStore: topics,
+    });
+
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer opener',
+      ['steer'],
+      undefined
+    );
+    const adapter = await steerAdapter(harness.sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    // The ordinary turn that opened this run DOES carry the full envelope.
+    expect(adapter.sendInputs[0]!.content).toContain('[Relay channel #product');
+
+    const steerTrigger = postSteering(
+      harness.store,
+      harness.binder,
+      '@steer instead inspect the conflict',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.steerInputs.length === 1);
+
+    const steered = adapter.steerInputs[0]!.content;
+    expect(steered.split('\n')[0]).toBe(
+      `[relay channel-id=${CH} trigger-seq=${steerTrigger.seq}]`
+    );
+    expect(steered).not.toContain('[Relay channel #');
+    expect(steered).not.toContain('since your last turn');
+    expect(steered).not.toContain('[Thread scope —');
+    expect(steered).toContain(
+      '[operator [human] — new instruction for your current turn]'
+    );
+    expect(steered).toContain('@steer instead inspect the conflict');
+
+    // Acceptance advanced the cursor past the steered trigger, so the next
+    // ordinary turn must not re-deliver it as a context row.
+    adapter.completeLatest('redirected reply');
+    postSteering(
+      harness.store,
+      harness.binder,
+      '@steer now summarise',
+      ['steer'],
+      undefined
+    );
+    await waitFor(() => adapter.sendCalls.length === 2);
+    expect(adapter.sendInputs[1]!.content).toContain('@steer now summarise');
+    expect(adapter.sendInputs[1]!.content).not.toContain(
+      'instead inspect the conflict'
     );
   });
 

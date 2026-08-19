@@ -57,25 +57,62 @@ const IMAGE_ONLY_ROW_MARKER = '[image-only message]';
 const NON_TEXT_ROW_MARKER = '[non-text message]';
 const THREAD_SCOPE_MARKER =
   '[Thread scope — only this thread is shown; its root message is always included]';
+/**
+ * Marker for the ordinary follow-up thread turn (#1408): above the delivery
+ * cursor the root was delivered on an earlier turn and this packet is
+ * replies-only. Promising a root that is not there is worse than saying nothing
+ * — an agent that reads "root is always included" takes the first context row
+ * for the root and misreads reply 1 as the question it is answering.
+ */
+const THREAD_SCOPE_MARKER_ROOTLESS =
+  '[Thread scope — only this thread is shown; its root was delivered on an earlier turn]';
 
 export interface BuildMentionContextPacketInput {
+  /**
+   * Durable channel (workspace topic) id, rendered verbatim in the handle line
+   * so an agent can address `relay-ide v1 channels post` at the channel it is
+   * speaking in. This is a public, channel-visible id: NEVER pass a runtime,
+   * provider-session, or turn id here (#1408).
+   */
+  channelId: string;
   /** Human-facing channel title (topic display title), rendered as `#<title>`. */
   channelTitle: string;
+  /**
+   * A DM is a channel with exactly one agent profile, so the multi-party
+   * framing is false there and costs tokens on every turn. Defaults to the
+   * multi-party shape: without a resolvable topic row the caller cannot prove
+   * DM-ness, and over-claiming privacy is the worse error.
+   */
+  channelKind?: 'dm' | 'channel';
+  /**
+   * `turn` is the ordinary mention delivery. `steer` is a mid-turn instruction
+   * injected into a LIVE turn: the provider already holds this conversation and
+   * just re-read the header, so a steer packet carries the handle, any interim
+   * rows, and the instruction — no header or scope marker, and no counts unless
+   * rows were omitted (#1408).
+   */
+  delivery?: 'turn' | 'steer';
   /** Framework id the packet is addressed to (`you are @<framework>`). */
   framework: string;
   /**
    * Prior channel rows, oldest-first; only non-empty human/agent prose is eligible,
-   * except that a canonical thread root is always retained structurally. For a
-   * channel trigger this is every row
-   * with `lastDeliveredSeq < seq < trigger.seq`. For a threaded trigger this is
-   * the thread root plus prior replies; the channel delivery cursor is ignored.
+   * except that a canonical thread root is retained structurally inside the
+   * orientation window. Both scopes select `lastDeliveredSeq < seq <
+   * trigger.seq` (#1408); a threaded trigger additionally keeps only rows of its
+   * own thread, and `lastDeliveredSeq` is then the per-(binding, thread) cursor.
    * The agent's own prior rows are skipped HERE (they already live in the reused
-   * provider conversation), except that a thread root is always retained.
+   * provider conversation), except for a thread root inside that window.
    */
   rows: ChannelMessage[];
   /** The mention row itself — always rendered in the footer, never dropped. */
   trigger: ChannelMessage;
-  /** Cursor: 0 for a first-ever mention (cold session → full orientation window). */
+  /**
+   * Cursor: 0 for a first-ever mention (cold session → full orientation window).
+   * A thread packet built at cursor 0 MUST be able to resolve its root — that is
+   * the orientation invariant, and a missing root throws. Above 0 the root has
+   * already been delivered, so a rootless replies-only packet is the correct
+   * shape rather than an error.
+   */
   lastDeliveredSeq: number;
   /**
    * Precomputed counts for the scanned candidate window. They are exact unless
@@ -199,9 +236,10 @@ export function isOwnMentionContextRow(
 /**
  * Build the deterministic context packet delivered as the agent's turn content.
  *
- * Shape (§4):
+ * Shape (§4, `delivery: 'turn'`):
  *   [Relay channel #<title> — you are @<framework>, one participant in a multi-party chat]
- *   N messages since your last turn (M shown, K activity rows filtered).
+ *   [relay channel-id=<channelId> trigger-seq=<seq>]                      (ALWAYS line 2)
+ *   N messages since your last turn (M shown, K activity rows filtered).   (dropped at 0/0/0)
  *   Recent text messages, oldest first. Lines are "sender: text"; ...   (only with context)
  *   […earlier messages omitted]                                          (only when >N eligible)
  *   <sender>: <text>
@@ -210,31 +248,50 @@ export function isOwnMentionContextRow(
  *   [<trigger sender> mentioned you — reply to this message; your reply is posted to the channel]
  *   <trigger text>
  *
- * A reused session with no interim rows collapses to header + footer only — the
- * provider already holds the conversation, so re-sending it wastes tokens.
+ * A DM swaps the header for `[Relay DM #<title> — you are @<framework>]`: one
+ * agent, no multi-party framing to pay for.
+ *
+ * `delivery: 'steer'` drops the header, the counts, and the scope marker — the
+ * live turn already read them — leaving the handle line, any interim rows, and
+ * a `[… — new instruction for your current turn]` footer. The counts line comes
+ * back whenever rows were actually omitted, so a steer never silently swallows
+ * interim messages it is about to move the cursor past.
+ *
+ * A reused session with no interim rows collapses to header + handle + footer
+ * only — the provider already holds the conversation, so re-sending it wastes
+ * tokens.
  */
 export function buildMentionContextPacketEnvelope(
   input: BuildMentionContextPacketInput
 ): MentionContextPacketEnvelope {
-  const header = `[Relay channel #${input.channelTitle} — you are @${input.framework}, one participant in a multi-party chat]`;
+  const steer = input.delivery === 'steer';
+  const header =
+    input.channelKind === 'dm'
+      ? `[Relay DM #${input.channelTitle} — you are @${input.framework}]`
+      : `[Relay channel #${input.channelTitle} — you are @${input.framework}, one participant in a multi-party chat]`;
+  // Machine-readable, fixed-position handle. It carries the DURABLE channel id
+  // and the trigger's channel seq and nothing else: an agent needs an address
+  // for `relay-ide v1 channels post`, and a runtime/session id would both leak
+  // private execution state and name something that is not a chat destination.
+  const handle = `[relay channel-id=${input.channelId} trigger-seq=${input.trigger.seq}]`;
   const threadRootId = input.trigger.threadId;
 
   // Candidate rows are strictly after the delivery cursor and before the
   // trigger, minus the agent's OWN prior prose (already retained by the reused
   // provider conversation). Detail/activity rows are counted, then filtered,
   // so the delivery summary is truthful without spending packet rows on blank
-  // tool/thought/status shells (#1358).
+  // tool/thought/status shells (#1358). Thread scope applies the cursor to the
+  // structural root as well (#1408) — the caller's cursor is per-thread, so a
+  // root above it has not been delivered and a root below it has.
   const candidates = input.rows.filter((row) => {
     if (row.seq >= input.trigger.seq) return false;
+    if (row.seq <= input.lastDeliveredSeq) return false;
     if (threadRootId !== null) {
       const isRoot = row.id === threadRootId;
       if (!isRoot && row.threadId !== threadRootId) return false;
       return isRoot || !isOwnMentionContextRow(row, input.framework);
     }
-    return (
-      row.seq > input.lastDeliveredSeq &&
-      !isOwnMentionContextRow(row, input.framework)
-    );
+    return !isOwnMentionContextRow(row, input.framework);
   });
   const eligible = candidates.filter((row) => {
     const isRoot = threadRootId !== null && row.id === threadRootId;
@@ -248,18 +305,28 @@ export function buildMentionContextPacketEnvelope(
   const contextTotalCount = input.summary?.totalCount ?? candidates.length;
 
   let contextRows: ChannelMessage[];
+  // Load-bearing for row capping, omitted-marker placement, and byte trimming:
+  // only a packet that actually carries its root reserves index 0 for it.
+  let hasThreadRoot = false;
   let omittedEarlier =
     input.summary?.candidateScanTruncated === true ||
     contextTotalCount - activityFilteredCount > eligible.length;
   if (threadRootId !== null) {
     const root = eligible.find((row) => row.id === threadRootId);
-    if (!root) {
+    // Orientation invariant (#1408): at cursor 0 the window reaches the root, so
+    // its absence means the caller handed over an unbuildable thread packet and
+    // the agent would be oriented by nothing. Above 0 the root is legitimately
+    // outside the window — it was delivered on an earlier turn of this thread —
+    // and the packet is replies-only.
+    if (!root && input.lastDeliveredSeq === 0) {
       throw new Error(`thread context root missing: ${threadRootId}`);
     }
+    hasThreadRoot = root !== undefined;
     const replies = eligible.filter((row) => row.id !== threadRootId);
     const replyLimit = Math.max(0, PACKET_MAX_ROWS - 1);
     if (replies.length > replyLimit) omittedEarlier = true;
-    contextRows = [root, ...replies.slice(-replyLimit)];
+    const newestReplies = replies.slice(-replyLimit);
+    contextRows = root ? [root, ...newestReplies] : newestReplies;
   } else {
     contextRows = eligible;
     if (contextRows.length > PACKET_MAX_ROWS) {
@@ -275,7 +342,9 @@ export function buildMentionContextPacketEnvelope(
         ROW_TRUNCATED_SUFFIX
       : input.trigger.body.text;
   const footer = [
-    `[${triggerLabel} mentioned you — reply to this message; your reply is posted to the channel]`,
+    steer
+      ? `[${triggerLabel} — new instruction for your current turn]`
+      : `[${triggerLabel} mentioned you — reply to this message; your reply is posted to the channel]`,
     triggerText,
     ...imageDegradationNotes(input.trigger).map(
       (label) => `[Relay image attachment unavailable: ${label}]`
@@ -290,38 +359,67 @@ export function buildMentionContextPacketEnvelope(
     const boundedDetails = truncated
       ? `; activity rows filtered: at least ${activityFilteredCount}; newest ${input.summary?.candidateScanBudget ?? 'bounded'} raw ${scope === 'thread' ? 'reply ' : ''}candidates scanned`
       : `, ${activityFilteredCount} activity rows filtered`;
+    // Thread scope now windows on the same per-thread cursor channel scope uses
+    // (#1408), so above the cursor "prior thread rows" would misdescribe an
+    // incremental window as the whole thread.
+    const threadSummary =
+      input.lastDeliveredSeq > 0
+        ? `${boundedPrefix}${contextTotalCount} thread rows since your last turn (${rows.length} shown${boundedDetails}).`
+        : `${boundedPrefix}${contextTotalCount} prior thread rows (${rows.length} shown${boundedDetails}).`;
     const summary =
       scope === 'thread'
-        ? `${boundedPrefix}${contextTotalCount} prior thread rows (${rows.length} shown${boundedDetails}).`
+        ? threadSummary
         : `${boundedPrefix}${contextTotalCount} messages since your last turn (${rows.length} shown${boundedDetails}).`;
-    const scopeLines = threadRootId !== null ? [THREAD_SCOPE_MARKER] : [];
+    // An all-zero delivery statement says nothing an agent can act on: nothing
+    // shown, nothing omitted, nothing filtered, and no bounded scan to
+    // disclose. Any non-zero component (including "0 shown, 2 filtered") is
+    // real information and still renders.
+    const quiet =
+      contextTotalCount === 0 &&
+      rows.length === 0 &&
+      activityFilteredCount === 0 &&
+      !truncated;
+    // The handle is the one line every packet carries, so its position is
+    // fixed: line 2 of a turn packet, line 1 of a steer packet.
+    const lead = steer ? [handle] : [header, handle];
+    // A steer normally drops the counts because the live turn just read them.
+    // It cannot drop them when something WAS omitted: with rows present the
+    // omitted marker still signals it, but a truncated or byte-trimmed steer
+    // that filtered down to zero rows would otherwise disclose nothing at all
+    // — and accepting the steer advances the cursor past those rows for good.
+    const summaryLines = quiet || (steer && !omitted) ? [] : [summary];
+    const scopeLines =
+      !steer && threadRootId !== null
+        ? [hasThreadRoot ? THREAD_SCOPE_MARKER : THREAD_SCOPE_MARKER_ROOTLESS]
+        : [];
     if (rows.length === 0) {
-      return [header, summary, ...scopeLines, '', footer].join('\n');
+      return [...lead, ...summaryLines, ...scopeLines, '', footer].join('\n');
     }
     const contextBlock = [
-      summary,
+      ...summaryLines,
       ...scopeLines,
       'Recent text messages, oldest first. Lines are "sender: text"; agents tagged [agent].',
-      ...(threadRootId !== null && omitted
+      ...(hasThreadRoot && omitted
         ? [renderRow(rows[0]!), OMITTED_MARKER, ...rows.slice(1).map(renderRow)]
         : [...(omitted ? [OMITTED_MARKER] : []), ...rows.map(renderRow)]),
     ].join('\n');
-    return `${header}\n${contextBlock}\n\n${footer}`;
+    return `${lead.join('\n')}\n${contextBlock}\n\n${footer}`;
   };
 
-  // Whole-packet byte budget: drop oldest context rows until under. Thread mode
-  // never drops its load-bearing root; the trigger/footer is never dropped in
-  // either mode. A root/footer-only packet may exceed the budget — losing either
-  // is worse than a slightly oversized packet.
+  // Whole-packet byte budget: drop oldest context rows until under. A thread
+  // packet that carries its root never drops it; a replies-only one has no such
+  // anchor, so it trims from the front exactly like channel scope and may reach
+  // zero rows. The trigger/footer is never dropped in any mode. A root/footer-only
+  // packet may exceed the budget — losing either is worse than a slightly
+  // oversized packet.
   let packet = assemble(contextRows, omittedEarlier);
   while (
-    contextRows.length > (threadRootId !== null ? 1 : 0) &&
+    contextRows.length > (hasThreadRoot ? 1 : 0) &&
     Buffer.byteLength(packet, 'utf8') > PACKET_MAX_BYTES
   ) {
-    contextRows =
-      threadRootId !== null
-        ? [contextRows[0]!, ...contextRows.slice(2)]
-        : contextRows.slice(1);
+    contextRows = hasThreadRoot
+      ? [contextRows[0]!, ...contextRows.slice(2)]
+      : contextRows.slice(1);
     omittedEarlier = true;
     packet = assemble(contextRows, omittedEarlier);
   }

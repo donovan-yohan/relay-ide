@@ -78,6 +78,13 @@ workflow.
 - Mid-turn channel sends now steer Codex and Claude at their native safe tool
   boundary by default, while harnesses without that primitive retain a clearly
   labelled FIFO queue fallback
+- Agent context packets went on a token diet: threaded turns now deliver only
+  messages since the agent's last turn instead of re-sending the whole thread
+  window (a fresh runtime still gets the root and orientation window), DMs get a
+  direct-conversation header instead of the multi-party one, empty delivery
+  counts disappear, mid-turn steering messages drop the envelope, and every
+  packet carries a machine-readable `[relay channel-id=… trigger-seq=…]` line
+  agents can use with `relay-ide v1 channels post` (#1408)
 
 #### Fixed
 
