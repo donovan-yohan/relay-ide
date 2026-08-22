@@ -26,6 +26,7 @@ const SERIAL_SUBPROCESS_FILES = [
   'test/cli-gateway-hermes-tools.test.ts',
   'test/cli-gateway-sessions-wait.test.ts',
   'test/cli-gateway-workflow.test.ts',
+  'test/operator-client-cli.test.ts',
   'test/cli-gateway/channels-post.test.ts',
   'test/cli-gateway/events.test.ts',
   'test/hub-node-packaging.test.ts',

@@ -68,7 +68,7 @@ export type RelayChannelReducerState = Omit<
 export interface RelayChannelClientConfig {
   /** Relay hub URL. Defaults to RELAY_IDE_URL or the local RELAY_IDE_PORT hub. */
   baseUrl?: string;
-  /** Construction-only bearer credential. Defaults to actor then browser env credential. */
+  /** Construction-only bearer credential. Defaults to operator-client, actor, then browser env credential. */
   token?: string;
   /** Construction-only headers, useful for an already-authenticated proxy. */
   headers?: HeadersInit;
@@ -455,11 +455,21 @@ function projectPublicValueWithNeedles(
 }
 
 /** Project every message-bearing response at the client boundary. */
+export function projectRelayChannelPublicValue(
+  value: unknown,
+  configuredToken?: string
+): unknown {
+  return projectPublicValue(value, configuredToken);
+}
+
 export function projectRelayChannelMessage(
   message: ChannelMessage,
   configuredToken?: string
 ): RelayChannelMessage {
-  return projectPublicValue(message, configuredToken) as RelayChannelMessage;
+  return projectRelayChannelPublicValue(
+    message,
+    configuredToken
+  ) as RelayChannelMessage;
 }
 
 function projectChannelEvent(
@@ -768,18 +778,28 @@ export function createRelayChannelClient(
 ): RelayChannelClient {
   const env = config.env ?? (typeof process === 'undefined' ? {} : process.env);
   const baseUrl = trimBaseUrl(config.baseUrl ?? defaultBaseUrl(env));
-  // A browser bearer is accepted by the ordinary HTTP auth lane.  Advertising
-  // it as an actor credential would switch server-side scope semantics, so the
-  // actor marker is emitted only for a known actor credential/env lane.
+  // Browser bearers are accepted by the ordinary HTTP auth lane. A scoped actor
+  // or human operator-client credential needs its own explicit marker so Relay
+  // never confuses a human post with an agent post.
   const configuredToken = config.token;
-  const configuredActor = configuredToken?.startsWith('relay-sac-v1.')
+  const configuredOperatorClient = configuredToken?.startsWith('relay-occ-v1.')
     ? configuredToken
     : undefined;
-  const actorToken = configuredActor ?? env['RELAY_IDE_ACTOR_TOKEN'];
-  const browserToken = configuredActor
-    ? undefined
-    : (configuredToken ?? env['RELAY_IDE_BROWSER_TOKEN']);
-  const token = actorToken ?? browserToken;
+  const operatorClientToken =
+    configuredOperatorClient ?? env['RELAY_IDE_OPERATOR_CLIENT_TOKEN'];
+  const configuredActor =
+    !configuredOperatorClient && configuredToken?.startsWith('relay-sac-v1.')
+      ? configuredToken
+      : undefined;
+  const actorToken =
+    configuredActor ??
+    (operatorClientToken ? undefined : env['RELAY_IDE_ACTOR_TOKEN']);
+  const browserToken =
+    configuredOperatorClient || configuredActor
+      ? undefined
+      : (configuredToken ??
+        (operatorClientToken ? undefined : env['RELAY_IDE_BROWSER_TOKEN']));
+  const token = operatorClientToken ?? actorToken ?? browserToken;
   const fetcher = config.fetch ?? globalThis.fetch;
   const staticHeaders = new Headers(config.headers);
 
@@ -794,6 +814,10 @@ export function createRelayChannelClient(
     );
     if (token && !headers.has('authorization'))
       headers.set('authorization', `Bearer ${token}`);
+    if (operatorClientToken) {
+      headers.delete('x-relay-cli-actor-token');
+      headers.set('x-relay-operator-client-token', 'v1');
+    }
     if (actorToken && !headers.has('x-relay-cli-actor-token'))
       headers.set('x-relay-cli-actor-token', 'v1');
     return headers;

@@ -301,12 +301,21 @@ const expectedInventoryCoverage = [
       '/inbox/*',
       '/events/*',
       '/handoffs/*',
-      '/channels/*',
       '/nodes',
       '/hub/audit/*',
       '/hub/nodes/:nodeId/logs',
       '/hub/nodes/:nodeId/sessions',
     ],
+  },
+  {
+    surface: 'CLI gateway channel APIs',
+    middleware: 'requireChannelGatewayAuthForCommand',
+    acceptedLanes: [
+      'scoped-actor-credential',
+      'operator-client-credential',
+      'browser-session',
+    ],
+    routes: ['/channels/*'],
   },
   {
     surface: 'scoped session APIs',
@@ -397,6 +406,7 @@ test('auth route lane inventory covers browser, scoped, node, pair, public, and 
     new Set([
       'browser-session',
       'scoped-actor-credential',
+      'operator-client-credential',
       'node-credential',
       'pair-token',
       'public-local-only',
@@ -430,6 +440,11 @@ test('auth route lane inventory keeps credential classes distinct', () => {
   ]);
   expect(routeToLanes.get('/sessions (GET/POST)')).toEqual([
     'scoped-actor-credential',
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('/channels/*')).toEqual([
+    'scoped-actor-credential',
+    'operator-client-credential',
     'browser-session',
   ]);
   expect(routeToLanes.get('POST /webhooks/manage/setup')).toEqual([

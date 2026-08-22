@@ -170,6 +170,27 @@ describe('relay-ide/channel-client', () => {
     expect(JSON.stringify(requests)).not.toContain('secret-never-in-input');
   });
 
+  it('selects the human operator-client marker without changing stable request schemas', async () => {
+    const requests: RequestInit[] = [];
+    const client = createRelayChannelClient({
+      baseUrl: 'http://relay.test',
+      token: 'relay-occ-v1.credential-id.raw-secret',
+      fetch: async (_url, init) => {
+        requests.push(init ?? {});
+        return Response.json({ channels: [] });
+      },
+    });
+
+    await client.list();
+    const headers = new Headers(requests[0]?.headers);
+    expect(headers.get('authorization')).toBe(
+      'Bearer relay-occ-v1.credential-id.raw-secret'
+    );
+    expect(headers.get('x-relay-operator-client-token')).toBe('v1');
+    expect(headers.get('x-relay-cli-actor-token')).toBeNull();
+    expect(headers.get('x-relay-cli-command')).toBe('channels.list');
+  });
+
   it('keeps concurrent run lookups isolated and preserves sibling denial envelopes', async () => {
     const client = createRelayChannelClient({
       baseUrl: 'http://relay.test',

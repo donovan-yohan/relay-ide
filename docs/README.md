@@ -27,6 +27,7 @@ Every doc listed here is linked from this index. If you add a doc, add a row.
 | Provider adapters    | [`provider-guide.md`](provider-guide.md)                                         |
 | Security             | [`SECURITY_POLICY.md`](SECURITY_POLICY.md)                                       |
 | Handshake grants     | [`OPERATOR_HANDSHAKE_GRANTS.md`](OPERATOR_HANDSHAKE_GRANTS.md)                   |
+| Operator clients     | [`OPERATOR_CLIENT_CREDENTIALS.md`](OPERATOR_CLIENT_CREDENTIALS.md)               |
 | Session durability   | [`SESSION_DURABILITY.md`](SESSION_DURABILITY.md)                                 |
 | Terminal backend     | [`TERMINAL_BACKENDS.md`](TERMINAL_BACKENDS.md)                                   |
 | Self-hosting         | [`SELF_HOSTING.md`](SELF_HOSTING.md)                                             |

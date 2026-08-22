@@ -22,6 +22,12 @@ workflow.
 
 #### Added
 
+- Issue revocable, expiring Relay operator-client credentials for non-browser
+  human clients. The separate `relay:operator-client:v1` lane supports the
+  existing stable channel list/get/history/post/subscribe surface with optional
+  exact channel scope, only `context:read`/`context:write`, server-derived human
+  attribution, safe subscription revalidation, metadata-only lifecycle views,
+  and one-time handshake-grant or authenticated-operator issuance.
 - Search durable message history in a complementary right rail while channel
   navigation and threads remain visible. Active channels with resolved human
   metadata seed an editable exact `in:<channel>` scope; unresolved or global

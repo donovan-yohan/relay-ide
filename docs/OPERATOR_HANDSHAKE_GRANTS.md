@@ -23,13 +23,14 @@ Suggested minimal approval copy:
 
 The browser session may authorize the approval ceremony, but the returned `relay-ohg-v1.<grant-id>.<secret>` handle is the only grant material for this lane and is consumed once by validation. It must not be accepted as any other credential type.
 
-| Presented material                   | Accepted as handshake grant?                           | Notes                                                               |
-| ------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------- |
-| Browser PIN/session cookie           | No                                                     | May authorize ceremony routes only; never reusable automation auth. |
-| `relay-ohg-v1...` handshake grant    | Yes, once, if audience/capability/scope/bindings match | Consumed on successful validation.                                  |
-| `relay-sac-v1...` scoped actor token | No                                                     | Separate scoped actor credential lane.                              |
-| Pair token                           | No                                                     | Node bootstrap only.                                                |
-| Node credential                      | No                                                     | Node heartbeat/link only.                                           |
+| Presented material                           | Accepted as handshake grant?                           | Notes                                                               |
+| -------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------- |
+| Browser PIN/session cookie                   | No                                                     | May authorize ceremony routes only; never reusable automation auth. |
+| `relay-ohg-v1...` handshake grant            | Yes, once, if audience/capability/scope/bindings match | Consumed on successful validation.                                  |
+| `relay-occ-v1...` operator-client credential | No                                                     | Separate human operator-client channel lane.                        |
+| `relay-sac-v1...` scoped actor token         | No                                                     | Separate scoped actor credential lane.                              |
+| Pair token                                   | No                                                     | Node bootstrap only.                                                |
+| Node credential                              | No                                                     | Node heartbeat/link only.                                           |
 
 ## Node pair-token minting grant
 
