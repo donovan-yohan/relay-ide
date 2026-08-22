@@ -28,6 +28,11 @@ workflow.
   exact channel scope, only `context:read`/`context:write`, server-derived human
   attribution, safe subscription revalidation, metadata-only lifecycle views,
   and one-time handshake-grant or authenticated-operator issuance.
+- Let a still-valid operator-client credential renew itself through
+  `POST /operator-client-credentials/renew`: the successor copies client,
+  device binding, capabilities, channel scope, and originating grant (grant
+  revocation still cascades), while the old token expires naturally so a lost
+  renew response can never lock a client out.
 - Search durable message history in a complementary right rail while channel
   navigation and threads remain visible. Active channels with resolved human
   metadata seed an editable exact `in:<channel>` scope; unresolved or global

@@ -390,12 +390,14 @@ import {
 } from './cli-gateway-actor-auth.js';
 import {
   authenticateOperatorClientCredential,
+  authenticateOperatorClientCredentialForRenew,
   createOperatorClientCredentialRegistry,
   isOperatorClientChannelCommand,
   isOperatorClientCredentialRequest,
   issueOperatorClientCredentialWithGrant,
   operatorClientAuthFailure,
   operatorClientCredentialIssueInput,
+  renewOperatorClientCredential,
   revokeOperatorClientCredentialWithGrant,
 } from './operator-client-auth.js';
 import {
@@ -2582,6 +2584,31 @@ async function main(): Promise<void> {
       }
     }
   );
+  // Renewal: the still-valid credential itself mints its successor. Defined
+  // before the parameterized /:id/revoke route; express matches the literal
+  // path first regardless, but keeping lifecycle routes together reads better.
+  app.post('/operator-client-credentials/renew', (req, res) => {
+    const auth = authenticateOperatorClientCredentialForRenew(
+      operatorClientCredentialRegistry,
+      req
+    );
+    if (!auth.ok) {
+      res.status(401).json(operatorClientAuthFailure({ reason: auth.reason }));
+      return;
+    }
+    try {
+      const issued = renewOperatorClientCredential(
+        operatorClientCredentialRegistry,
+        auth.credential,
+        isRecord(req.body) ? req.body : {}
+      );
+      res
+        .status(201)
+        .json({ token: issued.token, credential: issued.credential });
+    } catch (error) {
+      operatorClientLifecycleError(res, error);
+    }
+  });
   app.get('/operator-client-credentials', requireAuth, (_req, res) => {
     res.json({
       credentials: operatorClientCredentialRegistry.listCredentials(),

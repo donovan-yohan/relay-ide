@@ -84,6 +84,35 @@ POST /operator-client-credentials/:credentialId/revoke
 The latter accepts `grantHandle`, matching `client` metadata, optional matching
 `device`, and optional revocation `reason`; it returns metadata only.
 
+## Renewal / rotation
+
+A still-valid credential can mint its own successor:
+
+```text
+POST /operator-client-credentials/renew
+Authorization: Bearer relay-occ-v1.<id>.<secret>
+x-relay-operator-client-token: v1
+x-relay-cli-gateway: v1
+```
+
+Body is `{ "ttlMs": <positive number> }` (optional; defaults to the 15-minute
+standard) or empty. The response is the same once-only raw-token shape as
+issuance. The new credential copies the old one's client, device binding,
+capabilities, channel scope, and originating `grantId`, so grant revocation
+still cascades across every renewed descendant.
+
+The old credential is deliberately **not** revoked at renewal. It expires
+naturally within its own TTL window, so a lost renew response can never lock a
+client out, and each individual token's blast radius stays unchanged.
+Continuous possession therefore means continuous access — but revocation
+(browser `DELETE`, grant-backed revoke, or originating-grant cascade) cuts
+access immediately regardless of unexpired tokens.
+
+Renewal fails closed like every other lane: expired, revoked, malformed, or
+actor-marker-substituted tokens are rejected with the same failure envelope as
+the command lanes (401/403 with `OPERATOR_CLIENT_*` reason codes). A requested
+`ttlMs` beyond the registry maximum is rejected, not silently clamped.
+
 ## CLI onboarding
 
 Request and approve an operator handshake grant with audience

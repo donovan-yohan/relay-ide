@@ -142,6 +142,92 @@ export function authenticateOperatorClientCredential(
   return validation;
 }
 
+/**
+ * Renewal auth: the CURRENT still-valid credential itself authorizes minting
+ * its successor. Lifecycle route — the per-command header is not required, but
+ * both v1 markers are, and actor-marker substitution stays forbidden.
+ */
+export function authenticateOperatorClientCredentialForRenew(
+  registry: OperatorClientCredentialRegistry,
+  req: Request
+):
+  | { ok: true; credential: OperatorClientCredentialRecord }
+  | { ok: false; reason: OperatorClientAuthFailureReason } {
+  if (req.header(OPERATOR_CLIENT_GATEWAY_HEADER) !== 'v1') {
+    return { ok: false, reason: 'gateway_marker_required' };
+  }
+  if (req.header(OPERATOR_CLIENT_TOKEN_HEADER) !== 'v1') {
+    return { ok: false, reason: 'marker_required' };
+  }
+  if (req.header('x-relay-cli-actor-token') !== undefined) {
+    return { ok: false, reason: 'actor_marker_forbidden' };
+  }
+  const token = bearerOperatorClientToken(req);
+  if (!token.startsWith(`${OPERATOR_CLIENT_CREDENTIAL_TOKEN_PREFIX}.`)) {
+    return { ok: false, reason: 'token_substitution' };
+  }
+  const validation = registry.validate(token, {
+    audience: OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+    requiredCapabilities: ['context:read'],
+  });
+  if (!validation.ok) {
+    return { ok: false, reason: validation.reason };
+  }
+  return { ok: true, credential: validation.credential };
+}
+
+const DEFAULT_RENEW_TTL_MS = 15 * 60 * 1000;
+
+function renewTtlMs(value: unknown): number | undefined {
+  const body = value;
+  if (!isRecord(body)) {
+    throw new OperatorClientCredentialError(
+      'grant_rejected',
+      'operator client renewal requires an object body'
+    );
+  }
+  for (const key of Object.keys(body)) {
+    if (key !== 'ttlMs') {
+      throw new OperatorClientCredentialError(
+        'grant_rejected',
+        `unexpected renewal field '${key}'`
+      );
+    }
+  }
+  const ttlMs = body['ttlMs'];
+  if (ttlMs === undefined) return undefined;
+  if (typeof ttlMs !== 'number' || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new OperatorClientCredentialError(
+      'grant_rejected',
+      'renewal ttlMs must be a positive finite number'
+    );
+  }
+  return ttlMs;
+}
+
+/**
+ * Mint a successor credential copying the old record's identity dimensions.
+ * The old credential is deliberately NOT revoked: it expires naturally within
+ * its own TTL window, so a lost renew response can never lock the client out,
+ * and revocation (explicit or grant-cascade) still cuts access immediately.
+ */
+export function renewOperatorClientCredential(
+  registry: OperatorClientCredentialRegistry,
+  previous: OperatorClientCredentialRecord,
+  value: unknown
+): { token: string; credential: OperatorClientCredentialRecord } {
+  return registry.issue({
+    client: { ...previous.client },
+    ...(previous.device ? { deviceHash: { ...previous.device } } : {}),
+    capabilities: [...previous.capabilities],
+    scope: previous.scope.channelIds
+      ? { channelIds: [...previous.scope.channelIds] }
+      : {},
+    ...(previous.grantId ? { grantId: previous.grantId } : {}),
+    ttlMs: renewTtlMs(value) ?? DEFAULT_RENEW_TTL_MS,
+  });
+}
+
 export function operatorClientAuthFailure(input: {
   reason: OperatorClientAuthFailureReason;
   credentialId?: string;
@@ -190,7 +276,9 @@ export function issueOperatorClientCredentialWithGrant(
   const inheritedScope = issueScopeIsOmitted(value)
     ? exactChannelScopeForGrantHandle(grants, grantHandle)
     : undefined;
-  const issueInput = inheritedScope ? { ...input, scope: inheritedScope } : input;
+  const issueInput = inheritedScope
+    ? { ...input, scope: inheritedScope }
+    : input;
   const grantInput = grantValidationInput(issueInput);
   const preflight = grants.validate(grantHandle, {
     ...grantInput,

@@ -64,6 +64,12 @@ interface InternalOperatorClientCredentialRecord extends OperatorClientCredentia
 export interface IssueOperatorClientCredentialInput {
   client: OperatorClientCredentialClient;
   device?: OperatorClientCredentialDeviceInput;
+  /**
+   * Renewal passthrough: an already-hashed device binding copied from the
+   * credential being renewed. Mutually exclusive with `device` — raw ids only
+   * enter through issuance, hashes only through renewal.
+   */
+  deviceHash?: OperatorClientCredentialDevice;
   capabilities: string[];
   scope?: OperatorClientCredentialScope;
   ttlMs?: number;
@@ -160,7 +166,15 @@ export class OperatorClientCredentialRegistry {
   ): IssuedOperatorClientCredential {
     const issuedAt = this.now();
     const client = normalizeClient(input.client);
-    const device = normalizeDevice(input.device);
+    if (input.device && input.deviceHash) {
+      throw new OperatorClientCredentialRegistryError(
+        'CLIENT_REQUIRED',
+        'operator client credentials accept either device or deviceHash, not both'
+      );
+    }
+    const device =
+      normalizeDevice(input.device) ??
+      (input.deviceHash ? { ...input.deviceHash } : undefined);
     const capabilities = normalizeCapabilities(input.capabilities);
     const scope = normalizeScope(input.scope);
     const expiresAt = resolveExpiry(input, issuedAt, this.maxTtlMs);
