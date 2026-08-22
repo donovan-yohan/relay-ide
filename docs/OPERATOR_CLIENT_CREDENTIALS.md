@@ -13,10 +13,13 @@ provider, plugin, agent, node, or session credential.
   `human:operator` / `Operator`. Callers cannot provide a sender, source, or
   principal field.
 - Capability allowlist: only `context:read` and `context:write`.
-- Scope: `scope.channelIds` is optional. When present it is an exact allowlist;
-  when omitted the credential retains the authenticated operator's normal
-  channel reach. Actor credentials remain separately fail-closed without a
-  channel scope.
+- Scope: `scope.channelIds` is optional. When present it is an exact allowlist.
+  Browser-authenticated issuance without it retains the authenticated operator's
+  normal channel reach. Grant-backed issuance without it inherits the exact
+  `channelIds` allowlist from an otherwise channel-only grant; grants without
+  channel ids, with another scope dimension, or with wildcard channel ids fail
+  closed. Actor credentials remain separately fail-closed without a channel
+  scope.
 - Metadata: records retain client id/display name/platform and optional hashed
   device id/display name. Raw device ids and raw credential secrets are not
   listed or returned by revoke operations.
@@ -60,9 +63,11 @@ A grant-backed issue body contains:
 
 The matching handshake grant must use the same audience, a `cli:<client.id>`
 actor binding, requested capability subset, optional device binding, and any
-requested channel scope. It is consumed before the credential is returned.
-A channel-scoped grant cannot mint an unscoped credential. Revoking an
-originating handshake grant revokes credentials minted from it.
+requested channel scope. If the issue body omits `scope`, a channel-only grant's
+exact channel allowlist is inherited before normal grant validation; an explicit
+scope retains the existing exact/subset validation. It is consumed before the
+credential is returned. Revoking an originating handshake grant revokes
+credentials minted from it.
 
 The operator browser lane can revoke with:
 

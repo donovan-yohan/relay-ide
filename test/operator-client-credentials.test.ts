@@ -165,4 +165,100 @@ describe('operator client credential registry', () => {
     expect(revoked).not.toHaveProperty('token');
     expect(revoked.revokedAt).toBeDefined();
   });
+
+  it('does not inherit a non-channel or wildcard grant scope', () => {
+    const registry = credentials(() => NOW);
+    const grantRegistry = grants(() => NOW);
+    const input = issueInput();
+    for (const [id, scope] of [
+      ['repo-only', { repoIds: ['repo-a'] }],
+      ['wildcard-channel', { channelIds: ['*'] }],
+    ]) {
+      const requested = grantRegistry.request({
+        id,
+        actor: { type: 'cli', id: input.client.id },
+        issuer: { id: 'browser-operator' },
+        audience: OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+        capabilities: input.capabilities,
+        scope,
+        ttlMs: 120_000,
+      });
+      const approved = grantRegistry.approve(requested.id, {
+        approvedBy: { id: 'browser-operator' },
+      });
+
+      expect(() =>
+        issueOperatorClientCredentialWithGrant(registry, grantRegistry, {
+          grantHandle: approved.handle,
+          client: input.client,
+          capabilities: input.capabilities,
+          ttlMs: input.ttlMs,
+        })
+      ).toThrow(/handshake grant does not authorize/);
+    }
+    expect(registry.listCredentials()).toEqual([]);
+  });
+
+  it('fails closed without leaking grant metadata for tampered or unknown handles', () => {
+    const registry = credentials(() => NOW);
+    const grantRegistry = grants(() => NOW);
+    const input = issueInput();
+    const requested = grantRegistry.request({
+      actor: { type: 'cli', id: input.client.id },
+      issuer: { id: 'browser-operator' },
+      audience: OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+      capabilities: input.capabilities,
+      scope: input.scope,
+      ttlMs: 120_000,
+    });
+    const approved = grantRegistry.approve(requested.id, {
+      approvedBy: { id: 'browser-operator' },
+    });
+
+    for (const grantHandle of [
+      `${approved.handle}tampered`,
+      'relay-ohg-v1.unknown-grant.unknown-secret',
+    ]) {
+      let rejected: unknown;
+      try {
+        issueOperatorClientCredentialWithGrant(registry, grantRegistry, {
+          grantHandle,
+          client: input.client,
+          capabilities: input.capabilities,
+          ttlMs: input.ttlMs,
+        });
+      } catch (error) {
+        rejected = error;
+      }
+      expect(String(rejected)).toMatch(/handshake grant does not authorize/);
+      expect(String(rejected)).not.toContain('topic:operator');
+    }
+    expect(registry.listCredentials()).toEqual([]);
+  });
+
+  it('rejects an explicit channel scope that is wider than the grant', () => {
+    const registry = credentials(() => NOW);
+    const grantRegistry = grants(() => NOW);
+    const input = issueInput();
+    const requested = grantRegistry.request({
+      actor: { type: 'cli', id: input.client.id },
+      issuer: { id: 'browser-operator' },
+      audience: OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+      capabilities: input.capabilities,
+      scope: input.scope,
+      ttlMs: 120_000,
+    });
+    const approved = grantRegistry.approve(requested.id, {
+      approvedBy: { id: 'browser-operator' },
+    });
+
+    expect(() =>
+      issueOperatorClientCredentialWithGrant(registry, grantRegistry, {
+        ...input,
+        scope: { channelIds: ['topic:operator', 'topic:outside-grant'] },
+        grantHandle: approved.handle,
+      })
+    ).toThrow(/handshake grant does not authorize/);
+    expect(registry.listCredentials()).toEqual([]);
+  });
 });

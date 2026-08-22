@@ -187,15 +187,22 @@ export function issueOperatorClientCredentialWithGrant(
 ): { token: string; credential: OperatorClientCredentialRecord } {
   const input = operatorClientCredentialIssueInput(value);
   const grantHandle = requiredGrantHandle(value);
-  const grantInput = grantValidationInput(input);
+  const inheritedScope = issueScopeIsOmitted(value)
+    ? exactChannelScopeForGrantHandle(grants, grantHandle)
+    : undefined;
+  const issueInput = inheritedScope ? { ...input, scope: inheritedScope } : input;
+  const grantInput = grantValidationInput(issueInput);
   const preflight = grants.validate(grantHandle, {
     ...grantInput,
     consume: false,
   });
   if (!preflight.ok) throw grantRejected();
-  requireGrantScope(preflight.grant.scope.channelIds, input.scope?.channelIds);
+  requireGrantScope(
+    preflight.grant.scope.channelIds,
+    issueInput.scope?.channelIds
+  );
   const issued = registry.issue({
-    ...input,
+    ...issueInput,
     grantId: preflight.grant.id,
     notAfter: preflight.grant.expiresAt,
   });
@@ -364,6 +371,42 @@ function requireGrantScope(
       'a channel-scoped handshake grant cannot mint an unscoped operator client credential'
     );
   }
+}
+
+/**
+ * A scope-less grant-backed issue can only inherit a complete, literal channel
+ * allowlist. The subsequent registry validation still authenticates the handle
+ * and checks the copied scope against every grant scope dimension.
+ */
+function exactChannelScopeForGrantHandle(
+  grants: HandshakeGrantRegistry,
+  grantHandle: string
+): OperatorClientCredentialScope | undefined {
+  const grantId = grantIdFromHandle(grantHandle);
+  const scope = grantId ? grants.getGrant(grantId)?.scope : undefined;
+  if (!scope || Object.keys(scope).some((key) => key !== 'channelIds')) {
+    return undefined;
+  }
+  const channelIds = scope.channelIds;
+  if (
+    !channelIds?.length ||
+    channelIds.some((channelId) => !channelId.trim() || channelId === '*')
+  ) {
+    return undefined;
+  }
+  return { channelIds: [...channelIds] };
+}
+
+function grantIdFromHandle(grantHandle: string): string | undefined {
+  const [prefix, id, secret, ...rest] = grantHandle.split('.');
+  if (prefix !== 'relay-ohg-v1' || !id || !secret || rest.length > 0) {
+    return undefined;
+  }
+  return id;
+}
+
+function issueScopeIsOmitted(value: unknown): boolean {
+  return isRecord(value) && value['scope'] === undefined;
 }
 
 function requiredGrantHandle(value: unknown): string {

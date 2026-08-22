@@ -94,6 +94,9 @@ workflow.
 
 #### Fixed
 
+- Allow a grant-backed operator-client issue request that omits `scope` to
+  inherit a validated, exact channel-only grant scope, while malformed,
+  wildcard, non-channel, and broader requests continue to fail closed.
 - Filtered channel subscriptions now resume without duplicate delivery by
   applying streamed catch-up state replacements to already-known messages
   (#1398)

@@ -12,10 +12,15 @@ import { createChannelMessageStore } from '../server/channel-message-store.js';
 import { createChannelSubscriptionRouter } from '../server/channel-subscription-router.js';
 import {
   authenticateOperatorClientCredential,
+  issueOperatorClientCredentialWithGrant,
   operatorClientAuthFailure,
 } from '../server/operator-client-auth.js';
 import { createWorkspaceTopicStore } from '../server/workspace-topics.js';
-import { OperatorClientCredentialRegistry } from '../shared/operator-client-credentials.js';
+import {
+  OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+  OperatorClientCredentialRegistry,
+} from '../shared/operator-client-credentials.js';
+import { HandshakeGrantRegistry } from '../shared/operator-handshake-grants.js';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -161,6 +166,68 @@ async function nextMatchingFrame(
 }
 
 describe('operator client channel lane', () => {
+  it('inherits a grant channel scope omitted by the client and authorizes stable channel commands only within it', async () => {
+    const { port, registry, channelId, otherChannelId } = await fixture();
+    const grantRegistry = new HandshakeGrantRegistry({
+      secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+    });
+    const client = { id: 'desktop-plugin' };
+    const requested = grantRegistry.request({
+      actor: { type: 'cli', id: client.id },
+      issuer: { id: 'browser-operator' },
+      audience: OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
+      capabilities: ['context:read', 'context:write'],
+      scope: { channelIds: [channelId] },
+      ttlMs: 60_000,
+    });
+    const approved = grantRegistry.approve(requested.id, {
+      approvedBy: { id: 'browser-operator' },
+    });
+    const issued = issueOperatorClientCredentialWithGrant(
+      registry,
+      grantRegistry,
+      {
+        grantHandle: approved.handle,
+        client,
+        capabilities: ['context:read', 'context:write'],
+        ttlMs: 60_000,
+      }
+    );
+
+    expect(issued.credential.scope).toEqual({ channelIds: [channelId] });
+    const listed = await fetch(`http://127.0.0.1:${port}/channels`, {
+      headers: headers(issued.token, 'channels.list'),
+    });
+    expect(listed.status).toBe(200);
+    expect((await listed.json()).channels).toHaveLength(1);
+
+    const posted = await fetch(
+      `http://127.0.0.1:${port}/channels/${encodeURIComponent(channelId)}/messages`,
+      {
+        method: 'POST',
+        headers: headers(issued.token, 'channels.post'),
+        body: JSON.stringify({ text: 'grant-backed operator post' }),
+      }
+    );
+    expect(posted.status).toBe(201);
+
+    const history = await fetch(
+      `http://127.0.0.1:${port}/channels/${encodeURIComponent(channelId)}/messages`,
+      { headers: headers(issued.token, 'channels.history') }
+    );
+    expect(history.status).toBe(200);
+
+    const siblingPost = await fetch(
+      `http://127.0.0.1:${port}/channels/${encodeURIComponent(otherChannelId)}/messages`,
+      {
+        method: 'POST',
+        headers: headers(issued.token, 'channels.post'),
+        body: JSON.stringify({ text: 'outside inherited scope' }),
+      }
+    );
+    expect(siblingPost.status).toBe(403);
+  });
+
   it('preserves stable channel schemas, attributes posts to the server-derived human, and rejects sender/source injection', async () => {
     const { port, registry, store, channelId, otherChannelId } =
       await fixture();
