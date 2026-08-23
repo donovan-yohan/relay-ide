@@ -100,7 +100,9 @@ there is no second replay ring. Each frame reports the last safe `durableSeq`.
 Only committed rows advance it, so text deltas can be rendered live without
 moving the reconnect cursor past their owning row. Exact `channelIds` scope and
 `context:read` are checked before registration, and revoked actor credentials
-terminate established streams on their next validation interval.
+terminate established streams on their next validation interval. Operator-client
+credentials use the same stream and revalidation path, but resolve only as the
+server-derived human operator; they never carry actor markers or provider state.
 
 The CLI output is a discriminated v1 frame stream: every `open`, `event`, and
 `closed` frame has `schemaVersion: 1`, `channelId`, `sequence`, `occurredAt`,

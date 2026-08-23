@@ -189,6 +189,9 @@ Commands:
                                        Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
     update [--check]                   Update the relay-ide install on this node (--check reports only)
+  operator-client    Mint or revoke a non-browser human channel credential
+    issue --hub <url> --operator-grant <handle> --client-id <id> [--capabilities context:read,context:write] [--channel-id <id>] [--ttl-seconds <n>] [--json]
+    revoke --hub <url> --operator-grant <handle> --credential-id <id> --client-id <id> [--reason <reason>] [--json]
   sessions           Read and control terminal sessions (requires RELAY_IDE_BROWSER_TOKEN)
     get <session-id>                   Print one session descriptor as JSON
     interventions <session-id> [--limit <n>]
@@ -7910,6 +7913,144 @@ function optionalNodeArgBody(
   if (value && value.trim()) body[key] = value.trim();
 }
 
+function operatorClientFlagValues(input: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    if (input[index] !== flag) continue;
+    const value = input[index + 1];
+    if (!value || value.startsWith('--')) continue;
+    values.push(value);
+    index += 1;
+  }
+  return values;
+}
+
+async function runOperatorClientCommand(operatorArgs: string[]): Promise<void> {
+  const subcommand = operatorArgs[0];
+  const hubUrl = getNodeArg(operatorArgs, '--hub');
+  const grantHandle =
+    getNodeArg(operatorArgs, '--operator-grant') ??
+    getNodeArg(operatorArgs, '--handshake-grant') ??
+    process.env['RELAY_IDE_OPERATOR_GRANT'];
+  const clientId = getNodeArg(operatorArgs, '--client-id');
+  if (
+    (subcommand !== 'issue' && subcommand !== 'revoke') ||
+    !hubUrl ||
+    !grantHandle ||
+    !clientId
+  ) {
+    logger.error(
+      'Usage: relay-ide operator-client <issue|revoke> --hub <url> --operator-grant <handle> --client-id <id> [--json]'
+    );
+    process.exit(1);
+  }
+  try {
+    new URL(hubUrl);
+  } catch {
+    logger.error(`invalid --hub url: ${hubUrl}`);
+    process.exit(1);
+  }
+
+  const body: Record<string, unknown> = {
+    grantHandle,
+    client: {
+      id: clientId,
+      ...(getNodeArg(operatorArgs, '--client-display-name')
+        ? { displayName: getNodeArg(operatorArgs, '--client-display-name') }
+        : {}),
+      ...(getNodeArg(operatorArgs, '--platform')
+        ? { platform: getNodeArg(operatorArgs, '--platform') }
+        : {}),
+    },
+  };
+  const deviceId = getNodeArg(operatorArgs, '--device-id');
+  if (deviceId) {
+    body['device'] = {
+      id: deviceId,
+      ...(getNodeArg(operatorArgs, '--device-display-name')
+        ? { displayName: getNodeArg(operatorArgs, '--device-display-name') }
+        : {}),
+    };
+  }
+  if (subcommand === 'issue') {
+    const capabilityInput =
+      getNodeArg(operatorArgs, '--capabilities') ??
+      'context:read,context:write';
+    body['capabilities'] = capabilityInput
+      .split(',')
+      .map((capability) => capability.trim())
+      .filter(Boolean);
+    const channelIds = operatorClientFlagValues(operatorArgs, '--channel-id');
+    if (channelIds.length) body['scope'] = { channelIds };
+    const ttlSeconds =
+      optionalNodeJsonNumber(operatorArgs, '--ttl-seconds') ?? 900;
+    body['ttlMs'] = ttlSeconds * 1000;
+  } else {
+    const reason = getNodeArg(operatorArgs, '--reason');
+    if (reason) body['reason'] = reason;
+  }
+
+  const credentialId = getNodeArg(operatorArgs, '--credential-id');
+  if (subcommand === 'revoke' && !credentialId) {
+    logger.error('operator-client revoke requires --credential-id <id>');
+    process.exit(1);
+  }
+  const pathName =
+    subcommand === 'issue'
+      ? '/operator-client-credentials'
+      : `/operator-client-credentials/${encodeURIComponent(credentialId!)}/revoke`;
+  let response: Response;
+  try {
+    response = await fetch(nodeEndpoint(hubUrl, pathName), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    logger.error(
+      `OPERATOR_CLIENT_CREDENTIAL_${subcommand.toUpperCase()}_FAILED: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(1);
+  }
+  const responseText = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    parsed = {};
+  }
+  if (!response.ok) {
+    const message =
+      typeof parsed === 'object' && parsed !== null
+        ? ((parsed as { error?: { message?: string } }).error?.message ??
+          `hub returned ${response.status}`)
+        : `hub returned ${response.status}`;
+    logger.error(
+      `OPERATOR_CLIENT_CREDENTIAL_${subcommand.toUpperCase()}_FAILED: ${message}`
+    );
+    process.exit(1);
+  }
+  if (operatorArgs.includes('--json')) {
+    console.log(JSON.stringify(parsed, null, 2));
+    return;
+  }
+  if (subcommand === 'issue') {
+    const token =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { token?: unknown }).token
+        : undefined;
+    if (typeof token !== 'string') {
+      logger.error(
+        'OPERATOR_CLIENT_CREDENTIAL_ISSUE_FAILED: hub response did not include token'
+      );
+      process.exit(1);
+    }
+    console.log(token);
+    return;
+  }
+  console.log(JSON.stringify(parsed, null, 2));
+}
+
 async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
   const hubUrl = getNodeArg(nodeArgs, '--hub');
   const operatorGrant =
@@ -8945,6 +9086,11 @@ if (command === 'hub') {
     );
     process.exit(1);
   }
+}
+
+if (command === 'operator-client') {
+  await runOperatorClientCommand(args.slice(1));
+  process.exit(0);
 }
 
 if (command === 'node') {

@@ -9,6 +9,7 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export const AUTH_LANES = [
   'browser-session',
   'scoped-actor-credential',
+  'operator-client-credential',
   'node-credential',
   'pair-token',
   'public-local-only',
@@ -129,7 +130,6 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       '/inbox/*',
       '/events/*',
       '/handoffs/*',
-      '/channels/*',
       '/nodes',
       '/hub/audit/*',
       '/hub/nodes/:nodeId/logs',
@@ -138,7 +138,19 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     acceptedLanes: ['scoped-actor-credential', 'browser-session'],
     middleware: 'requireCliGatewayAuth',
     notes:
-      'CLI gateway calls prefer a scoped actor credential and retain browser-session compatibility for local/dev callers; this does not make browser cookies node credentials. Channel routes sit here too: they mount with requireCliGatewayAuth and gate writes on a context:write capability check rather than on the lane alone.',
+      'CLI gateway calls retain scoped actor and browser-session compatibility; this does not make browser cookies node credentials.',
+  },
+  {
+    surface: 'CLI gateway channel APIs',
+    routes: ['/channels/*'],
+    acceptedLanes: [
+      'scoped-actor-credential',
+      'operator-client-credential',
+      'browser-session',
+    ],
+    middleware: 'requireChannelGatewayAuthForCommand',
+    notes:
+      'The stable channel subset additionally accepts the separate operator-client credential lane. It is server-attributed to the human operator and limited to declared context read/write list/get/history/post/subscribe commands.',
   },
   {
     surface: 'scoped session APIs',

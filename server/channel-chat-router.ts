@@ -6,12 +6,14 @@ import type { Request, RequestHandler, Response } from 'express';
 import multer from 'multer';
 
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
+import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
 import { isDmChannel } from '../shared/dm-channels.js';
 import {
   authenticatedCliGatewayActorCredential,
   type CliGatewayActorReadCommand,
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
+import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
 import {
   CHANNEL_HISTORY_DEFAULT_LIMIT,
   CHANNEL_HISTORY_MAX_LIMIT,
@@ -271,7 +273,15 @@ function requireKnownThreadScope(
  */
 function actorChannelIds(req: Request): readonly string[] | undefined {
   const credential = authenticatedCliGatewayActorCredential(req);
-  return credential?.scope?.channelIds;
+  if (credential) return credential.scope?.channelIds;
+  return authenticatedOperatorClientCredential(req)?.scope?.channelIds;
+}
+
+/** Operator-client responses retain Relay ids but never expose provider correlations. */
+function operatorClientPublicValue<T>(req: Request, value: T): T {
+  return authenticatedOperatorClientCredential(req)
+    ? (projectRelayChannelPublicValue(value) as T)
+    : value;
 }
 
 /** Deny (403) when a scoped actor targets a channel outside its channel scope. */
@@ -281,8 +291,13 @@ function denyOutOfScopeChannel(
   channelId: string
 ): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
-  if (!credential) return false; // browser/operator lane: existing authority
-  if (credential.scope?.channelIds?.includes(channelId)) return false;
+  if (credential) {
+    if (credential.scope?.channelIds?.includes(channelId)) return false;
+  } else {
+    const operatorClient = authenticatedOperatorClientCredential(req);
+    if (!operatorClient || !operatorClient.scope.channelIds) return false;
+    if (operatorClient.scope.channelIds.includes(channelId)) return false;
+  }
   sendGatewayError(
     res,
     'FORBIDDEN',
@@ -330,7 +345,11 @@ function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
 
 /** Private browser/operator REST surfaces are never part of the actor lane. */
 function denyScopedActorPrivateRoute(req: Request, res: Response): boolean {
-  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  if (
+    !authenticatedCliGatewayActorCredential(req) &&
+    !authenticatedOperatorClientCredential(req)
+  )
+    return false;
   sendGatewayError(
     res,
     'FORBIDDEN',
@@ -394,6 +413,10 @@ function denyMissingCapability(
   for (const capability of actorCredential?.capabilities ?? []) {
     provided.add(capability);
   }
+  const operatorCredential = authenticatedOperatorClientCredential(req);
+  for (const capability of operatorCredential?.capabilities ?? []) {
+    provided.add(capability);
+  }
   const missing = required.filter((capability) => !provided.has(capability));
   if (missing.length === 0) return false;
   sendGatewayError(
@@ -422,7 +445,11 @@ function denyNonOperator(
   res: Response,
   verb: 'read' | 'mark'
 ): boolean {
-  if (deriveSender(req, undefined).kind === 'human') return false;
+  if (
+    !authenticatedCliGatewayActorCredential(req) &&
+    !authenticatedOperatorClientCredential(req)
+  )
+    return false;
   sendGatewayError(
     res,
     'FORBIDDEN',
@@ -508,6 +535,8 @@ function deriveSender(
   req: Request,
   runtime: { profileActorId: string; providerId: string } | undefined
 ): ChannelSenderRef {
+  const operatorClient = authenticatedOperatorClientCredential(req);
+  if (operatorClient) return { ...operatorClient.principal };
   const credential = authenticatedCliGatewayActorCredential(req);
   if (credential) {
     const isPersistentOrchestrator =
@@ -697,7 +726,11 @@ function rejectInvalidActorChannelPostBody(
   req: Request,
   res: Response
 ): boolean {
-  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  if (
+    !authenticatedCliGatewayActorCredential(req) &&
+    !authenticatedOperatorClientCredential(req)
+  )
+    return false;
   if (!isRecord(req.body)) {
     sendGatewayError(
       res,
@@ -824,7 +857,11 @@ function rejectInvalidActorPagination(
   res: Response,
   fields: readonly string[]
 ): boolean {
-  if (!authenticatedCliGatewayActorCredential(req)) return false;
+  if (
+    !authenticatedCliGatewayActorCredential(req) &&
+    !authenticatedOperatorClientCredential(req)
+  )
+    return false;
   const allowed = new Set(fields);
   const undeclared = Object.keys(req.query).find(
     (field) => !allowed.has(field)
@@ -1186,7 +1223,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         .map((topic) => channelSummaryView(store, topic));
       // A scoped actor enumerates ONLY its allowed channelIds (Slice 0 gate:
       // an actor scoped to channel A must never see channel B in the list).
-      res.json({ channels: filterChannelListToScope(req, channels) });
+      res.json(
+        operatorClientPublicValue(req, {
+          channels: filterChannelListToScope(req, channels),
+        })
+      );
     } catch (error) {
       mapStoreError(res, error);
     }
@@ -1446,7 +1487,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       return;
     }
     try {
-      res.json({ channel: channelSummaryView(store, topic) });
+      res.json(
+        operatorClientPublicValue(req, {
+          channel: channelSummaryView(store, topic),
+        })
+      );
     } catch (error) {
       mapStoreError(res, error);
     }
@@ -1487,12 +1532,14 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         limit,
         deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
       );
-      res.json({
-        messages: budgeted.rows,
-        ...(budgeted.hasMore
-          ? { hasMore: true, nextCursor: budgeted.nextCursor }
-          : {}),
-      });
+      res.json(
+        operatorClientPublicValue(req, {
+          messages: budgeted.rows,
+          ...(budgeted.hasMore
+            ? { hasMore: true, nextCursor: budgeted.nextCursor }
+            : {}),
+        })
+      );
     } catch (error) {
       mapStoreError(res, error);
     }
@@ -1992,10 +2039,12 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       if (result.replayed && steering) {
         deps.binder?.steerExisting(result.message, steering);
       }
-      res.status(result.replayed ? 200 : 201).json({
-        message: result.message,
-        run: result.run,
-      });
+      res.status(result.replayed ? 200 : 201).json(
+        operatorClientPublicValue(req, {
+          message: result.message,
+          run: result.run,
+        })
+      );
     } catch (error) {
       mapStoreError(res, error);
     }

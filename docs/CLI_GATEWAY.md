@@ -131,7 +131,10 @@ channels the credential is scoped to: an actor credential with no `channelIds`
 scope is refused, and a `channelId` outside the scope is rejected before any
 read. Browser-only conveniences (attachments, agent commands, interrupt,
 approvals, read-state) remain outside the gateway contract and stay closed to
-scoped actors.
+scoped actors. Non-browser human clients use the separate
+[`operator-client credential`](OPERATOR_CLIENT_CREDENTIALS.md) lane: it accepts
+only list/get/history/post/subscribe, derives `human:operator` on the server,
+and rejects actor-token markers or caller sender/source fields.
 
 ### Local MCP channel facade (#1399)
 

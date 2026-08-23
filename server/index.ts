@@ -389,6 +389,18 @@ import {
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
 import {
+  authenticateOperatorClientCredential,
+  authenticateOperatorClientCredentialForRenew,
+  createOperatorClientCredentialRegistry,
+  isOperatorClientChannelCommand,
+  isOperatorClientCredentialRequest,
+  issueOperatorClientCredentialWithGrant,
+  operatorClientAuthFailure,
+  operatorClientCredentialIssueInput,
+  renewOperatorClientCredential,
+  revokeOperatorClientCredentialWithGrant,
+} from './operator-client-auth.js';
+import {
   RELAY_CAPABILITY_BITS,
   type RelayCapabilityBit,
 } from '../shared/security-policy.js';
@@ -403,6 +415,8 @@ const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
 const cliGatewayHandshakeGrantRegistry =
   createCliGatewayHandshakeGrantRegistry();
+const operatorClientCredentialRegistry =
+  createOperatorClientCredentialRegistry();
 
 // When run via the CLI bin or the dev runner, RELAY_IDE_CONFIG is set
 // explicitly. When run directly from source (e.g. `node dist/server/index.js`),
@@ -1988,6 +2002,57 @@ async function main(): Promise<void> {
     };
   };
 
+  /**
+   * Stable channel commands admit either the established scoped actor lane or
+   * the deliberately separate human operator-client lane. The latter is
+   * checked first so an operator credential carrying an actor marker fails
+   * closed instead of falling into agent attribution.
+   */
+  const requireChannelGatewayAuthForCommand = (
+    expectedCommand: CliGatewayActorCommand,
+    options: {
+      capabilities?: readonly RelayCapabilityBit[];
+      scopeForRequest?: (
+        req: express.Request
+      ) => { channelIds?: string[] } | undefined;
+    } = {}
+  ): express.RequestHandler => {
+    const actorAuth = requireCliGatewayAuthForActorCommand(
+      expectedCommand,
+      options
+    );
+    return (req, res, next) => {
+      if (!isOperatorClientCredentialRequest(req)) {
+        actorAuth(req, res, next);
+        return;
+      }
+      const channelId = options.scopeForRequest?.(req)?.channelIds?.[0];
+      if (!isOperatorClientChannelCommand(expectedCommand)) {
+        const failure = operatorClientAuthFailure({
+          reason: 'unsupported_command',
+        });
+        res
+          .status(failure.code === 'FORBIDDEN' ? 403 : 401)
+          .json({ error: failure });
+        return;
+      }
+      const validation = authenticateOperatorClientCredential(
+        operatorClientCredentialRegistry,
+        req,
+        expectedCommand,
+        channelId
+      );
+      if (!validation.ok) {
+        const failure = operatorClientAuthFailure(validation);
+        res
+          .status(failure.code === 'FORBIDDEN' ? 403 : 401)
+          .json({ error: failure });
+        return;
+      }
+      next();
+    };
+  };
+
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
       requireCliGatewayReadAuth()(req, res, next);
@@ -2462,6 +2527,147 @@ async function main(): Promise<void> {
     }
   });
 
+  const operatorClientLifecycleAuth: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
+    const body = isRecord(req.body) ? req.body : {};
+    if (typeof body['grantHandle'] === 'string') {
+      next();
+      return;
+    }
+    requireAuth(req, res, next);
+  };
+  const operatorClientLifecycleError = (
+    res: express.Response,
+    error: unknown
+  ) => {
+    const reason =
+      error instanceof Error &&
+      'reason' in error &&
+      typeof error.reason === 'string'
+        ? error.reason
+        : 'issue_failed';
+    res.status(reason === 'credential_not_found' ? 404 : 400).json({
+      error: {
+        code: `OPERATOR_CLIENT_CREDENTIAL_${reason.toUpperCase()}`,
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    });
+  };
+
+  // A raw operator-client token is returned only from this issue response.
+  // Enumeration and revocation project credential metadata only.
+  app.post(
+    '/operator-client-credentials',
+    operatorClientLifecycleAuth,
+    (req, res) => {
+      try {
+        const body = isRecord(req.body) ? req.body : {};
+        const issued =
+          typeof body['grantHandle'] === 'string'
+            ? issueOperatorClientCredentialWithGrant(
+                operatorClientCredentialRegistry,
+                cliGatewayHandshakeGrantRegistry,
+                body
+              )
+            : operatorClientCredentialRegistry.issue(
+                operatorClientCredentialIssueInput(body)
+              );
+        res
+          .status(201)
+          .json({ token: issued.token, credential: issued.credential });
+      } catch (error) {
+        operatorClientLifecycleError(res, error);
+      }
+    }
+  );
+  // Renewal: the still-valid credential itself mints its successor. Defined
+  // before the parameterized /:id/revoke route; express matches the literal
+  // path first regardless, but keeping lifecycle routes together reads better.
+  app.post('/operator-client-credentials/renew', (req, res) => {
+    const auth = authenticateOperatorClientCredentialForRenew(
+      operatorClientCredentialRegistry,
+      req
+    );
+    if (!auth.ok) {
+      res.status(401).json(operatorClientAuthFailure({ reason: auth.reason }));
+      return;
+    }
+    try {
+      const issued = renewOperatorClientCredential(
+        operatorClientCredentialRegistry,
+        auth.credential,
+        isRecord(req.body) ? req.body : {}
+      );
+      res
+        .status(201)
+        .json({ token: issued.token, credential: issued.credential });
+    } catch (error) {
+      operatorClientLifecycleError(res, error);
+    }
+  });
+  app.get('/operator-client-credentials', requireAuth, (_req, res) => {
+    res.json({
+      credentials: operatorClientCredentialRegistry.listCredentials(),
+    });
+  });
+  app.delete('/operator-client-credentials/:id', requireAuth, (req, res) => {
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({
+        error: {
+          code: 'OPERATOR_CLIENT_CREDENTIAL_ID_REQUIRED',
+          message: 'credential id is required',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    const body = isRecord(req.body) ? req.body : {};
+    const credential = operatorClientCredentialRegistry.revoke(id, {
+      revokedBy: 'browser-operator',
+      ...(typeof body['reason'] === 'string' ? { reason: body['reason'] } : {}),
+    });
+    if (!credential) {
+      res.status(404).json({
+        error: {
+          code: 'OPERATOR_CLIENT_CREDENTIAL_NOT_FOUND',
+          message: 'credential not found',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    res.json({ credential });
+  });
+  app.post('/operator-client-credentials/:id/revoke', (req, res) => {
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({
+        error: {
+          code: 'OPERATOR_CLIENT_CREDENTIAL_ID_REQUIRED',
+          message: 'credential id is required',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    try {
+      const credential = revokeOperatorClientCredentialWithGrant(
+        operatorClientCredentialRegistry,
+        cliGatewayHandshakeGrantRegistry,
+        id,
+        isRecord(req.body) ? req.body : {}
+      );
+      res.json({ credential });
+    } catch (error) {
+      operatorClientLifecycleError(res, error);
+    }
+  });
+
   const collectLocalInventory = () =>
     collectLocalRepoInventory({
       config: getConfig(),
@@ -2483,6 +2689,10 @@ async function main(): Promise<void> {
           ...(input.correlationId
             ? { correlationId: input.correlationId }
             : {}),
+        });
+        operatorClientCredentialRegistry.revokeByGrantId(input.grantId, {
+          revokedBy: `grant:${input.grantId}`,
+          reason: input.reason ?? 'originating operator grant revoked',
         });
       },
       scopedSessionAuth: requireScopedSessionAuth,
@@ -2664,7 +2874,7 @@ async function main(): Promise<void> {
       },
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: (command, options) =>
-        requireCliGatewayAuthForActorCommand(command, {
+        requireChannelGatewayAuthForCommand(command, {
           ...(command === 'channels.list'
             ? { scopeForRequest: channelListScopeFromCredential }
             : command === 'channels.search'
@@ -2679,7 +2889,7 @@ async function main(): Promise<void> {
           ...(options ?? {}),
         }),
       requireWriteActorAuth: (command, options) =>
-        requireCliGatewayAuthForActorCommand(command, {
+        requireChannelGatewayAuthForCommand(command, {
           ...(command === 'channels.post'
             ? { scopeForRequest: channelScopeFromParams }
             : {}),
@@ -2690,11 +2900,19 @@ async function main(): Promise<void> {
   app.use(
     createChannelSubscriptionRouter({
       hub: channelHub,
-      requireSubscribeAuth: requireCliGatewayAuthForActorCommand(
+      requireSubscribeAuth: requireChannelGatewayAuthForCommand(
         'channels.subscribe',
         { scopeForRequest: channelScopeFromParams }
       ),
       isStillAuthorized: (req, channelId) => {
+        if (isOperatorClientCredentialRequest(req)) {
+          return authenticateOperatorClientCredential(
+            operatorClientCredentialRegistry,
+            req,
+            'channels.subscribe',
+            channelId
+          ).ok;
+        }
         if (!isCliGatewayActorTokenRequest(req)) return true;
         const validation = validateCliGatewayActorCredential(
           cliGatewayActorRegistry,

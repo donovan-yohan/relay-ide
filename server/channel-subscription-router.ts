@@ -9,7 +9,9 @@ import {
   type ChannelEventV1,
   type ChannelSubscriptionFilter,
 } from '../shared/channel-chat-protocol.js';
+import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
 import { authenticatedCliGatewayActorCredential } from './cli-gateway-actor-auth.js';
+import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
 import type {
   ChannelEventSink,
   ChannelHub,
@@ -180,6 +182,8 @@ function projectEvent(
 function requestHasContextRead(req: Request): boolean {
   const actor = authenticatedCliGatewayActorCredential(req);
   if (actor) return actor.capabilities.includes(CONTEXT_READ);
+  const operatorClient = authenticatedOperatorClientCredential(req);
+  if (operatorClient) return operatorClient.capabilities.includes(CONTEXT_READ);
   return (req.header('x-relay-capabilities') ?? '')
     .split(/[\s,]+/)
     .some((capability) => capability === CONTEXT_READ);
@@ -190,7 +194,13 @@ function actorMayReadChannel(req: Request, channelId: string): boolean {
   // Browser/session clients retain their established access lane. A scoped
   // actor with no channelIds is deliberately fail-closed for this enumeration
   // capable, long-lived route.
-  return !actor || actor.scope?.channelIds?.includes(channelId) === true;
+  if (actor) return actor.scope?.channelIds?.includes(channelId) === true;
+  const operatorClient = authenticatedOperatorClientCredential(req);
+  return (
+    !operatorClient ||
+    !operatorClient.scope.channelIds ||
+    operatorClient.scope.channelIds.includes(channelId)
+  );
 }
 
 function advanceDurableCursor(current: number, event: ChannelEventV1): number {
@@ -456,13 +466,16 @@ export function createChannelSubscriptionRouter(
           durableSeq = advanceDurableCursor(durableSeq, event);
           const projected = projectEvent(event, filter);
           if (!projected) return true;
+          const payload = authenticatedOperatorClientCredential(req)
+            ? (projectRelayChannelPublicValue(projected) as ChannelEventV1)
+            : projected;
           return writeFrame({
             frame: 'event',
             schemaVersion: 1,
             channelId,
             sequence: sequence++,
             occurredAt: now().toISOString(),
-            payload: projected,
+            payload,
             durableSeq,
           });
         },
