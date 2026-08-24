@@ -18,6 +18,25 @@ workflow.
 
 ## [Unreleased]
 
+### Native session surface
+
+#### Added
+
+- List, read, and import native provider sessions (Claude, Codex, Pi) through
+  one unified read-only surface: `relay-ide v1 sessions native list|get|import
+  --json`. The cross-provider adapter registry aggregates sessions from every
+  installed adapter with graceful per-provider install status, so a missing or
+  unsupported provider degrades to a diagnostic instead of breaking the
+  aggregate response (#1427).
+- Widen `NativeSessionProvider` to include `pi` alongside claude, codex, hermes,
+  and opencode. The Pi adapter honestly reports `unsupported` because Pi is
+  RPC-based and does not expose session history over its protocol or via local
+  files — no data is faked (#1427).
+- New CLI gateway scopes `sessions.native.list`, `sessions.native.get`, and
+  `sessions.native.import` enforced via the existing actor-auth pattern
+  (`requireCliGatewayAuthForActorCommand`); unauthenticated or underscoped
+  requests fail closed (#1427).
+
 ### Channel workspace and sidebar
 
 #### Added

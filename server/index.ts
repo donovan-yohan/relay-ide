@@ -315,6 +315,17 @@ import {
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
+  ClaudeJsonlStateAdapter,
+  CodexJsonlStateAdapter,
+  PiStateAdapter,
+  NativeSessionAdapterRegistry,
+  type NativeSessionRegistryReport,
+} from './provider-state/index.js';
+import type {
+  NativeSessionProvider,
+  NativeSessionRef,
+} from '../shared/provider-native-session-state.js';
+import {
   buildPtyCapacityResponse,
   countActivePtySessions,
   sessionCreateErrorResponse,
@@ -4049,6 +4060,62 @@ async function main(): Promise<void> {
         }
         return { ok: true, data: found };
       },
+      'sessions.native.list': async (commandArgs) => {
+        const provider = commandArgs['provider'];
+        const cwd = commandArgs['cwd'];
+        const workContextId = commandArgs['workContextId'];
+        const report = await nativeSessionRegistry.listAllSessions({
+          ...(typeof provider === 'string' && provider
+            ? { provider: provider as NativeSessionProvider }
+            : {}),
+          ...(typeof cwd === 'string' && cwd ? { cwd } : {}),
+          ...(typeof workContextId === 'string' && workContextId
+            ? { workContextId }
+            : {}),
+        });
+        return { ok: true, data: report };
+      },
+      'sessions.native.get': async (commandArgs) => {
+        const provider = commandArgs['provider'];
+        const nativeId = commandArgs['nativeId'];
+        if (typeof provider !== 'string' || !provider) {
+          return {
+            ok: false,
+            kind: 'unavailable',
+            reason: 'not-found',
+            message: 'provider is required',
+          };
+        }
+        if (typeof nativeId !== 'string' || !nativeId) {
+          return {
+            ok: false,
+            kind: 'unavailable',
+            reason: 'not-found',
+            message: 'nativeId is required',
+          };
+        }
+        try {
+          const ref: NativeSessionRef = {
+            provider: provider as NativeSessionProvider,
+            nativeId,
+            ...(typeof commandArgs['sourcePath'] === 'string'
+              ? { sourcePath: commandArgs['sourcePath'] as string }
+              : {}),
+            ...(typeof commandArgs['cwd'] === 'string'
+              ? { cwd: commandArgs['cwd'] as string }
+              : {}),
+          };
+          const snapshot = await nativeSessionRegistry.getProviderState(ref);
+          return { ok: true, data: { snapshot } };
+        } catch (error) {
+          return {
+            ok: false,
+            kind: 'unavailable',
+            reason: 'not-found',
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
       'settings.get': () => ({
         ok: true,
         data: {
@@ -4353,6 +4420,257 @@ async function main(): Promise<void> {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  // ── Native session adapter registry (#1427) ─────────────────────────────
+  // Cross-provider fan-out: aggregates listNativeSessions across Claude, Codex,
+  // and Pi state adapters with graceful per-provider install status. Adapters
+  // are read-only and never mutate provider stores.
+  const nativeSessionRegistry = new NativeSessionAdapterRegistry();
+  nativeSessionRegistry.register(new ClaudeJsonlStateAdapter());
+  nativeSessionRegistry.register(new CodexJsonlStateAdapter());
+  nativeSessionRegistry.register(new PiStateAdapter());
+
+  const VALID_NATIVE_PROVIDERS = new Set<NativeSessionProvider>([
+    'claude',
+    'codex',
+    'hermes',
+    'opencode',
+    'pi',
+  ]);
+
+  // GET /sessions/native — list native provider sessions with install status
+  app.get(
+    '/sessions/native',
+    requireCliGatewayAuthForActorCommand('sessions.native.list'),
+    async (req, res) => {
+      try {
+        const providerParam =
+          typeof req.query['provider'] === 'string'
+            ? (req.query['provider'] as string)
+            : undefined;
+        const cwdParam =
+          typeof req.query['cwd'] === 'string'
+            ? (req.query['cwd'] as string)
+            : undefined;
+        const workContextIdParam =
+          typeof req.query['workContextId'] === 'string'
+            ? (req.query['workContextId'] as string)
+            : undefined;
+
+        if (
+          providerParam &&
+          !VALID_NATIVE_PROVIDERS.has(providerParam as NativeSessionProvider)
+        ) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: `Unsupported provider '${providerParam}'.`,
+              retryable: false,
+            },
+          });
+          return;
+        }
+
+        const report: NativeSessionRegistryReport =
+          await nativeSessionRegistry.listAllSessions({
+            ...(providerParam
+              ? { provider: providerParam as NativeSessionProvider }
+              : {}),
+            ...(cwdParam ? { cwd: cwdParam } : {}),
+            ...(workContextIdParam ? { workContextId: workContextIdParam } : {}),
+          });
+
+        res.json(report);
+      } catch (error) {
+        logger.error('[sessions.native.list] error:', error);
+        res.status(500).json({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message:
+              error instanceof Error ? error.message : 'Internal error',
+            retryable: false,
+          },
+        });
+      }
+    }
+  );
+
+  // GET /sessions/native/:provider/:nativeId — read bounded provider state
+  app.get(
+    '/sessions/native/:provider/:nativeId',
+    requireCliGatewayAuthForActorCommand('sessions.native.get'),
+    async (req, res) => {
+      try {
+        const provider = req.params['provider'] as NativeSessionProvider;
+        if (!VALID_NATIVE_PROVIDERS.has(provider)) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: `Unsupported provider '${provider}'.`,
+              retryable: false,
+            },
+          });
+          return;
+        }
+        const nativeId = req.params['nativeId'] as string;
+        if (!nativeId) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: 'nativeId is required.',
+              retryable: false,
+            },
+          });
+          return;
+        }
+
+        const sourcePath =
+          typeof req.query['sourcePath'] === 'string'
+            ? (req.query['sourcePath'] as string)
+            : undefined;
+        const cwd =
+          typeof req.query['cwd'] === 'string'
+            ? (req.query['cwd'] as string)
+            : undefined;
+
+        const ref: NativeSessionRef = {
+          provider,
+          nativeId,
+          ...(sourcePath ? { sourcePath } : {}),
+          ...(cwd ? { cwd } : {}),
+        };
+
+        const snapshot = await nativeSessionRegistry.getProviderState(ref);
+        res.json({ snapshot });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        if (message.includes('not found') || message.includes('not registered')) {
+          res.status(404).json({
+            error: {
+              code: 'NOT_FOUND',
+              message,
+              retryable: false,
+            },
+          });
+          return;
+        }
+        logger.error('[sessions.native.get] error:', error);
+        res.status(500).json({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message,
+            retryable: false,
+          },
+        });
+      }
+    }
+  );
+
+  // POST /sessions/native/import — import a native session transcript
+  app.post(
+    '/sessions/native/import',
+    requireCliGatewayAuthForActorCommand('sessions.native.import'),
+    async (req, res) => {
+      try {
+        const body =
+          typeof req.body === 'object' && req.body !== null
+            ? (req.body as Record<string, unknown>)
+            : {};
+        const provider = body['provider'] as NativeSessionProvider;
+        if (
+          !provider ||
+          !VALID_NATIVE_PROVIDERS.has(provider)
+        ) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: 'Valid provider is required.',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        const nativeId = body['nativeId'];
+        if (typeof nativeId !== 'string' || !nativeId) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: 'nativeId is required.',
+              retryable: false,
+            },
+          });
+          return;
+        }
+
+        const sourcePath =
+          typeof body['sourcePath'] === 'string'
+            ? (body['sourcePath'] as string)
+            : undefined;
+        const cwd =
+          typeof body['cwd'] === 'string' ? (body['cwd'] as string) : undefined;
+
+        const ref: NativeSessionRef = {
+          provider,
+          nativeId,
+          ...(sourcePath ? { sourcePath } : {}),
+          ...(cwd ? { cwd } : {}),
+        };
+
+        const result = await nativeSessionRegistry.importSession(ref);
+        // Return only the safe metadata; the full session/patches are large
+        // and available via the import result for internal use. The CLI can
+        // expand to include the full session if needed.
+        res.json({
+          result: {
+            provider: result.provider,
+            nativeId: result.nativeId,
+            importedAt: result.importedAt,
+            sourcePath: result.sourcePath,
+            ...(result.importTruncation
+              ? { importTruncation: result.importTruncation }
+              : {}),
+            ...(result.sourceReadTruncation
+              ? { sourceReadTruncation: result.sourceReadTruncation }
+              : {}),
+            session: result.session,
+            patches: result.patches,
+          },
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        if (message.includes('not found') || message.includes('not registered')) {
+          res.status(404).json({
+            error: {
+              code: 'NOT_FOUND',
+              message,
+              retryable: false,
+            },
+          });
+          return;
+        }
+        if (message.includes('cannot import') || message.includes('cannot read')) {
+          res.status(422).json({
+            error: {
+              code: 'UNSUPPORTED',
+              message,
+              retryable: false,
+            },
+          });
+          return;
+        }
+        logger.error('[sessions.native.import] error:', error);
+        res.status(500).json({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message,
+            retryable: false,
+          },
+        });
+      }
+    }
+  );
 
   // GET /sessions — enrich with live branch from git (rate-limited to avoid spawning git on every poll)
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp

@@ -1557,6 +1557,9 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.get',
   'sessions.create',
   'sessions.screen',
+  'sessions.native.list',
+  'sessions.native.get',
+  'sessions.native.import',
   'work-contexts.get',
   'work-contexts.resume',
   // context/inbox mail loop: a scoped actor credential can create/read context
@@ -1732,7 +1735,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions native list|sessions native get|sessions native import|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2093,6 +2096,74 @@ async function runGatewaySessionList(): Promise<never> {
     capabilities: ['session:read'],
   });
   printGatewayEnvelope(gatewayOk('sessions.list', { sessions }), 0);
+}
+
+async function runGatewaySessionNativeList(
+  nativeArgs: string[]
+): Promise<never> {
+  const provider = gatewayArg(nativeArgs, '--provider');
+  const cwd = gatewayArg(nativeArgs, '--cwd');
+  const workContextId = gatewayArg(nativeArgs, '--work-context-id');
+  const queryParts: string[] = [];
+  if (provider) queryParts.push(`provider=${encodeURIComponent(provider)}`);
+  if (cwd) queryParts.push(`cwd=${encodeURIComponent(cwd)}`);
+  if (workContextId)
+    queryParts.push(`workContextId=${encodeURIComponent(workContextId)}`);
+  const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.native.list',
+    pathName: `/sessions/native${query}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.native.list', data), 0);
+}
+
+async function runGatewaySessionNativeGet(
+  nativeArgs: string[]
+): Promise<never> {
+  const provider = gatewayArg(nativeArgs, '--provider');
+  const nativeId = gatewayArg(nativeArgs, '--native-id') ?? nativeArgs[0];
+  if (!provider)
+    gatewayInvalid('sessions.native.get', '--provider is required');
+  if (!nativeId || nativeId.startsWith('--'))
+    gatewayInvalid('sessions.native.get', '--native-id is required');
+  const sourcePath = gatewayArg(nativeArgs, '--source-path');
+  const cwd = gatewayArg(nativeArgs, '--cwd');
+  const queryParts: string[] = [];
+  if (sourcePath)
+    queryParts.push(`sourcePath=${encodeURIComponent(sourcePath)}`);
+  if (cwd) queryParts.push(`cwd=${encodeURIComponent(cwd)}`);
+  const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.native.get',
+    pathName: `/sessions/native/${encodeURIComponent(provider)}/${encodeURIComponent(nativeId)}${query}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.native.get', data), 0);
+}
+
+async function runGatewaySessionNativeImport(
+  nativeArgs: string[]
+): Promise<never> {
+  const provider = gatewayArg(nativeArgs, '--provider');
+  const nativeId = gatewayArg(nativeArgs, '--native-id') ?? nativeArgs[0];
+  if (!provider)
+    gatewayInvalid('sessions.native.import', '--provider is required');
+  if (!nativeId || nativeId.startsWith('--'))
+    gatewayInvalid('sessions.native.import', '--native-id is required');
+  const sourcePath = gatewayArg(nativeArgs, '--source-path');
+  const cwd = gatewayArg(nativeArgs, '--cwd');
+  const body: Record<string, string> = { provider, nativeId };
+  if (sourcePath) body['sourcePath'] = sourcePath;
+  if (cwd) body['cwd'] = cwd;
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.native.import',
+    pathName: '/sessions/native/import',
+    method: 'POST',
+    body,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.native.import', data), 0);
 }
 
 async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
@@ -3386,6 +3457,19 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   const sessionArgs = gatewayArgs.slice(2);
   if (sessionSubcommand === 'list') return runGatewaySessionList();
   if (sessionSubcommand === 'get') return runGatewaySessionGet(sessionArgs);
+  if (sessionSubcommand === 'native') {
+    const nativeSub = gatewayArgs[2];
+    const nativeArgs = gatewayArgs.slice(3);
+    if (nativeSub === 'list')
+      return runGatewaySessionNativeList(nativeArgs);
+    if (nativeSub === 'get')
+      return runGatewaySessionNativeGet(nativeArgs);
+    if (nativeSub === 'import')
+      return runGatewaySessionNativeImport(nativeArgs);
+    gatewayInvalid('sessions.native.list', 'unknown native sessions command', {
+      args: gatewayArgs,
+    });
+  }
   if (sessionSubcommand === 'create')
     return runGatewaySessionCreate(sessionArgs);
   if (sessionSubcommand === 'renew') return runGatewaySessionRenew(sessionArgs);
