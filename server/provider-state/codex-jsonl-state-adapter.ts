@@ -843,18 +843,23 @@ function isToolResultOnly(blocks: Record<string, unknown>[]): boolean {
   });
 }
 
+function appendBlockContentText(content: unknown, parts: string[]): void {
+  if (typeof content === 'string') {
+    parts.push(content);
+    return;
+  }
+  if (!Array.isArray(content)) return;
+  for (const item of content) {
+    if (isRecord(item) && typeof item.text === 'string') parts.push(item.text);
+  }
+}
+
 function blockText(blocks: Record<string, unknown>[]): string {
   const parts: string[] = [];
   for (const block of blocks) {
     const type = stringField(block.type);
     if (type === 'tool_result' || type === 'tool_use_result') {
-      const content = block.content;
-      if (typeof content === 'string') parts.push(content);
-      else if (Array.isArray(content)) {
-        for (const item of content) {
-          if (isRecord(item) && typeof item.text === 'string') parts.push(item.text);
-        }
-      }
+      appendBlockContentText(block.content, parts);
     }
   }
   return parts.join('\n');
