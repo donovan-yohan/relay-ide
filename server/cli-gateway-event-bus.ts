@@ -6,7 +6,8 @@ export type CliGatewayMetadataTopic =
   | 'handoff-artifacts'
   | 'workflow-runs'
   | 'automation-runs'
-  | 'pr-overseer';
+  | 'pr-overseer'
+  | 'native-sessions';
 
 export interface CliGatewayEventRedaction {
   rawPayloadIncluded: false;
@@ -148,6 +149,8 @@ export function createCliGatewayEventBus(input: { maxEventsPerTopic?: number } =
     },
     replay(topic, cursor) {
       const buffer = topicBuffer(topic);
+      // No cursor = live-only subscribe: the consumer asked for events from
+      // "now", so buffered history is not backfilled.
       if (!cursor) return { events: [], replayDropped: false };
       const index = buffer.findIndex((event) => event.cursor === cursor);
       if (index >= 0) return { events: buffer.slice(index + 1), replayDropped: false };

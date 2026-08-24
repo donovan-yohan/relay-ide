@@ -1560,6 +1560,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.native.list',
   'sessions.native.get',
   'sessions.native.import',
+  'sessions.native.watch',
   'work-contexts.get',
   'work-contexts.resume',
   // context/inbox mail loop: a scoped actor credential can create/read context
@@ -1735,7 +1736,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions native list|sessions native get|sessions native import|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions native list|sessions native get|sessions native import|sessions native watch|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2164,6 +2165,120 @@ async function runGatewaySessionNativeImport(
     capabilities: ['session:read'],
   });
   printGatewayEnvelope(gatewayOk('sessions.native.import', data), 0);
+}
+
+/**
+ * `sessions native watch` (#1428): stream normalized live events from a
+ * running native session as NDJSON gateway envelopes. Two-phase flow:
+ * POST /sessions/native/watch starts the read-only tail (and validates the
+ * actor credential against the native session scope), then the shared
+ * GET /events?topic=native-sessions&sessionId=<nativeId> NDJSON endpoint is
+ * streamed with the same envelope framing as events.subscribe.
+ */
+async function runGatewaySessionNativeWatch(
+  nativeArgs: string[]
+): Promise<never> {
+  const provider = gatewayArg(nativeArgs, '--provider');
+  const nativeId = gatewayArg(nativeArgs, '--native-id') ?? nativeArgs[0];
+  if (!provider)
+    gatewayInvalid('sessions.native.watch', '--provider is required');
+  if (!nativeId || nativeId.startsWith('--'))
+    gatewayInvalid('sessions.native.watch', '--native-id is required');
+  const sourcePath = gatewayArg(nativeArgs, '--source-path');
+  const cwd = gatewayArg(nativeArgs, '--cwd');
+  const cursor = gatewayArg(nativeArgs, '--cursor');
+  const maxEvents = gatewayOptionalPositiveInt(
+    'sessions.native.watch',
+    nativeArgs,
+    '--max-events',
+    10000
+  );
+  const idleTimeoutMs = gatewayOptionalPositiveInt(
+    'sessions.native.watch',
+    nativeArgs,
+    '--idle-timeout-ms',
+    300000
+  );
+
+  const token = gatewayRequiredToken('sessions.native.watch');
+  const actorToken = gatewayActorToken();
+  const usingActorToken = actorToken.length > 0 && token === actorToken;
+  const correlationId = gatewayCorrelationId();
+  const port = gatewayWsPort();
+
+  // Phase 1 — start the tail. Actor credentials are validated against the
+  // native session scope here; the hub re-validates on the /events stream.
+  const watchBody: Record<string, unknown> = { provider, nativeId };
+  if (sourcePath) watchBody['sourcePath'] = sourcePath;
+  if (cwd) watchBody['cwd'] = cwd;
+  try {
+    await fetch(`http://127.0.0.1:${port}/sessions/native/watch`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        ...(usingActorToken
+          ? {
+              'x-relay-cli-actor-token': 'v1',
+              'x-relay-cli-command': 'sessions.native.watch',
+            }
+          : {}),
+        ...(correlationId ? { 'x-relay-correlation-id': correlationId } : {}),
+      },
+      body: JSON.stringify(watchBody),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        let upstream: Record<string, unknown> | undefined;
+        try {
+          upstream = text
+            ? (JSON.parse(text) as Record<string, unknown>)
+            : undefined;
+        } catch {
+          upstream = undefined;
+        }
+        printGatewayEnvelope(
+          gatewayError('sessions.native.watch', {
+            code: normalizeGatewayErrorCode(res.status, upstream),
+            message: gatewayErrorMessage(res.status, upstream),
+            retryable: gatewayErrorRetryable(res.status, upstream),
+            details: {
+              ...sanitizedGatewayErrorDetails(res.status, upstream),
+              provider,
+              nativeId,
+            },
+          }),
+          1
+        );
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError('sessions.native.watch', {
+        code: 'SERVER_UNAVAILABLE',
+        message: `could not connect to Relay hub on port ${port}: ${message}`,
+        retryable: true,
+        details: { provider, nativeId },
+      }),
+      1
+    );
+  }
+
+  // Phase 2 — stream the topic with events.subscribe framing.
+  return runGatewayEventsSubscribe([
+    '--topic',
+    'native-sessions',
+    '--session-id',
+    nativeId,
+    ...(cursor ? ['--cursor', cursor] : []),
+    ...(maxEvents !== undefined
+      ? ['--max-events', String(maxEvents)]
+      : []),
+    ...(idleTimeoutMs !== undefined
+      ? ['--idle-timeout-ms', String(idleTimeoutMs)]
+      : []),
+  ]);
 }
 
 async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
@@ -3466,6 +3581,8 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
       return runGatewaySessionNativeGet(nativeArgs);
     if (nativeSub === 'import')
       return runGatewaySessionNativeImport(nativeArgs);
+    if (nativeSub === 'watch')
+      return runGatewaySessionNativeWatch(nativeArgs);
     gatewayInvalid('sessions.native.list', 'unknown native sessions command', {
       args: gatewayArgs,
     });

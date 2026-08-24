@@ -107,6 +107,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.native.list': 'native sessions list',
   'sessions.native.get': 'native session details',
   'sessions.native.import': 'import native session',
+  'sessions.native.watch': 'watch native session',
   'tickets.startWork': 'start ticket work',
   'branches.openSession': 'open branch session',
   'sessions.renew': 'renew session',
@@ -204,6 +205,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
 const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.stream',
   'sessions.wait',
+  'sessions.native.watch',
   'events.subscribe',
   'channels.subscribe',
 ]);

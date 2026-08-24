@@ -131,6 +131,19 @@ export class NativeSessionAdapterRegistry {
     return adapter.resumeCommand(ref);
   }
 
+  /**
+   * List sessions for one provider only, without the install-status fan-out of
+   * `listAllSessions` (#1428 live-tail path uses this to resolve a nativeId to
+   * its source file).
+   */
+  async listNativeSessionsByProvider(
+    provider: NativeSessionProvider,
+    scope?: NativeSessionListScope
+  ): Promise<NativeSessionSummary[]> {
+    const adapter = this.requireAdapter(provider);
+    return adapter.listNativeSessions(scope);
+  }
+
   private requireAdapter(provider: NativeSessionProvider): AgentHarnessStateAdapter {
     const adapter = this.adapters.get(provider);
     if (!adapter) {

@@ -73,7 +73,11 @@ function isMetadataTopic(topic: EventsSubscribeTopic): topic is CliGatewayMetada
     topic === 'handoff-artifacts' ||
     topic === 'workflow-runs' ||
     topic === 'automation-runs' ||
-    topic === 'pr-overseer'
+    topic === 'pr-overseer' ||
+    // Live native-session tails (#1428) ride the metadata bus with cursor
+    // replay, but unlike other metadata topics their frames are scoped to a
+    // native session id via `sessionId`.
+    topic === 'native-sessions'
   );
 }
 

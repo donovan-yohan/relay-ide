@@ -319,6 +319,8 @@ import {
   CodexJsonlStateAdapter,
   PiStateAdapter,
   NativeSessionAdapterRegistry,
+  NativeSessionLiveTailManager,
+  LiveTailCursorStore,
   type NativeSessionRegistryReport,
 } from './provider-state/index.js';
 import type {
@@ -2122,7 +2124,13 @@ async function main(): Promise<void> {
         ...(sessionId ? { sessionIds: [sessionId] } : {}),
         ...(globalSessionId ? { globalSessionIds: [globalSessionId] } : {}),
       },
-      'events.subscribe'
+      // `native-sessions` frames carry the native session id in `sessionId`;
+      // the actor credential's `sessionIds` grant is validated against it
+      // above, fail-closed (#1428). All other topics keep events.subscribe
+      // semantics.
+      topic === 'native-sessions'
+        ? 'sessions.native.watch'
+        : 'events.subscribe'
     )(req, res, next);
   };
 
@@ -4430,6 +4438,16 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new CodexJsonlStateAdapter());
   nativeSessionRegistry.register(new PiStateAdapter());
 
+  // #1428 live tails: normalized JSONL tail events for claude/codex onto the
+  // scoped `native-sessions` gateway topic. Durable cursors live under the hub
+  // config directory so a hub restart resumes from the last acknowledged byte
+  // offset — no replay, no gap. Observation only; nothing is ever written to
+  // provider stores.
+  const nativeLiveTailManager = new NativeSessionLiveTailManager({
+    eventBus: cliGatewayEventBus,
+    cursorStore: new LiveTailCursorStore(configDir),
+  });
+
   const VALID_NATIVE_PROVIDERS = new Set<NativeSessionProvider>([
     'claude',
     'codex',
@@ -4665,6 +4683,112 @@ async function main(): Promise<void> {
           error: {
             code: 'UPSTREAM_ERROR',
             message,
+            retryable: false,
+          },
+        });
+      }
+    }
+  );
+
+  // POST /sessions/native/watch — start (idempotently) a live JSONL tail for a
+  // native session (#1428). Observation only. The actual event stream flows
+  // through the shared `GET /events?topic=native-sessions&sessionId=<nativeId>`
+  // NDJSON endpoint, so this route only resolves the session file, starts the
+  // tailer, and reports the subscription target. Underscoped actor credentials
+  // fail closed here AND again on the /events subscription.
+  app.post(
+    '/sessions/native/watch',
+    requireCliGatewayAuthForActorCommand('sessions.native.watch', {
+      scopeForRequest: (req) => {
+        const body =
+          typeof req.body === 'object' && req.body !== null
+            ? (req.body as Record<string, unknown>)
+            : {};
+        const nativeId =
+          typeof body['nativeId'] === 'string' ? body['nativeId'] : undefined;
+        return nativeId ? { sessionIds: [nativeId] } : undefined;
+      },
+    }),
+    async (req, res) => {
+      try {
+        const body =
+          typeof req.body === 'object' && req.body !== null
+            ? (req.body as Record<string, unknown>)
+            : {};
+        const provider = body['provider'] as NativeSessionProvider;
+        const nativeId = typeof body['nativeId'] === 'string' ? body['nativeId'] : '';
+        if (!provider || !VALID_NATIVE_PROVIDERS.has(provider)) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: 'Valid provider is required.',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        if (!nativeId) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_ARGUMENT',
+              message: 'nativeId is required.',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        // Honest capability gating: pi has no proven RPC/live path and the
+        // other providers are out of scope for #1428 tails.
+        if (provider !== 'claude' && provider !== 'codex') {
+          res.status(422).json({
+            error: {
+              code: 'UNSUPPORTED',
+              message: `Live streaming is not available for provider '${provider}'.`,
+              retryable: false,
+            },
+          });
+          return;
+        }
+
+        // Resolve nativeId -> sourcePath through the read-only state adapters
+        // so the caller never supplies arbitrary filesystem paths.
+        const sessions = await nativeSessionRegistry.listNativeSessionsByProvider(
+          provider,
+          {}
+        );
+        const found = sessions.find((session) => session.nativeId === nativeId);
+        if (!found || !found.capabilities.canStreamLiveEvents) {
+          res.status(404).json({
+            error: {
+              code: 'NOT_FOUND',
+              message: `Native session '${nativeId}' was not found for provider '${provider}'.`,
+              retryable: false,
+            },
+          });
+          return;
+        }
+
+        nativeLiveTailManager.watch({
+          provider,
+          nativeId,
+          sourcePath: found.sourcePath,
+        });
+
+        res.json({
+          result: {
+            watching: true,
+            topic: 'native-sessions',
+            provider,
+            nativeId,
+            sourcePath: found.sourcePath,
+          },
+        });
+      } catch (error) {
+        logger.error('[sessions.native.watch] error:', error);
+        res.status(500).json({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message: error instanceof Error ? error.message : 'Internal error',
             retryable: false,
           },
         });
