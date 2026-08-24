@@ -36,6 +36,9 @@ export type RelayCliGatewayCommand =
   | 'sessions.list'
   | 'sessions.get'
   | 'sessions.create'
+  | 'sessions.native.list'
+  | 'sessions.native.get'
+  | 'sessions.native.import'
   | 'tickets.startWork'
   | 'branches.openSession'
   | 'sessions.renew'
@@ -728,6 +731,69 @@ const sessionDescriptorSchema: RelayJsonSchema = {
     'status',
     'activityState',
   ],
+};
+
+const nativeSessionPreviewSchema: RelayJsonSchema = {
+  title: 'NativeSessionPreview',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    text: stringSchema,
+    source: { type: 'string', enum: ['metadata', 'transcript', 'filename', 'none'] },
+    redacted: booleanSchema,
+    charCount: { type: 'number', minimum: 0 },
+  },
+  required: ['text', 'source', 'redacted', 'charCount'],
+};
+
+const nativeSessionSummarySchema: RelayJsonSchema = {
+  title: 'NativeSessionSummary',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    provider: { type: 'string', enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'] },
+    nativeId: stringSchema,
+    sourcePath: stringSchema,
+    cwd: nullableStringSchema,
+    repoPath: nullableStringSchema,
+    worktreePath: nullableStringSchema,
+    workContextId: nullableStringSchema,
+    createdAt: nullableStringSchema,
+    updatedAt: nullableStringSchema,
+    lastMessageAt: nullableStringSchema,
+    title: nullableStringSchema,
+    preview: nativeSessionPreviewSchema,
+    metadata: { type: 'object', additionalProperties: true },
+    capabilities: { type: 'object', additionalProperties: true },
+  },
+  required: ['provider', 'nativeId', 'sourcePath', 'preview', 'capabilities'],
+};
+
+const providerInstallDiagnosticSchema: RelayJsonSchema = {
+  title: 'ProviderInstallDiagnostic',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    code: stringSchema,
+    message: stringSchema,
+    severity: { type: 'string', enum: ['info', 'warning', 'error'] },
+  },
+  required: ['code', 'message', 'severity'],
+};
+
+const providerInstallStatusSchema: RelayJsonSchema = {
+  title: 'ProviderInstallStatus',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    provider: { type: 'string', enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'] },
+    status: { type: 'string', enum: ['installed', 'unavailable', 'unsupported'] },
+    detectedAt: stringSchema,
+    stateRoots: { type: 'array', items: stringSchema },
+    diagnostics: { type: 'array', items: providerInstallDiagnosticSchema },
+    version: nullableStringSchema,
+  },
+  required: ['provider', 'status', 'detectedAt', 'stateRoots', 'diagnostics'],
 };
 
 const fileRpcStatSchema: RelayJsonSchema = {
@@ -4533,6 +4599,174 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SERVER_UNAVAILABLE',
       'CONFIRMATION_REQUIRED',
       'NODE_OFFLINE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.native.list',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'native',
+      'list',
+      '--json',
+    ],
+    summary:
+      'List native provider sessions (claude/codex/pi) from local provider stores with per-provider install status.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: 'string',
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+        },
+        cwd: stringSchema,
+        workContextId: stringSchema,
+      },
+    },
+    outputSchema: okOutput('SessionsNativeListOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sessions: { type: 'array', items: nativeSessionSummarySchema },
+        providers: { type: 'array', items: providerInstallStatusSchema },
+      },
+      required: ['sessions', 'providers'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.native.get',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'native',
+      'get',
+      '--provider',
+      '<provider>',
+      '--native-id',
+      '<nativeId>',
+      '--json',
+    ],
+    summary:
+      'Read bounded provider state for one native session (provider-tagged, redacted preview).',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: 'string',
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+        },
+        nativeId: stringSchema,
+        sourcePath: stringSchema,
+        cwd: stringSchema,
+      },
+      required: ['provider', 'nativeId'],
+    },
+    outputSchema: okOutput('SessionsNativeGetOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        snapshot: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ref: { type: 'object', additionalProperties: true },
+            capturedAt: stringSchema,
+            sourcePath: stringSchema,
+            summary: { type: 'object', additionalProperties: true },
+            redaction: { type: 'object', additionalProperties: true },
+          },
+          required: ['ref', 'capturedAt', 'sourcePath', 'summary', 'redaction'],
+        },
+      },
+      required: ['snapshot'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.native.import',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'native',
+      'import',
+      '--provider',
+      '<provider>',
+      '--native-id',
+      '<nativeId>',
+      '--json',
+    ],
+    summary:
+      'Import a native provider session transcript into a read-only AgentSessionV2 with audit marker and truncation metadata.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: 'string',
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+        },
+        nativeId: stringSchema,
+        sourcePath: stringSchema,
+        cwd: stringSchema,
+      },
+      required: ['provider', 'nativeId'],
+    },
+    outputSchema: okOutput('SessionsNativeImportOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        result: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            provider: stringSchema,
+            nativeId: stringSchema,
+            importedAt: stringSchema,
+            sourcePath: stringSchema,
+          },
+          required: ['provider', 'nativeId', 'importedAt', 'sourcePath'],
+        },
+      },
+      required: ['result'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'UNSUPPORTED',
+      'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
   },
