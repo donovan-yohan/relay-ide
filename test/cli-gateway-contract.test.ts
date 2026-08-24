@@ -187,6 +187,7 @@ describe('CLI gateway contract', () => {
       'sessions.native.list',
       'sessions.native.get',
       'sessions.native.import',
+      'sessions.native.watch',
       'tickets.startWork',
       'branches.openSession',
       'sessions.renew',

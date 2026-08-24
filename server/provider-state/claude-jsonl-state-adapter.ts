@@ -27,7 +27,9 @@ const CLAUDE_STATE_CAPABILITIES: AgentHarnessStateCapabilities = {
   canImportTranscript: true,
   canReadProviderState: true,
   canResumeNative: true,
-  canStreamLiveEvents: false,
+  // #1428: JSONL live tail is implemented and exercised end-to-end by the
+  // native-sessions gateway topic + `sessions native watch` verb.
+  canStreamLiveEvents: true,
   canRespondToApprovals: false,
   canExposeToolCalls: true,
   readOnly: true,

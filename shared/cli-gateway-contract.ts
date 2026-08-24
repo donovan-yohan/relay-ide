@@ -39,6 +39,7 @@ export type RelayCliGatewayCommand =
   | 'sessions.native.list'
   | 'sessions.native.get'
   | 'sessions.native.import'
+  | 'sessions.native.watch'
   | 'tickets.startWork'
   | 'branches.openSession'
   | 'sessions.renew'
@@ -1961,6 +1962,7 @@ export const EVENTS_SUBSCRIBE_TOPICS = [
   'workflow-runs',
   'automation-runs',
   'pr-overseer',
+  'native-sessions',
 ] as const;
 export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
 
@@ -1978,6 +1980,10 @@ export const EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES = {
   'workflow-runs': ['context:read'],
   'automation-runs': ['context:read'],
   'pr-overseer': ['context:read'],
+  // Live native-session tails (#1428) are session reads: same capability bit
+  // as the sessions/nodes topics. Scope is enforced per-session via the actor
+  // lane's sessionId validation in requireCliGatewayEventsAuth.
+  'native-sessions': ['session:read'],
 } as const satisfies Record<
   EventsSubscribeTopic,
   readonly RelayCapabilityBit[]
@@ -4760,6 +4766,65 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       },
       required: ['result'],
     }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'UNSUPPORTED',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.native.watch',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'native',
+      'watch',
+      '--provider',
+      '<provider>',
+      '--native-id',
+      '<nativeId>',
+      '--json',
+    ],
+    summary:
+      'Stream normalized live events from a running native session (claude/codex JSONL tails) as newline-delimited gateway envelopes. Read-only observation; never writes to or injects into native sessions.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: 'string',
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+        },
+        nativeId: stringSchema,
+        sourcePath: stringSchema,
+        cwd: stringSchema,
+        cursor: stringSchema,
+        maxEvents: {
+          type: 'number',
+          minimum: 1,
+          maximum: 10000,
+          description:
+            'Detach after N event frames (excluding open/closed envelopes).',
+        },
+        idleTimeoutMs: {
+          type: 'number',
+          minimum: 1,
+          maximum: 300000,
+          description: 'Detach after this many ms without an event frame.',
+        },
+      },
+      required: ['provider', 'nativeId'],
+    },
+    outputSchema: okOutput('SessionsNativeWatchFrame', eventsSubscribeFrameSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

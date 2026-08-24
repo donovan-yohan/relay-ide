@@ -22,6 +22,31 @@ workflow.
 
 #### Added
 
+- Live native-session tail streaming (Claude and Codex): a generic offset-based
+  JSONL tailer with durable per-session byte cursors survives hub restarts with
+  no replay and no gap, normalizes raw provider events onto the shared live
+  vocabulary (user/assistant/reasoning/tool-call/tool-result), and publishes
+  redacted, size-bounded events on the new scoped `native-sessions` gateway
+  topic. Partial trailing lines are held back until complete; rotation and
+  truncation reset cleanly; unmapped events are published as explicit gaps and
+  logged, never silently dropped (#1428).
+- `relay-ide v1 sessions native watch --provider <p> --native-id <id> --json`
+  streams normalized live events as newline-delimited gateway envelopes with
+  cursor resume, max-events, and idle-timeout controls. The verb is read-only
+  observation: it never writes to native sessions or injects input (#1428).
+- `canStreamLiveEvents` is now `true` for Claude and Codex adapters. Pi stays
+  honestly `false`: its RPC path has not been proven end-to-end (#1428).
+
+#### Changed
+
+- Gateway subscriptions to the `native-sessions` topic require `session:read`
+  and validate scoped actor credentials against the native session id,
+  failing closed for underscoped actors (#1428).
+
+### Native session surface (foundation)
+
+#### Added
+
 - List, read, and import native provider sessions (Claude, Codex, Pi) through
   one unified read-only surface: `relay-ide v1 sessions native list|get|import
   --json`. The cross-provider adapter registry aggregates sessions from every

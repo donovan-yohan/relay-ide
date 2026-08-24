@@ -6,3 +6,17 @@ export {
   createDefaultNativeSessionRegistry,
   type NativeSessionRegistryReport,
 } from './registry.js';
+export {
+  JsonlFileTailer,
+  type JsonlTailPoll,
+} from './jsonl-tailer.js';
+export {
+  normalizeClaudeLiveEvent,
+  normalizeCodexLiveEvent,
+  redactLiveText,
+} from './live-event-normalizers.js';
+export {
+  LiveTailCursorStore,
+  NativeSessionLiveTailManager,
+  type NativeSessionLiveTailManagerOptions,
+} from './live-tail-manager.js';

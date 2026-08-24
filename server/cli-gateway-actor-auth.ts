@@ -46,6 +46,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'sessions.native.list',
   'sessions.native.get',
   'sessions.native.import',
+  'sessions.native.watch',
   'work-contexts.get',
   'work-contexts.resume',
   'work-context-artifacts.list',
@@ -135,6 +136,8 @@ const cliGatewayActorGrantCapabilitySet = new Set<string>(
 const cliGatewayActorReadPostCommandSet = new Set<string>([
   'work-context-messages.query',
   'work-context-messages.templates.render',
+  // #1428: starting a live tail is a POST but strictly read-only observation.
+  'sessions.native.watch',
 ]);
 
 export interface CliGatewayActorIssueInput {
@@ -351,6 +354,10 @@ export function cliGatewayActorCommandCapabilities(
 ): readonly RelayCapabilityBit[] {
   if (command === 'sessions.create') return ['session:create:terminal'];
   if (command === 'events.subscribe') return ['context:read'];
+  // Live native-session watch (#1428) is a session read on the events lane.
+  // The `native-sessions` topic itself also requires `session:read`, so the
+  // actor credential must carry it regardless of this mapping's audience.
+  if (command === 'sessions.native.watch') return ['session:read'];
   // context/inbox reads must resolve to their read capability BEFORE the generic
   // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
   // branches below, so the required bit matches the route's read gate
