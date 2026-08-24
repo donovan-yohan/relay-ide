@@ -22,27 +22,27 @@ workflow.
 
 #### Added
 
-- Prime Agent native-session support: `~/.prime/agent/sessions/*.jsonl`
-  transcripts are listed, read, and imported through the unified read-only
-  surface (`relay-ide v1 sessions native list|get|import --provider
-prime-agent`). The adapter parses the `type:"session"` v3 header (id, cwd,
-  git branch/repo hints) and typed event records deterministically, redacts
-  previews, logs unknown event types as gaps instead of dropping them, and
-  mirrors the proven `prime-agent --resume <id>` argv as copyable output only.
-  Path-escape, symlink, and byte/line/event-limit guards match the Claude and
-  Codex adapters (#1426).
-- Live JSONL tail streaming for Prime Agent on the scoped `native-sessions`
-  gateway topic: the same durable-cursor tail manager now normalizes Prime's
-  user/assistant/toolResult message records onto the shared live vocabulary,
-  with header-to-`session-started` mapping and attributed gaps for everything
-  else (#1426).
+- Pi native session state is real: the Pi adapter now detects the local
+  `~/.pi/agent/sessions` store (one cwd-slug bucket per working directory,
+  per-session JSONL files), lists sessions with redacted previews and
+  timestamps scoped to a `cwd`, imports transcripts into read-only
+  `AgentSessionV2` read models with audit markers and FIFO truncation, and
+  returns bounded provider state snapshots — previously it reported
+  `unsupported` because local persistence was not yet verified (#1426).
+- Live native-session tails cover Pi: a provider normalizer maps Pi's
+  `session`/`message`/`model_change`/`thinking_level_change`/`compaction`
+  JSONL records onto the shared live-event vocabulary, including
+  `toolCall` blocks and `toolResult` messages; unmapped events stay
+  explicit gaps. `sessions native watch --provider pi` streams them like
+  Claude/Codex, with durable cursor resume (#1426).
 
 #### Changed
 
-- The `provider` enum on the native-session gateway verbs accepts
-  `prime-agent` alongside claude/codex/hermes/opencode/pi (#1426).
+- `canStreamLiveEvents`, `canImportTranscript`, and `canReadProviderState`
+  are now `true` for the Pi adapter; its resume argv (`pi --resume <id>`)
+  is unchanged (#1426).
 
-### Native session surface (tails)
+### Native session surface (live tails)
 
 #### Added
 

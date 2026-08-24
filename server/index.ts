@@ -4441,7 +4441,7 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new PiStateAdapter());
   nativeSessionRegistry.register(new PrimeAgentStateAdapter());
 
-  // #1428 live tails: normalized JSONL tail events for claude/codex onto the
+  // #1428 live tails: normalized JSONL tail events for claude/codex/pi onto the
   // scoped `native-sessions` gateway topic. Durable cursors live under the hub
   // config directory so a hub restart resumes from the last acknowledged byte
   // offset — no replay, no gap. Observation only; nothing is ever written to
@@ -4747,12 +4747,13 @@ async function main(): Promise<void> {
           });
           return;
         }
-        // Honest capability gating: pi has no proven RPC/live path and the
-        // other providers are out of scope for #1428 tails. prime-agent joins
-        // via its JSONL tail wiring (#1426).
+        // Honest capability gating: live tails cover providers whose JSONL
+        // normalizers are proven end-to-end (claude/codex #1428, pi and
+        // prime-agent via their JSONL tail wiring, #1426).
         if (
           provider !== 'claude' &&
           provider !== 'codex' &&
+          provider !== 'pi' &&
           provider !== 'prime-agent'
         ) {
           res.status(422).json({

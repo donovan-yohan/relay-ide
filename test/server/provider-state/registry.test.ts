@@ -74,6 +74,42 @@ async function writeCodexFixture(
   return { sessionPath };
 }
 
+async function writePiFixture(root: string): Promise<{ sessionPath: string }> {
+  const sessionDir = path.join(
+    root,
+    '--tmp-repo--' // Pi's cwd bucket slug for /tmp/repo (#1426)
+  );
+  await mkdir(sessionDir, { recursive: true });
+  const sessionPath = path.join(
+    sessionDir,
+    '2026-01-01T00-00-00-000Z_pi-session-1.jsonl'
+  );
+  const lines = [
+    {
+      type: 'session',
+      version: 3,
+      id: 'pi-session-1',
+      cwd: '/tmp/repo',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      type: 'message',
+      id: 'u1',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:01.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'pi investigation' }],
+      },
+    },
+  ];
+  await writeFile(
+    sessionPath,
+    `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`
+  );
+  return { sessionPath };
+}
+
 describe('NativeSessionAdapterRegistry', () => {
   it('aggregates sessions across providers with per-provider install status', async () => {
     const claudeRoot = await mkdtemp(
@@ -86,6 +122,7 @@ describe('NativeSessionAdapterRegistry', () => {
 
     await writeClaudeFixture(claudeRoot);
     await writeCodexFixture(codexRoot);
+    await writePiFixture(piRoot);
 
     const registry = new NativeSessionAdapterRegistry();
     registry.register(new ClaudeJsonlStateAdapter({ stateRoot: claudeRoot }));
@@ -94,10 +131,10 @@ describe('NativeSessionAdapterRegistry', () => {
 
     const report = await registry.listAllSessions();
 
-    expect(report.sessions).toHaveLength(2);
     expect(report.sessions.map((s) => s.provider).sort()).toEqual([
       'claude',
       'codex',
+      'pi',
     ]);
 
     expect(report.providers).toHaveLength(3);
@@ -106,7 +143,8 @@ describe('NativeSessionAdapterRegistry', () => {
     );
     expect(providerStatuses['claude']).toBe('installed');
     expect(providerStatuses['codex']).toBe('installed');
-    expect(providerStatuses['pi']).toBe('unsupported');
+    // #1426: Pi now reads its local JSONL session store like claude/codex.
+    expect(providerStatuses['pi']).toBe('installed');
   });
 
   it('filters by provider when scope.provider is set', async () => {
@@ -147,7 +185,9 @@ describe('NativeSessionAdapterRegistry', () => {
         stateRoot: '/nonexistent/codex/path',
       })
     );
-    registry.register(new PiStateAdapter({ stateRoot: '/nonexistent/pi/path' }));
+    registry.register(
+      new PiStateAdapter({ stateRoot: '/nonexistent/pi/path' })
+    );
 
     const report = await registry.listAllSessions();
 
