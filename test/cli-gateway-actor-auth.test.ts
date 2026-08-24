@@ -583,6 +583,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'sessions.native.list',
     'sessions.native.get',
     'sessions.native.import',
+    'sessions.native.watch',
     'work-contexts.get',
     'work-contexts.resume',
     'work-context-artifacts.list',
