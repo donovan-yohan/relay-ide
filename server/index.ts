@@ -2126,11 +2126,12 @@ async function main(): Promise<void> {
       },
       // `native-sessions` frames carry the native session id in `sessionId`;
       // the actor credential's `sessionIds` grant is validated against it
-      // above, fail-closed (#1428). All other topics keep events.subscribe
-      // semantics.
-      topic === 'native-sessions'
-        ? 'sessions.native.watch'
-        : 'events.subscribe'
+      // above, fail-closed (#1428). The command header stays `events.subscribe`
+      // for every /events topic — that is what the CLI sends
+      // (runGatewayEventsSubscribe), and the sessionId scope check above is
+      // what scopes native-sessions access; remapping the expected command
+      // here would 401 every legitimate CLI subscription.
+      'events.subscribe'
     )(req, res, next);
   };
 

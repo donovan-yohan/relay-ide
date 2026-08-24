@@ -39,3 +39,28 @@ test('lifecycle mutation routes reject read-only CLI actor credentials', () => {
     "app.delete('/worktrees', requireCliGatewayWriteAuth, async (req, res) =>"
   );
 });
+
+// #1428 regression tripwire: `requireCliGatewayEventsAuth` must keep
+// `events.subscribe` as the expected actor command for EVERY /events topic.
+// The CLI always sends that header (runGatewayEventsSubscribe); remapping it
+// for `native-sessions` made classifyCliGatewayCredentialLane return
+// 'unsupported-route' and 401 every scoped-actor CLI subscription. Native
+// session scoping is enforced by the sessionId grant check, not this header.
+test('events auth keeps events.subscribe as expected command for all topics', () => {
+  const indexSource = readFileSync(
+    new URL('../server/index.ts', import.meta.url),
+    'utf8'
+  );
+  const gateStart = indexSource.indexOf('const requireCliGatewayEventsAuth');
+  const gateEnd = indexSource.indexOf(
+    'const requireCliGatewayWriteAuth: express.RequestHandler'
+  );
+  expect(gateStart).toBeGreaterThan(-1);
+  expect(gateEnd).toBeGreaterThan(gateStart);
+  const gateSource = indexSource.slice(gateStart, gateEnd);
+
+  expect(gateSource).toContain("'events.subscribe'");
+  // The exact regression shape: a conditional remap of the expected command
+  // keyed on the native-sessions topic.
+  expect(gateSource).not.toContain("? 'sessions.native.watch'");
+});
