@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   attachAuthenticatedCliGatewayActorCredential,
   bearerActorToken,
+  classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
   issueCliGatewayActorCredential,
@@ -292,6 +293,70 @@ describe('events.subscribe actor capability gating', () => {
 
     expect(stream.status).toBe(200);
     expect(stream.frames[0]).toMatchObject({ event: 'open', topic: 'pr-overseer' });
+    stream.close();
+  });
+
+  // #1428 regression: the CLI (runGatewayEventsSubscribe) always sends
+  // `x-relay-cli-command: events.subscribe`, including for the
+  // `native-sessions` topic. The hub gate must classify that exact header into
+  // the actor lane — a remap to `sessions.native.watch` here would 401 every
+  // legitimate CLI subscription. Scoping for native-sessions is enforced by
+  // the sessionId grant check, not the command header.
+  it('classifies the CLI events.subscribe header into the actor lane for native-sessions', () => {
+    const cliRequest = {
+      method: 'GET',
+      header: (name: string) =>
+        ({
+          authorization: `Bearer relay-sac-v1.credential.token`,
+          'x-relay-cli-actor-token': 'v1',
+          'x-relay-cli-command': 'events.subscribe',
+        })[name.toLowerCase()],
+    } as unknown as Parameters<typeof classifyCliGatewayCredentialLane>[0];
+
+    expect(classifyCliGatewayCredentialLane(cliRequest, 'events.subscribe')).toBe(
+      'scoped-actor-credential'
+    );
+  });
+
+  it('streams native-sessions to a scoped actor credential using CLI subscribe headers', async () => {
+    const bus = createCliGatewayEventBus();
+    const registry = new ScopedActorCredentialRegistry({ secretBytes: actorRegistrySecret });
+    await mount(bus, actorTokenAuth(registry));
+
+    const issued = issueCliGatewayActorCredential(registry, {
+      capabilities: ['session:read'],
+      scope: {
+        sessionIds: ['native-fix-1'],
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+      },
+    });
+    const stream = await openStream(
+      'topic=native-sessions&sessionId=native-fix-1',
+      'session:read',
+      {
+        // Exact headers sent by runGatewayEventsSubscribe on the actor lane.
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'events.subscribe',
+      }
+    );
+
+    expect(stream.status).toBe(200);
+    await stream.waitFor((f) => f.some((x) => x.event === 'open'), 'open');
+
+    bus.publish({
+      topic: 'native-sessions',
+      type: 'native-session.text',
+      sessionId: 'native-fix-1',
+      payload: { provider: 'claude', nativeId: 'native-fix-1', kind: 'text', text: 'live tail' },
+    });
+    await stream.waitFor(
+      (f) => f.filter((x) => x.event === 'event').length >= 1,
+      'one native-sessions event'
+    );
+    const event = stream.frames.find((x) => x.event === 'event');
+    expect(event?.topic).toBe('native-sessions');
+    expect(event?.payload?.['nativeId']).toBe('native-fix-1');
     stream.close();
   });
 });
