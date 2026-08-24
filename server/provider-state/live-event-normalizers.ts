@@ -441,6 +441,146 @@ export function normalizePrimeAgentLiveEvent(
   }
 
   if (type !== 'message') {
+    return [gapEvent(base, nativeId, type || 'unknown')];
+  }
+
+  const role = roleOf(record);
+  const blocks = contentBlocks(record);
+  const { views } = blockViews(blocks);
+
+  if (role === 'user') {
+    const text = redactLiveText(
+      views
+        .filter(
+          (view): view is Extract<BlockView, { kind: 'text' }> =>
+            view.kind === 'text'
+        )
+        .map((view) => view.text)
+        .join('\n')
+    );
+    if (!text) {
+      return [gapEvent(base, nativeId, type || 'user')];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'user-message',
+        text: truncate(text),
+        providerEvent: type || 'user',
+      },
+    ];
+  }
+
+  if (role === 'toolResult') {
+    const toolResultText = blocks
+      .filter((block) => stringField(block.type) === 'text')
+      .map((block) => stringField(block.text))
+      .join('\n');
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'tool-result',
+        text: truncate(redactLiveText(toolResultText)),
+        providerEvent: type || 'toolResult',
+      },
+    ];
+  }
+
+  if (role === 'assistant') {
+    const events: NativeSessionLiveEvent[] = [];
+    let emitted = false;
+    for (const view of views) {
+      if (view.kind === 'tool-call') {
+        events.push(
+          toolCallEvent(
+            base,
+            nativeId,
+            primeToolCallShape(view.block),
+            type || 'assistant'
+          )
+        );
+        emitted = true;
+      } else if (view.kind === 'reasoning') {
+        events.push({
+          ...base,
+          nativeId,
+          kind: 'reasoning',
+          text: truncate(redactLiveText(view.text)),
+          providerEvent: type || 'assistant',
+        });
+        emitted = true;
+      } else {
+        const text = redactLiveText(view.text);
+        if (!text) continue;
+        events.push({
+          ...base,
+          nativeId,
+          kind: 'assistant-message',
+          text: truncate(text),
+          providerEvent: type || 'assistant',
+        });
+        emitted = true;
+      }
+    }
+    if (!emitted) {
+      return [gapEvent(base, nativeId, type || 'assistant')];
+    }
+    return events;
+  }
+
+  return [gapEvent(base, nativeId, type || 'unknown')];
+}
+
+/**
+ * Prime tool-call blocks use `{name, arguments}`, and their executable payload
+ * rides in `arguments.code` / `arguments.command`; the shared toolCallEvent
+ * reads `{name|tool, input|args}.command`. Normalize the shape without
+ * mutating the original record.
+ */
+function primeToolCallShape(
+  block: Record<string, unknown>
+): Record<string, unknown> {
+  if (!('arguments' in block) || 'input' in block || 'args' in block) {
+    return block;
+  }
+  const args = objectField(block['arguments']);
+  const command = stringField(args['command']) || stringField(args['code']);
+  return { ...block, input: { ...args, command } };
+}
+
+/**
+ * Map one raw Pi agent JSONL record onto zero or more shared live events.
+ * Layout verified against real `~/.pi/agent/sessions` stores (#1426):
+ * `type: 'session'` header, `type: 'message'` records with
+ * `message.role` user|assistant|toolResult and content blocks
+ * text|thinking|toolCall, plus model_change/thinking_level_change/compaction
+ * metadata records.
+ */
+export function normalizePiLiveEvent(
+  record: Record<string, unknown>,
+  context: LiveContext
+): NativeSessionLiveEvent[] {
+  const type = stringField(record.type);
+  // Pi records carry event-chain ids (id/parentId), NOT the session uuid —
+  // the session identity comes from the watched file's fallback nativeId.
+  const nativeId = context.fallbackNativeId || '';
+  const base = liveBase('pi', record, context);
+
+  if (type === 'session') {
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'session-started',
+        text: '',
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (type !== 'message') {
     // Metadata records (model_change / thinking_level_change / compaction) are
     // known but carry no conversation payload here: attributed gaps, never
     // silent drops.
@@ -542,5 +682,5 @@ export function normalizePrimeAgentLiveEvent(
     ];
   }
 
-  return [gapEvent(base, nativeId, `${type}:${role || 'unknown-role'}`)] as NativeSessionLiveEvent[];
+  return [gapEvent(base, nativeId, `${type}:${role || 'unknown-role'}`)];
 }
