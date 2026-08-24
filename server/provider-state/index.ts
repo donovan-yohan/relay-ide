@@ -11,6 +11,7 @@ export { JsonlFileTailer, type JsonlTailPoll } from './jsonl-tailer.js';
 export {
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
+  normalizePiLiveEvent,
   normalizePrimeAgentLiveEvent,
   redactLiveText,
 } from './live-event-normalizers.js';

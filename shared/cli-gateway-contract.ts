@@ -4800,7 +4800,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Stream normalized live events from a running native session (claude/codex JSONL tails) as newline-delimited gateway envelopes. Read-only observation; never writes to or injects into native sessions.',
+      'Stream normalized live events from a running native session (claude/codex/pi JSONL tails) as newline-delimited gateway envelopes. Read-only observation; never writes to or injects into native sessions.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,

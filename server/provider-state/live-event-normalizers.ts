@@ -31,7 +31,7 @@ interface LiveContext {
 }
 
 function liveBase(
-  provider: 'claude' | 'codex' | 'prime-agent',
+  provider: 'claude' | 'codex' | 'pi' | 'prime-agent',
   record: Record<string, unknown>,
   context: LiveContext
 ): Omit<
@@ -441,12 +441,24 @@ export function normalizePrimeAgentLiveEvent(
   }
 
   if (type !== 'message') {
+    // Metadata records (model_change / thinking_level_change / compaction) are
+    // known but carry no conversation payload here: attributed gaps, never
+    // silent drops.
     return [gapEvent(base, nativeId, type || 'unknown')];
   }
 
-  const role = roleOf(record);
-  const blocks = contentBlocks(record);
-  const { views } = blockViews(blocks);
+  const message = objectField(record.message);
+  const role = stringField(message.role);
+  const blocks = contentBlocks({ ...record, message });
+  // Pi names tool-invocation blocks `toolCall` and puts the payload under
+  // `arguments`; normalize onto the shared `input` shape so the common block
+  // extractor sees a tool call (#1426).
+  const piBlocks = blocks.map((block) =>
+    stringField(block.type) === 'toolCall'
+      ? { ...block, input: block.arguments ?? block.input }
+      : block
+  );
+  const { views, toolResultText } = blockViews(piBlocks);
 
   if (role === 'user') {
     const text = redactLiveText(
@@ -467,23 +479,7 @@ export function normalizePrimeAgentLiveEvent(
         nativeId,
         kind: 'user-message',
         text: truncate(text),
-        providerEvent: type || 'user',
-      },
-    ];
-  }
-
-  if (role === 'toolResult') {
-    const toolResultText = blocks
-      .filter((block) => stringField(block.type) === 'text')
-      .map((block) => stringField(block.text))
-      .join('\n');
-    return [
-      {
-        ...base,
-        nativeId,
-        kind: 'tool-result',
-        text: truncate(redactLiveText(toolResultText)),
-        providerEvent: type || 'toolResult',
+        providerEvent: `${type}:user`,
       },
     ];
   }
@@ -494,12 +490,7 @@ export function normalizePrimeAgentLiveEvent(
     for (const view of views) {
       if (view.kind === 'tool-call') {
         events.push(
-          toolCallEvent(
-            base,
-            nativeId,
-            primeToolCallShape(view.block),
-            type || 'assistant'
-          )
+          toolCallEvent(base, nativeId, view.block, `${type}:assistant`)
         );
         emitted = true;
       } else if (view.kind === 'reasoning') {
@@ -508,7 +499,7 @@ export function normalizePrimeAgentLiveEvent(
           nativeId,
           kind: 'reasoning',
           text: truncate(redactLiveText(view.text)),
-          providerEvent: type || 'assistant',
+          providerEvent: `${type}:assistant`,
         });
         emitted = true;
       } else {
@@ -519,33 +510,37 @@ export function normalizePrimeAgentLiveEvent(
           nativeId,
           kind: 'assistant-message',
           text: truncate(text),
-          providerEvent: type || 'assistant',
+          providerEvent: `${type}:assistant`,
         });
         emitted = true;
       }
     }
     if (!emitted) {
-      return [gapEvent(base, nativeId, type || 'assistant')];
+      return [gapEvent(base, nativeId, `${type}:assistant`)];
     }
     return events;
   }
 
-  return [gapEvent(base, nativeId, type || 'unknown')];
-}
-
-/**
- * Prime tool-call blocks use `{name, arguments}`, and their executable payload
- * rides in `arguments.code` / `arguments.command`; the shared toolCallEvent
- * reads `{name|tool, input|args}.command`. Normalize the shape without
- * mutating the original record.
- */
-function primeToolCallShape(
-  block: Record<string, unknown>
-): Record<string, unknown> {
-  if (!('arguments' in block) || 'input' in block || 'args' in block) {
-    return block;
+  if (role === 'toolResult') {
+    // Pi tool results are plain text blocks on a role='toolResult' message,
+    // not `tool_result` content blocks; extract their text directly.
+    const resultText =
+      toolResultText.length > 0
+        ? toolResultText.join('\n')
+        : piBlocks
+            .filter((block) => stringField(block.type) === 'text')
+            .map((block) => stringField(block.text))
+            .join('\n');
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'tool-result',
+        text: truncate(redactLiveText(resultText)),
+        providerEvent: `${type}:${role}`,
+      },
+    ];
   }
-  const args = objectField(block['arguments']);
-  const command = stringField(args['command']) || stringField(args['code']);
-  return { ...block, input: { ...args, command } };
+
+  return [gapEvent(base, nativeId, `${type}:${role || 'unknown-role'}`)] as NativeSessionLiveEvent[];
 }
