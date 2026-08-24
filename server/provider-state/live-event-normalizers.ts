@@ -31,7 +31,7 @@ interface LiveContext {
 }
 
 function liveBase(
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | 'prime-agent',
   record: Record<string, unknown>,
   context: LiveContext
 ): Omit<
@@ -134,7 +134,11 @@ function blockViews(blocks: Record<string, unknown>[]): {
         stringField(block.text) ||
         stringField(block.summary);
       if (text) views.push({ kind: 'reasoning', text });
-    } else if (type === 'tool_use' || type === 'function_call') {
+    } else if (
+      type === 'tool_use' ||
+      type === 'function_call' ||
+      type === 'toolCall'
+    ) {
       views.push({ kind: 'tool-call', block });
     } else if (type === 'tool_result' || type === 'tool_use_result') {
       appendBlockContentText(block.content, toolResultText);
@@ -240,7 +244,10 @@ export function normalizeClaudeLiveEvent(
     }
     const text = redactLiveText(
       views
-        .filter((view): view is Extract<BlockView, { kind: 'text' }> => view.kind === 'text')
+        .filter(
+          (view): view is Extract<BlockView, { kind: 'text' }> =>
+            view.kind === 'text'
+        )
         .map((view) => view.text)
         .join('\n')
     );
@@ -263,7 +270,9 @@ export function normalizeClaudeLiveEvent(
     let emitted = false;
     for (const view of views) {
       if (view.kind === 'tool-call') {
-        events.push(toolCallEvent(base, nativeId, view.block, type || 'assistant'));
+        events.push(
+          toolCallEvent(base, nativeId, view.block, type || 'assistant')
+        );
         emitted = true;
       } else if (view.kind === 'reasoning') {
         events.push({
@@ -340,7 +349,10 @@ export function normalizeCodexLiveEvent(
     }
     const text = redactLiveText(
       views
-        .filter((view): view is Extract<BlockView, { kind: 'text' }> => view.kind === 'text')
+        .filter(
+          (view): view is Extract<BlockView, { kind: 'text' }> =>
+            view.kind === 'text'
+        )
         .map((view) => view.text)
         .join('\n')
     );
@@ -363,7 +375,9 @@ export function normalizeCodexLiveEvent(
     let emitted = false;
     for (const view of views) {
       if (view.kind === 'tool-call') {
-        events.push(toolCallEvent(base, nativeId, view.block, type || 'assistant'));
+        events.push(
+          toolCallEvent(base, nativeId, view.block, type || 'assistant')
+        );
         emitted = true;
       } else if (view.kind === 'reasoning') {
         events.push({
@@ -397,4 +411,141 @@ export function normalizeCodexLiveEvent(
   // by the telemetry adapters; on this surface they are attributed gaps, never
   // silent drops.
   return [gapEvent(base, nativeId, type || 'unknown')];
+}
+
+/**
+ * Map one raw Prime Agent JSONL record onto zero or more shared live events.
+ * Prime's transcript layout (verified against real `~/.prime/agent/sessions`
+ * files): a `type:"session"` header line, then typed records whose conversational
+ * payloads ride in `message` envelopes with roles user/assistant/toolResult and
+ * content blocks text/thinking/toolCall. Everything else is an attributed gap.
+ */
+export function normalizePrimeAgentLiveEvent(
+  record: Record<string, unknown>,
+  context: LiveContext
+): NativeSessionLiveEvent[] {
+  const type = stringField(record.type);
+  const nativeId = nativeIdOf(record) ?? context.fallbackNativeId ?? '';
+  const base = liveBase('prime-agent', record, context);
+
+  if (type === 'session') {
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'session-started',
+        text: '',
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (type !== 'message') {
+    return [gapEvent(base, nativeId, type || 'unknown')];
+  }
+
+  const role = roleOf(record);
+  const blocks = contentBlocks(record);
+  const { views } = blockViews(blocks);
+
+  if (role === 'user') {
+    const text = redactLiveText(
+      views
+        .filter(
+          (view): view is Extract<BlockView, { kind: 'text' }> =>
+            view.kind === 'text'
+        )
+        .map((view) => view.text)
+        .join('\n')
+    );
+    if (!text) {
+      return [gapEvent(base, nativeId, type || 'user')];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'user-message',
+        text: truncate(text),
+        providerEvent: type || 'user',
+      },
+    ];
+  }
+
+  if (role === 'toolResult') {
+    const toolResultText = blocks
+      .filter((block) => stringField(block.type) === 'text')
+      .map((block) => stringField(block.text))
+      .join('\n');
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'tool-result',
+        text: truncate(redactLiveText(toolResultText)),
+        providerEvent: type || 'toolResult',
+      },
+    ];
+  }
+
+  if (role === 'assistant') {
+    const events: NativeSessionLiveEvent[] = [];
+    let emitted = false;
+    for (const view of views) {
+      if (view.kind === 'tool-call') {
+        events.push(
+          toolCallEvent(
+            base,
+            nativeId,
+            primeToolCallShape(view.block),
+            type || 'assistant'
+          )
+        );
+        emitted = true;
+      } else if (view.kind === 'reasoning') {
+        events.push({
+          ...base,
+          nativeId,
+          kind: 'reasoning',
+          text: truncate(redactLiveText(view.text)),
+          providerEvent: type || 'assistant',
+        });
+        emitted = true;
+      } else {
+        const text = redactLiveText(view.text);
+        if (!text) continue;
+        events.push({
+          ...base,
+          nativeId,
+          kind: 'assistant-message',
+          text: truncate(text),
+          providerEvent: type || 'assistant',
+        });
+        emitted = true;
+      }
+    }
+    if (!emitted) {
+      return [gapEvent(base, nativeId, type || 'assistant')];
+    }
+    return events;
+  }
+
+  return [gapEvent(base, nativeId, type || 'unknown')];
+}
+
+/**
+ * Prime tool-call blocks use `{name, arguments}`, and their executable payload
+ * rides in `arguments.code` / `arguments.command`; the shared toolCallEvent
+ * reads `{name|tool, input|args}.command`. Normalize the shape without
+ * mutating the original record.
+ */
+function primeToolCallShape(
+  block: Record<string, unknown>
+): Record<string, unknown> {
+  if (!('arguments' in block) || 'input' in block || 'args' in block) {
+    return block;
+  }
+  const args = objectField(block['arguments']);
+  const command = stringField(args['command']) || stringField(args['code']);
+  return { ...block, input: { ...args, command } };
 }

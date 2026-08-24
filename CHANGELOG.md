@@ -22,6 +22,30 @@ workflow.
 
 #### Added
 
+- Prime Agent native-session support: `~/.prime/agent/sessions/*.jsonl`
+  transcripts are listed, read, and imported through the unified read-only
+  surface (`relay-ide v1 sessions native list|get|import --provider
+prime-agent`). The adapter parses the `type:"session"` v3 header (id, cwd,
+  git branch/repo hints) and typed event records deterministically, redacts
+  previews, logs unknown event types as gaps instead of dropping them, and
+  mirrors the proven `prime-agent --resume <id>` argv as copyable output only.
+  Path-escape, symlink, and byte/line/event-limit guards match the Claude and
+  Codex adapters (#1426).
+- Live JSONL tail streaming for Prime Agent on the scoped `native-sessions`
+  gateway topic: the same durable-cursor tail manager now normalizes Prime's
+  user/assistant/toolResult message records onto the shared live vocabulary,
+  with header-to-`session-started` mapping and attributed gaps for everything
+  else (#1426).
+
+#### Changed
+
+- The `provider` enum on the native-session gateway verbs accepts
+  `prime-agent` alongside claude/codex/hermes/opencode/pi (#1426).
+
+### Native session surface (tails)
+
+#### Added
+
 - Live native-session tail streaming (Claude and Codex): a generic offset-based
   JSONL tailer with durable per-session byte cursors survives hub restarts with
   no replay and no gap, normalizes raw provider events onto the shared live
@@ -58,7 +82,7 @@ workflow.
 
 - List, read, and import native provider sessions (Claude, Codex, Pi) through
   one unified read-only surface: `relay-ide v1 sessions native list|get|import
-  --json`. The cross-provider adapter registry aggregates sessions from every
+--json`. The cross-provider adapter registry aggregates sessions from every
   installed adapter with graceful per-provider install status, so a missing or
   unsupported provider degrades to a diagnostic instead of breaking the
   aggregate response (#1427).

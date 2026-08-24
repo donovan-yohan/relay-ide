@@ -1,8 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
-import type {
-  NativeSessionLiveEvent,
-} from '../../shared/provider-native-live-events.js';
+import type { NativeSessionLiveEvent } from '../../shared/provider-native-live-events.js';
 import type {
   CliGatewayEventBus,
   CliGatewayMetadataTopic,
@@ -11,6 +9,7 @@ import { createLogger } from '../logger.js';
 import {
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
+  normalizePrimeAgentLiveEvent,
 } from './live-event-normalizers.js';
 import { JsonlFileTailer } from './jsonl-tailer.js';
 
@@ -74,7 +73,7 @@ export class LiveTailCursorStore {
 }
 
 interface WatchRequest {
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'prime-agent';
   nativeId: string;
   sourcePath: string;
 }
@@ -117,34 +116,29 @@ export class NativeSessionLiveTailManager {
     if (this.tails.has(key)) return;
 
     const cursorKey = `${key}:${path.basename(request.sourcePath)}`;
-    const parseLine =
-      request.provider === 'claude'
-        ? (line: string): NativeSessionLiveEvent[] | null => {
-            try {
-              return normalizeClaudeLiveEvent(
-                JSON.parse(line) as Record<string, unknown>,
-                {
-                  sourcePath: request.sourcePath,
-                  fallbackNativeId: request.nativeId,
-                }
-              );
-            } catch {
-              return null;
-            }
-          }
-        : (line: string): NativeSessionLiveEvent[] | null => {
-            try {
-              return normalizeCodexLiveEvent(
-                JSON.parse(line) as Record<string, unknown>,
-                {
-                  sourcePath: request.sourcePath,
-                  fallbackNativeId: request.nativeId,
-                }
-              );
-            } catch {
-              return null;
-            }
-          };
+    const parseLine = (line: string): NativeSessionLiveEvent[] | null => {
+      try {
+        const record = JSON.parse(line) as Record<string, unknown>;
+        if (request.provider === 'claude') {
+          return normalizeClaudeLiveEvent(record, {
+            sourcePath: request.sourcePath,
+            fallbackNativeId: request.nativeId,
+          });
+        }
+        if (request.provider === 'prime-agent') {
+          return normalizePrimeAgentLiveEvent(record, {
+            sourcePath: request.sourcePath,
+            fallbackNativeId: request.nativeId,
+          });
+        }
+        return normalizeCodexLiveEvent(record, {
+          sourcePath: request.sourcePath,
+          fallbackNativeId: request.nativeId,
+        });
+      } catch {
+        return null;
+      }
+    };
 
     // The tailer's element type is "a batch of events from one line"; the
     // manager flattens batches when publishing so one JSONL record carrying

@@ -740,7 +740,10 @@ const nativeSessionPreviewSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     text: stringSchema,
-    source: { type: 'string', enum: ['metadata', 'transcript', 'filename', 'none'] },
+    source: {
+      type: 'string',
+      enum: ['metadata', 'transcript', 'filename', 'none'],
+    },
     redacted: booleanSchema,
     charCount: { type: 'number', minimum: 0 },
   },
@@ -752,7 +755,10 @@ const nativeSessionSummarySchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: true,
   properties: {
-    provider: { type: 'string', enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'] },
+    provider: {
+      type: 'string',
+      enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+    },
     nativeId: stringSchema,
     sourcePath: stringSchema,
     cwd: nullableStringSchema,
@@ -787,8 +793,14 @@ const providerInstallStatusSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    provider: { type: 'string', enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'] },
-    status: { type: 'string', enum: ['installed', 'unavailable', 'unsupported'] },
+    provider: {
+      type: 'string',
+      enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+    },
+    status: {
+      type: 'string',
+      enum: ['installed', 'unavailable', 'unsupported'],
+    },
     detectedAt: stringSchema,
     stateRoots: { type: 'array', items: stringSchema },
     diagnostics: { type: 'array', items: providerInstallDiagnosticSchema },
@@ -3724,7 +3736,11 @@ const channelSearchInputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    q: { type: 'string', minLength: 1, maxLength: CHANNEL_SEARCH_QUERY_MAX_CHARS },
+    q: {
+      type: 'string',
+      minLength: 1,
+      maxLength: CHANNEL_SEARCH_QUERY_MAX_CHARS,
+    },
     channelId: stringSchema,
     workspaceId: stringSchema,
     includeArchived: booleanSchema,
@@ -4610,16 +4626,9 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.native.list',
-    cli: [
-      'relay-ide',
-      'v1',
-      'sessions',
-      'native',
-      'list',
-      '--json',
-    ],
+    cli: ['relay-ide', 'v1', 'sessions', 'native', 'list', '--json'],
     summary:
-      'List native provider sessions (claude/codex/pi) from local provider stores with per-provider install status.',
+      'List native provider sessions (claude/codex/pi/prime-agent) from local provider stores with per-provider install status.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -4630,7 +4639,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
         },
         cwd: stringSchema,
         workContextId: stringSchema,
@@ -4678,7 +4687,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,
@@ -4740,7 +4749,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,
@@ -4802,7 +4811,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi'],
+          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,
@@ -4824,7 +4833,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       },
       required: ['provider', 'nativeId'],
     },
-    outputSchema: okOutput('SessionsNativeWatchFrame', eventsSubscribeFrameSchema),
+    outputSchema: okOutput(
+      'SessionsNativeWatchFrame',
+      eventsSubscribeFrameSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
