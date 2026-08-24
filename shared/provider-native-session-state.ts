@@ -7,7 +7,7 @@ import type { WorkContextId } from './work-context.js';
 
 export type NativeSessionProvider = Extract<
   AgentProviderV2,
-  'claude' | 'codex' | 'hermes' | 'opencode' | 'pi'
+  'claude' | 'codex' | 'hermes' | 'opencode' | 'pi' | 'prime-agent'
 >;
 
 export type ProviderInstallStatusKind =

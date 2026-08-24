@@ -318,6 +318,7 @@ import {
   ClaudeJsonlStateAdapter,
   CodexJsonlStateAdapter,
   PiStateAdapter,
+  PrimeAgentStateAdapter,
   NativeSessionAdapterRegistry,
   NativeSessionLiveTailManager,
   LiveTailCursorStore,
@@ -4438,6 +4439,7 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new ClaudeJsonlStateAdapter());
   nativeSessionRegistry.register(new CodexJsonlStateAdapter());
   nativeSessionRegistry.register(new PiStateAdapter());
+  nativeSessionRegistry.register(new PrimeAgentStateAdapter());
 
   // #1428 live tails: normalized JSONL tail events for claude/codex onto the
   // scoped `native-sessions` gateway topic. Durable cursors live under the hub
@@ -4455,6 +4457,7 @@ async function main(): Promise<void> {
     'hermes',
     'opencode',
     'pi',
+    'prime-agent',
   ]);
 
   // GET /sessions/native — list native provider sessions with install status
@@ -4496,7 +4499,9 @@ async function main(): Promise<void> {
               ? { provider: providerParam as NativeSessionProvider }
               : {}),
             ...(cwdParam ? { cwd: cwdParam } : {}),
-            ...(workContextIdParam ? { workContextId: workContextIdParam } : {}),
+            ...(workContextIdParam
+              ? { workContextId: workContextIdParam }
+              : {}),
           });
 
         res.json(report);
@@ -4505,8 +4510,7 @@ async function main(): Promise<void> {
         res.status(500).json({
           error: {
             code: 'UPSTREAM_ERROR',
-            message:
-              error instanceof Error ? error.message : 'Internal error',
+            message: error instanceof Error ? error.message : 'Internal error',
             retryable: false,
           },
         });
@@ -4562,9 +4566,11 @@ async function main(): Promise<void> {
         const snapshot = await nativeSessionRegistry.getProviderState(ref);
         res.json({ snapshot });
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        if (message.includes('not found') || message.includes('not registered')) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes('not found') ||
+          message.includes('not registered')
+        ) {
           res.status(404).json({
             error: {
               code: 'NOT_FOUND',
@@ -4597,10 +4603,7 @@ async function main(): Promise<void> {
             ? (req.body as Record<string, unknown>)
             : {};
         const provider = body['provider'] as NativeSessionProvider;
-        if (
-          !provider ||
-          !VALID_NATIVE_PROVIDERS.has(provider)
-        ) {
+        if (!provider || !VALID_NATIVE_PROVIDERS.has(provider)) {
           res.status(400).json({
             error: {
               code: 'INVALID_ARGUMENT',
@@ -4657,9 +4660,11 @@ async function main(): Promise<void> {
           },
         });
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        if (message.includes('not found') || message.includes('not registered')) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes('not found') ||
+          message.includes('not registered')
+        ) {
           res.status(404).json({
             error: {
               code: 'NOT_FOUND',
@@ -4669,7 +4674,10 @@ async function main(): Promise<void> {
           });
           return;
         }
-        if (message.includes('cannot import') || message.includes('cannot read')) {
+        if (
+          message.includes('cannot import') ||
+          message.includes('cannot read')
+        ) {
           res.status(422).json({
             error: {
               code: 'UNSUPPORTED',
@@ -4717,7 +4725,8 @@ async function main(): Promise<void> {
             ? (req.body as Record<string, unknown>)
             : {};
         const provider = body['provider'] as NativeSessionProvider;
-        const nativeId = typeof body['nativeId'] === 'string' ? body['nativeId'] : '';
+        const nativeId =
+          typeof body['nativeId'] === 'string' ? body['nativeId'] : '';
         if (!provider || !VALID_NATIVE_PROVIDERS.has(provider)) {
           res.status(400).json({
             error: {
@@ -4739,8 +4748,13 @@ async function main(): Promise<void> {
           return;
         }
         // Honest capability gating: pi has no proven RPC/live path and the
-        // other providers are out of scope for #1428 tails.
-        if (provider !== 'claude' && provider !== 'codex') {
+        // other providers are out of scope for #1428 tails. prime-agent joins
+        // via its JSONL tail wiring (#1426).
+        if (
+          provider !== 'claude' &&
+          provider !== 'codex' &&
+          provider !== 'prime-agent'
+        ) {
           res.status(422).json({
             error: {
               code: 'UNSUPPORTED',
@@ -4753,10 +4767,11 @@ async function main(): Promise<void> {
 
         // Resolve nativeId -> sourcePath through the read-only state adapters
         // so the caller never supplies arbitrary filesystem paths.
-        const sessions = await nativeSessionRegistry.listNativeSessionsByProvider(
-          provider,
-          {}
-        );
+        const sessions =
+          await nativeSessionRegistry.listNativeSessionsByProvider(
+            provider,
+            {}
+          );
         const found = sessions.find((session) => session.nativeId === nativeId);
         if (!found || !found.capabilities.canStreamLiveEvents) {
           res.status(404).json({

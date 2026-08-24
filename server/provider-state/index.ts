@@ -1,18 +1,17 @@
 export { ClaudeJsonlStateAdapter } from './claude-jsonl-state-adapter.js';
 export { CodexJsonlStateAdapter } from './codex-jsonl-state-adapter.js';
 export { PiStateAdapter } from './pi-state-adapter.js';
+export { PrimeAgentStateAdapter } from './prime-agent-state-adapter.js';
 export {
   NativeSessionAdapterRegistry,
   createDefaultNativeSessionRegistry,
   type NativeSessionRegistryReport,
 } from './registry.js';
-export {
-  JsonlFileTailer,
-  type JsonlTailPoll,
-} from './jsonl-tailer.js';
+export { JsonlFileTailer, type JsonlTailPoll } from './jsonl-tailer.js';
 export {
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
+  normalizePrimeAgentLiveEvent,
   redactLiveText,
 } from './live-event-normalizers.js';
 export {
