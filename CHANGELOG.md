@@ -43,6 +43,15 @@ workflow.
   and validate scoped actor credentials against the native session id,
   failing closed for underscoped actors (#1428).
 
+#### Fixed
+
+- Scoped actor CLI credentials can subscribe to
+  `relay-ide v1 events subscribe --topic native-sessions` again: the hub no
+  longer remaps the expected `x-relay-cli-command` header for that topic,
+  which made every legitimate CLI subscription fail with 401 UNAUTHORIZED.
+  Session scoping is unchanged and still enforced by the sessionId grant
+  check (#1428, follow-up to #1430).
+
 ### Native session surface (foundation)
 
 #### Added
