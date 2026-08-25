@@ -1153,6 +1153,77 @@ export interface ChannelRunLifecycleEventV1 extends ChannelEventBaseV1 {
   run: ChannelAsyncRun;
 }
 
+/**
+ * Every outcome class for an addressed/mention channel delivery (#1442).
+ *
+ * The union must stay exhaustive over the binder's outcome table: a new binder
+ * outcome without a receipt state here is exactly the silent drop the typed
+ * receipt exists to prevent.
+ */
+export const CHANNEL_DELIVERY_RECEIPT_STATES = [
+  'queued',
+  'delivered_to_runtime',
+  'turn_started',
+  'completed',
+  'held_busy',
+  'dropped_queue_full',
+  'refused_policy',
+  'unreachable_offline',
+  'expired_watchdog',
+  'failed_runtime',
+  'superseded',
+] as const;
+
+export type ChannelDeliveryReceiptState =
+  (typeof CHANNEL_DELIVERY_RECEIPT_STATES)[number];
+
+/** Reason codes a receipt may carry. Optional; the state is the primary signal. */
+export type ChannelDeliveryReceiptReasonCode =
+  | 'queue_cap'
+  | 'steering_queue_cap'
+  | 'superseded_by_newer'
+  | 'runtime_unavailable'
+  | 'binding_failed'
+  | 'watchdog_force_drain'
+  | 'send_rejected'
+  | 'send_error'
+  | 'runtime_ended'
+  | 'agent_busy'
+  | 'profile_missing'
+  | 'provider_unavailable';
+
+/**
+ * A typed, CONTENT-FREE delivery receipt (#1442).
+ *
+ * Structural rule (enforced by `isChannelDeliveryReceipt` and by a dedicated
+ * test): a receipt carries identity and outcome only — message id, channel,
+ * target binding, sender/target profile ids, state, optional reason code, and
+ * a timestamp. No message body, text, attachment, or free-form prose field of
+ * any kind may appear. Human-readable system rows remain the prose surface;
+ * this event is the machine-readable twin.
+ *
+ * `targetBindingId` is the durable `(channelId, threadId, profileActorId)`
+ * binding key rendered as a string, so a consumer can correlate receipts per
+ * target binding without re-deriving Relay's internal key format.
+ */
+export interface ChannelDeliveryReceiptV1 {
+  messageId: string;
+  channelId: string;
+  /** Durable `(channelId, threadId, profileActorId)` binding identity. */
+  targetBindingId: string;
+  senderProfileId: string | null;
+  targetProfileId: string;
+  state: ChannelDeliveryReceiptState;
+  reasonCode?: ChannelDeliveryReceiptReasonCode;
+  ts: string;
+}
+
+/** Additive channel-event variant carrying one delivery receipt (#1442). */
+export interface ChannelDeliveryReceiptEventV1 extends ChannelEventBaseV1 {
+  type: 'channel-delivery-receipt-v1';
+  receipt: ChannelDeliveryReceiptV1;
+}
+
 export type ChannelEventV1 =
   | ChannelSnapshotEventV1
   | ChannelMessageCreatedEventV1
@@ -1162,7 +1233,92 @@ export type ChannelEventV1 =
   | ChannelMessageEditedEventV1
   | ChannelMessageDeletedEventV1
   | ChannelResyncRequiredEventV1
-  | ChannelRunLifecycleEventV1;
+  | ChannelRunLifecycleEventV1
+  | ChannelDeliveryReceiptEventV1;
+
+/**
+ * Fields a delivery receipt is allowed to carry, at any depth. Everything else
+ * — including anything whose name suggests body/text/attachment/prose — is
+ * rejected at the wire so a future "helpful" extra field cannot leak message
+ * content into a supposedly content-free event.
+ */
+const CHANNEL_DELIVERY_RECEIPT_ALLOWED_KEYS = new Set<string>([
+  'messageId',
+  'channelId',
+  'targetBindingId',
+  'senderProfileId',
+  'targetProfileId',
+  'state',
+  'reasonCode',
+  'ts',
+]);
+
+const CHANNEL_DELIVERY_RECEIPT_REASON_CODES = new Set<string>([
+  'queue_cap',
+  'steering_queue_cap',
+  'superseded_by_newer',
+  'runtime_unavailable',
+  'binding_failed',
+  'watchdog_force_drain',
+  'send_rejected',
+  'send_error',
+  'runtime_ended',
+  'agent_busy',
+  'profile_missing',
+  'provider_unavailable',
+]);
+
+export function isChannelDeliveryReceipt(
+  value: unknown
+): value is ChannelDeliveryReceiptV1 {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value['messageId'] !== 'string' ||
+    value['messageId'].length === 0
+  )
+    return false;
+  if (
+    typeof value['channelId'] !== 'string' ||
+    value['channelId'].length === 0
+  )
+    return false;
+  if (
+    typeof value['targetBindingId'] !== 'string' ||
+    value['targetBindingId'].length === 0
+  )
+    return false;
+  if (
+    value['senderProfileId'] !== null &&
+    typeof value['senderProfileId'] !== 'string'
+  )
+    return false;
+  if (
+    typeof value['targetProfileId'] !== 'string' ||
+    value['targetProfileId'].length === 0
+  )
+    return false;
+  if (
+    typeof value['state'] !== 'string' ||
+    !CHANNEL_DELIVERY_RECEIPT_STATES.includes(
+      value['state'] as ChannelDeliveryReceiptState
+    )
+  )
+    return false;
+  if (
+    value['reasonCode'] !== undefined &&
+    (typeof value['reasonCode'] !== 'string' ||
+      !CHANNEL_DELIVERY_RECEIPT_REASON_CODES.has(value['reasonCode']))
+  )
+    return false;
+  if (typeof value['ts'] !== 'string' || value['ts'].length === 0) return false;
+  // Content-free closure: no key outside the allowlist may ride along. This is
+  // what makes the payload structurally incapable of carrying message text —
+  // even a malformed producer cannot smuggle a body through an extra field.
+  for (const key of Object.keys(value)) {
+    if (!CHANNEL_DELIVERY_RECEIPT_ALLOWED_KEYS.has(key)) return false;
+  }
+  return true;
+}
 
 // ── runtime validators ──────────────────────────────────────────────────────
 
@@ -1495,6 +1651,10 @@ export function isChannelEventV1(value: unknown): value is ChannelEventV1 {
       return typeof value.latestSeq === 'number';
     case 'channel-run-lifecycle-v1':
       return isChannelAsyncRun(value.run);
+    case 'channel-delivery-receipt-v1':
+      // The receipt itself is validated by its own allowlist-closed predicate:
+      // an unknown key (let alone a text field) drops the event at the wire.
+      return isChannelDeliveryReceipt(value.receipt);
     default:
       return false;
   }
@@ -1809,6 +1969,13 @@ export function applyChannelEventV1(
       // snapshots carry the durable projection after reconnect, and a replayed
       // lifecycle notification is idempotent by opaque run id.
       return { ...state, runs: { ...state.runs, [event.run.id]: event.run } };
+
+    case 'channel-delivery-receipt-v1':
+      // Receipts are an observation stream, not timeline state (#1442): they
+      // never create, mutate, or cursor a message row. Clients that care keep
+      // their own receipt log from the events; the reducer stays a no-op so
+      // replay determinism and catch-up semantics are untouched.
+      return state;
 
     default:
       return state;

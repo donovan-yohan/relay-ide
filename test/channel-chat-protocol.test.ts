@@ -6,13 +6,16 @@ import {
   channelMessageMatchesSubscriptionFilter,
   channelSubscriptionFilterValidationError,
   normalizeChannelSubscriptionFilter,
+  CHANNEL_DELIVERY_RECEIPT_STATES,
   CHANNEL_SUBSCRIPTION_FILTER_MAX_BYTES,
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
+  isChannelDeliveryReceipt,
   parseChannelSearchSnippet,
   initialChannelReducerState,
   isChannelEventV1,
   parseMentions,
+  type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
   type ChannelAsyncRun,
   type ChannelMessage,
@@ -926,6 +929,114 @@ describe('channel-message-deleted-v1', () => {
     );
     expect(renumbered.needsCatchup).toBe(true);
     expect(renumbered.byId['chm:1']?.body.text).toBe('hi');
+  });
+});
+
+describe('channel-delivery-receipt-v1 (#1442)', () => {
+  function receipt(
+    overrides: Partial<ChannelDeliveryReceiptV1> = {}
+  ): ChannelDeliveryReceiptV1 {
+    return {
+      messageId: 'chm:1',
+      channelId: CHANNEL,
+      targetBindingId: `${CHANNEL}\u0000\u0000agent-profile:mock:default`,
+      senderProfileId: 'human:operator',
+      targetProfileId: 'agent-profile:mock:default',
+      state: 'queued',
+      ts: '2026-08-25T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function receiptEvent(
+    overrides: Partial<ChannelDeliveryReceiptV1> = {}
+  ): ChannelEventV1 {
+    return {
+      type: 'channel-delivery-receipt-v1',
+      channelId: CHANNEL,
+      timestamp: 't',
+      receipt: receipt(overrides),
+    };
+  }
+
+  it('covers every outcome class in the issue table', () => {
+    expect([...CHANNEL_DELIVERY_RECEIPT_STATES].sort()).toEqual(
+      [
+        'queued',
+        'delivered_to_runtime',
+        'turn_started',
+        'completed',
+        'held_busy',
+        'dropped_queue_full',
+        'refused_policy',
+        'unreachable_offline',
+        'expired_watchdog',
+        'failed_runtime',
+        'superseded',
+      ].sort()
+    );
+  });
+
+  it('accepts a well-formed receipt event and rejects malformed ones', () => {
+    for (const state of CHANNEL_DELIVERY_RECEIPT_STATES) {
+      expect(isChannelEventV1(receiptEvent({ state }))).toBe(true);
+    }
+    expect(isChannelEventV1(receiptEvent())).toBe(true);
+    expect(isChannelEventV1(receiptEvent({ senderProfileId: null }))).toBe(true);
+    expect(isChannelEventV1(receiptEvent({ reasonCode: 'queue_cap' }))).toBe(
+      true
+    );
+
+    expect(isChannelEventV1(null)).toBe(false);
+    expect(isChannelEventV1({ type: 'channel-delivery-receipt-v1' })).toBe(
+      false
+    );
+    expect(isChannelEventV1(receiptEvent({ state: 'sorta-fine' }))).toBe(false);
+    expect(isChannelEventV1(receiptEvent({ ts: '' }))).toBe(false);
+    expect(isChannelEventV1(receiptEvent({ reasonCode: 'made_up' }))).toBe(
+      false
+    );
+  });
+
+  it('is structurally content-free: no body/text field can reach the payload', () => {
+    // The validator must reject any key outside the identity/outcome allowlist,
+    // at any nesting the payload could carry. These are the leak shapes a
+    // careless producer would reach for — same rule walkie-talkie applies to
+    // metrics/events.
+    const leaks: Array<Record<string, unknown>> = [
+      { text: 'secret message body' },
+      { body: { text: 'secret message body' } },
+      { messageText: 'secret message body' },
+      { content: 'secret message body' },
+      { delta: { text: 'partial body' } },
+      { attachments: [{ type: 'image', id: 'cha:x' }] },
+      { parts: [{ type: 'image' }] },
+      { prose: 'free-form prose' },
+      { meta: { anything: 'goes' } },
+      { preview: 'first 80 chars of the body' },
+    ];
+    for (const leak of leaks) {
+      const candidate = { ...receipt(), ...leak };
+      expect(isChannelDeliveryReceipt(candidate)).toBe(false);
+      expect(isChannelEventV1(receiptEvent(candidate))).toBe(false);
+    }
+    // Even a deep smuggle under an allowed key's shadow fails closed.
+    expect(
+      isChannelDeliveryReceipt({
+        ...receipt(),
+        ts: undefined,
+        extra: { nested: { text: 'leak' } },
+      })
+    ).toBe(false);
+  });
+
+  it('reducer treats receipts as observation-only (no timeline mutation)', () => {
+    const before = initialChannelReducerState(CHANNEL);
+    const withCreated = applyChannelEventV1(before, created(message()));
+    const after = applyChannelEventV1(withCreated, receiptEvent());
+    expect(after).toEqual(withCreated);
+    expect(after.lastSeq).toBe(1);
+    expect(Object.keys(after.byId)).toEqual(['chm:1']);
   });
 });
 
