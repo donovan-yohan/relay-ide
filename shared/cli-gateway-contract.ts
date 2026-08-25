@@ -757,7 +757,15 @@ const nativeSessionSummarySchema: RelayJsonSchema = {
   properties: {
     provider: {
       type: 'string',
-      enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+      enum: [
+        'claude',
+        'codex',
+        'hermes',
+        'opencode',
+        'pi',
+        'prime-agent',
+        'dsh',
+      ],
     },
     nativeId: stringSchema,
     sourcePath: stringSchema,
@@ -795,7 +803,15 @@ const providerInstallStatusSchema: RelayJsonSchema = {
   properties: {
     provider: {
       type: 'string',
-      enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+      enum: [
+        'claude',
+        'codex',
+        'hermes',
+        'opencode',
+        'pi',
+        'prime-agent',
+        'dsh',
+      ],
     },
     status: {
       type: 'string',
@@ -4628,7 +4644,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     name: 'sessions.native.list',
     cli: ['relay-ide', 'v1', 'sessions', 'native', 'list', '--json'],
     summary:
-      'List native provider sessions (claude/codex/pi/prime-agent) from local provider stores with per-provider install status.',
+      'List native provider sessions (claude/codex/pi/prime-agent/dsh) from local provider stores with per-provider install status.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -4639,7 +4655,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+          enum: [
+            'claude',
+            'codex',
+            'hermes',
+            'opencode',
+            'pi',
+            'prime-agent',
+            'dsh',
+          ],
         },
         cwd: stringSchema,
         workContextId: stringSchema,
@@ -4687,7 +4711,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+          enum: [
+            'claude',
+            'codex',
+            'hermes',
+            'opencode',
+            'pi',
+            'prime-agent',
+            'dsh',
+          ],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,
@@ -4749,7 +4781,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+          enum: [
+            'claude',
+            'codex',
+            'hermes',
+            'opencode',
+            'pi',
+            'prime-agent',
+            'dsh',
+          ],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,
@@ -4811,7 +4851,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         provider: {
           type: 'string',
-          enum: ['claude', 'codex', 'hermes', 'opencode', 'pi', 'prime-agent'],
+          enum: [
+            'claude',
+            'codex',
+            'hermes',
+            'opencode',
+            'pi',
+            'prime-agent',
+            'dsh',
+          ],
         },
         nativeId: stringSchema,
         sourcePath: stringSchema,

@@ -31,7 +31,7 @@ interface LiveContext {
 }
 
 function liveBase(
-  provider: 'claude' | 'codex' | 'pi' | 'prime-agent',
+  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh',
   record: Record<string, unknown>,
   context: LiveContext
 ): Omit<
@@ -683,4 +683,141 @@ export function normalizePiLiveEvent(
   }
 
   return [gapEvent(base, nativeId, `${type}:${role || 'unknown-role'}`)];
+}
+
+/**
+ * Map one raw DeepSeek Harness (DSH) session record onto zero or more shared
+ * live events. Layout verified against real `~/.dsh/sessions` stores (#1426):
+ * typed records with epoch-ms `time` and a `data` payload — `user/message`
+ * (role/source-kind + content blocks), `assistant/chunk` stream deltas,
+ * `reasoning-chunks` thinking deltas, consolidated `assistant/message`, plus
+ * operational metadata (`session/title`, `permission/preset`,
+ * `sandbox/mode`, `approval/policy`, turn/step markers, ...).
+ *
+ * Deterministic-and-simple choice: `assistant/chunk` deltas are attributed
+ * gaps (`assistant/chunk:folded-into-assistant-message`) rather than partial
+ * assistant-message updates — the consolidated `assistant/message` already
+ * carries the final text, so emitting both would double-count; the gap keeps
+ * the fidelity invariant without inventing incremental state.
+ */
+export function normalizeDshLiveEvent(
+  record: Record<string, unknown>,
+  context: LiveContext
+): NativeSessionLiveEvent[] {
+  const type = stringField(record.type);
+  // DSH records carry seq numbers, not the session uuid — session identity
+  // comes from the watched file's fallback nativeId.
+  const nativeId = context.fallbackNativeId || '';
+  const base = liveBase('dsh', record, context);
+  const data = objectField(record.data);
+
+  if (type === 'session') {
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'session-started',
+        text: '',
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (type === 'user/message') {
+    const sourceKind = stringField(objectField(data.source).kind, 'user');
+    if (sourceKind !== 'user') {
+      return [gapEvent(base, nativeId, `${type}:${sourceKind}`)];
+    }
+    const text = redactLiveText(textFromContent(data.content));
+    if (!text) {
+      return [gapEvent(base, nativeId, `${type}:user(empty)`)];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'user-message',
+        text: truncate(text),
+        providerEvent: `${type}:user`,
+      },
+    ];
+  }
+
+  if (type === 'assistant/message') {
+    const message = objectField(data.message);
+    const text = redactLiveText(textFromContent(message.content));
+    if (!text) {
+      return [gapEvent(base, nativeId, `${type}:assistant(empty)`)];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'assistant-message',
+        text: truncate(text),
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (type === 'reasoning-chunks') {
+    const texts = Array.isArray(data.texts)
+      ? data.texts.filter((t): t is string => typeof t === 'string')
+      : [];
+    const joined = texts.join('');
+    if (!joined) {
+      return [gapEvent(base, nativeId, `${type}:empty`)];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'reasoning',
+        text: truncate(redactLiveText(joined)),
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (
+    type === 'assistant/chunk' ||
+    type === 'turn/start' ||
+    type === 'step/start' ||
+    type === 'step/end' ||
+    type === 'turn/end'
+  ) {
+    return [
+      gapEvent(
+        base,
+        nativeId,
+        type === 'assistant/chunk'
+          ? `${type}:folded-into-assistant-message`
+          : type
+      ),
+    ];
+  }
+
+  // Everything else (permission/preset, sandbox/mode, approval/policy,
+  // request/header|context, agent/inbox/spliced, session/title, ...) is an
+  // attributed gap — published and logged, never a silent drop.
+  return [gapEvent(base, nativeId, type || 'unknown')];
+}
+
+/** Flatten DSH content blocks (or a bare string) into redactable text. */
+function textFromContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const block of content) {
+    if (
+      typeof block === 'object' &&
+      block !== null &&
+      !Array.isArray(block) &&
+      (block as Record<string, unknown>).type === 'text' &&
+      typeof (block as Record<string, unknown>).text === 'string'
+    ) {
+      parts.push((block as Record<string, unknown>).text as string);
+    }
+  }
+  return parts.join('\n');
 }

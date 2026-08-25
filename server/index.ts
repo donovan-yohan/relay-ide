@@ -317,6 +317,7 @@ import { semverLessThan, clampDimension } from './utils.js';
 import {
   ClaudeJsonlStateAdapter,
   CodexJsonlStateAdapter,
+  DshStateAdapter,
   PiStateAdapter,
   PrimeAgentStateAdapter,
   NativeSessionAdapterRegistry,
@@ -4440,6 +4441,7 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new CodexJsonlStateAdapter());
   nativeSessionRegistry.register(new PiStateAdapter());
   nativeSessionRegistry.register(new PrimeAgentStateAdapter());
+  nativeSessionRegistry.register(new DshStateAdapter());
 
   // #1428 live tails: normalized JSONL tail events for claude/codex/pi onto the
   // scoped `native-sessions` gateway topic. Durable cursors live under the hub
@@ -4458,6 +4460,7 @@ async function main(): Promise<void> {
     'opencode',
     'pi',
     'prime-agent',
+    'dsh',
   ]);
 
   // GET /sessions/native — list native provider sessions with install status
@@ -4747,14 +4750,15 @@ async function main(): Promise<void> {
           });
           return;
         }
-        // Honest capability gating: live tails cover providers whose JSONL
-        // normalizers are proven end-to-end (claude/codex #1428, pi and
-        // prime-agent via their JSONL tail wiring, #1426).
+        // Honest capability gating: live tails cover providers whose tail
+        // wiring is proven end-to-end (claude/codex #1428, pi and prime-agent
+        // via their JSONL tail wiring, dsh via the framed-zstd tailer, #1426).
         if (
           provider !== 'claude' &&
           provider !== 'codex' &&
           provider !== 'pi' &&
-          provider !== 'prime-agent'
+          provider !== 'prime-agent' &&
+          provider !== 'dsh'
         ) {
           res.status(422).json({
             error: {

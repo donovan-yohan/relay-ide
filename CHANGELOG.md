@@ -22,6 +22,28 @@ workflow.
 
 #### Added
 
+- DeepSeek Harness (DSH) native session state is real: a new `dsh` provider
+  adapter detects the local `~/.dsh/sessions` store
+  (`<project-slug>/session-<uuid>/session.jsonl.zstd`, concatenated zstd
+  frames of JSONL), decodes multi-frame logs with graceful torn-tail handling,
+  lists sessions scoped to a `cwd` with redacted previews and header-derived
+  timestamps, imports transcripts into read-only `AgentSessionV2` read models
+  (user turns from real user messages, reasoning evidence from
+  `reasoning-chunks`, consolidated assistant messages; harness-internal
+  injections and stream deltas stay attributed gaps), and returns bounded
+  provider state snapshots (#1426).
+- Live native-session tails cover DSH: a framed-zstd byte-cursor tailer
+  re-decodes only newly appended complete frames (torn trailing frames wait
+  until closed) and the `normalizeDshLiveEvent` normalizer maps
+  `user/message`/`assistant/message`/`reasoning-chunks` onto the shared
+  live-event vocabulary, everything else as attributed gaps;
+  `sessions native watch --provider dsh` streams them like Claude/Codex/Pi,
+  with durable cursor resume across hub restarts (#1426).
+
+### Native session surface
+
+#### Added
+
 - Pi native session state is real: the Pi adapter now detects the local
   `~/.pi/agent/sessions` store (one cwd-slug bucket per working directory,
   per-session JSONL files), lists sessions with redacted previews and

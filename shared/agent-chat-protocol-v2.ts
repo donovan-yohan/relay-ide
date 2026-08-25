@@ -7,6 +7,7 @@ export type AgentProviderV2 =
   | 'hermes'
   | 'prime-agent'
   | 'pi'
+  | 'dsh'
   | 'mock'
   | (string & {});
 
