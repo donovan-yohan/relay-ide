@@ -1,6 +1,7 @@
 import { createLogger } from './logger.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
+  type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
   type ChannelAsyncRun,
   type ChannelInFlightRef,
@@ -12,6 +13,20 @@ import {
 } from '../shared/channel-chat-protocol.js';
 
 const logger = createLogger('channel-hub');
+
+/**
+ * Bounded server-side retention for delivery receipts (#1442). Receipts are
+ * observability state, not the durable log: the ring is in-memory, capped per
+ * channel, and dropped on close/restart. A consumer needing durable history
+ * re-derives outcomes from the message log; the ring only serves recent
+ * queries so a poller can catch a receipt it missed on the live stream.
+ */
+export const DELIVERY_RECEIPT_RING_MAX_PER_CHANNEL = 256;
+const DELIVERY_RECEIPT_LIST_MAX = 128;
+
+interface DeliveryReceiptRing {
+  receipts: ChannelDeliveryReceiptV1[];
+}
 
 // Per-channel fan-out hub (#1165). Owns the live subscriber sets, per-message
 // in-flight accumulators, delta coalescing, the connect-time snapshot/live
@@ -175,6 +190,21 @@ export interface ChannelHub {
     mentions?: ChannelMention[],
     options?: ChannelMessagePostedOptions
   ): void;
+  /**
+   * Emit one typed, content-free delivery receipt (#1442) on the channel
+   * event stream and retain it in a bounded per-channel ring so it stays
+   * queryable per message id + target through the hub API. Receipts never
+   * touch the durable message sequence.
+   */
+  broadcastDeliveryReceipt(receipt: ChannelDeliveryReceiptV1): void;
+  /** Bounded server-side receipt log for the additive GET query route. */
+  listDeliveryReceipts(input: {
+    channelId: string;
+    messageId?: string;
+    targetBindingId?: string;
+    targetProfileId?: string;
+    limit?: number;
+  }): ChannelDeliveryReceiptV1[];
   beginStreamBroadcast(message: ChannelMessage): void;
   pushDelta(messageId: string, text: string): void;
   /** Debounced authoritative full-row refresh for streaming card state. */
@@ -211,6 +241,24 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
   const subscribers = new Map<string, Set<Subscriber>>();
   const accumulators = new Map<string, Accumulator>();
   const postedHandlers = new Set<ChannelMessagePostedHandler>();
+  const deliveryReceiptRings = new Map<string, DeliveryReceiptRing>();
+
+  function retainDeliveryReceipt(receipt: ChannelDeliveryReceiptV1): void {
+    let ring = deliveryReceiptRings.get(receipt.channelId);
+    if (!ring) {
+      ring = { receipts: [] };
+      deliveryReceiptRings.set(receipt.channelId, ring);
+    }
+    ring.receipts.push(receipt);
+    if (ring.receipts.length > DELIVERY_RECEIPT_RING_MAX_PER_CHANNEL) {
+      // Drop oldest-first; the cap is per channel so one chatty channel can
+      // never evict another's receipt history.
+      ring.receipts.splice(
+        0,
+        ring.receipts.length - DELIVERY_RECEIPT_RING_MAX_PER_CHANNEL
+      );
+    }
+  }
 
   function nowIso(): string {
     return new Date().toISOString();
@@ -727,6 +775,47 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       });
     },
 
+    broadcastDeliveryReceipt(receipt) {
+      retainDeliveryReceipt(receipt);
+      broadcast(receipt.channelId, {
+        type: 'channel-delivery-receipt-v1',
+        channelId: receipt.channelId,
+        timestamp: nowIso(),
+        receipt,
+      });
+    },
+
+    listDeliveryReceipts({ channelId, messageId, targetBindingId, targetProfileId, limit }) {
+      const ring = deliveryReceiptRings.get(channelId);
+      if (!ring) return [];
+      const cap =
+        typeof limit === 'number' &&
+        Number.isSafeInteger(limit) &&
+        limit > 0
+          ? Math.min(limit, DELIVERY_RECEIPT_LIST_MAX)
+          : DELIVERY_RECEIPT_LIST_MAX;
+      // Newest-first: the common consumer question is "what happened to this
+      // message most recently", and bounded retention makes oldest-first
+      // pagination a promise the ring cannot keep across evictions.
+      const out: ChannelDeliveryReceiptV1[] = [];
+      for (let i = ring.receipts.length - 1; i >= 0 && out.length < cap; i--) {
+        const receipt = ring.receipts[i]!;
+        if (messageId !== undefined && receipt.messageId !== messageId) continue;
+        if (
+          targetBindingId !== undefined &&
+          receipt.targetBindingId !== targetBindingId
+        )
+          continue;
+        if (
+          targetProfileId !== undefined &&
+          receipt.targetProfileId !== targetProfileId
+        )
+          continue;
+        out.push(receipt);
+      }
+      return out;
+    },
+
     beginStreamBroadcast(message) {
       accumulators.set(message.id, {
         channelId: message.channelId,
@@ -864,6 +953,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       accumulators.clear();
       subscribers.clear();
       postedHandlers.clear();
+      deliveryReceiptRings.clear();
     },
   };
 }

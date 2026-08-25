@@ -18,6 +18,8 @@ import {
 import {
   applyChannelEventV1,
   initialChannelReducerState,
+  type ChannelDeliveryReceiptEventV1,
+  type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
@@ -905,6 +907,100 @@ describe('channel-hub snapshot correctness', () => {
     expect(bytes).toBeLessThanOrEqual(8 * 1000 + 2500);
     // Full snapshot keeps the newest rows (tail).
     expect(snap.messages[snap.messages.length - 1]?.seq).toBe(20);
+  });
+});
+
+describe('channel-hub delivery receipts (#1442)', () => {
+  const CH = 'topic:receipts';
+  function receipt(
+    overrides: Partial<ChannelDeliveryReceiptV1> = {}
+  ): ChannelDeliveryReceiptV1 {
+    return {
+      messageId: 'chm:1',
+      channelId: CH,
+      targetBindingId: `${CH}\u0000\u0000agent-profile:mock:default`,
+      senderProfileId: 'human:operator',
+      targetProfileId: 'agent-profile:mock:default',
+      state: 'queued',
+      ts: '2026-08-25T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('fans receipts out on the existing channel subscription stream', () => {
+    const s = store();
+    const hub = hubWith(s);
+    const sink = fakeSink();
+    hub.subscribe(sink, { channelId: CH, afterSeq: null });
+    expect(sink.sent.some((e) => e.type === 'channel-snapshot-v1')).toBe(true);
+
+    hub.broadcastDeliveryReceipt(receipt({ state: 'held_busy' }));
+
+    const events = sink.sent.filter(
+      (event): event is ChannelDeliveryReceiptEventV1 =>
+        event.type === 'channel-delivery-receipt-v1'
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.channelId).toBe(CH);
+    expect(events[0]!.receipt.state).toBe('held_busy');
+    // Content-free at the transport boundary too.
+    const serialized = JSON.stringify(events[0]);
+    expect(serialized).not.toContain('body');
+    expect(serialized).not.toContain('"text"');
+  });
+
+  it('retains receipts in a bounded ring queryable per message id and target', () => {
+    const s = store();
+    const hub = hubWith(s);
+    for (let i = 1; i <= 300; i++) {
+      hub.broadcastDeliveryReceipt(
+        receipt({
+          messageId: `chm:${i}`,
+          state: i % 2 === 0 ? 'completed' : 'queued',
+        })
+      );
+    }
+    const all = hub.listDeliveryReceipts({ channelId: CH });
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.length).toBeLessThanOrEqual(128);
+    // Newest-first, evicted oldest entries gone: chm:1..(evicted) absent,
+    // the newest retained id present.
+    expect(all[0]!.messageId).toBe('chm:300');
+
+    const perMessage = hub.listDeliveryReceipts({
+      channelId: CH,
+      messageId: 'chm:299',
+    });
+    expect(perMessage).toHaveLength(1);
+    expect(perMessage[0]!.state).toBe('queued');
+    expect(perMessage[0]!.targetBindingId).toBe(
+      receipt().targetBindingId
+    );
+
+    const perTarget = hub.listDeliveryReceipts({
+      channelId: CH,
+      targetProfileId: 'agent-profile:mock:default',
+      limit: 5,
+    });
+    expect(perTarget).toHaveLength(5);
+    expect(
+      hub.listDeliveryReceipts({
+        channelId: CH,
+        targetProfileId: 'agent-profile:nobody',
+      })
+    ).toEqual([]);
+    expect(hub.listDeliveryReceipts({ channelId: 'topic:other' })).toEqual([]);
+  });
+
+  it('drops the ring on close; receipts never touch the durable sequence', () => {
+    const s = store();
+    const hub = hubWith(s);
+    const before = s.latestSeq(CH);
+    hub.broadcastDeliveryReceipt(receipt());
+    expect(hub.listDeliveryReceipts({ channelId: CH })).toHaveLength(1);
+    expect(s.latestSeq(CH)).toBe(before);
+    hub.close();
+    expect(hub.listDeliveryReceipts({ channelId: CH })).toEqual([]);
   });
 });
 
