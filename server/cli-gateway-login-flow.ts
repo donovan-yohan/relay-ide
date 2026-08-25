@@ -1,5 +1,5 @@
 import * as crypto from 'node:crypto';
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import type {
   ScopedActorCredentialRecord,
   ScopedActorCredentialScope,
@@ -337,6 +337,9 @@ export function createCliGatewayLoginRouter(
   options: CliGatewayLoginRouterOptions
 ): Router {
   const router = Router();
+  // HTML form submissions are urlencoded; the global express.json() middleware
+  // cannot parse them, so mount urlencoded locally for the approval POST.
+  router.use(express.urlencoded({ extended: false }));
 
   const flowErrorResponse = (res: Response, error: unknown): void => {
     if (error instanceof CliGatewayLoginFlowError) {
@@ -439,10 +442,11 @@ export function createCliGatewayLoginRouter(
         .status(400)
         .type('html')
         .send(
-          renderMessagePage(
-            'PIN required',
-            'Enter your Relay PIN to approve this login.'
-          )
+          renderApprovalPage({
+            heading: 'PIN required',
+            detail: 'Enter your Relay PIN to approve this login.',
+            flow: options.flows.get(flowId) ?? null,
+          })
         );
       return;
     }
@@ -453,10 +457,11 @@ export function createCliGatewayLoginRouter(
         .status(401)
         .type('html')
         .send(
-          renderMessagePage(
-            'Invalid PIN',
-            'The PIN did not match. Run `relay-ide login` again for a fresh link.'
-          )
+          renderApprovalPage({
+            heading: 'Invalid PIN',
+            detail: 'The PIN did not match. Try again or run `relay-ide login` for a fresh link.',
+            flow: options.flows.get(flowId) ?? null,
+          })
         );
       return;
     }
@@ -559,25 +564,31 @@ const PAGE_STYLES = `
 :root { color-scheme: dark; }
 * { box-sizing: border-box; border-radius: 0 !important; }
 body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-  background: #101014; color: #e7e7ea;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-main { width: min(30rem, calc(100vw - 3rem)); padding: 2rem;
-  border: 1px solid #2c2c34; background: #17171d; }
-h1 { font-size: 1.15rem; letter-spacing: 0.02em; margin-top: 0; }
-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid #2c2c34;
-  font-size: 0.85rem; vertical-align: top; }
-th { color: #9a9aa4; font-weight: 500; width: 9rem; }
-code { background: #23232b; padding: 0.1rem 0.35rem; font-size: 0.85rem; }
-label { display: block; margin: 1rem 0 0.35rem; color: #9a9aa4; font-size: 0.8rem;
+  background: #000; color: #c8c8c8;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+main { width: min(26rem, calc(100vw - 2rem)); padding: 1.75rem;
+  border: 1px solid #1a1a1a; background: #0a0a0a; }
+h1 { font-size: 1rem; letter-spacing: 0.04em; margin-top: 0; text-transform: uppercase;
+  color: #e0e0e0; }
+table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+th, td { text-align: left; padding: 0.4rem 0.4rem; border-bottom: 1px solid #1a1a1a;
+  font-size: 0.78rem; vertical-align: top; }
+th { color: #666; font-weight: 500; width: 8rem; text-transform: uppercase;
+  letter-spacing: 0.06em; font-size: 0.7rem; }
+code { background: #111; padding: 0.1rem 0.3rem; font-size: 0.78rem; color: #e0e0e0; }
+label { display: block; margin: 0.75rem 0 0.3rem; color: #666; font-size: 0.7rem;
   text-transform: uppercase; letter-spacing: 0.08em; }
-input { width: 100%; padding: 0.55rem 0.6rem; background: #101014; color: #e7e7ea;
-  border: 1px solid #2c2c34; font: inherit; }
-button { margin-top: 1rem; margin-right: 0.5rem; padding: 0.55rem 1.1rem;
-  background: #e7e7ea; color: #101014; border: 1px solid #e7e7ea;
-  font: inherit; cursor: pointer; }
-button.secondary { background: transparent; color: #e7e7ea; }
-.detail { color: #9a9aa4; font-size: 0.82rem; }
+input { width: 100%; padding: 0.5rem 0.5rem; background: #000; color: #e0e0e0;
+  border: 1px solid #1a1a1a; font: inherit; font-size: 0.9rem; }
+input:focus { outline: none; border-color: #333; }
+button { margin-top: 0.75rem; margin-right: 0.4rem; padding: 0.45rem 0.9rem;
+  background: #e0e0e0; color: #000; border: 1px solid #e0e0e0;
+  font: inherit; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+  cursor: pointer; }
+button.secondary { background: transparent; color: #666; border-color: #1a1a1a; }
+button:hover { opacity: 0.85; }
+.detail { color: #666; font-size: 0.75rem; line-height: 1.5; }
+.error { color: #c44; }
 `;
 
 function escapeHtml(value: string): string {

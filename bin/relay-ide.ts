@@ -8649,7 +8649,7 @@ async function runCliLogout(): Promise<void> {
   logger.info(
     revokedServerSide
       ? '✓ Logged out: local credential removed and revoked on the hub.'
-      : '✓ Logged out: local credential removed. Revoke it hub-side if it was not expired.'
+      : '✓ Logged out: local credential removed. Hub-side self-revocation is not yet supported — revoke via the browser operator UI (credentials list) if it was not expired.'
   );
 }
 
