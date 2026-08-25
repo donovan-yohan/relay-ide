@@ -31,7 +31,7 @@ interface LiveContext {
 }
 
 function liveBase(
-  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh',
+  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh' | 'antigravity',
   record: Record<string, unknown>,
   context: LiveContext
 ): Omit<
@@ -820,4 +820,130 @@ function textFromContent(content: unknown): string {
     }
   }
   return parts.join('\n');
+}
+
+/**
+ * Map one raw Antigravity CLI (`agy`) brain-transcript record onto zero or
+ * more shared live events (#1439). Layout verified against the real
+ * `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`:
+ * appended plaintext JSONL keyed on `type` — `USER_INPUT` (content wrapped in
+ * `<USER_REQUEST>`), `PLANNER_RESPONSE` (optional `thinking`, `tool_calls[]`,
+ * answer text in `content`), typed tool steps (`LIST_DIRECTORY`, …) with
+ * `status DONE|ERROR`, plus system bookkeeping (`CONVERSATION_HISTORY`,
+ * `CHECKPOINT`). Transcript records carry no conversation id, so session
+ * identity comes from the watched file's fallback nativeId.
+ *
+ * Deterministic-and-simple choice: one record maps to its events in file
+ * order; a `PLANNER_RESPONSE` carrying thinking + tool calls + an answer
+ * streams all of them. System bookkeeping and unknown types are attributed
+ * gaps — published and logged, never silent drops.
+ */
+export function normalizeAntigravityLiveEvent(
+  record: Record<string, unknown>,
+  context: LiveContext
+): NativeSessionLiveEvent[] {
+  const type = stringField(record.type);
+  const nativeId = context.fallbackNativeId || '';
+  const base = liveBase('antigravity', record, context);
+
+  if (type === 'USER_INPUT') {
+    const content = stringField(record.content);
+    const match = content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+    const text = redactLiveText((match?.[1] ?? content).trim());
+    if (!text) {
+      return [gapEvent(base, nativeId, `${type}:empty`)];
+    }
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'user-message',
+        text: truncate(text),
+        providerEvent: type,
+      },
+    ];
+  }
+
+  if (type === 'PLANNER_RESPONSE') {
+    const events: NativeSessionLiveEvent[] = [];
+
+    const thinking = stringField(record.thinking);
+    if (thinking) {
+      events.push({
+        ...base,
+        nativeId,
+        kind: 'reasoning',
+        text: truncate(redactLiveText(thinking)),
+        providerEvent: `${type}:thinking`,
+      });
+    }
+
+    const toolCalls = Array.isArray(record.tool_calls)
+      ? record.tool_calls.filter(isRecord)
+      : [];
+    for (const call of toolCalls) {
+      events.push({
+        ...base,
+        nativeId,
+        kind: 'tool-call',
+        text: truncate(redactLiveText(stringField(call.name, 'unknown-tool'))),
+        providerEvent: `${type}:tool_calls:${stringField(call.name, 'unknown')}`,
+      });
+    }
+
+    const answer = redactLiveText(
+      stringField(record.content) || stringField(record.response)
+    );
+    if (answer) {
+      events.push({
+        ...base,
+        nativeId,
+        kind: 'assistant-message',
+        text: truncate(answer),
+        providerEvent: type,
+      });
+    }
+
+    if (events.length === 0) {
+      return [gapEvent(base, nativeId, `${type}:empty`)];
+    }
+    return events;
+  }
+
+  if (
+    type === 'READ_FILE' ||
+    type === 'WRITE_FILE' ||
+    type === 'RUN_COMMAND' ||
+    type === 'SEARCH' ||
+    type === 'WEB_SEARCH'
+  ) {
+    const status = stringField(record.status);
+    return [gapEvent(base, nativeId, status ? `${type}:${status}` : type)];
+  }
+
+  if (type === 'LIST_DIRECTORY') {
+    // Observed most often as a MODEL tool step whose result rides its own
+    // `content`; surfaced as a bounded tool-result preview.
+    const text = redactLiveText(stringField(record.content));
+    return [
+      {
+        ...base,
+        nativeId,
+        kind: 'tool-result',
+        text: truncate(text),
+        providerEvent: stringField(record.status)
+          ? `${type}:${stringField(record.status)}`
+          : type,
+      },
+    ];
+  }
+
+  // CONVERSATION_HISTORY and CHECKPOINT are system-side context replays with
+  // no conversational payload; anything else is genuinely unknown. All are
+  // attributed gaps — published and logged, never silent drops.
+  return [gapEvent(base, nativeId, type || 'unknown')];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

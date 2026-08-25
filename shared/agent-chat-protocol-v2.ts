@@ -8,6 +8,7 @@ export type AgentProviderV2 =
   | 'prime-agent'
   | 'pi'
   | 'dsh'
+  | 'antigravity'
   | 'mock'
   | (string & {});
 

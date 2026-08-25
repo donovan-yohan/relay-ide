@@ -18,6 +18,24 @@ workflow.
 
 ## [Unreleased]
 
+### Antigravity CLI native-session support
+
+#### Added
+
+- Google's Antigravity CLI (`agy`) is now a supported native-session provider:
+  `relay-ide v1 sessions native list/get/import/watch --provider antigravity`
+  read the local `~/.gemini/antigravity-cli` store read-only. Listing groups
+  `history.jsonl` by conversation; import normalizes brain transcripts
+  (`USER_INPUT` / `PLANNER_RESPONSE` with thinking + tool calls + answers,
+  typed tool steps, attributed gaps for unknown records); conversations backed
+  only by opaque `.pb` artifacts list with an honest per-session signal and
+  import their real user turns from history (#1439).
+- Live watch streams appended brain-transcript records onto the scoped
+  `native-sessions` topic within the poll interval, with durable byte cursors
+  that survive restart without replay or gap. Resume argv is copyable only:
+  `agy --conversation <id>`. No channel adapter yet — Antigravity cannot serve
+  channel agents until that lands (#1439).
+
 ### CLI login and actor credential lifecycle
 
 #### Added

@@ -115,6 +115,39 @@ session directories with tools, extensions, skills, templates, themes, context
 files, and Pi telemetry disabled. Cleanup removes those directories, and output
 omits prompts, provider stderr, credentials, and raw session identifiers.
 
+## Native session state adapters (read-only)
+
+Separate from the channel lane, `AgentHarnessStateAdapter` implementations
+(`server/provider-state/`) expose a provider's local session store read-only:
+list native sessions, snapshot provider state, import a transcript into an
+`AgentSessionV2` read model, report a copyable resume argv, and — where the
+store is appended plaintext JSONL or framed zstd — stream live tail events onto
+the scoped `native-sessions` gateway topic with durable byte cursors (#1426,
+#1428). Adapters never mutate provider stores and never execute resume
+commands themselves. Providers currently covered: `claude`, `codex`,
+`prime-agent`, `pi`, `dsh` (framed-zstd tailer), and `antigravity`.
+
+### Antigravity CLI (`agy`) state adapter
+
+The Antigravity CLI is wired as a native-session provider only (`#1439`): no
+channel adapter exists yet, so it does not appear in the built-in native
+transports table above. State root: `~/.gemini/antigravity-cli/`.
+
+- Listing reads `history.jsonl` (one row per user prompt) grouped by
+  `conversationId`; the first prompt's text is the bounded, redacted title.
+- Import parses `brain/<id>/.system_generated/logs/transcript.jsonl`:
+  `USER_INPUT` opens turns, `PLANNER_RESPONSE` folds thinking evidence, named
+  tool calls, and the final answer into them, typed tool steps map to
+  provider-extension items with honest status, and unknown record types become
+  attributed gaps on the audit marker — never silent drops.
+- Conversations whose only artifacts are opaque `.pb` blobs still list with
+  `metadata.transcriptAvailable: false`; importing one yields the real user
+  turns from history plus an explicit degradation marker rather than
+  fabricated assistant content.
+- Live watch tails the canonical `transcript.jsonl`; long conversations may
+  roll into `chunks/transcript/*.jsonl`, which are not tailed.
+- Resume argv: `agy --conversation <id>` (flag verified against agy v1.1.20).
+
 ## Identity boundary
 
 Keep these identities distinct:

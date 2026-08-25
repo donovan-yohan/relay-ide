@@ -315,6 +315,7 @@ import {
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
+  AntigravityStateAdapter,
   ClaudeJsonlStateAdapter,
   CodexJsonlStateAdapter,
   DshStateAdapter,
@@ -4588,6 +4589,9 @@ async function main(): Promise<void> {
   nativeSessionRegistry.register(new PiStateAdapter());
   nativeSessionRegistry.register(new PrimeAgentStateAdapter());
   nativeSessionRegistry.register(new DshStateAdapter());
+  // #1439: agy session store is plaintext JSONL; adapter + live tail are
+  // read-only over ~/.gemini/antigravity-cli.
+  nativeSessionRegistry.register(new AntigravityStateAdapter());
 
   // #1428 live tails: normalized JSONL tail events for claude/codex/pi onto the
   // scoped `native-sessions` gateway topic. Durable cursors live under the hub
@@ -4607,6 +4611,7 @@ async function main(): Promise<void> {
     'pi',
     'prime-agent',
     'dsh',
+    'antigravity',
   ]);
 
   // GET /sessions/native — list native provider sessions with install status
@@ -4904,7 +4909,8 @@ async function main(): Promise<void> {
           provider !== 'codex' &&
           provider !== 'pi' &&
           provider !== 'prime-agent' &&
-          provider !== 'dsh'
+          provider !== 'dsh' &&
+          provider !== 'antigravity'
         ) {
           res.status(422).json({
             error: {
