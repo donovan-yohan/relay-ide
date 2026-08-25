@@ -40,6 +40,28 @@ test('lifecycle mutation routes reject read-only CLI actor credentials', () => {
   );
 });
 
+test('native watch phase one marks its hand-rolled request as CLI gateway v1', () => {
+  const cliSource = readFileSync(
+    new URL('../bin/relay-ide.ts', import.meta.url),
+    'utf8'
+  );
+  const watchStart = cliSource.indexOf(
+    'async function runGatewaySessionNativeWatch'
+  );
+  const watchEnd = cliSource.indexOf(
+    'async function runGatewaySessionGet',
+    watchStart
+  );
+  expect(watchStart).toBeGreaterThan(-1);
+  expect(watchEnd).toBeGreaterThan(watchStart);
+
+  const watchSource = cliSource.slice(watchStart, watchEnd);
+  expect(watchSource).toContain("'x-relay-cli-gateway': 'v1'");
+  expect(watchSource).toContain(
+    "'x-relay-cli-command': 'sessions.native.watch'"
+  );
+});
+
 // #1428 regression tripwire: `requireCliGatewayEventsAuth` must keep
 // `events.subscribe` as the expected actor command for EVERY /events topic.
 // The CLI always sends that header (runGatewayEventsSubscribe); remapping it
