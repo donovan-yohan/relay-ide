@@ -660,6 +660,12 @@ export interface Config {
       }
     | undefined;
   updateChannel?: 'stable' | 'nightly' | undefined;
+  /**
+   * #1435: ceiling for scoped CLI gateway actor credentials minted by the hub
+   * (login flow, issue/renew endpoints). Config-file-only; no settings UI.
+   * Default: 30 days.
+   */
+  cliGatewayActorCredentialMaxTtlMs?: number | undefined;
 }
 
 export interface AutomationSettings {

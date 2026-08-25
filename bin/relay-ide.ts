@@ -7,6 +7,18 @@ import { Buffer } from 'node:buffer';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  deleteStoredActorCredential,
+  expiresWithinMargin,
+  loadStoredActorCredential,
+  saveStoredActorCredential,
+  type StoredActorCredential,
+} from '../shared/cli-actor-token-store.js';
+import {
+  CLI_GATEWAY_ACTOR_RENEW_COMMAND,
+  DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
+} from '../server/cli-gateway-actor-auth.js';
+import os from 'node:os';
 import * as service from '../server/service.js';
 import { DEFAULTS, loadConfig } from '../server/config.js';
 import { createLogger } from '../server/logger.js';
@@ -1309,7 +1321,7 @@ function workflowSessionBody(
 }
 
 function requireWorkflowGatewayAuth(commandName: WorkflowGatewayCommand): void {
-  const actorToken = gatewayActorToken();
+  const actorToken = gatewayActorTokenSync();
   if (actorToken) {
     gatewayInvalid(
       commandName,
@@ -1620,8 +1632,155 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'cockpit.get',
 ]);
 
-function gatewayActorToken(): string {
-  return getArg('--actor-token') ?? process.env['RELAY_IDE_ACTOR_TOKEN'] ?? '';
+/**
+ * #1435: how close to expiry a stored credential must be before the CLI
+ * transparently renews it (mirrors the plugin RENEW_MARGIN_SECONDS pattern).
+ */
+const ACTOR_TOKEN_RENEW_MARGIN_MS = 120 * 1000;
+
+function actorTokenConfigDir(): string {
+  return service.CONFIG_DIR;
+}
+
+interface ResolvedActorToken {
+  token: string;
+  source: 'flag' | 'env' | 'file';
+}
+
+/**
+ * Actor-token precedence: --actor-token flag > RELAY_IDE_ACTOR_TOKEN env >
+ * stored `relay-ide login` credential file. The file is explicit opt-in — it
+ * only exists because the operator ran login. Within the renew margin the CLI
+ * transparently renews and atomically rewrites the file; on renewal failure it
+ * falls back to the old token until it is truly expired.
+ */
+async function resolveGatewayActorToken(): Promise<ResolvedActorToken> {
+  const flag = getArg('--actor-token');
+  if (flag) {
+    // Flag path: explicit per-invocation, no persistence side effects.
+    return { token: flag, source: 'flag' };
+  }
+  const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
+  if (env) return { token: env, source: 'env' };
+
+  const stored = loadStoredActorCredential(actorTokenConfigDir());
+  if (!stored) return { token: '', source: 'file' };
+
+  let credential = stored;
+  if (expiresWithinMargin(stored, ACTOR_TOKEN_RENEW_MARGIN_MS, Date.now())) {
+    const renewed = await tryRenewStoredActorCredential(stored);
+    if (renewed) {
+      saveStoredActorCredential(actorTokenConfigDir(), renewed);
+      credential = renewed;
+    }
+  }
+  if (Date.parse(credential.expiresAt) <= Date.now()) {
+    printGatewayEnvelope(
+      gatewayError('sessions.list', {
+        code: 'UNAUTHORIZED',
+        message:
+          'The stored relay-ide login credential has expired. Run `relay-ide login` to authorize again.',
+        retryable: false,
+      }),
+      1
+    );
+  }
+  return { token: credential.token, source: 'file' };
+}
+
+/**
+ * Best-effort transparent renewal against the hub. Returns the updated stored
+ * credential, or null when the hub refuses (revoked/expired/network) — callers
+ * then keep using the old token until it fails server-side or truly expires.
+ */
+async function tryRenewStoredActorCredential(
+  stored: StoredActorCredential
+): Promise<StoredActorCredential | null> {
+  let hubUrlString = stored.hubUrl?.trim();
+  if (!hubUrlString) {
+    const port =
+      getArg('--port') ??
+      process.env['RELAY_IDE_PORT'] ??
+      String(DEFAULTS.port);
+    hubUrlString = `http://127.0.0.1:${port}`;
+  } else if (/^[0-9]+$/.test(hubUrlString)) {
+    hubUrlString = `http://127.0.0.1:${hubUrlString}`;
+  }
+  try {
+    new URL(hubUrlString);
+  } catch {
+    return null;
+  }
+  try {
+    const response = await fetch(
+      nodeEndpoint(hubUrlString, '/cli-gateway/actor-credentials/renew'),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${stored.token}`,
+          'content-type': 'application/json',
+          'x-relay-cli-gateway': 'v1',
+          'x-relay-cli-actor-token': 'v1',
+          'x-relay-cli-command': CLI_GATEWAY_ACTOR_RENEW_COMMAND,
+        },
+        body: JSON.stringify({}),
+      }
+    );
+    if (!response.ok) return null;
+    const parsed: unknown = await response.json();
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)['token'] !== 'string'
+    ) {
+      return null;
+    }
+    const envelope = parsed as {
+      token?: unknown;
+      credential?: { id?: unknown; expiresAt?: unknown };
+    };
+    const token = envelope.token as string;
+    if (!token.startsWith('relay-sac-v1.')) return null;
+    return {
+      version: 1,
+      token,
+      credentialId:
+        typeof envelope.credential?.id === 'string'
+          ? envelope.credential.id
+          : stored.credentialId,
+      hubUrl: stored.hubUrl,
+      issuedAt: new Date().toISOString(),
+      expiresAt:
+        typeof envelope.credential?.expiresAt === 'string'
+          ? envelope.credential.expiresAt
+          : stored.expiresAt,
+      actorId: stored.actorId,
+      capabilities: stored.capabilities,
+    };
+  } catch {
+    // Renewal is opportunistic; the still-valid old token keeps working.
+    return null;
+  }
+}
+
+function gatewayActorToken(): Promise<string> {
+  return resolveGatewayActorToken().then((resolved) => resolved.token);
+}
+
+/**
+ * Non-renewing snapshot for sync call sites (workflow commands): flag/env only,
+ * plus a stored file token WITHOUT triggering transparent renewal. Workflow
+ * commands never touch the actor lane, so this exists purely to keep their
+ * "actor token is forbidden here" guard working.
+ */
+function gatewayActorTokenSync(): string {
+  const flag = getArg('--actor-token');
+  if (flag) return flag;
+  const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
+  if (env) return env;
+  const stored = loadStoredActorCredential(actorTokenConfigDir());
+  if (!stored || Date.parse(stored.expiresAt) <= Date.now()) return '';
+  return stored.token;
 }
 
 function gatewayCorrelationId(): string | undefined {
@@ -1636,7 +1795,7 @@ async function gatewayHttpJson(input: {
   capabilities?: readonly string[];
   confirmationToken?: string;
 }): Promise<unknown> {
-  const actorToken = gatewayActorToken();
+  const actorToken = await gatewayActorToken();
   if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
     gatewayInvalid(
       input.commandName,
@@ -2201,7 +2360,7 @@ async function runGatewaySessionNativeWatch(
   );
 
   const token = gatewayRequiredToken('sessions.native.watch');
-  const actorToken = gatewayActorToken();
+  const actorToken = await gatewayActorToken();
   const usingActorToken = actorToken.length > 0 && token === actorToken;
   const correlationId = gatewayCorrelationId();
   const port = gatewayWsPort();
@@ -2272,9 +2431,7 @@ async function runGatewaySessionNativeWatch(
     '--session-id',
     nativeId,
     ...(cursor ? ['--cursor', cursor] : []),
-    ...(maxEvents !== undefined
-      ? ['--max-events', String(maxEvents)]
-      : []),
+    ...(maxEvents !== undefined ? ['--max-events', String(maxEvents)] : []),
     ...(idleTimeoutMs !== undefined
       ? ['--idle-timeout-ms', String(idleTimeoutMs)]
       : []),
@@ -2793,7 +2950,7 @@ function gatewayOptionalPositiveInt(
 function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
   // The scoped actor lane (events.subscribe, etc.) prefers RELAY_IDE_ACTOR_TOKEN
   // / --actor-token; other WS paths (PTY streams) stay on the browser token.
-  const actorToken = gatewayActorToken();
+  const actorToken = gatewayActorTokenSync();
   const actorCapable = CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(commandName);
   if (actorToken && actorCapable) {
     return actorToken;
@@ -3575,14 +3732,11 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'native') {
     const nativeSub = gatewayArgs[2];
     const nativeArgs = gatewayArgs.slice(3);
-    if (nativeSub === 'list')
-      return runGatewaySessionNativeList(nativeArgs);
-    if (nativeSub === 'get')
-      return runGatewaySessionNativeGet(nativeArgs);
+    if (nativeSub === 'list') return runGatewaySessionNativeList(nativeArgs);
+    if (nativeSub === 'get') return runGatewaySessionNativeGet(nativeArgs);
     if (nativeSub === 'import')
       return runGatewaySessionNativeImport(nativeArgs);
-    if (nativeSub === 'watch')
-      return runGatewaySessionNativeWatch(nativeArgs);
+    if (nativeSub === 'watch') return runGatewaySessionNativeWatch(nativeArgs);
     gatewayInvalid('sessions.native.list', 'unknown native sessions command', {
       args: gatewayArgs,
     });
@@ -4847,7 +5001,7 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
   );
 
   const token = gatewayRequiredToken('events.subscribe');
-  const actorToken = gatewayActorToken();
+  const actorToken = await gatewayActorToken();
   const usingActorToken = actorToken.length > 0 && token === actorToken;
   const correlationId = gatewayCorrelationId();
   const port = gatewayWsPort();
@@ -5776,9 +5930,7 @@ function validateChannelPostCliInput(input: Record<string, unknown>): void {
  * searches exactly the channels the credential is scoped to — the hub refuses
  * a scope-less actor credential outright rather than widening to every channel.
  */
-async function runGatewayChannelsSearch(
-  channelArgs: string[]
-): Promise<void> {
+async function runGatewayChannelsSearch(channelArgs: string[]): Promise<void> {
   const values = parseChannelCliFlags('channels.search', channelArgs, [
     '--query',
     '--channel-id',
@@ -6089,7 +6241,7 @@ async function runGatewayChannelsSubscribe(input: {
 }): Promise<void> {
   const commandName = 'channels.subscribe' as const;
   const token = gatewayRequiredToken(commandName);
-  const actorToken = gatewayActorToken();
+  const actorToken = await gatewayActorToken();
   const query = new URLSearchParams();
   if (input.afterSeq !== undefined)
     query.set('afterSeq', String(input.afterSeq));
@@ -8252,6 +8404,295 @@ async function runOperatorClientCommand(operatorArgs: string[]): Promise<void> {
   console.log(JSON.stringify(parsed, null, 2));
 }
 
+// ── relay-ide login / logout / login status (#1435) ──────────────────────────
+
+const CLI_LOGIN_POLL_INTERVAL_MS = 1000;
+const CLI_LOGIN_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function cliLoginHubUrl(loginArgs: string[]): string {
+  const hub = getNodeArg(loginArgs, '--hub');
+  if (hub) return hub.replace(/\/+$/, '');
+  const port =
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  return `http://127.0.0.1:${port}`;
+}
+
+async function runCliLoginLifecycle(
+  command: 'login' | 'logout',
+  loginArgs: string[]
+): Promise<void> {
+  if (command === 'logout') {
+    await runCliLogout();
+    return;
+  }
+  const subcommand = loginArgs[0];
+  if (subcommand === 'status') {
+    runCliLoginStatus();
+    return;
+  }
+  if (subcommand && !subcommand.startsWith('-')) {
+    logger.error(
+      'Usage: relay-ide login [--hub <url>] [--json] | relay-ide login status | relay-ide logout'
+    );
+    process.exit(1);
+  }
+  await runCliLogin(loginArgs);
+}
+
+async function runCliLogin(loginArgs: string[]): Promise<void> {
+  const outputJson = loginArgs.includes('--json');
+  const noBrowser = loginArgs.includes('--no-browser');
+  const hubUrl = cliLoginHubUrl(loginArgs);
+  try {
+    new URL(hubUrl);
+  } catch {
+    logger.error(`invalid --hub url: ${hubUrl}`);
+    process.exit(1);
+  }
+
+  // 1. Start the flow.
+  let start: {
+    flowId?: unknown;
+    code?: unknown;
+    expiresAt?: unknown;
+    verificationUrl?: unknown;
+  };
+  try {
+    const response = await fetch(
+      nodeEndpoint(hubUrl, '/cli-gateway/login/start'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actorId: `relay-cli@${hostnameShort()}`,
+          displayName: hostnameShort(),
+          correlationId: `cli-login-${Date.now()}`,
+        }),
+      }
+    );
+    const parsed: unknown = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      logger.error(
+        `LOGIN_START_FAILED: ${loginErrorMessage(response.status, parsed)}`
+      );
+      process.exit(1);
+    }
+    start = (parsed ?? {}) as typeof start;
+  } catch (error) {
+    logger.error(
+      `LOGIN_START_FAILED: could not reach hub at ${hubUrl}: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(1);
+  }
+  const { flowId, code, verificationUrl } = start as {
+    flowId?: string;
+    code?: string;
+    verificationUrl?: string;
+  };
+  if (typeof flowId !== 'string' || typeof code !== 'string') {
+    logger.error(
+      'LOGIN_START_FAILED: hub response did not include a flow id and code'
+    );
+    process.exit(1);
+  }
+
+  // 2. Show the human leg.
+  const approveUrl =
+    verificationUrl ?? `${hubUrl}/cli-gateway/login/${flowId}/approve`;
+  if (!outputJson) {
+    logger.info(`Open this URL to authorize this machine:`);
+    console.log(approveUrl);
+    console.log(`Verification code: ${code}`);
+    logger.info('Waiting for approval…');
+  }
+  if (!noBrowser) {
+    void openLoginBrowser(approveUrl).catch(() => undefined);
+  }
+
+  // 3. Poll until approved / denied / expired.
+  const deadline = Date.now() + CLI_LOGIN_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(CLI_LOGIN_POLL_INTERVAL_MS);
+    let poll: {
+      status?: string;
+      token?: unknown;
+      credential?: {
+        id?: unknown;
+        expiresAt?: unknown;
+        actor?: { id?: unknown };
+      };
+    };
+    try {
+      const response = await fetch(
+        nodeEndpoint(hubUrl, `/cli-gateway/login/${encodeURIComponent(flowId)}`)
+      );
+      poll = (await response.json().catch(() => ({}))) as typeof poll;
+    } catch {
+      continue; // transient network hiccup; keep polling until the deadline
+    }
+    if (poll.status === 'approved' && typeof poll.token === 'string') {
+      const credentialExpiresAt =
+        typeof poll.credential?.expiresAt === 'string'
+          ? poll.credential.expiresAt
+          : new Date(Date.now() + DEFAULT_CLI_LOGIN_ACTOR_TTL_MS).toISOString();
+      const stored: StoredActorCredential = {
+        version: 1,
+        token: poll.token,
+        credentialId:
+          typeof poll.credential?.id === 'string' ? poll.credential.id : '',
+        hubUrl,
+        issuedAt: new Date().toISOString(),
+        expiresAt: credentialExpiresAt,
+        actorId:
+          typeof poll.credential?.actor?.id === 'string'
+            ? poll.credential.actor.id
+            : 'relay-cli',
+        capabilities: ['session:read'],
+      };
+      saveStoredActorCredential(actorTokenConfigDir(), stored);
+      if (outputJson) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              credentialId: stored.credentialId,
+              actorId: stored.actorId,
+              expiresAt: stored.expiresAt,
+            },
+            null,
+            2
+          )
+        );
+      } else {
+        logger.info(`✓ Authorized as ${stored.actorId}`);
+        logger.info(
+          `✓ Actor credential stored (${actorTokenFilePathLabel()}), expires ${stored.expiresAt}`
+        );
+      }
+      return;
+    }
+    if (poll.status === 'denied') {
+      if (outputJson)
+        console.log(JSON.stringify({ ok: false, status: 'denied' }, null, 2));
+      else logger.error('Login denied in the browser.');
+      process.exit(1);
+    }
+    if (poll.status === 'expired') {
+      if (outputJson)
+        console.log(JSON.stringify({ ok: false, status: 'expired' }, null, 2));
+      else logger.error('Login request expired. Run `relay-ide login` again.');
+      process.exit(1);
+    }
+  }
+  logger.error('Timed out waiting for approval. Run `relay-ide login` again.');
+  process.exit(1);
+}
+
+function runCliLoginStatus(): void {
+  const stored = loadStoredActorCredential(actorTokenConfigDir());
+  if (!stored) {
+    logger.info(
+      'Not logged in. Run `relay-ide login` to authorize this machine.'
+    );
+    process.exit(1);
+  }
+  const expired = Date.parse(stored.expiresAt) <= Date.now();
+  console.log(
+    JSON.stringify(
+      {
+        loggedIn: !expired,
+        expired,
+        actorId: stored.actorId,
+        credentialId: stored.credentialId,
+        capabilities: stored.capabilities,
+        issuedAt: stored.issuedAt,
+        expiresAt: stored.expiresAt,
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function runCliLogout(): Promise<void> {
+  const stored = loadStoredActorCredential(actorTokenConfigDir());
+  let revokedServerSide = false;
+  if (stored?.credentialId && !expired(stored)) {
+    try {
+      const response = await fetch(
+        nodeEndpoint(
+          cliLoginHubUrl([]),
+          `/cli-gateway/actor-credentials/${encodeURIComponent(stored.credentialId)}/revoke`
+        ),
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${stored.token}`,
+            'content-type': 'application/json',
+            'x-relay-cli-gateway': 'v1',
+            'x-relay-cli-actor-token': 'v1',
+            'x-relay-cli-command': CLI_GATEWAY_ACTOR_RENEW_COMMAND,
+          },
+          body: JSON.stringify({}),
+        }
+      );
+      revokedServerSide = response.ok || response.status === 404;
+    } catch {
+      // Best-effort: local removal still happens below.
+    }
+  }
+  const removed = deleteStoredActorCredential(actorTokenConfigDir());
+  if (!removed && !stored) {
+    logger.info('No stored login found; nothing to do.');
+    return;
+  }
+  logger.info(
+    revokedServerSide
+      ? '✓ Logged out: local credential removed and revoked on the hub.'
+      : '✓ Logged out: local credential removed. Revoke it hub-side if it was not expired.'
+  );
+}
+
+function expired(credential: StoredActorCredential): boolean {
+  return Date.parse(credential.expiresAt) <= Date.now();
+}
+
+function hostnameShort(): string {
+  try {
+    return os.hostname().split('.')[0] || 'unknown-host';
+  } catch {
+    return 'unknown-host';
+  }
+}
+
+function actorTokenFilePathLabel(): string {
+  return path.join('~/.config/relay-ide', 'actor-token.json');
+}
+
+async function openLoginBrowser(url: string): Promise<void> {
+  const platform = process.platform;
+  const command =
+    platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  try {
+    await promisify(execFile)(command, args, { timeout: 5000 });
+  } catch {
+    // Headless or no default browser: the printed URL is the fallback leg.
+  }
+}
+
+function loginErrorMessage(status: number, parsed: unknown): string {
+  const message =
+    typeof parsed === 'object' && parsed !== null
+      ? ((parsed as { error?: { message?: string } }).error?.message ?? null)
+      : null;
+  return message ?? `hub returned ${status}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
   const hubUrl = getNodeArg(nodeArgs, '--hub');
   const operatorGrant =
@@ -9291,6 +9732,11 @@ if (command === 'hub') {
 
 if (command === 'operator-client') {
   await runOperatorClientCommand(args.slice(1));
+  process.exit(0);
+}
+
+if (command === 'login' || command === 'logout') {
+  await runCliLoginLifecycle(command, args.slice(1));
   process.exit(0);
 }
 

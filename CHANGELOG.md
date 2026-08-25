@@ -18,6 +18,38 @@ workflow.
 
 ## [Unreleased]
 
+### CLI login and actor credential lifecycle
+
+#### Added
+
+- `relay-ide login`: one browser/PIN approval authorizes a machine for the
+  scoped CLI actor lane. The CLI starts a short-lived one-time flow, prints a
+  verification URL and human code (`XXXX-XXXX`), and polls; the hub serves an
+  approval page (device name, requested capabilities, expiry) that requires
+  PIN re-entry as the consent act. The minted scoped actor credential is
+  delivered exactly once to the CLI and stored at
+  `~/.config/relay-ide/actor-token.json` with `chmod 600` (#1435).
+- `relay-ide login status` reports presence, actor id, capabilities, and
+  expiry without printing token material; `relay-ide logout` removes the
+  stored file and best-effort revokes the credential on the hub (#1435).
+- `POST /cli-gateway/actor-credentials/renew`: the current valid actor token
+  mints its own successor with the same actor/capabilities/scope
+  (rotate-before-expiry). The predecessor is not revoked — it expires within
+  its own TTL window — so a lost renew response cannot lock the CLI out, and
+  explicit revocation still cuts access immediately (#1435).
+- `v1` actor-lane commands now fall back to the stored `relay-ide login`
+  credential when `RELAY_IDE_ACTOR_TOKEN`/`--actor-token` is unset
+  (precedence: flag > env > file). Within 120 seconds of expiry the CLI
+  transparently renews and atomically rewrites the file; revoked or expired
+  credentials fail closed with guidance to run `relay-ide login` (#1435).
+
+#### Changed
+
+- Scoped actor credentials minted by the hub now default to a 30-day TTL,
+  configurable via `cliGatewayActorCredentialMaxTtlMs` in `config.json`
+  (previously fixed at 15 minutes); explicit per-issue TTLs above the ceiling
+  are still rejected (#1435).
+
 ### Native session surface
 
 #### Added
