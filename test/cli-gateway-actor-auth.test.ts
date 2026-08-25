@@ -1,6 +1,7 @@
-import { expect, test } from 'vitest';
+import { describe, expect, it, test } from 'vitest';
 import type { Request } from 'express';
 import {
+  isSupportedCliGatewayActorReadRequest,
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_ACTOR_READ_COMMANDS,
   CLI_GATEWAY_ACTOR_WRITE_COMMANDS,
@@ -1757,4 +1758,38 @@ test('denies revoked grant handles before minting actor credentials', () => {
     )
   ).toThrow(CliGatewayActorGrantError);
   expect(scopedRegistry.listCredentials()).toHaveLength(0);
+});
+
+describe('read-POST command allowlist (#1426 follow-up)', () => {
+  it('accepts sessions.native.import and sessions.native.watch as actor-lane POST reads', () => {
+    const makeReq = (commandName: string) =>
+      ({
+        method: 'POST',
+        header: (name: string) =>
+          name === 'x-relay-cli-command' ? commandName : undefined,
+      }) as unknown as Parameters<
+        typeof isSupportedCliGatewayActorReadRequest
+      >[0];
+
+    // Both native-session verbs are POST-shaped but strictly read-only.
+    expect(
+      isSupportedCliGatewayActorReadRequest(
+        makeReq('sessions.native.import'),
+        'sessions.native.import'
+      )
+    ).toBe(true);
+    expect(
+      isSupportedCliGatewayActorReadRequest(
+        makeReq('sessions.native.watch'),
+        'sessions.native.watch'
+      )
+    ).toBe(true);
+    // A genuinely write-shaped command stays rejected on the read lane.
+    expect(
+      isSupportedCliGatewayActorReadRequest(
+        makeReq('channels.post'),
+        'sessions.native.import'
+      )
+    ).toBe(false);
+  });
 });
