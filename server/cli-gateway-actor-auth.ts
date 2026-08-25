@@ -138,6 +138,10 @@ const cliGatewayActorReadPostCommandSet = new Set<string>([
   'work-context-messages.templates.render',
   // #1428: starting a live tail is a POST but strictly read-only observation.
   'sessions.native.watch',
+  // #1427/#1426: importing a native session transcript is a POST but strictly
+  // read-only against the provider store (the import materializes into Relay's
+  // own session store, never mutating provider files).
+  'sessions.native.import',
 ]);
 
 export interface CliGatewayActorIssueInput {

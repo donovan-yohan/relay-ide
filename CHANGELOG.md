@@ -59,6 +59,13 @@ workflow.
   page; the page styling matches the hub's black terminal aesthetic (#1435,
   follow-up to #1437).
 
+#### Fixed
+
+- `relay-ide v1 sessions native import` works with scoped actor credentials:
+  the import route is a POST but strictly read-only against provider stores,
+  and it now sits on the actor read lane beside `watch` instead of failing
+  with CLI_ACTOR_ROUTE_UNSUPPORTED (#1426, follow-up to #1429).
+
 ### Native session surface
 
 #### Added
