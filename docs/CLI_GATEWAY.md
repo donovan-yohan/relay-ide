@@ -521,7 +521,44 @@ Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --j
 
 ### Mint, use, revoke, and rotate
 
-The current MVP exposes credential lifecycle through hub operator endpoints, not through stable `relay-ide v1` adapter commands. Browser-authenticated operators may mint/list/revoke with the existing hub operator auth path after PIN/browser-session login. #815 also allows an approved one-time operator handshake grant for the same lifecycle without browser-cookie fallback. Grant-backed lifecycle calls must carry a handshake `grantHandle`, exact audience `relay:cli-gateway:v1`, actor type/id, explicit `session:read` capability bits, at least one concrete scope dimension, TTL or expiry, and a correlation id.
+#### The default path: `relay-ide login` (#1435)
+
+A fresh machine reaches working scoped-actor commands with one browser/PIN approval and zero hand-copied tokens:
+
+```bash
+relay-ide login          # opens the hub approval page; approve with your Relay PIN
+relay-ide v1 sessions native list --json   # just works — no env var needed
+```
+
+The CLI starts a short-lived one-time login flow (`POST /cli-gateway/login/start`), prints the verification URL and a human code (`XXXX-XXXX`, also shown on the approval page so you can confirm you are approving the right request), and polls until you approve. The hub serves an approval page showing the requesting device, requested capabilities, expiry, and the verification code; approving requires re-entering your Relay PIN (the consent act). On approval the CLI receives the minted scoped actor credential exactly once and stores it at `~/.config/relay-ide/actor-token.json` with `chmod 600`.
+
+Credential lifecycle from the machine:
+
+```bash
+relay-ide login status   # presence, actor id, capabilities, expiry — never prints the token
+relay-ide logout         # deletes the stored file and best-effort revokes the credential hub-side
+```
+
+Token resolution for `v1` actor-lane commands is explicit opt-in with clear precedence: `--actor-token` flag > `RELAY_IDE_ACTOR_TOKEN` env > the stored `relay-ide login` credential file (the file only exists because you ran `login`). When the stored credential is within 120 seconds of expiry, the CLI transparently renews it against `POST /cli-gateway/actor-credentials/renew` and atomically rewrites the file; if renewal fails (revoked, network down), the old token keeps working until it truly expires, then the command fails closed with "run relay-ide login". Revoked credentials fail closed immediately even if the file still exists.
+
+Login-minted credentials default to a 30-day TTL, capped by the hub's registry ceiling configured via `cliGateway.actorCredentialMaxTtlMs` in `config.json` (default 30 days). Renewal copies the SAME actor/capabilities/scope and does not revoke the predecessor — it expires naturally within its own TTL window, mirroring operator-client renew semantics, so a lost renew response can never lock the CLI out.
+
+Device-key binding of credentials is not implemented in this slice (tracked as a follow-up); the chmod-600 file plus immediate revocation is the current theft mitigation.
+
+#### Automation paths: raw curl and grant-backed lanes
+
+The hub operator endpoints below remain the automation surface. Browser-authenticated operators may mint/list/revoke with the existing hub operator auth path after PIN/browser-session login. #815 also allows an approved one-time operator handshake grant for the same lifecycle without browser-cookie fallback. Grant-backed lifecycle calls must carry a handshake `grantHandle`, exact audience `relay:cli-gateway:v1`, actor type/id, explicit `session:read` capability bits, at least one concrete scope dimension, TTL or expiry, and a correlation id.
+
+Renew an existing credential without a browser round-trip (the current valid token authorizes its own successor):
+
+```bash
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials/renew \
+  -H 'Authorization: Bearer relay-sac-v1.<credential-id>.<secret>' \
+  -H 'x-relay-cli-gateway: v1' \
+  -H 'x-relay-cli-actor-token: v1' \
+  -H 'x-relay-cli-command: actor-credentials.renew' \
+  -d '{}'
+```
 
 Mint a short-lived CLI actor token with browser operator auth:
 

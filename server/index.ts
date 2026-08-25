@@ -382,6 +382,8 @@ import {
   attachAuthenticatedCliGatewayActorCredential,
   authenticatedCliGatewayActorCredential,
   bearerActorToken,
+  CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES,
+  CLI_GATEWAY_ACTOR_RENEW_COMMAND,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
@@ -389,12 +391,14 @@ import {
   cliGatewayActorCommandCapabilities,
   createCliGatewayActorRegistry,
   createCliGatewayHandshakeGrantRegistry,
+  DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
   isCliGatewayActorTokenRequest,
   issueChannelRuntimeReadCliGatewayActorCredential,
   issueCliGatewayActorCredential,
   issueCliGatewayActorCredentialWithGrant,
   issuePersistentOrchestratorCliGatewayActorCredential,
   listCliGatewayActorCredentialsWithGrant,
+  renewCliGatewayActorCredential,
   revokeCliGatewayActorCredentialWithGrant,
   rotateCliGatewayActorCredentialWithGrant,
   sendCliGatewayActorFailure,
@@ -403,6 +407,10 @@ import {
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
+import {
+  CliGatewayLoginFlowRegistry,
+  createCliGatewayLoginRouter,
+} from './cli-gateway-login-flow.js';
 import {
   authenticateOperatorClientCredential,
   authenticateOperatorClientCredentialForRenew,
@@ -427,9 +435,26 @@ const logger = createLogger('index');
 const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
 
 const localRelayNode = createLocalRelayNode();
-const cliGatewayActorRegistry = createCliGatewayActorRegistry();
+// #1435: the actor credential ceiling is config-driven (default 30 days) so
+// `relay-ide login` can mint long-lived device credentials. The registry is
+// created lazily inside main() once the startup config is loaded; these `let`
+// bindings exist so module-scope imports/refs below stay valid before that.
+let cliGatewayActorRegistry = createCliGatewayActorRegistry({
+  maxTtlMs: DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
+});
 const cliGatewayHandshakeGrantRegistry =
   createCliGatewayHandshakeGrantRegistry();
+/** Rebuild the actor registry with the configured TTL ceiling (#1435). */
+function applyCliGatewayActorMaxTtl(config: Config): void {
+  const configured = config.cliGatewayActorCredentialMaxTtlMs;
+  const maxTtlMs =
+    typeof configured === 'number' &&
+    Number.isFinite(configured) &&
+    configured > 0
+      ? configured
+      : DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+  cliGatewayActorRegistry = createCliGatewayActorRegistry({ maxTtlMs });
+}
 const operatorClientCredentialRegistry =
   createOperatorClientCredentialRegistry();
 
@@ -1496,6 +1521,10 @@ async function main(): Promise<void> {
   if (process.env.RELAY_IDE_HOST)
     startupConfig.host = process.env.RELAY_IDE_HOST;
 
+  // #1435: size the scoped actor registry from config before any route can
+  // mint credentials (default 30 days for `relay-ide login` device tokens).
+  applyCliGatewayActorMaxTtl(startupConfig);
+
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
   const configDir = getConfigDir(CONFIG_PATH);
@@ -2421,6 +2450,46 @@ async function main(): Promise<void> {
     });
   };
 
+  // ── `relay-ide login` device-flow approval (#1435) ───────────────────────
+  // The CLI starts a short-lived one-time flow and polls it; a human approves
+  // the served approval page with a PIN re-entry (the consent act). The token
+  // is minted at poll time and delivered exactly once over the CLI's own
+  // loopback response; the approval page only ever sees the public record.
+  const cliGatewayLoginFlows = new CliGatewayLoginFlowRegistry({
+    issueCredential: ({ flow, approvedBy }) => {
+      const issued = issueCliGatewayActorCredential(cliGatewayActorRegistry, {
+        actor: {
+          type: 'cli',
+          id: flow.actorId,
+          ...(flow.displayName ? { displayName: flow.displayName } : {}),
+        },
+        issuer: { id: approvedBy, displayName: 'relay-ide login' },
+        capabilities: flow.requestedCapabilities,
+        scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+        metadata: { reason: 'cli-login' },
+      });
+      return issued;
+    },
+  });
+  app.use(
+    '/cli-gateway/login',
+    createCliGatewayLoginRouter({
+      flows: cliGatewayLoginFlows,
+      verifyPin: async (pin) => {
+        const authConfig = getConfig();
+        return auth.verifyPin(pin, authConfig.pinHash);
+      },
+      isRateLimited: (ip) => auth.isRateLimited(ip),
+      recordFailedAttempt: (ip) => auth.recordFailedAttempt(ip),
+      clearRateLimit: (ip) => auth.clearRateLimit(ip),
+      allowedCapabilities: [...CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES],
+      baseUrl: () => {
+        const config = getConfig();
+        return `http://127.0.0.1:${config.port}`;
+      },
+    })
+  );
+
   app.post('/cli-gateway/actor-credentials', actorLifecycleAuth, (req, res) => {
     try {
       const body = isRecord(req.body)
@@ -2437,6 +2506,83 @@ async function main(): Promise<void> {
       res.status(201).json({
         token: issued.token,
         credential: issued.credential,
+      });
+    } catch (error) {
+      actorLifecycleError(res, error);
+    }
+  });
+
+  // #1435 renewal: defined before the parameterized /:id/revoke route. The
+  // still-valid actor credential itself mints its successor with the SAME
+  // actor/capabilities/scope; the old credential is NOT revoked (it expires
+  // naturally, mirroring operator-client renew), so a lost response can never
+  // lock the CLI out and explicit revocation still cuts access immediately.
+  app.post('/cli-gateway/actor-credentials/renew', (req, res) => {
+    if (!isCliGatewayActorTokenRequest(req)) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({ lane: 'missing' })
+      );
+      return;
+    }
+    const lane = classifyCliGatewayCredentialLane(
+      req,
+      CLI_GATEWAY_ACTOR_RENEW_COMMAND
+    );
+    if (lane !== 'scoped-actor-credential') {
+      sendCliGatewayActorFailure(res, cliGatewayActorFailure({ lane }));
+      return;
+    }
+    const correlationId = cliGatewayCorrelationId(req);
+    const validation = validateCliGatewayActorCredential(
+      cliGatewayActorRegistry,
+      {
+        token: bearerActorToken(req),
+        // Pure validity check: signature, expiry, revocation, audience. No
+        // capability bit is demanded so ANY currently-valid scoped actor
+        // credential can renew itself; its own capability set is copied
+        // verbatim onto the successor.
+        capabilities: [],
+        ...(correlationId ? { correlationId } : {}),
+      }
+    );
+    if ('reason' in validation) {
+      sendCliGatewayActorFailure(
+        res,
+        cliGatewayActorFailure({
+          reason: validation.reason,
+          ...(validation.credentialId
+            ? { credentialId: validation.credentialId }
+            : {}),
+          deniedBits: validation.deniedBits,
+          ...(correlationId ? { correlationId } : {}),
+        })
+      );
+      return;
+    }
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      for (const key of Object.keys(body)) {
+        if (key !== 'ttlMs' && key !== 'correlationId') {
+          res.status(400).json({
+            error: {
+              code: 'CLI_ACTOR_CREDENTIAL_RENEW_FIELD_UNSUPPORTED',
+              message: `unexpected renewal field '${key}'`,
+              retryable: false,
+            },
+          });
+          return;
+        }
+      }
+      const issued = renewCliGatewayActorCredential(
+        cliGatewayActorRegistry,
+        validation.credential,
+        body
+      );
+      res.status(201).json({
+        token: issued.token,
+        credential: issued.credential,
+        superseded: validation.credential.id,
       });
     } catch (error) {
       actorLifecycleError(res, error);

@@ -229,8 +229,80 @@ type RequestWithAuthenticatedCliGatewayActor = Request & {
   [AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL]?: ScopedActorCredentialRecord;
 };
 
-export function createCliGatewayActorRegistry(): ScopedActorCredentialRegistry {
-  return new ScopedActorCredentialRegistry();
+export function createCliGatewayActorRegistry(
+  options: { maxTtlMs?: number } = {}
+): ScopedActorCredentialRegistry {
+  return new ScopedActorCredentialRegistry(
+    options.maxTtlMs ? { maxTtlMs: options.maxTtlMs } : {}
+  );
+}
+
+/** Default TTL for a `relay-ide login` minted CLI actor credential (#1435). */
+export const DEFAULT_CLI_LOGIN_ACTOR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Lifecycle pseudo-command for #1435 credential self-renewal. It lives outside
+ * the read/write command allowlists on purpose: it gates exactly one route
+ * (`POST /cli-gateway/actor-credentials/renew`) and grants nothing else.
+ */
+export const CLI_GATEWAY_ACTOR_RENEW_COMMAND =
+  'actor-credentials.renew' as const;
+
+/**
+ * #1435 renewal: the still-valid credential itself mints its successor with
+ * the SAME actor/capabilities/scope (rotate-before-expiry, mirroring
+ * `renewOperatorClientCredential`). The old credential is deliberately NOT
+ * revoked — it expires within its own TTL window, so a lost renew response can
+ * never lock the CLI out, and explicit revocation still cuts access
+ * immediately. The successor TTL may not exceed the hub's registry ceiling.
+ */
+export function renewCliGatewayActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  previous: ScopedActorCredentialRecord,
+  input: { ttlMs?: unknown } = {}
+): { token: string; credential: ScopedActorCredentialRecord } {
+  const ttlMs =
+    typeof input.ttlMs === 'number' &&
+    Number.isFinite(input.ttlMs) &&
+    input.ttlMs > 0
+      ? input.ttlMs
+      : DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+  return registry.issue({
+    actor: { ...previous.actor },
+    issuer: {
+      id: previous.id,
+      ...(previous.issuer.displayName
+        ? { displayName: previous.issuer.displayName }
+        : {}),
+    },
+    audience: previous.audience,
+    capabilities: [...previous.capabilities],
+    scope: deepCopyScope(previous.scope),
+    metadata: {
+      ...previous.metadata,
+      reason: 'cli-login-renewal',
+    },
+    ttlMs,
+  });
+}
+
+function deepCopyScope(
+  scope: ScopedActorCredentialScope
+): ScopedActorCredentialScope {
+  return {
+    ...(scope.nodeIds ? { nodeIds: [...scope.nodeIds] } : {}),
+    ...(scope.sessionIds ? { sessionIds: [...scope.sessionIds] } : {}),
+    ...(scope.globalSessionIds
+      ? { globalSessionIds: [...scope.globalSessionIds] }
+      : {}),
+    ...(scope.workContextIds
+      ? { workContextIds: [...scope.workContextIds] }
+      : {}),
+    ...(scope.channelIds ? { channelIds: [...scope.channelIds] } : {}),
+    ...(scope.repoIds ? { repoIds: [...scope.repoIds] } : {}),
+    ...(scope.pathPrefixes ? { pathPrefixes: [...scope.pathPrefixes] } : {}),
+    ...(scope.taskRefs ? { taskRefs: [...scope.taskRefs] } : {}),
+  };
 }
 
 export function createCliGatewayHandshakeGrantRegistry(): HandshakeGrantRegistry {
@@ -273,7 +345,9 @@ export function isCliGatewayActorTokenRequest(req: Request): boolean {
 
 export function classifyCliGatewayCredentialLane(
   req: Request,
-  expectedCommand?: CliGatewayActorCommand
+  expectedCommand?:
+    | CliGatewayActorCommand
+    | typeof CLI_GATEWAY_ACTOR_RENEW_COMMAND
 ):
   | 'missing'
   | 'scoped-actor-credential'
@@ -287,6 +361,14 @@ export function classifyCliGatewayCredentialLane(
     return 'missing';
   }
   if (token.startsWith('relay-sac-v1.')) {
+    // The renewal pseudo-command is its own lane marker: it only ever gates
+    // POST /cli-gateway/actor-credentials/renew and grants nothing else.
+    if (expectedCommand === CLI_GATEWAY_ACTOR_RENEW_COMMAND) {
+      return req.method === 'POST' &&
+        req.header(CLI_GATEWAY_COMMAND_HEADER) === expectedCommand
+        ? 'scoped-actor-credential'
+        : 'unsupported-route';
+    }
     return isSupportedCliGatewayActorRequest(req, expectedCommand)
       ? 'scoped-actor-credential'
       : 'unsupported-route';
