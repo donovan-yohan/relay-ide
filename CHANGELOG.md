@@ -50,6 +50,15 @@ workflow.
   (previously fixed at 15 minutes); explicit per-issue TTLs above the ceiling
   are still rejected (#1435).
 
+#### Fixed
+
+- The `relay-ide login` approval page parses browser form submissions again
+  (the global JSON body parser cannot read urlencoded forms, so every PIN
+  submit was silently empty) and the 'PIN required' / 'Invalid PIN' error
+  paths now re-render the approval form with retry instead of a dead-end
+  page; the page styling matches the hub's black terminal aesthetic (#1435,
+  follow-up to #1437).
+
 ### Native session surface
 
 #### Added
