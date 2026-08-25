@@ -1,5 +1,10 @@
 export { ClaudeJsonlStateAdapter } from './claude-jsonl-state-adapter.js';
 export { CodexJsonlStateAdapter } from './codex-jsonl-state-adapter.js';
+export {
+  DshStateAdapter,
+  dshProjectSlug,
+  scanZstdFrames,
+} from './dsh-state-adapter.js';
 export { PiStateAdapter } from './pi-state-adapter.js';
 export { PrimeAgentStateAdapter } from './prime-agent-state-adapter.js';
 export {
@@ -9,8 +14,14 @@ export {
 } from './registry.js';
 export { JsonlFileTailer, type JsonlTailPoll } from './jsonl-tailer.js';
 export {
+  ZstdFrameLogTailer,
+  scanFramesFrom,
+  type ZstdFrameTailPoll,
+} from './zstd-frame-tailer.js';
+export {
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
+  normalizeDshLiveEvent,
   normalizePiLiveEvent,
   normalizePrimeAgentLiveEvent,
   redactLiveText,

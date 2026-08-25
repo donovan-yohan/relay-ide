@@ -9,10 +9,12 @@ import { createLogger } from '../logger.js';
 import {
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
+  normalizeDshLiveEvent,
   normalizePiLiveEvent,
   normalizePrimeAgentLiveEvent,
 } from './live-event-normalizers.js';
 import { JsonlFileTailer } from './jsonl-tailer.js';
+import { ZstdFrameLogTailer } from './zstd-frame-tailer.js';
 
 const logger = createLogger('provider-state:live-tail');
 
@@ -74,7 +76,7 @@ export class LiveTailCursorStore {
 }
 
 interface WatchRequest {
-  provider: 'claude' | 'codex' | 'pi' | 'prime-agent';
+  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh';
   nativeId: string;
   sourcePath: string;
 }
@@ -94,6 +96,7 @@ const LIVE_NORMALIZERS: Record<
   codex: normalizeCodexLiveEvent,
   pi: normalizePiLiveEvent,
   'prime-agent': normalizePrimeAgentLiveEvent,
+  dsh: normalizeDshLiveEvent,
 };
 
 export interface NativeSessionLiveTailManagerOptions {
@@ -117,9 +120,13 @@ export class NativeSessionLiveTailManager {
   private readonly eventBus: CliGatewayEventBus;
   private readonly cursorStore: LiveTailCursorStore;
   private readonly pollIntervalMs: number;
-  private readonly tails = new Map<
+  private readonly jsonlTails = new Map<
     string,
     JsonlFileTailer<NativeSessionLiveEvent[]>
+  >();
+  private readonly zstdTails = new Map<
+    string,
+    ZstdFrameLogTailer<NativeSessionLiveEvent[]>
   >();
   private timer: NodeJS.Timeout | undefined;
 
@@ -131,10 +138,44 @@ export class NativeSessionLiveTailManager {
 
   watch(request: WatchRequest): void {
     const key = `${request.provider}:${request.nativeId}`;
-    if (this.tails.has(key)) return;
+    if (this.jsonlTails.has(key) || this.zstdTails.has(key)) return;
 
     const cursorKey = `${key}:${path.basename(request.sourcePath)}`;
     const normalize = LIVE_NORMALIZERS[request.provider];
+
+    // DSH logs are concatenated zstd FRAMES, not plaintext lines (#1426): the
+    // framed tailer tracks the same durable byte-cursor store but re-decodes
+    // only newly appended complete frames; a torn trailing frame waits until
+    // a later frame closes it.
+    if (request.provider === 'dsh') {
+      const tailer = new ZstdFrameLogTailer<NativeSessionLiveEvent[]>({
+        filePath: request.sourcePath,
+        decodeChunk: (plaintext) => {
+          const batch: NativeSessionLiveEvent[] = [];
+          for (const line of plaintext.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              batch.push(
+                ...normalize(JSON.parse(trimmed) as Record<string, unknown>, {
+                  sourcePath: request.sourcePath,
+                  fallbackNativeId: request.nativeId,
+                })
+              );
+            } catch {
+              return null; // unparseable line -> whole-frame gap
+            }
+          }
+          return batch;
+        },
+        loadCursor: () => this.cursorStore.load(cursorKey),
+        saveCursor: (offset) => this.cursorStore.save(cursorKey, offset),
+      });
+      this.zstdTails.set(key, tailer);
+      this.ensureTimer();
+      return;
+    }
+
     const parseLine = (line: string): NativeSessionLiveEvent[] | null => {
       try {
         return normalize(JSON.parse(line) as Record<string, unknown>, {
@@ -155,8 +196,11 @@ export class NativeSessionLiveTailManager {
       loadCursor: () => this.cursorStore.load(cursorKey),
       saveCursor: (offset) => this.cursorStore.save(cursorKey, offset),
     });
-    this.tails.set(key, tailer);
+    this.jsonlTails.set(key, tailer);
+    this.ensureTimer();
+  }
 
+  private ensureTimer(): void {
     if (!this.timer) {
       this.timer = setInterval(() => this.pollAll(), this.pollIntervalMs);
       this.timer.unref?.();
@@ -165,15 +209,17 @@ export class NativeSessionLiveTailManager {
 
   stop(provider: string, nativeId: string): void {
     const key = `${provider}:${nativeId}`;
-    this.tails.delete(key);
-    if (this.tails.size === 0 && this.timer) {
+    this.jsonlTails.delete(key);
+    this.zstdTails.delete(key);
+    if (this.jsonlTails.size === 0 && this.zstdTails.size === 0 && this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
   }
 
   stopAll(): void {
-    this.tails.clear();
+    this.jsonlTails.clear();
+    this.zstdTails.clear();
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -181,7 +227,7 @@ export class NativeSessionLiveTailManager {
   }
 
   get watching(): string[] {
-    return [...this.tails.keys()];
+    return [...this.jsonlTails.keys(), ...this.zstdTails.keys()];
   }
 
   /**
@@ -189,7 +235,7 @@ export class NativeSessionLiveTailManager {
    * for deterministic callers; the interval drives production.
    */
   pollAll(): void {
-    for (const [key, tailer] of this.tails) {
+    for (const [key, tailer] of this.jsonlTails) {
       let result;
       try {
         result = tailer.poll();
@@ -203,12 +249,7 @@ export class NativeSessionLiveTailManager {
           // Unmapped native events arrive as `kind: 'gap'` — published as an
           // explicit gap frame AND logged, never silently dropped (fidelity
           // invariant in server/protocol-adapters/AGENTS.md).
-          if (event.kind === 'gap') {
-            logger.info(
-              `Unmapped native live event (${event.provider}) '${event.providerEvent}' on ${event.nativeId}; publishing gap.`
-            );
-          }
-          this.publish(event);
+          this.publishPolledEvent(event);
         }
       }
       if (result.gaps > 0) {
@@ -217,6 +258,36 @@ export class NativeSessionLiveTailManager {
         );
       }
     }
+
+    for (const [key, tailer] of this.zstdTails) {
+      let result;
+      try {
+        result = tailer.poll();
+      } catch (error) {
+        logger.warn(`Tail poll failed for ${key}:`, error);
+        continue;
+      }
+      for (const batch of result.events) {
+        if (!batch) continue;
+        for (const event of batch) {
+          this.publishPolledEvent(event);
+        }
+      }
+      if (result.gaps > 0) {
+        logger.warn(
+          `Tail ${key}: ${result.gaps} undecodable frame(s)/line(s) counted as gaps.`
+        );
+      }
+    }
+  }
+
+  private publishPolledEvent(event: NativeSessionLiveEvent): void {
+    if (event.kind === 'gap') {
+      logger.info(
+        `Unmapped native live event (${event.provider}) '${event.providerEvent}' on ${event.nativeId}; publishing gap.`
+      );
+    }
+    this.publish(event);
   }
 
   private publish(event: NativeSessionLiveEvent): void {
