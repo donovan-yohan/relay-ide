@@ -283,7 +283,7 @@ describe('login HTTP flow (mocked browser leg)', () => {
   // content type on the approve route — a JSON-only parser silently dropped
   // every real browser PIN submit (dead-end 'PIN required' page).
   it('approves via urlencoded form submission exactly as a browser sends it', async () => {
-    const { flows, minted } = flowRegistry({});
+    const { flows } = flowRegistry({});
     const server = await startServer(testRouter(flows));
     cleanupServers.push(server.close);
     const start = await (
