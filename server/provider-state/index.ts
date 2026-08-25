@@ -7,6 +7,7 @@ export {
 } from './dsh-state-adapter.js';
 export { PiStateAdapter } from './pi-state-adapter.js';
 export { PrimeAgentStateAdapter } from './prime-agent-state-adapter.js';
+export { AntigravityStateAdapter } from './antigravity-state-adapter.js';
 export {
   NativeSessionAdapterRegistry,
   createDefaultNativeSessionRegistry,
@@ -19,6 +20,7 @@ export {
   type ZstdFrameTailPoll,
 } from './zstd-frame-tailer.js';
 export {
+  normalizeAntigravityLiveEvent,
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
   normalizeDshLiveEvent,

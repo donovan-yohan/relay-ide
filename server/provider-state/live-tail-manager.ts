@@ -7,6 +7,7 @@ import type {
 } from '../cli-gateway-event-bus.js';
 import { createLogger } from '../logger.js';
 import {
+  normalizeAntigravityLiveEvent,
   normalizeClaudeLiveEvent,
   normalizeCodexLiveEvent,
   normalizeDshLiveEvent,
@@ -76,7 +77,7 @@ export class LiveTailCursorStore {
 }
 
 interface WatchRequest {
-  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh';
+  provider: 'claude' | 'codex' | 'pi' | 'prime-agent' | 'dsh' | 'antigravity';
   nativeId: string;
   sourcePath: string;
 }
@@ -97,6 +98,7 @@ const LIVE_NORMALIZERS: Record<
   pi: normalizePiLiveEvent,
   'prime-agent': normalizePrimeAgentLiveEvent,
   dsh: normalizeDshLiveEvent,
+  antigravity: normalizeAntigravityLiveEvent,
 };
 
 export interface NativeSessionLiveTailManagerOptions {

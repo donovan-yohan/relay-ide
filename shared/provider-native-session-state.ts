@@ -7,7 +7,14 @@ import type { WorkContextId } from './work-context.js';
 
 export type NativeSessionProvider = Extract<
   AgentProviderV2,
-  'claude' | 'codex' | 'hermes' | 'opencode' | 'pi' | 'prime-agent' | 'dsh'
+  | 'claude'
+  | 'codex'
+  | 'hermes'
+  | 'opencode'
+  | 'pi'
+  | 'prime-agent'
+  | 'dsh'
+  | 'antigravity'
 >;
 
 export type ProviderInstallStatusKind =
@@ -86,6 +93,13 @@ export interface NativeSessionSummary {
     nativeSessionId?: string;
     eventTypes?: string[];
     readTruncation?: NativeSessionJsonlReadTruncation;
+    /**
+     * Honest per-session importability signal (#1439): false when the
+     * conversation's parseable transcript is missing (e.g. Antigravity
+     * conversations backed only by opaque `.pb` artifacts) so callers can
+     * degrade before attempting an import.
+     */
+    transcriptAvailable?: boolean;
   };
   capabilities: AgentHarnessStateCapabilities;
 }
