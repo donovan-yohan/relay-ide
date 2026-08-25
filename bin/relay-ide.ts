@@ -2375,6 +2375,7 @@ async function runGatewaySessionNativeWatch(
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
+        'x-relay-cli-gateway': 'v1',
         'content-type': 'application/json',
         ...(usingActorToken
           ? {

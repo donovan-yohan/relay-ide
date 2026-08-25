@@ -70,6 +70,10 @@ workflow.
 
 #### Fixed
 
+- `relay-ide v1 sessions native watch` now marks its phase-one tail-start POST
+  as CLI gateway v1, so scoped actor credentials — including credentials stored
+  by `relay-ide login` — reach actor authentication instead of failing with a
+  401 before session-scope validation (#1428, follow-up to #1437).
 - The `relay-ide login` approval page parses browser form submissions again
   (the global JSON body parser cannot read urlencoded forms, so every PIN
   submit was silently empty) and the 'PIN required' / 'Invalid PIN' error
