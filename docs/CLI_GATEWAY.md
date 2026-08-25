@@ -541,7 +541,7 @@ relay-ide logout         # deletes the stored file and best-effort revokes the c
 
 Token resolution for `v1` actor-lane commands is explicit opt-in with clear precedence: `--actor-token` flag > `RELAY_IDE_ACTOR_TOKEN` env > the stored `relay-ide login` credential file (the file only exists because you ran `login`). When the stored credential is within 120 seconds of expiry, the CLI transparently renews it against `POST /cli-gateway/actor-credentials/renew` and atomically rewrites the file; if renewal fails (revoked, network down), the old token keeps working until it truly expires, then the command fails closed with "run relay-ide login". Revoked credentials fail closed immediately even if the file still exists.
 
-Login-minted credentials default to a 30-day TTL, capped by the hub's registry ceiling configured via `cliGateway.actorCredentialMaxTtlMs` in `config.json` (default 30 days). Renewal copies the SAME actor/capabilities/scope and does not revoke the predecessor — it expires naturally within its own TTL window, mirroring operator-client renew semantics, so a lost renew response can never lock the CLI out.
+Login-minted credentials default to a 30-day TTL, capped by the hub's registry ceiling configured via top-level `cliGatewayActorCredentialMaxTtlMs` in `config.json` (default 30 days). Renewal copies the SAME actor/capabilities/scope and does not revoke the predecessor — it expires naturally within its own TTL window, mirroring operator-client renew semantics, so a lost renew response can never lock the CLI out.
 
 Device-key binding of credentials is not implemented in this slice (tracked as a follow-up); the chmod-600 file plus immediate revocation is the current theft mitigation.
 

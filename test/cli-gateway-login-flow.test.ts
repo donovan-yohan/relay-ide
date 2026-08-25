@@ -278,6 +278,51 @@ describe('login HTTP flow (mocked browser leg)', () => {
     expect(minted).toHaveLength(1);
   });
 
+  // #1435 regression: the browser approval form posts
+  // application/x-www-form-urlencoded, not JSON. The hub must parse that
+  // content type on the approve route — a JSON-only parser silently dropped
+  // every real browser PIN submit (dead-end 'PIN required' page).
+  it('approves via urlencoded form submission exactly as a browser sends it', async () => {
+    const { flows, minted } = flowRegistry({});
+    const server = await startServer(testRouter(flows));
+    cleanupServers.push(server.close);
+    const start = await (
+      await fetch(`${server.baseUrl}/cli-gateway/login/start`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+    ).json();
+    const { flowId } = start as { flowId: string };
+    const formResponse = await fetch(
+      `${server.baseUrl}/cli-gateway/login/${flowId}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ pin: '4321', action: 'approve' }).toString(),
+      }
+    );
+    if (formResponse.status !== 200) {
+      throw new Error(
+        `approve returned ${formResponse.status}: ${(await formResponse.text()).slice(0, 400)}`
+      );
+    }
+    const pageHtml = await formResponse.text();
+    if (!pageHtml.toLowerCase().includes('approved')) {
+      throw new Error(`approve page missing 'approved': ${pageHtml.slice(0, 400)}`);
+    }
+    const poll = (await (
+      await fetch(`${server.baseUrl}/cli-gateway/login/${flowId}`)
+    ).json()) as { status: string; token?: string };
+    expect(poll.status).toBe('approved');
+    expect(typeof poll.token).toBe('string');
+    // Token delivered exactly once.
+    const secondPoll = (await (
+      await fetch(`${server.baseUrl}/cli-gateway/login/${flowId}`)
+    ).json()) as { token?: string; credential?: unknown };
+    expect(secondPoll.token).toBeUndefined();
+  });
+
   it('deny action marks the flow denied and polling never yields a token', async () => {
     const { flows, minted } = flowRegistry({});
     const server = await startServer(testRouter(flows));
