@@ -3051,6 +3051,7 @@ async function main(): Promise<void> {
               : command === 'channels.get' ||
                   command === 'channels.run.get' ||
                   command === 'channels.history' ||
+                  command === 'channels.receipts' ||
                   command === 'channels.threads.history' ||
                   command === 'channels.roster'
                 ? { scopeForRequest: channelScopeFromParams }

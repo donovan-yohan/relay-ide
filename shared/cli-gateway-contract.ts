@@ -107,6 +107,7 @@ export type RelayCliGatewayCommand =
   | 'channels.get'
   | 'channels.run.get'
   | 'channels.history'
+  | 'channels.receipts'
   | 'channels.subscribe'
   | 'channels.threads.history'
   | 'channels.roster'
@@ -3532,6 +3533,90 @@ const channelHistoryInputSchema: RelayJsonSchema = {
   },
   required: ['channelId'],
   not: { required: ['beforeSeq', 'afterSeq'] },
+};
+
+// #1442 — deliberately strict and content-free: this schema is the published
+// gateway backstop in addition to the shared wire validator. Do not add a
+// message/body/text field here; prose remains in normal channel message rows.
+const channelDeliveryReceiptSchema: RelayJsonSchema = {
+  title: 'ChannelDeliveryReceiptV1',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    messageId: stringSchema,
+    channelId: stringSchema,
+    targetBindingId: stringSchema,
+    senderProfileId: { oneOf: [stringSchema, { type: 'null' }] },
+    targetProfileId: stringSchema,
+    state: {
+      type: 'string',
+      enum: [
+        'queued',
+        'delivered_to_runtime',
+        'turn_started',
+        'completed',
+        'held_busy',
+        'dropped_queue_full',
+        'refused_policy',
+        'unreachable_offline',
+        'expired_watchdog',
+        'failed_runtime',
+        'superseded',
+      ],
+    },
+    reasonCode: {
+      type: 'string',
+      enum: [
+        'queue_cap',
+        'steering_queue_cap',
+        'superseded_by_newer',
+        'runtime_unavailable',
+        'binding_failed',
+        'watchdog_force_drain',
+        'send_rejected',
+        'send_error',
+        'runtime_ended',
+        'agent_busy',
+        'profile_missing',
+        'provider_unavailable',
+        'mention_chain_paused',
+      ],
+    },
+    ts: stringSchema,
+  },
+  required: [
+    'messageId',
+    'channelId',
+    'targetBindingId',
+    'senderProfileId',
+    'targetProfileId',
+    'state',
+    'ts',
+  ],
+};
+
+const channelReceiptsInputSchema: RelayJsonSchema = {
+  title: 'ChannelsReceiptsInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    channelId: stringSchema,
+    messageId: stringSchema,
+    targetBindingId: stringSchema,
+    targetProfileId: stringSchema,
+    limit: { type: 'integer', minimum: 1, maximum: 200 },
+  },
+  required: ['channelId'],
+};
+
+const channelReceiptsOutputDataSchema: RelayJsonSchema = {
+  title: 'ChannelsReceiptsOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    receipts: { type: 'array', items: channelDeliveryReceiptSchema },
+  },
+  required: ['receipts'],
 };
 
 const channelSubscriptionOpaqueIdSchema: RelayJsonSchema = {
@@ -7165,6 +7250,44 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput(
       'ChannelsHistoryOutput',
       channelHistoryOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
+  },
+  {
+    name: 'channels.receipts',
+    cli: [
+      'relay-ide',
+      'v1',
+      'channels',
+      'receipts',
+      '--channel-id',
+      '<id>',
+      '--message-id',
+      '<id>',
+      '--target-binding-id',
+      '<id>',
+      '--target-profile-id',
+      '<id>',
+      '--limit',
+      '<n>',
+      '--json',
+    ],
+    summary:
+      'Recent content-free delivery receipts for a channel the actor is scoped to; exact filters may narrow by message id or target.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: channelReceiptsInputSchema,
+    outputSchema: okOutput(
+      'ChannelsReceiptsOutput',
+      channelReceiptsOutputDataSchema
     ),
     errorCodes: [
       'UNAUTHORIZED',
