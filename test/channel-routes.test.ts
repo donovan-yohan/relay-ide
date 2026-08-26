@@ -58,6 +58,7 @@ import {
   CHANNEL_SEARCH_MAX_RESULTS,
   CHANNEL_SEARCH_PREFIX_TERM_BUDGET,
   parseChannelSearchSnippet,
+  type ChannelDeliveryReceiptV1,
   type ChannelEventV1,
 } from '../shared/channel-chat-protocol.js';
 import { dmChannelCreateInput } from '../shared/dm-channels.js';
@@ -738,6 +739,110 @@ describe('channel routes — topic validation', () => {
       body: { text: 'hi' },
     });
     expect(res.status).toBe(409);
+  });
+});
+
+describe('channel routes — delivery receipts (#1442)', () => {
+  function receipt(
+    overrides: Partial<ChannelDeliveryReceiptV1> = {}
+  ): ChannelDeliveryReceiptV1 {
+    return {
+      messageId: 'chm:1',
+      channelId: '',
+      targetBindingId: '\u0000\u0000agent-profile:mock:default',
+      senderProfileId: null,
+      targetProfileId: 'agent-profile:mock:default',
+      state: 'queued',
+      ts: '2026-08-25T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('returns receipts for the channel, filtered by messageId and target', async () => {
+    const h = await harness();
+    const ch = h.channelId;
+    h.hub.broadcastDeliveryReceipt(
+      receipt({ channelId: ch, messageId: 'chm:a', state: 'queued' })
+    );
+    h.hub.broadcastDeliveryReceipt(
+      receipt({
+        channelId: ch,
+        messageId: 'chm:b',
+        state: 'completed',
+        targetProfileId: 'agent-profile:claude:default',
+        targetBindingId: `\u0000\u0000agent-profile:claude:default`,
+      })
+    );
+
+    const all = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(ch)}/receipts`,
+    });
+    expect(all.status).toBe(200);
+    // Newest-first.
+    expect(all.body.receipts.map((r) => r.messageId)).toEqual(['chm:b', 'chm:a']);
+
+    const perMessage = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(ch)}/receipts?messageId=chm:a`,
+    });
+    expect(perMessage.body.receipts).toHaveLength(1);
+    expect(perMessage.body.receipts[0]).toMatchObject({
+      messageId: 'chm:a',
+      state: 'queued',
+      channelId: ch,
+    });
+
+    const perTarget = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(
+        ch
+      )}/receipts?targetProfileId=agent-profile%3Aclaude%3Adefault`,
+    });
+    expect(perTarget.body.receipts).toHaveLength(1);
+    expect(perTarget.body.receipts[0]!.messageId).toBe('chm:b');
+  });
+
+  it('never returns another channel\u2019s receipts and honors the limit', async () => {
+    const h = await harness();
+    const ch = h.channelId;
+    for (let i = 0; i < 5; i++) {
+      h.hub.broadcastDeliveryReceipt(
+        receipt({ channelId: ch, messageId: `chm:${i}` })
+      );
+    }
+    const limited = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(ch)}/receipts?limit=2`,
+    });
+    expect(limited.body.receipts).toHaveLength(2);
+    expect(limited.body.receipts[0]!.messageId).toBe('chm:4');
+
+    // A different persisted topic never sees this ring.
+    const other = h.topicStore.create({ workspaceId: 'ws', title: 'Other' });
+    const foreign = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(other.id)}/receipts`,
+    });
+    expect(foreign.body.receipts).toEqual([]);
+  });
+
+  it('refuses unknown topics with NOT_FOUND', async () => {
+    const h = await harness();
+    const res = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent('topic:ghost')}/receipts`,
+    });
+    expect(res).toMatchObject({
+      status: 404,
+      body: { error: { code: 'NOT_FOUND' } },
+    });
   });
 });
 

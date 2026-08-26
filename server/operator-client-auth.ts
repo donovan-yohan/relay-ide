@@ -21,6 +21,7 @@ export const OPERATOR_CLIENT_CHANNEL_COMMANDS = [
   'channels.list',
   'channels.get',
   'channels.history',
+  'channels.receipts',
   'channels.subscribe',
   'channels.post',
 ] as const;
