@@ -1190,7 +1190,8 @@ export type ChannelDeliveryReceiptReasonCode =
   | 'runtime_ended'
   | 'agent_busy'
   | 'profile_missing'
-  | 'provider_unavailable';
+  | 'provider_unavailable'
+  | 'mention_chain_paused';
 
 /**
  * A typed, CONTENT-FREE delivery receipt (#1442).
@@ -1266,6 +1267,7 @@ const CHANNEL_DELIVERY_RECEIPT_REASON_CODES = new Set<string>([
   'agent_busy',
   'profile_missing',
   'provider_unavailable',
+  'mention_chain_paused',
 ]);
 
 export function isChannelDeliveryReceipt(
