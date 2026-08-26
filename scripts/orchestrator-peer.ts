@@ -637,30 +637,14 @@ export class OrchestratorPeer {
     );
     this.implCursor = implSelection.nextSeq;
 
-    // Typed receipts when the hub supports the route (#1442). The query is
-    // best-effort: any failure here degrades to the ack-text fallback rather
-    // than failing a poll that already relayed its messages successfully.
-    const deliveryStates: Record<string, ChannelDeliveryReceiptState> = {};
     const postedDeliveries = [
       ...productSelection.deliveries,
       ...implSelection.deliveries,
     ];
-    if (postedDeliveries.length > 0 && this.receiptsSupported !== false) {
-      try {
-        const channelIds = new Set(postedDeliveries.map((delivery) => delivery.channelId));
-        for (const channelId of channelIds) {
-          const receipts = await this.fetchReceipts(channelId);
-          if (!receipts) continue;
-          for (const delivery of postedDeliveries) {
-            if (delivery.channelId !== channelId) continue;
-            const state = latestStateForMessage(receipts, delivery.messageId);
-            if (state !== undefined) deliveryStates[delivery.messageId] = state;
-          }
-        }
-      } catch {
-        // Receipt observability must never break the relay loop.
-      }
-    }
+    const deliveryStates =
+      postedDeliveries.length > 0 && this.receiptsSupported !== false
+        ? await this.collectDeliveryStates(postedDeliveries)
+        : {};
 
     return {
       instructionCount: productSelection.acks.length,
@@ -669,6 +653,35 @@ export class OrchestratorPeer {
       implLastSeq: this.implCursor,
       deliveryStates,
     };
+  }
+
+  // Typed receipts when the hub supports the route (#1442). The query is
+  // best-effort: any failure here degrades to the ack-text fallback rather
+  // than failing a poll that already relayed its messages successfully.
+  private async collectDeliveryStates(
+    postedDeliveries: ReadonlyArray<{
+      channelId: string;
+      messageId: string;
+    }>
+  ): Promise<Record<string, ChannelDeliveryReceiptState>> {
+    const deliveryStates: Record<string, ChannelDeliveryReceiptState> = {};
+    try {
+      const channelIds = new Set(
+        postedDeliveries.map((delivery) => delivery.channelId)
+      );
+      for (const channelId of channelIds) {
+        const receipts = await this.fetchReceipts(channelId);
+        if (!receipts) continue;
+        for (const delivery of postedDeliveries) {
+          if (delivery.channelId !== channelId) continue;
+          const state = latestStateForMessage(receipts, delivery.messageId);
+          if (state !== undefined) deliveryStates[delivery.messageId] = state;
+        }
+      }
+    } catch {
+      // Receipt observability must never break the relay loop.
+    }
+    return deliveryStates;
   }
 
   async run(signal: AbortSignal): Promise<void> {

@@ -174,6 +174,10 @@ function projectEvent(
       return channelAsyncRunMatchesSubscriptionFilter(event.run, filter)
         ? event
         : null;
+    case 'channel-delivery-receipt-v1':
+      // Receipts are content-free operational signals (ids, state, timestamps),
+      // not message rows: semantic projection forwards them unchanged.
+      return event;
     case 'channel-resync-required-v1':
       return event;
   }
