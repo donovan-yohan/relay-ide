@@ -723,7 +723,10 @@ function eventMatchesSubscriptionChannel(
     case 'channel-run-lifecycle-v1':
       return event.run.channelId === channelId;
     case 'channel-message-delta-v1':
+    case 'channel-delivery-receipt-v1':
     case 'channel-resync-required-v1':
+      // Deltas carry no durable row and receipts are content-free signals;
+      // channel membership was already established above.
       return true;
   }
 }

@@ -268,6 +268,7 @@ describe('CLI gateway contract', () => {
       'channels.get',
       'channels.run.get',
       'channels.history',
+      'channels.receipts',
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
@@ -297,6 +298,7 @@ describe('CLI gateway contract', () => {
       'channels.get',
       'channels.run.get',
       'channels.history',
+      'channels.receipts',
       'channels.subscribe',
       'channels.threads.history',
       'channels.roster',
@@ -335,6 +337,49 @@ describe('CLI gateway contract', () => {
       'channels.threads.history'
     );
     expect(commandSpec('channels.post').name).toBe('channels.post');
+  });
+
+  it('models content-free delivery receipt query inputs and output (#1442)', () => {
+    const valid = {
+      channelId: 'channel-1',
+      messageId: 'chm:request',
+      targetBindingId: 'binding-1',
+      targetProfileId: 'agent-profile:codex:default',
+      limit: 50,
+    };
+    expect(schemaAcceptsCommandInput('channels.receipts', valid)).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('channels.receipts', {
+        channelId: 'channel-1',
+        limit: 0,
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('channels.receipts', {
+        channelId: 'channel-1',
+        text: 'must not be queryable',
+      })
+    ).toBe(false);
+
+    const data = commandSpec('channels.receipts').outputSchema.properties?.['data'];
+    if (!data) throw new Error('channels.receipts output data schema is missing');
+    const receipt = {
+      messageId: 'chm:request',
+      channelId: 'channel-1',
+      targetBindingId: 'binding-1',
+      senderProfileId: null,
+      targetProfileId: 'agent-profile:codex:default',
+      state: 'completed',
+      ts: '2026-08-25T00:00:00.000Z',
+    };
+    expect(schemaMatches(data, { receipts: [receipt] })).toBe(true);
+    // Structural gateway backstop: receipt items are closed objects and list
+    // only the identity/outcome fields — no prose/content field is published.
+    const receiptItem = data.properties?.['receipts']?.items;
+    expect(receiptItem).toMatchObject({ additionalProperties: false });
+    expect(receiptItem?.properties).not.toHaveProperty('body');
+    expect(receiptItem?.properties).not.toHaveProperty('text');
+    expect(receiptItem?.properties).not.toHaveProperty('attachments');
   });
 
   it('models a bounded exclusive channel subscription cursor', () => {

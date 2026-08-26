@@ -54,6 +54,8 @@ import {
   CHANNEL_RETRY_OF_META_KEY,
   type ChannelAsyncRunApprovalState,
   type ChannelAsyncRunTargetState,
+  type ChannelDeliveryReceiptState,
+  type ChannelDeliveryReceiptV1,
   type ChannelMention,
   type ChannelMessage,
   type ChannelPostSteering,
@@ -769,6 +771,82 @@ export function createChannelAgentBinder(
     if (last !== undefined && now() - last < UNAVAILABLE_ROW_TTL_MS) return;
     unavailableRowAt.set(key, now());
     postSystemRow(channelId, text, { parentMessageId });
+  }
+
+  /**
+   * Emit the typed twin of a `postUnavailableRow` (#1442). Kept separate from
+   * the prose row's TTL dedupe: a receipt is identity+state only and cheap to
+   * re-emit, and suppressing it on the row's 5-minute window would leave the
+   * second affected message with no machine-readable outcome.
+   */
+  function emitUnavailableReceipt(
+    trigger: ChannelMessage,
+    profileActorId: string,
+    reasonCode:
+      | 'runtime_unavailable'
+      | 'provider_unavailable'
+      | 'profile_missing'
+      | 'binding_failed'
+  ): void {
+    emitReceipt({
+      trigger,
+      targetProfileId: profileActorId,
+      state: 'unreachable_offline',
+      reasonCode,
+    });
+  }
+
+  // ── typed delivery receipts (#1442) ─────────────────────────────────────────
+  //
+  // Every outcome that already produces a prose system row (or a state
+  // transition) ALSO emits one content-free receipt on the hub's channel event
+  // stream. The receipt carries identity and outcome only — never message
+  // text — so machine consumers get the outcome table without parsing prose.
+  // A hub fan-out failure must never alter routing: receipts are fire-and-
+  // forget observability.
+
+  function emitReceipt(input: {
+    trigger: ChannelMessage;
+    targetProfileId: string;
+    state: ChannelDeliveryReceiptState;
+    reasonCode?:
+      | 'queue_cap'
+      | 'steering_queue_cap'
+      | 'superseded_by_newer'
+      | 'runtime_unavailable'
+      | 'binding_failed'
+      | 'watchdog_force_drain'
+      | 'send_rejected'
+      | 'send_error'
+      | 'runtime_ended'
+      | 'agent_busy'
+      | 'profile_missing'
+      | 'provider_unavailable'
+      | 'mention_chain_paused';
+    threadId?: string | null;
+  }): void {
+    const threadId =
+      input.threadId !== undefined ? input.threadId : input.trigger.threadId;
+    const receipt: ChannelDeliveryReceiptV1 = {
+      messageId: input.trigger.id,
+      channelId: input.trigger.channelId,
+      targetBindingId: bindingKey(
+        input.trigger.channelId,
+        input.targetProfileId,
+        threadId
+      ),
+      senderProfileId:
+        input.trigger.sender.kind === 'agent' ? input.trigger.sender.id : null,
+      targetProfileId: input.targetProfileId,
+      state: input.state,
+      ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
+      ts: new Date(now()).toISOString(),
+    };
+    try {
+      deps.hub.broadcastDeliveryReceipt(receipt);
+    } catch (err) {
+      logger.warn('channel binder delivery receipt failed:', err);
+    }
   }
 
   function parentForTrigger(trigger: ChannelMessage): string | undefined {
@@ -2165,6 +2243,12 @@ export function createChannelAgentBinder(
           `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
           { parentMessageId: parentForTrigger(trigger) }
         );
+        emitReceipt({
+          trigger,
+          targetProfileId: binding.profileActorId,
+          state: 'dropped_queue_full',
+          reasonCode: 'steering_queue_cap',
+        });
         rejectAdmittedDelegation();
         return false;
       }
@@ -2207,6 +2291,20 @@ export function createChannelAgentBinder(
         // one fewer slot. An operator typing fast is therefore never told
         // their message was dropped for a turn that was never going to exist.
         binding.queue[tailIndex] = entry;
+        // The superseded tail keeps its own trigger identity but will never
+        // own a turn: the newest member's packet still carries it as a context
+        // row, so the receipt says `superseded`, not `dropped` (#1442).
+        emitReceipt({
+          trigger: tail.trigger,
+          targetProfileId: binding.profileActorId,
+          state: 'superseded',
+          reasonCode: 'superseded_by_newer',
+        });
+        emitReceipt({
+          trigger,
+          targetProfileId: binding.profileActorId,
+          state: 'queued',
+        });
         emitAgentStatus(binding);
         if (steering === 'interrupt') steerInterrupt(binding, trigger);
         pump(binding);
@@ -2217,10 +2315,21 @@ export function createChannelAgentBinder(
         `@${binding.displayName} has ${QUEUE_CAP} messages pending — message dropped`,
         { parentMessageId: parentForTrigger(trigger) }
       );
+      emitReceipt({
+        trigger,
+        targetProfileId: binding.profileActorId,
+        state: 'dropped_queue_full',
+        reasonCode: 'queue_cap',
+      });
       rejectAdmittedDelegation();
       return false;
     }
     binding.queue.push(entry);
+    emitReceipt({
+      trigger,
+      targetProfileId: binding.profileActorId,
+      state: binding.activeTurnId !== null ? 'held_busy' : 'queued',
+    });
     emitAgentStatus(binding);
     // Interrupt BEFORE pumping: while a turn is live `pump` is a no-op, and the
     // cancellation's terminal patch is what releases the binding into
@@ -2631,6 +2740,11 @@ export function createChannelAgentBinder(
     binding.activeContent = packet.content;
     binding.activeAttachments = packet.attachments;
     setStatus(binding, 'thinking');
+    emitReceipt({
+      trigger,
+      targetProfileId: binding.profileActorId,
+      state: 'turn_started',
+    });
     armWatchdog(binding);
     deliver(
       binding,
@@ -2667,6 +2781,13 @@ export function createChannelAgentBinder(
       .then(() => {
         if (!completionCallback) {
           advanceCursor(binding, trigger);
+          // Send acceptance is the delivery boundary (§4): the runtime now
+          // owns this trigger even if the turn later fails (#1442).
+          emitReceipt({
+            trigger,
+            targetProfileId: binding.profileActorId,
+            state: 'delivered_to_runtime',
+          });
           return;
         }
         // `sendMessage` acceptance is the callback's delivery boundary. The
@@ -2887,6 +3008,14 @@ export function createChannelAgentBinder(
       }
       return;
     }
+    // The send never landed, and the single retry (if any) also failed or was
+    // not possible: this is a runtime failure outcome (#1442).
+    emitReceipt({
+      trigger,
+      targetProfileId: binding.profileActorId,
+      state: 'failed_runtime',
+      reasonCode: err instanceof Error ? 'send_rejected' : 'send_error',
+    });
     postSystemRow(
       binding.channelId,
       `@${binding.displayName} could not receive the message: ${errText(err)}`,
@@ -2952,6 +3081,12 @@ export function createChannelAgentBinder(
         `@${binding.displayName} runtime ended before delivering a queued message.`,
         { parentMessageId: parentForTrigger(queued.trigger) }
       );
+      emitReceipt({
+        trigger: queued.trigger,
+        targetProfileId: binding.profileActorId,
+        state: 'failed_runtime',
+        reasonCode: 'runtime_ended',
+      });
     }
     binding.queue = [];
     for (const steering of binding.steeringQueue) {
@@ -2994,6 +3129,12 @@ export function createChannelAgentBinder(
         `@${binding.displayName} runtime ended before accepting a steering message.`,
         { parentMessageId: parentForTrigger(steering.trigger) }
       );
+      emitReceipt({
+        trigger: steering.trigger,
+        targetProfileId: binding.profileActorId,
+        state: 'failed_runtime',
+        reasonCode: 'runtime_ended',
+      });
     }
     binding.steeringQueue = [];
     binding.steeringInFlight = false;
@@ -3051,6 +3192,41 @@ export function createChannelAgentBinder(
           ? 'cancelled'
           : 'failed'
     );
+    // Turn terminal receipts ride the turn's REQUEST message id, not the
+    // callback trigger a completion-callback turn may have been built from:
+    // the receipt consumer correlates on the row the operator sent (#1442).
+    const requestMessageId =
+      binding.requestMessageIdByTurn.get(terminalTurnId) ??
+      binding.parentMessageIdByTurn.get(terminalTurnId);
+    if (requestMessageId && store.getMessage(requestMessageId)) {
+      if (terminalReason === 'watchdog') {
+        emitReceipt({
+          trigger: { ...store.getMessage(requestMessageId)! },
+          targetProfileId: binding.profileActorId,
+          state: 'expired_watchdog',
+          reasonCode: 'watchdog_force_drain',
+        });
+      } else if (
+        terminalReason === 'completed' ||
+        terminalReason === 'safe-idle'
+      ) {
+        emitReceipt({
+          trigger: { ...store.getMessage(requestMessageId)! },
+          targetProfileId: binding.profileActorId,
+          state: 'completed',
+        });
+      } else {
+        const receiptInput = {
+          trigger: { ...store.getMessage(requestMessageId)! },
+          targetProfileId: binding.profileActorId,
+          state: 'failed_runtime' as const,
+          ...(terminalReason === 'interrupt'
+            ? {}
+            : { reasonCode: 'send_error' as const }),
+        };
+        emitReceipt(receiptInput);
+      }
+    }
     terminalizeCompletionCallback(binding, terminalTurnId, terminalReason);
     const callback = binding.completionCallbackByTurn.get(terminalTurnId);
     if (
@@ -3457,6 +3633,7 @@ export function createChannelAgentBinder(
               parentForTrigger(trigger)
             );
           }
+          emitUnavailableReceipt(trigger, profile.id, 'provider_unavailable');
           return;
         }
         const availability = availabilityForProfile(profile, target);
@@ -3471,6 +3648,7 @@ export function createChannelAgentBinder(
             `@${senderDisplayName} is not available in channels yet — ${availability.reason ?? 'channel runtime unavailable.'}`,
             parentForTrigger(trigger)
           );
+          emitUnavailableReceipt(trigger, profile.id, 'runtime_unavailable');
           return;
         }
         let binding: LiveBinding;
@@ -3495,9 +3673,16 @@ export function createChannelAgentBinder(
                 err.systemMessage,
                 parentForTrigger(trigger)
               );
+              emitUnavailableReceipt(trigger, profile.id, 'binding_failed');
             } else {
               postSystemRow(trigger.channelId, err.systemMessage, {
                 parentMessageId: parentForTrigger(trigger),
+              });
+              emitReceipt({
+                trigger,
+                targetProfileId: profile.id,
+                state: 'refused_policy',
+                reasonCode: 'binding_failed',
               });
             }
             return;
@@ -3711,6 +3896,14 @@ export function createChannelAgentBinder(
           `Mention chain paused — ${state.count} agent turns without a human.`,
           { parentMessageId: parentForTrigger(message) }
         );
+        for (const profile of profiles) {
+          emitReceipt({
+            trigger: message,
+            targetProfileId: profile.id,
+            state: 'refused_policy',
+            reasonCode: 'mention_chain_paused',
+          });
+        }
         return;
       }
       state.allowedTurnKeys.add(turnKey);

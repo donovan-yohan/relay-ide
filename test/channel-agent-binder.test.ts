@@ -65,6 +65,7 @@ import {
   channelTurnId,
   parseMentions,
   CHANNEL_RETRY_OF_META_KEY,
+  type ChannelDeliveryReceiptV1,
   type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
@@ -8208,3 +8209,244 @@ describe('channel-agent-binder — presence teardown (#1307)', () => {
     expect(statuses.at(-1)).toBe('idle');
   });
 });
+
+// ── typed delivery receipts (#1442) ──────────────────────────────────────────
+// Every outcome that already produces a prose system row must ALSO emit one
+// content-free `channel-delivery-receipt-v1` event through the hub. These tests
+// read the hub side of the fan-out (the receipts ring), so the transport and
+// query surface are exercised together with the emission points.
+
+function collectReceipts(
+  hub: ChannelHub,
+  channelId: string
+): ChannelDeliveryReceiptV1[] {
+  return hub.listDeliveryReceipts({ channelId }).reverse(); // oldest-first
+}
+
+describe('channel-agent-binder — delivery receipts (#1442)', () => {
+  it('emits queued → turn_started in order with a content-free payload', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (agentType) => new ScriptedAdapter(agentType, { mode: 'stall' }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = post(store, binder, '@mock go', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    const forMessage = collectReceipts(hub, CH).filter(
+      (r) => r.messageId === trigger.id
+    );
+    // The scripted stall adapter ACCEPTS the send (stall models a stuck
+    // provider turn, not a rejected transport), so acceptance lands too.
+    expect(forMessage.map((r) => r.state)).toEqual([
+      'queued',
+      'turn_started',
+      'delivered_to_runtime',
+    ]);
+    expect(forMessage[0]).toMatchObject({
+      channelId: CH,
+      targetProfileId: builtInAgentProfileId('mock'),
+      senderProfileId: null,
+    });
+    // Content-free by construction: identity/outcome keys only, no text field.
+    const allowedKeys = [
+      'channelId',
+      'messageId',
+      'reasonCode',
+      'senderProfileId',
+      'state',
+      'targetBindingId',
+      'targetProfileId',
+      'ts',
+    ];
+    for (const r of forMessage) {
+      for (const key of Object.keys(r)) {
+        expect(allowedKeys).toContain(key);
+      }
+      expect(JSON.stringify(r)).not.toContain('"text"');
+    }
+  });
+
+  it('marks an over-cap steering drop as dropped_queue_full alongside the prose row', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: (agentType) => new SteerableAdapter(agentType, true),
+      targets: STEER_TARGETS,
+      knownProviderIds: ['steer'],
+    });
+    postSteering(store, binder, '@steer opener', ['steer'], undefined);
+    const adapter = await steerAdapter(sessions);
+    await waitFor(() => adapter.sendCalls.length === 1);
+    // Accepted steers hold aggregate slots; the overflow post takes the drop.
+    let overflow: ChannelMessage | null = null;
+    for (let i = 0; i < 9; i++) {
+      overflow = postSteering(
+        store,
+        binder,
+        `@steer ${i}`,
+        ['steer'],
+        undefined
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(overflow).not.toBeNull();
+    const drops = collectReceipts(hub, CH).filter(
+      (r) => r.messageId === overflow!.id && r.state === 'dropped_queue_full'
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops[0]!.reasonCode).toBe('steering_queue_cap');
+    expect(
+      systemRows(store).some((row) => row.body.text.includes('message dropped'))
+    ).toBe(true);
+  });
+
+  it('emits superseded + queued for a queue-merge supersede', async () => {
+    const { binder, store, hub } = makeBinder({
+      build: () => new ScriptedAdapter('stall', { mode: 'stall' }),
+      targets: [
+        {
+          id: 'stall',
+          displayName: 'Stall',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['stall'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    // One live turn plus cap+1 coalescing posts: each over-cap post supersedes
+    // the queue tail instead of being dropped.
+    const posted: ChannelMessage[] = [];
+    let last: ChannelMessage | null = null;
+    for (let i = 1; i <= 10; i++) {
+      last = post(store, binder, `@stall t${i}`, ['stall'], OPERATOR, root.id);
+      posted.push(last);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const receipts = collectReceipts(hub, CH);
+    const supersededIds = new Set(
+      receipts.filter((r) => r.state === 'superseded').map((r) => r.messageId)
+    );
+    expect(supersededIds.size).toBeGreaterThanOrEqual(1);
+    // Every superseded id is one of the queued posts (never the live trigger).
+    const liveTrigger = receipts.find(
+      (r) => r.state === 'turn_started'
+    )!.messageId;
+    for (const id of supersededIds) {
+      expect(posted.some((m) => m.id === id)).toBe(true);
+      expect(id).not.toBe(liveTrigger);
+    }
+    const superseded = receipts.find((r) => r.state === 'superseded')!;
+    expect(superseded.reasonCode).toBe('superseded_by_newer');
+    expect(
+      receipts.some((r) => r.messageId === last!.id && r.state === 'queued')
+    ).toBe(true);
+  });
+
+  it('marks watchdog expiry as expired_watchdog', async () => {
+    const { binder, store, hub, sessions } = makeBinder({
+      build: () => new ScriptedAdapter('stall', { mode: 'stall' }),
+      targets: [
+        {
+          id: 'stall',
+          displayName: 'Stall',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['stall'],
+      watchdogMs: 25,
+    });
+    post(store, binder, '@stall stuck', ['stall']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    await waitFor(() =>
+      collectReceipts(hub, CH).some((r) => r.state === 'expired_watchdog')
+    );
+    const wd = collectReceipts(hub, CH).find(
+      (r) => r.state === 'expired_watchdog'
+    )!;
+    expect(wd.reasonCode).toBe('watchdog_force_drain');
+  });
+
+  it('marks a rejected send as failed_runtime after retries are exhausted', async () => {
+    const { binder, store, hub } = makeBinder({
+      build: () => new ScriptedAdapter('x', { mode: 'reject' }),
+      targets: [
+        {
+          id: 'x',
+          displayName: 'X',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['x'],
+    });
+    const trigger = post(store, binder, '@x go', ['x']);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('could not receive'))
+    );
+    const failures = collectReceipts(hub, CH).filter(
+      (r) => r.messageId === trigger.id && r.state === 'failed_runtime'
+    );
+    expect(failures.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('marks runtime death mid-queue as failed_runtime/runtime_ended per queued trigger', async () => {
+    const harness = makeParkedBinder();
+    const { binder, store, hub, events } = harness;
+    post(store, binder, '@parked one', ['parked']);
+    const adapter = await parkedOnApproval(harness);
+    const queued = post(store, binder, '@parked two', ['parked']);
+    await waitFor(() => events.at(-1)?.['queuedCount'] === 1);
+    adapter.die();
+    await waitFor(() =>
+      systemRows(store).some((row) =>
+        row.body.text.includes('runtime ended before delivering')
+      )
+    );
+    const ended = collectReceipts(hub, CH).filter(
+      (r) => r.messageId === queued.id && r.state === 'failed_runtime'
+    );
+    expect(ended).toHaveLength(1);
+    expect(ended[0]!.reasonCode).toBe('runtime_ended');
+  });
+
+  it('marks an unavailable provider as unreachable_offline', async () => {
+    const { binder, store, hub } = makeBinder({
+      build: () => new ScriptedAdapter('gone', { mode: 'reply', text: 'hi' }),
+      targets: [
+        {
+          id: 'gone',
+          displayName: 'Gone',
+          kind: 'framework',
+          available: false,
+          reason: 'framework unavailable',
+        },
+      ],
+      knownProviderIds: ['gone'],
+    });
+    const trigger = post(store, binder, '@gone hi', ['gone']);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('not available'))
+    );
+    const offline = collectReceipts(hub, CH).filter(
+      (r) => r.messageId === trigger.id && r.state === 'unreachable_offline'
+    );
+    expect(offline).toHaveLength(1);
+    expect(offline[0]!.reasonCode).toBe('runtime_unavailable');
+  });
+});
+

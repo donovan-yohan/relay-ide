@@ -18,6 +18,19 @@ workflow.
 
 ## [Unreleased]
 
+### Typed channel delivery receipts
+
+#### Added
+
+- Addressed and mention-routed channel messages now emit additive,
+  content-free `channel-delivery-receipt-v1` lifecycle events covering queue,
+  runtime, policy, offline, watchdog, failure, and supersede outcomes. Recent
+  receipts fan out on the existing channel event stream and are queryable with
+  `GET /channels/:id/receipts` (exact message/target filters, channel-scoped
+  `context:read` authorization). The orchestrator peer consumes typed receipts
+  when available and retains its legacy text-ack fallback against older hubs
+  (#1442).
+
 ### Antigravity CLI native-session support
 
 #### Added

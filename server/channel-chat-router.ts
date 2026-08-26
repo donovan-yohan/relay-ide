@@ -1152,6 +1152,14 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const runGetAuth = deps.requireReadActorAuth?.('channels.run.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
+  // Typed delivery receipts (#1442): an observation read over the hub's
+  // in-memory receipt ring, so it gets its OWN gateway verb rather than riding
+  // `channels.history`. Same reasoning as `channels.search`: the actor lane
+  // authorizes by the `x-relay-cli-command` header, and a distinct verb keeps
+  // the audit trail honest. It gates on the same `context:read` bit and is
+  // bounded by the credential's `channelIds` scope like every channel read.
+  const receiptsAuth =
+    deps.requireReadActorAuth?.('channels.receipts') ?? auth;
   // Search is a filtered read of the same durable message log, but it gets its
   // OWN gateway verb (#1410) rather than riding `channels.history`. The actor
   // lane authorizes by the `x-relay-cli-command` header, so reusing the history
@@ -1588,6 +1596,51 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       return;
     }
     res.json({ run });
+  });
+
+  // Typed delivery receipts (#1442): bounded server-side query surface for the
+  // same content-free receipts the channel event stream carries. Newest-first;
+  // filters are exact-match and ANDed. The receipts live in the hub's
+  // in-memory ring (dropped on restart), so this is a recent-outcome lookup,
+  // not durable history — the message log remains the source of truth.
+  router.get('/channels/:id/receipts', receiptsAuth, (req, res) => {
+    if (!deps.hub) return void sendGatewayError(
+      res,
+      'SESSION_CONFLICT',
+      'channel hub is unavailable',
+      false,
+      { reasonCode: 'CHANNEL_HUB_UNAVAILABLE' }
+    );
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const id = req.params['id'] ?? '';
+    if (denyOutOfScopeChannel(req, res, id)) return;
+    if (!requirePersistedChannel(req, res)) return;
+    const messageId =
+      typeof req.query['messageId'] === 'string'
+        ? req.query['messageId']
+        : undefined;
+    const targetBindingId =
+      typeof req.query['targetBindingId'] === 'string'
+        ? req.query['targetBindingId']
+        : undefined;
+    const targetProfileId =
+      typeof req.query['targetProfileId'] === 'string'
+        ? req.query['targetProfileId']
+        : undefined;
+    const limitRaw = parseSeqQuery(req.query['limit']);
+    const limit =
+      typeof limitRaw === 'number' && Number.isSafeInteger(limitRaw) && limitRaw > 0
+        ? limitRaw
+        : undefined;
+    res.json({
+      receipts: deps.hub.listDeliveryReceipts({
+        channelId: id,
+        ...(messageId !== undefined ? { messageId } : {}),
+        ...(targetBindingId !== undefined ? { targetBindingId } : {}),
+        ...(targetProfileId !== undefined ? { targetProfileId } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      }),
+    });
   });
 
   router.post('/channels/:id/attachments', auth, (req, res) => {

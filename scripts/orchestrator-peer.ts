@@ -3,7 +3,10 @@
 
 import { pathToFileURL } from 'node:url';
 import {
+  isChannelDeliveryReceipt,
   isChannelMessage,
+  type ChannelDeliveryReceiptState,
+  type ChannelDeliveryReceiptV1,
   type ChannelMessage,
 } from '../shared/channel-chat-protocol.js';
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
@@ -58,6 +61,15 @@ export interface MessageSelection {
   nextSeq: number;
 }
 
+interface PostedDeliveryRef {
+  messageId: string;
+  channelId: string;
+}
+
+interface RelaySelection extends MessageSelection {
+  deliveries: PostedDeliveryRef[];
+}
+
 interface HistoryResponse {
   messages: ChannelMessage[];
 }
@@ -79,6 +91,58 @@ export function buildWorkerMention(
 
 export function buildRollup(message: ChannelMessage): string {
   return `rollup (from impl): ${message.body.text}`;
+}
+
+// ── typed delivery receipts (#1442) ──────────────────────────────────────────
+//
+// Capability detection, not version sniffing: a hub that serves the additive
+// `channels.receipts` route is queried for typed receipts for the messages the
+// peer just relayed; an older hub answers 404 and the peer silently falls back
+// to its existing ack-text parsing. Receipts only annotate delivery outcomes —
+// they never replace message relaying.
+
+/** Terminal receipt states the peer does not need to re-query. */
+export const SETTLED_RECEIPT_STATES = new Set<ChannelDeliveryReceiptState>([
+  'completed',
+  'dropped_queue_full',
+  'refused_policy',
+  'unreachable_offline',
+  'expired_watchdog',
+  'failed_runtime',
+  'superseded',
+]);
+
+/**
+ * Parse one `channels.receipts` response. Additive and defensive: any shape
+ * the validator refuses (including one smuggling a text field past a buggy
+ * server) degrades to "no typed receipts" rather than poisoning the run.
+ */
+export function parseReceiptsResponse(
+  value: unknown
+): ChannelDeliveryReceiptV1[] | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = (value as Record<string, unknown>)['receipts'];
+  if (!Array.isArray(raw)) return null;
+  const receipts: ChannelDeliveryReceiptV1[] = [];
+  for (const entry of raw) {
+    if (!isChannelDeliveryReceipt(entry)) return null;
+    receipts.push(entry);
+  }
+  return receipts;
+}
+
+export function latestStateForMessage(
+  receipts: ChannelDeliveryReceiptV1[],
+  messageId: string
+): ChannelDeliveryReceiptState | undefined {
+  // The ring returns newest-first; the first hit is the current state.
+  return receipts.find((receipt) => receipt.messageId === messageId)?.state;
+}
+
+export function isSettledReceiptState(
+  state: ChannelDeliveryReceiptState
+): boolean {
+  return SETTLED_RECEIPT_STATES.has(state);
 }
 
 export function selectNewMessages(
@@ -393,6 +457,12 @@ export class OrchestratorPeer {
   private readonly tokenManager: TokenManager;
   private productCursor = 0;
   private implCursor = 0;
+  /**
+   * Capability detection cache (#1442): null = not yet probed; true/false =
+   * whether the hub serves the additive `channels.receipts` route. A probe
+   * never fails the run — an older hub just keeps the ack-text fallback.
+   */
+  private receiptsSupported: boolean | null = null;
 
   constructor(
     private readonly config: PeerConfig,
@@ -412,13 +482,61 @@ export class OrchestratorPeer {
     return this.implCursor;
   }
 
+  get supportsDeliveryReceipts(): boolean | null {
+    return this.receiptsSupported;
+  }
+
+  /**
+   * Query typed delivery receipts for one channel's recent messages (#1442).
+   * Returns null when the hub does not support the route (404) or answers
+   * with a malformed payload — both mean "fall back to ack-text parsing".
+   */
+  async fetchReceipts(
+    channelId: string
+  ): Promise<ChannelDeliveryReceiptV1[] | null> {
+    const receiptsUrl =
+      `${this.baseUrl}/channels/${encodeURIComponent(channelId)}` +
+      `/receipts?limit=50`;
+    const response = await this.tokenManager.gatewayFetch(
+      receiptsUrl,
+      'channels.receipts'
+    );
+    if (!response.ok) {
+      try {
+        // 404 = older hub without the additive route: capability absent.
+        if (response.status === 404) {
+          if (this.receiptsSupported === null) this.receiptsSupported = false;
+          return null;
+        }
+        throw await responseError(
+          'channels.receipts',
+          response,
+          this.config.actorToken
+        );
+      } finally {
+        this.tokenManager.releaseGatewayResponse(response);
+      }
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } finally {
+      this.tokenManager.releaseGatewayResponse(response);
+    }
+    const parsed = parseReceiptsResponse(payload);
+    if (parsed !== null && this.receiptsSupported === null) {
+      this.receiptsSupported = true;
+    }
+    return parsed;
+  }
+
   private async relayChannel(
     sourceChannelPath: string,
     targetChannelPath: string,
     cursor: number,
     buildText: (message: ChannelMessage) => string,
     relayKind: 'instruction' | 'rollup'
-  ): Promise<MessageSelection> {
+  ): Promise<RelaySelection> {
     const historyUrl =
       `${this.baseUrl}${sourceChannelPath}/messages` +
       `?afterSeq=${cursor}&limit=${HISTORY_LIMIT}`;
@@ -451,6 +569,7 @@ export class OrchestratorPeer {
       buildText
     );
 
+    const deliveries: PostedDeliveryRef[] = [];
     for (const ack of selection.acks) {
       const postResponse = await this.tokenManager.gatewayFetch(
         `${this.baseUrl}${targetChannelPath}/messages`,
@@ -472,10 +591,24 @@ export class OrchestratorPeer {
           this.tokenManager.releaseGatewayResponse(postResponse);
         }
       }
-      this.tokenManager.releaseGatewayResponse(postResponse);
+      // Posting remains successful even if an older/non-conforming hub omits
+      // the returned message. Receipt correlation is then unavailable, but the
+      // existing text relay behavior is unchanged.
+      let postPayload: unknown = null;
+      try {
+        postPayload = await postResponse.json();
+      } catch {
+        // Deliberately ignored: receipt observability is additive.
+      } finally {
+        this.tokenManager.releaseGatewayResponse(postResponse);
+      }
+      if (typeof postPayload !== 'object' || postPayload === null) continue;
+      const posted = (postPayload as Record<string, unknown>)['message'];
+      if (!isChannelMessage(posted)) continue;
+      deliveries.push({ messageId: posted.id, channelId: posted.channelId });
     }
 
-    return selection;
+    return { ...selection, deliveries };
   }
 
   async pollOnce(): Promise<{
@@ -483,6 +616,8 @@ export class OrchestratorPeer {
     rollupCount: number;
     productLastSeq: number;
     implLastSeq: number;
+    /** Typed receipt states for the just-relayed messages, when available. */
+    deliveryStates: Record<string, ChannelDeliveryReceiptState>;
   }> {
     const productSelection = await this.relayChannel(
       this.productChannelPath,
@@ -502,12 +637,51 @@ export class OrchestratorPeer {
     );
     this.implCursor = implSelection.nextSeq;
 
+    const postedDeliveries = [
+      ...productSelection.deliveries,
+      ...implSelection.deliveries,
+    ];
+    const deliveryStates =
+      postedDeliveries.length > 0 && this.receiptsSupported !== false
+        ? await this.collectDeliveryStates(postedDeliveries)
+        : {};
+
     return {
       instructionCount: productSelection.acks.length,
       rollupCount: implSelection.acks.length,
       productLastSeq: this.productCursor,
       implLastSeq: this.implCursor,
+      deliveryStates,
     };
+  }
+
+  // Typed receipts when the hub supports the route (#1442). The query is
+  // best-effort: any failure here degrades to the ack-text fallback rather
+  // than failing a poll that already relayed its messages successfully.
+  private async collectDeliveryStates(
+    postedDeliveries: ReadonlyArray<{
+      channelId: string;
+      messageId: string;
+    }>
+  ): Promise<Record<string, ChannelDeliveryReceiptState>> {
+    const deliveryStates: Record<string, ChannelDeliveryReceiptState> = {};
+    try {
+      const channelIds = new Set(
+        postedDeliveries.map((delivery) => delivery.channelId)
+      );
+      for (const channelId of channelIds) {
+        const receipts = await this.fetchReceipts(channelId);
+        if (!receipts) continue;
+        for (const delivery of postedDeliveries) {
+          if (delivery.channelId !== channelId) continue;
+          const state = latestStateForMessage(receipts, delivery.messageId);
+          if (state !== undefined) deliveryStates[delivery.messageId] = state;
+        }
+      }
+    } catch {
+      // Receipt observability must never break the relay loop.
+    }
+    return deliveryStates;
   }
 
   async run(signal: AbortSignal): Promise<void> {

@@ -8,6 +8,9 @@ import {
   buildInstruction,
   buildRollup,
   buildWorkerMention,
+  isSettledReceiptState,
+  latestStateForMessage,
+  parseReceiptsResponse,
   readPeerConfig,
   redactPeerText,
   safePeerErrorMessage,
@@ -373,12 +376,14 @@ describe('orchestrator peer gateway cycle', () => {
       rollupCount: 0,
       productLastSeq: 1,
       implLastSeq: 0,
+      deliveryStates: {},
     });
 
     // No /auth, no /cli-gateway/actor-credentials, no PIN, no browser cookie:
-    // the peer uses the pre-minted lease directly.
-    expect(calls).toHaveLength(3);
-    const gatewayCalls = calls;
+    // the peer uses the pre-minted lease directly. (The 4th call is the #1442
+    // receipts probe; this hub answers 404, so the fallback path is exercised.)
+    expect(calls).toHaveLength(4);
+    const gatewayCalls = calls.slice(0, 3);
     expect(gatewayCalls).toHaveLength(3);
     for (const call of gatewayCalls) {
       const headers = new Headers(call.init.headers);
@@ -465,9 +470,10 @@ describe('orchestrator peer gateway cycle', () => {
       rollupCount: 1,
       productLastSeq: 0,
       implLastSeq: 4,
+      deliveryStates: {},
     });
 
-    const gatewayCalls = calls.slice(0);
+    const gatewayCalls = calls.slice(0, 3);
     expect(gatewayCalls).toHaveLength(3);
     const post = gatewayCalls[2];
     expect(post?.url).toBe(
@@ -525,12 +531,14 @@ describe('orchestrator peer gateway cycle', () => {
       rollupCount: 0,
       productLastSeq: 3,
       implLastSeq: 7,
+      deliveryStates: {},
     });
     await expect(peer.pollOnce()).resolves.toEqual({
       instructionCount: 0,
       rollupCount: 0,
       productLastSeq: 3,
       implLastSeq: 7,
+      deliveryStates: {},
     });
 
     const channelPosts = calls.filter(
@@ -757,5 +765,167 @@ describe('orchestrator peer gateway cycle', () => {
         message.length <= 570
       );
     });
+  });
+});
+
+describe('orchestrator peer delivery receipts (#1442)', () => {
+  const receiptFixture = (
+    messageId: string,
+    state: string,
+    channelId = 'topic:general'
+  ) => ({
+    messageId,
+    channelId,
+    targetBindingId: 'binding-1',
+    senderProfileId: null,
+    targetProfileId: 'agent-profile:codex:default',
+    state,
+    ts: '2026-08-25T00:00:00.000Z',
+  });
+
+  it('queries receipts when the hub supports the route (typed path)', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
+      const url = input.toString();
+      calls.push({ url, init });
+      if (
+        url.endsWith('/channels/topic%3Ageneral/messages?afterSeq=0&limit=100')
+      ) {
+        return jsonResponse({
+          messages: [message(1, 'human:operator', 'build feature')],
+        });
+      }
+      if (
+        url.endsWith(
+          '/channels/topic%3Aimplementation/messages?afterSeq=0&limit=100'
+        )
+      ) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.endsWith('/channels/topic%3Aimplementation/messages')) {
+        return jsonResponse(
+          {
+            // This is the POSTED addressed message. Its id/channel are the
+            // receipt correlation tuple, not the source product message.
+            message: message(
+              99,
+              'agent:echo-peer',
+              '@codex build feature',
+              CONFIG.implChannelId
+            ),
+          },
+          { status: 201 }
+        );
+      }
+      if (
+        url.endsWith('/channels/topic%3Aimplementation/receipts?limit=50')
+      ) {
+        expect(new Headers(init.headers).get('x-relay-cli-command')).toBe(
+          'channels.receipts'
+        );
+        return jsonResponse({
+          receipts: [
+            receiptFixture('chm:99', 'completed', CONFIG.implChannelId),
+          ],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
+    await expect(peer.pollOnce()).resolves.toEqual({
+      instructionCount: 1,
+      rollupCount: 0,
+      productLastSeq: 1,
+      implLastSeq: 0,
+      deliveryStates: { 'chm:99': 'completed' },
+    });
+    expect(peer.supportsDeliveryReceipts).toBe(true);
+    expect(calls.some((call) => call.url.includes('/receipts'))).toBe(true);
+  });
+
+  it('falls back to ack-text parsing when the hub answers 404 (legacy path)', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchMock = vi.fn<FetchLike>(async (input, init = {}) => {
+      const url = input.toString();
+      calls.push({ url, init });
+      if (
+        url.endsWith('/channels/topic%3Ageneral/messages?afterSeq=0&limit=100')
+      ) {
+        return jsonResponse({
+          messages: [message(1, 'human:operator', 'build feature')],
+        });
+      }
+      if (url.includes('/channels/') && url.includes('/messages?afterSeq=')) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.endsWith('/channels/topic%3Aimplementation/messages')) {
+        return jsonResponse(
+          { message: message(1, 'agent:echo-peer', '@codex build feature') },
+          { status: 201 }
+        );
+      }
+      // Older hub: the additive receipts route is a plain 404.
+      return new Response(null, { status: 404 });
+    });
+
+    const peer = new OrchestratorPeer(CONFIG, fetchMock);
+    await expect(peer.pollOnce()).resolves.toEqual({
+      instructionCount: 1,
+      rollupCount: 0,
+      productLastSeq: 1,
+      implLastSeq: 0,
+      deliveryStates: {},
+    });
+    // Capability latched off after the first probe — later polls do not retry
+    // the missing route; relaying continued via the existing ack-text path.
+    expect(peer.supportsDeliveryReceipts).toBe(false);
+    const poll2Calls = calls.length;
+    await peer.pollOnce();
+    expect(calls.slice(poll2Calls).some((c) => c.url.includes('/receipts')))
+      .toBe(false);
+  });
+
+  it('degrades a malformed receipts payload to no typed receipts', () => {
+    expect(parseReceiptsResponse(null)).toBeNull();
+    expect(parseReceiptsResponse({})).toBeNull();
+    expect(parseReceiptsResponse({ receipts: 'nope' })).toBeNull();
+    // Content-free rule enforced client-side too: a payload smuggling text
+    // under an unknown key is rejected wholesale, not partially trusted.
+    expect(
+      parseReceiptsResponse({
+        receipts: [{ ...receiptFixture('chm:1', 'completed'), text: 'leak' }],
+      })
+    ).toBeNull();
+    expect(parseReceiptsResponse({ receipts: [receiptFixture('chm:1', 'completed')] }))
+      .toEqual([receiptFixture('chm:1', 'completed')]);
+  });
+
+  it('classifies settled vs in-flight states and picks the newest per message', () => {
+    for (const state of [
+      'completed',
+      'dropped_queue_full',
+      'refused_policy',
+      'unreachable_offline',
+      'expired_watchdog',
+      'failed_runtime',
+      'superseded',
+    ] as const) {
+      expect(isSettledReceiptState(state)).toBe(true);
+    }
+    expect(isSettledReceiptState('queued')).toBe(false);
+    expect(isSettledReceiptState('held_busy')).toBe(false);
+
+    // The ring returns newest-first, so the FIRST hit for a message is its
+    // latest state — here `delivered_to_runtime` supersedes the older `queued`.
+    const receipts = [
+      receiptFixture('chm:1', 'delivered_to_runtime'),
+      receiptFixture('chm:2', 'failed_runtime'),
+      receiptFixture('chm:1', 'queued'),
+    ] as never[];
+    expect(latestStateForMessage(receipts, 'chm:1')).toBe(
+      'delivered_to_runtime'
+    );
+    expect(latestStateForMessage(receipts, 'chm:missing')).toBeUndefined();
   });
 });
