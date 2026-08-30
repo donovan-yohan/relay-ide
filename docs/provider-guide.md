@@ -152,22 +152,42 @@ profile never reaches the codex adapter's `extra`.
 with `404` (the multiplex router's "unknown or unconfigured profile"), and a
 profile whose `API_SERVER_KEY` the presented token does not satisfy with `401`.
 Relay keys on the status, not the body. The two have different fixes, so a
-bound runtime maps them to a `HermesProfileError` naming
-the profile and the remedy and raises a non-retryable `chat:error` — `auth` for
-401, `protocol` for 404. Connect fails with the same profile-specific reason
+bound runtime maps them to a `HermesProfileError` naming the profile and the
+remedy and raises a non-retryable `chat:error` — `auth` for 401, `protocol` for 404. Connect fails with the same profile-specific reason
 when the gateway does not serve the prefix at all, so a bad binding surfaces on
 the channel row instead of quietly running somewhere else. An unbound runtime's
 error mapping is unchanged and still retryable.
 
-**Keys are per gateway, not per binding.** Relay resolves one bearer token for
-the Hermes gateway, in order: `extra.apiToken`/`extra.apiKey`, then
-`HERMES_API_TOKEN`, `HERMES_API_KEY`, `HERMES_GATEWAY_API_KEY`, or
-`API_SERVER_KEY` from the hub process environment or the Hermes `.env` files,
-then the `api_server` key in `config.yaml`. The `.env` files it merges are
-`~/.hermes/.env` and the _active_ profile's — not the bound profile's — and an
-agent profile's `envVars` do not feed this path. The token Relay presents must
-therefore be one the gateway accepts for `/p/<profile>/`. Operator steps and the
-verification matrix live in
+**The gateway key travels with the binding.** Hermes multiplex gives each named
+profile its own `API_SERVER_KEY`, so a bound runtime has to present that
+profile's key rather than the gateway default's. A hermes agent profile
+therefore carries an optional `hermesApiKey` beside its binding, entered as the
+`hermes api key` field in Settings → agent profiles.
+
+The key is stored write-only by construction: it lives in its own
+`agent_profiles.hermes_api_key` column outside the readable `profile_json`
+blob, and every profile read statement selects `hermes_api_key IS NOT NULL`
+rather than the value, so an `AgentProfile` can only ever carry a
+`hermesApiKeySet` boolean. `AgentProfileStore.getGatewaySecret` is the single
+value read path, and which adapter `extra` key carries it is one more
+`PROVIDER_DESCRIPTORS` row (`agentProfileGatewaySecretKey`). See
+[`SECURITY_POLICY.md`](SECURITY_POLICY.md) for the handling rules.
+
+The secret rides only alongside a present binding. An unbound runtime talks to
+the gateway default and keeps the default credential, so a stored per-profile
+key is never sent where it cannot work. With no per-profile key stored, a bound
+runtime falls back to the same gateway-wide resolution an unbound one uses:
+`extra.apiToken`/`extra.apiKey`, then `HERMES_API_TOKEN`, `HERMES_API_KEY`,
+`HERMES_GATEWAY_API_KEY`, or `API_SERVER_KEY` from the hub process environment
+or the Hermes `.env` files, then the `api_server` key in `config.yaml`.
+
+The value becomes an `Authorization: Bearer` header verbatim, so
+`HERMES_API_KEY_PATTERN` restricts it to printable non-space US-ASCII, at most
+4096 characters — CR, LF, and NUL are excluded by construction rather than
+escaped. A malformed stored key throws `hermes_profile_key_invalid` instead of
+falling back to the default credential, and no message or log line echoes the
+value: operator-facing text names the profile and the field only. Operator steps
+and the verification matrix live in
 [`references/hermes-multiplex-setup.md`](references/hermes-multiplex-setup.md).
 
 **Availability stays global.** `server/frameworks.ts` probes the gateway with no

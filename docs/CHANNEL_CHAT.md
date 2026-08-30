@@ -296,11 +296,13 @@ Hermes multiplex profile. Mentioning that Relay profile then runs the turn on
 the named Hermes profile's own config, model routing, SOUL, memory, skills, and
 session namespace instead of the gateway's default profile, because the adapter
 addresses `/p/<profile>` for every gateway call. An unbound hermes profile keeps
-talking to the gateway default. The binding decorates the actor like model or
-permission mode; it is not a second identity, so two Relay profiles bound to
-different Hermes profiles stay two distinct participants and the transcript
-still belongs to the channel. Setup and verification:
-[`references/hermes-multiplex-setup.md`](references/hermes-multiplex-setup.md).
+talking to the gateway default. Because Hermes multiplex gives each named
+profile its own `API_SERVER_KEY`, a bound profile also carries its own write-only
+gateway key; the binding and the credential travel together. The binding
+decorates the actor like model or permission mode; it is not a second identity,
+so two Relay profiles bound to different Hermes profiles stay two distinct
+participants and the transcript still belongs to the channel. Setup and
+verification: [`references/hermes-multiplex-setup.md`](references/hermes-multiplex-setup.md).
 
 Channel roster state is derived from profiles, provider availability, durable
 bindings, and current runtime state. The UI can show spawning, thinking,
