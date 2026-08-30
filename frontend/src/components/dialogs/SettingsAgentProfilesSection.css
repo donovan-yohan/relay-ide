@@ -251,6 +251,19 @@
   gap: 6px;
 }
 
+.agent-profiles-editor__field-hint,
+.agent-profiles-editor__field-error {
+  line-height: 1.5;
+}
+
+.agent-profiles-editor__field-hint {
+  color: var(--text-muted);
+}
+
+.agent-profiles-editor__field-error {
+  color: var(--status-error);
+}
+
 .agent-profiles-section__state {
   padding: 12px;
 }

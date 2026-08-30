@@ -4006,6 +4006,12 @@ export interface AgentProfileWriteInput {
   provider?: string | null;
   effort?: string | null;
   envVars?: Record<string, string> | null;
+  /**
+   * Hermes multiplex profile binding (#1453). `null` CLEARS the binding; the
+   * empty string is a deliberate 400 at the router, so an emptied field must
+   * serialize as `null` and never as `''`.
+   */
+  hermesProfile?: string | null;
   namePool?: string[] | null;
   respondTo?: AgentProfileRespondTo;
   respondToAllowlist?: string[] | null;

@@ -12,8 +12,10 @@ import {
   AgentProfileEditor,
   AgentProfileGallery,
   groupAgentProfiles,
+  hermesProfileDraftError,
   profileDraftFrom,
   profileSubmitInput,
+  withProfileProvider,
 } from '../../frontend/src/components/dialogs/SettingsAgentProfilesSection.js';
 
 (
@@ -44,6 +46,22 @@ const frameworks: FrameworkInfo[] = [
     id: 'codex',
     displayName: 'Codex',
     command: 'codex',
+    capabilities: {
+      supportsContinue: true,
+      supportsYolo: true,
+      supportsHooks: true,
+      supportsTelemetry: true,
+    },
+    eventSource: 'hooks',
+  },
+];
+
+const hermesFrameworks: FrameworkInfo[] = [
+  ...frameworks,
+  {
+    id: 'hermes',
+    displayName: 'Hermes',
+    command: 'hermes',
     capabilities: {
       supportsContinue: true,
       supportsYolo: true,
@@ -221,6 +239,237 @@ describe('AgentProfileEditor', () => {
   });
 });
 
+describe('AgentProfileEditor hermes profile binding (#1453)', () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  const hermesProfile = (overrides: Partial<AgentProfile> = {}) =>
+    profile({
+      id: 'agent-profile:hermes:product',
+      providerId: 'hermes',
+      displayName: 'product owner',
+      model: '',
+      effort: '',
+      ...overrides,
+    });
+
+  const hermesInput = () =>
+    host.querySelector<HTMLInputElement>(
+      'input[placeholder="gateway default"]'
+    );
+
+  const renderEditor = async (
+    props: Partial<Parameters<typeof AgentProfileEditor>[0]> & {
+      key?: string;
+    } = {}
+  ) => {
+    await act(async () => {
+      root.render(
+        React.createElement(AgentProfileEditor, {
+          frameworks: hermesFrameworks,
+          onCancel: vi.fn(),
+          onSubmit: vi.fn(),
+          ...props,
+        })
+      );
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', matchMedia);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the binding field with its helper text only for the hermes provider', async () => {
+    await renderEditor({ profile: profile() });
+    expect(hermesInput()).toBeNull();
+    await renderEditor({ key: 'hermes', profile: hermesProfile() });
+    expect(hermesInput()).not.toBeNull();
+    expect(
+      host.querySelector('.agent-profiles-editor__field-hint')?.textContent
+    ).toBe('optional. leave blank to use the hermes default profile.');
+    expect(
+      host.querySelector('.agent-profiles-editor__field-error')
+    ).toBeNull();
+    const hintId = host.querySelector('.agent-profiles-editor__field-hint')?.id;
+    expect(hintId).toBeTruthy();
+    expect(hermesInput()?.getAttribute('aria-describedby')).toBe(hintId);
+    expect(hermesInput()?.getAttribute('aria-label')).toBe('hermes profile');
+    await act(async () =>
+      setInput(hermesInput() as HTMLInputElement, '../other')
+    );
+    const errorId = host.querySelector(
+      '.agent-profiles-editor__field-error'
+    )?.id;
+    expect(hermesInput()?.getAttribute('aria-describedby')).toBe(
+      `${hintId} ${errorId}`
+    );
+  });
+
+  it('shows the stored binding and submits it unchanged', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({ hermesProfile: 'koi-product' }),
+      onSubmit,
+    });
+    expect(hermesInput()?.value).toBe('koi-product');
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'hermes',
+        hermesProfile: 'koi-product',
+      })
+    );
+  });
+
+  it('patches null — never the empty string — when the operator clears the binding', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({ hermesProfile: 'koi-product' }),
+      onSubmit,
+    });
+    await act(async () => setInput(hermesInput() as HTMLInputElement, ''));
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    const input = onSubmit.mock.calls[0]?.[0] as { hermesProfile?: unknown };
+    expect(input.hermesProfile).toBeNull();
+    expect(input.hermesProfile).not.toBe('');
+  });
+
+  it('blocks save on a path-traversing or malformed binding and never submits it', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({ hermesProfile: 'koi-product' }),
+      onSubmit,
+    });
+    const save = () =>
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'save profile'
+      );
+    expect(save()?.disabled).toBe(false);
+    for (const invalid of [
+      '../other',
+      'a/b',
+      '..',
+      '.',
+      'has space',
+      '%2e%2e',
+      'x'.repeat(65),
+    ]) {
+      await act(async () =>
+        setInput(hermesInput() as HTMLInputElement, invalid)
+      );
+      expect(save()?.disabled).toBe(true);
+      expect(
+        host.querySelector('.agent-profiles-editor__field-error')?.textContent
+      ).toContain('64');
+      expect(hermesInput()?.getAttribute('aria-invalid')).toBe('true');
+      await act(async () => {
+        (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true })
+        );
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+    }
+    await act(async () =>
+      setInput(hermesInput() as HTMLInputElement, 'ika-frontend')
+    );
+    expect(save()?.disabled).toBe(false);
+    expect(
+      host.querySelector('.agent-profiles-editor__field-error')
+    ).toBeNull();
+    expect(hermesInput()?.getAttribute('aria-invalid')).toBe('false');
+  });
+
+  it('drops the binding when the draft leaves the hermes provider', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({ hermesProfile: 'koi-product' }),
+      onSubmit,
+    });
+    await selectFramework(host, 'Codex');
+    expect(hermesInput()).toBeNull();
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: 'codex', hermesProfile: null })
+    );
+  });
+
+  it('omits the binding entirely from a non-hermes create draft', () => {
+    const draft = {
+      ...profileDraftFrom(),
+      providerId: 'codex',
+      displayName: 'review codex',
+      hermesProfile: 'koi-product',
+    };
+    expect(profileSubmitInput(draft)).not.toHaveProperty('hermesProfile');
+    expect(withProfileProvider(draft, 'hermes').hermesProfile).toBe('');
+  });
+
+  it('accepts a valid binding and rejects segment-escaping values', () => {
+    const draft = (value: string) => ({
+      ...profileDraftFrom(hermesProfile()),
+      hermesProfile: value,
+    });
+    expect(hermesProfileDraftError(draft(''))).toBeNull();
+    expect(hermesProfileDraftError(draft('  '))).toBeNull();
+    expect(hermesProfileDraftError(draft('koi-product'))).toBeNull();
+    expect(hermesProfileDraftError(draft('a_b.c-1'))).toBeNull();
+    for (const invalid of [
+      '..',
+      '.',
+      '../other',
+      'a/b',
+      'a b',
+      'x'.repeat(65),
+    ]) {
+      expect(hermesProfileDraftError(draft(invalid))).toBeTruthy();
+    }
+    expect(
+      hermesProfileDraftError({
+        ...profileDraftFrom(profile()),
+        hermesProfile: '../other',
+      })
+    ).toBeNull();
+  });
+
+  it('serializes a trimmed binding and keeps the create path free of empty strings', () => {
+    expect(
+      profileSubmitInput({
+        ...profileDraftFrom(hermesProfile()),
+        hermesProfile: '  koi-product  ',
+      })
+    ).toEqual(expect.objectContaining({ hermesProfile: 'koi-product' }));
+    expect(
+      profileSubmitInput(profileDraftFrom(hermesProfile()))
+    ).not.toHaveProperty('hermesProfile');
+    expect(
+      profileSubmitInput(profileDraftFrom(hermesProfile()), {
+        clearEmpty: true,
+      })
+    ).toEqual(expect.objectContaining({ hermesProfile: null }));
+  });
+});
+
 describe('AgentProfileGallery', () => {
   it('groups cards by configured vendor and marks the provider default', () => {
     const profiles = [
@@ -254,6 +503,33 @@ describe('AgentProfileGallery', () => {
     expect(html).toContain('default');
     expect(html).toContain('built-in default');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>delete<\/button>/);
+  });
+
+  it('subtitles a bound hermes card with its gateway profile (#1453)', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(AgentProfileGallery, {
+        profiles: [
+          profile({
+            id: 'agent-profile:hermes:product',
+            providerId: 'hermes',
+            displayName: 'product owner',
+            hermesProfile: 'koi-product',
+          }),
+          profile({
+            id: 'agent-profile:hermes:plain',
+            providerId: 'hermes',
+            displayName: 'plain hermes',
+          }),
+        ],
+        frameworks: hermesFrameworks,
+        onEdit: vi.fn(),
+        onDuplicate: vi.fn(),
+        onDelete: vi.fn(),
+        onSetDefault: vi.fn(),
+      })
+    );
+    expect(html).toContain('hermes · koi-product');
+    expect(html.match(/hermes ·/g)).toHaveLength(1);
   });
 });
 

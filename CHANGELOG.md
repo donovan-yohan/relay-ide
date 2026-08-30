@@ -414,6 +414,11 @@ search`), and Claude channel agents get the Relay MCP facade mounted
   two different Hermes profiles. Hermes agents with no binding are unchanged. A
   binding the gateway does not serve, or has no key for, now says which profile
   failed and what to fix on the channel row instead of a bare HTTP error (#1462)
+- Settings can now set that binding: a Hermes agent profile carries a "hermes
+  profile" field that routes the agent to a named gateway profile, and leaving
+  it blank keeps using the gateway default. A name the gateway could never
+  serve is refused inline before the profile can be saved, and every bound
+  profile shows which Hermes profile it is on in the agent list (#1453)
 
 ## [0.1.1] - 2026-08-05
 
