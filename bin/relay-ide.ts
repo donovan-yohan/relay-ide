@@ -158,8 +158,184 @@ function isMissingCommandError(err: unknown, command: string): boolean {
 // Parse CLI flags
 const args = process.argv.slice(2);
 
-if (args.includes('--help') || args.includes('-h')) {
-  logger.info(`Usage: relay-ide [options]
+/**
+ * #1471: `relay-ide v1 ...` verb inventory, structured so the one-line usage
+ * error, the `v1 --help` page, and the per-group `v1 <group> --help` page can
+ * never drift from one another. Each entry is a dispatch group from
+ * `gatewayGroupHandlers` plus the subcommands that group actually accepts.
+ */
+const GATEWAY_USAGE_GROUPS: ReadonlyArray<
+  readonly [group: string, subcommands: readonly string[]]
+> = [
+  ['contract', ['--list', 'schema']],
+  ['nodes', ['manifest', 'list']],
+  ['repos', ['add']],
+  ['workspaces', ['launch']],
+  ['worktrees', ['create', 'status', 'delete', 'archive']],
+  [
+    'sessions',
+    [
+      'list',
+      'get',
+      'create',
+      'native list',
+      'native get',
+      'native import',
+      'native watch',
+      'renew',
+      'attach',
+      'detach',
+      'kill',
+      'rename',
+      'stream',
+      'wait',
+      'input',
+      'interventions',
+    ],
+  ],
+  ['tickets', ['start-work']],
+  ['branches', ['open-session']],
+  ['files', ['list', 'stat', 'read', 'write']],
+  ['work-contexts', ['get', 'resume']],
+  ['context', ['create', 'get', 'list', 'pin', 'unpin']],
+  [
+    'work-context-messages',
+    ['append', 'list', 'show', 'query', 'templates list'],
+  ],
+  [
+    'work-context-artifacts',
+    ['publish', 'list', 'show', 'pin', 'unpin', 'export', 'doctor'],
+  ],
+  ['handoff-artifacts', ['attach', 'list', 'show', 'copy']],
+  ['workspace-surfaces', ['list', 'publish']],
+  [
+    'workspace-topics',
+    ['list', 'search', 'get', 'create', 'update', 'archive'],
+  ],
+  [
+    'channels',
+    [
+      'list',
+      'get',
+      'create',
+      'history',
+      'threads history',
+      'roster',
+      'search',
+      'subscribe',
+      'post',
+      'run get',
+    ],
+  ],
+  ['cockpit', ['list', 'get']],
+  ['inbox', ['send', 'list', 'get', 'ack', 'resolve', 'ignore']],
+  ['workflow-runs', ['publish', 'update', 'list', 'get']],
+  ['automation-runs', ['register', 'observe', 'retire', 'list', 'get']],
+  ['pr-overseer', ['register', 'observe', 'retire', 'list', 'get']],
+  ['handoffs', ['plan']],
+  ['artifacts', ['read']],
+  ['supervisor', ['snapshot', 'sessions', 'send-text', 'send-key', 'submit']],
+  ['events', ['subscribe']],
+  ['settings', ['get', 'update']],
+  ['webhooks', ['status', 'ping']],
+];
+
+/** Flattened `group sub` verbs, e.g. `channels history`. */
+function gatewayUsageVerbs(): string[] {
+  return GATEWAY_USAGE_GROUPS.flatMap(([group, subcommands]) =>
+    subcommands.map((sub) => (group === 'contract' ? sub : `${group} ${sub}`))
+  );
+}
+
+/**
+ * Credential + transport contract shared by every `v1` verb. Printed on the
+ * `v1 --help` page so an agent does not have to read the source to learn how
+ * the CLI resolves its token.
+ */
+const GATEWAY_HELP_FOOTER = `Every v1 command requires --json and prints exactly one JSON envelope
+({ ok, contract, contractVersion, command, data | error }) on stdout.
+Streaming verbs (sessions stream, channels subscribe, events subscribe)
+print one envelope per line as NDJSON.
+
+Credential resolution, in order:
+  1. --token <token>
+  2. RELAY_IDE_BROWSER_TOKEN
+  3. the actor credential stored by 'relay-ide login'
+  4. the local hub's config-dir token (same-machine hub only)
+Use 'relay-ide login' to mint a scoped actor credential and
+'relay-ide login status' to see which credential is active.`;
+
+/** `relay-ide v1 --help`, and `relay-ide v1 <group> --help` when scoped. */
+function gatewayHelpText(group?: string): string {
+  const groups = group
+    ? GATEWAY_USAGE_GROUPS.filter(([name]) => name === group)
+    : GATEWAY_USAGE_GROUPS;
+  if (groups.length === 0) {
+    return `Unknown v1 group: ${group}\n\n${gatewayHelpText()}`;
+  }
+  const width = Math.max(
+    ...groups.flatMap(([name, subcommands]) =>
+      subcommands.map(
+        (sub) => (name === 'contract' ? sub : `${name} ${sub}`).length
+      )
+    )
+  );
+  const lines = groups
+    .map(([name, subcommands]) =>
+      subcommands
+        .map((sub) => {
+          const verb = name === 'contract' ? sub : `${name} ${sub}`;
+          return `  ${verb.padEnd(width)}  relay-ide v1 ${verb} --json`;
+        })
+        .join('\n')
+    )
+    .join('\n\n');
+  return `Usage: relay-ide v1 <command> [options] --json
+
+Commands:
+${lines}
+
+${GATEWAY_HELP_FOOTER}`;
+}
+
+/** `relay-ide login --help` / `relay-ide logout --help`. */
+function cliLoginHelpText(): string {
+  return `Usage: relay-ide login [--hub <url>] [--no-browser] [--json]
+       relay-ide login status [--json]
+       relay-ide logout [--json]
+
+Mint and store a scoped CLI actor credential for the v1 gateway (#1435).
+'login' starts a device-code flow against the hub, prints the code, opens
+the browser for approval unless --no-browser is passed, then stores the
+returned credential under the relay-ide config directory.
+
+Options:
+  --hub <url>        Hub base URL (default: http://127.0.0.1:<--port|3456>)
+  --no-browser       Print the verification URL instead of opening a browser
+  --json             Emit machine-readable JSON instead of human text
+
+Subcommands:
+  status             Show the stored credential's actor, scopes, and expiry
+  (logout)           Delete the stored credential`;
+}
+
+/**
+ * Command-specific `--help` pages, keyed by the first CLI argument (#1471).
+ * A Map, not an object literal, so `relay-ide toString --help` cannot resolve
+ * an inherited `Object.prototype` member as if it were a help renderer.
+ */
+const CLI_HELP_TOPICS = new Map<string, (topicArgs: string[]) => string>([
+  [
+    'v1',
+    (topicArgs: string[]) =>
+      gatewayHelpText(topicArgs.find((arg) => !arg.startsWith('-'))),
+  ],
+  ['login', cliLoginHelpText],
+  ['logout', cliLoginHelpText],
+]);
+
+function relayRootHelpText(): string {
+  return `Usage: relay-ide [options]
        relay-ide <command>
 
 Commands:
@@ -182,7 +358,12 @@ Commands:
     get <work-context-id> [--json]
                      Show one cockpit item with safe follow-up commands
   manifest           Print local node capability manifest as JSON
-  v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
+  login [--hub <url>] [--no-browser] [--json]
+                     Mint and store a scoped CLI actor credential for v1
+    status [--json]                   Show the stored credential and its expiry
+  logout             Delete the stored CLI actor credential
+  v1 ... --json      Versioned CLI gateway JSON contract for channels/sessions/files
+                     ('relay-ide v1 --help' lists every verb)
   diag               Collect local diagnostics
     bundle [--output <dir>] [--lines <n>] [--json]
                                        Write a timestamped redacted diagnostics directory
@@ -237,7 +418,24 @@ Options:
   --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
   --allow-degraded   Permit the hub to start with failed persistence stores (unsafe; health reports degraded)
   --version, -v      Show version
-  --help, -h         Show this help`);
+  --help, -h         Show this help
+
+Run 'relay-ide <command> --help' for command-specific usage
+(for example 'relay-ide v1 --help' or 'relay-ide login --help').`;
+}
+
+// #1471: `--help` anywhere in argv used to short-circuit to root help, so
+// `relay-ide login --help` and `relay-ide v1 --help` printed the wrong page.
+// The first positional argument now selects a command-specific help page when
+// one exists; everything else still falls back to root help.
+if (args.includes('--help') || args.includes('-h')) {
+  const helpTopic = args[0] && !args[0].startsWith('-') ? args[0] : undefined;
+  const renderTopicHelp = helpTopic
+    ? CLI_HELP_TOPICS.get(helpTopic)
+    : undefined;
+  logger.info(
+    renderTopicHelp ? renderTopicHelp(args.slice(1)) : relayRootHelpText()
+  );
   process.exit(0);
 }
 
@@ -1985,8 +2183,11 @@ function requireGatewaySessionId(
 }
 
 function gatewayUsage(): never {
+  // #1471: derived from GATEWAY_USAGE_GROUPS so a newly wired verb can never be
+  // missing from the usage line (`channels post` was the only channels verb
+  // advertised here while eight others were already dispatched).
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions native list|sessions native get|sessions native import|sessions native watch|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|channels post|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|handoffs plan|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    `Usage: relay-ide v1 (${gatewayUsageVerbs().join('|')}) --json\nRun 'relay-ide v1 --help' for the grouped command list.`
   );
   process.exit(1);
 }
@@ -5823,6 +6024,8 @@ type ChannelCliValueFlag =
   | '--query'
   | '--workspace-id'
   | '--include-archived'
+  | '--title'
+  | '--description'
   | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
@@ -6088,6 +6291,72 @@ async function runGatewayChannelsSearch(channelArgs: string[]): Promise<void> {
   printGatewayEnvelope(gatewayOk('channels.search', result), 0);
 }
 
+/**
+ * #1472: `channels create` is the ergonomic front-end alias for the
+ * `workspace-topics.create` gateway verb — a channel IS a workspace topic, so
+ * no new verb is minted and the envelope still reports
+ * `workspace-topics.create`. `workspace-topics create` keeps working with the
+ * same `--input-json` / `--input-file` shape, which this alias also accepts.
+ */
+async function runGatewayChannelsCreate(channelArgs: string[]): Promise<void> {
+  const ergonomicFlags = [
+    '--title',
+    '--description',
+    '--workspace-id',
+    '--channel-id',
+  ] as const;
+  if (
+    channelArgs.includes('--input-json') ||
+    channelArgs.includes('--input-file')
+  ) {
+    // Silently dropping a flag the caller passed is worse than refusing: the
+    // JSON body would win and `--title` would vanish without a word.
+    const conflicting = ergonomicFlags.filter((flag) =>
+      channelArgs.includes(flag)
+    );
+    if (conflicting.length > 0) {
+      gatewayInvalid(
+        'workspace-topics.create',
+        `${conflicting.join(', ')} cannot be combined with --input-json/--input-file`,
+        { arguments: conflicting }
+      );
+    }
+    await runGatewayWorkspaceTopicsCreate(channelArgs);
+    return;
+  }
+  const values = parseChannelCliFlags(
+    'workspace-topics.create',
+    channelArgs,
+    ergonomicFlags
+  );
+  const title = values.get('--title')?.trim() ?? '';
+  if (!title) {
+    gatewayInvalid(
+      'workspace-topics.create',
+      '--title is required (or pass --input-json/--input-file)',
+      { field: 'title' }
+    );
+  }
+  // `workspace:local` is the documented placeholder the hub normalizes to its
+  // seeded local workspace, so a single-workspace hub needs no --workspace-id.
+  const workspaceId = values.get('--workspace-id')?.trim() ?? 'workspace:local';
+  const description = values.get('--description')?.trim();
+  const channelId = values.get('--channel-id')?.trim();
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.create',
+    pathName: '/workspace-topics',
+    method: 'POST',
+    body: {
+      workspaceId,
+      title,
+      ...(description ? { description } : {}),
+      ...(channelId ? { id: channelId } : {}),
+    },
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
+}
+
 async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   const subcommand = gatewayArgs[1];
   const channelArgs = gatewayArgs.slice(2);
@@ -6317,6 +6586,8 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
     });
     printGatewayEnvelope(gatewayOk('channels.post', result), 0);
   }
+  if (subcommand === 'create') return runGatewayChannelsCreate(channelArgs);
+
   gatewayInvalid('channels.list', 'unknown channels command', {
     args: gatewayArgs,
   });
