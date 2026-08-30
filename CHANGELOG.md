@@ -28,6 +28,18 @@ workflow.
   instead of starting a second one — noticeably faster first load on hubs
   tracking many repos (#1456)
 
+### Native session listing performance
+
+#### Changed
+
+- `sessions native list` and `sessions native get` now answer in milliseconds
+  instead of seconds. Relay caches each provider transcript's summary until the
+  file actually changes, reads providers concurrently, and resolves a session id
+  straight to its transcript, so a repeat listing of ~1,000 Claude and Codex
+  sessions returns in about 0.1 s instead of ~5 s and a single session read in
+  under 50 ms instead of ~2.5 s. A transcript that has been appended to is
+  re-read on the next listing, so results stay live (#1449)
+
 ### Faster repo, project, and workspace-tree reads
 
 #### Fixed

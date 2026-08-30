@@ -127,6 +127,39 @@ the scoped `native-sessions` gateway topic with durable byte cursors (#1426,
 commands themselves. Providers currently covered: `claude`, `codex`,
 `prime-agent`, `pi`, `dsh` (framed-zstd tailer), and `antigravity`.
 
+### Read-path performance contract (#1449)
+
+`sessions native list` fans out over every registered adapter, and each adapter
+walks up to 500 transcripts. Summaries must therefore be cheap on repeat calls:
+
+- Derive each file's summary behind `FileDerivedCache`
+  (`server/provider-state/file-summary-cache.ts`), keyed on the
+  `(mtimeMs, ctimeMs, size, ino)` stamp from one `stat`. All four matter: size
+  catches appends, mtime catches in-place rewrites, ino catches a replacement by
+  rename, and ctime catches a restore that forges mtime. Re-stat after the read
+  and only cache when the stamp still matches, so a transcript appended to
+  mid-parse is never cached, and share concurrent reads of one path with
+  `SingleFlight`.
+- Fan the per-file work out with `runWithConcurrency`, which preserves input
+  order — the summary sort is stable, so pre-sort order is part of the response.
+- Collect summary facts while streaming the file. Do not materialize the parsed
+  record array on the list path; the import and read paths may.
+- Resolve a `nativeId` to a path before reading anything (Claude and Codex name
+  the canonical transcript `<nativeId>.jsonl`). The by-name walk must use the
+  same traversal order and the same `maxFiles` budget as the list walk, or it
+  resolves ids to a different transcript than the list shows — or to ids the
+  capped list can never return. The fast path is best effort: honour `ref.cwd`,
+  verify the parsed id, and fall back to the full walk on any mismatch or read
+  failure.
+
+The registry lists providers concurrently, so an adapter's list path must not
+assume it is the only one running.
+
+`claude` and `codex` implement this contract today; `pi`, `prime-agent`, `dsh`,
+and `antigravity` still re-read their whole store per request. Those stores are
+small enough that the concurrent registry hides the cost (~75 ms combined on a
+real machine), but a new adapter should follow the contract from the start.
+
 ### Antigravity CLI (`agy`) state adapter
 
 The Antigravity CLI is wired as a native-session provider only (`#1439`): no
