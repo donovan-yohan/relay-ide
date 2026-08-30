@@ -517,7 +517,13 @@ export function AgentProfileEditor({
           <TuiInput
             value={draft.hermesProfile}
             onChange={(value) => set('hermesProfile', value)}
-            placeholder="gateway default"
+            placeholder="hermes default"
+            /*
+             * The hint and error spans sit inside this `<label>`, so the
+             * computed accessible name would otherwise swallow both. This
+             * override is load-bearing, not boilerplate — do not delete it
+             * without moving those spans out of the label first.
+             */
             aria-label="hermes profile"
             aria-invalid={hermesError ? 'true' : 'false'}
             aria-describedby={
@@ -753,6 +759,17 @@ export function SettingsAgentProfilesSection({
         </div>
         {editing !== undefined ? (
           <AgentProfileEditor
+            /*
+             * The editor seeds its draft ONCE from `profile`, and the gallery
+             * stays mounted while it is open — so every card's edit/duplicate
+             * button is live. Without a key, clicking edit on a second profile
+             * re-renders the same instance, leaving the first profile's draft
+             * in place while the submit handler addresses the second profile's
+             * id: one profile's `hermesProfile` would be written onto another
+             * row, or cleared off it. Remounting per edited row is what makes
+             * `profileDraftFrom` re-run.
+             */
+            key={editing?.id || 'new'}
             {...(editing ? { profile: editing } : {})}
             frameworks={frameworks}
             submitting={createMutation.isPending || updateMutation.isPending}

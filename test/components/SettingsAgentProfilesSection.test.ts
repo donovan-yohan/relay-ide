@@ -8,9 +8,12 @@ import type { AgentProfile } from '../../shared/agent-profile.js';
 import { deleteAgentProfile } from '../../frontend/src/lib/api.js';
 import type { FrameworkInfo } from '../../frontend/src/lib/types.js';
 import { SearchableSelect } from '../../frontend/src/components/SearchableSelect.js';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useConfigStore } from '../../frontend/src/lib/stores/config.js';
 import {
   AgentProfileEditor,
   AgentProfileGallery,
+  SettingsAgentProfilesSection,
   groupAgentProfiles,
   hermesProfileDraftError,
   profileDraftFrom,
@@ -254,9 +257,7 @@ describe('AgentProfileEditor hermes profile binding (#1453)', () => {
     });
 
   const hermesInput = () =>
-    host.querySelector<HTMLInputElement>(
-      'input[placeholder="gateway default"]'
-    );
+    host.querySelector<HTMLInputElement>('input[placeholder="hermes default"]');
 
   const renderEditor = async (
     props: Partial<Parameters<typeof AgentProfileEditor>[0]> & {
@@ -467,6 +468,128 @@ describe('AgentProfileEditor hermes profile binding (#1453)', () => {
         clearEmpty: true,
       })
     ).toEqual(expect.objectContaining({ hermesProfile: null }));
+    // A non-hermes edit sends the field too — as an unconditional `null`, the
+    // same shape `model`/`effort` already use. Pinned because it is a new
+    // field on every profile write, and `''` here would be a router 400.
+    expect(
+      profileSubmitInput(profileDraftFrom(profile()), { clearEmpty: true })
+    ).toEqual(expect.objectContaining({ hermesProfile: null }));
+  });
+});
+
+describe('SettingsAgentProfilesSection edit target (#1453)', () => {
+  let host: HTMLDivElement;
+  let root: Root;
+  const bound = profile({
+    id: 'agent-profile:hermes:product',
+    providerId: 'hermes',
+    displayName: 'product owner',
+    hermesProfile: 'koi-product',
+    model: '',
+    effort: '',
+  });
+  const unbound = profile({
+    id: 'agent-profile:claude:reviewer',
+    providerId: 'claude',
+    displayName: 'reviewer claude',
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', matchMedia);
+    useConfigStore.setState({ frameworks: hermesFrameworks });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * The gallery stays mounted while the editor is open, so a second `edit`
+   * click retargets the submit handler. If the editor is not remounted per
+   * edited row it keeps the first profile's draft, and this PR's binding is
+   * what gets written onto — or cleared off — the wrong profile.
+   */
+  it('re-seeds the editor when a second profile is opened for edit', async () => {
+    const writes: { url: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input);
+        if (!init || init.method === undefined || init.method === 'GET') {
+          return new Response(JSON.stringify({ profiles: [bound, unbound] }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        writes.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ profile: unbound }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client },
+          React.createElement(SettingsAgentProfilesSection, {
+            searchQuery: '',
+          })
+        )
+      );
+    });
+    for (
+      let i = 0;
+      i < 50 && !host.querySelector('.agent-profiles-card');
+      i++
+    ) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(host.querySelectorAll('.agent-profiles-card')).toHaveLength(2);
+    const editButton = (profileId: string) =>
+      host
+        .querySelector(`[data-profile-id="${profileId}"]`)
+        ?.querySelector<HTMLButtonElement>('button');
+    await act(async () => editButton(bound.id)?.click());
+    expect(
+      host.querySelector<HTMLInputElement>(
+        'input[placeholder="hermes default"]'
+      )?.value
+    ).toBe('koi-product');
+    await act(async () => editButton(unbound.id)?.click());
+    // The hermes-only field must be gone: the draft now belongs to a claude row.
+    expect(
+      host.querySelector('input[placeholder="hermes default"]')
+    ).toBeNull();
+    expect(
+      host.querySelector<HTMLInputElement>(
+        'input[placeholder="e.g. reviewer codex"]'
+      )?.value
+    ).toBe('reviewer claude');
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    await act(async () => {});
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.url).toContain(encodeURIComponent(unbound.id));
+    expect(writes[0]?.body).toEqual(
+      expect.objectContaining({
+        providerId: 'claude',
+        displayName: 'reviewer claude',
+        hermesProfile: null,
+      })
+    );
   });
 });
 

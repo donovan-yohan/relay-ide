@@ -418,7 +418,7 @@ search`), and Claude channel agents get the Relay MCP facade mounted
   profile" field that routes the agent to a named gateway profile, and leaving
   it blank keeps using the gateway default. A name the gateway could never
   serve is refused inline before the profile can be saved, and every bound
-  profile shows which Hermes profile it is on in the agent list (#1453)
+  profile shows which Hermes profile it is on in the agent list (#1463)
 
 ## [0.1.1] - 2026-08-05
 
