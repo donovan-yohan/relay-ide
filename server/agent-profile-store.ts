@@ -215,6 +215,7 @@ export function initAgentProfileStore(configDir: string): AgentProfileStore {
 
 /** Factory taking an explicit DB path. Used directly by unit tests. */
 export function createAgentProfileStore(dbPath: string): AgentProfileStore {
+  precreateSecretFile(dbPath);
   const db = new Database(dbPath);
   // The DB now holds a bearer secret. SQLite copies the main file's mode onto
   // the -wal/-shm sidecars it creates, so tighten BEFORE enabling WAL. Config
@@ -403,10 +404,21 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         throw new AgentProfileStoreError(400, 'agent_profile_invalid');
       }
       // An OMITTED `hermesApiKey` leaves the stored key alone; an explicit
-      // `null` clears it. Rejecting a malformed key before the transaction
-      // keeps a bad secret from ever reaching the column.
-      const patchesSecret = hasOwn(patch, 'hermesApiKey');
-      const nextSecret = patchesSecret
+      // `null` clears it. `undefined` counts as omitted even when the property
+      // is present, because the field's declared type is `string | null` and a
+      // caller spreading an optional variable in means "untouched", not "wipe".
+      // Rejecting a malformed key before the transaction keeps a bad secret
+      // from ever reaching the column.
+      const setsSecret =
+        hasOwn(patch, 'hermesApiKey') && patch.hermesApiKey !== undefined;
+      // The secret authenticates against the OLD provider's gateway, so a
+      // provider change clears it unless this same patch supplies a new one.
+      // This invariant lives HERE, beside the column it protects, rather than
+      // in the router: a non-HTTP caller must not be able to carry credential
+      // material across a provider change.
+      const providerChanged = providerId !== current.providerId;
+      const patchesSecret = setsSecret || providerChanged;
+      const nextSecret = setsSecret
         ? normalizeGatewaySecret(patch.hermesApiKey)
         : null;
       const nowIso = new Date().toISOString();
@@ -626,8 +638,14 @@ function toStoredJson(profile: AgentProfile): string {
 }
 
 /**
- * Validate a write of the gateway secret. `undefined`/`null`/empty clear it; a
- * malformed key is a typed 400 whose message never echoes the value.
+ * Validate a write of the gateway secret. `null` and an all-whitespace string
+ * clear it; a malformed key is a typed 400 whose message never echoes the
+ * value.
+ *
+ * The HTTP boundary is deliberately STRICTER: `agent-profile-router.ts` rejects
+ * `''` with a 400, exactly as it does for `hermesProfile`, so an emptied editor
+ * field can never be mistaken for "clear the key". This function is lenient
+ * only so a direct store caller cannot store whitespace as a bearer token.
  */
 function normalizeGatewaySecret(
   value: string | null | undefined
@@ -656,9 +674,35 @@ function restrictSecretFileMode(dbPath: string): void {
   for (const target of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
     try {
       fs.chmodSync(target, 0o600);
-    } catch {
-      // Missing sidecar, or a filesystem/owner that refuses chmod.
+    } catch (err) {
+      // A sidecar that does not exist yet is the normal case and says nothing.
+      // Anything else means the bearer key may be sitting in a world-readable
+      // file, and silence there is the wrong answer — the config dir itself is
+      // created without an explicit mode, so this chmod is the only thing
+      // narrowing the DB.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+      logger.warn(
+        'could not restrict permissions on %s: %s',
+        target,
+        (err as Error)?.message ?? String(err)
+      );
     }
+  }
+}
+
+/**
+ * Create the DB file at 0600 BEFORE better-sqlite3 opens it, so it never exists
+ * at `0666 & ~umask` even briefly. No-op for SQLite's non-file paths and for a
+ * file that already exists (`wx` fails with EEXIST, and the chmod after open
+ * narrows that case).
+ */
+function precreateSecretFile(dbPath: string): void {
+  if (!dbPath || dbPath === ':memory:' || dbPath.startsWith('file:')) return;
+  try {
+    fs.closeSync(fs.openSync(dbPath, 'wx', 0o600));
+  } catch {
+    // Already exists, or the directory is not writable — the open below and
+    // `restrictSecretFileMode` handle both.
   }
 }
 
@@ -718,6 +762,10 @@ function applyProfilePatch(
     providerId,
     isDefault,
   };
+  // A gateway binding names a profile on the OLD provider's gateway, so it
+  // cannot follow a provider change any more than the secret beside it can.
+  // An explicit `hermesProfile` in the same patch still wins, below.
+  if (providerId !== current.providerId) delete profile.hermesProfile;
   if (hasOwn(patch, 'displayName')) {
     profile.displayName =
       typeof patch.displayName === 'string' ? patch.displayName : '';

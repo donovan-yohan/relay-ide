@@ -3086,6 +3086,13 @@ describe('channel-agent-binder — lifecycle', () => {
       extra: { hermesProfile: 'koi-product', hermesApiKey: 'koi-only-key' },
     });
 
+    // `extra` is runtime-only, and the durable binding row is where a leak
+    // would become permanent. `ChannelMessageStore.upsertBinding` has no
+    // `extra` field at all, so this is belt-and-braces on that contract.
+    expect(
+      JSON.stringify(store.getBinding(CH, 'agent-profile:hermes:bound'))
+    ).not.toContain('koi-only-key');
+
     post(store, binder, '@Unbound Hermes two', ['hermes']);
     await waitFor(() => sessions.spawns() === 2);
     const unbound = sessions.lastCreateParams() as {

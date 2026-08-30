@@ -592,7 +592,7 @@ describe('AgentProfileEditor hermes profile binding (#1453)', () => {
     expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('hermesApiKey');
   });
 
-  it('clears the key when the draft leaves the hermes provider', async () => {
+  it('never sends the key field on a provider change; the server owns that clear', async () => {
     const onSubmit = vi.fn();
     await renderEditor({
       profile: hermesProfile({
@@ -608,9 +608,49 @@ describe('AgentProfileEditor hermes profile binding (#1453)', () => {
         new Event('submit', { bubbles: true, cancelable: true })
       );
     });
+    // The store clears the secret and the binding whenever the SAVED provider
+    // changes. Arming a client-side clear as well would wipe the key on a
+    // round trip (hermes -> codex -> hermes) that is not a provider change at
+    // all, so the draft must stay quiet about a key it did not touch.
     expect(onSubmit.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ providerId: 'codex', hermesApiKey: null })
+      expect.objectContaining({ providerId: 'codex' })
     );
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('hermesApiKey');
+  });
+
+  it('survives a provider round trip without arming a wipe', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({
+        hermesProfile: 'koi-product',
+        hermesApiKeySet: true,
+      }),
+      onSubmit,
+    });
+    await selectFramework(host, 'Codex');
+    await selectFramework(host, 'Hermes');
+    // Still truthfully "set": the key never left the row, and the save the
+    // operator is about to make does not change the provider.
+    expect(keyHint()).toContain('set');
+    expect(keyHint()).not.toContain('not set');
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('hermesApiKey');
+  });
+
+  it('never offers clear and keep at the same time', async () => {
+    await renderEditor({ profile: hermesProfile({ hermesApiKeySet: true }) });
+    expect(button('clear')).toBeTruthy();
+    expect(button('keep')).toBeUndefined();
+    await act(async () => button('clear')?.click());
+    expect(button('clear')).toBeUndefined();
+    expect(button('keep')).toBeTruthy();
+    await act(async () => button('keep')?.click());
+    expect(button('clear')).toBeTruthy();
+    expect(button('keep')).toBeUndefined();
   });
 
   it('blocks save on a malformed key and never submits it', async () => {

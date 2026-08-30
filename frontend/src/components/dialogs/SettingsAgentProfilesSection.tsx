@@ -149,13 +149,12 @@ export function withProfileProvider(
     model: '',
     effort: '',
     hermesProfile: '',
-    // The gateway key belongs to the OLD provider's gateway. Marking it cleared
-    // (rather than merely forgetting it) is what makes the save send an
-    // explicit `null`, so the secret does not survive as dead credential
-    // material on a row that can no longer use it.
+    // Only the TYPED box is dropped. The stored key is not touched from here:
+    // the server clears it whenever the saved `providerId` actually changes
+    // (`agent-profile-store.ts` `update`), so arming a client-side clear as
+    // well would wipe the key on a round trip — hermes → codex → hermes — that
+    // the server correctly sees as no provider change at all.
     hermesApiKey: '',
-    hermesApiKeyCleared: draft.hermesApiKeyStored || draft.hermesApiKeyCleared,
-    hermesApiKeyStored: false,
   };
 }
 
@@ -658,7 +657,7 @@ export function AgentProfileEditor({
               >
                 {hermesApiKeyStatus(draft)} · relay never returns a saved key.
               </span>
-              {draft.hermesApiKeyStored ? (
+              {draft.hermesApiKeyStored && !draft.hermesApiKeyCleared ? (
                 <TuiButton
                   variant="ghost"
                   size="sm"

@@ -734,6 +734,75 @@ describe('gateway secret storage', () => {
     expect(JSON.stringify(store.list())).not.toContain('smuggled-key');
   });
 
+  it('treats an explicit undefined as "untouched", not as a wipe', () => {
+    const store = makeStore();
+    const created = store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesApiKey: 'first-key',
+    });
+    // The declared type is `string | null`, so a caller spreading an optional
+    // variable in means "leave it alone". Treating the present-but-undefined
+    // property as a clear would destroy the secret on an ordinary save.
+    store.update(created.id, { hermesApiKey: undefined, model: 'sonnet' });
+    expect(store.getGatewaySecret(created.id)).toBe('first-key');
+  });
+
+  it('clears the key and the binding on a provider change, without the router', () => {
+    const store = makeStore();
+    store.seedBuiltIns(FRAMEWORKS);
+    const created = store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesProfile: 'koi-product',
+      hermesApiKey: 'koi-only-key',
+    });
+    // The invariant is the STORE's, so a non-HTTP caller cannot carry gateway
+    // credential material across a provider change either.
+    const moved = store.update(created.id, { providerId: 'codex' });
+    expect(moved.hermesProfile).toBeUndefined();
+    expect(moved.hermesApiKeySet).toBeUndefined();
+    expect(store.getGatewaySecret(created.id)).toBeNull();
+  });
+
+  it('lets one patch move the provider AND set that provider key', () => {
+    const store = makeStore();
+    store.seedBuiltIns(FRAMEWORKS);
+    const created = store.create({
+      providerId: 'codex',
+      displayName: 'becomes hermes',
+    });
+    const moved = store.update(created.id, {
+      providerId: 'hermes',
+      hermesProfile: 'koi-product',
+      hermesApiKey: 'koi-only-key',
+    });
+    expect(moved.hermesProfile).toBe('koi-product');
+    expect(moved.hermesApiKeySet).toBe(true);
+    expect(store.getGatewaySecret(created.id)).toBe('koi-only-key');
+  });
+
+  it('creates the DB file at 0600 before opening it', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesApiKey: 'koi-only-key',
+    });
+    // The DB now holds a bearer token, so it must never be group/world
+    // readable — not even for the window between create and chmod.
+    for (const file of [dbPath, `${dbPath}-wal`]) {
+      if (!fs.existsSync(file)) continue;
+      expect(fs.statSync(file).mode & 0o077).toBe(0);
+    }
+  });
+
   it('migrates a v1 database in place, preserving existing rows', () => {
     const dir = fs.mkdtempSync(
       path.join(os.tmpdir(), 'relay-agent-profile-test-')
