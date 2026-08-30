@@ -89,6 +89,8 @@ export interface AgentProfileCreateInput {
   provider?: string;
   effort?: string;
   envVars?: Record<string, string>;
+  /** Hermes multiplex profile binding; see `AgentProfile.hermesProfile`. */
+  hermesProfile?: string;
   namePool?: string[];
   respondTo?: AgentProfileRespondTo;
   respondToAllowlist?: string[];
@@ -110,6 +112,8 @@ export interface AgentProfileUpdateInput {
   provider?: string | null;
   effort?: string | null;
   envVars?: Record<string, string> | null;
+  /** Hermes multiplex profile binding; `null` clears it. */
+  hermesProfile?: string | null;
   namePool?: string[] | null;
   respondTo?: AgentProfileRespondTo | null;
   respondToAllowlist?: string[] | null;
@@ -593,7 +597,7 @@ function applyProfilePatch(
 
   const optionalFields: Array<
     readonly [
-      'systemPrompt' | 'model' | 'provider' | 'effort',
+      'systemPrompt' | 'model' | 'provider' | 'effort' | 'hermesProfile',
       string | null | undefined,
     ]
   > = [
@@ -601,6 +605,7 @@ function applyProfilePatch(
     ['model', patch.model],
     ['provider', patch.provider],
     ['effort', patch.effort],
+    ['hermesProfile', patch.hermesProfile],
   ];
   for (const [field, value] of optionalFields) {
     if (!hasOwn(patch, field)) continue;
@@ -657,6 +662,8 @@ function buildProfile(
   if (provider) profile.provider = provider;
   const effort = readTrimmed(input.effort);
   if (effort) profile.effort = effort;
+  const hermesProfile = readTrimmed(input.hermesProfile);
+  if (hermesProfile) profile.hermesProfile = hermesProfile;
   if (input.envVars && typeof input.envVars === 'object') {
     const envVars: Record<string, string> = {};
     for (const [key, val] of Object.entries(input.envVars)) {

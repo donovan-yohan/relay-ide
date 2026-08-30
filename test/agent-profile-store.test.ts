@@ -463,6 +463,63 @@ describe('update — profile JSON and denormalized invariant stay in lockstep', 
   });
 });
 
+describe('hermes profile binding round-trip (#1453)', () => {
+  it('persists, patches and clears the binding through the JSON blob', () => {
+    const store = makeStore();
+    store.seedBuiltIns(FRAMEWORKS);
+    const created = store.create({
+      providerId: 'claude',
+      displayName: 'Product Owner',
+      hermesProfile: 'koi-product',
+    });
+    expect(created.hermesProfile).toBe('koi-product');
+    expect(store.get(created.id)?.hermesProfile).toBe('koi-product');
+
+    expect(
+      store.update(created.id, { hermesProfile: 'ika-frontend' }).hermesProfile
+    ).toBe('ika-frontend');
+    // Untouched by an unrelated PATCH.
+    expect(store.update(created.id, { model: 'sonnet' }).hermesProfile).toBe(
+      'ika-frontend'
+    );
+    // Cleared by an explicit null.
+    expect(
+      store.update(created.id, { hermesProfile: null }).hermesProfile
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['../other'],
+    ['a/b'],
+    ['..'],
+    ['.'],
+    ['has space'],
+    ['x'.repeat(65)],
+  ])(
+    'refuses %j at the store guard even when the router is bypassed',
+    (value) => {
+      const store = makeStore();
+      store.seedBuiltIns(FRAMEWORKS);
+      expect(() =>
+        store.create({
+          providerId: 'claude',
+          displayName: 'Bad Binding',
+          hermesProfile: value,
+        })
+      ).toThrow(AgentProfileStoreError);
+
+      const clean = store.create({
+        providerId: 'claude',
+        displayName: 'Clean Binding',
+      });
+      expect(() => store.update(clean.id, { hermesProfile: value })).toThrow(
+        AgentProfileStoreError
+      );
+      expect(store.get(clean.id)?.hermesProfile).toBeUndefined();
+    }
+  );
+});
+
 describe('read-time shim over the store', () => {
   it('maps agent:<framework> to the seeded default profile id', () => {
     const store = makeStore();

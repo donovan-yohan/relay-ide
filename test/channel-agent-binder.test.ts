@@ -2984,6 +2984,58 @@ describe('channel-agent-binder — lifecycle', () => {
     ).rejects.toMatchObject({ reasonCode: 'UNAVAILABLE' });
   });
 
+  it('passes a hermes profile binding through to adapter extra, and only for hermes (#1453)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'hermes' }, { id: 'mock' }]);
+    profiles.create({
+      id: 'agent-profile:hermes:po',
+      providerId: 'hermes',
+      displayName: 'Product Owner',
+      hermesProfile: 'koi-product',
+    });
+    // A stale binding left on a NON-hermes profile must not reach that
+    // adapter's `extra` — the field is a Hermes multiplex quirk, not a generic
+    // provider option.
+    profiles.create({
+      id: 'agent-profile:mock:stale',
+      providerId: 'mock',
+      displayName: 'Stale Mock',
+      hermesProfile: 'koi-product',
+    });
+    const { binder, sessions, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'hermes',
+          displayName: 'Hermes',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        ...MOCK_TARGETS,
+      ],
+      knownProviderIds: ['hermes', 'mock'],
+      agentProfileStore: profiles,
+    });
+
+    post(store, binder, '@Product Owner one', ['hermes']);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()).toMatchObject({
+      providerId: 'hermes',
+      extra: { hermesProfile: 'koi-product' },
+    });
+
+    post(store, binder, '@Stale Mock two', ['mock']);
+    await waitFor(() => sessions.spawns() === 2);
+    const mockParams = sessions.lastCreateParams() as {
+      providerId: string;
+      extra?: Record<string, unknown>;
+    };
+    expect(mockParams.providerId).toBe('mock');
+    expect(mockParams.extra?.['hermesProfile']).toBeUndefined();
+  });
+
   it('keeps same-provider profiles isolated: bindings, sessions, replies, roster, and status all use profile actor ids', async () => {
     const profiles = createAgentProfileStore(':memory:');
     cleanup.push(() => profiles.close());
@@ -8449,4 +8501,3 @@ describe('channel-agent-binder — delivery receipts (#1442)', () => {
     expect(offline[0]!.reasonCode).toBe('runtime_unavailable');
   });
 });
-

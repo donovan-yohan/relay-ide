@@ -68,6 +68,19 @@ export interface AgentProfile {
   effort?: string;
   /** Optional extra environment variables applied at launch. */
   envVars?: Record<string, string>;
+  /**
+   * Optional Hermes multiplex profile binding (`providerId === 'hermes'`).
+   *
+   * Free-form operator-typed id: Relay does NOT track or reconcile the Hermes
+   * profile roster (#1453 operator decision). Absent means the Hermes adapter
+   * talks to the gateway's default/active profile at bare `/v1/...`; present
+   * means every gateway call is prefixed with `/p/<hermesProfile>/`.
+   *
+   * The value becomes a URL path SEGMENT, so it is constrained to
+   * `HERMES_PROFILE_PATTERN` and `.`/`..` are rejected outright — see
+   * `isValidHermesProfile`.
+   */
+  hermesProfile?: string;
   /** Optional pool of alternate names this profile also answers to. */
   namePool?: string[];
   /** Optional respond-to policy (advisory in this slice). */
@@ -302,6 +315,25 @@ export function resolveHistoricalAgentSenderProfileId(
   return match ? match.id : null;
 }
 
+/**
+ * Allowed shape of `AgentProfile.hermesProfile`. Deliberately narrower than a
+ * generic string: the value is interpolated into a URL path segment, so path
+ * separators, percent-encoding and whitespace are all excluded by construction.
+ */
+export const HERMES_PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * True when `value` is a usable Hermes profile binding. Rejects non-strings,
+ * the empty string, anything outside `HERMES_PROFILE_PATTERN` (which already
+ * excludes `/`, backslash, `%` and whitespace), and the relative path tokens `.`
+ * and `..`, which match the pattern but would traverse when used as a segment.
+ */
+export function isValidHermesProfile(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  if (value === '.' || value === '..') return false;
+  return HERMES_PROFILE_PATTERN.test(value);
+}
+
 /** Runtime guard for a stored/parsed AgentProfile row. */
 export function isAgentProfile(value: unknown): value is AgentProfile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -326,6 +358,8 @@ export function isAgentProfile(value: unknown): value is AgentProfile {
       Object.values(v.envVars as Record<string, unknown>).every(
         (x) => typeof x === 'string'
       ));
+  const hermesProfileOk =
+    v.hermesProfile === undefined || isValidHermesProfile(v.hermesProfile);
   const respondToOk =
     v.respondTo === undefined ||
     v.respondTo === 'owner-only' ||
@@ -343,6 +377,7 @@ export function isAgentProfile(value: unknown): value is AgentProfile {
     isOptString(v.provider) &&
     isOptString(v.effort) &&
     envVarsOk &&
+    hermesProfileOk &&
     isOptStringArray(v.namePool) &&
     respondToOk &&
     isOptStringArray(v.respondToAllowlist) &&
