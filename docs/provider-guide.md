@@ -115,6 +115,66 @@ session directories with tools, extensions, skills, templates, themes, context
 files, and Pi telemetry disabled. Cleanup removes those directories, and output
 omits prompts, provider stderr, credentials, and raw session identifiers.
 
+### Hermes multiplex profile binding
+
+A Relay agent profile whose provider is `hermes` may carry an optional
+`hermesProfile` binding: the id of a Hermes profile served by that gateway's
+multiplex listener. Settings → agent profiles shows it as a plain text
+`hermes profile` field on hermes profiles only. There is no roster discovery —
+Relay never enumerates or reconciles the Hermes profile list, so the value is
+operator-typed and Relay's only check is that it is a legal id.
+
+- **Unbound** (field blank, `hermesProfile` absent or `null`) — the adapter
+  calls the gateway at bare `/v1/...`, which is the gateway's default/active
+  profile. Byte-identical to pre-binding behavior.
+- **Bound** — every gateway call that runtime makes is prefixed with
+  `/p/<profile>`: the connect-time `health` and `/v1/models` probes, the turn at
+  `/v1/responses`, the abort at `/session/<id>/abort`, and the approval response
+  at `/permission/<id>/<action>`. All of them are built from one `baseUrl()` in
+  `server/protocol-adapters/hermes-adapter.ts`, so a call site that skipped it
+  would land in the default profile while the runtime believed it was bound.
+
+The binding is a URL path segment, so it is constrained rather than free-form:
+`HERMES_PROFILE_PATTERN` in `shared/agent-profile.ts` is
+`^[A-Za-z0-9._-]{1,64}$`, and `.` and `..` are rejected outright. The Settings
+editor, the agent-profile router, and the store guard all run that one
+predicate, and the adapter re-checks it at connect. A malformed binding
+**throws** instead of falling back to the gateway default; a silent fallback is
+exactly the cross-profile leak the binding exists to prevent. The empty string
+is not a clear — `null` is, and the router answers `''` with a typed 400.
+
+Which agent-profile field a provider consumes as a gateway binding is one
+`PROVIDER_DESCRIPTORS` row (`agentProfileGatewayBindingKey`), not a
+provider-name branch in the binder, so a stray `hermesProfile` on a codex
+profile never reaches the codex adapter's `extra`.
+
+**Typed profile errors.** Hermes answers an unknown or unserved profile prefix
+with `404` (the multiplex router's "unknown or unconfigured profile"), and a
+profile whose `API_SERVER_KEY` the presented token does not satisfy with `401`.
+Relay keys on the status, not the body. The two have different fixes, so a
+bound runtime maps them to a `HermesProfileError` naming
+the profile and the remedy and raises a non-retryable `chat:error` — `auth` for
+401, `protocol` for 404. Connect fails with the same profile-specific reason
+when the gateway does not serve the prefix at all, so a bad binding surfaces on
+the channel row instead of quietly running somewhere else. An unbound runtime's
+error mapping is unchanged and still retryable.
+
+**Keys are per gateway, not per binding.** Relay resolves one bearer token for
+the Hermes gateway, in order: `extra.apiToken`/`extra.apiKey`, then
+`HERMES_API_TOKEN`, `HERMES_API_KEY`, `HERMES_GATEWAY_API_KEY`, or
+`API_SERVER_KEY` from the hub process environment or the Hermes `.env` files,
+then the `api_server` key in `config.yaml`. The `.env` files it merges are
+`~/.hermes/.env` and the _active_ profile's — not the bound profile's — and an
+agent profile's `envVars` do not feed this path. The token Relay presents must
+therefore be one the gateway accepts for `/p/<profile>/`. Operator steps and the
+verification matrix live in
+[`references/hermes-multiplex-setup.md`](references/hermes-multiplex-setup.md).
+
+**Availability stays global.** `server/frameworks.ts` probes the gateway with no
+binding, so a hermes profile reads as available whenever the gateway is up,
+whether or not the bound profile is served. Per-profile health is not claimed
+anywhere in the UI.
+
 ## Native session state adapters (read-only)
 
 Separate from the channel lane, `AgentHarnessStateAdapter` implementations

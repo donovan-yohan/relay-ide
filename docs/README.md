@@ -51,17 +51,18 @@ Every doc listed here is linked from this index. If you add a doc, add a row.
 
 ### Hub, node, and operations
 
-| Area             | Source                                                               |
-| ---------------- | -------------------------------------------------------------------- |
-| Hub/node package | [`RELAY_HUB_NODE_PACKAGING.md`](RELAY_HUB_NODE_PACKAGING.md)         |
-| Node bootstrap   | [`RELAY_NODE_BOOTSTRAP.md`](RELAY_NODE_BOOTSTRAP.md)                 |
-| Pairing UX       | [`ADD_NODE_PAIR_DEVICE_UX.md`](ADD_NODE_PAIR_DEVICE_UX.md)           |
-| WSL2             | [`WSL2_RELAY_NODE_SUPPORT.md`](WSL2_RELAY_NODE_SUPPORT.md)           |
-| Federated dev    | [`FEDERATED_DEV.md`](FEDERATED_DEV.md)                               |
-| Federation       | [`federated-relay.md`](federated-relay.md)                           |
-| Deployment       | [`references/deployment.md`](references/deployment.md)               |
-| Devbox hub       | [`references/devbox-hub-deploy.md`](references/devbox-hub-deploy.md) |
-| Dogfood recovery | [`references/dogfood-recovery.md`](references/dogfood-recovery.md)   |
+| Area             | Source                                                                         |
+| ---------------- | ------------------------------------------------------------------------------ |
+| Hub/node package | [`RELAY_HUB_NODE_PACKAGING.md`](RELAY_HUB_NODE_PACKAGING.md)                   |
+| Node bootstrap   | [`RELAY_NODE_BOOTSTRAP.md`](RELAY_NODE_BOOTSTRAP.md)                           |
+| Pairing UX       | [`ADD_NODE_PAIR_DEVICE_UX.md`](ADD_NODE_PAIR_DEVICE_UX.md)                     |
+| WSL2             | [`WSL2_RELAY_NODE_SUPPORT.md`](WSL2_RELAY_NODE_SUPPORT.md)                     |
+| Federated dev    | [`FEDERATED_DEV.md`](FEDERATED_DEV.md)                                         |
+| Federation       | [`federated-relay.md`](federated-relay.md)                                     |
+| Deployment       | [`references/deployment.md`](references/deployment.md)                         |
+| Devbox hub       | [`references/devbox-hub-deploy.md`](references/devbox-hub-deploy.md)           |
+| Dogfood recovery | [`references/dogfood-recovery.md`](references/dogfood-recovery.md)             |
+| Hermes multiplex | [`references/hermes-multiplex-setup.md`](references/hermes-multiplex-setup.md) |
 
 ## Historical and reference
 
