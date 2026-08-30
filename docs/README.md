@@ -68,12 +68,13 @@ Every doc listed here is linked from this index. If you add a doc, add a row.
 Dated material, not maintained against the current tree. Read the date before
 trusting a claim.
 
-| Area                 | Source                                   | Status                                                                                                           |
-| -------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Boo substrate audit  | [`BOO_PHILOSOPHY.md`](BOO_PHILOSOPHY.md) | Gap audit against the `coder/boo` direction. Aspirational by design — verify against code before citing.         |
-| Bug analyses         | [`bug-analyses/`](bug-analyses/)         | Per-incident write-ups, dated in the filename. Historical; see [`bug-analyses/index.md`](bug-analyses/index.md). |
-| Refactor audits      | [`refactor/`](refactor/)                 | One-off audit snapshots, dated in the filename. Historical.                                                      |
-| Design-system assets | [`design-system/`](design-system/)       | Extracted palette/type CSS and the logo asset. Reference; `../DESIGN.md` is authoritative.                       |
+| Area                 | Source                                                                                               | Status                                                                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Boo substrate audit  | [`BOO_PHILOSOPHY.md`](BOO_PHILOSOPHY.md)                                                             | Gap audit against the `coder/boo` direction. Aspirational by design — verify against code before citing.                      |
+| Bug analyses         | [`bug-analyses/`](bug-analyses/)                                                                     | Per-incident write-ups, dated in the filename. Historical; see [`bug-analyses/index.md`](bug-analyses/index.md).              |
+| Refactor audits      | [`refactor/`](refactor/)                                                                             | One-off audit snapshots, dated in the filename. Historical.                                                                   |
+| Design-system assets | [`design-system/`](design-system/)                                                                   | Extracted palette/type CSS and the logo asset. Reference; `../DESIGN.md` is authoritative.                                    |
+| Endpoint perf        | [`references/endpoint-perf-baseline-2026-08-29.md`](references/endpoint-perf-baseline-2026-08-29.md) | Interactive HTTP latency baseline measured on the prod hub, 2026-08-29. Dated snapshot; re-measure before citing. Epic #1446. |
 
 ## Product invariants
 
