@@ -9,48 +9,32 @@ import type { ArtifactId, TaskRef, WorkContextId } from './work-context.js';
 // session, task, artifact, repo/worktree, and WorkspaceSurface identities by ref.
 // Surface metadata stays in WorkspaceSurface records; topics only carry surface ids.
 
-export const WORKSPACE_TOPIC_SCHEMA_VERSION = 1 as const;
+const WORKSPACE_TOPIC_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_TOPICS_MAX_LIST_ENTRIES = 200;
 export const WORKSPACE_TOPICS_SEARCH_DEFAULT_LIMIT = 20;
 export const WORKSPACE_TOPICS_SEARCH_MAX_RESULTS = 50;
 export const WORKSPACE_TOPICS_SEARCH_QUERY_MAX = 160;
-export const WORKSPACE_TOPIC_TITLE_MAX = 160;
-export const WORKSPACE_TOPIC_DESCRIPTION_MAX = 2000;
-export const WORKSPACE_TOPIC_PROMPT_MAX = 4000;
-export const WORKSPACE_TOPIC_REF_MAX = 256;
-export const WORKSPACE_TOPIC_PATH_MAX = 4096;
-export const WORKSPACE_TOPIC_MAX_REFS = 100;
+const WORKSPACE_TOPIC_TITLE_MAX = 160;
+const WORKSPACE_TOPIC_DESCRIPTION_MAX = 2000;
+const WORKSPACE_TOPIC_PROMPT_MAX = 4000;
+const WORKSPACE_TOPIC_REF_MAX = 256;
+const WORKSPACE_TOPIC_PATH_MAX = 4096;
+const WORKSPACE_TOPIC_MAX_REFS = 100;
 
 export type WorkspaceTopicId = string;
-export type WorkspaceTopicStatus = 'active' | 'archived';
-export type WorkspaceTopicVisibility = 'default' | 'private' | 'shared';
-export type WorkspaceTopicSource = 'persisted' | 'derived';
-export type WorkspaceTopicPrivacyClass = 'public' | 'internal' | 'sensitive';
-export type WorkspaceTopicRetentionClass =
+type WorkspaceTopicStatus = 'active' | 'archived';
+type WorkspaceTopicVisibility = 'default' | 'private' | 'shared';
+type WorkspaceTopicSource = 'persisted' | 'derived';
+type WorkspaceTopicPrivacyClass = 'public' | 'internal' | 'sensitive';
+type WorkspaceTopicRetentionClass =
   | 'ephemeral'
   | 'session'
   | 'project'
   | 'audit';
-export type WorkspaceTopicRedactionStrategy =
-  | 'none'
-  | 'summary'
-  | 'hash'
-  | 'omitted';
+type WorkspaceTopicRedactionStrategy = 'none' | 'summary' | 'hash' | 'omitted';
 export type WorkspaceTopicMutationKind = 'create' | 'update' | 'archive';
 
-export const WORKSPACE_TOPIC_DEFAULT_PRECEDENCE = [
-  'explicit-spawn-input',
-  'session-override',
-  'topic-defaults',
-  'workspace-defaults',
-  'repo-project-defaults',
-  'agent-profile-defaults',
-  'provider-runtime-defaults',
-] as const;
-export type WorkspaceTopicDefaultPrecedence =
-  (typeof WORKSPACE_TOPIC_DEFAULT_PRECEDENCE)[number];
-
-export interface WorkspaceTopicPrivacyMetadata {
+interface WorkspaceTopicPrivacyMetadata {
   classification: WorkspaceTopicPrivacyClass;
   retention: WorkspaceTopicRetentionClass;
   redaction: WorkspaceTopicRedactionStrategy;
@@ -69,19 +53,16 @@ export type WorkspaceTopicChannelKind =
   | 'research'
   | 'topic';
 
-export const WORKSPACE_TOPIC_CHANNEL_KINDS: readonly WorkspaceTopicChannelKind[] =
-  ['repo', 'product-area', 'journal', 'ops', 'research', 'topic'] as const;
+const WORKSPACE_TOPIC_CHANNEL_KINDS: readonly WorkspaceTopicChannelKind[] = [
+  'repo',
+  'product-area',
+  'journal',
+  'ops',
+  'research',
+  'topic',
+] as const;
 
-export function isWorkspaceTopicChannelKind(
-  value: unknown
-): value is WorkspaceTopicChannelKind {
-  return (
-    typeof value === 'string' &&
-    (WORKSPACE_TOPIC_CHANNEL_KINDS as readonly string[]).includes(value)
-  );
-}
-
-export interface WorkspaceTopicDisplay {
+interface WorkspaceTopicDisplay {
   title: string;
   description?: string;
   icon?: string;
@@ -90,19 +71,19 @@ export interface WorkspaceTopicDisplay {
   kind?: WorkspaceTopicChannelKind;
 }
 
-export interface WorkspaceTopicGrouping {
+interface WorkspaceTopicGrouping {
   parentTopicId?: WorkspaceTopicId;
   order?: number;
 }
 
-export interface WorkspaceTopicPromptDefaults {
+interface WorkspaceTopicPromptDefaults {
   starterPrompt?: string;
   systemPrompt?: string;
   instructions?: string;
   contextPacketIds?: string[];
 }
 
-export interface WorkspaceTopicRoutingDefaults {
+interface WorkspaceTopicRoutingDefaults {
   providerId?: string;
   agentId?: string;
   nodeId?: NodeId;
@@ -111,7 +92,7 @@ export interface WorkspaceTopicRoutingDefaults {
   cwd?: string;
 }
 
-export interface WorkspaceTopicLinkedRefs {
+interface WorkspaceTopicLinkedRefs {
   workContextIds?: WorkContextId[];
   sessionIds?: string[];
   taskRefs?: Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[];
@@ -129,7 +110,7 @@ export interface WorkspaceTopicLinkedRefs {
   agentRuntimeIds?: string[];
 }
 
-export interface WorkspaceTopicState {
+interface WorkspaceTopicState {
   pinned: boolean;
   muted: boolean;
   archivedAt?: string;
@@ -174,7 +155,7 @@ export interface WorkspaceTopicListResponse {
   derived: boolean;
 }
 
-export type WorkspaceTopicSearchMatchKind =
+type WorkspaceTopicSearchMatchKind =
   | 'topic'
   | 'workspace'
   | 'task'
@@ -195,7 +176,7 @@ export interface WorkspaceTopicSearchMatch {
   value: string;
 }
 
-export interface WorkspaceTopicSearchAction {
+interface WorkspaceTopicSearchAction {
   kind: 'open-topic';
   topicId: WorkspaceTopicId;
   primarySessionId?: string;
@@ -218,7 +199,7 @@ export interface WorkspaceTopicSearchResponse {
   unavailableReason?: string;
 }
 
-export type WorkspaceTopicLaunchOverrides = Record<string, unknown>;
+type WorkspaceTopicLaunchOverrides = Record<string, unknown>;
 
 export interface WorkspaceTopicCreateInput {
   id?: WorkspaceTopicId;
@@ -256,14 +237,14 @@ export type WorkspaceTopicTemplateKind =
   | 'terminal-task'
   | 'note';
 
-export interface WorkspaceTopicLaunchPreviewInput {
+interface WorkspaceTopicLaunchPreviewInput {
   create: WorkspaceTopicCreateInput;
   intent: WorkspaceTopicLaunchIntent;
   templateKind?: WorkspaceTopicTemplateKind;
   launchOverrides?: WorkspaceTopicLaunchOverrides;
 }
 
-export interface WorkspaceTopicLaunchPreview {
+interface WorkspaceTopicLaunchPreview {
   intent: WorkspaceTopicLaunchIntent;
   templateKind: WorkspaceTopicTemplateKind;
   title: string;
@@ -660,7 +641,7 @@ export const WORKSPACE_TOPIC_ALREADY_EXISTS_REASON =
   'WORKSPACE_TOPIC_ALREADY_EXISTS';
 
 /** `open` when the blocking channel is active, `restore` when it is archived. */
-export type WorkspaceTopicConflictRemedy = 'open' | 'restore';
+type WorkspaceTopicConflictRemedy = 'open' | 'restore';
 
 /**
  * Self-explaining 409 body for that conflict.
@@ -1320,7 +1301,7 @@ export const WORKSPACE_TOPIC_MUTATION_POLICIES: Record<
   },
 };
 
-export interface WorkspaceTopicDefaultsInput {
+interface WorkspaceTopicDefaultsInput {
   providerRuntimeDefaults?: WorkspaceTopicRoutingDefaults;
   agentProfileDefaults?: WorkspaceTopicRoutingDefaults;
   repoProjectDefaults?: WorkspaceTopicRoutingDefaults;

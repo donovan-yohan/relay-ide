@@ -35,33 +35,23 @@ export const AUTOMATION_RUN_STATUSES = [
 export type AutomationRunStatus = (typeof AUTOMATION_RUN_STATUSES)[number];
 
 /** Derived liveness of a single target session. */
-export const AUTOMATION_RUN_TARGET_STATES = [
+const AUTOMATION_RUN_TARGET_STATES = [
   'alive',
   'gone',
   'ended',
   'unknown',
 ] as const;
-export type AutomationRunTargetState =
-  (typeof AUTOMATION_RUN_TARGET_STATES)[number];
+type AutomationRunTargetState = (typeof AUTOMATION_RUN_TARGET_STATES)[number];
 
 /** Derived reasons a run is stale / needs cleanup. */
-export const AUTOMATION_RUN_STALE_REASONS = [
-  'target-session-gone',
-  'target-session-ended',
-  'heartbeat-expired',
-  'hard-expiry',
-] as const;
-export type AutomationRunStaleReason =
-  (typeof AUTOMATION_RUN_STALE_REASONS)[number];
+type AutomationRunStaleReason =
+  | 'target-session-gone'
+  | 'target-session-ended'
+  | 'heartbeat-expired'
+  | 'hard-expiry';
 
 /** Cleanup lifecycle of a run. `retired` is terminal. */
-export const AUTOMATION_RUN_CLEANUP_STATES = [
-  'none',
-  'needed',
-  'retired',
-] as const;
-export type AutomationRunCleanupState =
-  (typeof AUTOMATION_RUN_CLEANUP_STATES)[number];
+export type AutomationRunCleanupState = 'none' | 'needed' | 'retired';
 
 export interface AutomationRunTarget {
   /** Local session id (`<session-id>`). */
@@ -74,14 +64,14 @@ export interface AutomationRunTarget {
   lastCheckedAt?: string | undefined;
 }
 
-export interface AutomationRunOwner {
+interface AutomationRunOwner {
   /** Orchestrator label, e.g. `hermes`, `ebi`, `operator`. */
   orchestrator: string;
   actorId?: string | undefined;
   actorType?: string | undefined;
 }
 
-export interface AutomationRunLinks {
+interface AutomationRunLinks {
   taskRefs?:
     | Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[]
     | undefined;
@@ -91,7 +81,7 @@ export interface AutomationRunLinks {
   issueUrls?: string[] | undefined;
 }
 
-export interface AutomationRunHeartbeat {
+interface AutomationRunHeartbeat {
   /** Heartbeat TTL: a run that does not re-observe within this window goes stale. */
   ttlSeconds: number;
   lastObservedAt: string;
@@ -99,19 +89,19 @@ export interface AutomationRunHeartbeat {
   expiresAt: string;
 }
 
-export interface AutomationRunObservation {
+interface AutomationRunObservation {
   observedAt: string;
   summary?: string | undefined;
 }
 
-export interface AutomationRunCleanup {
+interface AutomationRunCleanup {
   state: AutomationRunCleanupState;
   reason?: string | undefined;
   retiredAt?: string | undefined;
   retiredBy?: string | undefined;
 }
 
-export interface AutomationRunRedaction {
+interface AutomationRunRedaction {
   rawPayloadStored: false;
   rawTranscriptStored: false;
   truncated: boolean;
@@ -191,7 +181,7 @@ export type AutomationRunLivenessResolver = (target: {
 }) => AutomationRunTargetState;
 
 /** Minimal session shape the production liveness probe needs. */
-export interface AutomationRunSessionLiveness {
+interface AutomationRunSessionLiveness {
   id?: string | undefined;
   globalSessionId?: string | undefined;
   /** #614 derived durability; `ended` marks a finished/cleaned-up (done) session. */
@@ -243,13 +233,13 @@ export function resolveAutomationRunTargetLiveness(
   return match.durability === 'ended' ? 'ended' : 'alive';
 }
 
-export const AUTOMATION_RUN_SUMMARY_MAX_BYTES = 4 * 1024;
-export const AUTOMATION_RUN_MAX_TARGETS = 100;
-export const AUTOMATION_RUN_MAX_LINKS = 50;
-export const AUTOMATION_RUN_MAX_INPUT_DEPTH = 20;
-export const AUTOMATION_RUN_TTL_MIN_SECONDS = 30;
-export const AUTOMATION_RUN_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
-export const AUTOMATION_RUN_TTL_DEFAULT_SECONDS = 300;
+const AUTOMATION_RUN_SUMMARY_MAX_BYTES = 4 * 1024;
+const AUTOMATION_RUN_MAX_TARGETS = 100;
+const AUTOMATION_RUN_MAX_LINKS = 50;
+const AUTOMATION_RUN_MAX_INPUT_DEPTH = 20;
+const AUTOMATION_RUN_TTL_MIN_SECONDS = 30;
+const AUTOMATION_RUN_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
+const AUTOMATION_RUN_TTL_DEFAULT_SECONDS = 300;
 
 const SECRETISH_KEYS = new Set<string>([
   'rawcontent',
@@ -379,15 +369,6 @@ function parseKind(value: unknown): AutomationRunKind {
     );
   }
   return value as AutomationRunKind;
-}
-
-export function parseAutomationRunStatus(
-  value: unknown
-): AutomationRunStatus | undefined {
-  return typeof value === 'string' &&
-    (AUTOMATION_RUN_STATUSES as readonly string[]).includes(value)
-    ? (value as AutomationRunStatus)
-    : undefined;
 }
 
 function clampTtl(value: unknown, fallback: number): number {

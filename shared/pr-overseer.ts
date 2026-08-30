@@ -53,23 +53,21 @@ export type PrOverseerStatus = (typeof PR_OVERSEER_STATUSES)[number];
  * keep it `observing` (in progress / awaiting an external signal). Either kind
  * keeps the run out of `ready`, so a handoff is gated until they all clear.
  */
-export const PR_OVERSEER_BLOCKER_KINDS = [
-  'pr-draft',
-  'checks-unknown',
-  'checks-pending',
-  'checks-failed',
-  'review-changes-requested',
-  'review-required',
-  'unresolved-review-threads',
-  'merge-conflict',
-  'mergeability-unknown',
-  'stale-head',
-  'issue-closeout-mismatch',
-] as const;
-export type PrOverseerBlockerKind = (typeof PR_OVERSEER_BLOCKER_KINDS)[number];
+type PrOverseerBlockerKind =
+  | 'pr-draft'
+  | 'checks-unknown'
+  | 'checks-pending'
+  | 'checks-failed'
+  | 'review-changes-requested'
+  | 'review-required'
+  | 'unresolved-review-threads'
+  | 'merge-conflict'
+  | 'mergeability-unknown'
+  | 'stale-head'
+  | 'issue-closeout-mismatch';
 
 /** Blockers that force `blocked` (vs merely keeping the run out of `ready`). */
-export const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
+const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
   'checks-failed',
   'review-changes-requested',
   'unresolved-review-threads',
@@ -78,43 +76,35 @@ export const PR_OVERSEER_HARD_BLOCKERS = new Set<PrOverseerBlockerKind>([
   'issue-closeout-mismatch',
 ]);
 
-export function isHardBlocker(kind: PrOverseerBlockerKind): boolean {
+function isHardBlocker(kind: PrOverseerBlockerKind): boolean {
   return PR_OVERSEER_HARD_BLOCKERS.has(kind);
 }
 
 /** Structured next-action verbs for the steering/release contract. */
-export const PR_OVERSEER_NEXT_ACTIONS = [
-  'observe-first',
-  're-observe',
-  'fix-checks',
-  'await-checks',
-  'address-review',
-  'await-review',
-  'resolve-review-threads',
-  'resolve-merge-conflict',
-  'await-mergeability',
-  'resync-head',
-  'mark-pr-ready',
-  'fix-issue-closeout',
-  'verify-issue-closeout',
-  'hand-off-to-release-train',
-  'none',
-] as const;
-export type PrOverseerNextAction = (typeof PR_OVERSEER_NEXT_ACTIONS)[number];
+type PrOverseerNextAction =
+  | 'observe-first'
+  | 're-observe'
+  | 'fix-checks'
+  | 'await-checks'
+  | 'address-review'
+  | 'await-review'
+  | 'resolve-review-threads'
+  | 'resolve-merge-conflict'
+  | 'await-mergeability'
+  | 'resync-head'
+  | 'mark-pr-ready'
+  | 'fix-issue-closeout'
+  | 'verify-issue-closeout'
+  | 'hand-off-to-release-train'
+  | 'none';
 
 /** Who the next action is addressed to. A collaboration hint, not an auth boundary. */
-export const PR_OVERSEER_ACTORS = [
-  'implementer',
-  'release-train',
-  'operator',
-  'none',
-] as const;
-export type PrOverseerActor = (typeof PR_OVERSEER_ACTORS)[number];
+type PrOverseerActor = 'implementer' | 'release-train' | 'operator' | 'none';
 
-export const PR_OVERSEER_PR_STATES = ['OPEN', 'CLOSED', 'MERGED'] as const;
+const PR_OVERSEER_PR_STATES = ['OPEN', 'CLOSED', 'MERGED'] as const;
 export type PrOverseerPrState = (typeof PR_OVERSEER_PR_STATES)[number];
 
-export const PR_OVERSEER_REVIEW_DECISIONS = [
+const PR_OVERSEER_REVIEW_DECISIONS = [
   'APPROVED',
   'CHANGES_REQUESTED',
   'REVIEW_REQUIRED',
@@ -122,7 +112,7 @@ export const PR_OVERSEER_REVIEW_DECISIONS = [
 export type PrOverseerReviewDecision =
   (typeof PR_OVERSEER_REVIEW_DECISIONS)[number];
 
-export const PR_OVERSEER_MERGEABLE_STATES = [
+const PR_OVERSEER_MERGEABLE_STATES = [
   'MERGEABLE',
   'CONFLICTING',
   'UNKNOWN',
@@ -131,14 +121,11 @@ export type PrOverseerMergeableState =
   (typeof PR_OVERSEER_MERGEABLE_STATES)[number];
 
 /** Why a fresh GitHub observation could not be taken. */
-export const PR_OVERSEER_UNAVAILABLE_REASONS = [
-  'gh-missing',
-  'auth',
-  'not-found',
-  'error',
-] as const;
 export type PrOverseerUnavailableReason =
-  (typeof PR_OVERSEER_UNAVAILABLE_REASONS)[number];
+  | 'gh-missing'
+  | 'auth'
+  | 'not-found'
+  | 'error';
 
 // ─── Reference shapes ──────────────────────────────────────────────────────────
 
@@ -162,14 +149,14 @@ export interface PrOverseerSessionRef {
   globalSessionId?: GlobalSessionId | undefined;
 }
 
-export interface PrOverseerOwner {
+interface PrOverseerOwner {
   /** Orchestrator label, e.g. `ebi`, `hermes`, `operator`. */
   orchestrator: string;
   actorId?: string | undefined;
   actorType?: string | undefined;
 }
 
-export interface PrOverseerLinks {
+interface PrOverseerLinks {
   taskRefs?:
     | Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[]
     | undefined;
@@ -213,7 +200,7 @@ export interface PrObservationClosingIssueRef {
   url?: string | undefined;
 }
 
-export interface PrObservationPr {
+interface PrObservationPr {
   number: number;
   url?: string | undefined;
   state: PrOverseerPrState;
@@ -248,7 +235,7 @@ export interface PrObservation {
 
 // ─── Persisted record ──────────────────────────────────────────────────────────
 
-export interface PrOverseerHeartbeat {
+interface PrOverseerHeartbeat {
   /** A run that does not re-`observe` within this window derives `stale`. */
   ttlSeconds: number;
   lastObservedAt: string;
@@ -269,22 +256,16 @@ export interface PrOverseerLastFetch {
   unavailableReason?: PrOverseerUnavailableReason | undefined;
 }
 
-export const PR_OVERSEER_CLEANUP_STATES = [
-  'none',
-  'needed',
-  'retired',
-] as const;
-export type PrOverseerCleanupState =
-  (typeof PR_OVERSEER_CLEANUP_STATES)[number];
+type PrOverseerCleanupState = 'none' | 'needed' | 'retired';
 
-export interface PrOverseerCleanup {
+interface PrOverseerCleanup {
   state: PrOverseerCleanupState;
   reason?: string | undefined;
   retiredAt?: string | undefined;
   retiredBy?: string | undefined;
 }
 
-export interface PrOverseerRedaction {
+interface PrOverseerRedaction {
   rawPayloadStored: false;
   rawTranscriptStored: false;
   truncated: boolean;
@@ -294,7 +275,7 @@ export interface PrOverseerRedaction {
 // ─── Derived (read-time) shapes ────────────────────────────────────────────────
 
 /** Exact-head / freshness risk for the stored evidence. */
-export interface PrOverseerStaleHeadRisk {
+interface PrOverseerStaleHeadRisk {
   diverged: boolean;
   /** Head the last successful observation covers. */
   observedHeadSha?: string | undefined;
@@ -310,7 +291,7 @@ export interface PrOverseerStaleHeadRisk {
   lastFetchFailed: boolean;
 }
 
-export interface PrOverseerRequiredNextAction {
+interface PrOverseerRequiredNextAction {
   action: PrOverseerNextAction;
   actor: PrOverseerActor;
   summary: string;
@@ -322,7 +303,7 @@ export interface PrOverseerRequiredNextAction {
  * blockers, exact-head evidence current, heartbeat fresh) — a tester/release
  * agent must treat `ready: false` as "do not QA/review/merge yet".
  */
-export interface PrOverseerHandoff {
+interface PrOverseerHandoff {
   ready: boolean;
   exactHeadEvidenceCurrent: boolean;
   evidenceHeadSha?: string | undefined;
@@ -412,14 +393,14 @@ export interface PrOverseerReadOptions {
 
 // ─── Bounds + secret rejection ─────────────────────────────────────────────────
 
-export const PR_OVERSEER_SUMMARY_MAX_BYTES = 4 * 1024;
-export const PR_OVERSEER_MAX_LINKS = 50;
+const PR_OVERSEER_SUMMARY_MAX_BYTES = 4 * 1024;
+const PR_OVERSEER_MAX_LINKS = 50;
 export const PR_OVERSEER_MAX_NAMES = 50;
-export const PR_OVERSEER_MAX_INPUT_DEPTH = 20;
-export const PR_OVERSEER_TTL_MIN_SECONDS = 30;
-export const PR_OVERSEER_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
-export const PR_OVERSEER_TTL_DEFAULT_SECONDS = 600;
-export const PR_OVERSEER_SHA_MAX_LEN = 64;
+const PR_OVERSEER_MAX_INPUT_DEPTH = 20;
+const PR_OVERSEER_TTL_MIN_SECONDS = 30;
+const PR_OVERSEER_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
+const PR_OVERSEER_TTL_DEFAULT_SECONDS = 600;
+const PR_OVERSEER_SHA_MAX_LEN = 64;
 
 const SECRETISH_KEYS = new Set<string>([
   'rawcontent',
@@ -581,7 +562,7 @@ function normalizeComparisonSha(value: string | undefined): string | undefined {
 }
 
 /** Normalize a head SHA: hex only, lowercased, bounded. Returns undefined if empty/invalid. */
-export function normalizeHeadSha(value: unknown): string | undefined {
+function normalizeHeadSha(value: unknown): string | undefined {
   const raw = optionalString(value);
   if (!raw) return undefined;
   const hex = raw.toLowerCase();
@@ -724,15 +705,6 @@ function parseLinks(value: unknown): PrOverseerLinks | undefined {
   const issueUrls = parseStringList(value['issueUrls'], PR_OVERSEER_MAX_LINKS);
   if (issueUrls?.length) links.issueUrls = issueUrls;
   return Object.keys(links).length ? links : undefined;
-}
-
-export function parsePrOverseerStatus(
-  value: unknown
-): PrOverseerStatus | undefined {
-  return typeof value === 'string' &&
-    (PR_OVERSEER_STATUSES as readonly string[]).includes(value)
-    ? (value as PrOverseerStatus)
-    : undefined;
 }
 
 export function parsePrOverseerRegisterInput(
@@ -961,7 +933,7 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
 // ─── Derivation ────────────────────────────────────────────────────────────────
 
 /** Input shape for the pure derivation (a subset of the stored record). */
-export interface PrOverseerDerivationInput {
+interface PrOverseerDerivationInput {
   pr: PrOverseerPrRef;
   expectedHeadSha?: string | undefined;
   issue?: PrOverseerIssueRef | undefined;
@@ -971,7 +943,7 @@ export interface PrOverseerDerivationInput {
   cleanup: Pick<PrOverseerCleanup, 'state'>;
 }
 
-export interface PrOverseerDerivedView {
+interface PrOverseerDerivedView {
   status: PrOverseerStatus;
   blockers: PrOverseerBlockerKind[];
   staleHeadRisk: PrOverseerStaleHeadRisk;
@@ -1077,7 +1049,7 @@ export function computePrOverseerBlockers(input: {
   return blockers;
 }
 
-export function derivePrOverseerStaleHeadRisk(
+function derivePrOverseerStaleHeadRisk(
   input: PrOverseerDerivationInput,
   nowIso: string,
   opts: PrOverseerReadOptions = {}
@@ -1121,7 +1093,7 @@ export function derivePrOverseerStaleHeadRisk(
  *
  *   retired > pending > merged > closed > blocked > stale > observing > ready
  */
-export function derivePrOverseerStatus(
+function derivePrOverseerStatus(
   input: PrOverseerDerivationInput,
   nowIso: string,
   opts: PrOverseerReadOptions = {}
@@ -1166,7 +1138,7 @@ function firstBlocker(
   return undefined;
 }
 
-export function derivePrOverseerRequiredNextAction(
+function derivePrOverseerRequiredNextAction(
   status: PrOverseerStatus,
   blockers: PrOverseerBlockerKind[],
   input: PrOverseerDerivationInput,
@@ -1323,7 +1295,7 @@ export function derivePrOverseerRequiredNextAction(
   }
 }
 
-export function derivePrOverseerHandoff(
+function derivePrOverseerHandoff(
   status: PrOverseerStatus,
   blockers: PrOverseerBlockerKind[],
   staleHeadRisk: PrOverseerStaleHeadRisk,

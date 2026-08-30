@@ -504,6 +504,17 @@ search`), and Claude channel agents get the Relay MCP facade mounted
 - `config.json` is written owner-only and an existing world-readable one is
   tightened on the next save; it carries the PIN hash (#1467)
 
+### Agent browser
+
+#### Fixed
+
+- The browser-automation feature now works on an installed copy of Relay.
+  `playwright` was only ever present in the development checkout, so
+  `relay-ide-browser` and the agent browser tools answered "Playwright is
+  unavailable" on any `npm install relay-ide`. It is now a declared runtime
+  dependency; browser binaries are still a separate `npx playwright install`
+  (#1477)
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as
