@@ -113,6 +113,10 @@ The same clip as h264: [`docs/assets/agents-collab.mp4`](docs/assets/agents-coll
 
 - Agent profiles with built-in vendor profiles, per-profile configuration, a
   vendor gallery, availability state, and channel rosters.
+- A Hermes agent profile can be bound to a named Hermes multiplex profile, so a
+  mention runs on that profile's own config, memory, and skills rather than the
+  gateway default. See
+  [`docs/references/hermes-multiplex-setup.md`](docs/references/hermes-multiplex-setup.md).
 - Mention routing that starts or reuses the addressed profile's runtime,
   supplies bounded channel context, and mirrors the response into the same
   conversation.
