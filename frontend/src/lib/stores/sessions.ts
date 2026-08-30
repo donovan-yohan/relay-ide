@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { StoreApi } from 'zustand';
 import type {
   CurrentActivity,
   SessionSummary,
@@ -274,6 +275,119 @@ function visibleRepoPaths(
   return Array.from(paths);
 }
 
+type SessionsSet = StoreApi<SessionsState>['setState'];
+type SessionsGet = StoreApi<SessionsState>['getState'];
+
+/**
+ * Enrichment requests currently in flight, keyed by repo path.
+ *
+ * #1447: mount fires `ensureFreshAll(0)` and the navigation effect re-arms
+ * `ensureFreshAll()` ~500 ms later — long before a cold batch has landed and
+ * stamped freshness metadata — so without this the entire batch is requested
+ * twice. Freshness-gated callers (`maxAgeMs > 0`) join the pending promise
+ * instead of issuing a duplicate. Callers that explicitly bypass the TTL
+ * (`forceRefresh`, `ensureFreshAll(0)`) always issue their own request: a
+ * webhook must not be answered by a response that was already in flight when
+ * the event arrived.
+ */
+const inFlightRepoEnrichments = new Map<string, Promise<void>>();
+
+function repoEnrichmentStamps(
+  repoPaths: string[],
+  source: RepoEnrichmentSource
+): Record<string, RepoEnrichmentMeta> {
+  const stampedAt = Date.now();
+  const stamps: Record<string, RepoEnrichmentMeta> = {};
+  for (const repoPath of repoPaths) {
+    stamps[repoPath] = { lastEnrichedAt: stampedAt, source };
+  }
+  return stamps;
+}
+
+/**
+ * #1447: enrich every branch of every requested repo in ONE `POST
+ * /gh/enrich-branches` call. The server already groups the payload by repo
+ * (`server/gh-routes.ts`) and keys its response `${repoPath}::${branchName}`,
+ * so the client demuxes by key rather than fanning out one request per repo.
+ */
+async function runRepoEnrichment(
+  set: SessionsSet,
+  get: SessionsGet,
+  repoPaths: string[],
+  source: RepoEnrichmentSource
+): Promise<void> {
+  if (repoPaths.length === 0) return;
+
+  const state = get();
+  const branches = repoPaths.flatMap((repoPath) =>
+    repoBranchEntriesFor(state, repoPath)
+  );
+
+  // Repos with nothing to enrich still count as refreshed, so a webhook for a
+  // repo with no local branches does not retry on every subsequent pass.
+  if (branches.length === 0) {
+    const stamps = repoEnrichmentStamps(repoPaths, source);
+    set((current) => ({
+      repoEnrichmentMeta: { ...current.repoEnrichmentMeta, ...stamps },
+    }));
+    return;
+  }
+
+  try {
+    const data = await api.enrichBranches(branches);
+    const stamps = repoEnrichmentStamps(repoPaths, source);
+    set((current) => {
+      const prefixes = repoPaths.map((repoPath) => `${repoPath}::`);
+      const nextResults: Record<string, BranchEnrichment> = {};
+      for (const [key, value] of Object.entries(current.enrichmentResults)) {
+        if (!prefixes.some((prefix) => key.startsWith(prefix))) {
+          nextResults[key] = value;
+        }
+      }
+      return {
+        enrichmentResults: { ...nextResults, ...data.results },
+        repoEnrichmentMeta: { ...current.repoEnrichmentMeta, ...stamps },
+      };
+    });
+  } catch (err) {
+    // Leave freshness metadata untouched so the next pass retries.
+    logger.warn('branch enrichment failed', err);
+  }
+}
+
+/** Runs one batched enrichment and publishes it as the in-flight request. */
+function enrichRepos(
+  set: SessionsSet,
+  get: SessionsGet,
+  repoPaths: string[],
+  source: RepoEnrichmentSource
+): Promise<void> {
+  if (repoPaths.length === 0) return Promise.resolve();
+
+  const run = runRepoEnrichment(set, get, repoPaths, source);
+  for (const repoPath of repoPaths) {
+    inFlightRepoEnrichments.set(repoPath, run);
+  }
+  void run.finally(() => {
+    for (const repoPath of repoPaths) {
+      if (inFlightRepoEnrichments.get(repoPath) === run) {
+        inFlightRepoEnrichments.delete(repoPath);
+      }
+    }
+  });
+  return run;
+}
+
+function isRepoEnrichmentFresh(
+  state: Pick<SessionsState, 'repoEnrichmentMeta'>,
+  repoPath: string,
+  maxAgeMs: number
+): boolean {
+  if (maxAgeMs <= 0) return false;
+  const meta = state.repoEnrichmentMeta[repoPath];
+  return !!meta && Date.now() - meta.lastEnrichedAt < maxAgeMs;
+}
+
 function sessionMatchesEventScope(
   session: SessionSummary,
   sessionId: string,
@@ -413,51 +527,38 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   ensureFresh: async (repoPath, maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
-    const meta = get().repoEnrichmentMeta[repoPath];
-    if (meta && maxAgeMs > 0 && Date.now() - meta.lastEnrichedAt < maxAgeMs) {
-      return;
+    if (isRepoEnrichmentFresh(get(), repoPath, maxAgeMs)) return;
+    if (maxAgeMs > 0) {
+      const inFlight = inFlightRepoEnrichments.get(repoPath);
+      if (inFlight) {
+        await inFlight;
+        return;
+      }
     }
     await get().forceRefresh(repoPath, 'manual');
   },
 
   ensureFreshAll: async (maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
-    const repos = visibleRepoPaths(get());
-    await Promise.all(
-      repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs))
-    );
+    const state = get();
+    const joins: Array<Promise<void>> = [];
+    const stale: string[] = [];
+    for (const repoPath of visibleRepoPaths(state)) {
+      if (isRepoEnrichmentFresh(state, repoPath, maxAgeMs)) continue;
+      const inFlight =
+        maxAgeMs > 0 ? inFlightRepoEnrichments.get(repoPath) : undefined;
+      if (inFlight) {
+        joins.push(inFlight);
+        continue;
+      }
+      stale.push(repoPath);
+    }
+    // #1447: one request for every stale repo, not one request per repo.
+    joins.push(enrichRepos(set, get, stale, 'manual'));
+    await Promise.all(joins);
   },
 
   forceRefresh: async (repoPath, source = 'manual') => {
-    const branches = repoBranchEntriesFor(get(), repoPath);
-    if (branches.length === 0) {
-      set((state) => ({
-        repoEnrichmentMeta: {
-          ...state.repoEnrichmentMeta,
-          [repoPath]: { lastEnrichedAt: Date.now(), source },
-        },
-      }));
-      return;
-    }
-
-    try {
-      const data = await api.enrichBranches(branches);
-      set((state) => {
-        const prefix = `${repoPath}::`;
-        const nextResults: Record<string, BranchEnrichment> = {};
-        for (const [key, value] of Object.entries(state.enrichmentResults)) {
-          if (!key.startsWith(prefix)) nextResults[key] = value;
-        }
-        return {
-          enrichmentResults: { ...nextResults, ...data.results },
-          repoEnrichmentMeta: {
-            ...state.repoEnrichmentMeta,
-            [repoPath]: { lastEnrichedAt: Date.now(), source },
-          },
-        };
-      });
-    } catch (err) {
-      logger.warn('forceRefresh failed', err);
-    }
+    await enrichRepos(set, get, [repoPath], source);
   },
 
   getEnrichment: (repoPath, branchName) =>

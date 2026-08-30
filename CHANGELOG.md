@@ -18,6 +18,16 @@ workflow.
 
 ## [Unreleased]
 
+### Startup performance
+
+#### Fixed
+
+- Launching Relay no longer fires a separate pull-request lookup for every
+  repository. Branch PR and staleness badges are backfilled in one batched
+  request, and navigating right after launch joins the pass already running
+  instead of starting a second one — noticeably faster first load on hubs
+  tracking many repos (#1447)
+
 ### Typed channel delivery receipts
 
 #### Added

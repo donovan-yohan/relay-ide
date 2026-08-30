@@ -132,10 +132,133 @@ describe('sessions repo enrichment freshness', () => {
     ]);
   });
 
+  it('ensureFreshAll batches every stale repo into one request and demuxes by key', async () => {
+    apiMocks.enrichBranches.mockResolvedValueOnce({
+      results: {
+        [`${repoA.path}::feature-a`]: { pr: { number: 1 }, stale: false },
+        [`${repoB.path}::feature-b`]: { pr: null, stale: true },
+      },
+    });
+
+    await (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(1);
+    expect(apiMocks.enrichBranches).toHaveBeenCalledWith([
+      { repoPath: repoA.path, branchName: 'feature-a' },
+      { repoPath: repoB.path, branchName: 'feature-b' },
+    ]);
+
+    const state = useSessionsStore.getState() as any;
+    expect(state.getEnrichment(repoA.path, 'feature-a')).toEqual({
+      pr: { number: 1 },
+      stale: false,
+    });
+    expect(state.getEnrichment(repoB.path, 'feature-b')).toEqual({
+      pr: null,
+      stale: true,
+    });
+    expect(state.repoEnrichmentMeta[repoA.path]).toEqual({
+      lastEnrichedAt: Date.now(),
+      source: 'manual',
+    });
+    expect(state.repoEnrichmentMeta[repoB.path]).toEqual({
+      lastEnrichedAt: Date.now(),
+      source: 'manual',
+    });
+  });
+
+  it('a batched pass only prunes the results of the repos it enriched', async () => {
+    useSessionsStore.setState({
+      enrichmentResults: {
+        [`${repoA.path}::gone`]: { pr: null, stale: true },
+        ['/repos/other::keep']: { pr: null, stale: true },
+      },
+    });
+    apiMocks.enrichBranches.mockResolvedValueOnce({
+      results: { [`${repoA.path}::feature-a`]: { pr: null, stale: false } },
+    });
+
+    await (useSessionsStore.getState() as any).forceRefresh(repoA.path);
+
+    expect(useSessionsStore.getState().enrichmentResults).toEqual({
+      ['/repos/other::keep']: { pr: null, stale: true },
+      [`${repoA.path}::feature-a`]: { pr: null, stale: false },
+    });
+  });
+
+  it('a freshness-gated pass joins an in-flight batch instead of duplicating it', async () => {
+    let release: (value: {
+      results: Record<string, unknown>;
+    }) => void = () => {};
+    apiMocks.enrichBranches.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      })
+    );
+
+    // Mount: force a cold batch, then the nav effect re-arms before it lands.
+    const mount = (useSessionsStore.getState() as any).ensureFreshAll(0);
+    const nav = (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(1);
+
+    release({ results: {} });
+    await Promise.all([mount, nav]);
+
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(1);
+
+    // Once the batch settles the map is clear again: a later stale pass runs.
+    vi.setSystemTime(new Date('2026-05-07T00:11:00.000Z'));
+    await (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(2);
+  });
+
+  it('a batch that fails leaves freshness metadata unset so the next pass retries', async () => {
+    apiMocks.enrichBranches.mockRejectedValueOnce(new Error('boom'));
+
+    await (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+
+    expect(useSessionsStore.getState().repoEnrichmentMeta).toEqual({});
+
+    apiMocks.enrichBranches.mockResolvedValueOnce({ results: {} });
+    await (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(2);
+  });
+
+  it('stamps a branchless repo inside a mixed batch without sending its key', async () => {
+    useSessionsStore.setState({
+      worktrees: [
+        {
+          name: 'feature-a',
+          path: '/repos/relay-ide/.worktrees/feature-a',
+          repoName: 'relay-ide',
+          repoPath: repoA.path,
+          displayName: 'feature-a',
+          lastActivity: '2026-05-07T00:00:00.000Z',
+          branchName: 'feature-a',
+        },
+      ],
+    });
+
+    await (useSessionsStore.getState() as any).ensureFreshAll(600_000);
+
+    expect(apiMocks.enrichBranches).toHaveBeenCalledTimes(1);
+    expect(apiMocks.enrichBranches).toHaveBeenCalledWith([
+      { repoPath: repoA.path, branchName: 'feature-a' },
+    ]);
+    expect(useSessionsStore.getState().repoEnrichmentMeta[repoB.path]).toEqual({
+      lastEnrichedAt: Date.now(),
+      source: 'manual',
+    });
+  });
+
   it('records webhook metadata even when the affected repo has no local branches to enrich', async () => {
     useSessionsStore.setState({ worktrees: [] });
 
-    await (useSessionsStore.getState() as any).forceRefresh(repoA.path, 'webhook');
+    await (useSessionsStore.getState() as any).forceRefresh(
+      repoA.path,
+      'webhook'
+    );
 
     expect(apiMocks.enrichBranches).not.toHaveBeenCalled();
     expect(useSessionsStore.getState().repoEnrichmentMeta[repoA.path]).toEqual({
