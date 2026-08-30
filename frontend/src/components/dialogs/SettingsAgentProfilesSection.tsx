@@ -1,15 +1,17 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  AgentProfile,
-  AgentProfileRespondTo,
+import {
+  isValidHermesProfile,
+  type AgentProfile,
+  type AgentProfileRespondTo,
 } from '../../../../shared/agent-profile.js';
 import type { FrameworkInfo } from '../../lib/types.js';
 import {
@@ -30,6 +32,13 @@ import { AgentAvatar } from '../chat/AgentAvatar.js';
 import './SettingsAgentProfilesSection.css';
 
 const AGENT_PROFILE_QUERY = ['agent-profiles'] as const;
+/**
+ * The only provider that consumes a gateway profile binding today. The server
+ * keeps this fact in its `PROVIDER_DESCRIPTORS` row
+ * (`agentProfileGatewayBindingKey`), which the browser cannot import, so the
+ * editor gates on the catalog id the same way the rest of the frontend does.
+ */
+const HERMES_PROVIDER_ID = 'hermes';
 const SEARCH_TERMS = [
   'agent',
   'agents',
@@ -41,6 +50,8 @@ const SEARCH_TERMS = [
   'environment',
   'respond to',
   'allowlist',
+  'hermes',
+  'hermes profile',
 ];
 
 export interface AgentProfileDraft {
@@ -49,6 +60,7 @@ export interface AgentProfileDraft {
   systemPrompt: string;
   model: string;
   effort: string;
+  hermesProfile: string;
   envVars: EnvVarRow[];
   namePool: string;
   respondTo: AgentProfileRespondTo;
@@ -95,6 +107,7 @@ export function profileDraftFrom(profile?: AgentProfile): AgentProfileDraft {
     systemPrompt: profile?.systemPrompt ?? '',
     model: profile?.model ?? '',
     effort: profile?.effort ?? '',
+    hermesProfile: profile?.hermesProfile ?? '',
     envVars: Object.entries(profile?.envVars ?? {}).map(([key, value]) => ({
       key,
       value,
@@ -105,12 +118,32 @@ export function profileDraftFrom(profile?: AgentProfile): AgentProfileDraft {
   };
 }
 
-/** Provider-owned model and effort values cannot follow a provider change. */
+/**
+ * Provider-owned model, effort and gateway-binding values cannot follow a
+ * provider change. Dropping `hermesProfile` here is what makes a switch away
+ * from hermes serialize as a `null` clear rather than carrying a stale binding.
+ */
 export function withProfileProvider(
   draft: AgentProfileDraft,
   providerId: string
 ): AgentProfileDraft {
-  return { ...draft, providerId, model: '', effort: '' };
+  return { ...draft, providerId, model: '', effort: '', hermesProfile: '' };
+}
+
+/**
+ * Inline validation message for the hermes profile field, or null when the
+ * draft is submittable. Mirrors the server's `isValidHermesProfile`: the value
+ * becomes a URL path segment, so `.`, `..` and anything outside
+ * `HERMES_PROFILE_PATTERN` are rejected before a save is offered.
+ */
+export function hermesProfileDraftError(
+  draft: AgentProfileDraft
+): string | null {
+  if (draft.providerId !== HERMES_PROVIDER_ID) return null;
+  const value = draft.hermesProfile.trim();
+  if (!value) return null;
+  if (isValidHermesProfile(value)) return null;
+  return 'use up to 64 letters, digits, dot, dash or underscore; "." and ".." are not allowed.';
 }
 
 export function profileSubmitInput(
@@ -121,6 +154,10 @@ export function profileSubmitInput(
   const systemPrompt = optionalText(draft.systemPrompt);
   const model = optionalText(draft.model);
   const effort = optionalText(draft.effort);
+  const hermesProfile =
+    draft.providerId === HERMES_PROVIDER_ID
+      ? optionalText(draft.hermesProfile)
+      : undefined;
   const envVars = envRecord(draft.envVars);
   const namePool = splitLines(draft.namePool);
   const respondToAllowlist =
@@ -139,6 +176,9 @@ export function profileSubmitInput(
       : {}),
     ...(model || options.clearEmpty ? { model: model ?? null } : {}),
     ...(effort || options.clearEmpty ? { effort: effort ?? null } : {}),
+    ...(hermesProfile || options.clearEmpty
+      ? { hermesProfile: hermesProfile ?? null }
+      : {}),
     ...(envVars || options.clearEmpty ? { envVars: envVars ?? null } : {}),
     ...(namePool || options.clearEmpty ? { namePool: namePool ?? null } : {}),
     respondTo: draft.respondTo,
@@ -326,7 +366,11 @@ function ProfileCard({
         <AgentAvatar identity={identity} name={name} size={24} />
         <div className="agent-profiles-card__name">
           <strong>{name}</strong>
-          <span>{profile.providerId}</span>
+          <span>
+            {profile.providerId === HERMES_PROVIDER_ID && profile.hermesProfile
+              ? `${profile.providerId} · ${profile.hermesProfile}`
+              : profile.providerId}
+          </span>
         </div>
         {profile.isDefault ? (
           <span className="agent-profiles-card__default">default</span>
@@ -386,6 +430,10 @@ export function AgentProfileEditor({
 }) {
   const [draft, setDraft] = useState(() => profileDraftFrom(profile));
   const isEdit = Boolean(profile?.id);
+  const hermesError = hermesProfileDraftError(draft);
+  const fieldId = useId();
+  const hermesHintId = `${fieldId}-hermes-profile-hint`;
+  const hermesErrorId = `${fieldId}-hermes-profile-error`;
   const set = <K extends keyof AgentProfileDraft>(
     key: K,
     value: AgentProfileDraft[K]
@@ -403,7 +451,7 @@ export function AgentProfileEditor({
       className="agent-profiles-editor"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!draft.providerId) return;
+        if (!draft.providerId || hermesProfileDraftError(draft)) return;
         onSubmit(profileSubmitInput(draft, { clearEmpty: isEdit }));
       }}
     >
@@ -463,6 +511,39 @@ export function AgentProfileEditor({
           />
         </label>
       </div>
+      {draft.providerId === HERMES_PROVIDER_ID ? (
+        <label>
+          hermes profile
+          <TuiInput
+            value={draft.hermesProfile}
+            onChange={(value) => set('hermesProfile', value)}
+            placeholder="hermes default"
+            /*
+             * The hint and error spans sit inside this `<label>`, so the
+             * computed accessible name would otherwise swallow both. This
+             * override is load-bearing, not boilerplate — do not delete it
+             * without moving those spans out of the label first.
+             */
+            aria-label="hermes profile"
+            aria-invalid={hermesError ? 'true' : 'false'}
+            aria-describedby={
+              hermesError ? `${hermesHintId} ${hermesErrorId}` : hermesHintId
+            }
+          />
+          <span id={hermesHintId} className="agent-profiles-editor__field-hint">
+            optional. leave blank to use the hermes default profile.
+          </span>
+          {hermesError ? (
+            <span
+              id={hermesErrorId}
+              className="agent-profiles-editor__field-error"
+              role="alert"
+            >
+              {hermesError}
+            </span>
+          ) : null}
+        </label>
+      ) : null}
       <fieldset className="agent-profiles-editor__env">
         <legend>environment variables</legend>
         {draft.envVars.map((row, index) => (
@@ -544,6 +625,7 @@ export function AgentProfileEditor({
           disabled={
             submitting ||
             !draft.providerId ||
+            Boolean(hermesError) ||
             (!isEdit && !draft.displayName.trim())
           }
         >
@@ -677,6 +759,17 @@ export function SettingsAgentProfilesSection({
         </div>
         {editing !== undefined ? (
           <AgentProfileEditor
+            /*
+             * The editor seeds its draft ONCE from `profile`, and the gallery
+             * stays mounted while it is open — so every card's edit/duplicate
+             * button is live. Without a key, clicking edit on a second profile
+             * re-renders the same instance, leaving the first profile's draft
+             * in place while the submit handler addresses the second profile's
+             * id: one profile's `hermesProfile` would be written onto another
+             * row, or cleared off it. Remounting per edited row is what makes
+             * `profileDraftFrom` re-run.
+             */
+            key={editing?.id || 'new'}
             {...(editing ? { profile: editing } : {})}
             frameworks={frameworks}
             submitting={createMutation.isPending || updateMutation.isPending}
