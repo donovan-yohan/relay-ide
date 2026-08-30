@@ -26,7 +26,7 @@ workflow.
   repository. Branch PR and staleness badges are backfilled in one batched
   request, and navigating right after launch joins the pass already running
   instead of starting a second one — noticeably faster first load on hubs
-  tracking many repos (#1447)
+  tracking many repos (#1456)
 
 ### Typed channel delivery receipts
 
