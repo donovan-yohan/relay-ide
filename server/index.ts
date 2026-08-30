@@ -297,7 +297,11 @@ import {
   registerFileRangeContentFetcher,
   type FileRangeContentFetcher,
 } from './context-adapters/file-range.js';
-import { collectLocalRepoInventory } from './repo-inventory.js';
+import {
+  collectLocalRepoInventory,
+  type RepoInventoryDetail,
+} from './repo-inventory.js';
+import { createRepoInventoryCache } from './repo-inventory-cache.js';
 import type {
   AutomationSettings,
   Config,
@@ -551,27 +555,34 @@ const GIT_WORKTREE_LIST_ARGS = ['worktree', 'list', '--porcelain'] as const;
 
 type RepoEntry = { name: string; path: string; root: string };
 
-function scanReposInRoot(rootDir: string): RepoEntry[] {
-  const repos: RepoEntry[] = [];
+// #1448: async fs, not `readdirSync`/`statSync`. `GET /repos` walks every root
+// dir and stats a `.git` per entry; doing that synchronously blocks the event
+// loop for the whole scan, stalling every other in-flight request on a busy
+// hub. Same traversal, same result ordering, off the blocking path.
+async function scanReposInRoot(rootDir: string): Promise<RepoEntry[]> {
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
   } catch (_) {
-    return repos;
+    return [];
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    const fullPath = path.join(rootDir, entry.name);
-    const dotGit = path.join(fullPath, '.git');
-    try {
-      if (fs.statSync(dotGit).isDirectory()) {
-        repos.push({ name: entry.name, path: fullPath, root: rootDir });
+  const candidates = entries.filter(
+    (entry) => entry.isDirectory() && !entry.name.startsWith('.')
+  );
+  const results = await Promise.all(
+    candidates.map(async (entry) => {
+      const fullPath = path.join(rootDir, entry.name);
+      try {
+        const stat = await fs.promises.stat(path.join(fullPath, '.git'));
+        if (!stat.isDirectory()) return null;
+      } catch (_) {
+        // .git doesn't exist — not a repo
+        return null;
       }
-    } catch (_) {
-      // .git doesn't exist — not a repo
-    }
-  }
-  return repos;
+      return { name: entry.name, path: fullPath, root: rootDir };
+    })
+  );
+  return results.filter((repo): repo is RepoEntry => repo !== null);
 }
 
 async function listNonMainWorktrees(
@@ -634,12 +645,9 @@ async function initializePortAllocatorAndReconcile(
   }
 }
 
-function scanAllRepos(rootDirs: string[]): RepoEntry[] {
-  const repos: RepoEntry[] = [];
-  for (const rootDir of rootDirs) {
-    repos.push(...scanReposInRoot(rootDir));
-  }
-  return repos;
+async function scanAllRepos(rootDirs: string[]): Promise<RepoEntry[]> {
+  const perRoot = await Promise.all(rootDirs.map(scanReposInRoot));
+  return perRoot.flat();
 }
 
 function parseTTL(ttl: string): number {
@@ -2837,11 +2845,21 @@ async function main(): Promise<void> {
     }
   });
 
-  const collectLocalInventory = () =>
-    collectLocalRepoInventory({
-      config: getConfig(),
-      configPath: CONFIG_PATH,
-    });
+  // #1448: `/hub/repo-inventory`, `/hub/repo-groups` and `/hub/ia/tree` all
+  // derive from this one scan. Memoise it behind a short TTL with in-flight
+  // coalescing so a dialog open pays for at most one fork storm, and dirty-flag
+  // it from the hub's own mutation signals (below) so an add/remove/branch
+  // change is visible on the very next read rather than after the TTL.
+  const repoInventoryCache = createRepoInventoryCache({
+    collect: (detail) =>
+      collectLocalRepoInventory({
+        config: getConfig(),
+        configPath: CONFIG_PATH,
+        detail,
+      }),
+  });
+  const collectLocalInventory = (detail?: RepoInventoryDetail) =>
+    repoInventoryCache.get(detail);
   const confirmationChallenges = createConfirmationChallengeStore();
   app.use(
     createHubNodeRouter({
@@ -3563,12 +3581,15 @@ async function main(): Promise<void> {
         }
       }
     }
+    // `currentBranch`/`divergence` in the memoised inventory just went stale.
+    repoInventoryCache.invalidate();
     broadcastBranchChanged(cwdPath, newBranch);
     // Rebuild ref watchers when branches change (new upstream to watch)
     rebuildRefWatcher();
   });
   branchWatcher.rebuild(getConfig().repos || []);
   watcher.on('worktrees-changed', () => {
+    repoInventoryCache.invalidate();
     branchWatcher.rebuild(getConfig().repos || []);
     queuePortReconciliation(getConfig().repos || []);
   });
@@ -3576,6 +3597,9 @@ async function main(): Promise<void> {
   // Watch upstream tracking refs for push/fetch and broadcast ref-changed events
   const refWatcher = new RefWatcher((cwdPath, branch) => {
     broadcastEvent('ref-changed', { cwdPath, branch });
+    // A push/fetch moves upstream ahead/behind counts and headSha, which the
+    // memoised inventory reports as `divergence`.
+    repoInventoryCache.invalidate();
     // Clear all PR cache — cwdPath may be a worktree path that doesn't match workspace cache keys
     clearPrCache();
   });
@@ -3674,8 +3698,13 @@ async function main(): Promise<void> {
     // #1287 slice 2: bulk add-project files each repo under a real
     // `ia_workspaces` lane, which is what the sidebar actually renders.
     iaStore,
-    onWorktreeCreated: () => broadcastEvent('worktrees-changed'),
+    onWorktreeCreated: () => {
+      repoInventoryCache.invalidate();
+      broadcastEvent('worktrees-changed');
+    },
     onWorkspacesChanged: () => {
+      // config.repos changed — the memoised inventory is derived from it.
+      repoInventoryCache.invalidate();
       setImmediate(() => {
         try {
           const repoPaths = getConfig().repos || [];
@@ -5333,7 +5362,7 @@ async function main(): Promise<void> {
   // GET /repos — scan root dirs for repos
   app.get('/repos', requireAuth, async (_req, res) => {
     const freshConfig = getConfig();
-    const repos = scanAllRepos(freshConfig.rootDirs || []);
+    const repos = await scanAllRepos(freshConfig.rootDirs || []);
     // Also include legacy manually-added repos
     if (freshConfig.repos) {
       for (const repo of freshConfig.repos as unknown as RepoEntry[]) {
@@ -5831,6 +5860,7 @@ async function main(): Promise<void> {
     deleteMeta(CONFIG_PATH, worktreePath);
 
     // Broadcast worktrees-changed so all clients refresh
+    repoInventoryCache.invalidate();
     broadcastEvent('worktrees-changed');
 
     res.json({ ok: true, branchDeleted });

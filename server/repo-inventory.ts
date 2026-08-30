@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { Semaphore, allOrFirstError } from './concurrency.js';
+
 import type { Config } from './types.js';
 import { readMeta } from './config.js';
 import { scanWorktrees } from './git-routes.js';
 import { detectGitRepo, resolveRepoIdentityFields, repoNameFromRemoteUrl } from './workspaces.js';
-import { extractOwnerRepo } from './git.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   createRepoInstanceId,
@@ -24,6 +25,64 @@ import type {
 const execFileAsync = promisify(execFile);
 const DIRTY_FILES_LIMIT = 25;
 
+/**
+ * Default ceiling on simultaneously running `git` subprocesses for ONE
+ * inventory collection. The scan is fork-bound, not CPU-bound, so a modest
+ * ceiling above the core count still wins; the ceiling exists to keep a host
+ * with dozens of repos from opening dozens of pipes at once.
+ */
+export const DEFAULT_REPO_SCAN_CONCURRENCY = 8;
+
+function defaultRepoScanConcurrency(): number {
+  const raw = Number.parseInt(
+    process.env.RELAY_REPO_SCAN_CONCURRENCY ?? '',
+    10
+  );
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REPO_SCAN_CONCURRENCY;
+}
+
+/**
+ * PROCESS-WIDE fork ceiling, shared by every collection that does not pin its
+ * own limit.
+ *
+ * A per-collection semaphore would only bound one scan: cache invalidation
+ * under churn (the worktree watcher debounces at 500 ms; a cold scan takes
+ * ~200 ms) can legitimately leave a superseded scan running while a fresh one
+ * starts, and N stacked scans with N private ceilings is N x the forks. One
+ * shared gate keeps the guarantee true no matter how many collections overlap.
+ *
+ * Callers that pass an explicit `concurrency` get a private gate instead, so
+ * tests can assert an exact bound without cross-test interference.
+ */
+let sharedScanGate: Semaphore | null = null;
+
+function sharedRepoScanGate(): Semaphore {
+  sharedScanGate ??= new Semaphore(defaultRepoScanConcurrency());
+  return sharedScanGate;
+}
+
+/** Test hook: drop the shared gate so a new concurrency env value takes effect. */
+export function resetSharedRepoScanGate(): void {
+  sharedScanGate = null;
+}
+
+/**
+ * How much of a repo instance a caller actually needs.
+ *
+ * - `full`     — every field, including `dirty`, `divergence`, and `worktrees`.
+ *                What `GET /hub/repo-inventory` and `GET /hub/ia/tree` read.
+ * - `identity` — identity coordinates only (`repoIdentity`, remotes, current
+ *                and default branch). `dirty`/`divergence` come back `null` and
+ *                `worktrees` empty, which is exactly what
+ *                `summarizeRepoIdentityGroups` already discards for
+ *                `GET /hub/repo-groups`. Skips the working-tree git forks
+ *                instead of computing and throwing them away.
+ *
+ * The response SHAPE is identical in both tiers; only optional facts are
+ * omitted. `identity` is never served where `full` was requested.
+ */
+export type RepoInventoryDetail = 'full' | 'identity';
+
 type ExecFileAsyncLike = (
   file: string,
   args: string[],
@@ -38,6 +97,13 @@ export interface CollectLocalRepoInventoryDeps {
   execFileAsync?: ExecFileAsyncLike;
   readdirSync?: (dir: string) => Array<{ name: string; isDirectory: () => boolean }>;
   statSync?: (path: string) => { isDirectory: () => boolean };
+  /** Which tier to collect. Defaults to `full` (unchanged legacy behaviour). */
+  detail?: RepoInventoryDetail;
+  /**
+   * Max simultaneous `git` subprocesses for this collection. Defaults to
+   * `RELAY_REPO_SCAN_CONCURRENCY` or {@link DEFAULT_REPO_SCAN_CONCURRENCY}.
+   */
+  concurrency?: number;
 }
 
 type CollectedRepoIdentityFields = Pick<
@@ -151,26 +217,23 @@ async function currentBranchFor(
   }
 }
 
-async function nameFromOrigin(
-  repoPath: string,
-  fallback: string,
-  execAsync: ExecFileAsyncLike
-): Promise<{ name: string; ownerRepo?: string }> {
-  try {
-    const { stdout } = await execAsync('git', ['remote', 'get-url', 'origin'], {
-      cwd: repoPath,
-      timeout: 5000,
-    });
-    const url = stdout.trim();
-    const remoteName = url ? repoNameFromRemoteUrl(url) : undefined;
-    const ownerRepo = url ? (extractOwnerRepo(url) ?? undefined) : undefined;
-    return {
-      name: remoteName ?? fallback,
-      ...(ownerRepo ? { ownerRepo } : {}),
-    };
-  } catch {
-    return { name: fallback };
-  }
+/**
+ * Repo display name, derived from the `origin` remote WITHOUT a second fork.
+ *
+ * `resolveRepoIdentityFields` already ran `git remote -v`, whose first line per
+ * remote is the fetch URL — byte-identical to what `git remote get-url origin`
+ * returns. Deriving from it drops one `git` fork per repo. Both the old and new
+ * paths fall back to the directory name when there is no usable `origin`
+ * (no remotes at all, or remotes without an `origin`).
+ */
+function nameFromRemotes(
+  remotes: CollectedRepoIdentityFields['remotes'],
+  fallback: string
+): string {
+  const origin = remotes.find((remote) => remote.name === 'origin');
+  const url = origin?.url?.trim();
+  if (!url) return fallback;
+  return repoNameFromRemoteUrl(url) ?? fallback;
 }
 
 async function worktreeInstanceFor(
@@ -199,71 +262,123 @@ async function worktreeInstanceFor(
   };
 }
 
+interface RepoInstanceScanInput {
+  repoPath: string;
+  nodeId: NodeId;
+  now: Date;
+  detail: RepoInventoryDetail;
+  execAsync: ExecFileAsyncLike;
+  deps: CollectLocalRepoInventoryDeps;
+}
+
+async function collectRepoInstance(
+  input: RepoInstanceScanInput
+): Promise<RepoInventoryRepoInstance> {
+  const { repoPath, nodeId, now, detail, execAsync, deps } = input;
+  const workspaceExecAsync = execAsync as unknown as typeof execFileAsync;
+  const { isGitRepo, defaultBranch } = await detectGitRepo(
+    repoPath,
+    workspaceExecAsync
+  );
+  const fallbackName = repoPath.split('/').filter(Boolean).pop() || repoPath;
+  const identityFields = (await resolveRepoIdentityFields(
+    repoPath,
+    isGitRepo,
+    workspaceExecAsync
+  )) as CollectedRepoIdentityFields;
+
+  // `identity` callers discard dirty/divergence/worktrees, so never fork for
+  // them. `full` keeps the original fan-out.
+  const wantsWorkingState = detail === 'full';
+  const [currentBranch, dirty, divergence, worktrees] = await Promise.all([
+    isGitRepo ? currentBranchFor(repoPath, execAsync) : Promise.resolve(null),
+    isGitRepo && wantsWorkingState
+      ? getDirtySummary(repoPath, execAsync)
+      : Promise.resolve(null),
+    isGitRepo && wantsWorkingState
+      ? getDivergenceSummary(repoPath, execAsync, now)
+      : Promise.resolve(null),
+    isGitRepo && wantsWorkingState
+      ? scanWorktrees(
+          {
+            getConfig: () => deps.config,
+            configPath: deps.configPath,
+            execFileAsync: execAsync,
+            readdirSync:
+              deps.readdirSync ??
+              ((_dir: string) =>
+                // Lazy require would be worse here; scanner tests inject this.
+                [] as Array<{ name: string; isDirectory: () => boolean }>),
+            statSync: deps.statSync ?? (() => ({ isDirectory: () => false })),
+            readMeta: (configPath: string, worktreePath: string) =>
+              readMeta(configPath, worktreePath),
+          },
+          repoPath
+        )
+      : Promise.resolve([]),
+  ]);
+
+  const worktreeInstances = await allOrFirstError(
+    worktrees.map((worktree) =>
+      worktreeInstanceFor(worktree, nodeId, execAsync, now)
+    )
+  );
+
+  return {
+    repoInstanceId: createRepoInstanceId(nodeId, repoPath),
+    nodeId,
+    localPath: repoPath,
+    name: isGitRepo
+      ? nameFromRemotes(identityFields.remotes, fallbackName)
+      : fallbackName,
+    isGitRepo,
+    defaultBranch,
+    currentBranch,
+    repoIdentity: identityFields.repoIdentity,
+    selectedRemote: identityFields.selectedRemote,
+    remotes: identityFields.remotes,
+    repoIdentityWarnings: identityFields.repoIdentityWarnings,
+    dirty,
+    divergence,
+    worktrees: worktreeInstances,
+    reportedAt: now.toISOString(),
+  };
+}
+
+/**
+ * Collect the local node's repo inventory.
+ *
+ * Repos are scanned CONCURRENTLY (they were serial before #1448 — 33 repos x
+ * ~8 `git` forks each is ~660 ms of round trips on a request path). Structural
+ * concurrency is unbounded but cheap; the actual ceiling is a {@link Semaphore}
+ * wrapped around the leaf `git` invocation — shared process-wide unless the
+ * caller pins its own `concurrency` — so the guarantee is "at most N `git`
+ * subprocesses at once" regardless of repo, worktree, or overlapping-scan
+ * count. Output order still follows `config.repos`, and a failing repo still
+ * surfaces the SAME error the old serial loop reported (lowest index wins).
+ */
 export async function collectLocalRepoInventory(
   deps: CollectLocalRepoInventoryDeps
 ): Promise<RepoInventoryReport> {
   const nodeId = deps.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   const now = deps.now?.() ?? new Date();
-  const execAsync = deps.execFileAsync ?? (execFileAsync as ExecFileAsyncLike);
-  const repos: RepoInventoryRepoInstance[] = [];
+  const baseExec = deps.execFileAsync ?? (execFileAsync as ExecFileAsyncLike);
+  const detail = deps.detail ?? 'full';
+  const gate =
+    deps.concurrency === undefined
+      ? sharedRepoScanGate()
+      : new Semaphore(deps.concurrency);
+  // Guard only the leaf subprocess call: a permit is never held across another
+  // acquire, so the pool cannot deadlock on nested scans (worktree fan-out).
+  const execAsync: ExecFileAsyncLike = (file, args, options) =>
+    gate.run(() => baseExec(file, args, options));
 
-  for (const repoPath of deps.config.repos ?? []) {
-    const workspaceExecAsync = execAsync as unknown as typeof execFileAsync;
-    const { isGitRepo, defaultBranch } = await detectGitRepo(repoPath, workspaceExecAsync);
-    const fallbackName = repoPath.split('/').filter(Boolean).pop() || repoPath;
-    const identityFields = (await resolveRepoIdentityFields(
-      repoPath,
-      isGitRepo,
-      workspaceExecAsync
-    )) as CollectedRepoIdentityFields;
-    const [{ name }, currentBranch, dirty, divergence, worktrees] = await Promise.all([
-      isGitRepo ? nameFromOrigin(repoPath, fallbackName, execAsync) : Promise.resolve({ name: fallbackName }),
-      isGitRepo ? currentBranchFor(repoPath, execAsync) : Promise.resolve(null),
-      isGitRepo ? getDirtySummary(repoPath, execAsync) : Promise.resolve(null),
-      isGitRepo ? getDivergenceSummary(repoPath, execAsync, now) : Promise.resolve(null),
-      isGitRepo
-        ? scanWorktrees(
-            {
-              getConfig: () => deps.config,
-              configPath: deps.configPath,
-              execFileAsync: execAsync,
-              readdirSync:
-                deps.readdirSync ??
-                ((_dir: string) =>
-                  // Lazy require would be worse here; scanner tests inject this.
-                  [] as Array<{ name: string; isDirectory: () => boolean }>),
-              statSync:
-                deps.statSync ??
-                (() => ({ isDirectory: () => false })),
-              readMeta: (configPath: string, worktreePath: string) => readMeta(configPath, worktreePath),
-            },
-            repoPath
-          )
-        : Promise.resolve([]),
-    ]);
-
-    const worktreeInstances = await Promise.all(
-      worktrees.map((worktree) => worktreeInstanceFor(worktree, nodeId, execAsync, now))
-    );
-
-    repos.push({
-      repoInstanceId: createRepoInstanceId(nodeId, repoPath),
-      nodeId,
-      localPath: repoPath,
-      name,
-      isGitRepo,
-      defaultBranch,
-      currentBranch,
-      repoIdentity: identityFields.repoIdentity,
-      selectedRemote: identityFields.selectedRemote,
-      remotes: identityFields.remotes,
-      repoIdentityWarnings: identityFields.repoIdentityWarnings,
-      dirty,
-      divergence,
-      worktrees: worktreeInstances,
-      reportedAt: now.toISOString(),
-    });
-  }
+  const repoPaths = deps.config.repos ?? [];
+  const repos = await allOrFirstError(
+    repoPaths.map((repoPath) =>
+      collectRepoInstance({ repoPath, nodeId, now, detail, execAsync, deps })
+    )
+  );
 
   return {
     nodeId,

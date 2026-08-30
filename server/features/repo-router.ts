@@ -32,6 +32,7 @@ import {
   type SessionCreateType,
 } from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
+import type { RepoInventoryDetail } from '../repo-inventory.js';
 import {
   summarizeRepoIdentityGroups,
   type RepoInventoryReport,
@@ -59,7 +60,16 @@ export interface RepoFeatureRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
   repoInventoryFeature: RepoInventoryFeature;
-  collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
+  /**
+   * Local-node inventory collector. Optionally tier-aware (#1448): callers that
+   * only need identity coordinates pass `'identity'` so the collector skips the
+   * dirty/divergence/worktree git forks it would otherwise compute and discard.
+   * A collector that ignores the argument stays correct — it just returns the
+   * full report.
+   */
+  collectLocalRepoInventory?: (
+    detail?: RepoInventoryDetail
+  ) => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
   confirmations?: ConfirmationChallengeStore;
@@ -378,7 +388,11 @@ export function createRepoFeatureRouter(
     try {
       const reports = [...repoInventoryFeature.listInventoryReports()];
       if (options.collectLocalRepoInventory) {
-        reports.push(await options.collectLocalRepoInventory());
+        // Identity tier (#1448): `summarizeRepoIdentityGroups` reads only
+        // identity coordinates and branch names, so scanning dirty state,
+        // divergence and worktrees here was pure waste — ~650 ms of `git`
+        // forks to produce a 5.7 KB response.
+        reports.push(await options.collectLocalRepoInventory('identity'));
       }
       res.json(summarizeRepoIdentityGroups(reports, now()));
     } catch (error) {

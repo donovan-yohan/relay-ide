@@ -28,6 +28,19 @@ workflow.
   instead of starting a second one — noticeably faster first load on hubs
   tracking many repos (#1456)
 
+### Faster repo, project, and workspace-tree reads
+
+#### Fixed
+
+- Surfaces that list repos, projects, and workspace trees — session create, the
+  node dashboard, and the environment picker — now open in milliseconds instead
+  of stalling on a fresh git scan of every repo. The scan is shared between
+  them, runs its git calls in parallel under a bounded ceiling, and refreshes
+  immediately whenever a repo, branch, or worktree changes (#1448)
+- The environment picker no longer computes dirty state, branch divergence, and
+  worktree listings only to throw them away, and the worktree list loads
+  noticeably faster (#1448)
+
 ### Typed channel delivery receipts
 
 #### Added
