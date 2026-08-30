@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
+import Database from 'better-sqlite3';
 import { hashPin } from '../server/auth.js';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
@@ -23,6 +24,31 @@ if (!fs.existsSync(SERVER_SCRIPT)) {
 }
 
 /** The stdio MCP facade an agent's provider mounts (#1410). */
+/**
+ * #1455 slice 1: the actor lane is gated on hub-authoritative channel
+ * membership. These black-box cases prove SCOPE and transport, not admission,
+ * and slice 1 deliberately ships no HTTP enrolment verb (that is slice 2's
+ * `channels.invite`) — so they write the durable member row the hub itself
+ * would have written on an invite, a mention, or the upgrade backfill. WAL lets
+ * this second connection commit while the hub subprocess holds the database.
+ */
+function enrollChannelMember(
+  configDir: string,
+  channelId: string,
+  memberId: string
+): void {
+  const db = new Database(path.join(configDir, 'channel-chat.db'));
+  try {
+    db.prepare(
+      `INSERT OR IGNORE INTO channel_members
+         (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
+       VALUES (?, 'agent', ?, ?, '{}', 'human:operator')`
+    ).run(channelId, memberId, new Date().toISOString());
+  } finally {
+    db.close();
+  }
+}
+
 const RELAY_MCP_SCRIPT = path.resolve(
   import.meta.dirname,
   '..',
@@ -699,6 +725,10 @@ test('real channel middleware enforces registry-issued channel leases and preser
       );
     const channelA = (await createTopic('Lease A')).topic.id;
     const channelB = (await createTopic('Lease B')).topic.id;
+    enrollChannelMember(tmpDir, channelA, 'agent:channel-lease-peer');
+    // Member of the ABSENT channel too, so the 404 below is the channel
+    // answering rather than the membership gate.
+    enrollChannelMember(tmpDir, 'missing', 'agent:channel-lease-peer');
 
     const requested = await expectJsonStatus<{ grant: { id: string } }>(
       await fetch(`${base}/hub/operator-handshake-grants`, {
@@ -1314,6 +1344,7 @@ test('the Relay MCP facade answers a spawned runtime from its injected environme
       201,
       'seed own channel history'
     );
+    enrollChannelMember(tmpDir, own, 'agent-profile:claude:default');
 
     // Mint the read lease's credential shape: read bits, channel-only scope.
     const grant = await expectJsonStatus<{ grant: { id: string } }>(

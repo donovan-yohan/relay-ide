@@ -4,6 +4,11 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { createLogger } from './logger.js';
+import {
+  AGENT_PROFILE_ID_PREFIX,
+  builtInAgentProfileId,
+  parseAgentProfileProviderId,
+} from '../shared/agent-profile.js';
 import type { AgentRole } from '../shared/agent-roster.js';
 
 import {
@@ -37,6 +42,9 @@ import {
   type ChannelMessageSearchHit,
   type ChannelSearchUnavailableReason,
   type ChannelBodyFormat,
+  CHANNEL_MEMBERSHIP_BACKFILL_INVITER,
+  CHANNEL_MEMBERSHIP_BINDING_INVITER,
+  canonicalChannelMemberId,
   type ChannelMemberRef,
   type ChannelMention,
   type ChannelMessage,
@@ -67,7 +75,7 @@ import {
 //    catch-up window, and thread parent stays valid. Nothing in this file may
 //    ever issue `DELETE FROM channel_messages` for an operator action.
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 const ASYNC_RUN_SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
@@ -784,6 +792,10 @@ CREATE TABLE IF NOT EXISTS channel_members (
   member_id     TEXT NOT NULL,
   joined_at     TEXT NOT NULL,
   metadata_json TEXT NOT NULL DEFAULT '{}',
+  -- #1455 slice 1: audit of HOW the member joined. Nullable because rows
+  -- written before the column existed cannot be attributed; the v17 migration
+  -- stamps those 'backfill'.
+  invited_by    TEXT,
   PRIMARY KEY (channel_id, member_kind, member_id)
 );
 
@@ -947,6 +959,7 @@ interface MemberRow {
   member_id: string;
   joined_at: string;
   metadata_json: string;
+  invited_by: string | null;
 }
 
 /** Projection of a read-state row (#1308 slice 3 item 1). */
@@ -1613,8 +1626,24 @@ export interface ChannelMessageStore {
     kind: 'human' | 'agent';
     id: string;
     metadata?: Record<string, unknown>;
+    /**
+     * Who admitted this member (#1455 slice 1). First-writer wins: a repeat
+     * upsert never rewrites the original attribution, so an agent that keeps
+     * posting cannot launder how it got in.
+     */
+    invitedBy?: string;
   }): ChannelMemberRef;
   listMembers(channelId: string): ChannelMemberRef[];
+  /**
+   * Hub-authoritative membership test (#1455 slice 1). Matches on the
+   * canonical id form, so `agent:<profile>` and `<profile>` are one member.
+   */
+  isMember(channelId: string, kind: 'human' | 'agent', id: string): boolean;
+  /**
+   * Seed membership from durable participation history. Idempotent — safe to
+   * call on every boot and safe to race with the live upsert path.
+   */
+  backfillMembership(): { inserted: number };
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(
     channelId: string,
@@ -2672,6 +2701,68 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
   );
 }
 
+/**
+ * Derive channel membership from durable participation history (#1455 slice 1).
+ *
+ * Membership became authoritative AFTER channels already existed, so the table
+ * has to be seeded from what the database can still prove about who took part:
+ * every non-system sender in `channel_messages`, plus every profile with a
+ * durable `channel_agent_bindings` row (a bound agent is a participant even in
+ * a channel where it has not yet emitted a durable message — the binder is
+ * about to drive its turns there).
+ *
+ * `INSERT OR IGNORE` makes this idempotent and race-safe: an explicit member
+ * row already written by the live path always wins, and running the pass twice
+ * inserts nothing the second time. `joined_at` is the FIRST message that
+ * participant sent, not `now`, so a backfilled row keeps a truthful ordering.
+ */
+/**
+ * Vendor framework id of a DEFAULT built-in profile Actor id
+ * (`agent-profile:<vendor>:default`), or `undefined` for anything else —
+ * including a non-default profile of the same vendor, which is its own
+ * participant. Used only to fold the two spellings of one built-in agent
+ * together for membership matching (#1455 slice 1).
+ */
+function defaultProfileVendorId(id: string): string | undefined {
+  const vendor = parseAgentProfileProviderId(id);
+  if (!vendor) return undefined;
+  return id === builtInAgentProfileId(vendor) ? vendor : undefined;
+}
+
+export function backfillChannelMembership(db: Database.Database): {
+  inserted: number;
+} {
+  const inserter = db.transaction(() => {
+    const fromMessages = db
+      .prepare(
+        `INSERT OR IGNORE INTO channel_members
+           (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
+         SELECT channel_id, sender_kind, sender_id, MIN(created_at), '{}', @inviter
+           FROM channel_messages
+          WHERE sender_kind IN ('human','agent')
+          GROUP BY channel_id, sender_kind, sender_id`
+      )
+      .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
+    const fromBindings = db
+      .prepare(
+        `INSERT OR IGNORE INTO channel_members
+           (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
+         SELECT channel_id, 'agent', profile_actor_id, MIN(created_at), '{}', @inviter
+           FROM channel_agent_bindings
+          GROUP BY channel_id, profile_actor_id`
+      )
+      .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
+    // Rows written before the column existed cannot be attributed to a real
+    // inviter, and leaving them NULL would make "unattributed" and "never
+    // audited" indistinguishable for slice 2's invite audit.
+    db.prepare(
+      `UPDATE channel_members SET invited_by = @inviter WHERE invited_by IS NULL`
+    ).run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER });
+    return fromMessages + fromBindings;
+  });
+  return { inserted: inserter() };
+}
+
 function runMigrations(db: Database.Database): void {
   runSchemaMigrations(db);
   // Repair legacy/hand-built schema-version rows that predate index backstops.
@@ -3202,6 +3293,23 @@ function runSchemaMigrations(db: Database.Database): void {
       db.prepare('UPDATE schema_version SET version = 16').run();
     })();
   }
+  if (current < 17) {
+    db.transaction(() => {
+      // #1455 slice 1: membership becomes the hub's authorization record for
+      // the actor lane. Adding the column is additive; the backfill in the same
+      // transaction is what keeps every channel that already exists working
+      // through the flip — without it, the first request after upgrade would
+      // reject every agent in every channel.
+      const columns = db
+        .prepare(`PRAGMA table_info(channel_members)`)
+        .all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'invited_by')) {
+        db.exec('ALTER TABLE channel_members ADD COLUMN invited_by TEXT');
+      }
+      backfillChannelMembership(db);
+      db.prepare('UPDATE schema_version SET version = 17').run();
+    })();
+  }
 }
 
 export function initChannelMessageStore(
@@ -3538,13 +3646,40 @@ export function createChannelMessageStore(
   }
 
   const upsertMemberStmt = db.prepare(
-    `INSERT INTO channel_members (channel_id, member_kind, member_id, joined_at, metadata_json)
-     VALUES (@channelId, @memberKind, @memberId, @joinedAt, @metadataJson)
+    `INSERT INTO channel_members (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
+     VALUES (@channelId, @memberKind, @memberId, @joinedAt, @metadataJson, @invitedBy)
      ON CONFLICT(channel_id, member_kind, member_id) DO UPDATE SET
-       metadata_json = excluded.metadata_json`
+       metadata_json = excluded.metadata_json,
+       -- First-writer wins on the audit field. COALESCE on the STORED value,
+       -- so a later upsert can fill in an attribution that was missing but can
+       -- never overwrite one that already names an inviter.
+       invited_by = COALESCE(channel_members.invited_by, excluded.invited_by)`
+  );
+  // Binding-driven enrollment deliberately leaves `metadata_json` and
+  // `joined_at` alone on conflict: it mirrors an execution fact onto an
+  // existing member row, it does not re-admit that member.
+  const enrollBoundMemberStmt = db.prepare(
+    `INSERT INTO channel_members (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
+     VALUES (@channelId, 'agent', @memberId, @joinedAt, '{}', @invitedBy)
+     ON CONFLICT(channel_id, member_kind, member_id) DO UPDATE SET
+       invited_by = COALESCE(channel_members.invited_by, excluded.invited_by)`
   );
   const listMembersStmt = db.prepare(
     'SELECT * FROM channel_members WHERE channel_id = ? ORDER BY joined_at ASC, member_id ASC'
+  );
+  // Canonical match: `agent:<profile>` and `<profile>` are the same member (see
+  // `canonicalChannelMemberId`). Enumerating both spellings as bound equalities
+  // keeps the `(channel_id, member_kind, member_id)` primary key serving the
+  // lookup; a `replace()`/`LIKE` predicate on `member_id` would not.
+  const isMemberStmt = db.prepare(
+    `SELECT 1 FROM channel_members
+      WHERE channel_id = @channelId
+        AND member_kind = @memberKind
+        AND member_id IN (
+          @memberId, @canonicalId, @prefixedId,
+          @defaultProfileId, @vendorId, @prefixedVendorId
+        )
+      LIMIT 1`
   );
   // Compiled once: `GET /channels` runs this per channel per list fetch.
   const threadSummaryStmt = db.prepare(buildChannelThreadSummarySql());
@@ -3626,11 +3761,36 @@ export function createChannelMessageStore(
       ORDER BY seq DESC LIMIT 1`
   );
 
+  /**
+   * Keep membership in lockstep with bindings (#1455 slice 1). Best-effort:
+   * a binding is a durable execution fact and must not fail because its
+   * membership mirror could not be written — the read side would simply see
+   * the agent as a non-member, which is the safe direction.
+   */
+  function enrollBoundMember(channelId: string, profileActorId: string): void {
+    try {
+      enrollBoundMemberStmt.run({
+        channelId,
+        memberId: profileActorId,
+        joinedAt: nowIso(),
+        invitedBy: CHANNEL_MEMBERSHIP_BINDING_INVITER,
+      });
+    } catch (error) {
+      logger.warn(
+        'channel binding member enrollment failed for %s in %s: %s',
+        profileActorId,
+        channelId,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
   function memberRowToRef(row: MemberRow): ChannelMemberRef {
     return {
       kind: row.member_kind as 'human' | 'agent',
       id: row.member_id,
       joinedAt: row.joined_at,
+      ...(row.invited_by ? { invitedBy: row.invited_by } : {}),
     };
   }
 
@@ -5519,11 +5679,14 @@ export function createChannelMessageStore(
         memberId: input.id,
         joinedAt: existing?.joined_at ?? joinedAt,
         metadataJson: JSON.stringify(input.metadata ?? {}),
+        invitedBy: input.invitedBy ?? null,
       });
+      const invitedBy = existing?.invited_by ?? input.invitedBy ?? null;
       return {
         kind: input.kind,
         id: input.id,
         joinedAt: existing?.joined_at ?? joinedAt,
+        ...(invitedBy ? { invitedBy } : {}),
       };
     },
 
@@ -5531,6 +5694,42 @@ export function createChannelMessageStore(
       return (listMembersStmt.all(channelId) as MemberRow[]).map(
         memberRowToRef
       );
+    },
+
+    isMember(channelId, kind, id) {
+      // Human ids are never prefix-folded: `canonicalChannelMemberId` only
+      // strips `agent:`, and a human id (`human:operator`) is its own canonical
+      // form, so every extra binding collapses onto the same value.
+      const canonical = kind === 'agent' ? canonicalChannelMemberId(id) : id;
+      // A gateway actor named for a VENDOR (`agent:claude`) and that vendor's
+      // DEFAULT profile Actor id (`agent-profile:claude:default`) are the same
+      // participant — the binder already treats them as one for self-mention
+      // suppression (`eligibleProfiles`). Membership must agree in BOTH
+      // directions, or an agent enrolled under one spelling is a non-member the
+      // moment it arrives under the other. Non-default profiles
+      // (`agent-profile:claude:<uuid>`) are deliberately NOT folded: they are
+      // distinct participants that happen to share a vendor.
+      const vendor =
+        kind === 'agent' ? defaultProfileVendorId(canonical) : undefined;
+      return (
+        isMemberStmt.get({
+          channelId,
+          memberKind: kind,
+          memberId: id,
+          canonicalId: canonical,
+          prefixedId: kind === 'agent' ? `agent:${canonical}` : id,
+          defaultProfileId:
+            kind === 'agent' && !canonical.startsWith(AGENT_PROFILE_ID_PREFIX)
+              ? builtInAgentProfileId(canonical)
+              : id,
+          vendorId: vendor ?? id,
+          prefixedVendorId: vendor ? `agent:${vendor}` : id,
+        }) !== undefined
+      );
+    },
+
+    backfillMembership() {
+      return backfillChannelMembership(db);
     },
 
     findDmChannel(memberIdA, memberIdB) {
@@ -5558,10 +5757,15 @@ export function createChannelMessageStore(
     },
 
     designateSoleOrchestrator(input) {
+      const designate = (): ChannelBinding => {
+        const binding = designateSoleOrchestratorTransaction.immediate(input);
+        enrollBoundMember(input.channelId, input.profileActorId);
+        return binding;
+      };
       try {
         // IMMEDIATE takes the write reservation before the conflict read, so
         // separate store handles cannot both observe an empty designation.
-        return designateSoleOrchestratorTransaction.immediate(input);
+        return designate();
       } catch (error) {
         if (error instanceof ChannelMessageStoreError) throw error;
         if (
@@ -5590,7 +5794,9 @@ export function createChannelMessageStore(
           'use designateSoleOrchestrator to assign the orchestrator role'
         );
       }
-      return writeBindingImpl(input);
+      const binding = writeBindingImpl(input);
+      enrollBoundMember(input.channelId, input.profileActorId);
+      return binding;
     },
 
     createCompletionCallback(input) {

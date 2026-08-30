@@ -60,6 +60,45 @@ directory. It stores:
 - channel members;
 - channel-to-profile runtime bindings and provider resume state.
 
+## Membership
+
+The hub owns channel membership (#1455). `channel_members` records each
+participant's kind, id, join time, and `invited_by` — the audit of _how_ they
+got in. First writer wins on that attribution, so an agent that keeps posting
+cannot relabel its own admission.
+
+Membership is written by four paths, and only these four:
+
+- an operator or host-local post enrolls its own sender;
+- a routable `@mention` enrolls the mentioned profile, credited to the
+  mentioning message's sender (the mention _is_ the invite until the explicit
+  `channels.invite` verb lands);
+- a durable `channel_agent_bindings` row enrolls its profile, credited
+  `binding`;
+- the v17 migration backfills every pre-membership channel from its durable
+  senders and bindings, credited `backfill`.
+
+A DM stays deterministic: addressing the channel is the mention, so its one
+agent is enrolled from the first message with no literal `@name`.
+
+Membership is the **authorization** record for the scoped-actor lane. A
+`relay-ide v1 ...` credential may _request_ any channel id; the hub answers on
+membership, not on token scope. `channels.get`, `channels.history`,
+`channels.roster`, `channels.receipts`, `channels.run.get`,
+`channels.threads.history`, `channels.search`, `channels.post`, thread
+create/rename, and `channels.subscribe` all refuse a non-member with a
+`CHANNEL_NOT_MEMBER` reason code; `channels.list` and an unscoped search narrow
+to the actor's own channels. Credential `channelIds` scope is still enforced —
+both must hold. The browser cookie lane, operator-client credentials, and the
+host-local `local-cli` credential (#1467) are the operator and are not gated.
+An unanswerable membership question never resolves to "yes".
+
+Agent identity reaches the table under two historical spellings —
+`agent:<actorId>` from a gateway post and the bare profile Actor id from a
+runtime-bound writer. Membership matches on the canonical form, and folds a
+vendor id onto that vendor's _default_ profile Actor id, so one agent is one
+member. A non-default profile of the same vendor stays its own participant.
+
 History is paginated and byte-bounded. Source and client-message uniqueness
 constraints make replay and retries idempotent. Thread replies share the
 channel sequence and carry their root message id.

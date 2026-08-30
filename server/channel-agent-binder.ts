@@ -3697,6 +3697,23 @@ export function createChannelAgentBinder(
           emitUnavailableReceipt(trigger, profile.id, 'runtime_unavailable');
           return;
         }
+        // #1455 slice 1: a routable mention IS the invite until slice 2 gives
+        // `channels.invite` its own verb. Enrolling HERE — before
+        // `ensureProfileBinding`, whose own enrollment would otherwise stamp
+        // the generic `binding` attribution first (membership is first-writer)
+        // — is what records WHO pulled this profile into the channel. It also
+        // preserves today's behaviour: a mentioned agent could always answer,
+        // and now the durable table says why it may.
+        try {
+          store.upsertMember({
+            channelId: trigger.channelId,
+            kind: 'agent',
+            id: profile.id,
+            invitedBy: trigger.sender.id,
+          });
+        } catch (err) {
+          logger.warn('channel mention member enrollment failed:', err);
+        }
         let binding: LiveBinding;
         try {
           binding = await ensureProfileBinding(

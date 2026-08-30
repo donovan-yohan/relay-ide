@@ -250,6 +250,7 @@ import {
 import { createChannelHub, type ChannelHub } from './channel-hub.js';
 import {
   channelSearchRequestedChannelId,
+  actorMemberRef,
   createChannelChatRouter,
 } from './channel-chat-router.js';
 import { createChannelSubscriptionRouter } from './channel-subscription-router.js';
@@ -3133,11 +3134,21 @@ async function main(): Promise<void> {
   app.use(
     createChannelSubscriptionRouter({
       hub: channelHub,
+      store: channelMessageStore,
       requireSubscribeAuth: requireChannelGatewayAuthForCommand(
         'channels.subscribe',
         { scopeForRequest: channelScopeFromParams }
       ),
       isStillAuthorized: (req, channelId) => {
+        // #1455 slice 1: membership is rechecked on the same per-frame cadence
+        // as revocation. A member removed mid-stream must stop receiving the
+        // channel, not keep the socket it opened while it still belonged.
+        const member = actorMemberRef(req);
+        if (
+          member &&
+          !channelMessageStore?.isMember(channelId, member.kind, member.id)
+        )
+          return false;
         if (isOperatorClientCredentialRequest(req)) {
           return authenticateOperatorClientCredential(
             operatorClientCredentialRegistry,

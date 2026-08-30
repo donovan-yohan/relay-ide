@@ -181,6 +181,44 @@ export interface ChannelMemberRef {
   kind: 'human' | 'agent';
   id: string;
   joinedAt: string;
+  /**
+   * Audit of HOW this member joined (#1455 slice 1). `'backfill'` marks a row
+   * derived from pre-membership history; a mention-routed auto-add records the
+   * mentioning message's sender id. First-writer wins — a repeat upsert never
+   * rewrites the original attribution.
+   */
+  invitedBy?: string;
+}
+
+/** Reason code for the hub-authoritative channel membership deny (#1455). */
+export const CHANNEL_NOT_MEMBER_REASON = 'CHANNEL_NOT_MEMBER' as const;
+export type ChannelNotMemberReason = typeof CHANNEL_NOT_MEMBER_REASON;
+
+/** `invited_by` value stamped on rows derived from pre-membership history. */
+export const CHANNEL_MEMBERSHIP_BACKFILL_INVITER = 'backfill' as const;
+
+/**
+ * `invited_by` for a member enrolled because Relay bound its profile to the
+ * channel as an execution target. A durable `channel_agent_bindings` row IS
+ * participation — the binder is about to drive that profile's turns there — so
+ * binding and membership are kept in lockstep rather than leaving the read side
+ * to guess from two tables.
+ */
+export const CHANNEL_MEMBERSHIP_BINDING_INVITER = 'binding' as const;
+
+/**
+ * Canonical comparison form for a channel member id.
+ *
+ * Agent identity reaches the membership table through two historically
+ * distinct spellings: `deriveSender` stamps `agent:<actorId>` on an ordinary
+ * scoped-actor post, while runtime-bound writers (the channel bridge, the
+ * binder, persistent-orchestrator credentials) use the bare profile actor id.
+ * Both name the SAME participant, so membership compares on the stripped form
+ * rather than minting a second row per agent. Rows are still STORED verbatim —
+ * this only widens matching, it never rewrites durable ids.
+ */
+export function canonicalChannelMemberId(id: string): string {
+  return id.startsWith('agent:') ? id.slice('agent:'.length) : id;
 }
 
 export interface ChannelMention {
@@ -1274,15 +1312,9 @@ export function isChannelDeliveryReceipt(
   value: unknown
 ): value is ChannelDeliveryReceiptV1 {
   if (!isRecord(value)) return false;
-  if (
-    typeof value['messageId'] !== 'string' ||
-    value['messageId'].length === 0
-  )
+  if (typeof value['messageId'] !== 'string' || value['messageId'].length === 0)
     return false;
-  if (
-    typeof value['channelId'] !== 'string' ||
-    value['channelId'].length === 0
-  )
+  if (typeof value['channelId'] !== 'string' || value['channelId'].length === 0)
     return false;
   if (
     typeof value['targetBindingId'] !== 'string' ||
@@ -1428,7 +1460,8 @@ function isMemberRef(value: unknown): value is ChannelMemberRef {
     isRecord(value) &&
     (value.kind === 'human' || value.kind === 'agent') &&
     typeof value.id === 'string' &&
-    typeof value.joinedAt === 'string'
+    typeof value.joinedAt === 'string' &&
+    (value.invitedBy === undefined || typeof value.invitedBy === 'string')
   );
 }
 

@@ -6518,6 +6518,41 @@ describe('channel-agent-binder — DM implicit routing', () => {
     });
   });
 
+  // #1455 slice 1: a DM is deterministic, so its membership is too — the two
+  // participants, with no invite verb needed.
+  it('enrols the DM agent from the addressed message alone', async () => {
+    const topics = makeTopics();
+    createDmTopic(topics);
+    const { binder, store } = makeBinder({
+      build: () =>
+        new ScriptedAdapter('hermes', { mode: 'reply', text: 'on it' }),
+      targets: HERMES_TARGETS,
+      knownProviderIds: ['hermes'],
+      topicStore: topics,
+    });
+
+    postTo(store, binder, DM_CH, 'what is the state of the build?');
+
+    await waitFor(() => repliesIn(store, DM_CH).length === 1);
+    // Addressing the channel IS the mention in a DM, so the one agent is
+    // enrolled with no literal @name and no invite verb, credited to the human
+    // who addressed it. (The human half is enrolled by the router's post path,
+    // which this binder-level fixture deliberately bypasses.)
+    expect(store.listMembers(DM_CH)).toMatchObject([
+      {
+        kind: 'agent',
+        id: builtInAgentProfileId('hermes'),
+        invitedBy: 'human:operator',
+      },
+    ]);
+    expect(
+      store.isMember(DM_CH, 'agent', builtInAgentProfileId('hermes'))
+    ).toBe(true);
+    // ...and the vendor spelling a gateway credential would arrive under
+    // resolves to that same member.
+    expect(store.isMember(DM_CH, 'agent', 'agent:hermes')).toBe(true);
+  });
+
   // #1408: a DM has exactly one agent profile, so the multi-party framing was
   // both false and paid for on every single turn.
   it('addresses the DM agent directly instead of as one of many participants', async () => {
