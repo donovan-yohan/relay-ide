@@ -16,6 +16,9 @@ import {
   issuePersistentOrchestratorCliGatewayActorCredential,
   listCliGatewayActorCredentialsWithGrant,
   revokeCliGatewayActorCredentialWithGrant,
+  isLocalHubCliActorCredential,
+  issueLocalHubCliActorCredential,
+  renewCliGatewayActorCredential,
   rotateCliGatewayActorCredentialWithGrant,
   validateCliGatewayActorCredential,
 } from '../server/cli-gateway-actor-auth.js';
@@ -180,6 +183,64 @@ test('reserves the persistent-orchestrator reason for the internal lease issuer'
   expect(internal.credential.metadata).toEqual({
     reason: 'persistent-orchestrator',
   });
+});
+
+test('reserves the hub-local-cli reason for the internal host-local issuer (#1467)', () => {
+  const scopedRegistry = registry();
+  // Plain issue — the surface behind POST /cli-gateway/actor-credentials.
+  const ordinary = issueCliGatewayActorCredential(scopedRegistry, {
+    metadata: { reason: 'hub-local-cli', trace: 'ordinary' },
+  });
+  expect(ordinary.credential.metadata?.reason).toBeUndefined();
+  expect(isLocalHubCliActorCredential(ordinary.credential)).toBe(false);
+
+  // Grant-backed issue.
+  const grants = grantRegistry();
+  const grantBacked = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-hub-local-issue'),
+        'hub-local-issue'
+      ),
+      metadata: { reason: 'hub-local-cli', trace: 'grant' },
+    }
+  );
+  expect(grantBacked.credential.metadata?.reason).toBeUndefined();
+  expect(isLocalHubCliActorCredential(grantBacked.credential)).toBe(false);
+
+  // Grant-backed rotate must not smuggle the marker in either.
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    grantBacked.credential.id,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-hub-local-rotate'),
+        'hub-local-rotate'
+      ),
+      metadata: { reason: 'hub-local-cli', trace: 'rotate' },
+    }
+  );
+  expect(rotated.credential.metadata?.reason).toBeUndefined();
+  expect(isLocalHubCliActorCredential(rotated.credential)).toBe(false);
+
+  // Only the trusted in-process issuer stamps it.
+  const internal = issueLocalHubCliActorCredential(scopedRegistry, {
+    actor: { type: 'cli', id: 'local-cli' },
+    issuer: { id: 'hub-local-boot' },
+    capabilities: ['session:read'],
+    ttlMs: 60_000,
+  });
+  expect(internal.credential.metadata).toEqual({ reason: 'hub-local-cli' });
+  expect(isLocalHubCliActorCredential(internal.credential)).toBe(true);
+
+  // ...and its successor cannot be minted through the renew surface, which
+  // would drop the marker and silently downgrade the credential.
+  expect(() =>
+    renewCliGatewayActorCredential(scopedRegistry, internal.credential)
+  ).toThrow(/cannot be renewed/);
 });
 
 test('reserves the channel-runtime-read reason for the internal read-lease issuer', () => {

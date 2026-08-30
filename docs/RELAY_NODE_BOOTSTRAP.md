@@ -408,7 +408,7 @@ relay-ide hub nodes --json
 curl https://hub.example.com/nodes -b "token=<browser-session-cookie>"
 ```
 
-Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, protocol/version state, and capability summary. The CLI reads the local hub port/config and requires `RELAY_IDE_BROWSER_TOKEN` for the same scoped hub API access as other CLI-gateway operations.
+Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, protocol/version state, and capability summary. The CLI reads the local hub port/config. On the hub host it authenticates itself with the boot-minted local CLI token and needs no login; elsewhere it uses `relay-ide login`, `RELAY_IDE_ACTOR_TOKEN`, or `RELAY_IDE_BROWSER_TOKEN`, exactly as other CLI-gateway operations do. See [docs/CLI_GATEWAY.md](CLI_GATEWAY.md#cli-credential-resolution-order).
 
 ## Update
 

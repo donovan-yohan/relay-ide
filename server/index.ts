@@ -432,6 +432,12 @@ import {
   RELAY_CAPABILITY_BITS,
   type RelayCapabilityBit,
 } from '../shared/security-policy.js';
+import {
+  clearStaleLocalHubActorTokenFile,
+  publishLocalHubActorToken,
+  retireLocalHubActorToken,
+  type PublishedLocalHubActorToken,
+} from './local-hub-actor-token.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -449,6 +455,44 @@ let cliGatewayActorRegistry = createCliGatewayActorRegistry({
 });
 const cliGatewayHandshakeGrantRegistry =
   createCliGatewayHandshakeGrantRegistry();
+/** Effective actor-credential TTL ceiling; the #1467 boot mint asks for exactly this. */
+let cliGatewayActorMaxTtlMs = DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+/** Port whose #1467 local CLI trust token file this process owns, if any. */
+let localHubActorTokenPort: number | null = null;
+/** Credential id of the file this process wrote — the delete key on shutdown. */
+let localHubActorTokenCredentialId: string | null = null;
+let localHubActorTokenTimer: NodeJS.Timeout | null = null;
+
+/** Mint + write the #1467 local CLI trust token, warning (never throwing) on failure. */
+function publishLocalHubActorTokenOrWarn(
+  configDir: string,
+  host: string,
+  port: number,
+  verb: 'published' | 'refreshed'
+): PublishedLocalHubActorToken | null {
+  try {
+    const published = publishLocalHubActorToken({
+      registry: cliGatewayActorRegistry,
+      port,
+      configDir,
+      host,
+      maxTtlMs: cliGatewayActorMaxTtlMs,
+    });
+    if (!published) return null;
+    localHubActorTokenPort = port;
+    localHubActorTokenCredentialId = published.credentialId;
+    logger.info(
+      `Local CLI trust token ${verb} (credential ${published.credentialId}) at ${published.path}`
+    );
+    return published;
+  } catch (error) {
+    logger.warn(
+      'Could not publish the local CLI trust token; `relay-ide v1` will require an explicit actor token:',
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
 /** Rebuild the actor registry with the configured TTL ceiling (#1435). */
 function applyCliGatewayActorMaxTtl(config: Config): void {
   const configured = config.cliGatewayActorCredentialMaxTtlMs;
@@ -458,6 +502,7 @@ function applyCliGatewayActorMaxTtl(config: Config): void {
     configured > 0
       ? configured
       : DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+  cliGatewayActorMaxTtlMs = maxTtlMs;
   cliGatewayActorRegistry = createCliGatewayActorRegistry({ maxTtlMs });
 }
 const operatorClientCredentialRegistry =
@@ -6454,6 +6499,24 @@ async function main(): Promise<void> {
   let cancelStartupRestore = (): void => {};
   async function gracefulShutdown() {
     cancelStartupRestore();
+    // #1467: the credential dies with the in-memory registry anyway; removing
+    // the file keeps a dead token off disk.
+    if (localHubActorTokenTimer) {
+      clearInterval(localHubActorTokenTimer);
+      localHubActorTokenTimer = null;
+    }
+    if (localHubActorTokenPort !== null && localHubActorTokenCredentialId) {
+      try {
+        retireLocalHubActorToken(
+          localHubActorTokenPort,
+          localHubActorTokenCredentialId
+        );
+      } catch {
+        /* best effort */
+      }
+      localHubActorTokenPort = null;
+      localHubActorTokenCredentialId = null;
+    }
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
@@ -6556,6 +6619,45 @@ async function main(): Promise<void> {
     server.listen(startupConfig.port, startupConfig.host, () => {
       const addr = server.address() as import('node:net').AddressInfo;
       logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
+      // #1467: publish the host-local CLI trust token once the real port is
+      // known. Never log the token value — only its path/credential id.
+      //
+      // `tryListen` re-calls `server.listen(cb)` on EADDRINUSE, and every
+      // attempt leaves a pending one-shot 'listening' listener behind — so on
+      // the attempt that finally binds, ALL of them fire. Guard so a retried
+      // boot mints one credential and arms one timer, not one per attempt.
+      if (localHubActorTokenTimer === null) {
+        // Binding this port proves any token file left for it is dead: its
+        // credential only ever existed in the previous owner's memory.
+        try {
+          clearStaleLocalHubActorTokenFile(addr.port);
+        } catch {
+          /* best effort */
+        }
+        const published = publishLocalHubActorTokenOrWarn(
+          configDir,
+          startupConfig.host,
+          addr.port,
+          'published'
+        );
+        // The on-disk credential is short-lived, so refresh it in place well
+        // before it expires; `refreshAfterMs` is always strictly inside the
+        // TTL the credential was actually issued with. The predecessor is left
+        // to expire on its own (mirrors #1435 renew semantics), and the timer
+        // is unref'd so it never holds the process open.
+        if (published) {
+          localHubActorTokenTimer = setInterval(() => {
+            if (localHubActorTokenPort === null) return;
+            publishLocalHubActorTokenOrWarn(
+              configDir,
+              startupConfig.host,
+              localHubActorTokenPort,
+              'refreshed'
+            );
+          }, published.refreshAfterMs);
+          localHubActorTokenTimer.unref();
+        }
+      }
     });
   }
   server.on('error', (err: NodeJS.ErrnoException) => {

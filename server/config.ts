@@ -148,8 +148,22 @@ export function loadConfig(configPath: string): Config {
   return config;
 }
 
+/** Owner-only mode for `config.json` — it carries `pinHash` (#1467). */
+export const CONFIG_FILE_MODE = 0o600;
+
 export function saveConfig(configPath: string, config: Config): void {
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  // `mode` only applies when the file is created, so chmod afterwards to fix
+  // configs written before #1467 under the default umask (0644).
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), {
+    encoding: 'utf8',
+    mode: CONFIG_FILE_MODE,
+  });
+  try {
+    fs.chmodSync(configPath, CONFIG_FILE_MODE);
+  } catch {
+    // Not the file owner (unusual, e.g. a shared-service deployment): the save
+    // itself succeeded, so do not fail the write over the permission tighten.
+  }
 }
 
 export function getConfigDir(configPath: string): string {

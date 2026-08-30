@@ -427,6 +427,42 @@ search`), and Claude channel agents get the Relay MCP facade mounted
   unbound Hermes agents, keep using the gateway default key exactly as before
   (#1453)
 
+### Zero-login CLI on the hub host
+
+#### Added
+
+- `relay-ide v1 …` now works from any terminal on the machine running the hub
+  with no `relay-ide login` and no environment variable. The hub mints a
+  local CLI credential at boot and stores it owner-only (`chmod 600`) in its
+  config directory, keyed by port so several hubs coexist; the CLI picks it up
+  for the loopback port it is dialing. The credential lives only in memory, so
+  restarting the hub rotates it, and the stored credential expires within a day
+  so a copied or backed-up file stops working on its own. A machine that is not
+  the hub host still uses `relay-ide login`, and a caller without the file still
+  gets the same 401 as before. Set `RELAY_IDE_DISABLE_LOCAL_ACTOR_TOKEN=1` to
+  turn it off (#1467)
+
+#### Changed
+
+- The CLI now honors `RELAY_IDE_CONFIG` when resolving its config directory, so
+  it points at the same hub a from-source or `dev:backend` launch is using
+  instead of the installed hub's config (#1467)
+
+#### Security
+
+- File RPC now refuses every read, list, stat, tail, and write inside Relay's
+  own config directories — and, for a hub pinned with `RELAY_IDE_CONFIG`, the
+  config file and the credential files beside it — so a session scoped to your
+  home directory can no longer hand an agent the PIN hash, a stored login
+  credential, the node credential, or the node identity key. A running
+  `tail --follow` is re-checked on every poll, so swapping the followed file
+  for a link into the config directory stops the stream instead of leaking it
+  (#1467)
+- Diagnostics bundles now redact bare Relay credential tokens found in log
+  text, not just ones behind an `Authorization: Bearer` prefix (#1467)
+- `config.json` is written owner-only and an existing world-readable one is
+  tightened on the next save; it carries the PIN hash (#1467)
+
 ## [0.1.1] - 2026-08-05
 
 This is the first public release of the channel era, branded v0.1; it ships as

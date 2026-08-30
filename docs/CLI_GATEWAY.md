@@ -521,7 +521,61 @@ Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --j
 
 ### Mint, use, revoke, and rotate
 
-#### The default path: `relay-ide login` (#1435)
+#### CLI credential resolution order
+
+<a id="cli-credential-resolution-order"></a>
+
+This is the single source of truth for how `relay-ide v1 …` decides what to
+authenticate with. Other docs link here rather than restating it.
+
+| #   | Lane                         | Where it comes from                                                                              | When it applies                                                                                 |
+| --- | ---------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 1   | `--actor-token <token>`      | Typed on the command line                                                                        | Always wins; no persistence side effects                                                        |
+| 2   | `RELAY_IDE_ACTOR_TOKEN`      | Environment                                                                                      | Wins over anything stored on disk                                                               |
+| 3   | `relay-ide login` credential | `~/.config/relay-ide/actor-token.json`, mode `600`                                               | Only exists because you ran `relay-ide login`; transparently renewed near expiry                |
+| 4   | Host-local hub token (#1467) | `local-actor-token-<port>.json` in the shared config root, minted by the hub at boot, mode `600` | Only on the hub host, only for the loopback port being dialed, and only for actor-lane commands |
+
+Two more rules matter:
+
+- `RELAY_IDE_BROWSER_TOKEN`, when set, is used instead of lane 4. An operator
+  who already has a working browser token keeps exactly the behavior they had
+  before #1467; the host-local lane can never turn a working invocation into a 401.
+- Lanes 3 and 4 are files, and an unsafe file is treated as absent. If it is a
+  symlink, group/other readable, owned by another uid, sitting in a
+  group/world-writable directory, bound to a different port, bound to a
+  non-loopback hub URL, or expired, the CLI ignores it and returns the same
+  `UNAUTHORIZED` envelope it would have returned with no file at all.
+
+When every lane comes up empty, `relay-ide v1 …` fails with
+`UNAUTHORIZED`/`CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED` before making any network
+call — unchanged from before #1467.
+
+The PIN is **not** in this table. It authenticates the browser/remote UI only;
+see `docs/SECURITY_POLICY.md` § Host-local CLI trust for the ratified boundary.
+
+#### On the hub host: zero login (#1467)
+
+A terminal on the machine running the hub needs no ceremony at all:
+
+```bash
+relay-ide v1 channels list --json   # works in a fresh shell, no login, no env var
+```
+
+At boot the hub mints one scoped actor credential with the full CLI-gateway capability surface and writes it, mode `0600`, to a port-keyed file `local-actor-token-<port>.json` in the shared standard config root (`~/.config/relay-ide`, or `$XDG_CONFIG_HOME/relay-ide` when that is set). The CLI looks there for the loopback port it is dialing (`--port` / `RELAY_IDE_PORT` / default), so several hubs on different ports coexist.
+
+The ratified boundary is in `docs/SECURITY_POLICY.md`: reading that file requires filesystem access as the hub's uid, and a process with that access already owns the hub. The PIN keeps gating the browser/remote UI, and a remote caller without the file gets the same 401 as before.
+
+Properties worth knowing:
+
+- The credential lives only in the hub's in-memory registry, so **every hub restart rotates it**. Its on-disk TTL is additionally capped at 24 hours and refreshed in place before expiry, so a copied or backed-up file stops working within a day even on a hub that never restarts. The hub deletes the file on graceful shutdown.
+- The token is never served over HTTP, logged, or included in a diagnostics bundle — the file is the only delivery channel.
+- The CLI ignores the file (and behaves exactly as it did before #1467) when it is a symlink, group/other readable, owned by another uid, in a group/world-writable directory, bound to a different port, or bound to a non-loopback hub URL.
+- It is the **last** lane in precedence — see [CLI credential resolution order](#cli-credential-resolution-order). It is only consulted for actor-lane commands.
+- Only a hub whose own config directory is (or sits under) a shared config root publishes one, so a fixture or test hub pinned elsewhere with `RELAY_IDE_CONFIG` writes nothing. A hub bound to a non-loopback address only also publishes nothing, since the CLI dials loopback.
+- If the config directory is group- or world-writable the hub refuses to publish and logs the `chmod go-w …` to run; it never re-permissions a directory you set up yourself.
+- Set `RELAY_IDE_DISABLE_LOCAL_ACTOR_TOKEN=1` on the hub to turn the whole mechanism off.
+
+#### Remote or non-host machines: `relay-ide login` (#1435)
 
 A fresh machine reaches working scoped-actor commands with one browser/PIN approval and zero hand-copied tokens:
 
@@ -539,7 +593,7 @@ relay-ide login status   # presence, actor id, capabilities, expiry — never pr
 relay-ide logout         # deletes the stored file and best-effort revokes the credential hub-side
 ```
 
-Token resolution for `v1` actor-lane commands is explicit opt-in with clear precedence: `--actor-token` flag > `RELAY_IDE_ACTOR_TOKEN` env > the stored `relay-ide login` credential file (the file only exists because you ran `login`). When the stored credential is within 120 seconds of expiry, the CLI transparently renews it against `POST /cli-gateway/actor-credentials/renew` and atomically rewrites the file; if renewal fails (revoked, network down), the old token keeps working until it truly expires, then the command fails closed with "run relay-ide login". Revoked credentials fail closed immediately even if the file still exists.
+Token resolution for `v1` actor-lane commands follows the [CLI credential resolution order](#cli-credential-resolution-order); the stored login file is lane 3, and it only exists because you ran `login`. When the stored credential is within 120 seconds of expiry, the CLI transparently renews it against `POST /cli-gateway/actor-credentials/renew` and atomically rewrites the file; if renewal fails (revoked, network down), the old token keeps working until it truly expires, then the command fails closed with "run relay-ide login". Revoked credentials fail closed immediately even if the file still exists.
 
 Login-minted credentials default to a 30-day TTL, capped by the hub's registry ceiling configured via top-level `cliGatewayActorCredentialMaxTtlMs` in `config.json` (default 30 days). Renewal copies the SAME actor/capabilities/scope and does not revoke the predecessor — it expires naturally within its own TTL window, mirroring operator-client renew semantics, so a lost renew response can never lock the CLI out.
 
@@ -653,6 +707,23 @@ Stable reason codes in this slice include:
 | Expired or revoked credential                           | `UNAUTHORIZED`                  | `CLI_ACTOR_EXPIRED` / `CLI_ACTOR_REVOKED`                                                                                                   |
 | Missing or wrong scope                                  | `FORBIDDEN`                     | `CLI_ACTOR_MISSING_SCOPE`, `CLI_ACTOR_WRONG_SESSION_SCOPE`, `CLI_ACTOR_WRONG_GLOBAL_SESSION_SCOPE`, or `CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE` |
 | Unknown or insufficient capability                      | `FORBIDDEN`                     | `CLI_ACTOR_UNKNOWN_CAPABILITY` / `CLI_ACTOR_INSUFFICIENT_CAPABILITY`                                                                        |
+
+Troubleshooting an `UNAUTHORIZED` from `relay-ide v1 …`:
+
+- **On the hub host, with no login:** this should not happen since #1467. Check
+  that the hub actually published a token — its boot log says
+  `Local CLI trust token published (credential …) at …`. If it does not, the
+  usual causes are the hub's config directory not being (or being under) a
+  shared config root, the hub binding a non-loopback address only,
+  `RELAY_IDE_DISABLE_LOCAL_ACTOR_TOKEN` being set, or a group/world-writable
+  config directory (the hub refuses to publish and logs the `chmod go-w` to
+  run). If the file exists but the CLI ignores it, it failed one of the
+  fail-closed checks in the [resolution order](#cli-credential-resolution-order)
+  — most often a wrong `--port`/`RELAY_IDE_PORT`, or a mode other than `600`.
+- **From another machine:** run `relay-ide login` once. The PIN alone does not
+  authenticate the CLI; it authenticates the browser/remote UI.
+- **`CLI_ACTOR_EXPIRED` with a stored login file:** run `relay-ide login` again.
+  Automatic renewal only fires within 120 seconds of expiry.
 
 Messages and details must not echo `relay-sac-v1...` tokens, bearer headers, browser cookies, node credential material, secret hashes, or raw secret-looking scope/params. Use credential ids, jtis, correlation ids, hashes, and redacted summaries when reporting gateway auth failures or migration evidence.
 

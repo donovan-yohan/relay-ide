@@ -266,6 +266,16 @@ export function renewCliGatewayActorCredential(
   previous: ScopedActorCredentialRecord,
   input: { ttlMs?: unknown } = {}
 ): { token: string; credential: ScopedActorCredentialRecord } {
+  // #1467: the host-local credential is refreshed in place by the hub, not by
+  // the CLI. Renewing it would mint a successor WITHOUT the trusted marker
+  // (the reason below is overwritten), silently downgrading a credential the
+  // caller believes it just extended. Refuse explicitly instead.
+  if (isLocalHubCliActorCredential(previous)) {
+    throw new CliGatewayActorGrantError(
+      'audience_expansion',
+      'the host-local CLI credential is rotated by the hub and cannot be renewed'
+    );
+  }
   const ttlMs =
     typeof input.ttlMs === 'number' &&
     Number.isFinite(input.ttlMs) &&
@@ -591,15 +601,19 @@ export function cliGatewayActorFailure(input: {
  * Reason markers only the trusted in-process issuers below may stamp.
  *
  * These are security-weighted: `persistent-orchestrator` reaches the verbatim
- * sender-id branch and the agent-brake bypass in the channel router, and
+ * sender-id branch and the agent-brake bypass in the channel router,
  * `channel-runtime-read` marks the standing read lease (#1410) so a later
  * consumer can tell an internally minted read handle from an operator-issued
- * one. Every externally supplied metadata blob is stripped of them, so no
- * caller can forge either marker through the issue/grant surface.
+ * one, and `hub-local-cli` (#1467) marks the boot-minted host-local operator
+ * credential that is exempt from the channel-scope narrowing every delegated
+ * actor credential is held to. Every externally supplied metadata blob is
+ * stripped of them, so no caller can forge any marker through the issue/grant
+ * surface.
  */
 const TRUSTED_INTERNAL_CREDENTIAL_REASONS = [
   'persistent-orchestrator',
   'channel-runtime-read',
+  'hub-local-cli',
 ] as const;
 
 type TrustedInternalCredentialReason =
@@ -690,6 +704,36 @@ export function issueChannelRuntimeReadCliGatewayActorCredential(
     input,
     'channel-runtime-read'
   );
+}
+
+/**
+ * Trusted in-process issuer for the #1467 host-local CLI credential.
+ *
+ * Unlike a delegated actor credential, this one represents the operator on the
+ * hub host itself: possession of the 0600 config-dir file it is written to
+ * already implies filesystem access as the hub's uid. It is therefore exempt
+ * from the channel-scope narrowing (`denyChannelReadWithoutScope` /
+ * `denyOutOfScopeChannel`) that stops a delegated agent credential from
+ * enumerating channels it was not scoped to. The marker is stamped here and
+ * nowhere else — `credentialIssueMetadata` strips it from every caller-supplied
+ * metadata blob, so the issue/grant HTTP surface cannot mint one.
+ */
+export function issueLocalHubCliActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  input: Omit<CliGatewayActorIssueInput, 'metadata'>
+): { token: string; credential: ScopedActorCredentialRecord } {
+  return issueCliGatewayActorCredentialInternal(
+    registry,
+    input,
+    'hub-local-cli'
+  );
+}
+
+/** True for a credential minted by `issueLocalHubCliActorCredential` (#1467). */
+export function isLocalHubCliActorCredential(
+  credential: ScopedActorCredentialRecord | undefined
+): boolean {
+  return credential?.metadata?.reason === 'hub-local-cli';
 }
 
 export function issueCliGatewayActorCredentialWithGrant(

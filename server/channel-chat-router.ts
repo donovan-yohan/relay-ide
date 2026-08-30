@@ -10,6 +10,7 @@ import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
 import { isDmChannel } from '../shared/dm-channels.js';
 import {
   authenticatedCliGatewayActorCredential,
+  isLocalHubCliActorCredential,
   type CliGatewayActorReadCommand,
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
@@ -292,6 +293,11 @@ function denyOutOfScopeChannel(
 ): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
   if (credential) {
+    // #1467: the host-local operator credential is not a delegated actor —
+    // whoever can read its 0600 config-dir file already owns the hub — so it
+    // keeps browser/operator authority instead of being narrowed to a channel
+    // list it never had.
+    if (isLocalHubCliActorCredential(credential)) return false;
     if (credential.scope?.channelIds?.includes(channelId)) return false;
   } else {
     const operatorClient = authenticatedOperatorClientCredential(req);
@@ -331,6 +337,7 @@ function filterChannelListToScope(
 function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
   if (!credential) return false; // browser/operator lane: existing authority
+  if (isLocalHubCliActorCredential(credential)) return false; // #1467 host-local operator
   const allowed = credential.scope?.channelIds;
   if (allowed && allowed.length > 0) return false;
   sendGatewayError(
@@ -1158,8 +1165,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // authorizes by the `x-relay-cli-command` header, and a distinct verb keeps
   // the audit trail honest. It gates on the same `context:read` bit and is
   // bounded by the credential's `channelIds` scope like every channel read.
-  const receiptsAuth =
-    deps.requireReadActorAuth?.('channels.receipts') ?? auth;
+  const receiptsAuth = deps.requireReadActorAuth?.('channels.receipts') ?? auth;
   // Search is a filtered read of the same durable message log, but it gets its
   // OWN gateway verb (#1410) rather than riding `channels.history`. The actor
   // lane authorizes by the `x-relay-cli-command` header, so reusing the history
@@ -1604,13 +1610,14 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // in-memory ring (dropped on restart), so this is a recent-outcome lookup,
   // not durable history — the message log remains the source of truth.
   router.get('/channels/:id/receipts', receiptsAuth, (req, res) => {
-    if (!deps.hub) return void sendGatewayError(
-      res,
-      'SESSION_CONFLICT',
-      'channel hub is unavailable',
-      false,
-      { reasonCode: 'CHANNEL_HUB_UNAVAILABLE' }
-    );
+    if (!deps.hub)
+      return void sendGatewayError(
+        res,
+        'SESSION_CONFLICT',
+        'channel hub is unavailable',
+        false,
+        { reasonCode: 'CHANNEL_HUB_UNAVAILABLE' }
+      );
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
@@ -1629,7 +1636,9 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         : undefined;
     const limitRaw = parseSeqQuery(req.query['limit']);
     const limit =
-      typeof limitRaw === 'number' && Number.isSafeInteger(limitRaw) && limitRaw > 0
+      typeof limitRaw === 'number' &&
+      Number.isSafeInteger(limitRaw) &&
+      limitRaw > 0
         ? limitRaw
         : undefined;
     res.json({

@@ -60,6 +60,11 @@ import {
 import { parseCliNodeLogLineCount } from '../server/node-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
+import { discoverLocalHubActorToken } from '../shared/local-hub-actor-token.js';
+import {
+  CONFIG_PATH_ENV_VAR,
+  sharedConfigRoots,
+} from '../server/runtime-state-paths.js';
 import {
   createNodeLinkProof,
   generateNodeIdentityKeyPair,
@@ -288,6 +293,13 @@ function getArg(flag: string): string | undefined {
 function resolveConfigPath(): string {
   const explicit = getArg('--config');
   if (explicit) return explicit;
+  // #1467: a hub started from source or via `dev:backend` pins its config with
+  // RELAY_IDE_CONFIG. Honoring it here keeps the CLI pointed at the same
+  // directory instead of silently resolving the installed hub's config. The
+  // hardcoded `~/.config/relay-ide/config.json` default is unchanged when the
+  // var is unset.
+  const fromEnv = process.env[CONFIG_PATH_ENV_VAR]?.trim();
+  if (fromEnv) return fromEnv;
   return path.join(service.CONFIG_DIR, 'config.json');
 }
 
@@ -1644,17 +1656,79 @@ function actorTokenConfigDir(): string {
 
 interface ResolvedActorToken {
   token: string;
-  source: 'flag' | 'env' | 'file';
+  source: 'flag' | 'env' | 'file' | 'local-hub';
+}
+
+/**
+ * #1467: where a hub on this host may have dropped its port-keyed local trust
+ * token, in CLI precedence order. `--config` and `RELAY_IDE_CONFIG` come first
+ * so an explicitly pinned hub wins; `sharedConfigRoots()` is the deterministic
+ * location the hub actually writes.
+ */
+function localHubActorTokenRoots(): string[] {
+  // The hub only ever publishes into `sharedConfigRoots()[0]`, and only when
+  // its own config dir is under a shared root — so those roots are the whole
+  // search space. `service.CONFIG_DIR` is listed because it is the installed
+  // hub's root even when `$XDG_CONFIG_HOME` moves the app-data one.
+  return [service.CONFIG_DIR, ...sharedConfigRoots()];
+}
+
+/**
+ * The gateway target port. `v1` commands only ever dial loopback, so this is
+ * also the port the local trust token must be bound to.
+ */
+function gatewayTargetPort(): string {
+  return (
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port)
+  );
+}
+
+/**
+ * #1467 last-resort lane: the hub-minted local trust token for the target
+ * port. It is only consulted for actor-capable commands (so non-actor
+ * commands keep their browser-token behavior byte-for-byte), only after the
+ * flag/env/login-file lanes came up empty, and only for a loopback hub whose
+ * port matches. The reader refuses symlinks, loose modes, foreign owners, and
+ * group/world-writable parent directories, so an unsafe file behaves exactly
+ * as if it were absent.
+ */
+let localHubActorTokenCache: string | null = null;
+
+function localHubActorToken(commandName?: RelayCliGatewayCommand): string {
+  if (!commandName || !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(commandName)) {
+    return '';
+  }
+  // An operator who already has a working browser token keeps using it: the
+  // local lane must never be able to turn a previously-working invocation into
+  // a 401 (e.g. a token file left behind by a hub that was SIGKILLed).
+  if (process.env['RELAY_IDE_BROWSER_TOKEN']) return '';
+  // Resolve once per process. Streaming commands ask twice (the sync
+  // `gatewayRequiredToken` and the async `gatewayActorToken`, then compare the
+  // two to decide whether to send the actor headers) and the hub refreshes the
+  // file periodically, so re-reading could hand those two call sites different
+  // tokens and silently drop the actor marker.
+  if (localHubActorTokenCache !== null) return localHubActorTokenCache;
+  const port = Number(gatewayTargetPort());
+  if (!Number.isInteger(port) || port <= 0) return '';
+  const credential = discoverLocalHubActorToken(
+    localHubActorTokenRoots(),
+    port
+  );
+  localHubActorTokenCache = credential?.token ?? '';
+  return localHubActorTokenCache;
 }
 
 /**
  * Actor-token precedence: --actor-token flag > RELAY_IDE_ACTOR_TOKEN env >
- * stored `relay-ide login` credential file. The file is explicit opt-in — it
- * only exists because the operator ran login. Within the renew margin the CLI
+ * stored `relay-ide login` credential file > #1467 hub-minted local trust
+ * token for the target port. The login file is explicit opt-in — it only
+ * exists because the operator ran login. Within the renew margin the CLI
  * transparently renews and atomically rewrites the file; on renewal failure it
  * falls back to the old token until it is truly expired.
  */
-async function resolveGatewayActorToken(): Promise<ResolvedActorToken> {
+async function resolveGatewayActorToken(
+  commandName?: RelayCliGatewayCommand
+): Promise<ResolvedActorToken> {
   const flag = getArg('--actor-token');
   if (flag) {
     // Flag path: explicit per-invocation, no persistence side effects.
@@ -1664,7 +1738,11 @@ async function resolveGatewayActorToken(): Promise<ResolvedActorToken> {
   if (env) return { token: env, source: 'env' };
 
   const stored = loadStoredActorCredential(actorTokenConfigDir());
-  if (!stored) return { token: '', source: 'file' };
+  if (!stored) {
+    const local = localHubActorToken(commandName);
+    if (local) return { token: local, source: 'local-hub' };
+    return { token: '', source: 'file' };
+  }
 
   let credential = stored;
   if (expiresWithinMargin(stored, ACTOR_TOKEN_RENEW_MARGIN_MS, Date.now())) {
@@ -1675,6 +1753,10 @@ async function resolveGatewayActorToken(): Promise<ResolvedActorToken> {
     }
   }
   if (Date.parse(credential.expiresAt) <= Date.now()) {
+    // #1467: an old login file must not shadow a perfectly good hub-minted
+    // token sitting right next to it — prefer the local lane before failing.
+    const local = localHubActorToken(commandName);
+    if (local) return { token: local, source: 'local-hub' };
     printGatewayEnvelope(
       gatewayError('sessions.list', {
         code: 'UNAUTHORIZED',
@@ -1763,8 +1845,12 @@ async function tryRenewStoredActorCredential(
   }
 }
 
-function gatewayActorToken(): Promise<string> {
-  return resolveGatewayActorToken().then((resolved) => resolved.token);
+function gatewayActorToken(
+  commandName?: RelayCliGatewayCommand
+): Promise<string> {
+  return resolveGatewayActorToken(commandName).then(
+    (resolved) => resolved.token
+  );
 }
 
 /**
@@ -1773,13 +1859,19 @@ function gatewayActorToken(): Promise<string> {
  * commands never touch the actor lane, so this exists purely to keep their
  * "actor token is forbidden here" guard working.
  */
-function gatewayActorTokenSync(): string {
+function gatewayActorTokenSync(commandName?: RelayCliGatewayCommand): string {
   const flag = getArg('--actor-token');
   if (flag) return flag;
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return env;
   const stored = loadStoredActorCredential(actorTokenConfigDir());
-  if (!stored || Date.parse(stored.expiresAt) <= Date.now()) return '';
+  // #1467: only actor-capable commands may fall back to the local trust token.
+  // Callers that pass no command (e.g. the workflow-lane guard) see exactly the
+  // pre-#1467 result. An expired login file falls through too, mirroring
+  // resolveGatewayActorToken.
+  if (!stored || Date.parse(stored.expiresAt) <= Date.now()) {
+    return localHubActorToken(commandName);
+  }
   return stored.token;
 }
 
@@ -1795,7 +1887,7 @@ async function gatewayHttpJson(input: {
   capabilities?: readonly string[];
   confirmationToken?: string;
 }): Promise<unknown> {
-  const actorToken = await gatewayActorToken();
+  const actorToken = await gatewayActorToken(input.commandName);
   if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
     gatewayInvalid(
       input.commandName,
@@ -1818,8 +1910,7 @@ async function gatewayHttpJson(input: {
     );
   }
 
-  const port =
-    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const port = gatewayTargetPort();
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     'x-relay-cli-gateway': 'v1',
@@ -2360,7 +2451,7 @@ async function runGatewaySessionNativeWatch(
   );
 
   const token = gatewayRequiredToken('sessions.native.watch');
-  const actorToken = await gatewayActorToken();
+  const actorToken = await gatewayActorToken('sessions.native.watch');
   const usingActorToken = actorToken.length > 0 && token === actorToken;
   const correlationId = gatewayCorrelationId();
   const port = gatewayWsPort();
@@ -2951,7 +3042,7 @@ function gatewayOptionalPositiveInt(
 function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
   // The scoped actor lane (events.subscribe, etc.) prefers RELAY_IDE_ACTOR_TOKEN
   // / --actor-token; other WS paths (PTY streams) stay on the browser token.
-  const actorToken = gatewayActorTokenSync();
+  const actorToken = gatewayActorTokenSync(commandName);
   const actorCapable = CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(commandName);
   if (actorToken && actorCapable) {
     return actorToken;
@@ -2973,9 +3064,7 @@ function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
 }
 
 function gatewayWsPort(): string {
-  return (
-    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port)
-  );
+  return gatewayTargetPort();
 }
 
 async function resolveGatewayPtyTarget(
@@ -5002,7 +5091,7 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
   );
 
   const token = gatewayRequiredToken('events.subscribe');
-  const actorToken = await gatewayActorToken();
+  const actorToken = await gatewayActorToken('events.subscribe');
   const usingActorToken = actorToken.length > 0 && token === actorToken;
   const correlationId = gatewayCorrelationId();
   const port = gatewayWsPort();
@@ -6242,7 +6331,7 @@ async function runGatewayChannelsSubscribe(input: {
 }): Promise<void> {
   const commandName = 'channels.subscribe' as const;
   const token = gatewayRequiredToken(commandName);
-  const actorToken = await gatewayActorToken();
+  const actorToken = await gatewayActorToken(commandName);
   const query = new URLSearchParams();
   if (input.afterSeq !== undefined)
     query.set('afterSeq', String(input.afterSeq));

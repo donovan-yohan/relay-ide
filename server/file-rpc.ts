@@ -4,6 +4,10 @@ import * as fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
 import type { Stats } from 'node:fs';
+import {
+  CONFIG_PATH_ENV_VAR,
+  sharedConfigRoots,
+} from './runtime-state-paths.js';
 import type {
   FileRpcDenialReason,
   FileRpcListResponse,
@@ -106,9 +110,13 @@ function boundedInteger(
 ): number | RelayNodeError {
   if (value === undefined || value === null) return fallback;
   if (!Number.isInteger(value) || typeof value !== 'number' || value <= 0) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', `${field} must be a positive integer`, {
-      field,
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      `${field} must be a positive integer`,
+      {
+        field,
+      }
+    );
   }
   return Math.min(value, max);
 }
@@ -120,19 +128,30 @@ function optionalBoundedInteger(
 ): number | RelayNodeError | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Number.isInteger(value) || typeof value !== 'number' || value <= 0) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', `${field} must be a positive integer`, {
-      field,
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      `${field} must be a positive integer`,
+      {
+        field,
+      }
+    );
   }
   return Math.min(value, max);
 }
 
-function optionalBoolean(value: unknown, field: string): boolean | RelayNodeError {
+function optionalBoolean(
+  value: unknown,
+  field: string
+): boolean | RelayNodeError {
   if (value === undefined || value === null) return false;
   if (typeof value !== 'boolean') {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', `${field} must be boolean when set`, {
-      field,
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      `${field} must be boolean when set`,
+      {
+        field,
+      }
+    );
   }
   return value;
 }
@@ -150,6 +169,112 @@ function normalizeForCompare(value: string, api: PathApi): string {
   return api === path.win32 ? normalized.toLowerCase() : normalized;
 }
 
+/**
+ * #1467: Relay's own config roots are off-limits to file RPC, whatever
+ * filesystem root a session happens to be scoped to.
+ *
+ * A session rooted at `$HOME` (or at the config dir itself) would otherwise put
+ * `config.json` (the PIN hash), `actor-token.json`, `node-credential.json`, the
+ * node identity key, and the #1467 local CLI trust token inside a legitimate
+ * read range — turning any agent with file access into a credential reader.
+ * The roots are recomputed per call so a test (or a differently configured
+ * process) sees its own environment rather than a value frozen at import.
+ */
+/** Credential-bearing files that sit beside a config file, whatever its dir. */
+const PROTECTED_CONFIG_SIBLINGS = [
+  'actor-token.json',
+  'node-credential.json',
+  'node-identity-key.json',
+] as const;
+/** Port-keyed #1467 local CLI trust tokens: `local-actor-token-<port>.json`. */
+const LOCAL_ACTOR_TOKEN_PREFIX = 'local-actor-token-';
+
+interface ProtectedFileRpcTargets {
+  /** Whole directory trees that are never served. */
+  roots: string[];
+  /** Individual files that are never served. */
+  files: string[];
+  /** Directories in which `local-actor-token-*.json` is never served. */
+  tokenDirs: string[];
+}
+
+/**
+ * Everything file RPC refuses to touch.
+ *
+ * `sharedConfigRoots()` are Relay-owned directories (`…/relay-ide`), so denying
+ * them wholesale is safe. A hub pinned with `RELAY_IDE_CONFIG`, by contrast,
+ * may point its config file at a directory that is *also* something else — a
+ * repo checkout (`<repo>/config.dev.json`, which `#961` explicitly tells
+ * operators to pin) or even `/`. Denying that whole directory would break every
+ * legitimate read in it, so only the config file itself and the credential
+ * files beside it are protected there.
+ */
+function protectedFileRpcTargets(): ProtectedFileRpcTargets {
+  const roots: string[] = [];
+  let sharedResolved = false;
+  try {
+    roots.push(...sharedConfigRoots());
+    sharedResolved = true;
+  } catch {
+    /* homedir unavailable — handled below, fail closed */
+  }
+  const files: string[] = [];
+  const tokenDirs: string[] = [];
+  const pinned = process.env[CONFIG_PATH_ENV_VAR]?.trim();
+  if (pinned) {
+    const resolved = path.resolve(pinned);
+    const dir = path.dirname(resolved);
+    files.push(resolved);
+    for (const name of PROTECTED_CONFIG_SIBLINGS) {
+      files.push(path.join(dir, name));
+    }
+    tokenDirs.push(dir);
+  }
+  if (!sharedResolved && roots.length === 0 && files.length === 0) {
+    // Fail closed rather than silently dropping the control: an unresolvable
+    // home directory must not turn the denylist into a no-op.
+    return { roots: [path.sep], files: [], tokenDirs: [] };
+  }
+  return { roots, files, tokenDirs };
+}
+
+function isProtectedFileRpcPath(target: string, api: PathApi): boolean {
+  const { roots, files, tokenDirs } = protectedFileRpcTargets();
+  if (roots.some((root) => pathInside(root, target, api))) return true;
+  const normalizedTarget = normalizeForCompare(api.resolve(target), api);
+  if (
+    files.some(
+      (file) => normalizeForCompare(api.resolve(file), api) === normalizedTarget
+    )
+  ) {
+    return true;
+  }
+  const base = api.basename(target);
+  return (
+    base.startsWith(LOCAL_ACTOR_TOKEN_PREFIX) &&
+    tokenDirs.some((dir) => pathInside(dir, target, api))
+  );
+}
+
+/**
+ * Re-validation hook for anything that keeps reading a path after the request
+ * was normalized (the `fs.tail --follow` poller). Exported so the follower
+ * cannot forget it.
+ */
+export function isProtectedLocalFileRpcPath(target: string): boolean {
+  return isProtectedFileRpcPath(target, path);
+}
+
+function protectedPathDenial(target: string): RelayNodeError {
+  // The denial names the path the caller already supplied and nothing else —
+  // never the directory listing, never any file content.
+  return invalidRequest(
+    'FILE_RPC_PROTECTED_PATH',
+    'path is inside a Relay configuration root and is never served over file RPC',
+    { path: target }
+  );
+}
+
 function pathInside(root: string, target: string, api: PathApi): boolean {
   const normalizedRoot = normalizeForCompare(root, api);
   const normalizedTarget = normalizeForCompare(target, api);
@@ -160,7 +285,8 @@ function pathInside(root: string, target: string, api: PathApi): boolean {
 
 function resolveRoot(summary: ScopedSessionSummary): string | RelayNodeError {
   const { scope } = summary;
-  if (scope.kind === 'worktree' && scope.worktreePath) return scope.worktreePath;
+  if (scope.kind === 'worktree' && scope.worktreePath)
+    return scope.worktreePath;
   if (scope.kind === 'repo' && scope.repoPath) return scope.repoPath;
   if (scope.cwd) return scope.cwd;
   return invalidRequest(
@@ -207,7 +333,11 @@ function buildReadRequest(
     'maxBytes'
   );
   if (typeof maxBytes !== 'number') return maxBytes;
-  const maxLines = optionalBoundedInteger(fields['maxLines'], FILE_RPC_MAX_READ_LINES, 'maxLines');
+  const maxLines = optionalBoundedInteger(
+    fields['maxLines'],
+    FILE_RPC_MAX_READ_LINES,
+    'maxLines'
+  );
   if (maxLines !== undefined && typeof maxLines !== 'number') return maxLines;
   const encodingRaw = fields['encoding'];
   if (
@@ -216,9 +346,13 @@ function buildReadRequest(
     encodingRaw !== 'utf8' &&
     encodingRaw !== 'base64'
   ) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'encoding must be "utf8" or "base64"', {
-      field: 'encoding',
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'encoding must be "utf8" or "base64"',
+      {
+        field: 'encoding',
+      }
+    );
   }
   const encoding = encodingRaw === 'base64' ? 'base64' : 'utf8';
   return {
@@ -240,7 +374,11 @@ function buildTailRequest(
     'maxBytes'
   );
   if (typeof maxBytes !== 'number') return maxBytes;
-  const maxLines = optionalBoundedInteger(fields['maxLines'], FILE_RPC_MAX_TAIL_LINES, 'maxLines');
+  const maxLines = optionalBoundedInteger(
+    fields['maxLines'],
+    FILE_RPC_MAX_TAIL_LINES,
+    'maxLines'
+  );
   if (maxLines !== undefined && typeof maxLines !== 'number') return maxLines;
   const follow = optionalBoolean(fields['follow'], 'follow');
   if (typeof follow !== 'boolean') return follow;
@@ -266,60 +404,103 @@ function buildWriteRequest(
 ): FileRpcRequest | RelayNodeError {
   const modeRaw = fields['mode'];
   if (modeRaw !== 'create' && modeRaw !== 'overwrite' && modeRaw !== 'append') {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'mode must be "create", "overwrite", or "append"', {
-      field: 'mode',
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'mode must be "create", "overwrite", or "append"',
+      {
+        field: 'mode',
+      }
+    );
   }
   const mode = modeRaw as FileRpcWriteMode;
 
   const contentBase64 = fields['contentBase64'];
   if (typeof contentBase64 !== 'string') {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'contentBase64 must be a string', {
-      field: 'contentBase64',
-    });
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'contentBase64 must be a string',
+      {
+        field: 'contentBase64',
+      }
+    );
   }
 
   // Validate base64 before decoding: Buffer.from(garbage, 'base64') silently
   // returns an empty buffer rather than throwing, so we must pre-validate.
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4 !== 0) {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is malformed base64', {
-      field: 'contentBase64',
-      reason: 'malformed_base64',
-    });
+  if (
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) ||
+    contentBase64.length % 4 !== 0
+  ) {
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_INVALID_REQUEST',
+      'contentBase64 is malformed base64',
+      {
+        field: 'contentBase64',
+        reason: 'malformed_base64',
+      }
+    );
   }
 
   let buf: Buffer;
   try {
     buf = Buffer.from(contentBase64, 'base64');
   } catch {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is not valid base64', {
-      field: 'contentBase64',
-      reason: 'malformed_base64',
-    });
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_INVALID_REQUEST',
+      'contentBase64 is not valid base64',
+      {
+        field: 'contentBase64',
+        reason: 'malformed_base64',
+      }
+    );
   }
 
   if (buf.length > FILE_RPC_MAX_WRITE_BYTES) {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SIZE_EXCEEDED', 'write content exceeds 1 MB limit', {
-      bytesDecoded: buf.length,
-      maxBytes: FILE_RPC_MAX_WRITE_BYTES,
-    });
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_WRITE_SIZE_EXCEEDED',
+      'write content exceeds 1 MB limit',
+      {
+        bytesDecoded: buf.length,
+        maxBytes: FILE_RPC_MAX_WRITE_BYTES,
+      }
+    );
   }
 
   if (mode === 'overwrite') {
     const expectedHash = fields['expectedHash'];
-    if (!expectedHash || typeof expectedHash !== 'string' || expectedHash.trim() === '') {
-      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_EXPECTED_HASH_REQUIRED', 'expectedHash is required when mode is "overwrite"', {
-        field: 'expectedHash',
-      });
+    if (
+      !expectedHash ||
+      typeof expectedHash !== 'string' ||
+      expectedHash.trim() === ''
+    ) {
+      return fileRpcError(
+        'INVALID_REQUEST',
+        'FILE_RPC_EXPECTED_HASH_REQUIRED',
+        'expectedHash is required when mode is "overwrite"',
+        {
+          field: 'expectedHash',
+        }
+      );
     }
   }
 
   const permissions = fields['permissions'];
   if (permissions !== undefined && permissions !== null) {
-    if (!Number.isInteger(permissions) || typeof permissions !== 'number' || permissions < 0) {
-      return invalidRequest('FILE_RPC_INVALID_REQUEST', 'permissions must be a non-negative integer when set', {
-        field: 'permissions',
-      });
+    if (
+      !Number.isInteger(permissions) ||
+      typeof permissions !== 'number' ||
+      permissions < 0
+    ) {
+      return invalidRequest(
+        'FILE_RPC_INVALID_REQUEST',
+        'permissions must be a non-negative integer when set',
+        {
+          field: 'permissions',
+        }
+      );
     }
   }
 
@@ -331,7 +512,9 @@ function buildWriteRequest(
     ...(mode === 'overwrite' && fields['expectedHash']
       ? { expectedHash: fields['expectedHash'] as string }
       : {}),
-    ...(permissions !== undefined && permissions !== null ? { permissions: permissions as number } : {}),
+    ...(permissions !== undefined && permissions !== null
+      ? { permissions: permissions as number }
+      : {}),
   };
   return req;
 }
@@ -342,48 +525,78 @@ export function normalizeHubFileRpcRequest(input: {
   nodeId: string;
   session: ScopedSessionSummary;
   body: Record<string, unknown>;
-}): { ok: true; value: NormalizedHubFileRpcRequest } | { ok: false; error: RelayNodeError } {
+}):
+  | { ok: true; value: NormalizedHubFileRpcRequest }
+  | { ok: false; error: RelayNodeError } {
   const api = pathApiForPlatform(input.nodePlatform);
   const rootRaw = resolveRoot(input.session);
   if (typeof rootRaw !== 'string') return { ok: false, error: rootRaw };
   const bodyPath = input.body['path'];
-  const pathRaw = bodyPath === undefined || bodyPath === null ? '.' : nonEmptyString(bodyPath);
+  const pathRaw =
+    bodyPath === undefined || bodyPath === null
+      ? '.'
+      : nonEmptyString(bodyPath);
   if (!pathRaw) {
     return {
       ok: false,
-      error: invalidRequest('FILE_RPC_INVALID_REQUEST', 'path must be a non-empty string when set', {
-        field: 'path',
-      }),
+      error: invalidRequest(
+        'FILE_RPC_INVALID_REQUEST',
+        'path must be a non-empty string when set',
+        {
+          field: 'path',
+        }
+      ),
     };
   }
-  const cwdRaw = nonEmptyString(input.body['cwd']) ?? input.session.scope.cwd ?? rootRaw;
+  const cwdRaw =
+    nonEmptyString(input.body['cwd']) ?? input.session.scope.cwd ?? rootRaw;
   if (hasNul(rootRaw) || hasNul(cwdRaw) || hasNul(pathRaw)) {
     return {
       ok: false,
-      error: invalidRequest('FILE_RPC_INVALID_REQUEST', 'paths must not contain NUL bytes'),
+      error: invalidRequest(
+        'FILE_RPC_INVALID_REQUEST',
+        'paths must not contain NUL bytes'
+      ),
     };
   }
   const root = api.resolve(rootRaw);
-  const cwd = api.isAbsolute(cwdRaw) ? api.resolve(cwdRaw) : api.resolve(root, cwdRaw);
+  const cwd = api.isAbsolute(cwdRaw)
+    ? api.resolve(cwdRaw)
+    : api.resolve(root, cwdRaw);
   if (!pathInside(root, cwd, api)) {
     return {
       ok: false,
-      error: invalidRequest('FILE_RPC_CWD_ESCAPE', 'cwd is outside the scoped filesystem root', {
-        root,
-        cwd,
-      }),
+      error: invalidRequest(
+        'FILE_RPC_CWD_ESCAPE',
+        'cwd is outside the scoped filesystem root',
+        {
+          root,
+          cwd,
+        }
+      ),
     };
   }
-  const target = api.isAbsolute(pathRaw) ? api.resolve(pathRaw) : api.resolve(cwd, pathRaw);
+  const target = api.isAbsolute(pathRaw)
+    ? api.resolve(pathRaw)
+    : api.resolve(cwd, pathRaw);
   if (!pathInside(root, target, api)) {
     return {
       ok: false,
-      error: invalidRequest('FILE_RPC_ROOT_ESCAPE', 'path is outside the scoped filesystem root', {
-        root,
-        cwd,
-        path: target,
-      }),
+      error: invalidRequest(
+        'FILE_RPC_ROOT_ESCAPE',
+        'path is outside the scoped filesystem root',
+        {
+          root,
+          cwd,
+          path: target,
+        }
+      ),
     };
+  }
+  // #1467: Relay config roots are denied even when they sit inside the
+  // session's own filesystem root (e.g. a session scoped to $HOME).
+  if (isProtectedFileRpcPath(target, api) || isProtectedFileRpcPath(cwd, api)) {
+    return { ok: false, error: protectedPathDenial(target) };
   }
 
   const base: FileRpcRequest = {
@@ -404,7 +617,9 @@ export function normalizeHubFileRpcRequest(input: {
         nodeId: input.nodeId,
         cwd,
         path: target,
-        ...(input.session.scope.repoPath ? { repoPath: input.session.scope.repoPath } : {}),
+        ...(input.session.scope.repoPath
+          ? { repoPath: input.session.scope.repoPath }
+          : {}),
         ...(input.session.scope.worktreePath !== undefined
           ? { worktreePath: input.session.scope.worktreePath }
           : {}),
@@ -413,9 +628,16 @@ export function normalizeHubFileRpcRequest(input: {
   };
 }
 
-function parseFileRpcRequest(raw: unknown, operation: FileRpcOperation): FileRpcRequest | RelayNodeError {
+function parseFileRpcRequest(
+  raw: unknown,
+  operation: FileRpcOperation
+): FileRpcRequest | RelayNodeError {
   const record = asRecord(raw);
-  if (!record) return invalidRequest('FILE_RPC_INVALID_REQUEST', 'file RPC payload must be an object');
+  if (!record)
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'file RPC payload must be an object'
+    );
   const sessionId = nonEmptyString(record['sessionId']);
   const root = nonEmptyString(record['root']);
   const cwd = nonEmptyString(record['cwd']);
@@ -427,7 +649,10 @@ function parseFileRpcRequest(raw: unknown, operation: FileRpcOperation): FileRpc
     );
   }
   if (hasNul(sessionId) || hasNul(root) || hasNul(cwd) || hasNul(requestPath)) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'file RPC payload paths must not contain NUL bytes');
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'file RPC payload paths must not contain NUL bytes'
+    );
   }
   const base: FileRpcRequest = { sessionId, root, cwd, path: requestPath };
   return buildOperationRequest(operation, base, record);
@@ -451,34 +676,60 @@ function statPayload(targetPath: string, stats: Stats): FileRpcStat {
   };
 }
 
-async function realpathOrError(target: string, reasonCode: FileRpcDenialReason): Promise<string | RelayNodeError> {
+async function realpathOrError(
+  target: string,
+  reasonCode: FileRpcDenialReason
+): Promise<string | RelayNodeError> {
   try {
     return await fs.realpath(target);
   } catch {
     if (reasonCode === 'FILE_RPC_ROOT_UNAVAILABLE') {
-      return notFound(reasonCode, 'filesystem root is unavailable', { root: target });
+      return notFound(reasonCode, 'filesystem root is unavailable', {
+        root: target,
+      });
     }
-    return notFound('FILE_RPC_NOT_FOUND', 'file RPC path was not found', { path: target });
+    return notFound('FILE_RPC_NOT_FOUND', 'file RPC path was not found', {
+      path: target,
+    });
   }
 }
 
-async function normalizeNodeRequest(raw: unknown, operation: FileRpcOperation): Promise<FileRpcRequest | RelayNodeError> {
+async function normalizeNodeRequest(
+  raw: unknown,
+  operation: FileRpcOperation
+): Promise<FileRpcRequest | RelayNodeError> {
   const parsed = parseFileRpcRequest(raw, operation);
   if ('code' in parsed) return parsed;
   const root = path.resolve(parsed.root);
   const cwd = path.resolve(parsed.cwd);
   const target = path.resolve(parsed.path);
   if (!pathInside(root, cwd, path)) {
-    return invalidRequest('FILE_RPC_CWD_ESCAPE', 'cwd is outside the scoped filesystem root', {
-      root,
-      cwd,
-    });
+    return invalidRequest(
+      'FILE_RPC_CWD_ESCAPE',
+      'cwd is outside the scoped filesystem root',
+      {
+        root,
+        cwd,
+      }
+    );
   }
   if (!pathInside(root, target, path)) {
-    return invalidRequest('FILE_RPC_ROOT_ESCAPE', 'path is outside the scoped filesystem root', {
-      root,
-      path: target,
-    });
+    return invalidRequest(
+      'FILE_RPC_ROOT_ESCAPE',
+      'path is outside the scoped filesystem root',
+      {
+        root,
+        path: target,
+      }
+    );
+  }
+  // #1467: second, authoritative check on the executing node — this is the
+  // process that would actually open the file.
+  if (
+    isProtectedFileRpcPath(target, path) ||
+    isProtectedFileRpcPath(cwd, path)
+  ) {
+    return protectedPathDenial(target);
   }
   const realRoot = await realpathOrError(root, 'FILE_RPC_ROOT_UNAVAILABLE');
   if (typeof realRoot !== 'string') return realRoot;
@@ -489,39 +740,64 @@ async function normalizeNodeRequest(raw: unknown, operation: FileRpcOperation): 
     const parentDir = path.dirname(target);
     const realParent = await realpathOrError(parentDir, 'FILE_RPC_NOT_FOUND');
     if (typeof realParent !== 'string') return realParent;
+    if (isProtectedFileRpcPath(realParent, path)) {
+      return protectedPathDenial(target);
+    }
     if (!pathInside(realRoot, realParent, path)) {
-      return invalidRequest('FILE_RPC_ROOT_ESCAPE', 'resolved parent dir escapes the scoped filesystem root', {
-        root: realRoot,
-        path: realParent,
-      });
+      return invalidRequest(
+        'FILE_RPC_ROOT_ESCAPE',
+        'resolved parent dir escapes the scoped filesystem root',
+        {
+          root: realRoot,
+          path: realParent,
+        }
+      );
     }
     return { ...parsed, root, cwd, path: target };
   }
   const realTarget = await realpathOrError(target, 'FILE_RPC_NOT_FOUND');
   if (typeof realTarget !== 'string') return realTarget;
+  // A symlink inside the root that resolves into a config root is the same
+  // credential read by another name.
+  if (isProtectedFileRpcPath(realTarget, path)) {
+    return protectedPathDenial(target);
+  }
   if (!pathInside(realRoot, realTarget, path)) {
-    return invalidRequest('FILE_RPC_ROOT_ESCAPE', 'resolved path escapes the scoped filesystem root', {
-      root: realRoot,
-      path: realTarget,
-    });
+    return invalidRequest(
+      'FILE_RPC_ROOT_ESCAPE',
+      'resolved path escapes the scoped filesystem root',
+      {
+        root: realRoot,
+        path: realTarget,
+      }
+    );
   }
   return { ...parsed, root, cwd, path: target };
 }
 
-async function executeList(request: FileRpcRequest): Promise<FileRpcListResponse | RelayNodeError> {
-  const maxEntries = 'maxEntries' in request ? request.maxEntries : FILE_RPC_DEFAULT_LIST_ENTRIES;
+async function executeList(
+  request: FileRpcRequest
+): Promise<FileRpcListResponse | RelayNodeError> {
+  const maxEntries =
+    'maxEntries' in request
+      ? request.maxEntries
+      : FILE_RPC_DEFAULT_LIST_ENTRIES;
   let stats: Stats;
   try {
     stats = await fs.stat(request.path);
   } catch {
-    return notFound('FILE_RPC_NOT_FOUND', 'directory was not found', { path: request.path });
+    return notFound('FILE_RPC_NOT_FOUND', 'directory was not found', {
+      path: request.path,
+    });
   }
   if (!stats.isDirectory()) {
-    return invalidRequest('FILE_RPC_NOT_DIRECTORY', 'path is not a directory', { path: request.path });
+    return invalidRequest('FILE_RPC_NOT_DIRECTORY', 'path is not a directory', {
+      path: request.path,
+    });
   }
-  const dirents = (await fs.readdir(request.path, { withFileTypes: true })).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  );
+  const dirents = (
+    await fs.readdir(request.path, { withFileTypes: true })
+  ).sort((a, b) => a.name.localeCompare(b.name));
   const entries: FileRpcStat[] = [];
   for (const dirent of dirents.slice(0, maxEntries)) {
     const entryPath = path.join(request.path, dirent.name);
@@ -542,7 +818,9 @@ async function executeList(request: FileRpcRequest): Promise<FileRpcListResponse
   };
 }
 
-async function executeStat(request: FileRpcRequest): Promise<FileRpcStatResponse | RelayNodeError> {
+async function executeStat(
+  request: FileRpcRequest
+): Promise<FileRpcStatResponse | RelayNodeError> {
   try {
     const stats = await fs.lstat(request.path);
     return {
@@ -553,35 +831,57 @@ async function executeStat(request: FileRpcRequest): Promise<FileRpcStatResponse
       stat: statPayload(request.path, stats),
     };
   } catch {
-    return notFound('FILE_RPC_NOT_FOUND', 'path was not found', { path: request.path });
+    return notFound('FILE_RPC_NOT_FOUND', 'path was not found', {
+      path: request.path,
+    });
   }
 }
 
-async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse | RelayNodeError> {
-  const maxBytes = 'maxBytes' in request ? request.maxBytes : FILE_RPC_DEFAULT_READ_BYTES;
+async function executeRead(
+  request: FileRpcRequest
+): Promise<FileRpcReadResponse | RelayNodeError> {
+  const maxBytes =
+    'maxBytes' in request ? request.maxBytes : FILE_RPC_DEFAULT_READ_BYTES;
   const maxLines = 'maxLines' in request ? request.maxLines : undefined;
   let stats: Stats;
   try {
     stats = await fs.stat(request.path);
   } catch {
-    return notFound('FILE_RPC_NOT_FOUND', 'file was not found', { path: request.path });
+    return notFound('FILE_RPC_NOT_FOUND', 'file was not found', {
+      path: request.path,
+    });
   }
   if (!stats.isFile()) {
-    return invalidRequest('FILE_RPC_NOT_FILE', 'path is not a regular file', { path: request.path });
+    return invalidRequest('FILE_RPC_NOT_FILE', 'path is not a regular file', {
+      path: request.path,
+    });
   }
   const handle = await fs.open(request.path, 'r');
   try {
-    const buffer = Buffer.alloc(Math.min(maxBytes + 1, FILE_RPC_MAX_READ_BYTES + 1));
+    const buffer = Buffer.alloc(
+      Math.min(maxBytes + 1, FILE_RPC_MAX_READ_BYTES + 1)
+    );
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
-      const read = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      const read = await handle.read(
+        buffer,
+        bytesRead,
+        buffer.length - bytesRead,
+        bytesRead
+      );
       if (read.bytesRead === 0) break;
       bytesRead += read.bytesRead;
     }
     const visibleBytes = Math.min(bytesRead, maxBytes);
     const visibleBuffer = buffer.subarray(0, visibleBytes);
-    const encoding = 'encoding' in request && request.encoding === 'base64' ? 'base64' : 'utf8';
-    let content = encoding === 'base64' ? visibleBuffer.toString('base64') : visibleBuffer.toString('utf8');
+    const encoding =
+      'encoding' in request && request.encoding === 'base64'
+        ? 'base64'
+        : 'utf8';
+    let content =
+      encoding === 'base64'
+        ? visibleBuffer.toString('base64')
+        : visibleBuffer.toString('utf8');
     const truncatedBytes = bytesRead > maxBytes;
     let truncatedLines = false;
     if (encoding === 'utf8' && maxLines !== undefined) {
@@ -609,7 +909,10 @@ async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse
   }
 }
 
-function tailTextByLines(content: string, maxLines: number | undefined): {
+function tailTextByLines(
+  content: string,
+  maxLines: number | undefined
+): {
   content: string;
   truncatedLines: boolean;
 } {
@@ -629,18 +932,27 @@ function isTailRequest(request: FileRpcRequest): request is FileRpcTailRequest {
   return 'follow' in request && 'maxFollowChunkBytes' in request;
 }
 
-async function executeTail(request: FileRpcRequest): Promise<FileRpcTailResponse | RelayNodeError> {
+async function executeTail(
+  request: FileRpcRequest
+): Promise<FileRpcTailResponse | RelayNodeError> {
   if (!isTailRequest(request)) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'tail request requires follow bounds');
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'tail request requires follow bounds'
+    );
   }
   let stats: Stats;
   try {
     stats = await fs.stat(request.path);
   } catch {
-    return notFound('FILE_RPC_NOT_FOUND', 'file was not found', { path: request.path });
+    return notFound('FILE_RPC_NOT_FOUND', 'file was not found', {
+      path: request.path,
+    });
   }
   if (!stats.isFile()) {
-    return invalidRequest('FILE_RPC_NOT_FILE', 'path is not a regular file', { path: request.path });
+    return invalidRequest('FILE_RPC_NOT_FILE', 'path is not a regular file', {
+      path: request.path,
+    });
   }
   const bytesToRead = Math.min(request.maxBytes, stats.size);
   const startOffset = Math.max(0, stats.size - bytesToRead);
@@ -649,12 +961,20 @@ async function executeTail(request: FileRpcRequest): Promise<FileRpcTailResponse
     const buffer = Buffer.alloc(bytesToRead);
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
-      const read = await handle.read(buffer, bytesRead, buffer.length - bytesRead, startOffset + bytesRead);
+      const read = await handle.read(
+        buffer,
+        bytesRead,
+        buffer.length - bytesRead,
+        startOffset + bytesRead
+      );
       if (read.bytesRead === 0) break;
       bytesRead += read.bytesRead;
     }
     const visible = buffer.subarray(0, bytesRead);
-    const lineResult = tailTextByLines(visible.toString('utf8'), request.maxLines);
+    const lineResult = tailTextByLines(
+      visible.toString('utf8'),
+      request.maxLines
+    );
     return {
       operation: 'tail',
       root: request.root,
@@ -723,10 +1043,13 @@ async function withFileRpcWriteTimeout<T>(
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           reject(
-            followBackpressureError('file follow writer did not drain before timeout', {
-              timeoutMs,
-              ...details,
-            })
+            followBackpressureError(
+              'file follow writer did not drain before timeout',
+              {
+                timeoutMs,
+                ...details,
+              }
+            )
           );
         }, timeoutMs);
         timer.unref?.();
@@ -749,7 +1072,8 @@ export function createFileRpcFollower(options: {
   let closed = false;
   let active = false;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
-  const writeTimeoutMs = options.writeTimeoutMs ?? FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS;
+  const writeTimeoutMs =
+    options.writeTimeoutMs ?? FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS;
 
   const closeWithError = (error: RelayNodeError): void => {
     if (closed) return;
@@ -762,19 +1086,43 @@ export function createFileRpcFollower(options: {
     if (closed || active) return;
     active = true;
     try {
+      // #1467: the follow loop keeps reading a path that was validated once,
+      // at request time. A file swapped for a symlink into a Relay config root
+      // between polls would otherwise stream credentials out through
+      // `fs.tail.chunk`, so re-resolve and re-check on every pass.
+      let resolvedTarget: string;
+      try {
+        resolvedTarget = await fs.realpath(options.request.path);
+      } catch {
+        resolvedTarget = options.request.path;
+      }
+      if (
+        isProtectedLocalFileRpcPath(resolvedTarget) ||
+        isProtectedLocalFileRpcPath(options.request.path)
+      ) {
+        closeWithError(protectedPathDenial(options.request.path));
+        return;
+      }
       const stats = await fs.stat(options.request.path);
       if (!stats.isFile()) {
         closeWithError(
-          invalidRequest('FILE_RPC_NOT_FILE', 'path is no longer a regular file', {
-            path: options.request.path,
-          })
+          invalidRequest(
+            'FILE_RPC_NOT_FILE',
+            'path is no longer a regular file',
+            {
+              path: options.request.path,
+            }
+          )
         );
         return;
       }
       if (stats.size < offset) offset = 0;
       if (stats.size <= offset) return;
       const appendedBytes = stats.size - offset;
-      const skippedBytes = Math.max(0, appendedBytes - options.request.maxFollowChunkBytes);
+      const skippedBytes = Math.max(
+        0,
+        appendedBytes - options.request.maxFollowChunkBytes
+      );
       const startOffset = offset + skippedBytes;
       const bytesToRead = stats.size - startOffset;
       const handle = await fs.open(options.request.path, 'r');
@@ -805,12 +1153,16 @@ export function createFileRpcFollower(options: {
             skippedBytes,
             maxFollowChunkBytes: options.request.maxFollowChunkBytes,
           };
-          await withFileRpcWriteTimeout(Promise.resolve(options.write(chunk)), writeTimeoutMs, {
-            path: options.request.path,
-            startOffset,
-            endOffset: startOffset + bytesRead,
-            bytesRead,
-          });
+          await withFileRpcWriteTimeout(
+            Promise.resolve(options.write(chunk)),
+            writeTimeoutMs,
+            {
+              path: options.request.path,
+              startOffset,
+              endOffset: startOffset + bytesRead,
+              bytesRead,
+            }
+          );
         }
         offset = stats.size;
       } finally {
@@ -830,7 +1182,8 @@ export function createFileRpcFollower(options: {
       } else {
         closeWithError({
           code: 'INTERNAL',
-          message: error instanceof Error ? error.message : String(error ?? 'unknown'),
+          message:
+            error instanceof Error ? error.message : String(error ?? 'unknown'),
           retryable: false,
         });
       }
@@ -861,7 +1214,9 @@ const FILE_RPC_MAX_SOURCE_READ_BYTES = 100 * 1024 * 1024;
  * process. Returns the hex digest, or a RelayNodeError if the file is too
  * large (> 100 MB) or cannot be opened/read.
  */
-async function streamHash(filePath: string): Promise<{ hex: string } | RelayNodeError> {
+async function streamHash(
+  filePath: string
+): Promise<{ hex: string } | RelayNodeError> {
   let stat: Stats;
   try {
     stat = await fs.stat(filePath);
@@ -869,12 +1224,16 @@ async function streamHash(filePath: string): Promise<{ hex: string } | RelayNode
     return mapWriteErrno(err);
   }
   if (stat.size > FILE_RPC_MAX_SOURCE_READ_BYTES) {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SOURCE_TOO_LARGE',
-      `source file exceeds ${FILE_RPC_MAX_SOURCE_READ_BYTES} byte hash limit`, {
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_WRITE_SOURCE_TOO_LARGE',
+      `source file exceeds ${FILE_RPC_MAX_SOURCE_READ_BYTES} byte hash limit`,
+      {
         size: stat.size,
         max: FILE_RPC_MAX_SOURCE_READ_BYTES,
         path: filePath,
-      });
+      }
+    );
   }
   return new Promise((resolve) => {
     const hash = crypto.createHash('sha256');
@@ -890,22 +1249,47 @@ function mapWriteErrno(err: unknown): RelayNodeError {
   const message = err instanceof Error ? err.message : String(err ?? 'unknown');
   const errno = code;
   if (code === 'EACCES' || code === 'EROFS' || code === 'EPERM') {
-    return fileRpcError('FORBIDDEN', 'FILE_RPC_WRITE_PERMISSION_DENIED', `write permission denied: ${message}`, { errno });
+    return fileRpcError(
+      'FORBIDDEN',
+      'FILE_RPC_WRITE_PERMISSION_DENIED',
+      `write permission denied: ${message}`,
+      { errno }
+    );
   }
   if (code === 'EXDEV') {
-    return fileRpcError('INTERNAL', 'FILE_RPC_WRITE_CROSS_DEVICE', `cross-device rename: ${message}`, { errno });
+    return fileRpcError(
+      'INTERNAL',
+      'FILE_RPC_WRITE_CROSS_DEVICE',
+      `cross-device rename: ${message}`,
+      { errno }
+    );
   }
   if (code === 'ENOSPC') {
-    return { code: 'INTERNAL', message: `no space left on device: ${message}`, retryable: true, details: { reasonCode: 'FILE_RPC_WRITE_NO_SPACE', errno } };
+    return {
+      code: 'INTERNAL',
+      message: `no space left on device: ${message}`,
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_WRITE_NO_SPACE', errno },
+    };
   }
   if (code === 'EBUSY' || code === 'EAGAIN' || code === 'ETIMEDOUT') {
-    return { code: 'INTERNAL', message, retryable: true, details: { reasonCode: 'FILE_RPC_INVALID_REQUEST', errno } };
+    return {
+      code: 'INTERNAL',
+      message,
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_INVALID_REQUEST', errno },
+    };
   }
   return { code: 'INTERNAL', message, retryable: false, details: { errno } };
 }
 
-function isWriteRequest(request: FileRpcRequest): request is FileRpcWriteRequest {
-  return 'operation' in request && (request as FileRpcWriteRequest).operation === 'write';
+function isWriteRequest(
+  request: FileRpcRequest
+): request is FileRpcWriteRequest {
+  return (
+    'operation' in request &&
+    (request as FileRpcWriteRequest).operation === 'write'
+  );
 }
 
 async function executeWriteAppend(
@@ -919,7 +1303,11 @@ async function executeWriteAppend(
   let appendErr: unknown;
   try {
     // O_NOFOLLOW | O_APPEND | O_WRONLY | O_CREAT — fails with ELOOP if path is a symlink.
-    const flags = fsConstants.O_NOFOLLOW | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_CREAT;
+    const flags =
+      fsConstants.O_NOFOLLOW |
+      fsConstants.O_APPEND |
+      fsConstants.O_WRONLY |
+      fsConstants.O_CREAT;
     handle = await fs.open(request.path, flags, perms);
     await handle.write(buf);
     await handle.sync();
@@ -927,15 +1315,22 @@ async function executeWriteAppend(
     appendErr = err;
   } finally {
     // Close the handle without letting a close error replace the write error.
-    await handle?.close().catch((closeErr: unknown) => { void closeErr; });
+    await handle?.close().catch((closeErr: unknown) => {
+      void closeErr;
+    });
   }
   if (appendErr !== undefined) {
     const errCode = nodeErrorCode(appendErr);
     if (errCode === 'ELOOP' || errCode === 'ENOTDIR') {
-      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'refusing to append through a symlink', {
-        path: request.path,
-        errno: errCode,
-      });
+      return fileRpcError(
+        'INVALID_REQUEST',
+        'FILE_RPC_WRITE_SYMLINK_ESCAPE',
+        'refusing to append through a symlink',
+        {
+          path: request.path,
+          errno: errCode,
+        }
+      );
     }
     return mapWriteErrno(appendErr);
   }
@@ -944,10 +1339,15 @@ async function executeWriteAppend(
   try {
     const realTarget = await fs.realpath(request.path);
     if (!pathInside(realRoot, realTarget, path)) {
-      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'write target resolved outside the scoped filesystem root', {
-        root: realRoot,
-        resolvedPath: realTarget,
-      });
+      return fileRpcError(
+        'INVALID_REQUEST',
+        'FILE_RPC_WRITE_SYMLINK_ESCAPE',
+        'write target resolved outside the scoped filesystem root',
+        {
+          root: realRoot,
+          resolvedPath: realTarget,
+        }
+      );
     }
   } catch {
     // If realpath fails after write, the file likely vanished — treat as success
@@ -975,21 +1375,35 @@ async function executeWriteAppend(
   };
 }
 
-async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteResponse | RelayNodeError> {
+async function executeWrite(
+  request: FileRpcRequest
+): Promise<FileRpcWriteResponse | RelayNodeError> {
   if (!isWriteRequest(request)) {
-    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'write request is malformed');
+    return invalidRequest(
+      'FILE_RPC_INVALID_REQUEST',
+      'write request is malformed'
+    );
   }
 
   // Defense-in-depth: re-validate base64 at the executor boundary (buildWriteRequest
   // already validates, but this catches any path that bypasses buildWriteRequest).
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(request.contentBase64) || request.contentBase64.length % 4 !== 0) {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is malformed base64', {
-      field: 'contentBase64',
-      reason: 'malformed_base64',
-    });
+  if (
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(request.contentBase64) ||
+    request.contentBase64.length % 4 !== 0
+  ) {
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_INVALID_REQUEST',
+      'contentBase64 is malformed base64',
+      {
+        field: 'contentBase64',
+        reason: 'malformed_base64',
+      }
+    );
   }
   const buf = Buffer.from(request.contentBase64, 'base64');
-  const perms = request.permissions !== undefined ? (request.permissions & 0o777) : 0o666;
+  const perms =
+    request.permissions !== undefined ? request.permissions & 0o777 : 0o666;
 
   // Realpath root for post-write symlink escape checks (handles /tmp -> /private/tmp on macOS).
   // If root realpath fails (e.g. the scoped root directory itself is gone), refuse the write
@@ -1021,14 +1435,22 @@ async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteRespon
   const existed = st !== null;
 
   if (st && !st.isFile() && !st.isSymbolicLink()) {
-    return invalidRequest('FILE_RPC_NOT_FILE', 'path exists but is not a regular file or symlink', {
-      path: request.path,
-    });
+    return invalidRequest(
+      'FILE_RPC_NOT_FILE',
+      'path exists but is not a regular file or symlink',
+      {
+        path: request.path,
+      }
+    );
   }
 
   // Refuse to overwrite a symlink: rename(tmp, symlink) would replace the
   // directory entry, destroying the symlink and losing the original target.
-  if (st && st.isSymbolicLink() && (request.mode === 'create' || request.mode === 'overwrite')) {
+  if (
+    st &&
+    st.isSymbolicLink() &&
+    (request.mode === 'create' || request.mode === 'overwrite')
+  ) {
     return fileRpcError(
       'INVALID_REQUEST',
       'FILE_RPC_WRITE_THROUGH_SYMLINK',
@@ -1038,9 +1460,14 @@ async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteRespon
   }
 
   if (request.mode === 'create' && existed) {
-    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_OVERWRITE_REQUIRED', 'file already exists; use mode "overwrite" to replace it', {
-      path: request.path,
-    });
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_OVERWRITE_REQUIRED',
+      'file already exists; use mode "overwrite" to replace it',
+      {
+        path: request.path,
+      }
+    );
   }
 
   if (request.mode === 'overwrite' && existed) {
@@ -1049,11 +1476,16 @@ async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteRespon
     if ('code' in currentHashResult) return currentHashResult;
     const currentHash = currentHashResult.hex;
     if (currentHash !== request.expectedHash) {
-      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_EXPECTED_HASH_MISMATCH', 'file content has changed since the expectedHash was computed', {
-        expectedHash: request.expectedHash,
-        actualHash: currentHash,
-        path: request.path,
-      });
+      return fileRpcError(
+        'INVALID_REQUEST',
+        'FILE_RPC_EXPECTED_HASH_MISMATCH',
+        'file content has changed since the expectedHash was computed',
+        {
+          expectedHash: request.expectedHash,
+          actualHash: currentHash,
+          path: request.path,
+        }
+      );
     }
   }
 
@@ -1089,10 +1521,15 @@ async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteRespon
     if (!pathInside(realRoot, realTarget, path)) {
       // Rollback: if we just created the file, remove it
       if (!existed) await fs.unlink(request.path).catch(() => {});
-      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'write target resolved outside the scoped filesystem root', {
-        root: realRoot,
-        resolvedPath: realTarget,
-      });
+      return fileRpcError(
+        'INVALID_REQUEST',
+        'FILE_RPC_WRITE_SYMLINK_ESCAPE',
+        'write target resolved outside the scoped filesystem root',
+        {
+          root: realRoot,
+          resolvedPath: realTarget,
+        }
+      );
     }
   } catch {
     // realpath failure after write — treat as success
