@@ -86,12 +86,26 @@ agent is enrolled from the first message with no literal `@name`.
 Two of these deserve their limits spelled out.
 
 **Credential mint is the interim invite.** Issuing a channel-scoped actor
-credential happens on an operator-authenticated route, so it _is_ an operator
-admitting that actor — and it is what keeps already-issued credentials and
-shipped peer scripts working until `channels.invite` lands. It is not a
-re-derivation of scope at request time: the member row is durable and outlives
-the credential, revoking the token does not evict the member, and a channel
-created _after_ the mint is still refused.
+credential is operator-_authorized_ — either a browser session, or a one-use
+handshake grant an operator requested and approved, which binds both the actor
+identity and the `channelIds` — so the mint _is_ an operator admitting that
+actor. It keeps already-issued credentials and shipped peer scripts working
+until `channels.invite` lands. It is not a re-derivation of scope at request
+time: the member row is durable and outlives the credential, revoking the token
+does not evict the member, and a channel created _after_ the mint is still
+refused.
+
+Three limits follow from that, and slice 1 owns none of them:
+
+- **Admission is currently irreversible.** Nothing removes a member row except
+  deleting the channel, so a mint naming the wrong channel id admits an actor
+  permanently. The removal verb is slice 2's, alongside `channels.invite`.
+- Membership matching folds a vendor id onto that vendor's default profile, so
+  minting a credential for the bare actor id `claude` also makes the built-in
+  default Claude profile a member of those channels.
+- Renewal and rotation deliberately admit nothing. Renewal is self-service with
+  no operator present, so enrolling there would be self-admission; rotation
+  carries the original actor and scope forward and can name nothing new.
 
 **A member can pull in another agent by mentioning it.** Only members can post,
 so only members can mention — but any member, human or agent, can therefore

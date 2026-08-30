@@ -1645,7 +1645,10 @@ export interface ChannelMessageStore {
    * so the boot sweep runs it to repair a binding whose membership mirror was
    * lost (see `enrollBoundMember`). It never rewrites an existing row.
    */
-  backfillMembership(): { inserted: number };
+  backfillMembership(options?: {
+    /** See `backfillChannelMembership`. Defaults to true (full derivation). */
+    includeMessageSenders?: boolean;
+  }): { inserted: number };
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
   getBinding(
     channelId: string,
@@ -2704,6 +2707,19 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
 }
 
 /**
+ * Vendor framework id of a DEFAULT built-in profile Actor id
+ * (`agent-profile:<vendor>:default`), or `undefined` for anything else —
+ * including a non-default profile of the same vendor, which is its own
+ * participant. Used only to fold the two spellings of one built-in agent
+ * together for membership matching (#1455 slice 1).
+ */
+function defaultProfileVendorId(id: string): string | undefined {
+  const vendor = parseAgentProfileProviderId(id);
+  if (!vendor) return undefined;
+  return id === builtInAgentProfileId(vendor) ? vendor : undefined;
+}
+
+/**
  * Derive channel membership from durable participation history (#1455 slice 1).
  *
  * Membership became authoritative AFTER channels already existed, so the table
@@ -2724,33 +2740,38 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
  * one-time relabel of pre-v17 rows lives in the v17 migration, where it is
  * correct because nothing else has run yet.
  */
-/**
- * Vendor framework id of a DEFAULT built-in profile Actor id
- * (`agent-profile:<vendor>:default`), or `undefined` for anything else —
- * including a non-default profile of the same vendor, which is its own
- * participant. Used only to fold the two spellings of one built-in agent
- * together for membership matching (#1455 slice 1).
- */
-function defaultProfileVendorId(id: string): string | undefined {
-  const vendor = parseAgentProfileProviderId(id);
-  if (!vendor) return undefined;
-  return id === builtInAgentProfileId(vendor) ? vendor : undefined;
-}
-
-export function backfillChannelMembership(db: Database.Database): {
+export function backfillChannelMembership(
+  db: Database.Database,
+  options: {
+    /**
+     * Include the sender-derived half. TRUE for the v17 migration, which is
+     * the one moment history has to be reconstructed. FALSE for the boot
+     * reconciliation: that pass exists only to repair a binding whose
+     * membership mirror was lost, and the sender-derived statement is a linear
+     * `channel_messages` scan (no index covers
+     * `(channel_id, sender_kind, sender_id)`) — hundreds of milliseconds on a
+     * large transcript, paid before the hub listens, to re-derive rows the
+     * migration already wrote once.
+     */
+    includeMessageSenders?: boolean;
+  } = {}
+): {
   inserted: number;
 } {
+  const includeMessageSenders = options.includeMessageSenders ?? true;
   const inserter = db.transaction(() => {
-    const fromMessages = db
-      .prepare(
-        `INSERT OR IGNORE INTO channel_members
+    const fromMessages = !includeMessageSenders
+      ? 0
+      : db
+          .prepare(
+            `INSERT OR IGNORE INTO channel_members
            (channel_id, member_kind, member_id, joined_at, metadata_json, invited_by)
          SELECT channel_id, sender_kind, sender_id, MIN(created_at), '{}', @inviter
            FROM channel_messages
           WHERE sender_kind IN ('human','agent')
           GROUP BY channel_id, sender_kind, sender_id`
-      )
-      .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
+          )
+          .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
     const fromBindings = db
       .prepare(
         `INSERT OR IGNORE INTO channel_members
@@ -5737,8 +5758,8 @@ export function createChannelMessageStore(
       );
     },
 
-    backfillMembership() {
-      return backfillChannelMembership(db);
+    backfillMembership(options) {
+      return backfillChannelMembership(db, options ?? {});
     },
 
     findDmChannel(memberIdA, memberIdB) {

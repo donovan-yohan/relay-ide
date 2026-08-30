@@ -582,6 +582,13 @@ const UPDATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
 const CHANNEL_MEMBERSHIP_RECHECK_TTL_MS = 1_000;
 
 /**
+ * Ceiling on how many channels one credential mint may admit its actor to
+ * (#1455 slice 1). Far above any real grant; it exists so an operator typo
+ * cannot turn one request into an unbounded run of synchronous writes.
+ */
+const CREDENTIAL_MEMBERSHIP_ENROLL_LIMIT = 64;
+
+/**
  * Per-request (i.e. per open subscription) memo of the membership answer.
  * Keyed on the Request object so it dies with the stream and cannot leak
  * across subscribers; the channel id is part of the key because one request
@@ -590,7 +597,13 @@ const CHANNEL_MEMBERSHIP_RECHECK_TTL_MS = 1_000;
  */
 const channelMembershipRecheckCache = new WeakMap<
   express.Request,
-  { channelId: string; memberId: string; at: number; allowed: boolean }
+  {
+    channelId: string;
+    memberKind: 'human' | 'agent';
+    memberId: string;
+    at: number;
+    allowed: boolean;
+  }
 >();
 
 const UPDATE_COMMAND_MAX_BUFFER = 8 * 1024 * 1024;
@@ -1726,8 +1739,19 @@ async function main(): Promise<void> {
       // binding can outlive its membership mirror. This pass is additive-only
       // and idempotent — it repairs that divergence on the next boot instead of
       // leaving a permanently locked-out agent behind a one-shot migration.
-      // Ordered AFTER `sweepOrphans` so it cannot resurrect a swept channel.
-      const repaired = channelMessageStore.backfillMembership();
+      //
+      // Ordered AFTER `sweepOrphans`, which deletes an orphan channel's
+      // bindings along with its messages, so this cannot resurrect one.
+      //
+      // Bindings ONLY. The sender-derived half is a linear `channel_messages`
+      // scan and belongs to the v17 migration, which reconstructs history once;
+      // paying it on every boot would put hundreds of milliseconds on the path
+      // before the hub listens to re-derive rows that already exist. Binding
+      // divergence is the only failure this repair is for, and
+      // `channel_agent_bindings` is one row per channel-profile pair.
+      const repaired = channelMessageStore.backfillMembership({
+        includeMessageSenders: false,
+      });
       if (repaired.inserted > 0) {
         logger.info(
           'channel membership reconciliation added %d missing member row(s)',
@@ -2159,8 +2183,27 @@ async function main(): Promise<void> {
   const enrollCredentialChannelMembership = (
     credential: ScopedActorCredentialRecord
   ): void => {
-    const channelIds = credential.scope?.channelIds;
-    if (!channelMessageStore || !channelIds?.length) return;
+    const scoped = credential.scope?.channelIds;
+    if (!channelMessageStore || !scoped?.length) return;
+    // Scope is neither deduped nor length-capped upstream, and each enrollment
+    // is a synchronous write. Operator-authorized, so the only blast radius is
+    // a self-inflicted event-loop stall — bounded here rather than trusted.
+    const channelIds = [...new Set(scoped)].slice(
+      0,
+      CREDENTIAL_MEMBERSHIP_ENROLL_LIMIT
+    );
+    if (channelIds.length < new Set(scoped).size) {
+      logger.warn(
+        'credential %s names %d channels; admitting only the first %d',
+        credential.id,
+        new Set(scoped).size,
+        CREDENTIAL_MEMBERSHIP_ENROLL_LIMIT
+      );
+    }
+    // The bare-actor-id branch is defensive, not reachable from THIS route:
+    // `credentialIssueMetadata` strips `persistent-orchestrator` from any
+    // caller-supplied metadata, and that reason is stamped only in-process.
+    // Orchestrator membership arrives through the binding path instead.
     const memberId =
       credential.metadata?.reason === 'persistent-orchestrator'
         ? credential.actor.id
@@ -3240,6 +3283,7 @@ async function main(): Promise<void> {
           const fresh =
             cached !== undefined &&
             cached.channelId === channelId &&
+            cached.memberKind === member.kind &&
             cached.memberId === member.id &&
             now - cached.at < CHANNEL_MEMBERSHIP_RECHECK_TTL_MS;
           const allowed = fresh
@@ -3252,6 +3296,7 @@ async function main(): Promise<void> {
           if (!fresh) {
             channelMembershipRecheckCache.set(req, {
               channelId,
+              memberKind: member.kind,
               memberId: member.id,
               at: now,
               allowed,
