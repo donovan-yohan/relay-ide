@@ -556,3 +556,236 @@ describe('persistence across reopen', () => {
     expect(second.seedBuiltIns(FRAMEWORKS)).toBe(0);
   });
 });
+
+// ── per-profile gateway secret (#1453) ──────────────────────────────────────
+// The key is WRITE-ONLY. It lives in its own `hermes_api_key` column, outside
+// `profile_json`, and every profile read selects `hermes_api_key IS NOT NULL`
+// rather than the value — so these tests assert absence from the SERIALIZED
+// profile, not merely from a property the caller happens to look at.
+
+describe('gateway secret storage', () => {
+  function serialized(value: unknown): string {
+    return JSON.stringify(value);
+  }
+
+  it('round-trips a key without ever putting it on a read profile', () => {
+    const store = makeStore();
+    store.seedBuiltIns(FRAMEWORKS);
+    const created = store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesProfile: 'koi-product',
+      hermesApiKey: 'koi-only-key',
+    });
+
+    expect(created.hermesApiKeySet).toBe(true);
+    expect(serialized(created)).not.toContain('koi-only-key');
+    expect(serialized(store.get(created.id))).not.toContain('koi-only-key');
+    expect(serialized(store.list())).not.toContain('koi-only-key');
+    expect(serialized(store.getDefaultForProvider('hermes'))).not.toContain(
+      'koi-only-key'
+    );
+    // The one sanctioned read path still returns it.
+    expect(store.getGatewaySecret(created.id)).toBe('koi-only-key');
+  });
+
+  it('keeps the key out of the profile_json blob column entirely', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    const created = store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesApiKey: 'koi-only-key',
+    });
+    store.update(created.id, { model: 'sonnet' });
+    store.setDefault(created.id);
+
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const blobs = (
+        db.prepare('SELECT profile_json FROM agent_profiles').all() as Array<{
+          profile_json: string;
+        }>
+      ).map((row) => row.profile_json);
+      expect(blobs.join('\n')).not.toContain('koi-only-key');
+      // …and the blob never claims secret state either; that is derived from
+      // the column on every read.
+      expect(blobs.join('\n')).not.toContain('hermesApiKeySet');
+    } finally {
+      db.close();
+    }
+    // Every write path above kept the column intact.
+    expect(store.getGatewaySecret(created.id)).toBe('koi-only-key');
+  });
+
+  it('replaces on a new value, clears on null, and survives an unrelated patch', () => {
+    const store = makeStore();
+    const created = store.create({
+      providerId: 'hermes',
+      displayName: 'koi',
+      hermesApiKey: 'first-key',
+    });
+
+    expect(store.update(created.id, { model: 'sonnet' }).hermesApiKeySet).toBe(
+      true
+    );
+    expect(store.getGatewaySecret(created.id)).toBe('first-key');
+
+    expect(
+      store.update(created.id, { hermesApiKey: 'second-key' }).hermesApiKeySet
+    ).toBe(true);
+    expect(store.getGatewaySecret(created.id)).toBe('second-key');
+
+    const cleared = store.update(created.id, { hermesApiKey: null });
+    expect(cleared.hermesApiKeySet).toBeUndefined();
+    expect(store.getGatewaySecret(created.id)).toBeNull();
+  });
+
+  it.each([
+    ['has space', 'whitespace'],
+    ['line\nbreak', 'header injection via LF'],
+    ['line\r\nX-Injected: 1', 'header injection via CRLF'],
+    ['k'.repeat(4097), 'over-length'],
+    ['ékey', 'non-ascii'],
+  ])('rejects a malformed key %j (%s)', (value) => {
+    const store = makeStore();
+    const clean = store.create({ providerId: 'hermes', displayName: 'koi' });
+
+    expect(() =>
+      store.create({
+        providerId: 'hermes',
+        displayName: 'other',
+        hermesApiKey: value,
+      })
+    ).toThrow(AgentProfileStoreError);
+    expect(() => store.update(clean.id, { hermesApiKey: value })).toThrow(
+      AgentProfileStoreError
+    );
+    // The rejected write did not land.
+    expect(store.getGatewaySecret(clean.id)).toBeNull();
+  });
+
+  it('never echoes the rejected value in the error message', () => {
+    const store = makeStore();
+    try {
+      store.create({
+        providerId: 'hermes',
+        displayName: 'koi',
+        hermesApiKey: 'bad key with spaces',
+      });
+      throw new Error('expected a rejection');
+    } catch (err) {
+      expect((err as Error).message).not.toContain('bad key with spaces');
+    }
+  });
+
+  it('drops a hand-edited key that no longer passes the guard', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    const created = store.create({ providerId: 'hermes', displayName: 'koi' });
+
+    const db = new Database(dbPath);
+    db.prepare('UPDATE agent_profiles SET hermes_api_key = ? WHERE id = ?').run(
+      'has a space',
+      created.id
+    );
+    db.close();
+
+    // The marker follows the column, but the unusable value is not handed out
+    // to become an Authorization header.
+    expect(store.get(created.id)?.hermesApiKeySet).toBe(true);
+    expect(store.getGatewaySecret(created.id)).toBeNull();
+  });
+
+  it('strips a secret smuggled into a hand-edited profile_json blob', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    const created = store.create({ providerId: 'hermes', displayName: 'koi' });
+
+    const db = new Database(dbPath);
+    db.prepare('UPDATE agent_profiles SET profile_json = ? WHERE id = ?').run(
+      JSON.stringify({
+        ...created,
+        hermesApiKey: 'smuggled-key',
+      }),
+      created.id
+    );
+    db.close();
+
+    // The row stays usable, but the smuggled value never reaches a reader.
+    const read = store.get(created.id);
+    expect(read).not.toBeNull();
+    expect(JSON.stringify(read)).not.toContain('smuggled-key');
+    expect(JSON.stringify(store.list())).not.toContain('smuggled-key');
+  });
+
+  it('migrates a v1 database in place, preserving existing rows', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+
+    // Hand-build the v1 schema exactly as it shipped, with one row in it.
+    const legacy = new Database(dbPath);
+    legacy.exec(
+      'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
+    );
+    legacy.exec(`
+      CREATE TABLE agent_profiles (
+        id            TEXT PRIMARY KEY,
+        provider_id   TEXT NOT NULL,
+        is_default    INTEGER NOT NULL,
+        is_built_in   INTEGER NOT NULL,
+        profile_json  TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_agent_profiles_one_default
+        ON agent_profiles(provider_id) WHERE is_default = 1;
+    `);
+    legacy.prepare('INSERT INTO schema_version (version) VALUES (1)').run();
+    const legacyProfile = {
+      id: 'agent-profile:hermes:legacy',
+      providerId: 'hermes',
+      displayName: 'legacy koi',
+      avatar: null,
+      isDefault: false,
+      isBuiltIn: false,
+    };
+    legacy
+      .prepare(
+        `INSERT INTO agent_profiles (id, provider_id, is_default, is_built_in,
+           profile_json, created_at, updated_at)
+         VALUES (?, 'hermes', 0, 0, ?, '2026-01-01', '2026-01-01')`
+      )
+      .run(legacyProfile.id, JSON.stringify(legacyProfile));
+    legacy.close();
+
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    expect(store.get(legacyProfile.id)?.displayName).toBe('legacy koi');
+    expect(store.get(legacyProfile.id)?.hermesApiKeySet).toBeUndefined();
+    expect(store.getGatewaySecret(legacyProfile.id)).toBeNull();
+    expect(
+      store.update(legacyProfile.id, { hermesApiKey: 'new-key' })
+        .hermesApiKeySet
+    ).toBe(true);
+    expect(store.getGatewaySecret(legacyProfile.id)).toBe('new-key');
+  });
+});

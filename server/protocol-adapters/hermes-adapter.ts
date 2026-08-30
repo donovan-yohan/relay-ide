@@ -1,7 +1,4 @@
-import {
-  readSseStream,
-  reconnectWithStoredConfig,
-} from './adapter-utils.js';
+import { readSseStream, reconnectWithStoredConfig } from './adapter-utils.js';
 import { diffCounts } from './wire-values.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -15,7 +12,10 @@ import type {
   SessionOptions,
 } from '../protocol-adapter.js';
 import { createLogger } from '../logger.js';
-import { isValidHermesProfile } from '../../shared/agent-profile.js';
+import {
+  isValidHermesApiKey,
+  isValidHermesProfile,
+} from '../../shared/agent-profile.js';
 
 const logger = createLogger('hermes-adapter');
 
@@ -49,6 +49,7 @@ export class HermesProfileError extends Error {
   constructor(
     readonly code:
       | 'hermes_profile_invalid'
+      | 'hermes_profile_key_invalid'
       | 'hermes_profile_unknown'
       | 'hermes_profile_unauthorized',
     message: string,
@@ -81,6 +82,31 @@ function resolveHermesProfileBasePath(
     );
   }
   return { basePath: `/p/${encodeURIComponent(raw)}`, profile: raw };
+}
+
+/**
+ * The per-profile gateway key from `extra`, or `null` when none was supplied.
+ * Throws on a malformed key instead of silently falling back to the default
+ * credential: a silent fallback would authenticate a bound runtime as the
+ * gateway default, which is the cross-profile confusion this guards against.
+ *
+ * NOTHING here may echo the key — not the thrown message, not a log line. The
+ * operator-facing text names the profile and the field, never the value.
+ */
+function resolveProfileApiKey(
+  extra: Record<string, unknown> | undefined,
+  profile: string
+): string | null {
+  const raw = extra?.['hermesApiKey'];
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (!isValidHermesApiKey(raw)) {
+    throw new HermesProfileError(
+      'hermes_profile_key_invalid',
+      `The Hermes API key stored for profile "${profile}" is not usable (it must be printable, space-free ASCII, max 4096 characters). Re-enter it in Settings → Agent profiles.`,
+      profile
+    );
+  }
+  return raw;
 }
 
 export interface HermesGatewayProbeResult {
@@ -383,13 +409,21 @@ export function resolveHermesGatewaySettings(
     configEndpoint ??
     DEFAULT_HERMES_ENDPOINT
   ).replace(/\/+$/, '');
+  const { basePath, profile } = resolveHermesProfileBasePath(extra);
+
+  // Hermes multiplex gives each named profile its OWN `API_SERVER_KEY`, so a
+  // bound runtime must present that profile's key rather than the gateway
+  // default's — otherwise `/p/<profile>/` answers 401 (#1453). The binding and
+  // the credential travel together: with no binding the calls go to the
+  // gateway default and keep the default credential, so a per-profile key is
+  // ignored rather than sent somewhere it cannot work.
+  const boundApiKey = profile ? resolveProfileApiKey(extra, profile) : null;
   const apiKey =
+    boundApiKey ??
     nonEmpty(extra?.['apiToken']) ??
     nonEmpty(extra?.['apiKey']) ??
     firstEnvValue(TOKEN_ENV_KEYS, fileEnv) ??
     configApiServer.apiKey;
-
-  const { basePath, profile } = resolveHermesProfileBasePath(extra);
 
   return {
     endpoint,
@@ -433,7 +467,7 @@ function hermesProfileFailureReason(
   endpoint: string
 ): string {
   return status === 401
-    ? `Hermes profile "${profile}" at ${endpoint} rejected Relay authentication. Provision an API_SERVER_KEY for that profile (~/.hermes/profiles/${profile}/.env) and restart the gateway.`
+    ? `Hermes profile "${profile}" at ${endpoint} rejected Relay authentication. Provision an API_SERVER_KEY for that profile (~/.hermes/profiles/${profile}/.env), restart the gateway, and set the same key as this profile's "hermes api key" in Settings → Agent profiles.`
     : `Hermes profile "${profile}" is not served by the gateway at ${endpoint} (HTTP ${status}: unknown or unconfigured profile). Enable gateway.multiplex_profiles, add "${profile}" to gateway.multiplex_profile_allowlist, and restart the gateway — or clear the profile binding in Settings.`;
 }
 
@@ -1155,7 +1189,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         this.fire({
           type: 'chat:error',
           kind:
-            isProfileFault && err.code === 'hermes_profile_unauthorized'
+            isProfileFault &&
+            (err.code === 'hermes_profile_unauthorized' ||
+              err.code === 'hermes_profile_key_invalid')
               ? 'auth'
               : 'protocol',
           message:

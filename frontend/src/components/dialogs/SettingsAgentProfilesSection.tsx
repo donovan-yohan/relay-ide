@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  isValidHermesApiKey,
   isValidHermesProfile,
   type AgentProfile,
   type AgentProfileRespondTo,
@@ -52,6 +53,8 @@ const SEARCH_TERMS = [
   'allowlist',
   'hermes',
   'hermes profile',
+  'hermes api key',
+  'api key',
 ];
 
 export interface AgentProfileDraft {
@@ -61,6 +64,16 @@ export interface AgentProfileDraft {
   model: string;
   effort: string;
   hermesProfile: string;
+  /**
+   * A NEWLY TYPED key, never a stored one: the server returns
+   * `hermesApiKeySet` and never the value, so this box always starts empty and
+   * an empty box means "leave the stored key alone".
+   */
+  hermesApiKey: string;
+  /** Server-reported: a key is stored for this profile. */
+  hermesApiKeyStored: boolean;
+  /** The operator asked to clear the stored key; the save sends `null`. */
+  hermesApiKeyCleared: boolean;
   envVars: EnvVarRow[];
   namePool: string;
   respondTo: AgentProfileRespondTo;
@@ -108,6 +121,9 @@ export function profileDraftFrom(profile?: AgentProfile): AgentProfileDraft {
     model: profile?.model ?? '',
     effort: profile?.effort ?? '',
     hermesProfile: profile?.hermesProfile ?? '',
+    hermesApiKey: '',
+    hermesApiKeyStored: profile?.hermesApiKeySet === true,
+    hermesApiKeyCleared: false,
     envVars: Object.entries(profile?.envVars ?? {}).map(([key, value]) => ({
       key,
       value,
@@ -127,7 +143,20 @@ export function withProfileProvider(
   draft: AgentProfileDraft,
   providerId: string
 ): AgentProfileDraft {
-  return { ...draft, providerId, model: '', effort: '', hermesProfile: '' };
+  return {
+    ...draft,
+    providerId,
+    model: '',
+    effort: '',
+    hermesProfile: '',
+    // The gateway key belongs to the OLD provider's gateway. Marking it cleared
+    // (rather than merely forgetting it) is what makes the save send an
+    // explicit `null`, so the secret does not survive as dead credential
+    // material on a row that can no longer use it.
+    hermesApiKey: '',
+    hermesApiKeyCleared: draft.hermesApiKeyStored || draft.hermesApiKeyCleared,
+    hermesApiKeyStored: false,
+  };
 }
 
 /**
@@ -146,6 +175,29 @@ export function hermesProfileDraftError(
   return 'use up to 64 letters, digits, dot, dash or underscore; "." and ".." are not allowed.';
 }
 
+/**
+ * Inline validation for the gateway key field. Mirrors the server's
+ * `isValidHermesApiKey`; the message never repeats the typed value.
+ */
+export function hermesApiKeyDraftError(
+  draft: AgentProfileDraft
+): string | null {
+  if (draft.providerId !== HERMES_PROVIDER_ID) return null;
+  const value = draft.hermesApiKey.trim();
+  if (!value) return null;
+  if (isValidHermesApiKey(value)) return null;
+  return 'use printable characters with no spaces (max 4096).';
+}
+
+/** The one-line state of the stored key, for the field's hint. */
+export function hermesApiKeyStatus(draft: AgentProfileDraft): string {
+  if (draft.hermesApiKey.trim()) {
+    return draft.hermesApiKeyStored ? 'set · replaced on save' : 'set on save';
+  }
+  if (draft.hermesApiKeyCleared) return 'not set · cleared on save';
+  return draft.hermesApiKeyStored ? 'set' : 'not set';
+}
+
 export function profileSubmitInput(
   draft: AgentProfileDraft,
   options: { clearEmpty?: boolean } = {}
@@ -157,6 +209,13 @@ export function profileSubmitInput(
   const hermesProfile =
     draft.providerId === HERMES_PROVIDER_ID
       ? optionalText(draft.hermesProfile)
+      : undefined;
+  // WRITE-ONLY, so this field breaks the `clearEmpty` rule the others follow:
+  // an empty box is "keep the stored key", never "clear it". Only a typed value
+  // or an explicit clear is ever sent.
+  const typedApiKey =
+    draft.providerId === HERMES_PROVIDER_ID
+      ? optionalText(draft.hermesApiKey)
       : undefined;
   const envVars = envRecord(draft.envVars);
   const namePool = splitLines(draft.namePool);
@@ -179,6 +238,11 @@ export function profileSubmitInput(
     ...(hermesProfile || options.clearEmpty
       ? { hermesProfile: hermesProfile ?? null }
       : {}),
+    ...(typedApiKey
+      ? { hermesApiKey: typedApiKey }
+      : draft.hermesApiKeyCleared
+        ? { hermesApiKey: null }
+        : {}),
     ...(envVars || options.clearEmpty ? { envVars: envVars ?? null } : {}),
     ...(namePool || options.clearEmpty ? { namePool: namePool ?? null } : {}),
     respondTo: draft.respondTo,
@@ -431,9 +495,12 @@ export function AgentProfileEditor({
   const [draft, setDraft] = useState(() => profileDraftFrom(profile));
   const isEdit = Boolean(profile?.id);
   const hermesError = hermesProfileDraftError(draft);
+  const hermesKeyError = hermesApiKeyDraftError(draft);
   const fieldId = useId();
   const hermesHintId = `${fieldId}-hermes-profile-hint`;
   const hermesErrorId = `${fieldId}-hermes-profile-error`;
+  const hermesKeyHintId = `${fieldId}-hermes-api-key-hint`;
+  const hermesKeyErrorId = `${fieldId}-hermes-api-key-error`;
   const set = <K extends keyof AgentProfileDraft>(
     key: K,
     value: AgentProfileDraft[K]
@@ -451,7 +518,13 @@ export function AgentProfileEditor({
       className="agent-profiles-editor"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!draft.providerId || hermesProfileDraftError(draft)) return;
+        if (
+          !draft.providerId ||
+          hermesProfileDraftError(draft) ||
+          hermesApiKeyDraftError(draft)
+        ) {
+          return;
+        }
         onSubmit(profileSubmitInput(draft, { clearEmpty: isEdit }));
       }}
     >
@@ -512,37 +585,120 @@ export function AgentProfileEditor({
         </label>
       </div>
       {draft.providerId === HERMES_PROVIDER_ID ? (
-        <label>
-          hermes profile
-          <TuiInput
-            value={draft.hermesProfile}
-            onChange={(value) => set('hermesProfile', value)}
-            placeholder="hermes default"
-            /*
-             * The hint and error spans sit inside this `<label>`, so the
-             * computed accessible name would otherwise swallow both. This
-             * override is load-bearing, not boilerplate — do not delete it
-             * without moving those spans out of the label first.
-             */
-            aria-label="hermes profile"
-            aria-invalid={hermesError ? 'true' : 'false'}
-            aria-describedby={
-              hermesError ? `${hermesHintId} ${hermesErrorId}` : hermesHintId
-            }
-          />
-          <span id={hermesHintId} className="agent-profiles-editor__field-hint">
-            optional. leave blank to use the hermes default profile.
-          </span>
-          {hermesError ? (
+        <div className="agent-profiles-editor__two-up">
+          <label>
+            hermes profile
+            <TuiInput
+              value={draft.hermesProfile}
+              onChange={(value) => set('hermesProfile', value)}
+              placeholder="hermes default"
+              /*
+               * The hint and error spans sit inside this `<label>`, so the
+               * computed accessible name would otherwise swallow both. This
+               * override is load-bearing, not boilerplate — do not delete it
+               * without moving those spans out of the label first.
+               */
+              aria-label="hermes profile"
+              aria-invalid={hermesError ? 'true' : 'false'}
+              aria-describedby={
+                hermesError ? `${hermesHintId} ${hermesErrorId}` : hermesHintId
+              }
+            />
             <span
-              id={hermesErrorId}
-              className="agent-profiles-editor__field-error"
-              role="alert"
+              id={hermesHintId}
+              className="agent-profiles-editor__field-hint"
             >
-              {hermesError}
+              optional. leave blank to use the hermes default profile.
             </span>
-          ) : null}
-        </label>
+            {hermesError ? (
+              <span
+                id={hermesErrorId}
+                className="agent-profiles-editor__field-error"
+                role="alert"
+              >
+                {hermesError}
+              </span>
+            ) : null}
+          </label>
+          <div className="agent-profiles-editor__secret">
+            <label>
+              hermes api key
+              <TuiInput
+                type="password"
+                value={draft.hermesApiKey}
+                onChange={(value) => set('hermesApiKey', value)}
+                /*
+                 * Not a login field: keep the browser from autofilling the
+                 * operator's site password into it, or offering to remember
+                 * the gateway key as one.
+                 */
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder={
+                  draft.hermesApiKeyStored ? 'stored' : 'gateway default key'
+                }
+                /*
+                 * Same load-bearing override as the profile field above: the
+                 * status and error spans live outside this label precisely so a
+                 * secret's state is announced without the value ever rendering.
+                 */
+                aria-label="hermes api key"
+                aria-invalid={hermesKeyError ? 'true' : 'false'}
+                aria-describedby={
+                  hermesKeyError
+                    ? `${hermesKeyHintId} ${hermesKeyErrorId}`
+                    : hermesKeyHintId
+                }
+              />
+            </label>
+            <div className="agent-profiles-editor__secret-state">
+              <span
+                id={hermesKeyHintId}
+                className="agent-profiles-editor__field-hint"
+              >
+                {hermesApiKeyStatus(draft)} · relay never returns a saved key.
+              </span>
+              {draft.hermesApiKeyStored ? (
+                <TuiButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      hermesApiKey: '',
+                      hermesApiKeyCleared: true,
+                    }))
+                  }
+                >
+                  clear
+                </TuiButton>
+              ) : null}
+              {draft.hermesApiKeyCleared ? (
+                <TuiButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      hermesApiKeyCleared: false,
+                    }))
+                  }
+                >
+                  keep
+                </TuiButton>
+              ) : null}
+            </div>
+            {hermesKeyError ? (
+              <span
+                id={hermesKeyErrorId}
+                className="agent-profiles-editor__field-error"
+                role="alert"
+              >
+                {hermesKeyError}
+              </span>
+            ) : null}
+          </div>
+        </div>
       ) : null}
       <fieldset className="agent-profiles-editor__env">
         <legend>environment variables</legend>
@@ -626,6 +782,7 @@ export function AgentProfileEditor({
             submitting ||
             !draft.providerId ||
             Boolean(hermesError) ||
+            Boolean(hermesKeyError) ||
             (!isEdit && !draft.displayName.trim())
           }
         >
@@ -796,8 +953,12 @@ export function SettingsAgentProfilesSection({
             frameworks={frameworks}
             onEdit={setEditing}
             onDuplicate={(source) => {
+              // A duplicate starts with NO gateway key: the secret lives in
+              // its own column and is never copied, so carrying the marker
+              // across would make the editor claim a key the copy has not got.
+              const { hermesApiKeySet: _omitted, ...copyable } = source;
               setEditing({
-                ...source,
+                ...copyable,
                 id: '',
                 isDefault: false,
                 isBuiltIn: false,

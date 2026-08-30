@@ -323,3 +323,132 @@ describe('agent profile router', () => {
     ).toHaveLength(1);
   });
 });
+
+// ── per-profile gateway key (#1453) ─────────────────────────────────────────
+describe('agent profile router: write-only hermes api key', () => {
+  const SECRET = 'koi-only-key-abc123';
+
+  /** Raw response text, so absence is asserted against the bytes on the wire. */
+  async function rawGet(route: string): Promise<string> {
+    const response = await fetch(`${baseUrl}${route}`);
+    return response.text();
+  }
+
+  async function createKeyed(): Promise<string> {
+    const created = await request('POST', '/agent-profiles', {
+      providerId: 'claude',
+      displayName: 'koi',
+      hermesApiKey: SECRET,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.profile.hermesApiKeySet).toBe(true);
+    expect(created.body.profile.hermesApiKey).toBeUndefined();
+    return created.body.profile.id as string;
+  }
+
+  it('never returns the key on create, list, patch or set-default', async () => {
+    const id = await createKeyed();
+
+    const createdText = JSON.stringify(
+      (await request('POST', '/agent-profiles', {
+        providerId: 'codex',
+        displayName: 'ika',
+        hermesApiKey: 'ika-only-key',
+      })
+      ).body
+    );
+    expect(createdText).not.toContain('ika-only-key');
+
+    expect(await rawGet('/agent-profiles')).not.toContain(SECRET);
+
+    const patched = await request('PATCH', `/agent-profiles/${id}`, {
+      displayName: 'koi renamed',
+    });
+    expect(JSON.stringify(patched.body)).not.toContain(SECRET);
+    expect(patched.body.profile.hermesApiKeySet).toBe(true);
+
+    const promoted = await request('POST', `/agent-profiles/${id}/default`);
+    expect(JSON.stringify(promoted.body)).not.toContain(SECRET);
+
+    // …and the value really is stored; the responses are redacted, not empty.
+    expect(store.getGatewaySecret(id)).toBe(SECRET);
+  });
+
+  it('replaces on a new value and clears on null', async () => {
+    const id = await createKeyed();
+
+    const replaced = await request('PATCH', `/agent-profiles/${id}`, {
+      hermesApiKey: 'second-key',
+    });
+    expect(replaced.status).toBe(200);
+    expect(JSON.stringify(replaced.body)).not.toContain('second-key');
+    expect(store.getGatewaySecret(id)).toBe('second-key');
+
+    const cleared = await request('PATCH', `/agent-profiles/${id}`, {
+      hermesApiKey: null,
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.profile.hermesApiKeySet).toBeUndefined();
+    expect(store.getGatewaySecret(id)).toBeNull();
+  });
+
+  it('leaves the stored key untouched when the field is omitted', async () => {
+    const id = await createKeyed();
+    await request('PATCH', `/agent-profiles/${id}`, { model: 'sonnet' });
+    expect(store.getGatewaySecret(id)).toBe(SECRET);
+  });
+
+  it('clears the key when the profile moves to another provider', async () => {
+    const id = await createKeyed();
+    const moved = await request('PATCH', `/agent-profiles/${id}`, {
+      providerId: 'codex',
+    });
+    expect(moved.status).toBe(200);
+    // The key authenticates against the OLD provider's gateway; it must not
+    // linger as dead credential material on a row that cannot use it.
+    expect(store.getGatewaySecret(id)).toBeNull();
+  });
+
+  it.each([
+    ['has space', 'whitespace'],
+    ['line\nbreak', 'header injection via LF'],
+    ['line\r\nX-Injected: 1', 'header injection via CRLF'],
+    ['', 'empty'],
+    ['k'.repeat(4097), 'over-length'],
+  ])('rejects a malformed key %j (%s) at POST and PATCH', async (value) => {
+    const rejectedCreate = await request('POST', '/agent-profiles', {
+      providerId: 'claude',
+      displayName: 'bad',
+      hermesApiKey: value,
+    });
+    expect(rejectedCreate.status).toBe(400);
+    expect(rejectedCreate.body.error.details).toMatchObject({
+      field: 'hermesApiKey',
+    });
+    // The rejection body must not carry the value it rejected.
+    if (value.trim()) {
+      expect(JSON.stringify(rejectedCreate.body)).not.toContain(value.trim());
+    }
+
+    const id = await createKeyed();
+    const rejectedPatch = await request('PATCH', `/agent-profiles/${id}`, {
+      hermesApiKey: value,
+    });
+    expect(rejectedPatch.status).toBe(400);
+    // The rejected write left the previous key in place.
+    expect(store.getGatewaySecret(id)).toBe(SECRET);
+  });
+
+  it('refuses a hermesApiKeySet write from the browser', async () => {
+    const id = await createKeyed();
+    const rejected = await request('PATCH', `/agent-profiles/${id}`, {
+      hermesApiKeySet: false,
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.details).toMatchObject({
+      reasonCode: 'AGENT_PROFILE_PATCH_FIELD_UNSUPPORTED',
+      field: 'hermesApiKeySet',
+    });
+    expect(store.getGatewaySecret(id)).toBe(SECRET);
+  });
+});

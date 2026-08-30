@@ -475,6 +475,177 @@ describe('AgentProfileEditor hermes profile binding (#1453)', () => {
       profileSubmitInput(profileDraftFrom(profile()), { clearEmpty: true })
     ).toEqual(expect.objectContaining({ hermesProfile: null }));
   });
+
+  // ── per-profile gateway key (#1453) ───────────────────────────────────────
+
+  const keyInput = () =>
+    host.querySelector<HTMLInputElement>(
+      'input[placeholder="stored"], input[placeholder="gateway default key"]'
+    );
+  const keyHint = () =>
+    host.querySelector(
+      '.agent-profiles-editor__secret .agent-profiles-editor__field-hint'
+    )?.textContent ?? '';
+  const button = (label: string) =>
+    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+      (candidate) => candidate.textContent?.trim() === label
+    );
+
+  it('renders a masked key field, only for hermes, and never a value', async () => {
+    await renderEditor({ profile: profile() });
+    expect(keyInput()).toBeNull();
+
+    await renderEditor({ key: 'hermes', profile: hermesProfile() });
+    const input = keyInput();
+    expect(input).not.toBeNull();
+    // The value is write-only: the server never sends it, so the box is empty
+    // and the type masks anything typed into it.
+    expect(input?.type).toBe('password');
+    expect(input?.value).toBe('');
+    expect(input?.getAttribute('aria-label')).toBe('hermes api key');
+    expect(keyHint()).toContain('not set');
+
+    await renderEditor({
+      key: 'hermes-set',
+      profile: hermesProfile({ hermesApiKeySet: true }),
+    });
+    expect(keyInput()?.value).toBe('');
+    expect(keyHint()).toContain('set');
+    expect(host.innerHTML).not.toContain('hermesApiKey"');
+  });
+
+  it('omits the key from a save that did not touch it', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({
+        hermesProfile: 'koi-product',
+        hermesApiKeySet: true,
+      }),
+      onSubmit,
+    });
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    // An untouched empty box means "keep the stored key" — sending `null` here
+    // would silently wipe the credential on every unrelated profile edit.
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('hermesApiKey');
+  });
+
+  it('sends a typed key, and sends null when the operator clears it', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({
+        hermesProfile: 'koi-product',
+        hermesApiKeySet: true,
+      }),
+      onSubmit,
+    });
+    await act(async () =>
+      setInput(keyInput() as HTMLInputElement, '  koi-only-key  ')
+    );
+    expect(keyHint()).toContain('replaced on save');
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ hermesApiKey: 'koi-only-key' })
+    );
+
+    onSubmit.mockClear();
+    await renderEditor({
+      key: 'clear',
+      profile: hermesProfile({
+        hermesProfile: 'koi-product',
+        hermesApiKeySet: true,
+      }),
+      onSubmit,
+    });
+    await act(async () => button('clear')?.click());
+    expect(keyHint()).toContain('cleared on save');
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ hermesApiKey: null })
+    );
+  });
+
+  it('undoes a pending clear with keep', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({ hermesApiKeySet: true }),
+      onSubmit,
+    });
+    await act(async () => button('clear')?.click());
+    await act(async () => button('keep')?.click());
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('hermesApiKey');
+  });
+
+  it('clears the key when the draft leaves the hermes provider', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({
+      profile: hermesProfile({
+        hermesProfile: 'koi-product',
+        hermesApiKeySet: true,
+      }),
+      onSubmit,
+    });
+    await selectFramework(host, 'Codex');
+    expect(keyInput()).toBeNull();
+    await act(async () => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ providerId: 'codex', hermesApiKey: null })
+    );
+  });
+
+  it('blocks save on a malformed key and never submits it', async () => {
+    const onSubmit = vi.fn();
+    await renderEditor({ profile: hermesProfile(), onSubmit });
+    const save = () => button('save profile');
+    expect(save()?.disabled).toBe(false);
+    for (const invalid of ['has space', 'k'.repeat(4097), 'ékey']) {
+      await act(async () => setInput(keyInput() as HTMLInputElement, invalid));
+      expect(save()?.disabled).toBe(true);
+      expect(keyInput()?.getAttribute('aria-invalid')).toBe('true');
+      await act(async () => {
+        (host.querySelector('form') as HTMLFormElement).dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true })
+        );
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+    }
+    await act(async () => setInput(keyInput() as HTMLInputElement, 'good-key'));
+    expect(save()?.disabled).toBe(false);
+    expect(keyInput()?.getAttribute('aria-invalid')).toBe('false');
+  });
+
+  it('reports the stored-key marker, never a value, into the draft', () => {
+    expect(
+      profileDraftFrom(hermesProfile({ hermesApiKeySet: true }))
+    ).toMatchObject({
+      hermesApiKey: '',
+      hermesApiKeyStored: true,
+      hermesApiKeyCleared: false,
+    });
+    expect(profileDraftFrom(hermesProfile())).toMatchObject({
+      hermesApiKeyStored: false,
+    });
+  });
 });
 
 describe('SettingsAgentProfilesSection edit target (#1453)', () => {
@@ -590,6 +761,68 @@ describe('SettingsAgentProfilesSection edit target (#1453)', () => {
         hermesProfile: null,
       })
     );
+  });
+
+  it('starts a duplicate with no gateway key, even from a keyed source (#1453)', async () => {
+    const keyed = profile({
+      id: 'agent-profile:hermes:keyed',
+      providerId: 'hermes',
+      displayName: 'keyed hermes',
+      hermesProfile: 'koi-product',
+      hermesApiKeySet: true,
+      model: '',
+      effort: '',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ profiles: [keyed] }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+      )
+    );
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client },
+          React.createElement(SettingsAgentProfilesSection, {
+            searchQuery: '',
+          })
+        )
+      );
+    });
+    for (
+      let i = 0;
+      i < 50 && !host.querySelector('.agent-profiles-card');
+      i++
+    ) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    const cardButtons = Array.from(
+      host
+        .querySelector(`[data-profile-id="${keyed.id}"]`)
+        ?.querySelectorAll<HTMLButtonElement>('button') ?? []
+    );
+    const hint = () =>
+      host.querySelector(
+        '.agent-profiles-editor__secret .agent-profiles-editor__field-hint'
+      )?.textContent ?? '';
+
+    await act(async () => cardButtons[0]?.click());
+    expect(hint()).toContain('set');
+    expect(hint()).not.toContain('not set');
+
+    // The secret lives in its own column and is NOT copied server-side, so a
+    // duplicate that claimed a key would be lying to the operator.
+    await act(async () => cardButtons[1]?.click());
+    expect(hint()).toContain('not set');
   });
 });
 

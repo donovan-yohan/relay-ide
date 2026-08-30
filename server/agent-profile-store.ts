@@ -27,13 +27,16 @@
 // stable primary key `builtInAgentProfileId(providerId)`.
 
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
 import {
+  AGENT_PROFILE_SECRET_KEY,
   builtInAgentProfileId,
   isAgentProfile,
+  isValidHermesApiKey,
   type AgentProfile,
   type AgentProfileAvatarRef,
   type AgentProfileRespondTo,
@@ -59,9 +62,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profiles_one_default
   ON agent_profiles(provider_id) WHERE is_default = 1;
 `;
 
+// The per-profile gateway key (#1453) is a WRITE-ONLY secret and gets its OWN
+// column rather than a field inside `profile_json`. That is the whole redaction
+// strategy: every read statement below selects `hermes_api_key IS NOT NULL`, so
+// a future read path added by someone who never heard of this field still
+// cannot return the secret. Only `getGatewaySecret` names the column's value.
+const SCHEMA_V2 = `
+ALTER TABLE agent_profiles ADD COLUMN hermes_api_key TEXT;
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
 ];
+
+/**
+ * Column list every profile read uses. `has_hermes_api_key` is deliberately a
+ * derived boolean, never the value.
+ */
+const PROFILE_COLUMNS = `id, provider_id, is_default, is_built_in, profile_json,
+   created_at, updated_at, hermes_api_key IS NOT NULL AS has_hermes_api_key`;
 
 interface AgentProfileRow {
   id: string;
@@ -71,6 +91,8 @@ interface AgentProfileRow {
   profile_json: string;
   created_at: string;
   updated_at: string;
+  /** 1 when a gateway key is stored. The key itself is never selected here. */
+  has_hermes_api_key: number;
 }
 
 /** Framework subset needed to seed a built-in default profile. */
@@ -91,6 +113,12 @@ export interface AgentProfileCreateInput {
   envVars?: Record<string, string>;
   /** Hermes multiplex profile binding; see `AgentProfile.hermesProfile`. */
   hermesProfile?: string;
+  /**
+   * Per-profile Hermes gateway key (#1453). WRITE-ONLY: it is stored in its own
+   * column and never comes back on any `AgentProfile` — only
+   * `AgentProfileStore.getGatewaySecret` can read it.
+   */
+  hermesApiKey?: string;
   namePool?: string[];
   respondTo?: AgentProfileRespondTo;
   respondToAllowlist?: string[];
@@ -114,6 +142,11 @@ export interface AgentProfileUpdateInput {
   envVars?: Record<string, string> | null;
   /** Hermes multiplex profile binding; `null` clears it. */
   hermesProfile?: string | null;
+  /**
+   * Per-profile Hermes gateway key; `null` clears it, an OMITTED field leaves
+   * the stored key untouched. WRITE-ONLY — see `AgentProfileCreateInput`.
+   */
+  hermesApiKey?: string | null;
   namePool?: string[] | null;
   respondTo?: AgentProfileRespondTo | null;
   respondToAllowlist?: string[] | null;
@@ -138,6 +171,17 @@ export interface AgentProfileStore {
   get(id: string): AgentProfile | null;
   list(filter?: { providerId?: string }): AgentProfile[];
   getDefaultForProvider(providerId: string): AgentProfile | null;
+  /**
+   * The profile's write-only gateway secret, or `null`. THE ONLY read path for
+   * it. Deliberately provider-neutral here: which adapter `extra` key the value
+   * is forwarded as is one `PROVIDER_DESCRIPTORS` row
+   * (`agentProfileGatewaySecretKey`), so this store holds no provider name and
+   * the channel binder needs no `providerId === 'hermes'` branch.
+   *
+   * Callers must treat the result as secret: never log it, never put it in an
+   * error message, never return it on an HTTP response.
+   */
+  getGatewaySecret(profileId: string): string | null;
   /** Atomically make `profileId` the sole default for its providerId. */
   setDefault(profileId: string): AgentProfile;
   /** Refuses to delete the built-in default profile for a provider (409). */
@@ -172,23 +216,36 @@ export function initAgentProfileStore(configDir: string): AgentProfileStore {
 /** Factory taking an explicit DB path. Used directly by unit tests. */
 export function createAgentProfileStore(dbPath: string): AgentProfileStore {
   const db = new Database(dbPath);
+  // The DB now holds a bearer secret. SQLite copies the main file's mode onto
+  // the -wal/-shm sidecars it creates, so tighten BEFORE enabling WAL. Config
+  // dir only, best effort: a filesystem that refuses chmod (or a pre-existing
+  // DB owned by another user) must not stop the hub from booting.
+  restrictSecretFileMode(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   runMigrations(db);
 
   const selectById = db.prepare(
-    `SELECT id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at
-     FROM agent_profiles WHERE id = ?`
+    `SELECT ${PROFILE_COLUMNS} FROM agent_profiles WHERE id = ?`
   );
   const selectDefaultForProvider = db.prepare(
-    `SELECT id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at
+    `SELECT ${PROFILE_COLUMNS}
      FROM agent_profiles WHERE provider_id = ? AND is_default = 1`
+  );
+  // The one statement in this file that selects the secret's VALUE.
+  const selectGatewaySecret = db.prepare(
+    'SELECT hermes_api_key FROM agent_profiles WHERE id = ?'
+  );
+  const updateGatewaySecret = db.prepare(
+    'UPDATE agent_profiles SET hermes_api_key = ?, updated_at = ? WHERE id = ?'
   );
   const insert = db.prepare(
     `INSERT INTO agent_profiles (
-       id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at
+       id, provider_id, is_default, is_built_in, profile_json, created_at,
+       updated_at, hermes_api_key
      ) VALUES (
-       @id, @providerId, @isDefault, @isBuiltIn, @profileJson, @createdAt, @updatedAt
+       @id, @providerId, @isDefault, @isBuiltIn, @profileJson, @createdAt,
+       @updatedAt, @hermesApiKey
      )`
   );
   const clearDefault = db.prepare(
@@ -226,6 +283,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
     profile: AgentProfile;
     createdAt: string;
     updatedAt: string;
+    hermesApiKey: string | null;
   }): void {
     try {
       insert.run({
@@ -233,9 +291,10 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         providerId: row.providerId,
         isDefault: row.isDefault,
         isBuiltIn: row.isBuiltIn,
-        profileJson: JSON.stringify(row.profile),
+        profileJson: toStoredJson(row.profile),
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        hermesApiKey: row.hermesApiKey,
       });
     } catch (err) {
       rethrowConstraint(err, row.providerId);
@@ -272,6 +331,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
       }
 
       const profile = buildProfile(id, providerId, isDefault, input);
+      const hermesApiKey = normalizeGatewaySecret(input.hermesApiKey);
       const nowIso = new Date().toISOString();
       persist({
         id,
@@ -281,6 +341,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         profile,
         createdAt: nowIso,
         updatedAt: nowIso,
+        hermesApiKey,
       });
       const written = getById(id);
       if (!written) {
@@ -341,6 +402,13 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
       if (!isAgentProfile(profile)) {
         throw new AgentProfileStoreError(400, 'agent_profile_invalid');
       }
+      // An OMITTED `hermesApiKey` leaves the stored key alone; an explicit
+      // `null` clears it. Rejecting a malformed key before the transaction
+      // keeps a bad secret from ever reaching the column.
+      const patchesSecret = hasOwn(patch, 'hermesApiKey');
+      const nextSecret = patchesSecret
+        ? normalizeGatewaySecret(patch.hermesApiKey)
+        : null;
       const nowIso = new Date().toISOString();
       const write = db.transaction(() => {
         // A false→true flip is the one sanctioned way update() changes a
@@ -354,7 +422,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
             const previousProfile = rowToProfileSafe(previous);
             if (previousProfile) {
               clearDefault.run(
-                JSON.stringify({ ...previousProfile, isDefault: false }),
+                toStoredJson({ ...previousProfile, isDefault: false }),
                 nowIso,
                 previous.id
               );
@@ -367,12 +435,13 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
             providerId: profile.providerId,
             isDefault: profile.isDefault ? 1 : 0,
             isBuiltIn: profile.isBuiltIn ? 1 : 0,
-            profileJson: JSON.stringify(profile),
+            profileJson: toStoredJson(profile),
             updatedAt: nowIso,
           });
         } catch (err) {
           rethrowConstraint(err, profile.providerId);
         }
+        if (patchesSecret) updateGatewaySecret.run(nextSecret, nowIso, id);
       });
       write();
       const written = getById(id);
@@ -395,7 +464,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
       }
       const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
       const stmt = db.prepare(
-        `SELECT id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at
+        `SELECT ${PROFILE_COLUMNS}
          FROM agent_profiles${where}
          ORDER BY provider_id ASC, is_default DESC, id ASC`
       );
@@ -409,6 +478,16 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         | AgentProfileRow
         | undefined;
       return row ? rowToProfileSafe(row) : null;
+    },
+
+    getGatewaySecret(profileId: string): string | null {
+      const row = selectGatewaySecret.get(profileId) as
+        | { hermes_api_key: string | null }
+        | undefined;
+      const stored = row?.hermes_api_key ?? null;
+      // A stored value that no longer passes the guard (hand-edited DB, or a
+      // tightened pattern) is dropped rather than handed to an HTTP header.
+      return stored !== null && isValidHermesApiKey(stored) ? stored : null;
     },
 
     setDefault(profileId: string): AgentProfile {
@@ -426,14 +505,14 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
           const currentProfile = rowToProfileSafe(current);
           if (currentProfile) {
             clearDefault.run(
-              JSON.stringify({ ...currentProfile, isDefault: false }),
+              toStoredJson({ ...currentProfile, isDefault: false }),
               nowIso,
               current.id
             );
           }
         }
         setDefaultRow.run(
-          JSON.stringify({ ...target, isDefault: true }),
+          toStoredJson({ ...target, isDefault: true }),
           nowIso,
           profileId
         );
@@ -494,7 +573,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
                   isDefault: true,
                   isBuiltIn: true,
                 };
-            promoteBuiltInDefault.run(JSON.stringify(healed), nowIso, id);
+            promoteBuiltInDefault.run(toStoredJson(healed), nowIso, id);
             // A heal is not a NEW row; the return count tracks inserts only.
             continue;
           }
@@ -514,9 +593,10 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
             providerId,
             isDefault: 1,
             isBuiltIn: 1,
-            profileJson: JSON.stringify(profile),
+            profileJson: toStoredJson(profile),
             createdAt: nowIso,
             updatedAt: nowIso,
+            hermesApiKey: null,
           }).changes;
         }
       });
@@ -532,6 +612,55 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Serialize a profile for the `profile_json` blob. Strips the derived
+ * `hermesApiKeySet` marker so the blob can never claim a secret state that
+ * disagrees with the column, and asserts the secret itself is absent.
+ */
+function toStoredJson(profile: AgentProfile): string {
+  const record: Record<string, unknown> = { ...profile };
+  delete record['hermesApiKeySet'];
+  delete record[AGENT_PROFILE_SECRET_KEY];
+  return JSON.stringify(record);
+}
+
+/**
+ * Validate a write of the gateway secret. `undefined`/`null`/empty clear it; a
+ * malformed key is a typed 400 whose message never echoes the value.
+ */
+function normalizeGatewaySecret(
+  value: string | null | undefined
+): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!isValidHermesApiKey(trimmed)) {
+    throw new AgentProfileStoreError(
+      400,
+      'agent_profile_gateway_secret_invalid',
+      'hermesApiKey must be printable, space-free ASCII (max 4096 characters).'
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Best-effort 0600 on the store DB and any WAL sidecars. The hub's own secrets
+ * (pinHash, GitHub token, VAPID private key) live in a config-dir `config.json`
+ * written at the process umask, so this is a tightening of that precedent, not
+ * a weakening of it — and it is best-effort because failing to chmod must never
+ * stop the hub from booting.
+ */
+function restrictSecretFileMode(dbPath: string): void {
+  for (const target of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch {
+      // Missing sidecar, or a filesystem/owner that refuses chmod.
+    }
+  }
+}
 
 function requireNonEmpty(value: unknown, field: string): string {
   const trimmed = readTrimmed(value);
@@ -723,19 +852,36 @@ function rowToProfileSafe(row: AgentProfileRow): AgentProfile | null {
     logger.warn('dropped agent profile %s: corrupt profile_json', row.id);
     return null;
   }
+  // A blob is not allowed to carry the secret, but a legacy or hand-edited row
+  // that does is CLEANED rather than dropped: dropping it would make the
+  // profile vanish from the UI, and the point here is that the value never
+  // leaves the store, not that the row is unusable.
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    AGENT_PROFILE_SECRET_KEY in (parsed as Record<string, unknown>)
+  ) {
+    delete (parsed as Record<string, unknown>)[AGENT_PROFILE_SECRET_KEY];
+    logger.warn('stripped secret field from agent profile blob %s', row.id);
+  }
   if (!isAgentProfile(parsed)) {
     logger.warn('dropped agent profile %s: failed validation', row.id);
     return null;
   }
   // Denormalized columns are the query source of truth; reconcile the blob so a
   // tampered blob can never disagree with its row on identity/default state.
-  return {
+  // `hermesApiKeySet` is derived from the column on every read for the same
+  // reason: the blob never gets to assert secret state.
+  const profile: AgentProfile = {
     ...parsed,
     id: row.id,
     providerId: row.provider_id,
     isDefault: row.is_default === 1,
     isBuiltIn: row.is_built_in === 1,
   };
+  if (row.has_hermes_api_key === 1) profile.hermesApiKeySet = true;
+  else delete profile.hermesApiKeySet;
+  return profile;
 }
 
 // ── Migration runner (mirrors agent-presence-store.ts / context-packets.ts) ────

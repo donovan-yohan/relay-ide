@@ -4012,6 +4012,14 @@ export interface AgentProfileWriteInput {
    * serialize as `null` and never as `''`.
    */
   hermesProfile?: string | null;
+  /**
+   * Per-profile Hermes gateway key (#1453). WRITE-ONLY: it is never returned by
+   * any read, so `AgentProfile` carries only the `hermesApiKeySet` marker.
+   * `null` CLEARS the stored key; OMITTING the field leaves it untouched — an
+   * empty editor field must therefore serialize as "absent", never as `''` or
+   * `null`, or every unrelated save would wipe the key.
+   */
+  hermesApiKey?: string | null;
   namePool?: string[] | null;
   respondTo?: AgentProfileRespondTo;
   respondToAllowlist?: string[] | null;

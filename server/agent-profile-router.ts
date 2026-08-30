@@ -5,7 +5,10 @@ import type {
   AgentProfileAvatarRef,
   AgentProfileRespondTo,
 } from '../shared/agent-profile.js';
-import { isValidHermesProfile } from '../shared/agent-profile.js';
+import {
+  isValidHermesApiKey,
+  isValidHermesProfile,
+} from '../shared/agent-profile.js';
 import {
   AgentProfileStoreError,
   type AgentProfileCreateInput,
@@ -37,6 +40,7 @@ const PATCH_FIELDS = new Set([
   'effort',
   'envVars',
   'hermesProfile',
+  'hermesApiKey',
   'namePool',
   'respondTo',
   'respondToAllowlist',
@@ -306,6 +310,17 @@ function parsePatch(
     }
     patch.hermesProfile = hermesProfile as string | null;
   }
+  if (hasOwn(body, 'hermesApiKey')) {
+    // WRITE-ONLY. The key is stored in its own column and never comes back on
+    // any response; `null` clears it and an omitted field leaves it untouched.
+    // The rejection names the FIELD only — echoing the rejected value would put
+    // a secret in an HTTP body and in whatever logs that body.
+    const hermesApiKey = body['hermesApiKey'];
+    if (hermesApiKey !== null && !isValidHermesApiKey(hermesApiKey)) {
+      return invalidField(res, 'hermesApiKey', 'invalid agent profile field');
+    }
+    patch.hermesApiKey = hermesApiKey as string | null;
+  }
   if (hasOwn(body, 'namePool')) {
     const namePool = validateStringList(body['namePool']);
     if (namePool === undefined) return invalidField(res, 'namePool');
@@ -367,6 +382,8 @@ function createInputFromPatch(
   if (patch.envVars) input.envVars = patch.envVars;
   if (typeof patch.hermesProfile === 'string')
     input.hermesProfile = patch.hermesProfile;
+  if (typeof patch.hermesApiKey === 'string')
+    input.hermesApiKey = patch.hermesApiKey;
   if (patch.namePool) input.namePool = patch.namePool;
   if (patch.respondTo) input.respondTo = patch.respondTo;
   if (patch.respondToAllowlist)
@@ -511,9 +528,12 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
     }
     if (patch.providerId && patch.providerId !== existing.providerId) {
       // Model and effort semantics belong to the selected vendor. Never carry
-      // those vendor-dependent overrides across a provider change.
+      // those vendor-dependent overrides across a provider change. The gateway
+      // secret is scoped to the OLD provider's gateway, so it is cleared too
+      // rather than left behind as dead credential material.
       patch.model = null;
       patch.effort = null;
+      patch.hermesApiKey = null;
     }
     try {
       res.json({ profile: store.update(existing.id, patch) });
