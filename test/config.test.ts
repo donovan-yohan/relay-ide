@@ -171,6 +171,17 @@ test('loadConfig throws for a missing file and saveConfig writes formatted JSON'
   );
 });
 
+test('saveConfig writes the pinHash-bearing config owner-only (#1467)', () => {
+  const configPath = path.join(tmpDir, 'mode.json');
+  saveConfig(configPath, { ...DEFAULTS, pinHash: 'scrypt$deadbeef' });
+  expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+
+  // A config left world-readable by an older Relay is tightened on next save.
+  fs.chmodSync(configPath, 0o644);
+  saveConfig(configPath, { ...DEFAULTS, pinHash: 'scrypt$deadbeef' });
+  expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+});
+
 test('worktree metadata round-trips and deletes', () => {
   const configPath = path.join(tmpDir, 'config.json');
   ensureMetaDir(configPath);

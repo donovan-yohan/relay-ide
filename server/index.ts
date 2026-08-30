@@ -432,6 +432,10 @@ import {
   RELAY_CAPABILITY_BITS,
   type RelayCapabilityBit,
 } from '../shared/security-policy.js';
+import {
+  publishLocalHubActorToken,
+  retireLocalHubActorToken,
+} from './local-hub-actor-token.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -449,6 +453,35 @@ let cliGatewayActorRegistry = createCliGatewayActorRegistry({
 });
 const cliGatewayHandshakeGrantRegistry =
   createCliGatewayHandshakeGrantRegistry();
+/** Effective actor-credential TTL ceiling; the #1467 boot mint asks for exactly this. */
+let cliGatewayActorMaxTtlMs = DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+/** Port whose #1467 local CLI trust token file this process owns, if any. */
+let localHubActorTokenPort: number | null = null;
+let localHubActorTokenTimer: NodeJS.Timeout | null = null;
+
+/** Mint + write the #1467 local CLI trust token, warning (never throwing) on failure. */
+function publishLocalHubActorTokenOrWarn(
+  port: number,
+  verb: 'published' | 'refreshed'
+): void {
+  try {
+    const published = publishLocalHubActorToken({
+      registry: cliGatewayActorRegistry,
+      port,
+      maxTtlMs: cliGatewayActorMaxTtlMs,
+    });
+    if (!published) return;
+    localHubActorTokenPort = port;
+    logger.info(
+      `Local CLI trust token ${verb} (credential ${published.credentialId}) at ${published.path}`
+    );
+  } catch (error) {
+    logger.warn(
+      'Could not publish the local CLI trust token; `relay-ide v1` will require an explicit actor token:',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
 /** Rebuild the actor registry with the configured TTL ceiling (#1435). */
 function applyCliGatewayActorMaxTtl(config: Config): void {
   const configured = config.cliGatewayActorCredentialMaxTtlMs;
@@ -458,6 +491,7 @@ function applyCliGatewayActorMaxTtl(config: Config): void {
     configured > 0
       ? configured
       : DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
+  cliGatewayActorMaxTtlMs = maxTtlMs;
   cliGatewayActorRegistry = createCliGatewayActorRegistry({ maxTtlMs });
 }
 const operatorClientCredentialRegistry =
@@ -6454,6 +6488,20 @@ async function main(): Promise<void> {
   let cancelStartupRestore = (): void => {};
   async function gracefulShutdown() {
     cancelStartupRestore();
+    // #1467: the credential dies with the in-memory registry anyway; removing
+    // the file keeps a dead token off disk.
+    if (localHubActorTokenTimer) {
+      clearInterval(localHubActorTokenTimer);
+      localHubActorTokenTimer = null;
+    }
+    if (localHubActorTokenPort !== null) {
+      try {
+        retireLocalHubActorToken(localHubActorTokenPort);
+      } catch {
+        /* best effort */
+      }
+      localHubActorTokenPort = null;
+    }
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
@@ -6556,6 +6604,22 @@ async function main(): Promise<void> {
     server.listen(startupConfig.port, startupConfig.host, () => {
       const addr = server.address() as import('node:net').AddressInfo;
       logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
+      // #1467: publish the host-local CLI trust token once the real port is
+      // known. Never log the token value — only its path/credential id.
+      publishLocalHubActorTokenOrWarn(addr.port, 'published');
+      // A hub that outlives the credential TTL would silently lose local CLI
+      // access, so refresh well before expiry. The predecessor is left to
+      // expire on its own (mirrors #1435 renew semantics), and the timer is
+      // unref'd so it never holds the process open.
+      const refreshMs = Math.max(
+        60 * 60 * 1000,
+        Math.floor(cliGatewayActorMaxTtlMs / 2)
+      );
+      localHubActorTokenTimer = setInterval(() => {
+        if (localHubActorTokenPort === null) return;
+        publishLocalHubActorTokenOrWarn(localHubActorTokenPort, 'refreshed');
+      }, refreshMs);
+      localHubActorTokenTimer.unref();
     });
   }
   server.on('error', (err: NodeJS.ErrnoException) => {

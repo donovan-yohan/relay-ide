@@ -12,7 +12,13 @@ export const FILE_RPC_MAX_WRITE_BYTES = 1024 * 1024; // 1 MB
 
 export type FileRpcOperation = 'list' | 'stat' | 'read' | 'tail' | 'write';
 
-export const FILE_RPC_OPERATIONS = ['list', 'stat', 'read', 'tail', 'write'] as const satisfies readonly FileRpcOperation[];
+export const FILE_RPC_OPERATIONS = [
+  'list',
+  'stat',
+  'read',
+  'tail',
+  'write',
+] as const satisfies readonly FileRpcOperation[];
 
 export type FileRpcDenialReason =
   | 'FILE_RPC_EXPECTED_HASH_MISMATCH'
@@ -23,6 +29,7 @@ export type FileRpcDenialReason =
   | 'FILE_RPC_NOT_FILE'
   | 'FILE_RPC_NOT_FOUND'
   | 'FILE_RPC_OVERWRITE_REQUIRED'
+  | 'FILE_RPC_PROTECTED_PATH'
   | 'FILE_RPC_ROOT_ESCAPE'
   | 'FILE_RPC_ROOT_UNAVAILABLE'
   | 'FILE_RPC_SESSION_REQUIRED'
@@ -71,9 +78,9 @@ export interface FileRpcWriteRequest extends FileRpcBaseRequest {
   operation: 'write';
   mode: FileRpcWriteMode;
   contentBase64: string;
-  expectedHash?: string;       // required when mode === 'overwrite'
+  expectedHash?: string; // required when mode === 'overwrite'
   // mtimeOk was removed: mtime-based optimistic concurrency deferred (follow-up issue)
-  permissions?: number;        // POSIX bits; clamped to 0o777 at handler
+  permissions?: number; // POSIX bits; clamped to 0o777 at handler
 }
 
 export type FileRpcRequest =
@@ -164,9 +171,9 @@ export interface FileRpcWriteResponse {
   path: string;
   mode: FileRpcWriteMode;
   bytesWritten: number;
-  newHash: string;             // sha256 hex of final on-disk content
+  newHash: string; // sha256 hex of final on-disk content
   newMtime: string;
-  created: boolean;            // true iff target did not exist prior
+  created: boolean; // true iff target did not exist prior
 }
 
 export type FileRpcResponse =
@@ -177,5 +184,11 @@ export type FileRpcResponse =
   | FileRpcWriteResponse;
 
 export function isFileRpcOperation(value: unknown): value is FileRpcOperation {
-  return value === 'list' || value === 'stat' || value === 'read' || value === 'tail' || value === 'write';
+  return (
+    value === 'list' ||
+    value === 'stat' ||
+    value === 'read' ||
+    value === 'tail' ||
+    value === 'write'
+  );
 }

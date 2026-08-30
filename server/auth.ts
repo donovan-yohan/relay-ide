@@ -67,7 +67,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     acceptedLanes: ['browser-session'],
     middleware: 'requireAuth',
     notes:
-      'Interactive browser surfaces require the browser session established by PIN login or first-run PIN setup; these cookies are not node, pair, or scoped actor credentials.',
+      'Interactive browser surfaces require the browser session established by PIN login or first-run PIN setup; these cookies are not node, pair, or scoped actor credentials. #1467 ratified the scope of this lane: the PIN protects the browser/remote UI, NOT the host itself — a process running as the hub uid can read the hub config-dir CLI trust token and is trusted for local CLI use by design.',
   },
   {
     surface: 'browser diagnostics, config, and lifecycle APIs',
