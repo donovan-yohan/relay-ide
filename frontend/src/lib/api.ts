@@ -2918,7 +2918,16 @@ export interface EnrichBranchesResult {
   results: Record<string, { pr: PrInfo | null; stale: boolean }>;
 }
 
-/** Swallows HTTP errors and returns `{ results: {} }` on failure. */
+/** How long one batched enrichment may run before the client gives up.
+ *  Server-side `gh`/`git` subprocesses are bounded at 5-10 s each and run
+ *  concurrently, so anything past this is a wedged connection, not slow work. */
+const ENRICH_BRANCHES_TIMEOUT_MS = 30_000;
+
+/**
+ * Throws on a non-2xx response or a timeout so the caller can leave its
+ * freshness metadata unstamped and retry, rather than treating an error as
+ * "this repo has no pull requests".
+ */
 export async function enrichBranches(
   branches: Array<{ repoPath: string; branchName: string }>
 ): Promise<EnrichBranchesResult> {
@@ -2926,8 +2935,11 @@ export async function enrichBranches(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ branches }),
+    signal: AbortSignal.timeout(ENRICH_BRANCHES_TIMEOUT_MS),
   });
-  if (!res.ok) return { results: {} };
+  if (!res.ok) {
+    throw new Error(`enrich-branches failed: HTTP ${res.status}`);
+  }
   return jsonEither<EnrichBranchesResult>(res);
 }
 
