@@ -86,6 +86,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'context.list',
   'inbox.list',
   'inbox.get',
+  'agent-profiles.list',
+  'agent-profiles.get',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -118,6 +120,12 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
+  // #1473: hub-local agent-profile configuration. Present on the actor lane so
+  // the #1467 host-local trust token can run them without a browser session —
+  // the router additionally refuses any DELEGATED actor credential, so a remote
+  // agent holding `context:write` still cannot mint or rebind a profile.
+  'agent-profiles.create',
+  'agent-profiles.update',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -483,6 +491,16 @@ export function cliGatewayActorCommandCapabilities(
   )
     return ['context:read'];
   if (command === 'channels.post') return ['context:write'];
+  // #1473: agent-profile reads are a roster read; writes are hub-local config
+  // mutations. Both resolve explicitly so neither falls into the generic
+  // `session:read` read fallback or the `artifact:write` write fallback below.
+  if (command === 'agent-profiles.list' || command === 'agent-profiles.get')
+    return ['context:read'];
+  if (
+    command === 'agent-profiles.create' ||
+    command === 'agent-profiles.update'
+  )
+    return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||

@@ -18,29 +18,41 @@ globalThis.fetch = async (url, init = {}) => {
       body,
     })
   );
-  const data = String(url).includes('/channels/')
-    ? {
-        message: { id: 'chm:test' },
-        run: {
-          id: 'chrun:test',
-          channelId: 'topic:test',
-          threadId: null,
-          requestMessageId: 'chm:test',
-          requesterId: 'actor:test',
-          state: 'submitted',
-          targets: [],
-          createdAt: '2026-08-12T00:00:00.000Z',
-          updatedAt: '2026-08-12T00:00:00.000Z',
-        },
-      }
-    : {
-        id: 'worker-session',
-        type: 'terminal',
-        mode: 'pty',
-        agent: 'terminal',
-        cwd: '/repo',
-        status: 'active',
-      };
+  const agentProfile = {
+    id: 'agent-profile:hermes:0001',
+    providerId: 'hermes',
+    displayName: 'Tako Planner',
+    avatar: null,
+    hermesProfile: 'tako-planner',
+    hermesApiKeySet: true,
+    isDefault: false,
+    isBuiltIn: false,
+  };
+  const data = String(url).includes('/agent-profiles')
+    ? { profile: agentProfile, profiles: [agentProfile] }
+    : String(url).includes('/channels/')
+      ? {
+          message: { id: 'chm:test' },
+          run: {
+            id: 'chrun:test',
+            channelId: 'topic:test',
+            threadId: null,
+            requestMessageId: 'chm:test',
+            requesterId: 'actor:test',
+            state: 'submitted',
+            targets: [],
+            createdAt: '2026-08-12T00:00:00.000Z',
+            updatedAt: '2026-08-12T00:00:00.000Z',
+          },
+        }
+      : {
+          id: 'worker-session',
+          type: 'terminal',
+          mode: 'pty',
+          agent: 'terminal',
+          cwd: '/repo',
+          status: 'active',
+        };
   return new Response(JSON.stringify(data), {
     status: 201,
     headers: { 'content-type': 'application/json' },

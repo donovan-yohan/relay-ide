@@ -59,6 +59,19 @@ workflow.
   created after its credential was issued until someone mentions it there
   (#1455)
 
+### CLI-only agent-profile setup
+
+#### Added
+
+- `relay-ide v1 agent-profiles list|get|create|update --json` configures agent
+  profiles without opening the web UI — create a profile, bind it to a Hermes
+  multiplex profile, and set or clear its gateway key from the terminal on the
+  hub host. The key is never accepted as a bare command-line value; pass it with
+  `--hermes-api-key-env <VAR>`, `--hermes-api-key-file <path>`, or
+  `--hermes-api-key-stdin`, and it is never returned by any read. Profile writes
+  require host-local operator authority, so an agent's own delegated credential
+  cannot mint or rebind a profile (#1473)
+
 ### Startup performance
 
 #### Fixed

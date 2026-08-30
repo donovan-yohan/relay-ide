@@ -31,6 +31,7 @@ import {
   resolveDetectedScriptPath,
   verifyUpdateLanded,
 } from '../server/self-update.js';
+import { isValidHermesApiKey } from '../shared/agent-profile.js';
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 import {
   NODE_PAIR_TOKEN_CREATE_CAPABILITY,
@@ -228,6 +229,7 @@ const GATEWAY_USAGE_GROUPS: ReadonlyArray<
     ],
   ],
   ['cockpit', ['list', 'get']],
+  ['agent-profiles', ['list', 'get', 'create', 'update']],
   ['inbox', ['send', 'list', 'get', 'ack', 'resolve', 'ignore']],
   ['workflow-runs', ['publish', 'update', 'list', 'get']],
   ['automation-runs', ['register', 'observe', 'retire', 'list', 'get']],
@@ -1840,6 +1842,12 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'channels.post',
   'cockpit.list',
   'cockpit.get',
+  // #1473: the whole point of these verbs is a web-UI-free setup, so they must
+  // be able to run on the #1467 hub-minted local trust token.
+  'agent-profiles.list',
+  'agent-profiles.get',
+  'agent-profiles.create',
+  'agent-profiles.update',
 ]);
 
 /**
@@ -6006,6 +6014,459 @@ async function runGatewayWorkspaceTopics(
   }
 }
 
+/**
+ * #1473: `relay-ide v1 agent-profiles list|get|create|update`.
+ *
+ * The per-profile Hermes gateway key is a WRITE-ONLY secret
+ * (`docs/SECURITY_POLICY.md` § Agent-profile gateway secrets). It never comes
+ * back on a response, and this CLI additionally refuses to take it from argv:
+ * argv is world-readable in the process table and lands in shell history, so a
+ * bare `--hermes-api-key <value>` is rejected with a hint instead of accepted.
+ * The three accepted sources are an environment VARIABLE NAME, a file path, and
+ * piped stdin.
+ */
+const AGENT_PROFILE_KEY_SOURCE_FLAGS = [
+  '--hermes-api-key-env',
+  '--hermes-api-key-file',
+  '--hermes-api-key-stdin',
+  '--clear-hermes-api-key',
+] as const;
+
+/** Argv spellings of the secret itself, refused outright with a hint. */
+const AGENT_PROFILE_ARGV_SECRET_FLAGS = [
+  '--hermes-api-key',
+  '--api-key',
+  '--gateway-key',
+] as const;
+
+const AGENT_PROFILE_MAX_KEY_BYTES = 4096;
+
+interface AgentProfileCliFlags {
+  values: ReadonlyMap<string, string>;
+  present: ReadonlySet<string>;
+}
+
+/**
+ * Strict, command-local flag parser. Unknown or duplicated flags fail loudly:
+ * silently dropping a flag on a command that stores a credential is exactly the
+ * failure mode that leaves an operator believing a key was saved.
+ */
+function parseAgentProfileCliFlags(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: readonly string[],
+  valueFlags: readonly string[],
+  booleanFlags: readonly string[]
+): AgentProfileCliFlags {
+  const valueSet = new Set(valueFlags);
+  const booleanSet = new Set(['--json', ...booleanFlags]);
+  const values = new Map<string, string>();
+  const present = new Set<string>();
+  for (let index = 0; index < commandArgs.length; index += 1) {
+    const flag = commandArgs[index];
+    if (!flag || (!valueSet.has(flag) && !booleanSet.has(flag))) {
+      // A stray POSITIONAL is never echoed back: the most likely way one shows
+      // up on these commands is a mistyped gateway-key flag that left the key
+      // itself loose in argv, and the error envelope must not repeat it.
+      const positional = !flag || !flag.startsWith('--');
+      gatewayInvalid(commandName, `unsupported ${commandName} argument`, {
+        ...(positional
+          ? { argumentPosition: index, reason: 'unexpected_positional' }
+          : { argument: flag }),
+        allowed: [...valueSet, ...booleanSet],
+      });
+    }
+    if (present.has(flag)) {
+      gatewayInvalid(commandName, `duplicate ${flag} is not allowed`, {
+        argument: flag,
+      });
+    }
+    present.add(flag);
+    if (booleanSet.has(flag)) continue;
+    const value = commandArgs[index + 1];
+    if (value === undefined || value.startsWith('--')) {
+      gatewayInvalid(commandName, `${flag} requires a value`, {
+        argument: flag,
+      });
+    }
+    values.set(flag, value);
+    index += 1;
+  }
+  return { values, present };
+}
+
+function refuseAgentProfileArgvSecret(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: readonly string[]
+): void {
+  for (const flag of AGENT_PROFILE_ARGV_SECRET_FLAGS) {
+    if (!commandArgs.includes(flag)) continue;
+    gatewayInvalid(
+      commandName,
+      `${flag} is not accepted: a gateway key passed in argv is visible in the process table and shell history. Use --hermes-api-key-env <VAR>, --hermes-api-key-file <path>, or --hermes-api-key-stdin.`,
+      { field: 'hermesApiKey', reason: 'secret_in_argv' }
+    );
+  }
+}
+
+/** Reject a rejected key without ever echoing it (policy: name the field). */
+function requireValidAgentProfileKey(
+  commandName: RelayCliGatewayCommand,
+  value: string,
+  source: string
+): string {
+  if (!isValidHermesApiKey(value)) {
+    gatewayInvalid(
+      commandName,
+      'hermesApiKey must be 1-4096 printable, space-free ASCII characters',
+      { field: 'hermesApiKey', source }
+    );
+  }
+  return value;
+}
+
+function readAgentProfileKeyFromStdin(
+  commandName: RelayCliGatewayCommand
+): string {
+  if (process.stdin.isTTY) {
+    gatewayInvalid(
+      commandName,
+      '--hermes-api-key-stdin requires piped stdin (stdin is a TTY)',
+      { field: 'hermesApiKey', reason: 'stdin_requires_pipe' }
+    );
+  }
+  const buf = fs.readFileSync(0);
+  if (buf.length > AGENT_PROFILE_MAX_KEY_BYTES * 2) {
+    gatewayInvalid(commandName, 'hermesApiKey stdin payload is too large', {
+      field: 'hermesApiKey',
+      reason: 'size_exceeded',
+      max: AGENT_PROFILE_MAX_KEY_BYTES,
+    });
+  }
+  return buf.toString('utf8').trim();
+}
+
+/**
+ * `undefined` = leave the stored key untouched, `null` = clear it, string = set
+ * it. Exactly one source may be named.
+ */
+function resolveAgentProfileGatewayKey(
+  commandName: RelayCliGatewayCommand,
+  parsed: AgentProfileCliFlags
+): string | null | undefined {
+  const named = AGENT_PROFILE_KEY_SOURCE_FLAGS.filter((flag) =>
+    parsed.present.has(flag)
+  );
+  if (named.length === 0) return undefined;
+  if (named.length > 1) {
+    gatewayInvalid(
+      commandName,
+      `${named.join(', ')} conflict: name exactly one gateway-key source`,
+      { field: 'hermesApiKey', arguments: named }
+    );
+  }
+  const source = named[0] as (typeof AGENT_PROFILE_KEY_SOURCE_FLAGS)[number];
+  if (source === '--clear-hermes-api-key') return null;
+  if (source === '--hermes-api-key-stdin') {
+    return requireValidAgentProfileKey(
+      commandName,
+      readAgentProfileKeyFromStdin(commandName),
+      'stdin'
+    );
+  }
+  if (source === '--hermes-api-key-env') {
+    const variable = (parsed.values.get(source) ?? '').trim();
+    if (!variable) {
+      gatewayInvalid(commandName, '--hermes-api-key-env requires a value', {
+        field: 'hermesApiKey',
+      });
+    }
+    // The VARIABLE NAME is safe to name in an error; its value never is.
+    const raw = process.env[variable];
+    if (raw === undefined || raw.trim() === '') {
+      gatewayInvalid(
+        commandName,
+        `environment variable ${variable} is unset or empty`,
+        { field: 'hermesApiKey', envVar: variable }
+      );
+    }
+    return requireValidAgentProfileKey(commandName, raw.trim(), 'env');
+  }
+  const keyPath = parsed.values.get(source) as string;
+  let contents: string;
+  try {
+    contents = fs.readFileSync(path.resolve(keyPath), 'utf8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    gatewayInvalid(
+      commandName,
+      `could not read --hermes-api-key-file: ${message}`,
+      { field: 'hermesApiKey' }
+    );
+  }
+  return requireValidAgentProfileKey(commandName, contents.trim(), 'file');
+}
+
+/**
+ * `--input-json` / `--input-file` supply the whole body for the fields with no
+ * ergonomic flag (envVars, namePool, respondTo, avatar, isDefault). A secret is
+ * refused there for the same reason it is refused in argv for `--input-json`,
+ * and refused uniformly so the rule is one sentence rather than two.
+ */
+function agentProfileInputBody(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: string[],
+  parsed: AgentProfileCliFlags,
+  ergonomicFlags: readonly string[]
+): Record<string, unknown> {
+  if (
+    !parsed.present.has('--input-json') &&
+    !parsed.present.has('--input-file')
+  ) {
+    return {};
+  }
+  const conflicting = ergonomicFlags.filter((flag) => parsed.present.has(flag));
+  if (conflicting.length > 0) {
+    gatewayInvalid(
+      commandName,
+      `${conflicting.join(', ')} cannot be combined with --input-json/--input-file`,
+      { arguments: conflicting }
+    );
+  }
+  const body = parseGatewayInputObject(commandName, commandArgs);
+  if (Object.prototype.hasOwnProperty.call(body, 'hermesApiKey')) {
+    gatewayInvalid(
+      commandName,
+      'hermesApiKey is not accepted inside --input-json/--input-file. Use --hermes-api-key-env <VAR>, --hermes-api-key-file <path>, or --hermes-api-key-stdin.',
+      { field: 'hermesApiKey', reason: 'secret_in_input_body' }
+    );
+  }
+  return body;
+}
+
+async function runGatewayAgentProfilesList(
+  profileArgs: string[]
+): Promise<never> {
+  parseAgentProfileCliFlags('agent-profiles.list', profileArgs, [], []);
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.list',
+    pathName: '/agent-profiles',
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('agent-profiles.list', result), 0);
+}
+
+async function runGatewayAgentProfilesGet(
+  profileArgs: string[]
+): Promise<never> {
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.get',
+    profileArgs,
+    ['--id'],
+    []
+  );
+  const id = (parsed.values.get('--id') ?? '').trim();
+  if (!id) {
+    gatewayInvalid('agent-profiles.get', '--id is required', { field: 'id' });
+  }
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.get',
+    pathName: `/agent-profiles/${encodeURIComponent(id)}`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('agent-profiles.get', result), 0);
+}
+
+const AGENT_PROFILE_CREATE_ERGONOMIC_FLAGS = [
+  '--provider',
+  '--name',
+  '--hermes-profile',
+  '--model',
+  '--effort',
+  '--system-prompt',
+] as const;
+
+async function runGatewayAgentProfilesCreate(
+  profileArgs: string[]
+): Promise<never> {
+  refuseAgentProfileArgvSecret('agent-profiles.create', profileArgs);
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.create',
+    profileArgs,
+    [
+      ...AGENT_PROFILE_CREATE_ERGONOMIC_FLAGS,
+      '--hermes-api-key-env',
+      '--hermes-api-key-file',
+      '--input-json',
+      '--input-file',
+    ],
+    ['--hermes-api-key-stdin']
+  );
+  const body = agentProfileInputBody(
+    'agent-profiles.create',
+    profileArgs,
+    parsed,
+    AGENT_PROFILE_CREATE_ERGONOMIC_FLAGS
+  );
+  for (const [flag, field] of [
+    ['--provider', 'providerId'],
+    ['--name', 'displayName'],
+    ['--hermes-profile', 'hermesProfile'],
+    ['--model', 'model'],
+    ['--effort', 'effort'],
+    ['--system-prompt', 'systemPrompt'],
+  ] as const) {
+    const value = parsed.values.get(flag);
+    if (value !== undefined) body[field] = value.trim();
+  }
+  if (typeof body['providerId'] !== 'string' || !body['providerId']) {
+    gatewayInvalid('agent-profiles.create', '--provider is required', {
+      field: 'providerId',
+    });
+  }
+  if (typeof body['displayName'] !== 'string' || !body['displayName']) {
+    gatewayInvalid('agent-profiles.create', '--name is required', {
+      field: 'displayName',
+    });
+  }
+  const key = resolveAgentProfileGatewayKey('agent-profiles.create', parsed);
+  if (key === null) {
+    gatewayInvalid(
+      'agent-profiles.create',
+      '--clear-hermes-api-key is meaningless on create',
+      { field: 'hermesApiKey' }
+    );
+  }
+  if (key !== undefined) body['hermesApiKey'] = key;
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.create',
+    pathName: '/agent-profiles',
+    method: 'POST',
+    body,
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('agent-profiles.create', result), 0);
+}
+
+const AGENT_PROFILE_UPDATE_ERGONOMIC_FLAGS = [
+  '--provider',
+  '--name',
+  '--hermes-profile',
+  '--model',
+  '--effort',
+  '--system-prompt',
+  '--clear-hermes-profile',
+  '--clear-model',
+  '--clear-effort',
+  '--clear-system-prompt',
+] as const;
+
+async function runGatewayAgentProfilesUpdate(
+  profileArgs: string[]
+): Promise<never> {
+  refuseAgentProfileArgvSecret('agent-profiles.update', profileArgs);
+  const parsed = parseAgentProfileCliFlags(
+    'agent-profiles.update',
+    profileArgs,
+    [
+      '--id',
+      '--provider',
+      '--name',
+      '--hermes-profile',
+      '--model',
+      '--effort',
+      '--system-prompt',
+      '--hermes-api-key-env',
+      '--hermes-api-key-file',
+      '--input-json',
+      '--input-file',
+    ],
+    [
+      '--hermes-api-key-stdin',
+      '--clear-hermes-api-key',
+      '--clear-hermes-profile',
+      '--clear-model',
+      '--clear-effort',
+      '--clear-system-prompt',
+    ]
+  );
+  const id = (parsed.values.get('--id') ?? '').trim();
+  if (!id) {
+    gatewayInvalid('agent-profiles.update', '--id is required', {
+      field: 'id',
+    });
+  }
+  const body = agentProfileInputBody(
+    'agent-profiles.update',
+    profileArgs,
+    parsed,
+    AGENT_PROFILE_UPDATE_ERGONOMIC_FLAGS
+  );
+  // `id` addresses the row in the path; it is never a patch field.
+  delete body['id'];
+  for (const [flag, field] of [
+    ['--provider', 'providerId'],
+    ['--name', 'displayName'],
+    ['--hermes-profile', 'hermesProfile'],
+    ['--model', 'model'],
+    ['--effort', 'effort'],
+    ['--system-prompt', 'systemPrompt'],
+  ] as const) {
+    const value = parsed.values.get(flag);
+    if (value !== undefined) body[field] = value.trim();
+  }
+  for (const [flag, field] of [
+    ['--clear-hermes-profile', 'hermesProfile'],
+    ['--clear-model', 'model'],
+    ['--clear-effort', 'effort'],
+    ['--clear-system-prompt', 'systemPrompt'],
+  ] as const) {
+    if (!parsed.present.has(flag)) continue;
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      gatewayInvalid(
+        'agent-profiles.update',
+        `${flag} conflicts with the value set for ${field}`,
+        { field }
+      );
+    }
+    body[field] = null;
+  }
+  const key = resolveAgentProfileGatewayKey('agent-profiles.update', parsed);
+  if (key !== undefined) body['hermesApiKey'] = key;
+  if (Object.keys(body).length === 0) {
+    gatewayInvalid(
+      'agent-profiles.update',
+      'the patch is empty: pass at least one field flag',
+      { field: 'patch' }
+    );
+  }
+  const result = await gatewayHttpJson({
+    commandName: 'agent-profiles.update',
+    pathName: `/agent-profiles/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body,
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('agent-profiles.update', result), 0);
+}
+
+async function runGatewayAgentProfiles(gatewayArgs: string[]): Promise<never> {
+  const profileArgs = gatewayArgs.slice(2);
+  switch (gatewayArgs[1]) {
+    case 'list':
+      return runGatewayAgentProfilesList(profileArgs);
+    case 'get':
+      return runGatewayAgentProfilesGet(profileArgs);
+    case 'create':
+      return runGatewayAgentProfilesCreate(profileArgs);
+    case 'update':
+      return runGatewayAgentProfilesUpdate(profileArgs);
+    default:
+      gatewayInvalid('agent-profiles.list', 'unknown agent-profiles command', {
+        args: gatewayArgs,
+      });
+  }
+}
+
 type ChannelCliValueFlag =
   | '--channel-id'
   | '--run-id'
@@ -7041,6 +7502,7 @@ async function runGatewayV1(): Promise<void> {
     'workspace-topics': runGatewayWorkspaceTopics,
     channels: runGatewayChannels,
     cockpit: runGatewayCockpit,
+    'agent-profiles': runGatewayAgentProfiles,
     artifacts: runGatewayArtifacts,
     supervisor: runGatewaySupervisor,
     events: runGatewayEvents,

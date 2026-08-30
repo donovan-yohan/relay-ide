@@ -3113,6 +3113,12 @@ async function main(): Promise<void> {
       listConfiguredFrameworks: () =>
         listConfiguredFrameworks(getConfig().frameworks),
       requireAuth,
+      // #1473: list/get/create/update also answer on the CLI gateway lane so a
+      // web-UI-free host can configure profiles. Delete and set-default stay
+      // browser-only. The router refuses a DELEGATED actor credential on the
+      // two write verbs, so only the #1467 host-local token (or the browser/
+      // operator lane) can actually mutate a profile.
+      requireGatewayAuthForCommand: requireCliGatewayAuthForActorCommand,
     })
   );
   app.use(

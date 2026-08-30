@@ -88,6 +88,10 @@ describe('relay-ide --help dispatch', () => {
       'channels subscribe',
       'channels post',
       'workspace-topics create',
+      // #1473: the agent-profile verbs are the CLI-only setup path.
+      'agent-profiles list',
+      'agent-profiles create',
+      'agent-profiles update',
     ]) {
       expect(stdout).toContain(verb);
     }
