@@ -158,6 +158,23 @@ describe('channel read CLI gateway runtime wiring', () => {
       'channels.roster',
       '/channels/product%2Fmain/roster',
     ],
+    // #1472: channel ids carry a colon (`topic:general`); the adapter lane
+    // percent-encodes it, so the CLI front-end must too.
+    [
+      ['get', '--channel-id', 'topic:general'],
+      'channels.get',
+      '/channels/topic%3Ageneral',
+    ],
+    [
+      ['history', '--channel-id', 'topic:general', '--limit', '3'],
+      'channels.history',
+      '/channels/topic%3Ageneral/messages?limit=3',
+    ],
+    [
+      ['history', '--channel-id', 'topic:general', '--before-seq', '42'],
+      'channels.history',
+      '/channels/topic%3Ageneral/messages?beforeSeq=42',
+    ],
     [
       ['search', '--query', 'needle'],
       'channels.search',
@@ -263,6 +280,23 @@ describe('channel read CLI gateway runtime wiring', () => {
       ['search', '--query', 'needle', '--after-seq', '3', '--json'],
       'channels.search',
     ],
+    [['create', '--json'], 'workspace-topics.create'],
+    [['create', '--workspace-id', 'ws:1', '--json'], 'workspace-topics.create'],
+    [
+      ['create', '--title', 'Demo', '--undeclared', 'x', '--json'],
+      'workspace-topics.create',
+    ],
+    [
+      [
+        'create',
+        '--title',
+        'Demo',
+        '--input-json',
+        '{"workspaceId":"ws:1","title":"Demo"}',
+        '--json',
+      ],
+      'workspace-topics.create',
+    ],
   ] as const)(
     'rejects malformed stable command argv %j',
     async (channelArgs, command) => {
@@ -279,4 +313,82 @@ describe('channel read CLI gateway runtime wiring', () => {
       expect(requested).toBe(false);
     }
   );
+});
+
+// #1472: `channels create` is the ergonomic alias for the existing
+// `workspace-topics.create` gateway verb. No new verb is minted, so the
+// envelope's command stays `workspace-topics.create`.
+describe('channels create CLI alias for workspace-topics.create', () => {
+  it('posts a workspace topic from ergonomic flags', async () => {
+    const { envelope, request } = await runCli([
+      'v1',
+      'channels',
+      'create',
+      '--title',
+      'Nightly triage',
+      '--json',
+    ]);
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'workspace-topics.create',
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/workspace-topics',
+      headers: {
+        'x-relay-cli-command': 'workspace-topics.create',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: { workspaceId: 'workspace:local', title: 'Nightly triage' },
+    });
+  });
+
+  it('carries workspace, description, and an explicit channel id', async () => {
+    const { request } = await runCli([
+      'v1',
+      'channels',
+      'create',
+      '--title',
+      'Nightly triage',
+      '--workspace-id',
+      'ws:local-1',
+      '--description',
+      'Triage lane',
+      '--channel-id',
+      'topic:nightly-triage',
+      '--json',
+    ]);
+
+    expect(request).toMatchObject({
+      method: 'POST',
+      body: {
+        workspaceId: 'ws:local-1',
+        title: 'Nightly triage',
+        description: 'Triage lane',
+        id: 'topic:nightly-triage',
+      },
+    });
+  });
+
+  it('passes --input-json straight through to workspace-topics create', async () => {
+    const { envelope, request } = await runCli([
+      'v1',
+      'channels',
+      'create',
+      '--input-json',
+      JSON.stringify({ workspaceId: 'ws:local-1', title: 'Raw JSON lane' }),
+      '--json',
+    ]);
+
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'workspace-topics.create',
+    });
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'http://127.0.0.1:4567/workspace-topics',
+      body: { workspaceId: 'ws:local-1', title: 'Raw JSON lane' },
+    });
+  });
 });

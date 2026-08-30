@@ -18,6 +18,13 @@ workflow.
 
 ## [Unreleased]
 
+### CLI help and channel commands
+
+#### Added
+
+- `relay-ide v1 channels create --title <title>` creates a channel from the CLI
+  (the ergonomic alias for `workspace-topics create`) (#1472)
+
 ### Startup performance
 
 #### Fixed

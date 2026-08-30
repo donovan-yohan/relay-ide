@@ -5823,6 +5823,8 @@ type ChannelCliValueFlag =
   | '--query'
   | '--workspace-id'
   | '--include-archived'
+  | '--title'
+  | '--description'
   | '--input-json';
 
 /** Strict, command-local parser for the six stable channel gateway commands. */
@@ -6088,6 +6090,72 @@ async function runGatewayChannelsSearch(channelArgs: string[]): Promise<void> {
   printGatewayEnvelope(gatewayOk('channels.search', result), 0);
 }
 
+/**
+ * #1472: `channels create` is the ergonomic front-end alias for the
+ * `workspace-topics.create` gateway verb — a channel IS a workspace topic, so
+ * no new verb is minted and the envelope still reports
+ * `workspace-topics.create`. `workspace-topics create` keeps working with the
+ * same `--input-json` / `--input-file` shape, which this alias also accepts.
+ */
+async function runGatewayChannelsCreate(channelArgs: string[]): Promise<void> {
+  const ergonomicFlags = [
+    '--title',
+    '--description',
+    '--workspace-id',
+    '--channel-id',
+  ] as const;
+  if (
+    channelArgs.includes('--input-json') ||
+    channelArgs.includes('--input-file')
+  ) {
+    // Silently dropping a flag the caller passed is worse than refusing: the
+    // JSON body would win and `--title` would vanish without a word.
+    const conflicting = ergonomicFlags.filter((flag) =>
+      channelArgs.includes(flag)
+    );
+    if (conflicting.length > 0) {
+      gatewayInvalid(
+        'workspace-topics.create',
+        `${conflicting.join(', ')} cannot be combined with --input-json/--input-file`,
+        { arguments: conflicting }
+      );
+    }
+    await runGatewayWorkspaceTopicsCreate(channelArgs);
+    return;
+  }
+  const values = parseChannelCliFlags(
+    'workspace-topics.create',
+    channelArgs,
+    ergonomicFlags
+  );
+  const title = values.get('--title')?.trim() ?? '';
+  if (!title) {
+    gatewayInvalid(
+      'workspace-topics.create',
+      '--title is required (or pass --input-json/--input-file)',
+      { field: 'title' }
+    );
+  }
+  // `workspace:local` is the documented placeholder the hub normalizes to its
+  // seeded local workspace, so a single-workspace hub needs no --workspace-id.
+  const workspaceId = values.get('--workspace-id')?.trim() ?? 'workspace:local';
+  const description = values.get('--description')?.trim();
+  const channelId = values.get('--channel-id')?.trim();
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.create',
+    pathName: '/workspace-topics',
+    method: 'POST',
+    body: {
+      workspaceId,
+      title,
+      ...(description ? { description } : {}),
+      ...(channelId ? { id: channelId } : {}),
+    },
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
+}
+
 async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   const subcommand = gatewayArgs[1];
   const channelArgs = gatewayArgs.slice(2);
@@ -6317,6 +6385,8 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
     });
     printGatewayEnvelope(gatewayOk('channels.post', result), 0);
   }
+  if (subcommand === 'create') return runGatewayChannelsCreate(channelArgs);
+
   gatewayInvalid('channels.list', 'unknown channels command', {
     args: gatewayArgs,
   });
