@@ -20,10 +20,21 @@ workflow.
 
 ### CLI help and channel commands
 
+#### Fixed
+
+- `relay-ide --help` now lists `login` and `logout`, and
+  `relay-ide <command> --help` prints that command's own usage instead of the
+  root page. `relay-ide login --help` documents the device-code flow and
+  `relay-ide v1 --help` prints the full grouped gateway verb list with the
+  `--json` requirement and the credential-resolution order (#1471)
+
 #### Added
 
 - `relay-ide v1 channels create --title <title>` creates a channel from the CLI
-  (the ergonomic alias for `workspace-topics create`) (#1472)
+  (the ergonomic alias for `workspace-topics create`), and the `v1` usage line
+  now advertises every wired channels verb — `list`, `get`, `history`,
+  `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
+  which were dispatchable but undiscoverable (#1472)
 
 ### Startup performance
 
