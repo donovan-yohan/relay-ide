@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
 
 import {
+  CHANNEL_NOT_MEMBER_REASON,
   channelAsyncRunMatchesSubscriptionFilter,
   channelMessageMatchesSubscriptionFilter,
   channelSubscriptionFilterValidationError,
@@ -11,6 +12,8 @@ import {
 } from '../shared/channel-chat-protocol.js';
 import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
 import { authenticatedCliGatewayActorCredential } from './cli-gateway-actor-auth.js';
+import { actorMemberRef } from './channel-chat-router.js';
+import type { ChannelMessageStore } from './channel-message-store.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
 import type {
   ChannelEventSink,
@@ -30,6 +33,13 @@ export interface ChannelSubscriptionRouterDeps {
    * `channels.subscribe` command before this handler runs.
    */
   requireSubscribeAuth: RequestHandler;
+  /**
+   * Membership oracle for the hub-authoritative gate (#1455 slice 1). Absent
+   * (or an unavailable store) fails CLOSED for the scoped-actor lane — an
+   * unanswerable membership question must not resolve to "yes" on a long-lived
+   * streaming route.
+   */
+  store?: Pick<ChannelMessageStore, 'isMember'> | null;
   now?: () => Date;
   heartbeatMs?: number;
   drainTimeoutMs?: number;
@@ -207,6 +217,23 @@ function actorMayReadChannel(req: Request, channelId: string): boolean {
   );
 }
 
+/**
+ * Hub-authoritative membership gate for the stream (#1455 slice 1).
+ *
+ * Returns true for every lane that is not a scoped actor — browser sessions,
+ * operator-client credentials, and the host-local `local-cli` credential are
+ * the operator (`actorMemberRef` returns undefined for all three).
+ */
+function actorIsChannelMember(
+  store: Pick<ChannelMessageStore, 'isMember'> | null | undefined,
+  req: Request,
+  channelId: string
+): boolean {
+  const member = actorMemberRef(req);
+  if (!member) return true;
+  return store?.isMember(channelId, member.kind, member.id) === true;
+}
+
 function advanceDurableCursor(current: number, event: ChannelEventV1): number {
   if (event.type === 'channel-message-created-v1') {
     // A live gap must never become the next resume cursor. The existing client
@@ -316,6 +343,19 @@ export function createChannelSubscriptionRouter(
           {
             channelId,
             reasonCode: 'CHANNEL_OUT_OF_SCOPE',
+          }
+        );
+        return;
+      }
+      if (!actorIsChannelMember(deps.store, req, channelId)) {
+        sendError(
+          res,
+          403,
+          'FORBIDDEN',
+          'actor is not a member of this channel',
+          {
+            channelId,
+            reasonCode: CHANNEL_NOT_MEMBER_REASON,
           }
         );
         return;

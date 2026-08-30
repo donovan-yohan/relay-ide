@@ -135,7 +135,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(16);
+    ).toBe(17);
     expect(
       (
         inspect
@@ -605,7 +605,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(16);
+    ).toBe(17);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -793,7 +793,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(16);
+    ).toBe(17);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1037,7 +1037,7 @@ describe('channel-message-store async-run migration (#1391)', () => {
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
     expect(inspect.prepare('SELECT version FROM schema_version').get()).toEqual(
-      { version: 16 }
+      { version: 17 }
     );
     expect(
       inspect
@@ -3720,7 +3720,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(16);
+    expect(version.version).toBe(17);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -4667,5 +4667,256 @@ describe('channel completion callback edge store', () => {
     expect(s.recoverCompletionCallbacks()).toMatchObject([
       { id: 'chcb:live', channelId: 'topic:live' },
     ]);
+  });
+});
+
+describe('channel-message-store membership (#1455 slice 1)', () => {
+  it('stamps invitedBy on first admission and never rewrites it', () => {
+    const s = store();
+    expect(
+      s.upsertMember({
+        channelId: 'topic:m',
+        kind: 'agent',
+        id: 'agent-profile:mock:default',
+        invitedBy: 'human:operator',
+      })
+    ).toMatchObject({ invitedBy: 'human:operator' });
+    // A member that keeps posting must not be able to launder how it got in.
+    s.upsertMember({
+      channelId: 'topic:m',
+      kind: 'agent',
+      id: 'agent-profile:mock:default',
+      invitedBy: 'agent:impostor',
+    });
+    expect(s.listMembers('topic:m')).toMatchObject([
+      { id: 'agent-profile:mock:default', invitedBy: 'human:operator' },
+    ]);
+    // An unattributed row can still be filled in later — first WRITER of the
+    // attribution wins, not first row.
+    s.upsertMember({ channelId: 'topic:m', kind: 'human', id: 'human:o' });
+    expect(s.listMembers('topic:m')[1]).not.toHaveProperty('invitedBy');
+    s.upsertMember({
+      channelId: 'topic:m',
+      kind: 'human',
+      id: 'human:o',
+      invitedBy: 'backfill',
+    });
+    expect(
+      s.listMembers('topic:m').find((m) => m.id === 'human:o')
+    ).toMatchObject({ invitedBy: 'backfill' });
+  });
+
+  it('folds the two spellings of one built-in agent onto a single member', () => {
+    const s = store();
+    s.upsertMember({
+      channelId: 'topic:fold',
+      kind: 'agent',
+      id: 'agent:claude',
+    });
+    // Gateway spelling, canonical spelling, and the vendor's DEFAULT profile
+    // Actor id all name the same participant.
+    expect(s.isMember('topic:fold', 'agent', 'agent:claude')).toBe(true);
+    expect(s.isMember('topic:fold', 'agent', 'claude')).toBe(true);
+    expect(
+      s.isMember('topic:fold', 'agent', 'agent-profile:claude:default')
+    ).toBe(true);
+    // ...and it holds from the other side of the fold too.
+    s.upsertMember({
+      channelId: 'topic:fold2',
+      kind: 'agent',
+      id: 'agent-profile:claude:default',
+    });
+    expect(s.isMember('topic:fold2', 'agent', 'agent:claude')).toBe(true);
+    // A NON-default profile of the same vendor is a different participant.
+    expect(
+      s.isMember('topic:fold2', 'agent', 'agent-profile:claude:9f2a')
+    ).toBe(false);
+    expect(s.isMember('topic:fold', 'agent', 'agent:codex')).toBe(false);
+    expect(s.isMember('topic:other', 'agent', 'agent:claude')).toBe(false);
+    // Kinds do not cross.
+    expect(s.isMember('topic:fold', 'human', 'agent:claude')).toBe(false);
+  });
+
+  it('enrolls a bound profile so a runtime-driven agent is never a stranger', () => {
+    const s = store();
+    s.upsertBinding({
+      channelId: 'topic:bound',
+      profileActorId: 'agent-profile:codex:9f2a',
+      agentFramework: 'codex',
+    });
+    expect(s.listMembers('topic:bound')).toMatchObject([
+      { kind: 'agent', id: 'agent-profile:codex:9f2a', invitedBy: 'binding' },
+    ]);
+    expect(s.isMember('topic:bound', 'agent', 'agent-profile:codex:9f2a')).toBe(
+      true
+    );
+  });
+
+  it('backfills from durable senders and bindings, and stays idempotent', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:bf',
+      sender: HUMAN,
+      text: 'operator opened this',
+    });
+    s.appendComplete({
+      channelId: 'topic:bf',
+      sender: { kind: 'agent', id: 'agent:claude', providerId: 'claude' },
+      text: 'agent answered',
+    });
+    s.appendComplete({
+      channelId: 'topic:bf',
+      sender: { kind: 'system', id: 'system' },
+      kind: 'system',
+      text: 'system rows are not members',
+    });
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    inspect.prepare('DELETE FROM channel_members').run();
+    expect(s.listMembers('topic:bf')).toEqual([]);
+
+    const first = s.backfillMembership();
+    expect(first.inserted).toBe(2);
+    expect(s.listMembers('topic:bf')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'human',
+          id: 'human:operator',
+          invitedBy: 'backfill',
+        }),
+        expect.objectContaining({
+          kind: 'agent',
+          id: 'agent:claude',
+          invitedBy: 'backfill',
+        }),
+      ])
+    );
+    // `joined_at` is the participant's FIRST message, not the backfill clock.
+    expect(
+      s.listMembers('topic:bf').find((m) => m.id === 'human:operator')!.joinedAt
+    ).toBe(s.history('topic:bf')[0]!.createdAt);
+    // Idempotent: a second pass inserts nothing and changes nothing.
+    const before = s.listMembers('topic:bf');
+    expect(s.backfillMembership().inserted).toBe(0);
+    expect(s.listMembers('topic:bf')).toEqual(before);
+  });
+
+  it('backfills a pre-membership database on upgrade to v17', () => {
+    const file = dbPath();
+    const seeded = createChannelMessageStore(file);
+    seeded.appendComplete({
+      channelId: 'topic:legacy',
+      sender: HUMAN,
+      text: 'pre-membership history',
+    });
+    seeded.appendComplete({
+      channelId: 'topic:legacy',
+      sender: {
+        kind: 'agent',
+        id: 'agent-profile:mock:default',
+        providerId: 'mock',
+      },
+      text: 'and a pre-membership agent reply',
+    });
+    seeded.close();
+    // Rewind to the last schema that had no membership authority at all.
+    const legacy = new Database(file);
+    legacy.exec(`
+      DELETE FROM channel_members;
+      UPDATE schema_version SET version = 16;
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    // Nothing breaks through the flip: everyone who was already talking here
+    // is a member on the other side of the migration.
+    expect(migrated.listMembers('topic:legacy')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'human',
+          id: 'human:operator',
+          invitedBy: 'backfill',
+        }),
+        expect.objectContaining({
+          kind: 'agent',
+          id: 'agent-profile:mock:default',
+          invitedBy: 'backfill',
+        }),
+      ])
+    );
+    expect(migrated.listMembers('topic:legacy')).toHaveLength(2);
+    expect(
+      migrated.isMember('topic:legacy', 'agent', 'agent-profile:mock:default')
+    ).toBe(true);
+  });
+
+  it('never relabels a live row when the reusable backfill re-runs', () => {
+    const s = store();
+    // A row the live path wrote with its own attribution, and one written
+    // without any. The boot sweep re-runs this pass on every start, so it must
+    // not overwrite either — relabelling them `backfill` would destroy exactly
+    // the distinction `invited_by` exists to keep.
+    s.upsertMember({
+      channelId: 'topic:live',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    s.upsertMember({ channelId: 'topic:live', kind: 'human', id: 'human:o' });
+    s.backfillMembership();
+    expect(
+      s.listMembers('topic:live').map((m) => [m.id, m.invitedBy ?? null])
+    ).toEqual(
+      expect.arrayContaining([
+        ['agent:claude', 'human:operator'],
+        ['human:o', null],
+      ])
+    );
+  });
+
+  it('repairs a binding whose membership mirror was lost', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.upsertBinding({
+      channelId: 'topic:orphaned-binding',
+      profileActorId: 'agent-profile:codex:default',
+      agentFramework: 'codex',
+    });
+    // Enrollment is best-effort by design — it must never fail a binding — so
+    // a durable binding can outlive its member row. Left unrepaired that is a
+    // legitimate agent permanently refused, which is what the boot sweep's
+    // additive re-run exists to prevent.
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    inspect.prepare('DELETE FROM channel_members').run();
+    expect(
+      s.isMember(
+        'topic:orphaned-binding',
+        'agent',
+        'agent-profile:codex:default'
+      )
+    ).toBe(false);
+
+    expect(s.backfillMembership().inserted).toBe(1);
+    expect(
+      s.isMember(
+        'topic:orphaned-binding',
+        'agent',
+        'agent-profile:codex:default'
+      )
+    ).toBe(true);
+  });
+
+  it('sweeps membership for a channel the topic store no longer knows', () => {
+    const s = store();
+    s.upsertMember({
+      channelId: 'topic:swept',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    s.sweepOrphans(new Set());
+    expect(s.isMember('topic:swept', 'agent', 'agent:claude')).toBe(false);
   });
 });

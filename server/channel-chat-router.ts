@@ -51,6 +51,8 @@ import {
 } from '../shared/channel-search-query.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
+  CHANNEL_NOT_MEMBER_REASON,
   CHANNEL_POST_STEERING_VALUES,
   CHANNEL_READ_STATE_EVENT,
   CHANNEL_SEARCH_MAX_RESULTS,
@@ -314,18 +316,98 @@ function denyOutOfScopeChannel(
   return true;
 }
 
-/** Narrow a list of channel summaries to the actor's channel scope (if any). */
+/**
+ * The channel member this request would act as, or `undefined` when the caller
+ * is not a scoped actor at all (#1455 slice 1).
+ *
+ * Deliberately reuses `deriveSender` — the SAME server-derived attribution the
+ * write path stamps on a durable row. Authorizing one identity while attributing
+ * another is how a membership gate quietly stops being one, so the two cannot be
+ * allowed to drift apart.
+ */
+export function actorMemberRef(
+  req: Request
+): { kind: 'human' | 'agent'; id: string } | undefined {
+  // The operator-client lane resolves only as the server-derived HUMAN
+  // operator and never carries actor markers. Checked first so a request
+  // carrying both never has its human principal looked up in the agent
+  // membership table (`deriveSender` prefers the operator principal, which
+  // would otherwise be checked as if it were the actor).
+  if (authenticatedOperatorClientCredential(req)) return undefined;
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return undefined;
+  // #1467: the host-local credential is not a delegated actor — reading its
+  // 0600 config-dir file already requires owning the hub — so it keeps
+  // browser/operator authority here exactly as it does in the scope guards.
+  if (isLocalHubCliActorCredential(credential)) return undefined;
+  const sender = deriveSender(req, undefined);
+  return sender.kind === 'system'
+    ? undefined
+    : { kind: sender.kind, id: sender.id };
+}
+
+/**
+ * Hub-authoritative membership deny for the scoped-actor lane (#1455 slice 1).
+ *
+ * Any channel id may be REQUESTED; the hub decides. Scope (`channelIds` on the
+ * credential) says which channels a credential is willing to name; membership
+ * says whether the actor belongs in the conversation. Both must hold, and this
+ * is the second — so `denyOutOfScopeChannel` stays exactly where it is.
+ *
+ * The browser cookie lane, the operator-client lane, and the host-local
+ * `agent:local-cli` credential are all the operator and are not gated.
+ */
+function denyNonMemberChannel(
+  req: Request,
+  res: Response,
+  store: ChannelMessageStore | null | undefined,
+  channelId: string
+): boolean {
+  const member = actorMemberRef(req);
+  if (!member) return false;
+  // Fail CLOSED when the store is unavailable: an unanswerable membership
+  // question must not resolve to "yes".
+  if (store?.isMember(channelId, member.kind, member.id)) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'actor is not a member of this channel',
+    false,
+    {
+      channelId,
+      memberId: member.id,
+      reasonCode: CHANNEL_NOT_MEMBER_REASON,
+    }
+  );
+  return true;
+}
+
+/**
+ * Narrow a list of channel summaries to the actor's channel scope, then to the
+ * channels it is actually a member of (#1455 slice 1).
+ *
+ * A summary carries the channel's member list and its latest activity, so
+ * enumeration is a read of channel data and is gated like every other one. The
+ * list is FILTERED rather than denied: an actor asking "what am I in" gets an
+ * honest answer, it just cannot include rooms it does not belong to.
+ */
 function filterChannelListToScope(
   req: Request,
+  store: ChannelMessageStore | null | undefined,
   channels: Record<string, unknown>[]
 ): Record<string, unknown>[] {
   const allowed = actorChannelIds(req);
-  if (!allowed) return channels;
-  const allowedSet = new Set(allowed);
-  return channels.filter(
-    (channel) =>
-      typeof channel['id'] === 'string' && allowedSet.has(channel['id'])
-  );
+  const member = actorMemberRef(req);
+  if (!allowed && !member) return channels;
+  const allowedSet = allowed ? new Set(allowed) : undefined;
+  return channels.filter((channel) => {
+    const id = channel['id'];
+    if (typeof id !== 'string') return false;
+    if (allowedSet && !allowedSet.has(id)) return false;
+    // Fail closed on an unavailable store, same as `denyNonMemberChannel`.
+    if (member && !store?.isMember(id, member.kind, member.id)) return false;
+    return true;
+  });
 }
 
 /**
@@ -1136,6 +1218,10 @@ function postToChannel(
       channelId: input.channelId,
       kind: input.sender.kind === 'agent' ? 'agent' : 'human',
       id: input.sender.id,
+      // Posting is not an invitation, but it is not unattributed either: this
+      // sender wrote its own way in, and slice 2's audit needs to tell that
+      // apart from a row nobody ever accounted for (#1455).
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
     });
     hub.broadcastCreated(
       result.message,
@@ -1239,7 +1325,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       // an actor scoped to channel A must never see channel B in the list).
       res.json(
         operatorClientPublicValue(req, {
-          channels: filterChannelListToScope(req, channels),
+          channels: filterChannelListToScope(req, store, channels),
         })
       );
     } catch (error) {
@@ -1284,7 +1370,13 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     const scopeChannelId = channelSearchRequestedChannelId(req.query);
     if (scopeChannelId && denyOutOfScopeChannel(req, res, scopeChannelId))
       return;
+    if (
+      scopeChannelId &&
+      denyNonMemberChannel(req, res, deps.store, scopeChannelId)
+    )
+      return;
     const scopeWorkspaceId = parseStringQuery(req.query['workspaceId']);
+    const searchMember = actorMemberRef(req);
 
     try {
       // Archive state and titles live in workspace_topics, a SEPARATE database
@@ -1314,6 +1406,15 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         if (scopeWorkspaceId && topic.workspaceId !== scopeWorkspaceId)
           continue;
         if (!includeArchived && topic.status === 'archived') continue;
+        // #1455 slice 1: an unnamed search must not read across channels the
+        // actor does not belong to. Narrowing the CANDIDATE set (rather than
+        // the answer) keeps the corpus honest — a non-member's channel is not
+        // searched at all, so it cannot crowd out a member channel's hits.
+        if (
+          searchMember &&
+          !deps.store?.isMember(topic.id, searchMember.kind, searchMember.id)
+        )
+          continue;
         visible.set(topic.id, topic);
       }
       const scope = resolveChannelSearchScopes(
@@ -1493,6 +1594,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (!topicStore) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     const topic = topicStore.get(id);
     if (!topic || topic.source !== 'persisted') {
       sendGatewayError(res, 'NOT_FOUND', 'channel not found', false, {
@@ -1517,6 +1619,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (!store) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     if (
       rejectInvalidActorPagination(req, res, ['beforeSeq', 'afterSeq', 'limit'])
     )
@@ -1565,6 +1668,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (!store) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     if (!requirePersistedChannel(req, res)) return;
     const runId = req.params['runId'] ?? '';
     if (!runId.startsWith('chrun:')) {
@@ -1621,6 +1725,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     if (!requirePersistedChannel(req, res)) return;
     const messageId =
       typeof req.query['messageId'] === 'string'
@@ -1768,6 +1873,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       if (!store) return;
       const id = req.params['id'] ?? '';
       if (denyOutOfScopeChannel(req, res, id)) return;
+      if (denyNonMemberChannel(req, res, deps.store, id)) return;
       if (
         rejectInvalidActorPagination(req, res, [
           'beforeSeq',
@@ -1819,6 +1925,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // fabricating a human prompt or allocating an agent runtime.
   router.post('/channels/:id/threads', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    if (denyNonMemberChannel(req, res, deps.store, req.params['id'] ?? ''))
+      return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topic = requirePersistedChannel(req, res);
@@ -1849,6 +1957,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
 
   router.patch('/channels/:id/threads/:rootMessageId', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    if (denyNonMemberChannel(req, res, deps.store, req.params['id'] ?? ''))
+      return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
     const topic = requirePersistedChannel(req, res);
@@ -1892,6 +2002,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     if (rejectInvalidActorChannelPostBody(req, res)) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
@@ -2285,6 +2396,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (!storeOr503(res, deps.store)) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
+    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     const binder = binderOr503(res, deps.binder);
@@ -2350,6 +2462,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   // forbidden from creating orchestrator runtimes directly; the durable
   // orchestrator role is granted only through this channel-owned lane.
   router.post('/channels/:id/orchestrator', auth, (req, res) => {
+    if (denyNonMemberChannel(req, res, deps.store, req.params['id'] ?? ''))
+      return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     // A DM already addresses exactly one provider. A persistent orchestrator

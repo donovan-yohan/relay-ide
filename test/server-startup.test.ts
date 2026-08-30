@@ -699,6 +699,11 @@ test('real channel middleware enforces registry-issued channel leases and preser
       );
     const channelA = (await createTopic('Lease A')).topic.id;
     const channelB = (await createTopic('Lease B')).topic.id;
+    // NOTE: no hand-written member rows at all. The credential minted below
+    // names both `channelA` and the absent `missing` in its operator-approved
+    // scope, and #1455 slice 1 treats that mint as the invite — so the actor
+    // reads and writes `channelA`, and hits the 404 rather than the membership
+    // gate on `missing`, entirely on membership the hub recorded itself.
 
     const requested = await expectJsonStatus<{ grant: { id: string } }>(
       await fetch(`${base}/hub/operator-handshake-grants`, {

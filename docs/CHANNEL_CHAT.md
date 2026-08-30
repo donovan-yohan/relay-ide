@@ -60,6 +60,82 @@ directory. It stores:
 - channel members;
 - channel-to-profile runtime bindings and provider resume state.
 
+## Membership
+
+The hub owns channel membership (#1455). `channel_members` records each
+participant's kind, id, join time, and `invited_by` — the audit of _how_ they
+got in. First writer wins on that attribution, so an agent that keeps posting
+cannot relabel its own admission.
+
+Membership is written by these paths, and only these:
+
+| Writer                                                        | `invited_by`                    |
+| ------------------------------------------------------------- | ------------------------------- |
+| an operator or host-local post enrolling its own sender       | `self`                          |
+| an agent's durable reply arriving through the channel bridge  | `self`                          |
+| a routable `@mention`, enrolling the mentioned profile        | the mentioning message's sender |
+| a durable `channel_agent_bindings` row, enrolling its profile | `binding`                       |
+| minting an actor credential scoped to the channel             | `credential-mint`               |
+| the v17 migration, from durable senders and bindings          | `backfill`                      |
+
+First writer wins, so the earliest of these is the one the audit keeps.
+
+A DM stays deterministic: addressing the channel is the mention, so its one
+agent is enrolled from the first message with no literal `@name`.
+
+Two of these deserve their limits spelled out.
+
+**Credential mint is the interim invite.** Issuing a channel-scoped actor
+credential is operator-_authorized_ — either a browser session, or a one-use
+handshake grant an operator requested and approved, which binds both the actor
+identity and the `channelIds` — so the mint _is_ an operator admitting that
+actor. It keeps already-issued credentials and shipped peer scripts working
+until `channels.invite` lands. It is not a re-derivation of scope at request
+time: the member row is durable and outlives the credential, revoking the token
+does not evict the member, and a channel created _after_ the mint is still
+refused.
+
+Three limits follow from that, and slice 1 owns none of them:
+
+- **Admission is currently irreversible.** Nothing removes a member row except
+  deleting the channel, so a mint naming the wrong channel id admits an actor
+  permanently. The removal verb is slice 2's, alongside `channels.invite`.
+- Membership matching folds a vendor id onto that vendor's default profile, so
+  minting a credential for the bare actor id `claude` also makes the built-in
+  default Claude profile a member of those channels.
+- Renewal and rotation deliberately admit nothing. Renewal is self-service with
+  no operator present, so enrolling there would be self-admission; rotation
+  carries the original actor and scope forward and can name nothing new.
+
+**A member can pull in another agent by mentioning it.** Only members can post,
+so only members can mention — but any member, human or agent, can therefore
+move a profile into the channel. Per-channel invite policy (`members` vs
+`humans-only`) is a follow-up; until it exists, an agent's `@mention` admits
+the mentioned profile on the mentioning agent's authority.
+
+Membership is repaired, never rewritten: the boot sweep re-runs the additive
+backfill, so a binding whose membership mirror was lost (that enrollment is
+best-effort and deliberately does not fail the binding) cannot leave a
+legitimate agent permanently locked out.
+
+Membership is the **authorization** record for the scoped-actor lane. A
+`relay-ide v1 ...` credential may _request_ any channel id; the hub answers on
+membership, not on token scope. `channels.get`, `channels.history`,
+`channels.roster`, `channels.receipts`, `channels.run.get`,
+`channels.threads.history`, `channels.search`, `channels.post`, thread
+create/rename, and `channels.subscribe` all refuse a non-member with a
+`CHANNEL_NOT_MEMBER` reason code; `channels.list` and an unscoped search narrow
+to the actor's own channels. Credential `channelIds` scope is still enforced —
+both must hold. The browser cookie lane, operator-client credentials, and the
+host-local `local-cli` credential (#1467) are the operator and are not gated.
+An unanswerable membership question never resolves to "yes".
+
+Agent identity reaches the table under two historical spellings —
+`agent:<actorId>` from a gateway post and the bare profile Actor id from a
+runtime-bound writer. Membership matches on the canonical form, and folds a
+vendor id onto that vendor's _default_ profile Actor id, so one agent is one
+member. A non-default profile of the same vendor stays its own participant.
+
 History is paginated and byte-bounded. Source and client-message uniqueness
 constraints make replay and retries idempotent. Thread replies share the
 channel sequence and carry their root message id.

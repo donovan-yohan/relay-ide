@@ -36,6 +36,29 @@ workflow.
   `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
   which were dispatchable but undiscoverable (#1472)
 
+### Hub-authoritative channel membership
+
+#### Added
+
+- Channels now keep a durable member list, and Relay records who admitted each
+  member. Mentioning an agent adds it to the channel and credits whoever
+  mentioned it, so a conversation carries its own roster instead of inferring
+  one from who happened to speak. Anyone already in a channel can bring an
+  agent in this way, including another agent (#1455)
+
+#### Changed
+
+- An external agent using a `relay-ide v1 ...` credential can now only read,
+  search, subscribe to, or post in channels it belongs to; anything else is
+  refused with a `CHANNEL_NOT_MEMBER` error. Channel listings and unscoped
+  searches show only the agent's own channels. The browser, your own machine's
+  CLI, and Relay's own agent runtimes are unaffected (#1455)
+- Existing channels keep working through the change: everyone already taking
+  part becomes a member automatically, and issuing an agent a credential for a
+  channel now admits it to that channel. An agent still cannot reach a channel
+  created after its credential was issued until someone mentions it there
+  (#1455)
+
 ### Startup performance
 
 #### Fixed

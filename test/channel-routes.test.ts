@@ -107,6 +107,22 @@ interface Harness {
   broadcasts: Array<{ type: string; data?: Record<string, unknown> }>;
 }
 
+/**
+ * #1455 slice 1: the actor lane is membership-gated. Cases that assert
+ * attribution, validation order, or scope behaviour — not admission — enroll
+ * their actor exactly as the hub otherwise would (an earlier post, a
+ * mention-invite, or the upgrade backfill), so they keep testing what they were
+ * written to test. Admission has its own cases.
+ */
+function enrollActor(h: Harness, actorId: string, channelId?: string): void {
+  h.store.upsertMember({
+    channelId: channelId ?? h.channelId,
+    kind: 'agent',
+    id: `agent:${actorId}`,
+    invitedBy: 'human:operator',
+  });
+}
+
 async function harness(
   options: {
     withStore?: boolean;
@@ -634,6 +650,7 @@ describe('channel routes — attribution', () => {
 
   it('derives an agent sender from the CLI-gateway actor lane', async () => {
     const h = await harness();
+    enrollActor(h, 'claude');
     const res = await req<{
       message: { sender: { kind: string; id: string } };
     }>({
@@ -944,6 +961,7 @@ describe('channel routes — read / write contract', () => {
     const h = await harness({
       binder: { steerExisting: (_message, steering) => steered.push(steering) },
     });
+    enrollActor(h, 'scoped-agent');
     const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
     const headers = {
       'x-test-actor-id': 'scoped-agent',
@@ -1048,6 +1066,11 @@ describe('channel routes — read / write contract', () => {
 
   it('validates an actor channels.post body before channel lookup or persistence', async () => {
     const h = await harness();
+    enrollActor(h, 'scoped-agent');
+    // Membership is recorded for the ABSENT channel too: this case proves body
+    // validation runs before channel lookup, so admission must not be what
+    // answers first.
+    enrollActor(h, 'scoped-agent', 'topic:missing');
     const headers = {
       'x-test-actor-id': 'scoped-agent',
       'x-test-actor-scope': JSON.stringify({
@@ -1089,6 +1112,10 @@ describe('channel routes — read / write contract', () => {
 
   it('fails closed for undeclared actor history queries and missing channels', async () => {
     const h = await harness();
+    enrollActor(h, 'scoped-agent');
+    // Member of the absent channel too, so the 404 below is the CHANNEL
+    // answering rather than the membership gate.
+    enrollActor(h, 'scoped-agent', 'missing');
     const headers = {
       'x-test-actor-id': 'scoped-agent',
       'x-test-actor-scope': JSON.stringify({
@@ -1127,6 +1154,7 @@ describe('channel routes — read / write contract', () => {
 
   it('rejects conflicting actor thread cursors while preserving browser precedence', async () => {
     const h = await harness();
+    enrollActor(h, 'scoped-agent');
     const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
     const root = await req<{ message: { id: string } }>({
       port: h.port,
@@ -1991,6 +2019,7 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
 
   it('an actor scoped to channel A can read/write A but never enumerate, read, or write B', async () => {
     const h = await harness();
+    enrollActor(h, 'claude');
     // The harness default channel is A; create a second persisted channel B.
     const a = h.channelId;
     const b = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
@@ -2308,6 +2337,7 @@ describe('channel routes — agent commands', () => {
         },
       },
     });
+    enrollActor(h, 'agent-profile:codex:scoped');
     h.store.appendComplete({
       channelId: h.channelId,
       sender: { kind: 'human', id: 'human:operator' },
@@ -3274,6 +3304,7 @@ describe('channel routes — message edit (#1308 slice 1 item 3)', () => {
 
   it('refuses agent rows, the agent lane, empty text, archived channels, and unknown ids', async () => {
     const h = await harness();
+    enrollActor(h, 'claude');
     const posted = await postHuman(h, 'operator says hi');
     const agentPost = await req<{ message: { id: string } }>({
       port: h.port,
@@ -3450,6 +3481,7 @@ describe('channel routes — message delete (#1308 slice 1 item 4)', () => {
 
   it('is idempotent and refuses agent rows, the agent lane, archived channels, and unknown ids', async () => {
     const h = await harness();
+    enrollActor(h, 'claude');
     const posted = await postHuman(h, 'operator says hi');
     const url = `${messagesUrl(h.channelId)}/${encodeURIComponent(posted.id)}`;
 
@@ -4313,5 +4345,233 @@ describe('channel routes — operator read state (#1308 slice 3 item 1)', () => 
     expect(read.status).toBe(503);
     const write = await put(h, h.channelId, { lastReadSeq: 1 });
     expect(write.status).toBe(503);
+  });
+});
+
+describe('channel routes — hub-authoritative membership (#1455 slice 1)', () => {
+  /** Scope is satisfied on every request below; membership is the variable. */
+  const scoped = (channelId: string, capability: string) => ({
+    'x-test-actor-id': 'claude',
+    'x-test-actor-scope': JSON.stringify({ channelIds: [channelId] }),
+    'x-relay-capabilities': capability,
+  });
+
+  it('rejects a scoped non-member on every gated channel verb', async () => {
+    const h = await harness();
+    const read = scoped(h.channelId, 'context:read');
+    const write = scoped(h.channelId, 'context:write');
+    const id = encodeURIComponent(h.channelId);
+    const cases: Array<[string, () => Promise<{ status: number; body: any }>]> =
+      [
+        [
+          'channels.get',
+          () =>
+            req({
+              port: h.port,
+              method: 'GET',
+              url: `/channels/${id}`,
+              headers: read,
+            }),
+        ],
+        [
+          'channels.history',
+          () =>
+            req({
+              port: h.port,
+              method: 'GET',
+              url: `/channels/${id}/messages`,
+              headers: read,
+            }),
+        ],
+        [
+          'channels.roster',
+          () =>
+            req({
+              port: h.port,
+              method: 'GET',
+              url: `/channels/${id}/roster`,
+              headers: read,
+            }),
+        ],
+        [
+          'channels.threads.history',
+          () =>
+            req({
+              port: h.port,
+              method: 'GET',
+              url: `/channels/${id}/threads/chm%3Aroot`,
+              headers: read,
+            }),
+        ],
+        [
+          'channels.search',
+          () =>
+            req({
+              port: h.port,
+              method: 'GET',
+              url: `/channels/search?q=anything&channelId=${id}`,
+              headers: read,
+            }),
+        ],
+        [
+          'channels.post',
+          () =>
+            req({
+              port: h.port,
+              method: 'POST',
+              url: `/channels/${id}/messages`,
+              headers: write,
+              body: { text: 'let me in' },
+            }),
+        ],
+        [
+          'channels.threads.create',
+          () =>
+            req({
+              port: h.port,
+              method: 'POST',
+              url: `/channels/${id}/threads`,
+              headers: write,
+              body: { title: 'mine now' },
+            }),
+        ],
+      ];
+    for (const [label, run] of cases) {
+      const res = await run();
+      expect([label, res.status]).toEqual([label, 403]);
+      expect([label, res.body.error.details?.reasonCode]).toEqual([
+        label,
+        'CHANNEL_NOT_MEMBER',
+      ]);
+    }
+    // Nothing the rejected actor asked for left a trace.
+    expect(h.store.history(h.channelId)).toHaveLength(0);
+  });
+
+  it('admits the same actor once the hub records it as a member', async () => {
+    const h = await harness();
+    const denied = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: scoped(h.channelId, 'context:read'),
+    });
+    expect(denied.status).toBe(403);
+    enrollActor(h, 'claude');
+    const allowed = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: scoped(h.channelId, 'context:read'),
+    });
+    expect(allowed.status).toBe(200);
+    const posted = await req<{ message: { sender: { id: string } } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: scoped(h.channelId, 'context:write'),
+      body: { text: 'now I belong' },
+    });
+    expect(posted.status).toBe(201);
+    expect(posted.body.message.sender.id).toBe('agent:claude');
+  });
+
+  it('never gates the browser lane or the host-local CLI credential', async () => {
+    const h = await harness();
+    // Browser cookie lane: no actor credential at all, existing authority.
+    const browser = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(browser.status).toBe(200);
+    // #1467: reading the hub's own 0600 config-dir token already requires
+    // owning the hub, so it keeps operator authority here as it does for scope.
+    const localCli = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: {
+        'x-test-actor-id': 'local-cli',
+        'x-test-actor-reason': 'hub-local-cli',
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(localCli.status).toBe(200);
+  });
+
+  it('enumerates only the channels the actor belongs to', async () => {
+    const h = await harness();
+    const b = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
+    enrollActor(h, 'claude'); // member of A only
+    const listed = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId, b] }),
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.body.channels.map((channel) => channel.id)).toEqual([
+      h.channelId,
+    ]);
+    // The browser still sees both.
+    const browser = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(browser.body.channels.map((channel) => channel.id).sort()).toEqual(
+      [h.channelId, b].sort()
+    );
+  });
+
+  it('keeps a non-member channel out of an unscoped search corpus', async () => {
+    const h = await harness();
+    const b = h.topicStore.create({ workspaceId: 'ws', title: 'Other' }).id;
+    for (const channelId of [h.channelId, b]) {
+      h.store.appendComplete({
+        channelId,
+        sender: { kind: 'human', id: 'human:operator' },
+        text: 'shared secret phrase',
+      });
+    }
+    enrollActor(h, 'claude'); // member of A only
+    const search = await req<{ results: Array<{ channelId: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels/search?q=secret',
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-scope': JSON.stringify({ channelIds: [h.channelId, b] }),
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(search.status).toBe(200);
+    expect([
+      ...new Set(search.body.results.map((hit) => hit.channelId)),
+    ]).toEqual([h.channelId]);
+  });
+
+  it('fails closed when the membership store cannot answer', async () => {
+    // The route's own 503 answers first for a wholly absent store, so the
+    // guard's fail-closed behaviour is proved where it can actually be
+    // observed: the subscribe lane, which reaches the check before any store
+    // preflight (see channel-subscription-routes.test.ts), and here through
+    // the guard's contract — an unanswerable membership question never
+    // resolves to "yes".
+    const h = await harness({ withStore: false });
+    const res = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}`,
+      headers: scoped(h.channelId, 'context:read'),
+    });
+    expect(res.status).toBe(503);
   });
 });

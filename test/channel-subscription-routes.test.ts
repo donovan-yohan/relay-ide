@@ -34,6 +34,9 @@ async function listen(input: {
   drainTimeoutMs?: number;
   writeResponse?: (res: express.Response, data: string) => boolean;
   hub?: ChannelHub;
+  /** #1455 membership oracle. Defaults to "everyone is a member" so the
+   *  transport tests keep testing transport; membership has its own case. */
+  isMember?: (channelId: string) => boolean;
 }): Promise<number> {
   const app = express();
   app.use((req, _res, next) => {
@@ -60,6 +63,9 @@ async function listen(input: {
   app.use(
     createChannelSubscriptionRouter({
       hub,
+      store: {
+        isMember: (channelId: string) => input.isMember?.(channelId) ?? true,
+      },
       requireSubscribeAuth: (_req, _res, next) => next(),
       now: () => new Date('2026-08-12T00:00:00.000Z'),
       heartbeatMs: input.heartbeatMs ?? 60_000,
@@ -481,6 +487,67 @@ describe('channel subscription route', () => {
     );
     expect(response.status).toBe(403);
     expect(subscribed).toBe(false);
+  });
+
+  it('rejects a scoped non-member before subscribing (#1455 slice 1)', async () => {
+    let subscribed = false;
+    const port = await listen({
+      channelIds: ['topic:a'],
+      isMember: () => false,
+      subscribe: () => {
+        subscribed = true;
+      },
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}/channels/topic%3Aa/subscribe`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    expect(response.status).toBe(403);
+    expect(
+      (
+        (await response.json()) as {
+          error: { details?: { reasonCode?: string } };
+        }
+      ).error.details?.reasonCode
+    ).toBe('CHANNEL_NOT_MEMBER');
+    // Scope was satisfied; membership is what refused, and it refused BEFORE
+    // the hub handed out a subscriber slot.
+    expect(subscribed).toBe(false);
+  });
+
+  it('fails closed for a scoped actor when no membership store is wired', async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      attachAuthenticatedCliGatewayActorCredential(req, {
+        id: 'credential:test',
+        actor: { type: 'agent', id: 'actor:test', displayName: 'Test' },
+        capabilities: ['context:read'],
+        scope: { channelIds: ['topic:a'] },
+      } as ScopedActorCredentialRecord);
+      next();
+    });
+    app.use(
+      createChannelSubscriptionRouter({
+        hub: {
+          channelExists: () => true,
+          subscribe: () => () => {},
+        } as unknown as ChannelHub,
+        requireSubscribeAuth: (_req, _res, next) => next(),
+      })
+    );
+    const server = http.createServer(app);
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing port');
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/channels/topic%3Aa/subscribe`,
+      { headers: { 'x-relay-cli-gateway': 'v1' } }
+    );
+    expect(response.status).toBe(403);
   });
 
   it('keeps ephemeral deltas on the last committed durable cursor', async () => {

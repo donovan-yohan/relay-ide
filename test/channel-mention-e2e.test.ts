@@ -419,6 +419,22 @@ async function harness(
   };
 }
 
+/**
+ * #1455 slice 1: the actor lane is membership-gated. The cases below assert
+ * ROUTING parity and correlation, not admission, so they enroll the actor
+ * exactly as the hub otherwise would (an earlier post, a mention-invite, or the
+ * upgrade backfill) and keep testing what they were written to test. Admission
+ * itself is proved by its own cases.
+ */
+function enrollActor(h: Harness, actorId: string): void {
+  h.store.upsertMember({
+    channelId: h.channelId,
+    kind: 'agent',
+    id: `agent:${actorId}`,
+    invitedBy: 'human:operator',
+  });
+}
+
 async function req<T>(input: {
   port: number;
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
@@ -544,6 +560,7 @@ describe('mention routing — end-to-end via the router', () => {
 
   it('a CLI-gateway-actor @mock post routes identically to a browser post', async () => {
     const h = await harness();
+    enrollActor(h, 'orchestrator');
     const res = await req<{ message: ChannelMessage }>({
       port: h.port,
       method: 'POST',
@@ -762,6 +779,83 @@ describe('mention routing — end-to-end via the router', () => {
   });
 });
 
+describe('mention routing — membership auto-add (#1455 slice 1)', () => {
+  it('enrolls the mentioned profile, crediting the mentioning sender', async () => {
+    const h = await harness();
+    expect(
+      h.store.isMember(h.channelId, 'agent', 'agent-profile:mock:default')
+    ).toBe(false);
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock please look at this' },
+    });
+    expect(posted.status).toBe(201);
+    await waitFor(() =>
+      h.store.isMember(h.channelId, 'agent', 'agent-profile:mock:default')
+    );
+    // The mention IS the invite until slice 2 gives it its own verb, so the
+    // audit names the human who made it — not the runtime that answered.
+    expect(
+      h.store
+        .listMembers(h.channelId)
+        .find((member) => member.id === 'agent-profile:mock:default')
+    ).toMatchObject({ kind: 'agent', invitedBy: 'human:operator' });
+    // The mentioning sender is enrolled too, by the ordinary post path.
+    expect(h.store.isMember(h.channelId, 'human', 'human:operator')).toBe(true);
+  });
+
+  it('never enrols a profile an unroutable mention could not reach', async () => {
+    const h = await harness();
+    const posted = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      // `codex` resolves to a profile but is catalogued as unavailable, and an
+      // unknown @name never resolves at all.
+      body: { text: '@nobody and @codex' },
+    });
+    expect(posted.status).toBe(201);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(
+      h.store
+        .listMembers(h.channelId)
+        .map((member) => member.id)
+        .sort()
+    ).toEqual(['human:operator']);
+  });
+
+  it('lets a mentioned agent read the channel it was just invited into', async () => {
+    const h = await harness();
+    const denied = await req<{ error: { details?: { reasonCode?: string } } }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: { 'x-test-actor-id': 'agent-profile:mock:default' },
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.details?.reasonCode).toBe('CHANNEL_NOT_MEMBER');
+
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock you are welcome here' },
+    });
+    await waitFor(() =>
+      h.store.isMember(h.channelId, 'agent', 'agent-profile:mock:default')
+    );
+    const allowed = await req<{ messages: unknown[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: { 'x-test-actor-id': 'agent-profile:mock:default' },
+    });
+    expect(allowed.status).toBe(200);
+  });
+});
+
 describe('mention routing — real scoped-actor auth composition (P2 #1180)', () => {
   it('rejects scoped-actor steering before the production-composed binder runs', async () => {
     const registry = createCliGatewayActorRegistry();
@@ -771,6 +865,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       capabilities: ['context:write'],
       scope: { channelIds: [h.channelId] },
     });
+    enrollActor(h, 'orchestrator');
     const response = await req<{ error: { code: string } }>({
       port: h.port,
       method: 'POST',
@@ -800,6 +895,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       capabilities: ['session:read', 'context:read', 'context:write'],
       scope: { channelIds: [h.channelId] },
     });
+    enrollActor(h, 'orchestrator');
     const actorHeaders = {
       authorization: `Bearer ${issued.token}`,
       'x-relay-cli-actor-token': 'v1',
@@ -884,6 +980,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       capabilities: ['context:read', 'context:write'],
       scope: { channelIds: [h.channelId] },
     });
+    enrollActor(h, 'concurrent-client');
     const headers = {
       authorization: `Bearer ${issued.token}`,
       'x-relay-cli-actor-token': 'v1',
@@ -1043,6 +1140,7 @@ describe('mention routing — real scoped-actor auth composition (P2 #1180)', ()
       capabilities: ['context:read', 'context:write'],
       scope: { channelIds: [h.channelId] },
     });
+    enrollActor(h, 'codex-desktop-dogfood');
     const post = await req<{ message: ChannelMessage; run: ChannelAsyncRun }>({
       port: h.port,
       method: 'POST',
