@@ -5,17 +5,26 @@
   // `project` is a candidate. Rationale and the known false-positive traps live
   // in docs/references/dead-code-and-critique.md — read that before deleting.
   "entry": [
-    // The four `bin` entries in package.json, the server entry, and the dev/CLI
-    // scripts. Without these most of server/ reads as unreachable. `server/index.ts`
-    // and `frontend/src/main.tsx` below are also inferred from package.json and
-    // frontend/index.html; they stay listed so the graph survives a change to
-    // either of those.
-    "server/index.ts",
+    // Only what knip cannot work out for itself. It already infers
+    // `server/index.ts` from package.json `main`/`exports`,
+    // `frontend/src/main.tsx` from frontend/index.html, and any script a
+    // package.json `scripts` entry or `bin` mapping names directly — listing
+    // those again earns a "redundant entry pattern" hint on every run, and a
+    // report that nags is a report nobody reads.
     "bin/*.ts",
-    "scripts/*.{ts,js,mjs}",
 
-    // Vite entry, reached from frontend/index.html.
-    "frontend/src/main.tsx",
+    // Enumerated, NOT globbed. `scripts/*` as an entry pattern would make every
+    // file in the directory an entry by definition, and an orphan script would
+    // be invisible for exactly as long as the glob lived. These are the ones an
+    // npm script runs through its built `dist/scripts/*.js` path, which knip
+    // cannot map back to the source.
+    "scripts/dev.ts",
+    "scripts/dev-backend-config-path.ts",
+    "scripts/dev-supervisor.ts",
+    "scripts/sandbox-cli.ts",
+    "scripts/agent-rpc-smoke.ts",
+    "scripts/channel-memory-load.ts",
+    "scripts/orchestrator-peer.ts",
 
     // E2E component fixtures. Only Rollup inputs when RELAY_IDE_E2E_FIXTURES=1
     // (frontend/vite.config.ts), so knip cannot infer them. Deleting one also

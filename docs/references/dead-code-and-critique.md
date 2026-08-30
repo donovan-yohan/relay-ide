@@ -25,20 +25,21 @@ npx knip --reporter json               # machine-readable, for scripted triage
 
 ### What `knip.jsonc` declares, and why
 
-| Setting                                             | Why                                                                                                                                                                                                                                                                                                        |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `entry: bin/*.ts`, `scripts/*`, `server/index.ts`   | The four `bin` entries in `package.json` plus the server entry. Without these, most of `server/` reads as unreachable.                                                                                                                                                                                     |
-| `entry: frontend/src/main.tsx`                      | The Vite entry, reached from `frontend/index.html`.                                                                                                                                                                                                                                                        |
-| `entry: frontend/src/test-*.tsx`                    | E2E component fixtures. They are only Rollup inputs when `RELAY_IDE_E2E_FIXTURES=1` (see `frontend/vite.config.ts`), so knip cannot see them as entries — declared explicitly. Deleting one also means deleting its `.html` and its `buildInputs` line; `test/e2e/fixture-targets.ts` guards that pairing. |
-| `entry: test/**/*.test.ts`, `test/e2e/**/*.spec.ts` | Tests are entry points, not project files. This is what makes "kept alive only by its own test" visible as a _conscious_ judgement rather than a knip finding.                                                                                                                                             |
-| `ignoreDependencies: ['@xterm/addon-webgpu']`       | Not a package. It is a Vite alias onto a path inside the custom `@xterm/xterm` fork (`frontend/vite.config.ts`).                                                                                                                                                                                           |
-| `ignoreExportsUsedInFile: true`                     | Suppresses ~930 findings of the form "this symbol is exported but only used inside its own file". Those symbols are **alive**; only the `export` keyword may be unnecessary. Turn it off to audit over-exporting — a different, much lower-value job.                                                      |
-| `rules: { duplicates: 'off' }`                      | The frontend convention is to export a component both named and as default. knip counts that as a duplicate on every component.                                                                                                                                                                            |
+| Setting                                             | Why                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entry: bin/*.ts`                                   | The four `bin` entries in `package.json`. knip infers `server/index.ts` from package.json `main`/`exports` and `frontend/src/main.tsx` from `frontend/index.html`, so neither is listed — re-declaring an inferred entry earns a "redundant entry pattern" hint on every run, and a report that nags is a report nobody reads.                                                          |
+| `entry:` seven enumerated `scripts/*.ts` files      | **Enumerated, not globbed.** `scripts/*` as an entry pattern makes every file in the directory an entry by definition, so an orphan script stays invisible for exactly as long as the glob lives — it was hiding `scripts/seed-channel-chat.ts`. Listed here are only the scripts an npm script invokes through a built `dist/scripts/*.js` path, which knip cannot map back to source. |
+| `entry: frontend/src/main.tsx`                      | The Vite entry, reached from `frontend/index.html`.                                                                                                                                                                                                                                                                                                                                     |
+| `entry: frontend/src/test-*.tsx`                    | E2E component fixtures. They are only Rollup inputs when `RELAY_IDE_E2E_FIXTURES=1` (see `frontend/vite.config.ts`), so knip cannot see them as entries — declared explicitly. Deleting one also means deleting its `.html` and its `buildInputs` line; `test/e2e/fixture-targets.ts` guards that pairing.                                                                              |
+| `entry: test/**/*.test.ts`, `test/e2e/**/*.spec.ts` | Tests are entry points, not project files. This is what makes "kept alive only by its own test" visible as a _conscious_ judgement rather than a knip finding.                                                                                                                                                                                                                          |
+| `ignoreDependencies: ['@xterm/addon-webgpu']`       | Not a package. It is a Vite alias onto a path inside the custom `@xterm/xterm` fork (`frontend/vite.config.ts`).                                                                                                                                                                                                                                                                        |
+| `ignoreExportsUsedInFile: true`                     | Suppresses ~930 findings of the form "this symbol is exported but only used inside its own file". Those symbols are **alive**; only the `export` keyword may be unnecessary. Turn it off to audit over-exporting — a different, much lower-value job.                                                                                                                                   |
+| `rules: { duplicates: 'off' }`                      | The frontend convention is to export a component both named and as default. knip counts that as a duplicate on every component.                                                                                                                                                                                                                                                         |
 
-Nothing is path-ignored to make numbers look better. `ignore` covers only
-`test/fixtures/**`. Generated projections (`.claude/`, `.codex/`,
+Nothing is path-ignored to make numbers look better: `knip.jsonc` has **no
+`ignore` key at all**. Generated projections (`.claude/`, `.codex/`,
 `opencode.json`, projected from `.chalk/` by chalkbag) are already outside
-knip's `project` globs, so they are never analysed.
+knip's `project` globs, so they are never analysed and need no entry.
 
 ### Known false positives — read before deleting anything
 
@@ -59,7 +60,12 @@ knip's `project` globs, so they are never analysed.
 4. **Route/auth drift guards.** `test/auth.test.ts` keeps a literal inventory of
    HTTP routes. It constrains what you may add, not what knip may report, but it
    is the second file to check whenever a server surface looks orphaned.
-5. **The named/default component pair.** Roughly 80 of the reported unused
+5. **`scripts/seed-channel-chat.ts`.** Reported as an unused file, and
+   technically correct: nothing imports it and no npm script runs it. It is a
+   manual dev utility whose own header documents `node dist/scripts/seed-channel-chat.js`.
+   It is deliberately _not_ added to `entry` — adding it would hide the open
+   question of whether anyone still uses the seeder. See #1477.
+6. **The named/default component pair.** Roughly 80 of the reported unused
    exports are one systemic pattern: a component exports both `export function
 Foo` and `export default Foo`, and consumers use one. That is one decision
    (a codemod, or a lint rule), not 80.
@@ -77,6 +83,13 @@ git log -1 --format='%ad %s' --date=short -- path/to/file
 A candidate whose only references are its own test is not a false positive —
 it is the most interesting kind of finding, and the decision is "delete both"
 or "wire it up", never "leave it".
+
+**Re-run knip after every deletion round.** The report is not a fixpoint. Under
+`ignoreExportsUsedInFile`, an export suppressed because its only consumer sits
+in the same file becomes genuinely dead the moment you delete that consumer —
+and stays invisible until the next run. In this tree, 77 of the 137 files
+carrying a reported-unused export also carry masked in-file-only exports, so a
+single-pass sweep will leave rot behind by construction.
 
 ## `npm run critique` — LLM critique lane
 
@@ -98,7 +111,7 @@ npm run critique -- server --out /tmp/report.md --max-tokens 32000
 | `--include-tests`    | off                                     | Tests are excluded so the model does not mistake test coverage for use.                    |
 | `--model <id>`       | `deepseek-v4-flash`                     | Any model the gateway serves. Also `RELAY_CRITIQUE_MODEL`.                                 |
 | `--budget <n>`       | `200000` input tokens                   | Packing budget, estimated at 4 chars/token.                                                |
-| `--max-tokens <n>`   | `16000`                                 | Completion budget. See the reasoning-model caveat below.                                   |
+| `--max-tokens <n>`   | `24000`                                 | Completion budget. See the reasoning-model caveat below.                                   |
 | `--reasoning-effort` | `low`                                   | `low` \| `medium` \| `high` \| `max`. Reasoning tokens are charged against `--max-tokens`. |
 | `--out <path>`       | `$RELAY_CRITIQUE_OUT_DIR` or a temp dir | The script prints the path on stdout, diagnostics on stderr.                               |
 | `--dry-run`          | off                                     | Pack and report sizes without calling the gateway.                                         |
@@ -130,9 +143,20 @@ Resolution order, at runtime, every run:
 2. Otherwise, parsed out of an env file — `$RELAY_CRITIQUE_ENV_FILE`, defaulting
    to `~/.config/finn-nancy/prod.env`.
 
-No credential is read from source, written to the report, or printed. The
-endpoint URL is echoed to stderr; the key never is. If you point this at a
-metered provider, mind that a full `server/` scope is a ~200k-token request.
+No credential is read from source or written to the report. Two things are
+enforced rather than assumed:
+
+- **Every gateway-derived string is scrubbed of the key before it is printed.**
+  Several OpenAI-compatible proxies echo the received `Authorization` header in
+  their 401 body — the one failure an operator is most likely to paste into a
+  chat asking why auth broke. `scrub()` runs on the error body and on any
+  transport error message.
+- **Only `protocol//host/pathname` of the endpoint is echoed.** A base URL is
+  not automatically non-secret: userinfo (`https://user:tok@host/v1`) and query
+  tokens (`?api-key=…`) are both common gateway shapes.
+
+If you point this at a metered provider, mind that a full `server/` scope is a
+~200k-token request.
 
 ### Caveats
 

@@ -144,7 +144,7 @@ function parseArgs(argv) {
  * `export ` prefixes and surrounding quotes are stripped. Values are never
  * logged by this script — callers must keep it that way.
  */
-function readEnvFile(file) {
+function readEnvFile(file, wanted) {
   const out = new Map();
   let raw;
   try {
@@ -168,7 +168,9 @@ function readEnvFile(file) {
     ) {
       value = value.slice(1, -1);
     }
-    out.set(key, value);
+    // Only the keys we were asked for. This file holds a whole production
+    // environment; there is no reason to hold the rest in memory.
+    if (wanted.has(key)) out.set(key, value);
   }
   return out;
 }
@@ -177,7 +179,10 @@ function resolveCredentials() {
   const envFile =
     process.env.RELAY_CRITIQUE_ENV_FILE ||
     path.join(os.homedir(), '.config', 'finn-nancy', 'prod.env');
-  const fromFile = readEnvFile(envFile);
+  const fromFile = readEnvFile(
+    envFile,
+    new Set(['LOCAL_LLM_BASE', 'LOCAL_LLM_KEY'])
+  );
   const base = process.env.LOCAL_LLM_BASE || fromFile.get('LOCAL_LLM_BASE');
   const key = process.env.LOCAL_LLM_KEY || fromFile.get('LOCAL_LLM_KEY');
   if (!base || !key) {
@@ -188,6 +193,21 @@ function resolveCredentials() {
     );
   }
   return { base: base.replace(/\/+$/, ''), key };
+}
+
+/**
+ * What is safe to print. A base URL is not automatically non-secret: userinfo
+ * (`https://user:tok@host/v1`) and query tokens (`?api-key=...`) are both
+ * common gateway shapes, and both would otherwise land in stderr, CI logs and
+ * agent transcripts alongside a message that says the key is never printed.
+ */
+function displayEndpoint(base) {
+  try {
+    const url = new URL(base);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '<unparseable endpoint>';
+  }
 }
 
 // ── packing ─────────────────────────────────────────────────────────────────
@@ -240,22 +260,46 @@ function solvePerFileCap(sizes, budgetChars) {
   return lo;
 }
 
+const ELISION = (n) =>
+  `\n\n/* … ${n} characters elided by critique.mjs … */\n\n`;
+const ELISION_OVERHEAD = ELISION(999_999).length;
+
+/** Per-file wrapper: the `===== FILE: path =====` banner plus the code fence. */
+const framingChars = (file) =>
+  `\n===== FILE: ${file} =====\n\`\`\`${path.extname(file).slice(1) || 'text'}\n\n\`\`\`\n`
+    .length;
+
 /** Keep the head and the tail; the middle of a big module is the least load-bearing part. */
 function truncate(text, cap) {
   if (text.length <= cap) return { text, truncated: false };
+  // Below this the marker is longer than the budget it is meant to respect,
+  // and truncating would return *more* text than `cap`.
+  if (cap <= ELISION_OVERHEAD) {
+    return { text: text.slice(0, Math.max(0, cap)), truncated: true };
+  }
   const headChars = Math.floor(cap * 0.7);
   const tailChars = cap - headChars;
   const head = text.slice(0, headChars);
   const tail = text.slice(text.length - tailChars);
-  const elided = text.length - cap;
   return {
-    text: `${head}\n\n/* … ${elided} characters elided by critique.mjs … */\n\n${tail}`,
+    text: `${head}${ELISION(text.length - cap)}${tail}`,
     truncated: true,
   };
 }
 
 function packPayload(root, files, budgetTokens) {
-  const budgetChars = budgetTokens * CHARS_PER_TOKEN;
+  // The budget covers the whole payload, so the per-file banners, fences and
+  // elision markers come out of it before the solver sees it. Without this
+  // `--budget` is an underestimate — badly so at small caps, where the marker
+  // alone can exceed the solved cap.
+  const overhead = files.reduce(
+    (acc, f) => acc + framingChars(f) + ELISION_OVERHEAD,
+    0
+  );
+  const budgetChars = Math.max(
+    files.length,
+    budgetTokens * CHARS_PER_TOKEN - overhead
+  );
   const contents = files.map((f) =>
     fs.readFileSync(path.join(root, f), 'utf8')
   );
@@ -335,6 +379,11 @@ ${body}`;
 
 // ── gateway ─────────────────────────────────────────────────────────────────
 
+/** Belt and braces: the key must not survive into anything we print. */
+function scrub(text, key) {
+  return key ? text.split(key).join('[redacted]') : text;
+}
+
 /**
  * Streamed, deliberately. A ~200k-token prefill on a local box takes minutes
  * before the first output token exists, and a non-streamed POST spends that
@@ -385,10 +434,13 @@ async function callGateway({
 
     if (!res.ok) {
       const text = await res.text();
-      // Gateway error bodies can echo request metadata; they do not carry the
-      // key, but keep the surface small anyway.
+      // Never interpolate a gateway body without scrubbing. Several
+      // OpenAI-compatible proxies echo the received `Authorization` header in
+      // their 401 body — the one failure an operator is most likely to paste
+      // into a chat asking why auth broke.
       throw new Error(
-        `gateway returned ${res.status} ${res.statusText}: ${text.slice(0, 500)}`
+        `gateway returned ${res.status} ${res.statusText}: ` +
+          `${scrub(text, key).slice(0, 500)}`
       );
     }
     if (!res.body) throw new Error('gateway returned no response body');
@@ -398,6 +450,33 @@ async function callGateway({
     let finishReason = 'unknown';
     let usage = null;
     let buffered = '';
+    let undecodableFrames = 0;
+
+    const handleLine = (line) => {
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+      let event;
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        // `lines.pop()` guarantees this line is complete, so this is never a
+        // partial frame — it is corruption or a multi-line `data:` field.
+        // Count it rather than losing content silently.
+        undecodableFrames += 1;
+        return;
+      }
+      if (event.usage) usage = event.usage;
+      const choice = event.choices?.[0];
+      if (!choice) return;
+      const delta = choice.delta ?? {};
+      if (delta.content) content += delta.content;
+      if (delta.reasoning_content) {
+        reasoningChars += delta.reasoning_content.length;
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      onTick?.({ contentChars: content.length, reasoningChars });
+    };
 
     const decoder = new TextDecoder();
     for await (const chunk of res.body) {
@@ -405,30 +484,15 @@ async function callGateway({
       buffered += decoder.decode(chunk, { stream: true });
       const lines = buffered.split('\n');
       buffered = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        let event;
-        try {
-          event = JSON.parse(payload);
-        } catch {
-          continue; // a partial or non-JSON keepalive frame
-        }
-        if (event.usage) usage = event.usage;
-        const choice = event.choices?.[0];
-        if (!choice) continue;
-        const delta = choice.delta ?? {};
-        if (delta.content) content += delta.content;
-        if (delta.reasoning_content) {
-          reasoningChars += delta.reasoning_content.length;
-        }
-        if (choice.finish_reason) finishReason = choice.finish_reason;
-        onTick?.({ contentChars: content.length, reasoningChars });
-      }
+      for (const line of lines) handleLine(line);
     }
+    // The last frame often arrives without a trailing newline, and it is the
+    // one carrying `finish_reason` and `usage`. Dropping it would make a
+    // truncated report look clean, which is the worst failure this tool has.
+    buffered += decoder.decode();
+    for (const line of buffered.split('\n')) handleLine(line);
 
-    return { content, reasoningChars, finishReason, usage };
+    return { content, reasoningChars, finishReason, usage, undecodableFrames };
   } catch (err) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -436,7 +500,10 @@ async function callGateway({
         { cause: err }
       );
     }
-    throw new Error(`gateway request failed: ${err.message}`, { cause: err });
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`gateway request failed: ${scrub(detail, key)}`, {
+      cause: err,
+    });
   } finally {
     clearTimeout(idleTimer);
   }
@@ -512,7 +579,8 @@ async function main() {
 
   const { base, key } = resolveCredentials();
   console.error(
-    `critique: model=${opts.model} reasoning=${opts.reasoningEffort} endpoint=${base}`
+    `critique: model=${opts.model} reasoning=${opts.reasoningEffort} ` +
+      `endpoint=${displayEndpoint(base)}`
   );
 
   const started = Date.now();
@@ -583,6 +651,11 @@ async function main() {
 
   fs.writeFileSync(outPath, header + result.content + '\n', 'utf8');
   console.error(`critique: wrote ${outPath}`);
+  if (result.undecodableFrames > 0) {
+    console.error(
+      `critique: WARNING ${result.undecodableFrames} stream frame(s) could not be decoded — the report may be missing content`
+    );
+  }
   if (result.finishReason === 'length') {
     console.error(
       'critique: WARNING finish_reason=length — the report is cut off, raise --max-tokens'
