@@ -48,6 +48,7 @@ Every doc listed here is linked from this index. If you add a doc, add a row.
 | Manual QA pass          | [`references/qa-guide.md`](references/qa-guide.md)                                     |
 | README screenshots      | [`assets/README.md`](assets/README.md) — spec for the shots the README still needs     |
 | Agent browser checks    | [`references/agent-browser-verification.md`](references/agent-browser-verification.md) |
+| Dead code and critique  | [`references/dead-code-and-critique.md`](references/dead-code-and-critique.md)         |
 
 ### Hub, node, and operations
 

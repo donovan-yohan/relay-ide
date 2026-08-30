@@ -1,0 +1,65 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+
+  // Entry points. Everything reachable from here is "used"; everything else in
+  // `project` is a candidate. Rationale and the known false-positive traps live
+  // in docs/references/dead-code-and-critique.md — read that before deleting.
+  "entry": [
+    // The four `bin` entries in package.json, the server entry, and the dev/CLI
+    // scripts. Without these most of server/ reads as unreachable. `server/index.ts`
+    // and `frontend/src/main.tsx` below are also inferred from package.json and
+    // frontend/index.html; they stay listed so the graph survives a change to
+    // either of those.
+    "server/index.ts",
+    "bin/*.ts",
+    "scripts/*.{ts,js}",
+
+    // Vite entry, reached from frontend/index.html.
+    "frontend/src/main.tsx",
+
+    // E2E component fixtures. Only Rollup inputs when RELAY_IDE_E2E_FIXTURES=1
+    // (frontend/vite.config.ts), so knip cannot infer them. Deleting one also
+    // means deleting its .html and its buildInputs line — test/e2e/fixture-targets.ts
+    // guards that pairing.
+    "frontend/src/test-*.tsx",
+
+    // Loaded by frontend/vite.config.ts, which knip parses as a config file
+    // rather than as project source.
+    "frontend/dev-server.ts",
+
+    // Tests are entries, not project files. This is deliberate: it keeps
+    // "alive only because its own test imports it" a conscious judgement call
+    // instead of a knip finding nobody reads.
+    "test/**/*.test.ts",
+    "test/e2e/**/*.spec.ts",
+  ],
+
+  "project": [
+    "server/**/*.ts",
+    "bin/**/*.ts",
+    "scripts/**/*.{ts,js}",
+    "shared/**/*.ts",
+    "frontend/**/*.{ts,tsx}",
+    "test/**/*.{ts,tsx}",
+  ],
+
+  // No `ignore` list, deliberately. Generated chalkbag projections (.claude/,
+  // .codex/, opencode.json) are already outside `project`, so they are never
+  // analysed and do not need an entry. Nothing is path-ignored to flatter the
+  // numbers — an unreferenced test fixture is a finding, not noise.
+
+  // Not a package: a Vite alias onto a path inside the custom @xterm/xterm
+  // fork. See frontend/vite.config.ts.
+  "ignoreDependencies": ["@xterm/addon-webgpu"],
+
+  // Suppresses ~930 findings of the form "exported but only used inside its own
+  // file". Those symbols are alive — only the `export` keyword may be
+  // unnecessary. Set to false to audit over-exporting; that is a different and
+  // much lower-value job than finding dead code.
+  "ignoreExportsUsedInFile": true,
+
+  // Frontend components export both a named and a default binding by
+  // convention, which knip counts as a duplicate on every single component.
+  // The unused half of each pair is still reported under `exports`.
+  "rules": { "duplicates": "off" },
+}
