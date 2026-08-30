@@ -3,8 +3,9 @@
 How to make a named Hermes profile reachable from Relay, and how to prove it is
 reachable before binding an agent profile to it.
 
-Relay's side of this is the optional `hermesProfile` field on a hermes agent
-profile — see the "Hermes multiplex profile binding" section of
+Relay's side of this is two optional fields on a hermes agent profile — the
+`hermesProfile` binding and the per-profile `hermesApiKey` that rides with it.
+See the "Hermes multiplex profile binding" section of
 [`../provider-guide.md`](../provider-guide.md) for the contract. This page is
 the Hermes-side and operator-side work.
 
@@ -45,12 +46,22 @@ genuinely different Hermes agents on one gateway process.
    config error and the gateway refuses to start, naming the profile and the
    platform.
 
-4. **Check whether your build gates the served set.** Some gateway builds
-   restrict multiplexing to an explicit `gateway.multiplex_profile_allowlist`;
-   others serve the default profile plus every valid directory under
-   `~/.hermes/profiles/`. If your build has the key, add the profile id to it.
-   Either way the `/p/<id>/v1/models` check below is the authority — do not
-   assume from the config file that the prefix is served.
+4. **Decide which profiles the multiplexer serves.**
+   `gateway.multiplex_profile_allowlist` gates the set: unset serves the
+   default profile plus every valid directory under `~/.hermes/profiles/`, `[]`
+   serves only the default profile, and a list serves only the named profiles
+   (unknown entries are skipped with a warning). If you set it, the bound
+   profile id has to be in it.
+
+   `hermes config set` coerces only scalars, so write the list in the default
+   profile's `~/.hermes/config.yaml`:
+
+   ```yaml
+   gateway:
+     multiplex_profiles: true
+     multiplex_profile_allowlist:
+       - coder
+   ```
 
 5. **Provision the API key.** The API server refuses to start without
    `API_SERVER_KEY`, including on a loopback bind, and on a network-accessible
@@ -74,25 +85,31 @@ genuinely different Hermes agents on one gateway process.
 
 ## Verify before you bind
 
-Ask the gateway directly. `GET /p/<id>/v1/models` is the cheapest probe that
-exercises both the prefix and the auth, and it is one of the two calls Relay
-itself makes at connect.
+The API server registers a `/p/<profile>/…` mirror for every one of its native
+routes, so the whole Responses API is reachable under the prefix. Ask the
+gateway directly: `GET /p/<id>/v1/models` is the cheapest probe that exercises
+both the prefix and the auth, and it is one of the two calls Relay itself makes
+at connect. Present the key you are going to give Relay — the profile's own
+`API_SERVER_KEY`, not the default profile's:
 
 ```bash
+PROFILE_KEY=$(sed -n 's/^API_SERVER_KEY=//p' ~/.hermes/profiles/coder/.env)
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer $HERMES_API_TOKEN" \
+  -H "Authorization: Bearer $PROFILE_KEY" \
   http://127.0.0.1:8642/p/coder/v1/models
 ```
 
 Run the bare `http://127.0.0.1:8642/v1/models` alongside it — that is the
 unbound path, and comparing the two separates "the gateway is down" from "this
-profile is not served".
+profile is not served". Gateway builds older than 0.20 may not mirror the prefix
+onto the API server at all; there, every `/p/<id>/v1/…` call answers `404` no
+matter how the profile is configured.
 
-| Status | Meaning                                                                               | Fix                                                                                                                                                                      |
-| ------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `200`  | The prefix is served and the token is accepted. Safe to bind.                         | None.                                                                                                                                                                    |
-| `401`  | The prefix is served; the token Relay would present is not accepted for this profile. | Provision an `API_SERVER_KEY` for the profile and make that key the one Relay presents (see "Relay side" below).                                                         |
-| `404`  | The gateway does not serve this prefix: profile unknown, not enabled, or an id typo.  | Confirm `gateway.multiplex_profiles` is on, the profile id matches the directory name, the allowlist (if your build has one) includes it, and the gateway was restarted. |
+| Status | Meaning                                                                                  | Fix                                                                                                                                                             |
+| ------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | The prefix is served and the token is accepted. Safe to bind.                            | None.                                                                                                                                                           |
+| `401`  | The prefix is served; that key is not accepted for this profile.                         | Check you used the profile's own `API_SERVER_KEY`, and that the gateway was restarted after it was written.                                                     |
+| `404`  | The gateway does not serve this prefix: profile unknown, not allowlisted, or an id typo. | Confirm `gateway.multiplex_profiles` is on, the profile id matches the directory name, the allowlist includes it if you set one, and the gateway was restarted. |
 
 A connection error rather than a status means the gateway or its `api_server`
 platform is not up at all; the bound and unbound paths will both fail.
@@ -103,19 +120,27 @@ platform is not up at all; the bound and unbound paths will both fail.
    `hermes`.
 2. Put the profile id in the `hermes profile` field — the same string that
    returned `200` above. Leave it blank to keep using the gateway default.
-3. Save, then mention the agent in a channel.
+3. Paste that profile's `API_SERVER_KEY` into the `hermes api key` field — the
+   same value you just proved with curl. Relay never returns a saved key, so the
+   box always starts empty; the hint beside it says whether one is stored, and a
+   `clear` control removes it.
+4. Save, then mention the agent in a channel.
 
 Two things about keys are worth knowing before you debug an auth failure:
 
-- **Relay presents one token per gateway, not one per binding.** It resolves it
-  from `HERMES_API_TOKEN`, `HERMES_API_KEY`, `HERMES_GATEWAY_API_KEY`, or
-  `API_SERVER_KEY` in the hub process environment, then from `~/.hermes/.env`
-  merged with the _active_ profile's `.env`, then from the `api_server` key in
-  `config.yaml`. It does not read the bound profile's `.env`, and an agent
-  profile's `envVars` do not feed this path. If the hub runs as a service, that
-  environment is the hub unit's, not your shell's.
+- **The key travels with the binding.** It is sent only when the profile is
+  bound; an unbound profile talks to the gateway default and keeps the default
+  credential. With a binding set and the key left empty, Relay falls back to the
+  gateway-wide credential (`HERMES_API_TOKEN`, `HERMES_API_KEY`,
+  `HERMES_GATEWAY_API_KEY`, or `API_SERVER_KEY` from the hub process environment
+  or the Hermes `.env` files, then the `api_server` key in `config.yaml`) —
+  usually the default profile's key, which will usually 401 against `/p/<id>/`.
+  If the hub runs as a service, that environment is the hub unit's, not your
+  shell's.
 - **A key the gateway rejects for `/p/<id>/` produces a typed 401 on the channel
-  row**, naming the profile and the remedy, and it is not retried.
+  row**, naming the profile and the remedy, and it is not retried. Relay stores
+  the key write-only and never echoes it, so a wrong key is diagnosed by
+  re-running the curl above, not by reading it back out of Relay.
 
 Availability is probed per gateway, not per profile: a bound hermes profile
 still shows as available whenever the gateway is up. A binding the gateway does
@@ -128,3 +153,5 @@ agent — which is why the curl matrix above is worth running first.
   prefixing, validation, and typed error mapping.
 - [`../CHANNEL_CHAT.md`](../CHANNEL_CHAT.md) — how a bound profile behaves as a
   channel participant.
+- [`../SECURITY_POLICY.md`](../SECURITY_POLICY.md) — how the stored gateway key
+  is held write-only.
