@@ -400,7 +400,7 @@ search`), and Claude channel agents get the Relay MCP facade mounted
   instead of the gateway's default one — two agents in the same channel can hold
   two different Hermes profiles. Hermes agents with no binding are unchanged. A
   binding the gateway does not serve, or has no key for, now says which profile
-  failed and what to fix on the channel row instead of a bare HTTP error (#1453)
+  failed and what to fix on the channel row instead of a bare HTTP error (#1462)
 
 ## [0.1.1] - 2026-08-05
 
