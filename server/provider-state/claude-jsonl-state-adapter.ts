@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
 import { access, lstat, readdir, realpath } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -22,6 +23,14 @@ import type {
   ProviderStateSnapshot,
 } from '../../shared/provider-native-session-state.js';
 import type { AgentHarnessStateAdapter } from '../harness-state-adapter.js';
+import {
+  FileDerivedCache,
+  SingleFlight,
+  runWithConcurrency,
+  sameStamp,
+  stampFromStats,
+  type FileDerivedCacheStats,
+} from './file-summary-cache.js';
 
 const CLAUDE_STATE_CAPABILITIES: AgentHarnessStateCapabilities = {
   canImportTranscript: true,
@@ -43,6 +52,10 @@ const MAX_JSONL_BYTES = 5_000_000;
 const MAX_JSONL_LINES = 20_000;
 const MAX_JSONL_EVENTS = 5_000;
 const MAX_IMPORT_TRANSCRIPT_BYTES = 256_000;
+// #1449: the list path fans out over up to MAX_LIST_FILES transcripts. Bound
+// the in-flight reads so a cold walk overlaps I/O without exhausting handles.
+const LIST_READ_CONCURRENCY = 8;
+const SUMMARY_CACHE_ENTRIES = 4_000;
 
 interface ParsedJsonlLine {
   lineNumber: number;
@@ -66,6 +79,8 @@ interface ClaudeAdapterOptions {
   stateRoot?: string;
   now?: () => Date;
   maxFiles?: number;
+  /** #1449: bound on the per-file summary cache (tests use small values). */
+  summaryCacheEntries?: number;
 }
 
 export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
@@ -75,11 +90,24 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
   private readonly stateRoot: string;
   private readonly now: () => Date;
   private readonly maxFiles: number;
+  /**
+   * #1449: per-file summary cache keyed on `(mtimeMs, size)`. A transcript that
+   * has not changed since the last list is never re-read, re-hashed or
+   * re-parsed; a transcript that has changed misses the stamp and is re-derived.
+   */
+  private readonly summaryCache: FileDerivedCache<NativeSessionSummary>;
+  /** Shares one in-flight read per path across concurrent list calls. */
+  private readonly summaryReads = new SingleFlight<NativeSessionSummary>();
+  private directIdHits = 0;
+  private directIdFallbacks = 0;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.stateRoot = options.stateRoot ?? path.join(homedir(), '.claude');
     this.now = options.now ?? (() => new Date());
     this.maxFiles = options.maxFiles ?? MAX_LIST_FILES;
+    this.summaryCache = new FileDerivedCache<NativeSessionSummary>(
+      options.summaryCacheEntries ?? SUMMARY_CACHE_ENTRIES
+    );
   }
 
   async detectInstall(): Promise<ProviderInstallStatus> {
@@ -95,21 +123,23 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
         status: 'installed',
         detectedAt,
         stateRoots: [this.stateRoot],
-        diagnostics: files.length > 0
-          ? [
-              {
-                code: 'CLAUDE_STATE_READABLE',
-                message: 'Claude state root is readable.',
-                severity: 'info',
-              },
-            ]
-          : [
-              {
-                code: 'CLAUDE_STATE_EMPTY',
-                message: 'Claude state root is readable but no JSONL sessions were found.',
-                severity: 'warning',
-              },
-            ],
+        diagnostics:
+          files.length > 0
+            ? [
+                {
+                  code: 'CLAUDE_STATE_READABLE',
+                  message: 'Claude state root is readable.',
+                  severity: 'info',
+                },
+              ]
+            : [
+                {
+                  code: 'CLAUDE_STATE_EMPTY',
+                  message:
+                    'Claude state root is readable but no JSONL sessions were found.',
+                  severity: 'warning',
+                },
+              ],
       };
     } catch (error) {
       return {
@@ -135,20 +165,32 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       maxFiles: this.maxFiles,
       maxDepth: MAX_SCAN_DEPTH,
     });
-    const summaries: NativeSessionSummary[] = [];
 
-    for (const filePath of files) {
-      try {
-        const parsed = await readClaudeJsonl(filePath);
-        const summary = summarizeClaudeJsonl(parsed, this.capabilities);
-        if (scope.cwd && summary.cwd !== scope.cwd) continue;
-        if (scope.workContextId && summary.workContextId !== scope.workContextId)
-          continue;
-        summaries.push(summary);
-      } catch {
-        // Skip unreadable or over-limit provider files during discovery. Direct
-        // reads still fail closed with the precise error.
+    // #1449: summaries are derived per file behind an (mtimeMs, size) cache and
+    // fanned out with bounded concurrency. `runWithConcurrency` returns results
+    // in input order, so the pre-sort order — and therefore the stable sort
+    // below — matches the previous serial walk exactly.
+    const derived = await runWithConcurrency(
+      files,
+      LIST_READ_CONCURRENCY,
+      async (filePath) => {
+        try {
+          return await this.summarizeFile(filePath);
+        } catch {
+          // Skip unreadable or over-limit provider files during discovery.
+          // Direct reads still fail closed with the precise error.
+          return undefined;
+        }
       }
+    );
+
+    const summaries: NativeSessionSummary[] = [];
+    for (const summary of derived) {
+      if (!summary) continue;
+      if (scope.cwd && summary.cwd !== scope.cwd) continue;
+      if (scope.workContextId && summary.workContextId !== scope.workContextId)
+        continue;
+      summaries.push(summary);
     }
 
     return summaries.sort((a, b) => {
@@ -158,11 +200,72 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     });
   }
 
-  async readProviderState(ref: NativeSessionRef): Promise<ProviderStateSnapshot> {
+  /**
+   * Derive one file's summary, serving the (mtimeMs, size) cache when the file
+   * is unchanged. The stamp is re-checked after the read so a transcript that
+   * was appended to mid-parse is never cached under its pre-read stamp.
+   */
+  private async summarizeFile(filePath: string): Promise<NativeSessionSummary> {
+    let info;
+    try {
+      info = await statClaudeSource(filePath);
+    } catch (error) {
+      // Deleted, replaced by a symlink, or grown past the read limit: drop any
+      // entry we were still holding for this path rather than orphan it.
+      this.summaryCache.delete(filePath);
+      throw error;
+    }
+
+    const stamp = stampFromStats(info);
+    const cached = this.summaryCache.get(filePath, stamp);
+    if (cached) return cached;
+
+    // Keyed on the stamp too: two callers that stat different versions of the
+    // same path must not share one derivation.
+    const flightKey = `${filePath}\u0000${stamp.ino}:${stamp.size}:${stamp.mtimeMs}:${stamp.ctimeMs}`;
+    return this.summaryReads.run(flightKey, async () => {
+      const summary = await summarizeClaudeJsonlFile(
+        filePath,
+        info.size,
+        this.capabilities
+      );
+
+      try {
+        const after = await lstat(filePath);
+        if (sameStamp(stampFromStats(after), stamp)) {
+          this.summaryCache.set(filePath, stamp, summary);
+        }
+      } catch {
+        // File vanished between read and re-stat: return what we read, cache
+        // nothing.
+      }
+      return summary;
+    });
+  }
+
+  /**
+   * Read-path counters (#1449). Not part of `AgentHarnessStateAdapter`; used by
+   * tests and diagnostics to prove the cache and the direct-id resolver are
+   * actually doing work rather than silently falling back.
+   */
+  nativeSessionReadStats(): {
+    summaryCache: FileDerivedCacheStats;
+    directIdHits: number;
+    directIdFallbacks: number;
+  } {
+    return {
+      summaryCache: this.summaryCache.stats(),
+      directIdHits: this.directIdHits,
+      directIdFallbacks: this.directIdFallbacks,
+    };
+  }
+
+  async readProviderState(
+    ref: NativeSessionRef
+  ): Promise<ProviderStateSnapshot> {
     const file = await this.readRef(ref);
-    const summary = summarizeClaudeJsonl(file, this.capabilities);
-    const eventTypes = collectEventTypes(file.lines);
-    const timestamps = collectTimestamps(file.lines);
+    const facts = claudeFactsFromFile(file);
+    const summary = buildClaudeSummary(facts, this.capabilities);
 
     return {
       ref: normalizeRef(ref, summary),
@@ -172,9 +275,11 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
         lineCount: file.lines.length,
         byteCount: file.bytes,
         hashSha256: file.hashSha256,
-        eventTypes,
-        ...(timestamps.first ? { firstTimestamp: timestamps.first } : {}),
-        ...(timestamps.last ? { lastTimestamp: timestamps.last } : {}),
+        eventTypes: facts.eventTypes,
+        ...(facts.firstTimestamp
+          ? { firstTimestamp: facts.firstTimestamp }
+          : {}),
+        ...(facts.lastTimestamp ? { lastTimestamp: facts.lastTimestamp } : {}),
         preview: summary.preview,
         ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
       },
@@ -186,7 +291,9 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     };
   }
 
-  async importSession(ref: NativeSessionRef): Promise<NativeSessionImportResult> {
+  async importSession(
+    ref: NativeSessionRef
+  ): Promise<NativeSessionImportResult> {
     const file = await this.readRef(ref);
     const summary = summarizeClaudeJsonl(file, this.capabilities);
     const importedAt = this.nowIso();
@@ -223,12 +330,20 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     if (importedTurns.truncation || file.readTruncation) {
       session.config.providerOptions = {
         ...session.config.providerOptions,
-        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
-        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+        ...(importedTurns.truncation
+          ? { importTruncation: importedTurns.truncation }
+          : {}),
+        ...(file.readTruncation
+          ? { sourceReadTruncation: file.readTruncation }
+          : {}),
       };
       annotateAuditMarker(session.turns, {
-        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
-        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+        ...(importedTurns.truncation
+          ? { importTruncation: importedTurns.truncation }
+          : {}),
+        ...(file.readTruncation
+          ? { sourceReadTruncation: file.readTruncation }
+          : {}),
       });
     }
 
@@ -248,8 +363,12 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       sourcePath: file.path,
       session,
       patches,
-      ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
-      ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+      ...(importedTurns.truncation
+        ? { importTruncation: importedTurns.truncation }
+        : {}),
+      ...(file.readTruncation
+        ? { sourceReadTruncation: file.readTruncation }
+        : {}),
     };
     return result;
   }
@@ -266,6 +385,31 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       return readClaudeJsonl(await this.resolveSafeSourcePath(ref.sourcePath));
     }
 
+    // #1449: Claude names a session's canonical transcript `<sessionId>.jsonl`
+    // inside its project directory, so resolve the id to a path with a
+    // readdir-only walk before falling back to reading every transcript. The
+    // `resolveSafeSourcePath` containment guard still runs on the hit.
+    const direct = await this.resolveNativeIdPath(ref.nativeId);
+    if (direct) {
+      try {
+        const file = await readClaudeJsonl(direct);
+        const summary = summarizeClaudeJsonl(file, this.capabilities);
+        // `ref.cwd` scoped the fallback walk before #1449, so the fast path has
+        // to honour it too: a same-id transcript under a different cwd was not
+        // a match then and must not become one now.
+        const cwdMatches = !ref.cwd || summary.cwd === ref.cwd;
+        if (summary.nativeId === ref.nativeId && cwdMatches) {
+          this.directIdHits += 1;
+          return file;
+        }
+      } catch {
+        // The canonically named file exists but is unreadable or over the size
+        // limit. Fall through to the full walk, which is what resolved the id
+        // before #1449 — the fast path must never turn a hit into an error.
+      }
+    }
+
+    this.directIdFallbacks += 1;
     const sessions = await this.listNativeSessions(
       ref.cwd ? { cwd: ref.cwd } : {}
     );
@@ -276,29 +420,64 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     return readClaudeJsonl(await this.resolveSafeSourcePath(found.sourcePath));
   }
 
+  /**
+   * Resolve `<nativeId>.jsonl` under the state root without reading any file
+   * contents. Returns the containment-checked real path, or `undefined` when
+   * the id does not name a transcript file.
+   */
+  private async resolveNativeIdPath(
+    nativeId: string
+  ): Promise<string | undefined> {
+    const fileName = `${nativeId}.jsonl`;
+    // Reject anything that could escape the state root before it reaches the
+    // filesystem; `resolveSafeSourcePath` is the second line of defence.
+    if (!nativeId || path.basename(fileName) !== fileName) return undefined;
+
+    const match = await findJsonlFileByName(this.stateRoot, fileName, {
+      maxFiles: this.maxFiles,
+      maxDepth: MAX_SCAN_DEPTH,
+    });
+    if (!match) return undefined;
+    try {
+      return await this.resolveSafeSourcePath(match);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolveSafeSourcePath(sourcePath: string): Promise<string> {
     const rootRealPath = await realpath(this.stateRoot);
     const candidatePath = path.isAbsolute(sourcePath)
       ? path.resolve(sourcePath)
       : path.resolve(rootRealPath, sourcePath);
     if (path.extname(candidatePath) !== '.jsonl') {
-      throw new Error('Claude native session sourcePath must point to a .jsonl file.');
+      throw new Error(
+        'Claude native session sourcePath must point to a .jsonl file.'
+      );
     }
 
     const sourceInfo = await lstat(candidatePath);
     if (sourceInfo.isSymbolicLink()) {
-      throw new Error('Claude native session sourcePath must not be a symlink.');
+      throw new Error(
+        'Claude native session sourcePath must not be a symlink.'
+      );
     }
     if (!sourceInfo.isFile()) {
-      throw new Error('Claude native session sourcePath must point to a regular .jsonl file.');
+      throw new Error(
+        'Claude native session sourcePath must point to a regular .jsonl file.'
+      );
     }
 
     const sourceRealPath = await realpath(candidatePath);
     if (path.extname(sourceRealPath) !== '.jsonl') {
-      throw new Error('Claude native session sourcePath must resolve to a .jsonl file.');
+      throw new Error(
+        'Claude native session sourcePath must resolve to a .jsonl file.'
+      );
     }
     if (!isPathInside(rootRealPath, sourceRealPath)) {
-      throw new Error('Claude native session sourcePath must resolve under the configured state root.');
+      throw new Error(
+        'Claude native session sourcePath must resolve under the configured state root.'
+      );
     }
 
     return sourceRealPath;
@@ -340,7 +519,56 @@ async function findJsonlFiles(
   return found;
 }
 
-async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
+/**
+ * #1449: readdir-only search for one transcript by file name.
+ *
+ * This walks the tree in exactly the order `findJsonlFiles` does - depth-first,
+ * entries in readdir order, directories and files interleaved - and consumes
+ * the same `maxFiles` budget, so it can only reach transcripts the list walk
+ * could also have reached. It opens nothing, so resolving a nativeId costs a
+ * directory scan instead of a full parse of every transcript.
+ *
+ * Both properties are load-bearing: a different traversal order would resolve a
+ * duplicated session id to a different transcript than the list did, and an
+ * unbounded walk would resolve ids the capped list can never return.
+ */
+async function findJsonlFileByName(
+  root: string,
+  fileName: string,
+  opts: { maxFiles: number; maxDepth: number }
+): Promise<string | undefined> {
+  let seenFiles = 0;
+
+  async function walk(dir: string, depth: number): Promise<string | undefined> {
+    if (seenFiles >= opts.maxFiles || depth > opts.maxDepth) return undefined;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+
+    for (const entry of entries) {
+      if (seenFiles >= opts.maxFiles) return undefined;
+      if (entry.isSymbolicLink()) continue;
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const hit = await walk(entryPath, depth + 1);
+        if (hit) return hit;
+      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        // Counted whether or not it matches: this is the same budget the list
+        // walk spends, so both stop at the same point in the tree.
+        seenFiles += 1;
+        if (entry.name === fileName) return entryPath;
+      }
+    }
+    return undefined;
+  }
+
+  return walk(root, 0);
+}
+
+async function statClaudeSource(filePath: string): Promise<Stats> {
   const info = await lstat(filePath);
   if (info.isSymbolicLink()) {
     throw new Error('Claude JSONL source must not be a symlink.');
@@ -351,9 +579,26 @@ async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
   if (info.size > MAX_JSONL_BYTES) {
     throw new Error(`Claude JSONL source exceeds ${MAX_JSONL_BYTES} bytes.`);
   }
+  return info;
+}
 
+interface ClaudeJsonlScan {
+  bytes: number;
+  hashSha256: string;
+  readTruncation?: NativeSessionJsonlReadTruncation;
+}
+
+/**
+ * Stream one transcript, hashing it and handing every parsed record to
+ * `onLine`. Callers that only need summary facts never materialize the record
+ * array, which is what makes the cold list path affordable (#1449).
+ */
+async function scanClaudeJsonl(
+  filePath: string,
+  byteCount: number,
+  onLine: (line: ParsedJsonlLine) => void
+): Promise<ClaudeJsonlScan> {
   const hash = createHash('sha256');
-  const lines: ParsedJsonlLine[] = [];
   let readTruncation: NativeSessionJsonlReadTruncation | undefined;
   let pending = '';
   let seenLines = 0;
@@ -364,18 +609,22 @@ async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
     const trimmed = line.trim();
     if (!trimmed) return;
     if (seenLines > MAX_JSONL_LINES) {
-      readTruncation = readTruncation ?? jsonlReadTruncation('line-limit', seenLines, parsedEvents);
+      readTruncation =
+        readTruncation ??
+        jsonlReadTruncation('line-limit', seenLines, parsedEvents);
       return;
     }
     if (parsedEvents >= MAX_JSONL_EVENTS) {
-      readTruncation = readTruncation ?? jsonlReadTruncation('event-limit', seenLines, parsedEvents);
+      readTruncation =
+        readTruncation ??
+        jsonlReadTruncation('event-limit', seenLines, parsedEvents);
       return;
     }
     try {
       const value = JSON.parse(trimmed) as unknown;
       if (isRecord(value)) {
         parsedEvents += 1;
-        lines.push({ lineNumber: seenLines, value });
+        onLine({ lineNumber: seenLines, value });
       }
     } catch {
       // Ignore corrupt lines during read-only listing/import. The bounded hash
@@ -386,22 +635,36 @@ async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
   for await (const chunk of createReadStream(filePath, { encoding: 'utf8' })) {
     hash.update(chunk, 'utf8');
     pending += chunk;
-    let newlineIndex = pending.indexOf('\n');
+    let searchFrom = 0;
+    let newlineIndex = pending.indexOf('\n', searchFrom);
     while (newlineIndex !== -1) {
-      const line = pending.slice(0, newlineIndex).replace(/\r$/, '');
-      processLine(line);
-      pending = pending.slice(newlineIndex + 1);
-      newlineIndex = pending.indexOf('\n');
+      processLine(pending.slice(searchFrom, newlineIndex).replace(/\r$/, ''));
+      searchFrom = newlineIndex + 1;
+      newlineIndex = pending.indexOf('\n', searchFrom);
     }
+    pending = searchFrom > 0 ? pending.slice(searchFrom) : pending;
   }
   if (pending.length > 0) processLine(pending.replace(/\r$/, ''));
 
   return {
-    path: filePath,
-    bytes: info.size,
+    bytes: byteCount,
     hashSha256: hash.digest('hex'),
-    lines,
     ...(readTruncation ? { readTruncation } : {}),
+  };
+}
+
+async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
+  const info = await statClaudeSource(filePath);
+  const lines: ParsedJsonlLine[] = [];
+  const scan = await scanClaudeJsonl(filePath, info.size, (line) => {
+    lines.push(line);
+  });
+  return {
+    path: filePath,
+    bytes: scan.bytes,
+    hashSha256: scan.hashSha256,
+    lines,
+    ...(scan.readTruncation ? { readTruncation: scan.readTruncation } : {}),
   };
 }
 
@@ -421,41 +684,188 @@ function jsonlReadTruncation(
   };
 }
 
-function summarizeClaudeJsonl(
-  file: ClaudeJsonlFile,
+/**
+ * The facts a `NativeSessionSummary` is built from. Collected either by walking
+ * an already-parsed `ClaudeJsonlFile` (import/read paths) or incrementally
+ * while streaming a transcript (the list path, #1449). Both routes feed
+ * `buildClaudeSummary` so the two can never drift.
+ */
+interface ClaudeSummaryFacts {
+  path: string;
+  bytes: number;
+  hashSha256: string;
+  lineCount: number;
+  eventTypes: string[];
+  nativeSessionId?: string | undefined;
+  cwd?: string | undefined;
+  workContextId?: string | undefined;
+  repoPath?: string | undefined;
+  worktreePath?: string | undefined;
+  firstTimestamp?: string | undefined;
+  lastTimestamp?: string | undefined;
+  title?: string | undefined;
+  previewText?: string | undefined;
+  readTruncation?: NativeSessionJsonlReadTruncation;
+}
+
+const CLAUDE_NATIVE_ID_KEYS = [
+  'sessionId',
+  'session_id',
+  'conversationId',
+  'conversation_id',
+];
+const CLAUDE_CWD_KEYS = ['cwd', 'workspace', 'projectPath'];
+const CLAUDE_WORK_CONTEXT_KEYS = ['workContextId', 'work_context_id'];
+const CLAUDE_REPO_PATH_KEYS = ['repoPath', 'repositoryPath'];
+const CLAUDE_WORKTREE_PATH_KEYS = ['worktreePath'];
+const CLAUDE_TITLE_KEYS = ['summary', 'title'];
+
+/** Incremental collector mirroring the whole-array helpers below. */
+class ClaudeFactCollector {
+  lineCount = 0;
+  private readonly eventTypes = new Set<string>();
+  private facts: {
+    nativeSessionId?: string | undefined;
+    cwd?: string | undefined;
+    workContextId?: string | undefined;
+    repoPath?: string | undefined;
+    worktreePath?: string | undefined;
+    firstTimestamp?: string | undefined;
+    lastTimestamp?: string | undefined;
+    title?: string | undefined;
+    previewText?: string | undefined;
+  } = {};
+
+  observe(line: ParsedJsonlLine): void {
+    const record = line.value;
+    this.lineCount += 1;
+
+    const eventType = stringField(record.type) || messageRole(record);
+    if (eventType) this.eventTypes.add(eventType);
+
+    this.facts.nativeSessionId ??= stringFromRecord(
+      record,
+      CLAUDE_NATIVE_ID_KEYS
+    );
+    this.facts.cwd ??= stringFromRecord(record, CLAUDE_CWD_KEYS);
+    this.facts.workContextId ??= stringFromRecord(
+      record,
+      CLAUDE_WORK_CONTEXT_KEYS
+    );
+    this.facts.repoPath ??= stringFromRecord(record, CLAUDE_REPO_PATH_KEYS);
+    this.facts.worktreePath ??= stringFromRecord(
+      record,
+      CLAUDE_WORKTREE_PATH_KEYS
+    );
+    this.facts.title ??= stringFromRecord(record, CLAUDE_TITLE_KEYS);
+
+    const timestamp = timestampFromRecord(record);
+    if (timestamp) {
+      // Timestamps are normalized to ISO-8601, so lexicographic min/max matches
+      // the sorted-array first/last the array helper produces.
+      if (!this.facts.firstTimestamp || timestamp < this.facts.firstTimestamp) {
+        this.facts.firstTimestamp = timestamp;
+      }
+      if (!this.facts.lastTimestamp || timestamp > this.facts.lastTimestamp) {
+        this.facts.lastTimestamp = timestamp;
+      }
+    }
+
+    if (this.facts.previewText === undefined) {
+      const text = textFromRecord(record);
+      if (text) this.facts.previewText = text;
+    }
+  }
+
+  toFacts(scan: ClaudeJsonlScan & { path: string }): ClaudeSummaryFacts {
+    return {
+      path: scan.path,
+      bytes: scan.bytes,
+      hashSha256: scan.hashSha256,
+      lineCount: this.lineCount,
+      eventTypes: [...this.eventTypes],
+      ...this.facts,
+      ...(scan.readTruncation ? { readTruncation: scan.readTruncation } : {}),
+    };
+  }
+}
+
+function claudeFactsFromFile(file: ClaudeJsonlFile): ClaudeSummaryFacts {
+  const collector = new ClaudeFactCollector();
+  for (const line of file.lines) collector.observe(line);
+  return collector.toFacts({
+    path: file.path,
+    bytes: file.bytes,
+    hashSha256: file.hashSha256,
+    ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
+  });
+}
+
+function buildClaudeSummary(
+  facts: ClaudeSummaryFacts,
   capabilities: AgentHarnessStateCapabilities
 ): NativeSessionSummary {
-  const nativeId = nativeIdFromLines(file.lines) ?? path.basename(file.path, '.jsonl');
-  const cwd = firstStringField(file.lines, ['cwd', 'workspace', 'projectPath']);
-  const workContextId = firstStringField(file.lines, ['workContextId', 'work_context_id']);
-  const repoPath = firstStringField(file.lines, ['repoPath', 'repositoryPath']);
-  const worktreePath = firstStringField(file.lines, ['worktreePath']);
-  const timestamps = collectTimestamps(file.lines);
-  const title = titleFromLines(file.lines);
-  const preview = previewFromLines(file.lines, title ?? path.basename(file.path, '.jsonl'));
+  const fallbackId = path.basename(facts.path, '.jsonl');
+  const nativeId = facts.nativeSessionId ?? fallbackId;
+  const cwd = facts.cwd;
+  const workContextId = facts.workContextId;
+  const repoPath = facts.repoPath;
+  const worktreePath = facts.worktreePath;
+  const title = facts.title
+    ? truncate(redactText(facts.title), PREVIEW_LIMIT)
+    : undefined;
+  const preview = buildPreview(facts.previewText, title ?? fallbackId);
 
   return {
     provider: 'claude',
     nativeId,
-    sourcePath: file.path,
+    sourcePath: facts.path,
     ...(cwd ? { cwd } : {}),
     ...(repoPath ? { repoPath } : {}),
     ...(worktreePath ? { worktreePath } : {}),
     ...(workContextId ? { workContextId } : {}),
-    ...(timestamps.first ? { createdAt: timestamps.first } : {}),
-    ...(timestamps.last ? { updatedAt: timestamps.last, lastMessageAt: timestamps.last } : {}),
+    ...(facts.firstTimestamp ? { createdAt: facts.firstTimestamp } : {}),
+    ...(facts.lastTimestamp
+      ? { updatedAt: facts.lastTimestamp, lastMessageAt: facts.lastTimestamp }
+      : {}),
     ...(title ? { title } : {}),
     preview,
     metadata: {
-      lineCount: file.lines.length,
-      byteCount: file.bytes,
-      hashSha256: file.hashSha256,
+      lineCount: facts.lineCount,
+      byteCount: facts.bytes,
+      hashSha256: facts.hashSha256,
       nativeSessionId: nativeId,
-      eventTypes: collectEventTypes(file.lines),
-      ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
+      eventTypes: facts.eventTypes,
+      ...(facts.readTruncation ? { readTruncation: facts.readTruncation } : {}),
     },
     capabilities,
   };
+}
+
+function summarizeClaudeJsonl(
+  file: ClaudeJsonlFile,
+  capabilities: AgentHarnessStateCapabilities
+): NativeSessionSummary {
+  return buildClaudeSummary(claudeFactsFromFile(file), capabilities);
+}
+
+/**
+ * Stream-and-summarize: derives the same summary as `summarizeClaudeJsonl`
+ * without ever holding the parsed record array (#1449).
+ */
+async function summarizeClaudeJsonlFile(
+  filePath: string,
+  byteCount: number,
+  capabilities: AgentHarnessStateCapabilities
+): Promise<NativeSessionSummary> {
+  const collector = new ClaudeFactCollector();
+  const scan = await scanClaudeJsonl(filePath, byteCount, (line) => {
+    collector.observe(line);
+  });
+  return buildClaudeSummary(
+    collector.toFacts({ ...scan, path: filePath }),
+    capabilities
+  );
 }
 
 function buildTurns(
@@ -503,7 +913,8 @@ function buildTurns(
     const blocks = messageBlocks(record);
 
     if (role === 'user' && isToolResultOnly(blocks)) {
-      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 =
+        activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
       activeTurn = turn;
       const text = redactText(blockText(blocks));
       turn.items.push({
@@ -553,7 +964,8 @@ function buildTurns(
     }
 
     if (role === 'assistant') {
-      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 =
+        activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
       activeTurn = turn;
       appendAssistantBlocks(turn, blocks, timestamp, ++assistantSeq);
       turn.completedAt = timestamp;
@@ -574,15 +986,21 @@ function buildTurns(
   return truncation ? { turns, truncation } : { turns };
 }
 
-function trimImportedTurns(turns: AgentTurnV2[]): NativeSessionImportTruncation | undefined {
+function trimImportedTurns(
+  turns: AgentTurnV2[]
+): NativeSessionImportTruncation | undefined {
   let approximateTranscriptBytes = transcriptBytes(turns);
-  if (approximateTranscriptBytes <= MAX_IMPORT_TRANSCRIPT_BYTES) return undefined;
+  if (approximateTranscriptBytes <= MAX_IMPORT_TRANSCRIPT_BYTES)
+    return undefined;
 
   const originalTurns = turns.length;
   let droppedTurns = 0;
   let droppedItems = 0;
 
-  while (approximateTranscriptBytes > MAX_IMPORT_TRANSCRIPT_BYTES && turns.length > 1) {
+  while (
+    approximateTranscriptBytes > MAX_IMPORT_TRANSCRIPT_BYTES &&
+    turns.length > 1
+  ) {
     const [removed] = turns.splice(1, 1);
     if (!removed) break;
     droppedTurns += 1;
@@ -738,7 +1156,9 @@ function createSyntheticTurn(
 
 function isPathInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  return (
+    relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+  );
 }
 
 function normalizeRef(
@@ -768,55 +1188,16 @@ function providerSession(
   return providerSession;
 }
 
-function nativeIdFromLines(lines: ParsedJsonlLine[]): string | null {
-  return firstStringField(lines, [
-    'sessionId',
-    'session_id',
-    'conversationId',
-    'conversation_id',
-  ]) ?? null;
-}
-
-function collectTimestamps(lines: ParsedJsonlLine[]): { first?: string; last?: string } {
-  const timestamps = lines
-    .map((line) => timestampFromRecord(line.value))
-    .filter((value): value is string => Boolean(value))
-    .sort();
-  return {
-    ...(timestamps[0] ? { first: timestamps[0] } : {}),
-    ...(timestamps[timestamps.length - 1]
-      ? { last: timestamps[timestamps.length - 1] }
-      : {}),
-  };
-}
-
-function collectEventTypes(lines: ParsedJsonlLine[]): string[] {
-  return [
-    ...new Set(
-      lines
-        .map((line) => stringField(line.value.type) || messageRole(line.value))
-        .filter(Boolean)
-    ),
-  ];
-}
-
-function titleFromLines(lines: ParsedJsonlLine[]): string | undefined {
-  for (const line of lines) {
-    const summary = stringFromRecord(line.value, ['summary', 'title']);
-    if (summary) return truncate(redactText(summary), PREVIEW_LIMIT);
-  }
-  return undefined;
-}
-
-function previewFromLines(lines: ParsedJsonlLine[], fallback: string): NativeSessionPreview {
-  for (const line of lines) {
-    const text = textFromRecord(line.value);
-    if (!text) continue;
-    const redacted = redactText(text);
+function buildPreview(
+  transcriptText: string | undefined,
+  fallback: string
+): NativeSessionPreview {
+  if (transcriptText) {
+    const redacted = redactText(transcriptText);
     return {
       text: truncate(redacted, PREVIEW_LIMIT),
       source: 'transcript',
-      redacted: redacted !== text,
+      redacted: redacted !== transcriptText,
       charCount: redacted.length,
     };
   }
@@ -828,19 +1209,14 @@ function previewFromLines(lines: ParsedJsonlLine[], fallback: string): NativeSes
   };
 }
 
-function firstStringField(
-  lines: ParsedJsonlLine[],
-  keys: string[]
+function timestampFromRecord(
+  record: Record<string, unknown>
 ): string | undefined {
-  for (const line of lines) {
-    const value = stringFromRecord(line.value, keys);
-    if (value) return value;
-  }
-  return undefined;
-}
-
-function timestampFromRecord(record: Record<string, unknown>): string | undefined {
-  const raw = stringFromRecord(record, ['timestamp', 'createdAt', 'created_at']);
+  const raw = stringFromRecord(record, [
+    'timestamp',
+    'createdAt',
+    'created_at',
+  ]);
   if (!raw) return undefined;
   const date = new Date(raw);
   return Number.isNaN(date.valueOf()) ? undefined : date.toISOString();
@@ -848,10 +1224,16 @@ function timestampFromRecord(record: Record<string, unknown>): string | undefine
 
 function messageRole(record: Record<string, unknown>): string {
   const message = objectField(record.message);
-  return stringField(message.role) || stringField(record.role) || stringField(record.type);
+  return (
+    stringField(message.role) ||
+    stringField(record.role) ||
+    stringField(record.type)
+  );
 }
 
-function messageBlocks(record: Record<string, unknown>): Record<string, unknown>[] {
+function messageBlocks(
+  record: Record<string, unknown>
+): Record<string, unknown>[] {
   const message = objectField(record.message);
   const content = message.content ?? record.content;
   if (typeof content === 'string') return [{ type: 'text', text: content }];
@@ -875,7 +1257,9 @@ function blockText(blocks: Record<string, unknown>[]): string {
 }
 
 function isToolResultOnly(blocks: Record<string, unknown>[]): boolean {
-  return blocks.length > 0 && blocks.every((block) => block.type === 'tool_result');
+  return (
+    blocks.length > 0 && blocks.every((block) => block.type === 'tool_result')
+  );
 }
 
 function stringFromRecord(
@@ -894,7 +1278,8 @@ function stringFromRecord(
 function redactJsonValue(value: unknown, depth = 0): unknown {
   if (depth > 6) return '[redacted-depth]';
   if (typeof value === 'string') return redactText(value);
-  if (Array.isArray(value)) return value.map((entry) => redactJsonValue(entry, depth + 1));
+  if (Array.isArray(value))
+    return value.map((entry) => redactJsonValue(entry, depth + 1));
   if (!isRecord(value)) return value;
 
   const out: Record<string, unknown> = {};
@@ -912,7 +1297,10 @@ function redactText(text: string): string {
   return text
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted-secret]')
     .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, '[redacted-secret]')
-    .replace(/\b[A-Za-z0-9._%+-]+:[A-Za-z0-9._%+-]+@/g, '[redacted-credential]@')
+    .replace(
+      /\b[A-Za-z0-9._%+-]+:[A-Za-z0-9._%+-]+@/g,
+      '[redacted-credential]@'
+    )
     .replace(
       /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
       '$1=[redacted]'

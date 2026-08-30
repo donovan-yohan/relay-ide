@@ -25,7 +25,10 @@ export interface NativeSessionRegistryReport {
 }
 
 export class NativeSessionAdapterRegistry {
-  private readonly adapters = new Map<NativeSessionProvider, AgentHarnessStateAdapter>();
+  private readonly adapters = new Map<
+    NativeSessionProvider,
+    AgentHarnessStateAdapter
+  >();
 
   register(adapter: AgentHarnessStateAdapter): void {
     if (this.adapters.has(adapter.provider)) {
@@ -45,62 +48,92 @@ export class NativeSessionAdapterRegistry {
   }
 
   async detectAllInstalls(): Promise<ProviderInstallStatus[]> {
-    const statuses: ProviderInstallStatus[] = [];
-    for (const adapter of this.adapters.values()) {
-      try {
-        statuses.push(await adapter.detectInstall());
-      } catch (error) {
-        statuses.push({
-          provider: adapter.provider,
-          status: 'unavailable',
-          detectedAt: new Date().toISOString(),
-          stateRoots: [],
-          diagnostics: [
-            {
-              code: 'ADAPTER_DETECT_FAILED',
-              message:
-                error instanceof Error ? error.message : String(error),
-              severity: 'error',
-            },
-          ],
-        });
-      }
-    }
-    return statuses;
+    // #1449: detects are independent filesystem probes; run them concurrently.
+    // `Promise.all` preserves registration order, so the result is unchanged.
+    return Promise.all(
+      Array.from(this.adapters.values()).map(
+        async (adapter): Promise<ProviderInstallStatus> => {
+          try {
+            return await adapter.detectInstall();
+          } catch (error) {
+            return {
+              provider: adapter.provider,
+              status: 'unavailable',
+              detectedAt: new Date().toISOString(),
+              stateRoots: [],
+              diagnostics: [
+                {
+                  code: 'ADAPTER_DETECT_FAILED',
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                  severity: 'error',
+                },
+              ],
+            };
+          }
+        }
+      )
+    );
   }
 
   async listAllSessions(
     scope?: NativeSessionListScope
   ): Promise<NativeSessionRegistryReport> {
+    // #1449: providers are independent read-only stores, so detect + list them
+    // concurrently instead of paying the sum of their walks. Results are
+    // collected in registration order, keeping `providers` and the pre-sort
+    // session order identical to the previous serial loop.
+    const selected = Array.from(this.adapters.values()).filter(
+      (adapter) => !scope?.provider || scope.provider === adapter.provider
+    );
+
+    const outcomes = await Promise.all(
+      selected.map(
+        async (
+          adapter
+        ): Promise<{
+          installs: ProviderInstallStatus[];
+          sessions: NativeSessionSummary[];
+        }> => {
+          const installs: ProviderInstallStatus[] = [];
+          try {
+            const install = await adapter.detectInstall();
+            installs.push(install);
+            if (install.status !== 'installed')
+              return { installs, sessions: [] };
+            return {
+              installs,
+              sessions: await adapter.listNativeSessions(scope),
+            };
+          } catch (error) {
+            // `installs` may already hold a successful detect: a list failure
+            // after a successful detect reported both entries before #1449 and
+            // still does, so the response is byte-identical.
+            installs.push({
+              provider: adapter.provider,
+              status: 'unavailable',
+              detectedAt: new Date().toISOString(),
+              stateRoots: [],
+              diagnostics: [
+                {
+                  code: 'ADAPTER_LIST_FAILED',
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                  severity: 'error',
+                },
+              ],
+            });
+            return { installs, sessions: [] };
+          }
+        }
+      )
+    );
+
     const providers: ProviderInstallStatus[] = [];
     const sessions: NativeSessionSummary[] = [];
-
-    for (const adapter of this.adapters.values()) {
-      if (scope?.provider && scope.provider !== adapter.provider) continue;
-
-      try {
-        const install = await adapter.detectInstall();
-        providers.push(install);
-        if (install.status !== 'installed') continue;
-
-        const providerSessions = await adapter.listNativeSessions(scope);
-        sessions.push(...providerSessions);
-      } catch (error) {
-        providers.push({
-          provider: adapter.provider,
-          status: 'unavailable',
-          detectedAt: new Date().toISOString(),
-          stateRoots: [],
-          diagnostics: [
-            {
-              code: 'ADAPTER_LIST_FAILED',
-              message:
-                error instanceof Error ? error.message : String(error),
-              severity: 'error',
-            },
-          ],
-        });
-      }
+    for (const outcome of outcomes) {
+      providers.push(...outcome.installs);
+      sessions.push(...outcome.sessions);
     }
 
     sessions.sort((a, b) => {
@@ -144,10 +177,14 @@ export class NativeSessionAdapterRegistry {
     return adapter.listNativeSessions(scope);
   }
 
-  private requireAdapter(provider: NativeSessionProvider): AgentHarnessStateAdapter {
+  private requireAdapter(
+    provider: NativeSessionProvider
+  ): AgentHarnessStateAdapter {
     const adapter = this.adapters.get(provider);
     if (!adapter) {
-      throw new Error(`No native session adapter registered for provider '${provider}'.`);
+      throw new Error(
+        `No native session adapter registered for provider '${provider}'.`
+      );
     }
     return adapter;
   }
