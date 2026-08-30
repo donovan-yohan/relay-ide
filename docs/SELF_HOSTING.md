@@ -37,7 +37,7 @@ The `dev` command starts the real Express/WebSocket backend under a supervisor a
 | Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json`            | Local source development outside production Relay |
 | Self-host source dev | `npm run dev:self`              | allocator-chosen          | allocator-chosen          | `~/.config/relay-ide/self-host/<worktree-slug>-<hash>/config.json` | Building Relay from inside Relay                  |
 
-Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` for process/logging isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
+Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` for process/logging isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. That PIN gates the browser/remote UI only — a terminal on the same host runs `relay-ide v1 ...` with no login at all, against whichever dev hub it is dialing (`--port`/`RELAY_IDE_PORT`), because each hub publishes a port-keyed local CLI token at boot. See [docs/CLI_GATEWAY.md](CLI_GATEWAY.md#cli-credential-resolution-order). Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
 
 ## What self-host mode isolates
 
@@ -184,7 +184,7 @@ lsof -nP -iTCP:<self-host-backend-port> -sTCP:LISTEN
 
 ## macOS e2e / global daemon caveats
 
-Config state no longer collides (#1214, above), but a *port* still can: anything already listening on the e2e port is reused as the fixture server. On macOS, stop the global service before e2e runs that need exclusive ownership of its port:
+Config state no longer collides (#1214, above), but a _port_ still can: anything already listening on the e2e port is reused as the fixture server. On macOS, stop the global service before e2e runs that need exclusive ownership of its port:
 
 ```bash
 launchctl stop com.relay-ide

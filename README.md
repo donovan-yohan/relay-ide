@@ -221,6 +221,13 @@ relay-ide audit verify ...   verify the security audit chain
 relay-ide pin reset          reset browser authentication
 ```
 
+The PIN authenticates the **browser/remote UI only**. In a terminal on the
+machine running the hub, `relay-ide v1 ...` needs no login and no environment
+variable: the hub mints a local CLI credential at boot and stores it owner-only
+in its config directory, and the CLI picks it up automatically. From any other
+machine, run `relay-ide login` once. Full precedence rules are in
+[docs/CLI_GATEWAY.md](docs/CLI_GATEWAY.md#cli-credential-resolution-order).
+
 ## Source development
 
 ```bash

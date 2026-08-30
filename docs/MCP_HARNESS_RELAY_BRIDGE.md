@@ -466,6 +466,14 @@ reviewer meets them as decisions, not as discoveries.
   existed for orchestrator runtimes only, with the read/write lease. Narrowing it
   needs a wrapper launcher that scrubs `RELAY_IDE_*` from the environment of
   non-Relay MCP children; no provider offers per-server env control today.
+  Since #1467 scrubbing the environment is necessary but no longer sufficient on
+  the hub host: any process running as the hub's uid — every MCP child included
+  — can read the boot-minted local CLI token out of the config directory and get
+  an unscoped, full-capability CLI-gateway credential regardless of the lease it
+  was handed. That is the ratified boundary (`docs/SECURITY_POLICY.md` §
+  Host-local CLI trust), not a regression, but it means lease narrowing is a
+  least-privilege measure against remote and delegated callers, not a sandbox
+  against local ones.
 - **`dev:self` trusts the checkout's build output.** In self-hosted development
   the resolver's second candidate is `<repo>/dist/bin/relay-mcp.js`, inside a
   working tree the agents themselves can edit. An agent that rewrites that file
@@ -509,8 +517,9 @@ not an SSE/PTY stream or a compaction summary, decides completion.
    capability, TTL, and bindings. The grant is consumed; it is neither a
    browser login nor a reusable actor token.
 3. The daily-driver PIN, browser session cookie, `RELAY_PEER_PIN`, legacy actor
-   token, OAuth refresh token, and grant secret must never be present in an MCP
-   config, prompt, tool result, event, log, artifact, or test fixture.
+   token, the #1467 host-local CLI token, OAuth refresh token, and grant secret
+   must never be present in an MCP config, prompt, tool result, event, log,
+   artifact, or test fixture.
    `orchestrator-peer.ts` now requires a pre-minted scoped actor lease; it must
    not grow a PIN/cookie, grant-redemption, or browser-login fallback.
 4. A scoped actor credential and any bootstrap handshake grant must include

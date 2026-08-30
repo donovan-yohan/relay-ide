@@ -32,6 +32,14 @@ not collide with it.
 
 ### PIN
 
+The PIN gates the browser/remote UI only. A terminal on the hub host runs
+`relay-ide v1 ...` with no login — see
+[CLI credential resolution order](../CLI_GATEWAY.md#cli-credential-resolution-order).
+Worth one pass per QA round: with no `relay-ide login` ever run and no
+`RELAY_IDE_ACTOR_TOKEN` set, `relay-ide v1 channels list --json` should succeed
+on the host and the same call from another machine should still return
+`UNAUTHORIZED`.
+
 Relay refuses browser traffic until a PIN is set. Delete `pinHash` from the QA
 config and restart to get the setup prompt, or run `relay-ide pin reset` against
 that config. Do not paste a pre-generated hash — the scrypt salt is generated at
