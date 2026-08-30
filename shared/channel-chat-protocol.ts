@@ -207,6 +207,26 @@ export const CHANNEL_MEMBERSHIP_BACKFILL_INVITER = 'backfill' as const;
 export const CHANNEL_MEMBERSHIP_BINDING_INVITER = 'binding' as const;
 
 /**
+ * `invited_by` for a participant that enrolled itself by writing into the
+ * channel — the operator's own post, the host-local CLI, or an agent's durable
+ * reply arriving through the channel bridge. Posting is not an invitation, but
+ * it is not *unattributed* either, and a NULL would make "wrote its own way in"
+ * indistinguishable from "never audited at all".
+ */
+export const CHANNEL_MEMBERSHIP_SELF_INVITER = 'self' as const;
+
+/**
+ * `invited_by` for an actor admitted because the operator minted it a
+ * credential naming this channel. Issuing a channel-scoped actor credential is
+ * an operator act on an operator-authenticated route, so it IS the invite —
+ * the bridge that keeps already-issued credentials working until slice 2's
+ * explicit `channels.invite` verb. Membership recorded this way is durable and
+ * independent of the credential: revoking the token does not evict the member,
+ * and a channel created AFTER the mint is still gated.
+ */
+export const CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER = 'credential-mint' as const;
+
+/**
  * Canonical comparison form for a channel member id.
  *
  * Agent identity reaches the membership table through two historically

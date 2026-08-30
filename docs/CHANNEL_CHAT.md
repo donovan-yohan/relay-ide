@@ -67,19 +67,42 @@ participant's kind, id, join time, and `invited_by` — the audit of _how_ they
 got in. First writer wins on that attribution, so an agent that keeps posting
 cannot relabel its own admission.
 
-Membership is written by four paths, and only these four:
+Membership is written by these paths, and only these:
 
-- an operator or host-local post enrolls its own sender;
-- a routable `@mention` enrolls the mentioned profile, credited to the
-  mentioning message's sender (the mention _is_ the invite until the explicit
-  `channels.invite` verb lands);
-- a durable `channel_agent_bindings` row enrolls its profile, credited
-  `binding`;
-- the v17 migration backfills every pre-membership channel from its durable
-  senders and bindings, credited `backfill`.
+| Writer                                                        | `invited_by`                    |
+| ------------------------------------------------------------- | ------------------------------- |
+| an operator or host-local post enrolling its own sender       | `self`                          |
+| an agent's durable reply arriving through the channel bridge  | `self`                          |
+| a routable `@mention`, enrolling the mentioned profile        | the mentioning message's sender |
+| a durable `channel_agent_bindings` row, enrolling its profile | `binding`                       |
+| minting an actor credential scoped to the channel             | `credential-mint`               |
+| the v17 migration, from durable senders and bindings          | `backfill`                      |
+
+First writer wins, so the earliest of these is the one the audit keeps.
 
 A DM stays deterministic: addressing the channel is the mention, so its one
 agent is enrolled from the first message with no literal `@name`.
+
+Two of these deserve their limits spelled out.
+
+**Credential mint is the interim invite.** Issuing a channel-scoped actor
+credential happens on an operator-authenticated route, so it _is_ an operator
+admitting that actor — and it is what keeps already-issued credentials and
+shipped peer scripts working until `channels.invite` lands. It is not a
+re-derivation of scope at request time: the member row is durable and outlives
+the credential, revoking the token does not evict the member, and a channel
+created _after_ the mint is still refused.
+
+**A member can pull in another agent by mentioning it.** Only members can post,
+so only members can mention — but any member, human or agent, can therefore
+move a profile into the channel. Per-channel invite policy (`members` vs
+`humans-only`) is a follow-up; until it exists, an agent's `@mention` admits
+the mentioned profile on the mentioning agent's authority.
+
+Membership is repaired, never rewritten: the boot sweep re-runs the additive
+backfill, so a binding whose membership mirror was lost (that enrollment is
+best-effort and deliberately does not fail the binding) cannot leave a
+legitimate agent permanently locked out.
 
 Membership is the **authorization** record for the scoped-actor lane. A
 `relay-ide v1 ...` credential may _request_ any channel id; the hub answers on

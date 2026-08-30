@@ -51,6 +51,7 @@ import {
 } from '../shared/channel-search-query.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_NOT_MEMBER_REASON,
   CHANNEL_POST_STEERING_VALUES,
   CHANNEL_READ_STATE_EVENT,
@@ -1217,6 +1218,10 @@ function postToChannel(
       channelId: input.channelId,
       kind: input.sender.kind === 'agent' ? 'agent' : 'human',
       id: input.sender.id,
+      // Posting is not an invitation, but it is not unattributed either: this
+      // sender wrote its own way in, and slice 2's audit needs to tell that
+      // apart from a row nobody ever accounted for (#1455).
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
     });
     hub.broadcastCreated(
       result.message,
@@ -1757,7 +1762,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
-    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     const topic = requirePersistedChannel(req, res);
     if (!topic) return;
     if (topic.status === 'archived') {
@@ -1811,7 +1815,6 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const id = req.params['id'] ?? '';
     if (denyOutOfScopeChannel(req, res, id)) return;
-    if (denyNonMemberChannel(req, res, deps.store, id)) return;
     if (!requirePersistedChannel(req, res)) return;
     const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
     if (!attachmentStore) return;

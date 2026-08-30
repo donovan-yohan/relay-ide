@@ -20,6 +20,7 @@ import {
 } from './channel-attachments.js';
 import { PACKET_IMAGE_DEGRADATION_META_KEY } from './channel-context-packet.js';
 import {
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_AGENT_DETAIL_MAX_BYTES,
   CHANNEL_AGENT_ATTRIBUTION_MAX_CHARS,
@@ -738,7 +739,13 @@ export function bindSessionToChannel(
     if (!message) return;
     hub.completeStreamBroadcast(message);
     try {
-      store.upsertMember({ channelId, kind: 'agent', id: sender.id });
+      store.upsertMember({
+        channelId,
+        kind: 'agent',
+        id: sender.id,
+        // A durable reply is this profile writing its own way in (#1455).
+        invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+      });
     } catch (err) {
       logger.warn('channel bridge detail member upsert failed:', err);
     }
@@ -975,7 +982,13 @@ export function bindSessionToChannel(
     if (!message) return false;
     hub.completeStreamBroadcast(message);
     try {
-      store.upsertMember({ channelId, kind: 'agent', id: sender.id });
+      store.upsertMember({
+        channelId,
+        kind: 'agent',
+        id: sender.id,
+        // A durable reply is this profile writing its own way in (#1455).
+        invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+      });
     } catch (err) {
       logger.warn('channel bridge image member upsert failed:', err);
     }
@@ -1092,7 +1105,13 @@ export function bindSessionToChannel(
     rememberFinalizedItem(stream.sourceKey);
     hub.completeStreamBroadcast(message);
     try {
-      store.upsertMember({ channelId, kind: 'agent', id: sender.id });
+      store.upsertMember({
+        channelId,
+        kind: 'agent',
+        id: sender.id,
+        // A durable reply is this profile writing its own way in (#1455).
+        invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+      });
     } catch (err) {
       logger.warn('channel bridge member upsert failed:', err);
     }

@@ -4851,6 +4851,63 @@ describe('channel-message-store membership (#1455 slice 1)', () => {
     ).toBe(true);
   });
 
+  it('never relabels a live row when the reusable backfill re-runs', () => {
+    const s = store();
+    // A row the live path wrote with its own attribution, and one written
+    // without any. The boot sweep re-runs this pass on every start, so it must
+    // not overwrite either — relabelling them `backfill` would destroy exactly
+    // the distinction `invited_by` exists to keep.
+    s.upsertMember({
+      channelId: 'topic:live',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    s.upsertMember({ channelId: 'topic:live', kind: 'human', id: 'human:o' });
+    s.backfillMembership();
+    expect(
+      s.listMembers('topic:live').map((m) => [m.id, m.invitedBy ?? null])
+    ).toEqual(
+      expect.arrayContaining([
+        ['agent:claude', 'human:operator'],
+        ['human:o', null],
+      ])
+    );
+  });
+
+  it('repairs a binding whose membership mirror was lost', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.upsertBinding({
+      channelId: 'topic:orphaned-binding',
+      profileActorId: 'agent-profile:codex:default',
+      agentFramework: 'codex',
+    });
+    // Enrollment is best-effort by design — it must never fail a binding — so
+    // a durable binding can outlive its member row. Left unrepaired that is a
+    // legitimate agent permanently refused, which is what the boot sweep's
+    // additive re-run exists to prevent.
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    inspect.prepare('DELETE FROM channel_members').run();
+    expect(
+      s.isMember(
+        'topic:orphaned-binding',
+        'agent',
+        'agent-profile:codex:default'
+      )
+    ).toBe(false);
+
+    expect(s.backfillMembership().inserted).toBe(1);
+    expect(
+      s.isMember(
+        'topic:orphaned-binding',
+        'agent',
+        'agent-profile:codex:default'
+      )
+    ).toBe(true);
+  });
+
   it('sweeps membership for a channel the topic store no longer knows', () => {
     const s = store();
     s.upsertMember({

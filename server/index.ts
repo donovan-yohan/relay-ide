@@ -253,6 +253,8 @@ import {
   actorMemberRef,
   createChannelChatRouter,
 } from './channel-chat-router.js';
+import { CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER } from '../shared/channel-chat-protocol.js';
+import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 import { createChannelSubscriptionRouter } from './channel-subscription-router.js';
 import {
   createChannelAgentBinder,
@@ -567,6 +569,30 @@ function getCurrentVersion(): string {
 }
 
 const UPDATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * How long one subscriber's channel-membership answer is reused before the
+ * stream re-reads it (#1455 slice 1). `isStillAuthorized` runs before EVERY
+ * streamed frame — including per-token delta chunks — so an uncached read would
+ * put synchronous SQLite work on the broadcast path, which is the shape that
+ * hurt in #1249. Membership changes are operator-paced; a bounded second of
+ * staleness is the right trade, and credential revocation keeps its own
+ * uncached per-frame check.
+ */
+const CHANNEL_MEMBERSHIP_RECHECK_TTL_MS = 1_000;
+
+/**
+ * Per-request (i.e. per open subscription) memo of the membership answer.
+ * Keyed on the Request object so it dies with the stream and cannot leak
+ * across subscribers; the channel id is part of the key because one request
+ * only ever streams one channel, but a stale answer for the wrong one would be
+ * a silent authorization bug.
+ */
+const channelMembershipRecheckCache = new WeakMap<
+  express.Request,
+  { channelId: string; memberId: string; at: number; allowed: boolean }
+>();
+
 const UPDATE_COMMAND_MAX_BUFFER = 8 * 1024 * 1024;
 
 /** execFile kills the child on timeout, surfacing as `killed` on the error. */
@@ -1694,6 +1720,20 @@ async function main(): Promise<void> {
         );
         channelMessageStore.sweepOrphans(persistedTopicIds);
       }
+      // #1455 slice 1: membership is now an authorization record, so a channel
+      // missing it refuses a legitimate agent. `enrollBoundMember` runs outside
+      // the binding transaction and is best-effort by design, so a durable
+      // binding can outlive its membership mirror. This pass is additive-only
+      // and idempotent — it repairs that divergence on the next boot instead of
+      // leaving a permanently locked-out agent behind a one-shot migration.
+      // Ordered AFTER `sweepOrphans` so it cannot resurrect a swept channel.
+      const repaired = channelMessageStore.backfillMembership();
+      if (repaired.inserted > 0) {
+        logger.info(
+          'channel membership reconciliation added %d missing member row(s)',
+          repaired.inserted
+        );
+      }
     } catch (err) {
       logger.warn(
         'Channel store boot sweep failed:',
@@ -2107,6 +2147,43 @@ async function main(): Promise<void> {
    * checked first so an operator credential carrying an actor marker fails
    * closed instead of falling into agent attribution.
    */
+  /**
+   * Admit a freshly minted actor credential to every channel its operator-
+   * approved scope names (#1455 slice 1). The stored id is the exact spelling
+   * `deriveSender` will stamp on that credential's rows, so `listMembers` reads
+   * truthfully rather than relying on the canonical fold to paper over a
+   * mismatch. Best-effort: a credential must still be issued if its membership
+   * mirror cannot be written — the read side then simply sees a non-member,
+   * which is the safe direction, and the boot reconciliation repairs it.
+   */
+  const enrollCredentialChannelMembership = (
+    credential: ScopedActorCredentialRecord
+  ): void => {
+    const channelIds = credential.scope?.channelIds;
+    if (!channelMessageStore || !channelIds?.length) return;
+    const memberId =
+      credential.metadata?.reason === 'persistent-orchestrator'
+        ? credential.actor.id
+        : `agent:${credential.actor.id}`;
+    for (const channelId of channelIds) {
+      try {
+        channelMessageStore.upsertMember({
+          channelId,
+          kind: 'agent',
+          id: memberId,
+          invitedBy: CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER,
+        });
+      } catch (err) {
+        logger.warn(
+          'channel membership enrollment failed for %s in %s: %s',
+          memberId,
+          channelId,
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    }
+  };
+
   const requireChannelGatewayAuthForCommand = (
     expectedCommand: CliGatewayActorCommand,
     options: {
@@ -2558,6 +2635,14 @@ async function main(): Promise<void> {
               req.body
             )
           : issueCliGatewayActorCredential(cliGatewayActorRegistry, body);
+      // #1455 slice 1: minting a channel-scoped actor credential on this
+      // operator-authenticated route IS the invite, and it is the bridge that
+      // keeps already-issued credentials and shipped peer scripts working until
+      // slice 2 lands the explicit `channels.invite` verb. Membership recorded
+      // here is durable and independent of the credential — revoking the token
+      // does not evict the member, and a channel created AFTER the mint is
+      // still gated, so this is not a re-derivation of scope at request time.
+      enrollCredentialChannelMembership(issued.credential);
       res.status(201).json({
         token: issued.token,
         credential: issued.credential,
@@ -3140,15 +3225,40 @@ async function main(): Promise<void> {
         { scopeForRequest: channelScopeFromParams }
       ),
       isStillAuthorized: (req, channelId) => {
-        // #1455 slice 1: membership is rechecked on the same per-frame cadence
-        // as revocation. A member removed mid-stream must stop receiving the
-        // channel, not keep the socket it opened while it still belonged.
+        // #1455 slice 1: a member removed mid-stream must stop receiving the
+        // channel, not keep the socket it opened while it still belonged. This
+        // runs before EVERY frame, including per-token delta chunks, so the
+        // SQLite read is cached for `CHANNEL_MEMBERSHIP_RECHECK_TTL_MS` rather
+        // than paid per chunk — synchronous database work on the broadcast path
+        // is exactly the shape that hurt in #1249. Revocation keeps its
+        // uncached per-frame check below; membership changes are operator-paced,
+        // so a bounded second of staleness is the right trade.
         const member = actorMemberRef(req);
-        if (
-          member &&
-          !channelMessageStore?.isMember(channelId, member.kind, member.id)
-        )
-          return false;
+        if (member) {
+          const now = Date.now();
+          const cached = channelMembershipRecheckCache.get(req);
+          const fresh =
+            cached !== undefined &&
+            cached.channelId === channelId &&
+            cached.memberId === member.id &&
+            now - cached.at < CHANNEL_MEMBERSHIP_RECHECK_TTL_MS;
+          const allowed = fresh
+            ? cached.allowed
+            : (channelMessageStore?.isMember(
+                channelId,
+                member.kind,
+                member.id
+              ) ?? false);
+          if (!fresh) {
+            channelMembershipRecheckCache.set(req, {
+              channelId,
+              memberId: member.id,
+              at: now,
+              allowed,
+            });
+          }
+          if (!allowed) return false;
+        }
         if (isOperatorClientCredentialRequest(req)) {
           return authenticateOperatorClientCredential(
             operatorClientCredentialRegistry,

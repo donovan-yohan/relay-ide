@@ -725,9 +725,12 @@ test('real channel middleware enforces registry-issued channel leases and preser
       );
     const channelA = (await createTopic('Lease A')).topic.id;
     const channelB = (await createTopic('Lease B')).topic.id;
-    enrollChannelMember(tmpDir, channelA, 'agent:channel-lease-peer');
-    // Member of the ABSENT channel too, so the 404 below is the channel
-    // answering rather than the membership gate.
+    // NOTE: no hand-written member row for `channelA`. Minting the credential
+    // below names `channelA` in its operator-approved scope, and #1455 slice 1
+    // treats that mint as the invite — so the actor reads and writes `channelA`
+    // on membership the hub recorded itself. Only the ABSENT channel needs a
+    // row, so the 404 further down is the channel answering rather than the
+    // membership gate.
     enrollChannelMember(tmpDir, 'missing', 'agent:channel-lease-peer');
 
     const requested = await expectJsonStatus<{ grant: { id: string } }>(
@@ -1344,7 +1347,6 @@ test('the Relay MCP facade answers a spawned runtime from its injected environme
       201,
       'seed own channel history'
     );
-    enrollChannelMember(tmpDir, own, 'agent-profile:claude:default');
 
     // Mint the read lease's credential shape: read bits, channel-only scope.
     const grant = await expectJsonStatus<{ grant: { id: string } }>(

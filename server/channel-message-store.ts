@@ -1640,8 +1640,10 @@ export interface ChannelMessageStore {
    */
   isMember(channelId: string, kind: 'human' | 'agent', id: string): boolean;
   /**
-   * Seed membership from durable participation history. Idempotent — safe to
-   * call on every boot and safe to race with the live upsert path.
+   * Seed membership from durable participation history for any channel missing
+   * it. Idempotent, additive-only, and safe to race with the live upsert path,
+   * so the boot sweep runs it to repair a binding whose membership mirror was
+   * lost (see `enrollBoundMember`). It never rewrites an existing row.
    */
   backfillMembership(): { inserted: number };
   findDmChannel(memberIdA: string, memberIdB: string): string | null;
@@ -2715,6 +2717,12 @@ function ensureLegacyClaudeEchoHeal(db: Database.Database): void {
  * row already written by the live path always wins, and running the pass twice
  * inserts nothing the second time. `joined_at` is the FIRST message that
  * participant sent, not `now`, so a backfilled row keeps a truthful ordering.
+ *
+ * It writes ONLY rows that are missing. It deliberately does not touch
+ * `invited_by` on rows that already exist — relabelling a live row `backfill`
+ * would destroy exactly the attribution this column was added to keep. The
+ * one-time relabel of pre-v17 rows lives in the v17 migration, where it is
+ * correct because nothing else has run yet.
  */
 /**
  * Vendor framework id of a DEFAULT built-in profile Actor id
@@ -2752,12 +2760,6 @@ export function backfillChannelMembership(db: Database.Database): {
           GROUP BY channel_id, profile_actor_id`
       )
       .run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER }).changes;
-    // Rows written before the column existed cannot be attributed to a real
-    // inviter, and leaving them NULL would make "unattributed" and "never
-    // audited" indistinguishable for slice 2's invite audit.
-    db.prepare(
-      `UPDATE channel_members SET invited_by = @inviter WHERE invited_by IS NULL`
-    ).run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER });
     return fromMessages + fromBindings;
   });
   return { inserted: inserter() };
@@ -3307,6 +3309,13 @@ function runSchemaMigrations(db: Database.Database): void {
         db.exec('ALTER TABLE channel_members ADD COLUMN invited_by TEXT');
       }
       backfillChannelMembership(db);
+      // One-time, and correct ONLY here: every row predating this migration was
+      // written before the column existed, so none of them can be attributed to
+      // a real inviter. Leaving them NULL would make "unattributed" and "never
+      // audited" indistinguishable for slice 2's invite audit.
+      db.prepare(
+        `UPDATE channel_members SET invited_by = @inviter WHERE invited_by IS NULL`
+      ).run({ inviter: CHANNEL_MEMBERSHIP_BACKFILL_INVITER });
       db.prepare('UPDATE schema_version SET version = 17').run();
     })();
   }
