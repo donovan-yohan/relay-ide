@@ -125,6 +125,12 @@ interface ProviderDriftExpectation {
   authCredentialPaths: string[][];
   /** Permission-mode word for a yolo spawn; `null` = this provider has none. */
   yoloPermissionMode: string | null;
+  /**
+   * `AgentProfile` field this provider consumes as a gateway-scoping binding,
+   * forwarded into adapter `extra` by `server/channel-agent-binder.ts`; `null`
+   * = this provider has no such concept and must receive nothing.
+   */
+  agentProfileGatewayBindingKey: 'hermesProfile' | null;
   /** Chosen when an orchestrator is designated with no framework named. */
   isDefaultOrchestratorProvider: boolean;
   /** Legacy v1 `ChatEventSource` — only the bridged lane needs one. */
@@ -169,6 +175,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     // The double exists to exercise Relay's plumbing, and the binder's yolo lane
     // is part of that plumbing (test/channel-agent-binder.test.ts).
     yoloPermissionMode: 'bypassPermissions',
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -192,6 +199,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
       ['.config', 'claude', 'credentials.json'],
     ],
     yoloPermissionMode: 'bypassPermissions',
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: true,
     validLegacyChatEventSource: true,
   },
@@ -212,6 +220,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: ['codex'], commandBasenames: [] },
     authCredentialPaths: [['.codex', 'auth.json']],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -237,6 +246,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: false,
   },
@@ -258,6 +268,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: [], commandBasenames: ['pi'] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: false,
   },
@@ -278,6 +289,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: ['opencode'], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -301,6 +313,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: [], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -321,6 +334,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     processMatch: { commandLineSubstrings: ['hermes'], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: 'hermesProfile',
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -785,6 +799,26 @@ describe('provider registry drift guards', () => {
       expect(descriptorFor(id).yoloPermissionMode).toBe(
         expectationFor(id).yoloPermissionMode
       );
+    });
+
+    it.each(PROVIDER_IDS)(
+      'names the agent-profile gateway binding key for %s',
+      (id) => {
+        expect(descriptorFor(id).agentProfileGatewayBindingKey).toBe(
+          expectationFor(id).agentProfileGatewayBindingKey
+        );
+      }
+    );
+
+    it('gives exactly one provider a gateway binding key', () => {
+      // `server/channel-agent-binder.ts` forwards this field and nothing else
+      // into adapter `extra`. A second provider claiming a key is fine, but it
+      // must be a deliberate descriptor edit, not drift from a copied row.
+      expect(
+        PROVIDER_IDS.filter(
+          (id) => descriptorFor(id).agentProfileGatewayBindingKey !== null
+        )
+      ).toEqual(['hermes']);
     });
 
     it('resolves the default orchestrator from exactly one descriptor', () => {

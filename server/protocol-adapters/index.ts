@@ -179,6 +179,18 @@ export interface ProviderDescriptor {
    */
   readonly yoloPermissionMode: string | null;
   /**
+   * The `AgentProfile` field this provider consumes as a gateway-scoping
+   * binding, forwarded verbatim into adapter `extra` under the same name — or
+   * `null` when the provider has no such concept.
+   *
+   * Only hermes has one (#1453): `hermesProfile` selects which Hermes multiplex
+   * profile the gateway serves that agent from. The `/p/<profile>/` URL shape
+   * that consumes it is a Hermes QUIRK and stays in `hermes-adapter.ts`; this
+   * row exists so the binder does not re-derive "hermes means hermesProfile"
+   * outside this directory.
+   */
+  readonly agentProfileGatewayBindingKey: 'hermesProfile' | null;
+  /**
    * The provider a channel gets when an orchestrator is designated with no
    * framework named. Exactly one descriptor may declare it (asserted at load).
    */
@@ -224,6 +236,7 @@ export const PROVIDER_DESCRIPTORS = {
     // The double exists to exercise Relay's own plumbing, and the binder's yolo
     // lane is part of that plumbing (test/channel-agent-binder.test.ts).
     yoloPermissionMode: 'bypassPermissions',
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   claude: {
@@ -252,6 +265,7 @@ export const PROVIDER_DESCRIPTORS = {
       ['.config', 'claude', 'credentials.json'],
     ],
     yoloPermissionMode: 'bypassPermissions',
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: true,
   },
   codex: {
@@ -279,6 +293,7 @@ export const PROVIDER_DESCRIPTORS = {
     processMatch: { commandLineSubstrings: ['codex'], commandBasenames: [] },
     authCredentialPaths: [['.codex', 'auth.json']],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   'prime-agent': {
@@ -303,6 +318,7 @@ export const PROVIDER_DESCRIPTORS = {
     },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   pi: {
@@ -325,6 +341,7 @@ export const PROVIDER_DESCRIPTORS = {
     processMatch: { commandLineSubstrings: [], commandBasenames: ['pi'] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   opencode: {
@@ -373,6 +390,7 @@ export const PROVIDER_DESCRIPTORS = {
     processMatch: { commandLineSubstrings: ['opencode'], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   'opencode-attached': {
@@ -427,6 +445,7 @@ export const PROVIDER_DESCRIPTORS = {
     processMatch: { commandLineSubstrings: [], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: null,
     isDefaultOrchestratorProvider: false,
   },
   hermes: {
@@ -482,6 +501,7 @@ export const PROVIDER_DESCRIPTORS = {
     processMatch: { commandLineSubstrings: ['hermes'], commandBasenames: [] },
     authCredentialPaths: [],
     yoloPermissionMode: null,
+    agentProfileGatewayBindingKey: 'hermesProfile',
     isDefaultOrchestratorProvider: false,
   },
 } satisfies Record<string, ProviderDescriptor>;

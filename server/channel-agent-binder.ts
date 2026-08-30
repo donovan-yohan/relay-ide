@@ -132,6 +132,24 @@ function yoloPermissionModeConfig(
   return mode ? { permissionMode: mode } : {};
 }
 
+/**
+ * The provider-scoping binding this profile carries for its adapter's gateway,
+ * as `extra` fragment. Which `AgentProfile` field (if any) a provider consumes
+ * is ONE descriptor row (`server/protocol-adapters/index.ts`), not a provider
+ * name spelled out here: a stray `hermesProfile` on a codex profile must never
+ * reach the codex adapter's `extra`, and a future provider with its own binding
+ * must not need an edit in this file.
+ */
+function gatewayBindingExtra(
+  providerId: string,
+  profile: AgentProfile
+): Record<string, string> {
+  const key = providerDescriptor(providerId)?.agentProfileGatewayBindingKey;
+  if (!key) return {};
+  const value = profile[key];
+  return value === undefined ? {} : { [key]: value };
+}
+
 /** Per-binding FIFO turn queue cap; overflow → system row, message dropped. */
 const QUEUE_CAP = 8;
 /** Force-drain a genuinely-stuck turn after this long (paused while waitingOn != null). */
@@ -1919,18 +1937,28 @@ export function createChannelAgentBinder(
         ...(inheritedPrompt !== undefined
           ? { systemPrompt: inheritedPrompt }
           : {}),
-        ...(profile.provider !== undefined || profile.effort !== undefined
-          ? {
-              extra: {
-                ...(profile.provider !== undefined
-                  ? { provider: profile.provider }
-                  : {}),
-                ...(profile.effort !== undefined
-                  ? { effort: profile.effort }
-                  : {}),
-              },
-            }
-          : {}),
+        ...(() => {
+          const gatewayBinding = gatewayBindingExtra(framework, profile);
+          const bindingKeys = Object.keys(gatewayBinding);
+          if (
+            profile.provider === undefined &&
+            profile.effort === undefined &&
+            bindingKeys.length === 0
+          ) {
+            return {};
+          }
+          return {
+            extra: {
+              ...(profile.provider !== undefined
+                ? { provider: profile.provider }
+                : {}),
+              ...(profile.effort !== undefined
+                ? { effort: profile.effort }
+                : {}),
+              ...gatewayBinding,
+            },
+          };
+        })(),
       });
     } catch (err) {
       setStatus(provisional, 'idle');

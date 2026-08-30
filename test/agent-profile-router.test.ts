@@ -204,6 +204,85 @@ describe('agent profile router', () => {
     });
   });
 
+  it('round-trips a hermes profile binding through POST, GET and PATCH', async () => {
+    configuredFrameworkIds.push('hermes');
+    const created = await request('POST', '/agent-profiles', {
+      providerId: 'hermes',
+      displayName: 'Product Owner',
+      hermesProfile: 'koi-product',
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.profile.hermesProfile).toBe('koi-product');
+
+    const listed = await request('GET', '/agent-profiles');
+    expect(listed.body.profiles).toContainEqual(
+      expect.objectContaining({
+        id: created.body.profile.id,
+        hermesProfile: 'koi-product',
+      })
+    );
+
+    const patched = await request(
+      'PATCH',
+      `/agent-profiles/${created.body.profile.id}`,
+      { hermesProfile: 'ika-frontend' }
+    );
+    expect(patched.status).toBe(200);
+    expect(patched.body.profile.hermesProfile).toBe('ika-frontend');
+
+    const cleared = await request(
+      'PATCH',
+      `/agent-profiles/${created.body.profile.id}`,
+      { hermesProfile: null }
+    );
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.profile.hermesProfile).toBeUndefined();
+  });
+
+  it.each([
+    ['../other'],
+    ['a/b'],
+    ['..'],
+    ['.'],
+    [''],
+    ['   '],
+    ['has space'],
+    ['%2e%2e'],
+    ['x'.repeat(65)],
+    [12],
+  ])(
+    'rejects the invalid hermes profile binding %j with a typed 400',
+    async (value) => {
+      configuredFrameworkIds.push('hermes');
+      const created = await request('POST', '/agent-profiles', {
+        providerId: 'hermes',
+        displayName: 'Bound Agent',
+        hermesProfile: value,
+      });
+      expect(created.status).toBe(400);
+      expect(created.body.error.details).toMatchObject({
+        reasonCode: 'AGENT_PROFILE_INVALID_FIELD',
+        field: 'hermesProfile',
+      });
+
+      const clean = await request('POST', '/agent-profiles', {
+        providerId: 'hermes',
+        displayName: 'Clean Agent',
+      });
+      const patched = await request(
+        'PATCH',
+        `/agent-profiles/${clean.body.profile.id}`,
+        { hermesProfile: value }
+      );
+      expect(patched.status).toBe(400);
+      expect(patched.body.error.details).toMatchObject({
+        field: 'hermesProfile',
+      });
+      // The rejected write must not have landed.
+      expect(store.get(clean.body.profile.id)?.hermesProfile).toBeUndefined();
+    }
+  );
+
   it('seeds a runtime-added framework before exposing or mutating its profiles', async () => {
     configuredFrameworkIds.push('runtime');
     const listed = await request('GET', '/agent-profiles');

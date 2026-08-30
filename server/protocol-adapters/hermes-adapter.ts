@@ -15,6 +15,7 @@ import type {
   SessionOptions,
 } from '../protocol-adapter.js';
 import { createLogger } from '../logger.js';
+import { isValidHermesProfile } from '../../shared/agent-profile.js';
 
 const logger = createLogger('hermes-adapter');
 
@@ -25,8 +26,61 @@ interface SseEvent {
 
 export interface HermesGatewaySettings {
   endpoint: string;
+  /**
+   * Hermes multiplex path prefix for a bound profile: `''` when unbound (bare
+   * `/v1/...`, byte-identical to pre-#1453 behavior) or `/p/<profile>` when
+   * `extra.hermesProfile` is set. Adapter-local QUIRK: `/p/<profile>/` is the
+   * Hermes gateway's own multiplex contract and has no sibling in any other
+   * adapter, so it must not be lifted into `adapter-utils.ts`.
+   */
+  basePath: string;
+  /** The bound Hermes profile id, or `null` for the gateway's default profile. */
+  hermesProfile: string | null;
   apiKey: string | null;
   source: string;
+}
+
+/**
+ * A Hermes multiplex profile binding that the gateway refused, or that Relay
+ * refused to send. Carried as a typed error so the channel row can say which
+ * profile failed and why instead of surfacing a bare `HTTP 404`.
+ */
+export class HermesProfileError extends Error {
+  constructor(
+    readonly code:
+      | 'hermes_profile_invalid'
+      | 'hermes_profile_unknown'
+      | 'hermes_profile_unauthorized',
+    message: string,
+    readonly profile: string
+  ) {
+    super(message);
+    this.name = 'HermesProfileError';
+  }
+}
+
+/**
+ * `/p/<profile>` for a bound runtime, `''` for an unbound one. Throws rather
+ * than silently falling back to the gateway's default profile when the binding
+ * is malformed — a silent fallback would route one agent's turn to another
+ * profile's conversation, which is exactly the cross-profile leak this slice
+ * guards against.
+ */
+function resolveHermesProfileBasePath(
+  extra: Record<string, unknown> | undefined
+): { basePath: string; profile: string | null } {
+  const raw = extra?.['hermesProfile'];
+  if (raw === undefined || raw === null || raw === '') {
+    return { basePath: '', profile: null };
+  }
+  if (!isValidHermesProfile(raw)) {
+    throw new HermesProfileError(
+      'hermes_profile_invalid',
+      `Hermes profile binding "${String(raw)}" is not a valid profile id. Use letters, digits, "." "_" or "-" (max 64 characters).`,
+      String(raw)
+    );
+  }
+  return { basePath: `/p/${encodeURIComponent(raw)}`, profile: raw };
 }
 
 export interface HermesGatewayProbeResult {
@@ -335,8 +389,12 @@ export function resolveHermesGatewaySettings(
     firstEnvValue(TOKEN_ENV_KEYS, fileEnv) ??
     configApiServer.apiKey;
 
+  const { basePath, profile } = resolveHermesProfileBasePath(extra);
+
   return {
     endpoint,
+    basePath,
+    hermesProfile: profile,
     apiKey,
     source: explicitEndpoint
       ? 'adapter config'
@@ -363,19 +421,64 @@ function gatewayHeaders(apiKey: string | null): Record<string, string> {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
+/**
+ * Hermes multiplex answers an unknown/unallowlisted profile with
+ * `404 {"error":"Unknown or unconfigured profile"}` and a profile that has no
+ * usable `API_SERVER_KEY` with `401`. The two have completely different fixes,
+ * so they stay distinguishable in the operator-facing text.
+ */
+function hermesProfileFailureReason(
+  status: number,
+  profile: string,
+  endpoint: string
+): string {
+  return status === 401
+    ? `Hermes profile "${profile}" at ${endpoint} rejected Relay authentication. Provision an API_SERVER_KEY for that profile (~/.hermes/profiles/${profile}/.env) and restart the gateway.`
+    : `Hermes profile "${profile}" is not served by the gateway at ${endpoint} (HTTP ${status}: unknown or unconfigured profile). Enable gateway.multiplex_profiles, add "${profile}" to gateway.multiplex_profile_allowlist, and restart the gateway — or clear the profile binding in Settings.`;
+}
+
 export async function probeHermesGatewayApi(
   extra: Record<string, unknown> | undefined,
   timeoutMs = 500
 ): Promise<HermesGatewayProbeResult> {
-  const settings = resolveHermesGatewaySettings(extra);
+  let settings: HermesGatewaySettings;
+  try {
+    settings = resolveHermesGatewaySettings(extra);
+  } catch (err) {
+    if (!(err instanceof HermesProfileError)) throw err;
+    // Report against the endpoint this runtime WOULD have used, minus the
+    // rejected binding, so the operator can see where the check aimed.
+    const fallback = resolveHermesGatewaySettings({
+      ...(extra ?? {}),
+      hermesProfile: undefined,
+    });
+    return {
+      available: false,
+      endpoint: fallback.endpoint,
+      source: fallback.source,
+      retryable: false,
+      reason: err.message,
+    };
+  }
   const headers = gatewayHeaders(settings.apiKey);
+  const base = `${settings.endpoint}${settings.basePath}`;
+  const boundProfile = settings.hermesProfile;
 
   try {
-    const health = await fetchWithTimeout(
-      `${settings.endpoint}/health`,
-      headers,
-      timeoutMs
-    );
+    const health = await fetchWithTimeout(`${base}/health`, headers, timeoutMs);
+    if (boundProfile && (health.status === 404 || health.status === 401)) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: false,
+        reason: hermesProfileFailureReason(
+          health.status,
+          boundProfile,
+          settings.endpoint
+        ),
+      };
+    }
     if (health.status === 401 || health.status === 403) {
       return {
         available: false,
@@ -396,10 +499,23 @@ export async function probeHermesGatewayApi(
     }
 
     const models = await fetchWithTimeout(
-      `${settings.endpoint}/v1/models`,
+      `${base}/v1/models`,
       headers,
       timeoutMs
     );
+    if (boundProfile && (models.status === 404 || models.status === 401)) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: false,
+        reason: hermesProfileFailureReason(
+          models.status,
+          boundProfile,
+          settings.endpoint
+        ),
+      };
+    }
     if (models.status === 401 || models.status === 403) {
       return {
         available: false,
@@ -772,6 +888,14 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _status: AdapterStatus = 'disconnected';
   private _config: AdapterConfig | null = null;
   private _endpoint = DEFAULT_HERMES_ENDPOINT;
+  /**
+   * `/p/<profile>` when this runtime's profile carries a Hermes multiplex
+   * binding, `''` otherwise. Every gateway call goes through `baseUrl()` so a
+   * bound runtime cannot reach another profile's turns, aborts or approvals.
+   */
+  private _basePath = '';
+  /** The bound Hermes profile id, or `null` for the gateway default. */
+  private _hermesProfile: string | null = null;
   private _settingsSource = 'default';
   private _messageAbortController: AbortController | null = null;
   private _turnCounter = 0;
@@ -866,6 +990,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
+    this._basePath = settings.basePath;
+    this._hermesProfile = settings.hermesProfile;
     this._apiKey = settings.apiKey;
     this._settingsSource = settings.source;
 
@@ -979,7 +1105,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       });
 
       if (!res.ok) {
-        throw new Error(`Hermes sendMessage failed: ${res.status}`);
+        // A bound runtime's 404/401 is a profile fault, not a generic gateway
+        // fault: the gateway is up, it just will not serve THIS profile. Keep
+        // the two distinguishable all the way to the channel row (#1453).
+        throw this.profileFaultOr(
+          res.status,
+          new Error(`Hermes sendMessage failed: ${res.status}`)
+        );
       }
       if (!res.body) {
         throw new Error(
@@ -1019,12 +1151,18 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         this._currentTurnId = null;
         return;
       } else {
+        const isProfileFault = err instanceof HermesProfileError;
         this.fire({
           type: 'chat:error',
-          kind: 'protocol',
+          kind:
+            isProfileFault && err.code === 'hermes_profile_unauthorized'
+              ? 'auth'
+              : 'protocol',
           message:
             err instanceof Error ? err.message : 'Hermes sendMessage failed',
-          retryable: true,
+          // A misrouted/unauthorized profile binding never fixes itself by
+          // retrying; it needs an operator change on the gateway or in Settings.
+          retryable: !isProfileFault,
           turnId,
         });
         this.fire({
@@ -1068,7 +1206,10 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       { method: 'POST', headers: this.headers() }
     );
     if (!res.ok) {
-      throw new Error(`Hermes approval response failed: ${res.status}`);
+      throw this.profileFaultOr(
+        res.status,
+        new Error(`Hermes approval response failed: ${res.status}`)
+      );
     }
     this.fire({
       type: 'chat:approval-response',
@@ -1117,8 +1258,29 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  /**
+   * Every gateway URL in this adapter is built from here — turns, aborts and
+   * approvals alike. Adding a call site that skips it would send that request
+   * to the gateway's DEFAULT profile while the runtime believes it is bound.
+   */
   private baseUrl(): string {
-    return this._endpoint;
+    return `${this._endpoint}${this._basePath}`;
+  }
+
+  /**
+   * Map a gateway HTTP status onto a typed profile fault when this runtime is
+   * bound to a Hermes multiplex profile, else return the generic fallback. Only
+   * 404 (unknown/unallowlisted profile) and 401 (profile has no usable
+   * API_SERVER_KEY) are profile faults; everything else stays generic.
+   */
+  private profileFaultOr(status: number, fallback: Error): Error {
+    const profile = this._hermesProfile;
+    if (!profile || (status !== 404 && status !== 401)) return fallback;
+    return new HermesProfileError(
+      status === 401 ? 'hermes_profile_unauthorized' : 'hermes_profile_unknown',
+      hermesProfileFailureReason(status, profile, this._endpoint),
+      profile
+    );
   }
 
   private headers(

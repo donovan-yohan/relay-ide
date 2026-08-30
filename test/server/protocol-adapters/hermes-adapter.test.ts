@@ -135,6 +135,8 @@ describe('Hermes gateway settings resolution', () => {
     );
 
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      basePath: '',
+      hermesProfile: null,
       endpoint: 'http://127.0.0.1:9876',
       apiKey: 'cfg#secret',
       source: 'Hermes config',
@@ -160,6 +162,8 @@ describe('Hermes gateway settings resolution', () => {
     );
 
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      basePath: '',
+      hermesProfile: null,
       endpoint: 'http://127.0.0.1:8642',
       apiKey: null,
       source: 'default',
@@ -182,6 +186,8 @@ describe('Hermes gateway settings resolution', () => {
     );
 
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      basePath: '',
+      hermesProfile: null,
       endpoint: 'http://127.0.0.1:2222',
       apiKey: 'profile-secret',
       source: 'environment',
@@ -209,6 +215,8 @@ describe('Hermes gateway settings resolution', () => {
     );
 
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      basePath: '',
+      hermesProfile: null,
       endpoint: 'http://127.0.0.1:2222',
       apiKey: 'custom-profile-secret',
       source: 'environment',
@@ -1295,5 +1303,421 @@ describe('Hermes interrupt chain re-anchor (#1409)', () => {
     expect(gateway.requests[2]?.['previous_response_id']).toBe(
       'resp_completed_1'
     );
+  });
+});
+
+/**
+ * Hermes multiplex profile binding (#1453 slice 1, PR 1).
+ *
+ * The invariants this block exists to hold:
+ *  - an UNBOUND runtime is byte-identical to pre-#1453 Relay on every call site
+ *    (health, models, responses, abort, approvals);
+ *  - a BOUND runtime prefixes all five with `/p/<profile>`;
+ *  - two runtimes bound to different profiles never cross paths or bearer
+ *    tokens, even with turns in flight at the same time;
+ *  - the gateway's 404 (unknown/unallowlisted profile) and 401 (profile has no
+ *    usable API_SERVER_KEY) reach the channel row as distinguishable, typed,
+ *    non-retryable errors instead of a bare `HTTP 404`.
+ */
+
+interface RecordedRequest {
+  method: string;
+  url: string;
+  authorization: string | undefined;
+}
+
+interface RecordingGateway {
+  server: http.Server;
+  endpoint: string;
+  recorded: RecordedRequest[];
+}
+
+/**
+ * Inline gateway that records the exact path and Authorization header of every
+ * request and answers ANY path shape (bare or `/p/<profile>`-prefixed), so the
+ * assertions are about what the adapter sent, not about what the stub allows.
+ */
+function startRecordingGateway(
+  options: {
+    /** Status for `…/v1/responses`; non-2xx skips the SSE body. */
+    responsesStatus?: number;
+    /** Paths whose prefix the gateway refuses (simulates an unserved profile). */
+    unservedPrefix?: string;
+    unservedStatus?: number;
+    /** Park responses calls until this many are in flight. */
+    parkResponses?: number;
+  } = {}
+): Promise<RecordingGateway> {
+  const recorded: RecordedRequest[] = [];
+  const parked: Array<() => void> = [];
+  const parkTarget = options.parkResponses ?? 0;
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const url = req.url ?? '';
+      recorded.push({
+        method: req.method ?? 'GET',
+        url,
+        authorization: req.headers['authorization'] as string | undefined,
+      });
+
+      if (options.unservedPrefix && url.startsWith(options.unservedPrefix)) {
+        res.writeHead(options.unservedStatus ?? 404, {
+          'Content-Type': 'application/json',
+        });
+        res.end(JSON.stringify({ error: 'Unknown or unconfigured profile' }));
+        return;
+      }
+
+      if (url.endsWith('/health')) {
+        res.writeHead(200);
+        res.end('ok');
+        return;
+      }
+      if (url.endsWith('/v1/models')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'inline-stub' }] }));
+        return;
+      }
+      if (url.endsWith('/v1/responses')) {
+        const status = options.responsesStatus ?? 200;
+        if (status !== 200) {
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unknown or unconfigured profile' }));
+          return;
+        }
+        const respond = (): void => {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+          });
+          const responseId = `resp_${recorded.length}`;
+          res.write(
+            `data: ${JSON.stringify({ type: 'response.created', response: { id: responseId } })}\n\n`
+          );
+          res.write(
+            `data: ${JSON.stringify({ type: 'response.completed', response: { id: responseId, status: 'completed' } })}\n\n`
+          );
+          res.end();
+        };
+        if (parkTarget > 0) {
+          parked.push(respond);
+          if (parked.length >= parkTarget) {
+            for (const release of parked.splice(0)) release();
+          }
+          return;
+        }
+        respond();
+        return;
+      }
+      // abort / permission and anything else the adapter may call.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({ server, endpoint: `http://127.0.0.1:${port}`, recorded });
+    });
+  });
+}
+
+function boundConfig(
+  endpoint: string,
+  sessionId: string,
+  extra: Record<string, unknown>
+): AdapterConfig {
+  return {
+    cwd: process.cwd(),
+    port: 0,
+    sessionId,
+    hookToken: 'test-hook',
+    configDir: process.cwd(),
+    extra: { endpoint, ...extra },
+  };
+}
+
+describe('Hermes multiplex profile binding (#1453)', () => {
+  const gateways: RecordingGateway[] = [];
+  const adapters: HermesProtocolAdapter[] = [];
+
+  afterEach(async () => {
+    for (const adapter of adapters.splice(0)) {
+      await adapter.disconnect().catch(() => {});
+    }
+    for (const gateway of gateways.splice(0)) {
+      await new Promise<void>((resolve) =>
+        gateway.server.close(() => resolve())
+      );
+    }
+  });
+
+  async function gateway(
+    options?: Parameters<typeof startRecordingGateway>[0]
+  ): Promise<RecordingGateway> {
+    const created = await startRecordingGateway(options);
+    gateways.push(created);
+    return created;
+  }
+
+  function adapterFor(): HermesProtocolAdapter {
+    const adapter = new HermesProtocolAdapter();
+    adapters.push(adapter);
+    return adapter;
+  }
+
+  /** Drive every call site the adapter owns, in order. */
+  async function exerciseAllCallSites(
+    adapter: HermesProtocolAdapter
+  ): Promise<void> {
+    await adapter.sendMessage('turn-1', 'hi');
+    await adapter.interrupt('turn-1');
+    await adapter.respondToApproval('req-1', 'allow');
+  }
+
+  it('resolves an empty base path when no profile is bound', () => {
+    makeTempHome();
+    expect(resolveHermesGatewaySettings({ endpoint: 'http://h:1' })).toEqual({
+      basePath: '',
+      hermesProfile: null,
+      endpoint: 'http://h:1',
+      apiKey: null,
+      source: 'adapter config',
+    });
+  });
+
+  it('resolves /p/<profile> for a bound profile', () => {
+    makeTempHome();
+    expect(
+      resolveHermesGatewaySettings({
+        endpoint: 'http://h:1',
+        hermesProfile: 'koi-product',
+      })
+    ).toMatchObject({
+      basePath: '/p/koi-product',
+      hermesProfile: 'koi-product',
+    });
+    // An empty binding is "unbound", never `/p/`.
+    expect(
+      resolveHermesGatewaySettings({
+        endpoint: 'http://h:1',
+        hermesProfile: '',
+      })
+    ).toMatchObject({ basePath: '' });
+  });
+
+  it.each([
+    ['../other', 'traversal via separator'],
+    ['a/b', 'nested path'],
+    ['..', 'relative parent'],
+    ['.', 'relative self'],
+    ['has space', 'whitespace'],
+    ['%2e%2e', 'percent-encoded traversal'],
+    ['x'.repeat(65), 'over-length'],
+  ])(
+    'refuses to build a base path from %j (%s) instead of silently using the default profile',
+    (value) => {
+      makeTempHome();
+      expect(() =>
+        resolveHermesGatewaySettings({
+          endpoint: 'http://h:1',
+          hermesProfile: value,
+        })
+      ).toThrow(/not a valid profile id/);
+    }
+  );
+
+  it('keeps every unbound call site on the bare gateway paths', async () => {
+    makeTempHome();
+    const gw = await gateway();
+    const adapter = adapterFor();
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-unbound', { apiToken: 'inline-key' })
+    );
+    await exerciseAllCallSites(adapter);
+
+    expect(gw.recorded.map((entry) => entry.url)).toEqual([
+      '/health',
+      '/v1/models',
+      '/v1/responses',
+      '/session/sess-unbound/abort',
+      '/permission/req-1/allow',
+    ]);
+    expect(
+      gw.recorded.every((entry) => entry.authorization === 'Bearer inline-key')
+    ).toBe(true);
+    expect(gw.recorded.some((entry) => entry.url.includes('/p/'))).toBe(false);
+  });
+
+  it('prefixes every bound call site with /p/<profile>', async () => {
+    makeTempHome();
+    const gw = await gateway();
+    const adapter = adapterFor();
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-bound', {
+        apiToken: 'inline-key',
+        hermesProfile: 'koi-product',
+      })
+    );
+    await exerciseAllCallSites(adapter);
+
+    expect(gw.recorded.map((entry) => entry.url)).toEqual([
+      '/p/koi-product/health',
+      '/p/koi-product/v1/models',
+      '/p/koi-product/v1/responses',
+      '/p/koi-product/session/sess-bound/abort',
+      '/p/koi-product/permission/req-1/allow',
+    ]);
+  });
+
+  it('never crosses paths or bearer tokens between two concurrently bound profiles', async () => {
+    makeTempHome();
+    // Both turns are parked until BOTH have arrived, so the two runtimes are
+    // genuinely in flight together when the assertion is made.
+    const gw = await gateway({ parkResponses: 2 });
+    const first = adapterFor();
+    const second = adapterFor();
+    await first.connect(
+      boundConfig(gw.endpoint, 'sess-a', {
+        apiToken: 'key-a',
+        hermesProfile: 'koi-product',
+      })
+    );
+    await second.connect(
+      boundConfig(gw.endpoint, 'sess-b', {
+        apiToken: 'key-b',
+        hermesProfile: 'ika-frontend',
+      })
+    );
+
+    await Promise.all([
+      first.sendMessage('turn-a', 'from a'),
+      second.sendMessage('turn-b', 'from b'),
+    ]);
+    await Promise.all([first.interrupt('turn-a'), second.interrupt('turn-b')]);
+
+    const forProfile = (profile: string): RecordedRequest[] =>
+      gw.recorded.filter((entry) => entry.url.startsWith(`/p/${profile}/`));
+    expect(forProfile('koi-product').length).toBeGreaterThanOrEqual(4);
+    expect(forProfile('ika-frontend').length).toBeGreaterThanOrEqual(4);
+    // Every koi-product request carries koi-product's key and vice versa.
+    expect(
+      forProfile('koi-product').every(
+        (entry) => entry.authorization === 'Bearer key-a'
+      )
+    ).toBe(true);
+    expect(
+      forProfile('ika-frontend').every(
+        (entry) => entry.authorization === 'Bearer key-b'
+      )
+    ).toBe(true);
+    // No request escaped its prefix, and no session id landed under the other
+    // profile's path.
+    expect(
+      gw.recorded.every(
+        (entry) =>
+          entry.url.startsWith('/p/koi-product/') ||
+          entry.url.startsWith('/p/ika-frontend/')
+      )
+    ).toBe(true);
+    expect(
+      forProfile('koi-product').some((entry) => entry.url.includes('sess-b'))
+    ).toBe(false);
+    expect(
+      forProfile('ika-frontend').some((entry) => entry.url.includes('sess-a'))
+    ).toBe(false);
+  });
+
+  it('surfaces an unknown bound profile (404) as a typed, non-retryable channel error', async () => {
+    makeTempHome();
+    // Health/models answer under the prefix so connect succeeds; only the turn
+    // hits the gateway's unknown-profile response.
+    const gw = await gateway({ responsesStatus: 404 });
+    const adapter = adapterFor();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-ghost', {
+        apiToken: 'inline-key',
+        hermesProfile: 'ghost-profile',
+      })
+    );
+    await expect(adapter.sendMessage('turn-1', 'hi')).rejects.toThrow(
+      /ghost-profile/
+    );
+
+    const error = events.find((event) => event.type === 'chat:error');
+    expect(error).toMatchObject({
+      type: 'chat:error',
+      kind: 'protocol',
+      retryable: false,
+      turnId: 'turn-1',
+    });
+    expect((error as { message: string }).message).toMatch(
+      /ghost-profile.*multiplex_profile_allowlist/s
+    );
+  });
+
+  it('surfaces an unauthorized bound profile (401) as a typed auth error', async () => {
+    makeTempHome();
+    const gw = await gateway({ responsesStatus: 401 });
+    const adapter = adapterFor();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-401', {
+        apiToken: 'inline-key',
+        hermesProfile: 'ika-frontend',
+      })
+    );
+    await expect(adapter.sendMessage('turn-1', 'hi')).rejects.toThrow(
+      /ika-frontend/
+    );
+
+    const error = events.find((event) => event.type === 'chat:error');
+    expect(error).toMatchObject({
+      type: 'chat:error',
+      kind: 'auth',
+      retryable: false,
+    });
+    expect((error as { message: string }).message).toMatch(/API_SERVER_KEY/);
+  });
+
+  it('leaves an UNBOUND runtime error mapping untouched (still retryable protocol)', async () => {
+    makeTempHome();
+    const gw = await gateway({ responsesStatus: 404 });
+    const adapter = adapterFor();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-plain', { apiToken: 'inline-key' })
+    );
+    await expect(adapter.sendMessage('turn-1', 'hi')).rejects.toThrow(
+      /Hermes sendMessage failed: 404/
+    );
+
+    expect(events.find((event) => event.type === 'chat:error')).toMatchObject({
+      kind: 'protocol',
+      retryable: true,
+      message: 'Hermes sendMessage failed: 404',
+    });
+  });
+
+  it('fails connect with the profile-specific reason when the gateway does not serve the prefix', async () => {
+    makeTempHome();
+    const gw = await gateway({ unservedPrefix: '/p/ghost-profile' });
+    const adapter = adapterFor();
+    await expect(
+      adapter.connect(
+        boundConfig(gw.endpoint, 'sess-unserved', {
+          apiToken: 'inline-key',
+          hermesProfile: 'ghost-profile',
+        })
+      )
+    ).rejects.toThrow(/ghost-profile.*multiplex_profiles/s);
   });
 });

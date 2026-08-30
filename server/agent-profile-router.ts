@@ -5,6 +5,7 @@ import type {
   AgentProfileAvatarRef,
   AgentProfileRespondTo,
 } from '../shared/agent-profile.js';
+import { isValidHermesProfile } from '../shared/agent-profile.js';
 import {
   AgentProfileStoreError,
   type AgentProfileCreateInput,
@@ -35,6 +36,7 @@ const PATCH_FIELDS = new Set([
   'provider',
   'effort',
   'envVars',
+  'hermesProfile',
   'namePool',
   'respondTo',
   'respondToAllowlist',
@@ -294,6 +296,16 @@ function parsePatch(
     if (envVars === undefined) return invalidField(res, 'envVars');
     patch.envVars = envVars;
   }
+  if (hasOwn(body, 'hermesProfile')) {
+    // Free-form operator-typed id (Relay does not know the Hermes roster), but
+    // it lands in a URL path segment, so the shape is validated here as well as
+    // in the store guard. `null` clears the binding.
+    const hermesProfile = body['hermesProfile'];
+    if (hermesProfile !== null && !isValidHermesProfile(hermesProfile)) {
+      return invalidField(res, 'hermesProfile');
+    }
+    patch.hermesProfile = hermesProfile as string | null;
+  }
   if (hasOwn(body, 'namePool')) {
     const namePool = validateStringList(body['namePool']);
     if (namePool === undefined) return invalidField(res, 'namePool');
@@ -353,6 +365,8 @@ function createInputFromPatch(
   if (typeof patch.provider === 'string') input.provider = patch.provider;
   if (typeof patch.effort === 'string') input.effort = patch.effort;
   if (patch.envVars) input.envVars = patch.envVars;
+  if (typeof patch.hermesProfile === 'string')
+    input.hermesProfile = patch.hermesProfile;
   if (patch.namePool) input.namePool = patch.namePool;
   if (patch.respondTo) input.respondTo = patch.respondTo;
   if (patch.respondToAllowlist)
