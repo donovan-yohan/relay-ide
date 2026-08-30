@@ -207,6 +207,16 @@ Offline nodes are skipped without throwing and audited with `CREDENTIAL_ROTATION
 
 A default cadence is intentionally not shipped; operators opt in by setting `credentialRotation.intervalMs` themselves. The scheduler is process-local: it stops on hub shutdown and does not persist tick state.
 
+## Agent-profile gateway secrets
+
+An agent profile may hold one write-only gateway credential: `hermesApiKey`, the `API_SERVER_KEY` for the Hermes multiplex profile that profile is bound to (#1453). It is a provider gateway credential, not a Relay auth lane — it is never a browser session, scoped actor credential, node credential, or pair token, and it authenticates Relay outbound to a local gateway rather than authenticating anyone to Relay.
+
+Redaction is structural, not procedural. The value lives in its own `agent_profiles.hermes_api_key` column, outside the `profile_json` blob, and every profile read statement selects `hermes_api_key IS NOT NULL` rather than the value. An `AgentProfile` can therefore carry only `hermesApiKeySet: boolean`, and a read path added later cannot return the secret by omission. The single value read path is `AgentProfileStore.getGatewaySecret`, whose only caller forwards it into adapter `extra` for a bound runtime. It must not appear in logs, diagnostics, snapshots, audit payloads, CLI JSON, browser JSON, or error messages; rejections name the field, never the value.
+
+The stored value is restricted to printable, space-free US-ASCII (max 4096 characters), so it cannot carry CR/LF into the `Authorization` header it becomes. The store DB is chmod'ed `0600` before WAL is enabled, best effort. There is no at-rest encryption: the hub has no key management, and `pinHash`, the GitHub access token, and the VAPID private key already live in a config-dir `config.json`.
+
+Related open gap: agent-profile `envVars` are still persisted and returned raw (#1464).
+
 ## Operator visibility
 
 The hub UI surfaces each paired node's trust tier, ACL allow/challenge/deny capability posture, scope, capability availability, and high-risk summary from the node summary returned by `/hub/nodes`. Confirmation prompts also show the selected node, trust tier, policy ref, required bits grouped by allow/challenge/deny/unknown posture, and keep canonical params behind a details disclosure instead of making raw JSON the only security context.

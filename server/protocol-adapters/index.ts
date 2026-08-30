@@ -191,6 +191,22 @@ export interface ProviderDescriptor {
    */
   readonly agentProfileGatewayBindingKey: 'hermesProfile' | null;
   /**
+   * The adapter `extra` key this provider's per-profile gateway SECRET is
+   * forwarded as, or `null` when the provider has none.
+   *
+   * Only hermes has one (#1453): each named multiplex profile carries its own
+   * `API_SERVER_KEY`, so a bound Relay profile must authenticate with that
+   * profile's key instead of the gateway default's. The value is stored
+   * write-only in the agent-profile store and read there through the neutral
+   * `getGatewaySecret`; this row is the single place that says which `extra`
+   * key carries it, so neither the binder nor the store spells a provider name.
+   *
+   * A secret is forwarded ONLY alongside a present `agentProfileGatewayBindingKey`
+   * value: an unbound runtime talks to the gateway default and must keep using
+   * the default credential.
+   */
+  readonly agentProfileGatewaySecretKey: 'hermesApiKey' | null;
+  /**
    * The provider a channel gets when an orchestrator is designated with no
    * framework named. Exactly one descriptor may declare it (asserted at load).
    */
@@ -237,6 +253,7 @@ export const PROVIDER_DESCRIPTORS = {
     // lane is part of that plumbing (test/channel-agent-binder.test.ts).
     yoloPermissionMode: 'bypassPermissions',
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   claude: {
@@ -266,6 +283,7 @@ export const PROVIDER_DESCRIPTORS = {
     ],
     yoloPermissionMode: 'bypassPermissions',
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: true,
   },
   codex: {
@@ -294,6 +312,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [['.codex', 'auth.json']],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   'prime-agent': {
@@ -319,6 +338,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   pi: {
@@ -342,6 +362,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   opencode: {
@@ -391,6 +412,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   'opencode-attached': {
@@ -446,6 +468,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
   },
   hermes: {
@@ -502,6 +525,7 @@ export const PROVIDER_DESCRIPTORS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: 'hermesProfile',
+    agentProfileGatewaySecretKey: 'hermesApiKey',
     isDefaultOrchestratorProvider: false,
   },
 } satisfies Record<string, ProviderDescriptor>;

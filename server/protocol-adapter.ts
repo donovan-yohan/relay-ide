@@ -35,6 +35,17 @@ export interface AdapterConfig {
   /**
    * Runtime-only subprocess environment overlay. Credentials belong here, not
    * in `extra`, because provider options are persisted with channel bindings.
+   *
+   * ONE CARVE-OUT (#1453): a per-profile GATEWAY credential travels in `extra`,
+   * under the key named by the provider's `agentProfileGatewaySecretKey`
+   * descriptor row. It cannot use `processEnv` — it is a bearer for an HTTP
+   * gateway the adapter calls in-process, not an environment variable for a
+   * subprocess. That is safe ONLY while `extra` stays runtime-only: nothing
+   * persists it today (`upsertBinding` is passed `providerSession`, never
+   * `extra`), and `test/channel-agent-binder.test.ts` pins that. Anyone adding
+   * `extra` persistence, or a cross-node spawn envelope that carries `extra`,
+   * must first strip the descriptor-named secret key — otherwise that change
+   * writes a bearer token to disk.
    */
   processEnv?: Record<string, string>;
   /**

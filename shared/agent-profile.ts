@@ -81,6 +81,21 @@ export interface AgentProfile {
    * `isValidHermesProfile`.
    */
   hermesProfile?: string;
+  /**
+   * READ-ONLY MARKER for the per-profile Hermes gateway key (#1453). `true`
+   * when a key is stored for this profile, absent when none is.
+   *
+   * The key ITSELF is never a field on `AgentProfile` and never appears in any
+   * read path. It lives in its own `agent_profiles.hermes_api_key` column,
+   * outside the `profile_json` blob, and the store's read statements select
+   * `hermes_api_key IS NOT NULL` rather than the value — so redaction is a
+   * property of the schema, not of a redaction helper somebody must remember to
+   * call on a new read path. Writes go in through
+   * `AgentProfileCreateInput`/`AgentProfileUpdateInput.hermesApiKey`; reads come
+   * back out only through `AgentProfileStore.getGatewaySecret`, which exactly
+   * one caller (the channel binder's gateway-binding extra) uses.
+   */
+  hermesApiKeySet?: boolean;
   /** Optional pool of alternate names this profile also answers to. */
   namePool?: string[];
   /** Optional respond-to policy (advisory in this slice). */
@@ -334,6 +349,32 @@ export function isValidHermesProfile(value: unknown): value is string {
   return HERMES_PROFILE_PATTERN.test(value);
 }
 
+/**
+ * Allowed shape of a per-profile Hermes gateway key. The value is sent verbatim
+ * as an `Authorization: Bearer <key>` header, so it is restricted to printable
+ * non-space US-ASCII: that excludes CR, LF and NUL by construction, which is
+ * what makes header injection impossible rather than merely unlikely. 4096 is a
+ * generous ceiling for any bearer/JWT the gateway would accept.
+ */
+export const HERMES_API_KEY_PATTERN = /^[\x21-\x7e]{1,4096}$/;
+
+/**
+ * True when `value` is a usable per-profile Hermes gateway key. Never log,
+ * echo, or include `value` in an error message derived from this check — the
+ * caller-facing failure names the FIELD, never the rejected secret.
+ */
+export function isValidHermesApiKey(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  return HERMES_API_KEY_PATTERN.test(value);
+}
+
+/**
+ * Field name a secret must never occupy on a profile row. `isAgentProfile`
+ * rejects a value carrying it, so a hand-edited or legacy `profile_json` blob
+ * that smuggled the key into the readable overlay cannot be served as a profile.
+ */
+export const AGENT_PROFILE_SECRET_KEY = 'hermesApiKey' as const;
+
 /** Runtime guard for a stored/parsed AgentProfile row. */
 export function isAgentProfile(value: unknown): value is AgentProfile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -360,6 +401,11 @@ export function isAgentProfile(value: unknown): value is AgentProfile {
       ));
   const hermesProfileOk =
     v.hermesProfile === undefined || isValidHermesProfile(v.hermesProfile);
+  // The gateway key is a write-only secret held in its own column. A profile
+  // object carrying it is malformed by definition, never merely redundant.
+  const noSecretOk = v[AGENT_PROFILE_SECRET_KEY] === undefined;
+  const hermesApiKeySetOk =
+    v.hermesApiKeySet === undefined || typeof v.hermesApiKeySet === 'boolean';
   const respondToOk =
     v.respondTo === undefined ||
     v.respondTo === 'owner-only' ||
@@ -378,6 +424,8 @@ export function isAgentProfile(value: unknown): value is AgentProfile {
     isOptString(v.effort) &&
     envVarsOk &&
     hermesProfileOk &&
+    noSecretOk &&
+    hermesApiKeySetOk &&
     isOptStringArray(v.namePool) &&
     respondToOk &&
     isOptStringArray(v.respondToAllowlist) &&

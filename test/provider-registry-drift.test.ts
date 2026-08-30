@@ -131,6 +131,12 @@ interface ProviderDriftExpectation {
    * = this provider has no such concept and must receive nothing.
    */
   agentProfileGatewayBindingKey: 'hermesProfile' | null;
+  /**
+   * Adapter `extra` key carrying this provider's WRITE-ONLY per-profile gateway
+   * secret; `null` = this provider has none and must receive nothing. A secret
+   * rides only alongside a present binding value.
+   */
+  agentProfileGatewaySecretKey: 'hermesApiKey' | null;
   /** Chosen when an orchestrator is designated with no framework named. */
   isDefaultOrchestratorProvider: boolean;
   /** Legacy v1 `ChatEventSource` — only the bridged lane needs one. */
@@ -176,6 +182,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     // is part of that plumbing (test/channel-agent-binder.test.ts).
     yoloPermissionMode: 'bypassPermissions',
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -200,6 +207,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     ],
     yoloPermissionMode: 'bypassPermissions',
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: true,
     validLegacyChatEventSource: true,
   },
@@ -221,6 +229,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [['.codex', 'auth.json']],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -247,6 +256,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: false,
   },
@@ -269,6 +279,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: false,
   },
@@ -290,6 +301,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -314,6 +326,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: null,
+    agentProfileGatewaySecretKey: null,
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -335,6 +348,7 @@ const PROVIDER_DRIFT_EXPECTATIONS = {
     authCredentialPaths: [],
     yoloPermissionMode: null,
     agentProfileGatewayBindingKey: 'hermesProfile',
+    agentProfileGatewaySecretKey: 'hermesApiKey',
     isDefaultOrchestratorProvider: false,
     validLegacyChatEventSource: true,
   },
@@ -809,6 +823,31 @@ describe('provider registry drift guards', () => {
         );
       }
     );
+
+    it.each(PROVIDER_IDS)(
+      'names the agent-profile gateway secret key for %s',
+      (id) => {
+        expect(descriptorFor(id).agentProfileGatewaySecretKey).toBe(
+          expectationFor(id).agentProfileGatewaySecretKey
+        );
+      }
+    );
+
+    it('gives a gateway secret key only to a provider that has a binding key', () => {
+      // The binder forwards the secret ONLY alongside a present binding value.
+      // A provider that declared a secret key with no binding key would supply
+      // credential material that nothing scopes.
+      for (const id of PROVIDER_IDS) {
+        const descriptor = descriptorFor(id);
+        if (descriptor.agentProfileGatewaySecretKey === null) continue;
+        expect(descriptor.agentProfileGatewayBindingKey).not.toBeNull();
+      }
+      expect(
+        PROVIDER_IDS.filter(
+          (id) => descriptorFor(id).agentProfileGatewaySecretKey !== null
+        )
+      ).toEqual(['hermes']);
+    });
 
     it('gives exactly one provider a gateway binding key', () => {
       // `server/channel-agent-binder.ts` forwards this field and nothing else

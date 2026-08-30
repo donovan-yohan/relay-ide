@@ -278,3 +278,19 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* The write-only gateway key: input, then its state line and clear action.
+   The status text and the button sit OUTSIDE the label so the field can be
+   described without the value ever having a rendered form. */
+.agent-profiles-editor__secret {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.agent-profiles-editor__secret-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
