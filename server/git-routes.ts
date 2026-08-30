@@ -9,9 +9,13 @@ import type { Request, Response } from 'express';
 import { listBranchesEnriched } from './git.js';
 import { readMeta } from './config.js';
 import { WORKTREE_DIRS, parseWorktreeListPorcelain } from './watcher.js';
+import { Semaphore, allOrFirstError } from './concurrency.js';
 import type { WorktreeMetadata } from './types.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Max simultaneous `git worktree list` forks per scan (#1448). */
+const WORKTREE_SCAN_CONCURRENCY = 8;
 
 type ExecFileAsyncLike = (
   file: string,
@@ -177,19 +181,32 @@ export async function scanWorktrees(
     addConfiguredRepos(reposToScan, config.repos ?? [], roots);
   }
 
-  for (const repo of reposToScan) {
-    try {
-      const { stdout } = await deps.execFileAsync(
-        'git',
-        ['worktree', 'list', '--porcelain'],
-        { cwd: repo.path }
-      );
-      worktrees.push(...processWorktreeList(deps, repo, stdout));
-    } catch {
-      // git worktree list failed — fall back to directory scanning
-      worktrees.push(...processWorktreeFallback(deps, repo));
-    }
-  }
+  // One `git worktree list` fork per repo. Serially that is O(repos) round
+  // trips on the request path (#1448); run them concurrently under a shared
+  // permit ceiling instead. Results are reassembled in `reposToScan` order so
+  // the dedup below still keeps the first-seen entry for a path.
+  const gate = new Semaphore(WORKTREE_SCAN_CONCURRENCY);
+  // `allOrFirstError`, not `Promise.all`: `processWorktreeFallback` runs in the
+  // catch and can itself throw (injected `readMeta`/`readdirSync`), and a
+  // second such rejection would go unobserved under `Promise.all`.
+  const perRepo = await allOrFirstError(
+    reposToScan.map((repo) =>
+      gate.run(async () => {
+        try {
+          const { stdout } = await deps.execFileAsync(
+            'git',
+            ['worktree', 'list', '--porcelain'],
+            { cwd: repo.path }
+          );
+          return processWorktreeList(deps, repo, stdout);
+        } catch {
+          // git worktree list failed — fall back to directory scanning
+          return processWorktreeFallback(deps, repo);
+        }
+      })
+    )
+  );
+  for (const items of perRepo) worktrees.push(...items);
 
   // Deduplicate by path
   const seen = new Set<string>();

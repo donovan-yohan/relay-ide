@@ -40,6 +40,19 @@ workflow.
   under 50 ms instead of ~2.5 s. A transcript that has been appended to is
   re-read on the next listing, so results stay live (#1449)
 
+### Faster repo, project, and workspace-tree reads
+
+#### Fixed
+
+- Surfaces that list repos, projects, and workspace trees — session create, the
+  node dashboard, and the environment picker — now open in milliseconds instead
+  of stalling on a fresh git scan of every repo. The scan is shared between
+  them, runs its git calls in parallel under a bounded ceiling, and refreshes
+  immediately whenever a repo, branch, or worktree changes (#1448)
+- The environment picker no longer computes dirty state, branch divergence, and
+  worktree listings only to throw them away, and the worktree list loads
+  noticeably faster (#1448)
+
 ### Typed channel delivery receipts
 
 #### Added
