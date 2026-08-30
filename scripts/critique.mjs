@@ -74,6 +74,14 @@ const TEST_PATTERN =
 
 function parseArgs(argv) {
   const scopes = [];
+  // `--model --dry-run` must not silently set the model to "--dry-run", and a
+  // flag at the end of argv must not silently become `undefined`.
+  const value = (flag, next) => {
+    if (next === undefined || next.startsWith('--')) {
+      throw new Error(`${flag} needs a value`);
+    }
+    return next;
+  };
   const opts = {
     includeTests: false,
     model: process.env.RELAY_CRITIQUE_MODEL || DEFAULT_MODEL,
@@ -93,19 +101,19 @@ function parseArgs(argv) {
         opts.dryRun = true;
         break;
       case '--model':
-        opts.model = argv[++i];
+        opts.model = value('--model', argv[++i]);
         break;
       case '--out':
-        opts.out = argv[++i];
+        opts.out = value('--out', argv[++i]);
         break;
       case '--budget':
-        opts.budget = Number(argv[++i]);
+        opts.budget = Number(value('--budget', argv[++i]));
         break;
       case '--max-tokens':
-        opts.maxTokens = Number(argv[++i]);
+        opts.maxTokens = Number(value('--max-tokens', argv[++i]));
         break;
       case '--reasoning-effort':
-        opts.reasoningEffort = argv[++i];
+        opts.reasoningEffort = value('--reasoning-effort', argv[++i]);
         break;
       default:
         if (arg.startsWith('--')) {
