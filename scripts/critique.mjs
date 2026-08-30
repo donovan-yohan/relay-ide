@@ -22,7 +22,7 @@
  *   --out <path>        report destination (default: a timestamped file under
  *                       the scratch dir; see RELAY_CRITIQUE_OUT_DIR)
  *   --budget <tokens>   input packing budget (default: 200000)
- *   --max-tokens <n>    completion budget (default: 16000 — a reasoning model
+ *   --max-tokens <n>    completion budget (default: 24000 — a reasoning model
  *                       spends most of this before it writes anything)
  *   --reasoning-effort  low | medium | high | max (default: low). Reasoning
  *                       tokens come out of --max-tokens, and on a large scope a
@@ -43,7 +43,7 @@ import path from 'node:path';
 
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_BUDGET_TOKENS = 200_000;
-const DEFAULT_MAX_TOKENS = 16_000;
+const DEFAULT_MAX_TOKENS = 24_000;
 // Reasoning tokens are charged against max_tokens and, on a 100k+ token scope,
 // a high-effort reasoning model will spend the entire budget thinking and
 // return an empty report. We want findings, not deliberation.

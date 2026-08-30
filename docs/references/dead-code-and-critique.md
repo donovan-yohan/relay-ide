@@ -90,7 +90,7 @@ npm run critique                                  # default scope: server/
 npm run critique -- server/protocol-adapters
 npm run critique -- shared frontend/src/lib --include-tests
 npm run critique -- server --dry-run              # pack only, print sizes, no call
-npm run critique -- server --out /tmp/report.md --max-tokens 20000
+npm run critique -- server --out /tmp/report.md --max-tokens 32000
 ```
 
 | Flag                 | Default                                 | Notes                                                                                      |
@@ -146,6 +146,11 @@ metered provider, mind that a full `server/` scope is a ~200k-token request.
   so you can see which of the two it is doing. If the report comes back empty or
   `finish_reason` is `length`: lower the effort, raise `--max-tokens`, or narrow
   the scope — in that order. Budget 15-25 minutes for a directory-sized scope.
+  Reference point: `server/protocol-adapters` at `--reasoning-effort low` took
+  21 minutes, emitted 52k characters of discarded reasoning, and still hit
+  `finish_reason: length` at 16k completion tokens — which is why the default is
+  now 24k. Check the `finish_reason` row in the report header before trusting
+  that the last section is missing rather than truncated.
 - **Scope blindness is structural.** The model sees only the packed files. A
   symbol with no caller _inside the scope_ may be called from outside it. The
   prompt demands "candidate" language for exactly this, but check anyway.
