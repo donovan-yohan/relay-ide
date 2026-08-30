@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   discoverLocalHubActorToken,
   localHubActorTokenPath,
@@ -9,7 +9,9 @@ import {
   type LocalHubActorTokenFile,
 } from '../shared/local-hub-actor-token.js';
 import {
+  configDirIsShared,
   LOCAL_HUB_ACTOR_ID,
+  LOCAL_HUB_ACTOR_TOKEN_TTL_MS,
   localHubActorTokenDisabled,
   localHubActorTokenRoot,
   publishLocalHubActorToken,
@@ -24,6 +26,7 @@ import {
   DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
   isLocalHubCliActorCredential,
   issueCliGatewayActorCredential,
+  renewCliGatewayActorCredential,
   validateCliGatewayActorCredential,
 } from '../server/cli-gateway-actor-auth.js';
 
@@ -53,10 +56,15 @@ function registry() {
   });
 }
 
+function sharedConfigDir(home: string): string {
+  return localHubActorTokenRoot(fixtureEnv(home), home);
+}
+
 function publish(home: string, reg = registry()) {
   const published = publishLocalHubActorToken({
     registry: reg,
     port: PORT,
+    configDir: sharedConfigDir(home),
     maxTtlMs: DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
     env: fixtureEnv(home),
     homedir: home,
@@ -186,10 +194,36 @@ describe('#1467 hub-local CLI trust token — publish', () => {
       publishLocalHubActorToken({
         registry: registry(),
         port: PORT,
+        configDir: sharedConfigDir(home),
         env: { ...fixtureEnv(home), RELAY_IDE_E2E_FIXTURES: '1' },
         homedir: home,
       })
     ).toBeNull();
+  });
+
+  it('publishes nothing for a hub pinned outside the shared config roots', () => {
+    const home = fixtureHome();
+    // A test child process or fixture hub booted with RELAY_IDE_CONFIG pointing
+    // at a temp dir must never write into the operator's real config root, and
+    // must never overwrite a live hub's port-keyed file.
+    const isolated = path.join(home, 'isolated-hub');
+    fs.mkdirSync(isolated, { recursive: true });
+    expect(configDirIsShared(isolated, fixtureEnv(home), home)).toBe(false);
+    expect(
+      configDirIsShared(sharedConfigDir(home), fixtureEnv(home), home)
+    ).toBe(true);
+    expect(
+      publishLocalHubActorToken({
+        registry: registry(),
+        port: PORT,
+        configDir: isolated,
+        env: fixtureEnv(home),
+        homedir: home,
+      })
+    ).toBeNull();
+    expect(
+      fs.existsSync(localHubActorTokenPath(sharedConfigDir(home), PORT))
+    ).toBe(false);
   });
 
   it('stamps a trusted marker that the public issue surface cannot forge', () => {
@@ -211,12 +245,142 @@ describe('#1467 hub-local CLI trust token — publish', () => {
     expect(isLocalHubCliActorCredential(forged.credential)).toBe(false);
   });
 
+  it('refuses to renew the host-local credential into an unmarked successor', () => {
+    const home = fixtureHome();
+    const { registry: reg, published } = publish(home);
+    const boot = reg.getCredential(published.credentialId);
+    expect(boot).toBeTruthy();
+    // `POST /cli-gateway/actor-credentials/renew` is reachable with this token.
+    // Renewal overwrites the reason marker, so the successor would silently
+    // lose the channel exemption — refuse instead of downgrading.
+    expect(() => renewCliGatewayActorCredential(reg, boot!)).toThrow(
+      /cannot be renewed/
+    );
+
+    // A normal login-minted credential still renews.
+    const login = issueCliGatewayActorCredential(reg, {
+      actor: { type: 'cli', id: 'relay-cli@box' },
+      issuer: { id: 'operator' },
+      capabilities: ['session:read'],
+      scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      ttlMs: 60_000,
+    });
+    expect(() =>
+      renewCliGatewayActorCredential(reg, login.credential, { ttlMs: 60_000 })
+    ).not.toThrow();
+  });
+
   it('retires the file on graceful shutdown', () => {
     const home = fixtureHome();
     const { published } = publish(home);
     expect(fs.existsSync(published.path)).toBe(true);
-    expect(retireLocalHubActorToken(PORT, fixtureEnv(home), home)).toBe(true);
+    // Only the publisher's own file is removed: a hub sharing the port on
+    // another address must not delete a peer's live token.
+    expect(
+      retireLocalHubActorToken(
+        PORT,
+        'some-other-hubs-credential',
+        fixtureEnv(home),
+        home
+      )
+    ).toBe(false);
+    expect(fs.existsSync(published.path)).toBe(true);
+    expect(
+      retireLocalHubActorToken(
+        PORT,
+        published.credentialId,
+        fixtureEnv(home),
+        home
+      )
+    ).toBe(true);
     expect(fs.existsSync(published.path)).toBe(false);
+  });
+
+  it('caps the on-disk TTL well below the registry ceiling and refreshes inside it', () => {
+    const home = fixtureHome();
+    const { published } = publish(home);
+    // A backed-up or synced copy must die within a day even if the hub never
+    // restarts; the refresh must land strictly before that.
+    expect(published.ttlMs).toBe(LOCAL_HUB_ACTOR_TOKEN_TTL_MS);
+    expect(published.ttlMs).toBeLessThan(DEFAULT_CLI_LOGIN_ACTOR_TTL_MS);
+    expect(published.refreshAfterMs).toBeLessThan(published.ttlMs);
+    expect(published.refreshAfterMs).toBeGreaterThan(0);
+
+    // Every configured ceiling — including hardened ones far below the 60s
+    // refresh floor — must still refresh strictly before the token expires.
+    let port = PORT + 100;
+    for (const ceiling of [
+      30_000,
+      60_000,
+      120_000,
+      30 * 60 * 1000,
+      DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
+    ]) {
+      const tight = publishLocalHubActorToken({
+        registry: createCliGatewayActorRegistry({ maxTtlMs: ceiling }),
+        port: port++,
+        configDir: sharedConfigDir(home),
+        maxTtlMs: ceiling,
+        env: fixtureEnv(home),
+        homedir: home,
+      });
+      expect(tight).not.toBeNull();
+      expect(tight!.ttlMs).toBe(
+        Math.min(ceiling, LOCAL_HUB_ACTOR_TOKEN_TTL_MS)
+      );
+      expect(tight!.refreshAfterMs).toBeGreaterThan(0);
+      expect(tight!.refreshAfterMs).toBeLessThan(tight!.ttlMs);
+    }
+  });
+
+  it('publishes nothing when the hub is bound to a non-loopback address only', () => {
+    const home = fixtureHome();
+    for (const host of ['0.0.0.0', '::', '127.0.0.1', 'localhost']) {
+      expect(
+        publishLocalHubActorToken({
+          registry: registry(),
+          port: PORT,
+          configDir: sharedConfigDir(home),
+          host,
+          env: fixtureEnv(home),
+          homedir: home,
+        })
+      ).not.toBeNull();
+    }
+    // A LAN-only hub would publish a token the loopback-only CLI can't use.
+    expect(
+      publishLocalHubActorToken({
+        registry: registry(),
+        port: PORT + 2,
+        configDir: sharedConfigDir(home),
+        host: '10.0.0.5',
+        env: fixtureEnv(home),
+        homedir: home,
+      })
+    ).toBeNull();
+    expect(
+      fs.existsSync(localHubActorTokenPath(sharedConfigDir(home), PORT + 2))
+    ).toBe(false);
+  });
+
+  it('refuses to publish into a group/world-writable directory instead of re-permissioning it', () => {
+    const home = fixtureHome();
+    const root = sharedConfigDir(home);
+    fs.mkdirSync(root, { recursive: true });
+    fs.chmodSync(root, 0o775);
+    expect(() =>
+      publishLocalHubActorToken({
+        registry: registry(),
+        port: PORT,
+        configDir: root,
+        env: fixtureEnv(home),
+        homedir: home,
+      })
+    ).toThrow(/group\/world-writable/);
+    // The operator's directory is left exactly as they set it.
+    expect(fs.statSync(root).mode & 0o777).toBe(0o775);
+    expect(fs.existsSync(localHubActorTokenPath(root, PORT))).toBe(false);
+    fs.chmodSync(root, 0o700);
   });
 });
 
@@ -277,14 +441,38 @@ describe('#1467 hub-local CLI trust token — fail-closed reader', () => {
     fs.chmodSync(root, 0o700);
   });
 
-  it('refuses a file owned by another uid', () => {
+  it('refuses a file owned by another uid — on the open handle, before the parent', () => {
     const home = fixtureHome();
     const { root } = publish(home);
     const uid = (process.getuid?.() ?? 0) + 4242;
+    // `foreign_owner` (not `foreign_owner_parent`) proves the FILE-level check
+    // on the fd fired: deleting it would fall through to the parent check and
+    // report the other reason, failing this assertion.
     expect(readLocalHubActorTokenFile(root, PORT, { uid })).toMatchObject({
       ok: false,
       reason: 'foreign_owner',
     });
+    // With a matching uid the same file is accepted, so the rejection is the
+    // ownership check and not some unrelated precondition.
+    expect(readLocalHubActorTokenFile(root, PORT).ok).toBe(true);
+  });
+
+  it('uses the real process uid when none is injected', () => {
+    const home = fixtureHome();
+    const { root } = publish(home);
+    const getuid = vi
+      .spyOn(process, 'getuid')
+      .mockReturnValue((process.getuid?.() ?? 0) + 4242);
+    try {
+      expect(readLocalHubActorTokenFile(root, PORT)).toMatchObject({
+        ok: false,
+        reason: 'foreign_owner',
+      });
+      expect(getuid).toHaveBeenCalled();
+    } finally {
+      getuid.mockRestore();
+    }
+    expect(readLocalHubActorTokenFile(root, PORT).ok).toBe(true);
   });
 
   it('refuses a port mismatch, a non-loopback hub, and an expired credential', () => {

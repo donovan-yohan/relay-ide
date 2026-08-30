@@ -529,16 +529,18 @@ A terminal on the machine running the hub needs no ceremony at all:
 relay-ide v1 channels list --json   # works in a fresh shell, no login, no env var
 ```
 
-At boot the hub mints one scoped actor credential with the full CLI-gateway capability surface and writes it, mode `0600`, to a port-keyed file `local-actor-token-<port>.json` in the shared standard config root (`~/.config/relay-ide`, or `$XDG_CONFIG_HOME/relay-ide` when that is set). The CLI discovers the file for the loopback port it is dialing (`--port` / `RELAY_IDE_PORT` / default), so several hubs on different ports coexist. `--config` and `RELAY_IDE_CONFIG` are consulted first if you pin them.
+At boot the hub mints one scoped actor credential with the full CLI-gateway capability surface and writes it, mode `0600`, to a port-keyed file `local-actor-token-<port>.json` in the shared standard config root (`~/.config/relay-ide`, or `$XDG_CONFIG_HOME/relay-ide` when that is set). The CLI looks there for the loopback port it is dialing (`--port` / `RELAY_IDE_PORT` / default), so several hubs on different ports coexist.
 
 The ratified boundary is in `docs/SECURITY_POLICY.md`: reading that file requires filesystem access as the hub's uid, and a process with that access already owns the hub. The PIN keeps gating the browser/remote UI, and a remote caller without the file gets the same 401 as before.
 
 Properties worth knowing:
 
-- The credential lives only in the hub's in-memory registry, so **every hub restart rotates it** and a copied or backed-up file is dead material. The hub deletes the file on graceful shutdown.
+- The credential lives only in the hub's in-memory registry, so **every hub restart rotates it**. Its on-disk TTL is additionally capped at 24 hours and refreshed in place before expiry, so a copied or backed-up file stops working within a day even on a hub that never restarts. The hub deletes the file on graceful shutdown.
 - The token is never served over HTTP, logged, or included in a diagnostics bundle — the file is the only delivery channel.
 - The CLI ignores the file (and behaves exactly as it did before #1467) when it is a symlink, group/other readable, owned by another uid, in a group/world-writable directory, bound to a different port, or bound to a non-loopback hub URL.
 - It is the **last** lane in precedence: `--actor-token` > `RELAY_IDE_ACTOR_TOKEN` > the stored `relay-ide login` credential > the local hub token. It is only consulted for actor-lane commands.
+- Only a hub whose own config directory is (or sits under) a shared config root publishes one, so a fixture or test hub pinned elsewhere with `RELAY_IDE_CONFIG` writes nothing. A hub bound to a non-loopback address only also publishes nothing, since the CLI dials loopback.
+- If the config directory is group- or world-writable the hub refuses to publish and logs the `chmod go-w …` to run; it never re-permissions a directory you set up yourself.
 - Set `RELAY_IDE_DISABLE_LOCAL_ACTOR_TOKEN=1` on the hub to turn the whole mechanism off.
 
 #### Remote or non-host machines: `relay-ide login` (#1435)

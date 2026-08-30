@@ -433,8 +433,10 @@ import {
   type RelayCapabilityBit,
 } from '../shared/security-policy.js';
 import {
+  clearStaleLocalHubActorTokenFile,
   publishLocalHubActorToken,
   retireLocalHubActorToken,
+  type PublishedLocalHubActorToken,
 } from './local-hub-actor-token.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -457,29 +459,38 @@ const cliGatewayHandshakeGrantRegistry =
 let cliGatewayActorMaxTtlMs = DEFAULT_CLI_LOGIN_ACTOR_TTL_MS;
 /** Port whose #1467 local CLI trust token file this process owns, if any. */
 let localHubActorTokenPort: number | null = null;
+/** Credential id of the file this process wrote — the delete key on shutdown. */
+let localHubActorTokenCredentialId: string | null = null;
 let localHubActorTokenTimer: NodeJS.Timeout | null = null;
 
 /** Mint + write the #1467 local CLI trust token, warning (never throwing) on failure. */
 function publishLocalHubActorTokenOrWarn(
+  configDir: string,
+  host: string,
   port: number,
   verb: 'published' | 'refreshed'
-): void {
+): PublishedLocalHubActorToken | null {
   try {
     const published = publishLocalHubActorToken({
       registry: cliGatewayActorRegistry,
       port,
+      configDir,
+      host,
       maxTtlMs: cliGatewayActorMaxTtlMs,
     });
-    if (!published) return;
+    if (!published) return null;
     localHubActorTokenPort = port;
+    localHubActorTokenCredentialId = published.credentialId;
     logger.info(
       `Local CLI trust token ${verb} (credential ${published.credentialId}) at ${published.path}`
     );
+    return published;
   } catch (error) {
     logger.warn(
       'Could not publish the local CLI trust token; `relay-ide v1` will require an explicit actor token:',
       error instanceof Error ? error.message : String(error)
     );
+    return null;
   }
 }
 /** Rebuild the actor registry with the configured TTL ceiling (#1435). */
@@ -6494,13 +6505,17 @@ async function main(): Promise<void> {
       clearInterval(localHubActorTokenTimer);
       localHubActorTokenTimer = null;
     }
-    if (localHubActorTokenPort !== null) {
+    if (localHubActorTokenPort !== null && localHubActorTokenCredentialId) {
       try {
-        retireLocalHubActorToken(localHubActorTokenPort);
+        retireLocalHubActorToken(
+          localHubActorTokenPort,
+          localHubActorTokenCredentialId
+        );
       } catch {
         /* best effort */
       }
       localHubActorTokenPort = null;
+      localHubActorTokenCredentialId = null;
     }
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
@@ -6606,20 +6621,43 @@ async function main(): Promise<void> {
       logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
       // #1467: publish the host-local CLI trust token once the real port is
       // known. Never log the token value — only its path/credential id.
-      publishLocalHubActorTokenOrWarn(addr.port, 'published');
-      // A hub that outlives the credential TTL would silently lose local CLI
-      // access, so refresh well before expiry. The predecessor is left to
-      // expire on its own (mirrors #1435 renew semantics), and the timer is
-      // unref'd so it never holds the process open.
-      const refreshMs = Math.max(
-        60 * 60 * 1000,
-        Math.floor(cliGatewayActorMaxTtlMs / 2)
-      );
-      localHubActorTokenTimer = setInterval(() => {
-        if (localHubActorTokenPort === null) return;
-        publishLocalHubActorTokenOrWarn(localHubActorTokenPort, 'refreshed');
-      }, refreshMs);
-      localHubActorTokenTimer.unref();
+      //
+      // `tryListen` re-calls `server.listen(cb)` on EADDRINUSE, and every
+      // attempt leaves a pending one-shot 'listening' listener behind — so on
+      // the attempt that finally binds, ALL of them fire. Guard so a retried
+      // boot mints one credential and arms one timer, not one per attempt.
+      if (localHubActorTokenTimer === null) {
+        // Binding this port proves any token file left for it is dead: its
+        // credential only ever existed in the previous owner's memory.
+        try {
+          clearStaleLocalHubActorTokenFile(addr.port);
+        } catch {
+          /* best effort */
+        }
+        const published = publishLocalHubActorTokenOrWarn(
+          configDir,
+          startupConfig.host,
+          addr.port,
+          'published'
+        );
+        // The on-disk credential is short-lived, so refresh it in place well
+        // before it expires; `refreshAfterMs` is always strictly inside the
+        // TTL the credential was actually issued with. The predecessor is left
+        // to expire on its own (mirrors #1435 renew semantics), and the timer
+        // is unref'd so it never holds the process open.
+        if (published) {
+          localHubActorTokenTimer = setInterval(() => {
+            if (localHubActorTokenPort === null) return;
+            publishLocalHubActorTokenOrWarn(
+              configDir,
+              startupConfig.host,
+              localHubActorTokenPort,
+              'refreshed'
+            );
+          }, published.refreshAfterMs);
+          localHubActorTokenTimer.unref();
+        }
+      }
     });
   }
   server.on('error', (err: NodeJS.ErrnoException) => {

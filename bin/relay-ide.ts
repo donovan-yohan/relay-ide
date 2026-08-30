@@ -1666,13 +1666,11 @@ interface ResolvedActorToken {
  * location the hub actually writes.
  */
 function localHubActorTokenRoots(): string[] {
-  const roots: string[] = [];
-  const explicitConfig = getArg('--config');
-  if (explicitConfig) roots.push(path.dirname(explicitConfig));
-  const envConfig = process.env[CONFIG_PATH_ENV_VAR]?.trim();
-  if (envConfig) roots.push(path.dirname(envConfig));
-  roots.push(service.CONFIG_DIR, ...sharedConfigRoots());
-  return roots;
+  // The hub only ever publishes into `sharedConfigRoots()[0]`, and only when
+  // its own config dir is under a shared root — so those roots are the whole
+  // search space. `service.CONFIG_DIR` is listed because it is the installed
+  // hub's root even when `$XDG_CONFIG_HOME` moves the app-data one.
+  return [service.CONFIG_DIR, ...sharedConfigRoots()];
 }
 
 /**
@@ -1690,20 +1688,34 @@ function gatewayTargetPort(): string {
  * port. It is only consulted for actor-capable commands (so non-actor
  * commands keep their browser-token behavior byte-for-byte), only after the
  * flag/env/login-file lanes came up empty, and only for a loopback hub whose
- * port matches — the reader refuses symlinks, loose modes, foreign owners, and
- * group/world-writable parent directories.
+ * port matches. The reader refuses symlinks, loose modes, foreign owners, and
+ * group/world-writable parent directories, so an unsafe file behaves exactly
+ * as if it were absent.
  */
+let localHubActorTokenCache: string | null = null;
+
 function localHubActorToken(commandName?: RelayCliGatewayCommand): string {
   if (!commandName || !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(commandName)) {
     return '';
   }
+  // An operator who already has a working browser token keeps using it: the
+  // local lane must never be able to turn a previously-working invocation into
+  // a 401 (e.g. a token file left behind by a hub that was SIGKILLed).
+  if (process.env['RELAY_IDE_BROWSER_TOKEN']) return '';
+  // Resolve once per process. Streaming commands ask twice (the sync
+  // `gatewayRequiredToken` and the async `gatewayActorToken`, then compare the
+  // two to decide whether to send the actor headers) and the hub refreshes the
+  // file periodically, so re-reading could hand those two call sites different
+  // tokens and silently drop the actor marker.
+  if (localHubActorTokenCache !== null) return localHubActorTokenCache;
   const port = Number(gatewayTargetPort());
   if (!Number.isInteger(port) || port <= 0) return '';
   const credential = discoverLocalHubActorToken(
     localHubActorTokenRoots(),
     port
   );
-  return credential?.token ?? '';
+  localHubActorTokenCache = credential?.token ?? '';
+  return localHubActorTokenCache;
 }
 
 /**
@@ -1741,6 +1753,10 @@ async function resolveGatewayActorToken(
     }
   }
   if (Date.parse(credential.expiresAt) <= Date.now()) {
+    // #1467: an old login file must not shadow a perfectly good hub-minted
+    // token sitting right next to it — prefer the local lane before failing.
+    const local = localHubActorToken(commandName);
+    if (local) return { token: local, source: 'local-hub' };
     printGatewayEnvelope(
       gatewayError('sessions.list', {
         code: 'UNAUTHORIZED',
@@ -1849,14 +1865,13 @@ function gatewayActorTokenSync(commandName?: RelayCliGatewayCommand): string {
   const env = process.env['RELAY_IDE_ACTOR_TOKEN'];
   if (env) return env;
   const stored = loadStoredActorCredential(actorTokenConfigDir());
-  if (!stored) {
-    // #1467: only actor-capable commands may fall back to the local trust
-    // token. Callers that pass no command (e.g. the workflow-lane guard) see
-    // exactly the pre-#1467 result. Mirrors resolveGatewayActorToken: an
-    // existing-but-expired login file still fails closed on `relay-ide login`.
+  // #1467: only actor-capable commands may fall back to the local trust token.
+  // Callers that pass no command (e.g. the workflow-lane guard) see exactly the
+  // pre-#1467 result. An expired login file falls through too, mirroring
+  // resolveGatewayActorToken.
+  if (!stored || Date.parse(stored.expiresAt) <= Date.now()) {
     return localHubActorToken(commandName);
   }
-  if (Date.parse(stored.expiresAt) <= Date.now()) return '';
   return stored.token;
 }
 

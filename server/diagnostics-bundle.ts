@@ -112,6 +112,11 @@ export const DIAGNOSTICS_REDACTION_RULES: readonly DiagnosticsRedactionRule[] =
       description: 'full Authorization header values',
     },
     { id: 'bearer-token', description: 'standalone Bearer token values' },
+    {
+      id: 'relay-credential-token',
+      description:
+        'bare Relay credential tokens (scoped actor, operator client, handshake grant)',
+    },
     { id: 'cookie-header', description: 'cookie header values' },
     { id: 'github-token', description: 'GitHub token formats' },
     {
@@ -652,6 +657,17 @@ export function redactText(value: string): RedactionResult<string> {
     /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
     'bearer-token',
     `Bearer ${REDACTED}`,
+    counts
+  );
+  // #1467: a Relay credential can also appear bare in log text (not behind a
+  // `Bearer` prefix) — e.g. the host-local CLI token or an operator client
+  // credential echoed into a message. Scrub the whole `<prefix>.<id>.<secret>`
+  // triple wherever it shows up.
+  output = replaceAndCount(
+    output,
+    /\brelay-(?:sac|occ|ohg|lot)-v\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9._~+/=-]+/g,
+    'relay-credential-token',
+    REDACTED,
     counts
   );
   output = replaceAndCount(

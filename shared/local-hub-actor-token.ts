@@ -26,7 +26,6 @@ import { writeNodeCredentialFile } from './node-credential-file.js';
  * restart rotates it and any copy of the old file is inert.
  */
 
-export const LOCAL_HUB_ACTOR_TOKEN_FILE_MODE = 0o600;
 export const LOCAL_HUB_ACTOR_TOKEN_SOURCE = 'hub-local' as const;
 
 /** Loopback hostnames the local token may ever be sent to. */
@@ -53,22 +52,58 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host.trim().toLowerCase());
 }
 
-/** Atomic 0600 write, reusing the node-credential writer (temp + `wx` + rename). */
+export type LocalHubActorTokenWriteRefusal =
+  | 'writable_parent'
+  | 'parent_not_directory';
+
+/** Thrown instead of publishing when the destination directory is unsafe. */
+export class LocalHubActorTokenWriteError extends Error {
+  constructor(
+    public readonly reason: LocalHubActorTokenWriteRefusal,
+    message: string
+  ) {
+    super(message);
+    this.name = 'LocalHubActorTokenWriteError';
+  }
+}
+
+/**
+ * Atomic 0600 write, reusing the node-credential writer (temp + `wx` + rename).
+ *
+ * The destination directory is never re-permissioned: silently stripping bits
+ * from a directory an operator deliberately shared would break whoever else
+ * uses it, and would do so invisibly. A pre-existing group/world-writable
+ * directory is refused instead, since another uid could swap the file there.
+ */
 export function writeLocalHubActorTokenFile(
   root: string,
   file: LocalHubActorTokenFile
 ): string {
   const filePath = localHubActorTokenPath(root, file.port);
-  // The reader refuses a group/world-writable parent (another uid could swap
-  // the file), so make sure our own directory can never trip that. New
-  // directories are created 0700; an existing one only loses its group/other
-  // *write* bits, so a config dir something else reads keeps working.
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  let stat: fs.Stats | null;
   try {
-    const mode = fs.statSync(root).mode & 0o777;
-    if ((mode & 0o022) !== 0) fs.chmodSync(root, mode & ~0o022);
+    stat = fs.statSync(root);
   } catch {
-    /* not our directory to tighten; the reader will fail closed */
+    stat = null;
+  }
+  if (stat === null) {
+    // Create only the final directory owner-only; parents keep their own
+    // default mode so we never re-permission `~/.config` as a side effect.
+    fs.mkdirSync(path.dirname(root), { recursive: true });
+    fs.mkdirSync(root, { mode: 0o700 });
+  } else {
+    if (!stat.isDirectory()) {
+      throw new LocalHubActorTokenWriteError(
+        'parent_not_directory',
+        `${root} is not a directory`
+      );
+    }
+    if ((stat.mode & 0o022) !== 0) {
+      throw new LocalHubActorTokenWriteError(
+        'writable_parent',
+        `${root} is group/world-writable, so another user could replace the token file; run \`chmod go-w ${root}\` to enable the host-local CLI token`
+      );
+    }
   }
   // `writeNodeCredentialFile` never opens the final path with O_TRUNC: it
   // writes a uniquely named temp with flag 'wx' and renames over the target,
@@ -78,12 +113,29 @@ export function writeLocalHubActorTokenFile(
   return filePath;
 }
 
+/**
+ * Remove the port-keyed file, but only when it is the one `credentialId`
+ * minted. Two hubs can bind the same port on different addresses, and a
+ * blind unlink-by-port would let one delete the other's live token.
+ */
 export function deleteLocalHubActorTokenFile(
   root: string,
-  port: number
+  port: number,
+  credentialId?: string
 ): boolean {
+  const filePath = localHubActorTokenPath(root, port);
+  if (credentialId !== undefined) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as {
+        credentialId?: unknown;
+      };
+      if (parsed.credentialId !== credentialId) return false;
+    } catch {
+      return false;
+    }
+  }
   try {
-    fs.unlinkSync(localHubActorTokenPath(root, port));
+    fs.unlinkSync(filePath);
     return true;
   } catch {
     return false;
@@ -96,7 +148,9 @@ export type LocalHubActorTokenRejection =
   | 'not_regular_file'
   | 'loose_mode'
   | 'foreign_owner'
+  | 'foreign_owner_parent'
   | 'writable_parent'
+  | 'parent_not_directory'
   | 'unreadable'
   | 'malformed'
   | 'wrong_source'
@@ -134,86 +188,88 @@ export function readLocalHubActorTokenFile(
 ): LocalHubActorTokenReadResult {
   const filePath = localHubActorTokenPath(root, port);
   const uid = currentUid(options);
+  const reject = (
+    reason: LocalHubActorTokenRejection
+  ): LocalHubActorTokenReadResult => ({ ok: false, reason, path: filePath });
 
-  // Parent directory first: if another uid can write it, they can swap the
-  // file between our checks and our read (TOCTOU) — refuse before opening.
-  let parentStat: fs.Stats;
+  // Open with O_NOFOLLOW and validate the *handle*, so nothing can be swapped
+  // between the check and the read.
+  let fd: number;
   try {
-    parentStat = fs.statSync(path.dirname(filePath));
-  } catch {
-    return { ok: false, reason: 'missing', path: filePath };
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // O_NOFOLLOW on a symlink reports ELOOP (or EMLINK on some platforms).
+    if (code === 'ELOOP' || code === 'EMLINK') return reject('symlink');
+    return reject('missing');
   }
-  if (!parentStat.isDirectory()) {
-    return { ok: false, reason: 'writable_parent', path: filePath };
-  }
-  if ((parentStat.mode & 0o022) !== 0) {
-    return { ok: false, reason: 'writable_parent', path: filePath };
-  }
-  if (uid !== undefined && parentStat.uid !== uid) {
-    return { ok: false, reason: 'foreign_owner', path: filePath };
-  }
-
-  let stat: fs.Stats;
   try {
-    stat = fs.lstatSync(filePath);
-  } catch {
-    return { ok: false, reason: 'missing', path: filePath };
-  }
-  if (stat.isSymbolicLink()) {
-    return { ok: false, reason: 'symlink', path: filePath };
-  }
-  if (!stat.isFile()) {
-    return { ok: false, reason: 'not_regular_file', path: filePath };
-  }
-  if ((stat.mode & 0o077) !== 0) {
-    return { ok: false, reason: 'loose_mode', path: filePath };
-  }
-  if (uid !== undefined && stat.uid !== uid) {
-    return { ok: false, reason: 'foreign_owner', path: filePath };
-  }
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return reject('not_regular_file');
+    if ((stat.mode & 0o077) !== 0) return reject('loose_mode');
+    if (uid !== undefined && stat.uid !== uid) return reject('foreign_owner');
 
-  let raw: string;
-  try {
-    raw = fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return { ok: false, reason: 'unreadable', path: filePath };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, reason: 'malformed', path: filePath };
-  }
-  if (!isStoredCredential(parsed)) {
-    return { ok: false, reason: 'malformed', path: filePath };
-  }
-  const record = parsed as unknown as Record<string, unknown>;
-  if (record['source'] !== LOCAL_HUB_ACTOR_TOKEN_SOURCE) {
-    return { ok: false, reason: 'wrong_source', path: filePath };
-  }
-  if (record['port'] !== port) {
-    return { ok: false, reason: 'port_mismatch', path: filePath };
-  }
-  const credential = parsed as LocalHubActorTokenFile;
+    // The containing directory matters too: if another uid can write it, they
+    // can put their own file at this path before we ever open it.
+    let parentStat: fs.Stats;
+    try {
+      parentStat = fs.statSync(path.dirname(filePath));
+    } catch {
+      return reject('missing');
+    }
+    if (!parentStat.isDirectory()) return reject('parent_not_directory');
+    if ((parentStat.mode & 0o022) !== 0) return reject('writable_parent');
+    if (uid !== undefined && parentStat.uid !== uid) {
+      // Distinct from the file-level rejection so a test can prove which of
+      // the two ownership guards actually fired.
+      return reject('foreign_owner_parent');
+    }
 
-  // The local token is proof of *local* access; it must never leave loopback.
-  let hubUrl: URL;
-  try {
-    hubUrl = new URL(credential.hubUrl);
-  } catch {
-    return { ok: false, reason: 'non_loopback_hub', path: filePath };
-  }
-  if (!isLoopbackHost(hubUrl.hostname) || Number(hubUrl.port) !== port) {
-    return { ok: false, reason: 'non_loopback_hub', path: filePath };
-  }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(fd, 'utf8');
+    } catch {
+      return reject('unreadable');
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return reject('malformed');
+    }
+    if (!isStoredCredential(parsed)) return reject('malformed');
+    const record = parsed as unknown as Record<string, unknown>;
+    if (record['source'] !== LOCAL_HUB_ACTOR_TOKEN_SOURCE) {
+      return reject('wrong_source');
+    }
+    if (record['port'] !== port) return reject('port_mismatch');
+    const credential = parsed as LocalHubActorTokenFile;
 
-  const now = options.now ?? Date.now();
-  const expiresAt = Date.parse(credential.expiresAt);
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
-    return { ok: false, reason: 'expired', path: filePath };
-  }
+    // The local token is proof of *local* access; it must never leave loopback.
+    let hubUrl: URL;
+    try {
+      hubUrl = new URL(credential.hubUrl);
+    } catch {
+      return reject('non_loopback_hub');
+    }
+    if (!isLoopbackHost(hubUrl.hostname) || Number(hubUrl.port) !== port) {
+      return reject('non_loopback_hub');
+    }
 
-  return { ok: true, credential, path: filePath };
+    const now = options.now ?? Date.now();
+    const expiresAt = Date.parse(credential.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      return reject('expired');
+    }
+
+    return { ok: true, credential, path: filePath };
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* already closed */
+    }
+  }
 }
 
 /**

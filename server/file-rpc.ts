@@ -4,7 +4,10 @@ import * as fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
 import type { Stats } from 'node:fs';
-import { sharedConfigRoots } from './runtime-state-paths.js';
+import {
+  CONFIG_PATH_ENV_VAR,
+  sharedConfigRoots,
+} from './runtime-state-paths.js';
 import type {
   FileRpcDenialReason,
   FileRpcListResponse,
@@ -177,16 +180,89 @@ function normalizeForCompare(value: string, api: PathApi): string {
  * The roots are recomputed per call so a test (or a differently configured
  * process) sees its own environment rather than a value frozen at import.
  */
-function protectedFileRpcRoots(): string[] {
+/** Credential-bearing files that sit beside a config file, whatever its dir. */
+const PROTECTED_CONFIG_SIBLINGS = [
+  'actor-token.json',
+  'node-credential.json',
+  'node-identity-key.json',
+] as const;
+/** Port-keyed #1467 local CLI trust tokens: `local-actor-token-<port>.json`. */
+const LOCAL_ACTOR_TOKEN_PREFIX = 'local-actor-token-';
+
+interface ProtectedFileRpcTargets {
+  /** Whole directory trees that are never served. */
+  roots: string[];
+  /** Individual files that are never served. */
+  files: string[];
+  /** Directories in which `local-actor-token-*.json` is never served. */
+  tokenDirs: string[];
+}
+
+/**
+ * Everything file RPC refuses to touch.
+ *
+ * `sharedConfigRoots()` are Relay-owned directories (`…/relay-ide`), so denying
+ * them wholesale is safe. A hub pinned with `RELAY_IDE_CONFIG`, by contrast,
+ * may point its config file at a directory that is *also* something else — a
+ * repo checkout (`<repo>/config.dev.json`, which `#961` explicitly tells
+ * operators to pin) or even `/`. Denying that whole directory would break every
+ * legitimate read in it, so only the config file itself and the credential
+ * files beside it are protected there.
+ */
+function protectedFileRpcTargets(): ProtectedFileRpcTargets {
+  const roots: string[] = [];
+  let sharedResolved = false;
   try {
-    return sharedConfigRoots();
+    roots.push(...sharedConfigRoots());
+    sharedResolved = true;
   } catch {
-    return [];
+    /* homedir unavailable — handled below, fail closed */
   }
+  const files: string[] = [];
+  const tokenDirs: string[] = [];
+  const pinned = process.env[CONFIG_PATH_ENV_VAR]?.trim();
+  if (pinned) {
+    const resolved = path.resolve(pinned);
+    const dir = path.dirname(resolved);
+    files.push(resolved);
+    for (const name of PROTECTED_CONFIG_SIBLINGS) {
+      files.push(path.join(dir, name));
+    }
+    tokenDirs.push(dir);
+  }
+  if (!sharedResolved && roots.length === 0 && files.length === 0) {
+    // Fail closed rather than silently dropping the control: an unresolvable
+    // home directory must not turn the denylist into a no-op.
+    return { roots: [path.sep], files: [], tokenDirs: [] };
+  }
+  return { roots, files, tokenDirs };
 }
 
 function isProtectedFileRpcPath(target: string, api: PathApi): boolean {
-  return protectedFileRpcRoots().some((root) => pathInside(root, target, api));
+  const { roots, files, tokenDirs } = protectedFileRpcTargets();
+  if (roots.some((root) => pathInside(root, target, api))) return true;
+  const normalizedTarget = normalizeForCompare(api.resolve(target), api);
+  if (
+    files.some(
+      (file) => normalizeForCompare(api.resolve(file), api) === normalizedTarget
+    )
+  ) {
+    return true;
+  }
+  const base = api.basename(target);
+  return (
+    base.startsWith(LOCAL_ACTOR_TOKEN_PREFIX) &&
+    tokenDirs.some((dir) => pathInside(dir, target, api))
+  );
+}
+
+/**
+ * Re-validation hook for anything that keeps reading a path after the request
+ * was normalized (the `fs.tail --follow` poller). Exported so the follower
+ * cannot forget it.
+ */
+export function isProtectedLocalFileRpcPath(target: string): boolean {
+  return isProtectedFileRpcPath(target, path);
 }
 
 function protectedPathDenial(target: string): RelayNodeError {
@@ -1010,6 +1086,23 @@ export function createFileRpcFollower(options: {
     if (closed || active) return;
     active = true;
     try {
+      // #1467: the follow loop keeps reading a path that was validated once,
+      // at request time. A file swapped for a symlink into a Relay config root
+      // between polls would otherwise stream credentials out through
+      // `fs.tail.chunk`, so re-resolve and re-check on every pass.
+      let resolvedTarget: string;
+      try {
+        resolvedTarget = await fs.realpath(options.request.path);
+      } catch {
+        resolvedTarget = options.request.path;
+      }
+      if (
+        isProtectedLocalFileRpcPath(resolvedTarget) ||
+        isProtectedLocalFileRpcPath(options.request.path)
+      ) {
+        closeWithError(protectedPathDenial(options.request.path));
+        return;
+      }
       const stats = await fs.stat(options.request.path);
       if (!stats.isFile()) {
         closeWithError(

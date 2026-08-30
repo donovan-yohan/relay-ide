@@ -183,11 +183,16 @@ async function harness(
       const scope = scopeHeader
         ? (JSON.parse(scopeHeader) as ScopedActorCredentialScope)
         : undefined;
+      // `x-test-actor-reason` models the trusted-internal metadata marker the
+      // hub stamps in-process (#1467 `hub-local-cli`); no caller can set it on
+      // a real credential.
+      const reason = req.header('x-test-actor-reason');
       attachAuthenticatedCliGatewayActorCredential(req, {
         id: 'cred-1',
         actor: { type: 'agent', id: actorId, displayName: 'Claude Bot' },
         capabilities: ['context:read', 'context:write'],
         ...(scope ? { scope } : {}),
+        ...(reason ? { metadata: { reason } } : {}),
       } as unknown as ScopedActorCredentialRecord);
     }
     next();
@@ -781,7 +786,10 @@ describe('channel routes — delivery receipts (#1442)', () => {
     });
     expect(all.status).toBe(200);
     // Newest-first.
-    expect(all.body.receipts.map((r) => r.messageId)).toEqual(['chm:b', 'chm:a']);
+    expect(all.body.receipts.map((r) => r.messageId)).toEqual([
+      'chm:b',
+      'chm:a',
+    ]);
 
     const perMessage = await req<{ receipts: ChannelDeliveryReceiptV1[] }>({
       port: h.port,
@@ -1920,10 +1928,7 @@ describe('channel routes — private routes stay closed to the standing read lea
     // "just drop denyScopedActorPrivateRoute" cannot pass silently.
     for (const [method, url] of [
       ['POST', `/channels/${encodeURIComponent(h.channelId)}/attachments`],
-      [
-        'GET',
-        `/channels/${encodeURIComponent(h.channelId)}/attachments/att-1`,
-      ],
+      ['GET', `/channels/${encodeURIComponent(h.channelId)}/attachments/att-1`],
       ['POST', `/channels/${encodeURIComponent(h.channelId)}/agent-commands`],
       [
         'POST',
@@ -2165,6 +2170,88 @@ describe('channel routes — channel-scope escape (Slice 0 gate)', () => {
     });
     expect(browserSearch.status).toBe(200);
     expect(browserSearch.body.results).toHaveLength(1);
+  });
+
+  it('exempts only the #1467 host-local operator credential from channel scope', async () => {
+    const h = await harness();
+    const seeded = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'local operator marker' },
+    });
+    expect(seeded.status).toBe(201);
+
+    // Same scope-less credential, but carrying the trusted in-process marker.
+    const localOperatorHeaders = {
+      'x-test-actor-id': 'local-cli',
+      'x-test-actor-reason': 'hub-local-cli',
+      'x-relay-capabilities': 'context:read',
+    };
+    const list = await req<{ channels: Array<{ id: string }> }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: localOperatorHeaders,
+    });
+    expect(list.status).toBe(200);
+    expect(list.body.channels.map((channel) => channel.id)).toContain(
+      h.channelId
+    );
+
+    for (const url of [
+      `/channels/${encodeURIComponent(h.channelId)}`,
+      `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      '/channels/search?q=marker',
+    ]) {
+      const allowed = await req({
+        port: h.port,
+        method: 'GET',
+        url,
+        headers: localOperatorHeaders,
+      });
+      expect(allowed.status).toBe(200);
+    }
+
+    // Attribution is deliberately unchanged: the host-local credential posts
+    // as an agent sender and stays under the ordinary agent brake. Only
+    // `persistent-orchestrator` reaches the verbatim sender-id path. Pinned
+    // here so promoting it to operator attribution is a decision, not a drift.
+    const posted = await req<{
+      message: { sender: { kind: string; id: string } };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: 'posted by the host-local operator' },
+      headers: {
+        ...localOperatorHeaders,
+        'x-relay-capabilities': 'context:write',
+      },
+    });
+    expect(posted.status).toBe(201);
+    expect(posted.body.message.sender).toMatchObject({
+      kind: 'agent',
+      id: 'agent:local-cli',
+    });
+
+    // A neighbouring reason marker must NOT inherit the exemption.
+    const otherMarker = await req<{
+      error: { details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: '/channels',
+      headers: {
+        'x-test-actor-id': 'claude',
+        'x-test-actor-reason': 'channel-runtime-read',
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(otherMarker.status).toBe(403);
+    expect(otherMarker.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_SCOPE_REQUIRED'
+    );
   });
 });
 

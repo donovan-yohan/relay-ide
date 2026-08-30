@@ -266,6 +266,16 @@ export function renewCliGatewayActorCredential(
   previous: ScopedActorCredentialRecord,
   input: { ttlMs?: unknown } = {}
 ): { token: string; credential: ScopedActorCredentialRecord } {
+  // #1467: the host-local credential is refreshed in place by the hub, not by
+  // the CLI. Renewing it would mint a successor WITHOUT the trusted marker
+  // (the reason below is overwritten), silently downgrading a credential the
+  // caller believes it just extended. Refuse explicitly instead.
+  if (isLocalHubCliActorCredential(previous)) {
+    throw new CliGatewayActorGrantError(
+      'audience_expansion',
+      'the host-local CLI credential is rotated by the hub and cannot be renewed'
+    );
+  }
   const ttlMs =
     typeof input.ttlMs === 'number' &&
     Number.isFinite(input.ttlMs) &&
