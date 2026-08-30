@@ -41,7 +41,8 @@ export const AUTOMATION_RUN_TARGET_STATES = [
   'ended',
   'unknown',
 ] as const;
-export type AutomationRunTargetState = (typeof AUTOMATION_RUN_TARGET_STATES)[number];
+export type AutomationRunTargetState =
+  (typeof AUTOMATION_RUN_TARGET_STATES)[number];
 
 /** Derived reasons a run is stale / needs cleanup. */
 export const AUTOMATION_RUN_STALE_REASONS = [
@@ -50,11 +51,17 @@ export const AUTOMATION_RUN_STALE_REASONS = [
   'heartbeat-expired',
   'hard-expiry',
 ] as const;
-export type AutomationRunStaleReason = (typeof AUTOMATION_RUN_STALE_REASONS)[number];
+export type AutomationRunStaleReason =
+  (typeof AUTOMATION_RUN_STALE_REASONS)[number];
 
 /** Cleanup lifecycle of a run. `retired` is terminal. */
-export const AUTOMATION_RUN_CLEANUP_STATES = ['none', 'needed', 'retired'] as const;
-export type AutomationRunCleanupState = (typeof AUTOMATION_RUN_CLEANUP_STATES)[number];
+export const AUTOMATION_RUN_CLEANUP_STATES = [
+  'none',
+  'needed',
+  'retired',
+] as const;
+export type AutomationRunCleanupState =
+  (typeof AUTOMATION_RUN_CLEANUP_STATES)[number];
 
 export interface AutomationRunTarget {
   /** Local session id (`<session-id>`). */
@@ -75,7 +82,9 @@ export interface AutomationRunOwner {
 }
 
 export interface AutomationRunLinks {
-  taskRefs?: Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[] | undefined;
+  taskRefs?:
+    | Pick<TaskRef, 'kind' | 'id' | 'title' | 'url' | 'status'>[]
+    | undefined;
   /** Linked PR URLs (e.g. the PR a watchdog oversees). */
   prUrls?: string[] | undefined;
   /** Linked issue URLs. */
@@ -202,7 +211,10 @@ export interface AutomationRunSessionLiveness {
  * - An absent local target resolves `gone` (404 / killed).
  */
 export function resolveAutomationRunTargetLiveness(
-  target: { sessionId?: string | undefined; globalSessionId?: string | undefined },
+  target: {
+    sessionId?: string | undefined;
+    globalSessionId?: string | undefined;
+  },
   sessions: readonly AutomationRunSessionLiveness[],
   localNodeId: string
 ): AutomationRunTargetState {
@@ -213,13 +225,15 @@ export function resolveAutomationRunTargetLiveness(
   const match = sessions.find((session) => {
     if (
       target.sessionId &&
-      (session.id === target.sessionId || session.globalSessionId === target.sessionId)
+      (session.id === target.sessionId ||
+        session.globalSessionId === target.sessionId)
     ) {
       return true;
     }
     if (
       target.globalSessionId &&
-      (session.globalSessionId === target.globalSessionId || session.id === target.globalSessionId)
+      (session.globalSessionId === target.globalSessionId ||
+        session.id === target.globalSessionId)
     ) {
       return true;
     }
@@ -290,17 +304,26 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function stringField(input: Record<string, unknown>, key: string): string | undefined {
+function stringField(
+  input: Record<string, unknown>,
+  key: string
+): string | undefined {
   return optionalString(input[key]);
 }
 
 function requireString(input: Record<string, unknown>, key: string): string {
   const value = stringField(input, key);
-  if (!value) throw new AutomationRunValidationError(`${key} is required`, { field: key });
+  if (!value)
+    throw new AutomationRunValidationError(`${key} is required`, {
+      field: key,
+    });
   return value;
 }
 
-function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+function truncateUtf8(
+  value: string,
+  maxBytes: number
+): { value: string; truncated: boolean } {
   const encoded = textEncoder.encode(value);
   if (encoded.length <= maxBytes) return { value, truncated: false };
   return {
@@ -316,10 +339,13 @@ function collectForbiddenKeys(
   depth = 0
 ): string[] {
   if (depth > AUTOMATION_RUN_MAX_INPUT_DEPTH) {
-    throw new AutomationRunValidationError('automation run payload exceeds maximum nested depth', {
-      path,
-      maxDepth: AUTOMATION_RUN_MAX_INPUT_DEPTH,
-    });
+    throw new AutomationRunValidationError(
+      'automation run payload exceeds maximum nested depth',
+      {
+        path,
+        maxDepth: AUTOMATION_RUN_MAX_INPUT_DEPTH,
+      }
+    );
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
@@ -340,16 +366,24 @@ function collectForbiddenKeys(
 }
 
 function parseKind(value: unknown): AutomationRunKind {
-  if (typeof value !== 'string' || !(AUTOMATION_RUN_KINDS as readonly string[]).includes(value)) {
-    throw new AutomationRunValidationError('kind must be a known AutomationRunKind', {
-      field: 'kind',
-      allowed: AUTOMATION_RUN_KINDS,
-    });
+  if (
+    typeof value !== 'string' ||
+    !(AUTOMATION_RUN_KINDS as readonly string[]).includes(value)
+  ) {
+    throw new AutomationRunValidationError(
+      'kind must be a known AutomationRunKind',
+      {
+        field: 'kind',
+        allowed: AUTOMATION_RUN_KINDS,
+      }
+    );
   }
   return value as AutomationRunKind;
 }
 
-export function parseAutomationRunStatus(value: unknown): AutomationRunStatus | undefined {
+export function parseAutomationRunStatus(
+  value: unknown
+): AutomationRunStatus | undefined {
   return typeof value === 'string' &&
     (AUTOMATION_RUN_STATUSES as readonly string[]).includes(value)
     ? (value as AutomationRunStatus)
@@ -369,29 +403,41 @@ function parseExpiresAt(value: unknown): string | undefined {
   const raw = optionalString(value);
   if (!raw) return undefined;
   if (Number.isNaN(Date.parse(raw))) {
-    throw new AutomationRunValidationError('expiresAt must be an ISO date-time string', {
-      field: 'expiresAt',
-    });
+    throw new AutomationRunValidationError(
+      'expiresAt must be an ISO date-time string',
+      {
+        field: 'expiresAt',
+      }
+    );
   }
   return new Date(raw).toISOString();
 }
 
 function parseOwner(value: unknown): AutomationRunOwner {
   if (!isRecord(value)) {
-    throw new AutomationRunValidationError('owner is required', { field: 'owner' });
+    throw new AutomationRunValidationError('owner is required', {
+      field: 'owner',
+    });
   }
   return {
     orchestrator: requireString(value, 'orchestrator'),
-    ...(stringField(value, 'actorId') ? { actorId: stringField(value, 'actorId') } : {}),
-    ...(stringField(value, 'actorType') ? { actorType: stringField(value, 'actorType') } : {}),
+    ...(stringField(value, 'actorId')
+      ? { actorId: stringField(value, 'actorId') }
+      : {}),
+    ...(stringField(value, 'actorType')
+      ? { actorType: stringField(value, 'actorType') }
+      : {}),
   };
 }
 
 function parseTargets(value: unknown): AutomationRunTarget[] {
   if (!Array.isArray(value)) {
-    throw new AutomationRunValidationError('targets must be a non-empty array', {
-      field: 'targets',
-    });
+    throw new AutomationRunValidationError(
+      'targets must be a non-empty array',
+      {
+        field: 'targets',
+      }
+    );
   }
   const targets: AutomationRunTarget[] = [];
   for (const entry of value.slice(0, AUTOMATION_RUN_MAX_TARGETS)) {
@@ -406,13 +452,19 @@ function parseTargets(value: unknown): AutomationRunTarget[] {
     }
     const lastKnownState =
       typeof entry['lastKnownState'] === 'string' &&
-      (AUTOMATION_RUN_TARGET_STATES as readonly string[]).includes(entry['lastKnownState'])
+      (AUTOMATION_RUN_TARGET_STATES as readonly string[]).includes(
+        entry['lastKnownState']
+      )
         ? (entry['lastKnownState'] as AutomationRunTargetState)
         : 'unknown';
     targets.push({
       ...(sessionId ? { sessionId } : {}),
-      ...(globalSessionId ? { globalSessionId: globalSessionId as GlobalSessionId } : {}),
-      ...(stringField(entry, 'label') ? { label: stringField(entry, 'label') } : {}),
+      ...(globalSessionId
+        ? { globalSessionId: globalSessionId as GlobalSessionId }
+        : {}),
+      ...(stringField(entry, 'label')
+        ? { label: stringField(entry, 'label') }
+        : {}),
       lastKnownState,
       ...(stringField(entry, 'lastCheckedAt')
         ? { lastCheckedAt: stringField(entry, 'lastCheckedAt') }
@@ -420,9 +472,12 @@ function parseTargets(value: unknown): AutomationRunTarget[] {
     });
   }
   if (targets.length === 0) {
-    throw new AutomationRunValidationError('targets must include at least one session', {
-      field: 'targets',
-    });
+    throw new AutomationRunValidationError(
+      'targets must include at least one session',
+      {
+        field: 'targets',
+      }
+    );
   }
   return targets;
 }
@@ -430,13 +485,18 @@ function parseTargets(value: unknown): AutomationRunTarget[] {
 function parseStringList(value: unknown, limit: number): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const strings = value
-    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .filter(
+      (item): item is string =>
+        typeof item === 'string' && item.trim().length > 0
+    )
     .map((item) => item.trim())
     .slice(0, limit);
   return strings.length ? strings : undefined;
 }
 
-function parseTaskRefs(value: unknown): AutomationRunLinks['taskRefs'] | undefined {
+function parseTaskRefs(
+  value: unknown
+): AutomationRunLinks['taskRefs'] | undefined {
   if (!Array.isArray(value)) return undefined;
   const refs: NonNullable<AutomationRunLinks['taskRefs']> = [];
   for (const entry of value.slice(0, AUTOMATION_RUN_MAX_LINKS)) {
@@ -466,7 +526,10 @@ function parseLinks(value: unknown): AutomationRunLinks | undefined {
   if (taskRefs?.length) links.taskRefs = taskRefs;
   const prUrls = parseStringList(value['prUrls'], AUTOMATION_RUN_MAX_LINKS);
   if (prUrls?.length) links.prUrls = prUrls;
-  const issueUrls = parseStringList(value['issueUrls'], AUTOMATION_RUN_MAX_LINKS);
+  const issueUrls = parseStringList(
+    value['issueUrls'],
+    AUTOMATION_RUN_MAX_LINKS
+  );
   if (issueUrls?.length) links.issueUrls = issueUrls;
   return Object.keys(links).length ? links : undefined;
 }
@@ -481,11 +544,15 @@ function rejectForbiddenKeys(input: Record<string, unknown>): void {
   }
 }
 
-export function parseAutomationRunRegisterInput(value: unknown): AutomationRunRegisterInput & {
+export function parseAutomationRunRegisterInput(
+  value: unknown
+): AutomationRunRegisterInput & {
   redaction: AutomationRunRedaction;
 } {
   if (!isRecord(value)) {
-    throw new AutomationRunValidationError('automation run register payload must be an object');
+    throw new AutomationRunValidationError(
+      'automation run register payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const summaryRaw = optionalString(value['observationSummary']);
@@ -498,17 +565,28 @@ export function parseAutomationRunRegisterInput(value: unknown): AutomationRunRe
     kind: parseKind(value['kind']),
     owner: parseOwner(value['owner']),
     targets: parseTargets(value['targets']),
-    ttlSeconds: clampTtl(value['ttlSeconds'], AUTOMATION_RUN_TTL_DEFAULT_SECONDS),
+    ttlSeconds: clampTtl(
+      value['ttlSeconds'],
+      AUTOMATION_RUN_TTL_DEFAULT_SECONDS
+    ),
     ...(stringField(value, 'id') ? { id: stringField(value, 'id') } : {}),
-    ...(stringField(value, 'runId') ? { runId: stringField(value, 'runId') } : {}),
-    ...(stringField(value, 'repoPath') ? { repoPath: stringField(value, 'repoPath') } : {}),
+    ...(stringField(value, 'runId')
+      ? { runId: stringField(value, 'runId') }
+      : {}),
+    ...(stringField(value, 'repoPath')
+      ? { repoPath: stringField(value, 'repoPath') }
+      : {}),
     ...(stringField(value, 'workContextId')
       ? { workContextId: stringField(value, 'workContextId') as WorkContextId }
       : {}),
     ...(links ? { links } : {}),
-    ...(parseExpiresAt(value['expiresAt']) ? { expiresAt: parseExpiresAt(value['expiresAt']) } : {}),
+    ...(parseExpiresAt(value['expiresAt'])
+      ? { expiresAt: parseExpiresAt(value['expiresAt']) }
+      : {}),
     ...(summary ? { observationSummary: summary.value } : {}),
-    ...(stringField(value, 'createdAt') ? { createdAt: stringField(value, 'createdAt') } : {}),
+    ...(stringField(value, 'createdAt')
+      ? { createdAt: stringField(value, 'createdAt') }
+      : {}),
     redaction: {
       rawPayloadStored: false,
       rawTranscriptStored: false,
@@ -518,11 +596,15 @@ export function parseAutomationRunRegisterInput(value: unknown): AutomationRunRe
   };
 }
 
-export function parseAutomationRunObserveInput(value: unknown): AutomationRunObserveInput & {
+export function parseAutomationRunObserveInput(
+  value: unknown
+): AutomationRunObserveInput & {
   truncated: boolean;
 } {
   if (!isRecord(value)) {
-    throw new AutomationRunValidationError('automation run observe payload must be an object');
+    throw new AutomationRunValidationError(
+      'automation run observe payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const summaryRaw = optionalString(value['summary']);
@@ -531,26 +613,43 @@ export function parseAutomationRunObserveInput(value: unknown): AutomationRunObs
     : undefined;
   return {
     ...(summary ? { summary: summary.value } : {}),
-    ...(value['targets'] !== undefined ? { targets: parseTargets(value['targets']) } : {}),
-    ...(value['ttlSeconds'] !== undefined
-      ? { ttlSeconds: clampTtl(value['ttlSeconds'], AUTOMATION_RUN_TTL_DEFAULT_SECONDS) }
+    ...(value['targets'] !== undefined
+      ? { targets: parseTargets(value['targets']) }
       : {}),
-    ...(parseExpiresAt(value['expiresAt']) ? { expiresAt: parseExpiresAt(value['expiresAt']) } : {}),
+    ...(value['ttlSeconds'] !== undefined
+      ? {
+          ttlSeconds: clampTtl(
+            value['ttlSeconds'],
+            AUTOMATION_RUN_TTL_DEFAULT_SECONDS
+          ),
+        }
+      : {}),
+    ...(parseExpiresAt(value['expiresAt'])
+      ? { expiresAt: parseExpiresAt(value['expiresAt']) }
+      : {}),
     truncated: Boolean(summary?.truncated),
   };
 }
 
-export function parseAutomationRunRetireInput(value: unknown): AutomationRunRetireInput {
+export function parseAutomationRunRetireInput(
+  value: unknown
+): AutomationRunRetireInput {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) {
-    throw new AutomationRunValidationError('automation run retire payload must be an object');
+    throw new AutomationRunValidationError(
+      'automation run retire payload must be an object'
+    );
   }
   rejectForbiddenKeys(value);
   const reasonRaw = optionalString(value['reason']);
-  const reason = reasonRaw ? truncateUtf8(reasonRaw, AUTOMATION_RUN_SUMMARY_MAX_BYTES).value : undefined;
+  const reason = reasonRaw
+    ? truncateUtf8(reasonRaw, AUTOMATION_RUN_SUMMARY_MAX_BYTES).value
+    : undefined;
   return {
     ...(reason ? { reason } : {}),
-    ...(stringField(value, 'retiredBy') ? { retiredBy: stringField(value, 'retiredBy') } : {}),
+    ...(stringField(value, 'retiredBy')
+      ? { retiredBy: stringField(value, 'retiredBy') }
+      : {}),
   };
 }
 
@@ -566,7 +665,9 @@ export function refreshTargetLiveness(
   return targets.map((target) => {
     const state = resolver({
       ...(target.sessionId ? { sessionId: target.sessionId } : {}),
-      ...(target.globalSessionId ? { globalSessionId: target.globalSessionId } : {}),
+      ...(target.globalSessionId
+        ? { globalSessionId: target.globalSessionId }
+        : {}),
     });
     return { ...target, lastKnownState: state, lastCheckedAt: now };
   });
@@ -622,7 +723,9 @@ export function deriveAutomationRunStatus(
 }
 
 /** Bounded, redaction-safe event payload for a run (no raw bodies). */
-export function automationRunSummaryPayload(run: AutomationRunRecord): Record<string, unknown> {
+export function automationRunSummaryPayload(
+  run: AutomationRunRecord
+): Record<string, unknown> {
   return {
     automationRunId: run.id,
     name: run.name,
