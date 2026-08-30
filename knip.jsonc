@@ -12,7 +12,7 @@
     // either of those.
     "server/index.ts",
     "bin/*.ts",
-    "scripts/*.{ts,js}",
+    "scripts/*.{ts,js,mjs}",
 
     // Vite entry, reached from frontend/index.html.
     "frontend/src/main.tsx",
@@ -37,7 +37,7 @@
   "project": [
     "server/**/*.ts",
     "bin/**/*.ts",
-    "scripts/**/*.{ts,js}",
+    "scripts/**/*.{ts,js,mjs}",
     "shared/**/*.ts",
     "frontend/**/*.{ts,tsx}",
     "test/**/*.{ts,tsx}",
