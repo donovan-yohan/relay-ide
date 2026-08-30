@@ -5,7 +5,11 @@ import type {
   AgentProfileAvatarRef,
   AgentProfileRespondTo,
 } from '../shared/agent-profile.js';
-import { isValidHermesProfile } from '../shared/agent-profile.js';
+import {
+  isValidHermesApiKey,
+  isValidHermesProfile,
+} from '../shared/agent-profile.js';
+import { providerDescriptor } from './protocol-adapters/index.js';
 import {
   AgentProfileStoreError,
   type AgentProfileCreateInput,
@@ -37,6 +41,7 @@ const PATCH_FIELDS = new Set([
   'effort',
   'envVars',
   'hermesProfile',
+  'hermesApiKey',
   'namePool',
   'respondTo',
   'respondToAllowlist',
@@ -306,6 +311,17 @@ function parsePatch(
     }
     patch.hermesProfile = hermesProfile as string | null;
   }
+  if (hasOwn(body, 'hermesApiKey')) {
+    // WRITE-ONLY. The key is stored in its own column and never comes back on
+    // any response; `null` clears it and an omitted field leaves it untouched.
+    // The rejection names the FIELD only — echoing the rejected value would put
+    // a secret in an HTTP body and in whatever logs that body.
+    const hermesApiKey = body['hermesApiKey'];
+    if (hermesApiKey !== null && !isValidHermesApiKey(hermesApiKey)) {
+      return invalidField(res, 'hermesApiKey', 'invalid agent profile field');
+    }
+    patch.hermesApiKey = hermesApiKey as string | null;
+  }
   if (hasOwn(body, 'namePool')) {
     const namePool = validateStringList(body['namePool']);
     if (namePool === undefined) return invalidField(res, 'namePool');
@@ -333,6 +349,33 @@ function parsePatch(
     patch.isDefault = body['isDefault'];
   }
   return patch;
+}
+
+/**
+ * A gateway secret is only meaningful for a provider whose descriptor declares
+ * one (`agentProfileGatewaySecretKey`). Storing it anywhere else would leave
+ * bearer material on a row that never forwards it AND that the editor cannot
+ * show or clear — the key field renders only on the branch of the provider that
+ * owns it. Clearing (`null`) stays allowed everywhere so an already-orphaned
+ * row can still be emptied.
+ *
+ * Returns `false` when it has already answered with a 400.
+ */
+function gatewaySecretAllowedForProvider(
+  res: Response,
+  providerId: string,
+  patch: AgentProfileUpdateInput
+): boolean {
+  if (typeof patch.hermesApiKey !== 'string') return true;
+  if (providerDescriptor(providerId)?.agentProfileGatewaySecretKey) return true;
+  sendError(
+    res,
+    400,
+    'AGENT_PROFILE_GATEWAY_SECRET_UNSUPPORTED',
+    'this provider does not use a gateway API key',
+    { field: 'hermesApiKey' }
+  );
+  return false;
 }
 
 function mapStoreError(res: Response, error: unknown): void {
@@ -367,6 +410,8 @@ function createInputFromPatch(
   if (patch.envVars) input.envVars = patch.envVars;
   if (typeof patch.hermesProfile === 'string')
     input.hermesProfile = patch.hermesProfile;
+  if (typeof patch.hermesApiKey === 'string')
+    input.hermesApiKey = patch.hermesApiKey;
   if (patch.namePool) input.namePool = patch.namePool;
   if (patch.respondTo) input.respondTo = patch.respondTo;
   if (patch.respondToAllowlist)
@@ -437,6 +482,7 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
     }
     const patch = parsePatch(res, body, frameworks);
     if (!patch) return;
+    if (!gatewaySecretAllowedForProvider(res, providerId, patch)) return;
     try {
       const profile = store.create(
         createInputFromPatch(providerId, displayName, patch)
@@ -475,6 +521,15 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
     const patch = parsePatch(res, body, frameworks);
     if (!patch) return;
     if (
+      !gatewaySecretAllowedForProvider(
+        res,
+        patch.providerId ?? existing.providerId,
+        patch
+      )
+    ) {
+      return;
+    }
+    if (
       existing.isBuiltIn &&
       hasOwn(patch, 'providerId') &&
       patch.providerId !== existing.providerId
@@ -512,6 +567,13 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
     if (patch.providerId && patch.providerId !== existing.providerId) {
       // Model and effort semantics belong to the selected vendor. Never carry
       // those vendor-dependent overrides across a provider change.
+      //
+      // The gateway binding and its secret are cleared by the STORE on the same
+      // condition (`agent-profile-store.ts` `update`/`applyProfilePatch`), so
+      // the invariant sits beside the column it protects and holds for
+      // non-HTTP callers too. Clearing them here as well would also clobber a
+      // key supplied in this very patch — "move to hermes and set its key"
+      // must be one save, not two.
       patch.model = null;
       patch.effort = null;
     }

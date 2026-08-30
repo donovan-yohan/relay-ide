@@ -142,12 +142,25 @@ function yoloPermissionModeConfig(
  */
 function gatewayBindingExtra(
   providerId: string,
-  profile: AgentProfile
+  profile: AgentProfile,
+  readGatewaySecret: (profileId: string) => string | null
 ): Record<string, string> {
-  const key = providerDescriptor(providerId)?.agentProfileGatewayBindingKey;
+  const descriptor = providerDescriptor(providerId);
+  const key = descriptor?.agentProfileGatewayBindingKey;
   if (!key) return {};
   const value = profile[key];
-  return value === undefined ? {} : { [key]: value };
+  if (value === undefined) return {};
+  const extra: Record<string, string> = { [key]: value };
+  // The per-profile gateway credential rides ONLY with a present binding. An
+  // unbound runtime talks to the gateway's default profile, so handing it a
+  // named profile's key would swap a working default credential for one that
+  // cannot work there — and would carry the secret further than it needs to go.
+  const secretKey = descriptor?.agentProfileGatewaySecretKey;
+  if (secretKey) {
+    const secret = readGatewaySecret(profile.id);
+    if (secret) extra[secretKey] = secret;
+  }
+  return extra;
 }
 
 /** Per-binding FIFO turn queue cap; overflow → system row, message dropped. */
@@ -1938,7 +1951,12 @@ export function createChannelAgentBinder(
           ? { systemPrompt: inheritedPrompt }
           : {}),
         ...(() => {
-          const gatewayBinding = gatewayBindingExtra(framework, profile);
+          const gatewayBinding = gatewayBindingExtra(
+            framework,
+            profile,
+            (profileId) =>
+              deps.agentProfileStore?.getGatewaySecret(profileId) ?? null
+          );
           const bindingKeys = Object.keys(gatewayBinding);
           if (
             profile.provider === undefined &&

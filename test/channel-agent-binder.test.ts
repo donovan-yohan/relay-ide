@@ -3036,6 +3036,80 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(mockParams.extra?.['hermesProfile']).toBeUndefined();
   });
 
+  it('carries the per-profile gateway key alongside a binding, and only then (#1453)', async () => {
+    const profiles = createAgentProfileStore(':memory:');
+    cleanup.push(() => profiles.close());
+    profiles.seedBuiltIns([{ id: 'hermes' }, { id: 'mock' }]);
+    profiles.create({
+      id: 'agent-profile:hermes:bound',
+      providerId: 'hermes',
+      displayName: 'Bound Hermes',
+      hermesProfile: 'koi-product',
+      hermesApiKey: 'koi-only-key',
+    });
+    // A key with NO binding: the runtime talks to the gateway default, which
+    // the named profile's key cannot authenticate, so it must not be sent.
+    profiles.create({
+      id: 'agent-profile:hermes:unbound',
+      providerId: 'hermes',
+      displayName: 'Unbound Hermes',
+      hermesApiKey: 'orphan-key',
+    });
+    // A key stranded on a provider with no gateway-secret descriptor row.
+    profiles.create({
+      id: 'agent-profile:mock:stale-key',
+      providerId: 'mock',
+      displayName: 'Stale Key Mock',
+      hermesProfile: 'koi-product',
+      hermesApiKey: 'stale-key',
+    });
+    const { binder, sessions, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: [
+        {
+          id: 'hermes',
+          displayName: 'Hermes',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        ...MOCK_TARGETS,
+      ],
+      knownProviderIds: ['hermes', 'mock'],
+      agentProfileStore: profiles,
+    });
+
+    post(store, binder, '@Bound Hermes one', ['hermes']);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()).toMatchObject({
+      providerId: 'hermes',
+      extra: { hermesProfile: 'koi-product', hermesApiKey: 'koi-only-key' },
+    });
+
+    // `extra` is runtime-only, and the durable binding row is where a leak
+    // would become permanent. `ChannelMessageStore.upsertBinding` has no
+    // `extra` field at all, so this is belt-and-braces on that contract.
+    expect(
+      JSON.stringify(store.getBinding(CH, 'agent-profile:hermes:bound'))
+    ).not.toContain('koi-only-key');
+
+    post(store, binder, '@Unbound Hermes two', ['hermes']);
+    await waitFor(() => sessions.spawns() === 2);
+    const unbound = sessions.lastCreateParams() as {
+      extra?: Record<string, unknown>;
+    };
+    expect(unbound.extra?.['hermesApiKey']).toBeUndefined();
+
+    post(store, binder, '@Stale Key Mock three', ['mock']);
+    await waitFor(() => sessions.spawns() === 3);
+    const mock = sessions.lastCreateParams() as {
+      providerId: string;
+      extra?: Record<string, unknown>;
+    };
+    expect(mock.providerId).toBe('mock');
+    expect(mock.extra?.['hermesApiKey']).toBeUndefined();
+  });
+
   it('keeps same-provider profiles isolated: bindings, sessions, replies, roster, and status all use profile actor ids', async () => {
     const profiles = createAgentProfileStore(':memory:');
     cleanup.push(() => profiles.close());

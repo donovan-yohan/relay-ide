@@ -1720,4 +1720,143 @@ describe('Hermes multiplex profile binding (#1453)', () => {
       )
     ).rejects.toThrow(/ghost-profile.*multiplex_profiles/s);
   });
+
+  // ── per-profile gateway key (#1453) ───────────────────────────────────────
+  // Hermes multiplex gives each named profile its own `API_SERVER_KEY`, so the
+  // binding and the credential have to travel together or `/p/<profile>/`
+  // answers 401.
+
+  it('sends the bound profile OWN key on every call site, not the default key', async () => {
+    makeTempHome();
+    process.env.HERMES_API_TOKEN = 'gateway-default-key';
+    const gw = await gateway();
+    const adapter = adapterFor();
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-keyed', {
+        hermesProfile: 'koi-product',
+        hermesApiKey: 'koi-only-key',
+      })
+    );
+    await exerciseAllCallSites(adapter);
+
+    expect(gw.recorded.map((entry) => entry.url)).toEqual([
+      '/p/koi-product/health',
+      '/p/koi-product/v1/models',
+      '/p/koi-product/v1/responses',
+      '/p/koi-product/session/sess-keyed/abort',
+      '/p/koi-product/permission/req-1/allow',
+    ]);
+    // Every single request, not just the turn: an abort or an approval sent
+    // with the default key is the same 401 the operator would have to debug.
+    expect(new Set(gw.recorded.map((entry) => entry.authorization))).toEqual(
+      new Set(['Bearer koi-only-key'])
+    );
+  });
+
+  it('keeps the DEFAULT key for an unbound runtime even when a profile key is supplied', async () => {
+    makeTempHome();
+    const gw = await gateway();
+    const adapter = adapterFor();
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-unbound-key', {
+        apiToken: 'gateway-default-key',
+        hermesApiKey: 'koi-only-key',
+      })
+    );
+    await exerciseAllCallSites(adapter);
+
+    expect(gw.recorded.some((entry) => entry.url.includes('/p/'))).toBe(false);
+    // An unbound runtime talks to the gateway's DEFAULT profile. A named
+    // profile's key cannot work there, so it must not displace the default.
+    expect(new Set(gw.recorded.map((entry) => entry.authorization))).toEqual(
+      new Set(['Bearer gateway-default-key'])
+    );
+  });
+
+  it('falls back to the default key when a bound profile has no key of its own', async () => {
+    makeTempHome();
+    const gw = await gateway();
+    const adapter = adapterFor();
+    await adapter.connect(
+      boundConfig(gw.endpoint, 'sess-keyless', {
+        apiToken: 'gateway-default-key',
+        hermesProfile: 'ika-frontend',
+      })
+    );
+    await exerciseAllCallSites(adapter);
+
+    expect(new Set(gw.recorded.map((entry) => entry.authorization))).toEqual(
+      new Set(['Bearer gateway-default-key'])
+    );
+  });
+
+  it('gives two bound runtimes their own bearer, with neither key crossing prefixes', async () => {
+    makeTempHome();
+    const gw = await gateway({ parkResponses: 2 });
+    const koi = adapterFor();
+    const ika = adapterFor();
+    await koi.connect(
+      boundConfig(gw.endpoint, 'sess-koi', {
+        hermesProfile: 'koi-product',
+        hermesApiKey: 'koi-only-key',
+      })
+    );
+    await ika.connect(
+      boundConfig(gw.endpoint, 'sess-ika', {
+        hermesProfile: 'ika-frontend',
+        hermesApiKey: 'ika-only-key',
+      })
+    );
+    await Promise.all([
+      koi.sendMessage('turn-koi', 'hi'),
+      ika.sendMessage('turn-ika', 'hi'),
+    ]);
+
+    const koiRequests = gw.recorded.filter((entry) =>
+      entry.url.startsWith('/p/koi-product/')
+    );
+    const ikaRequests = gw.recorded.filter((entry) =>
+      entry.url.startsWith('/p/ika-frontend/')
+    );
+    expect(koiRequests.length).toBeGreaterThan(0);
+    expect(ikaRequests.length).toBeGreaterThan(0);
+    expect(koiRequests.length + ikaRequests.length).toBe(gw.recorded.length);
+    expect(new Set(koiRequests.map((entry) => entry.authorization))).toEqual(
+      new Set(['Bearer koi-only-key'])
+    );
+    expect(new Set(ikaRequests.map((entry) => entry.authorization))).toEqual(
+      new Set(['Bearer ika-only-key'])
+    );
+  });
+
+  it.each([
+    ['has space', 'whitespace'],
+    ['line\nbreak', 'header injection via LF'],
+    ['line\r\nX-Injected: 1', 'header injection via CRLF'],
+    ['', 'empty'],
+  ])(
+    'refuses a malformed profile key %j (%s) rather than silently using the default credential',
+    (value, label) => {
+      makeTempHome();
+      process.env.HERMES_API_TOKEN = 'gateway-default-key';
+      const resolve = (): unknown =>
+        resolveHermesGatewaySettings({
+          endpoint: 'http://h:1',
+          hermesProfile: 'koi-product',
+          hermesApiKey: value,
+        });
+      if (label === 'empty') {
+        // An empty key is "no key", which is the documented fall-back.
+        expect(resolve()).toMatchObject({ apiKey: 'gateway-default-key' });
+        return;
+      }
+      expect(resolve).toThrow(/not usable/);
+      // The rejection must never echo the secret it rejected.
+      try {
+        resolve();
+      } catch (err) {
+        expect((err as Error).message).not.toContain(value);
+      }
+    }
+  );
 });

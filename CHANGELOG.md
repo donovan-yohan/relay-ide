@@ -419,6 +419,13 @@ search`), and Claude channel agents get the Relay MCP facade mounted
   it blank keeps using the gateway default. A name the gateway could never
   serve is refused inline before the profile can be saved, and every bound
   profile shows which Hermes profile it is on in the agent list (#1463)
+- Each bound Hermes profile can now carry its own gateway API key, so a named
+  Hermes profile with its own `API_SERVER_KEY` authenticates as itself instead
+  of failing with a 401 against the default profile's key. The key is
+  write-only: Settings shows only whether one is set and offers a clear action,
+  and Relay never returns it once saved. Profiles with no key of their own, and
+  unbound Hermes agents, keep using the gateway default key exactly as before
+  (#1453)
 
 ## [0.1.1] - 2026-08-05
 
