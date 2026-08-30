@@ -11,7 +11,10 @@ import {
   type ChannelSubscriptionFilter,
 } from '../shared/channel-chat-protocol.js';
 import { projectRelayChannelPublicValue } from '../shared/channel-client.js';
-import { authenticatedCliGatewayActorCredential } from './cli-gateway-actor-auth.js';
+import {
+  authenticatedCliGatewayActorCredential,
+  isLocalHubCliActorCredential,
+} from './cli-gateway-actor-auth.js';
 import { actorMemberRef } from './channel-chat-router.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import { authenticatedOperatorClientCredential } from './operator-client-auth.js';
@@ -208,7 +211,14 @@ function actorMayReadChannel(req: Request, channelId: string): boolean {
   // Browser/session clients retain their established access lane. A scoped
   // actor with no channelIds is deliberately fail-closed for this enumeration
   // capable, long-lived route.
-  if (actor) return actor.scope?.channelIds?.includes(channelId) === true;
+  if (actor) {
+    // #1467/#1476: the host-local operator credential is not a delegated actor
+    // — reading its 0600 config-dir file already requires owning the hub — so
+    // it keeps browser/operator authority here exactly as it does in the chat
+    // router's scope guards and in the shared actor-credential validator.
+    if (isLocalHubCliActorCredential(actor)) return true;
+    return actor.scope?.channelIds?.includes(channelId) === true;
+  }
   const operatorClient = authenticatedOperatorClientCredential(req);
   return (
     !operatorClient ||

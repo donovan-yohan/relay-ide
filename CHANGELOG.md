@@ -36,6 +36,15 @@ workflow.
   `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
   which were dispatchable but undiscoverable (#1472)
 
+#### Fixed
+
+- `relay-ide v1 channels get|history|roster|subscribe|post` now work on the hub's
+  own machine without `relay-ide login`. Previously only `channels list` did:
+  every command that names a channel was refused with a
+  `CLI_ACTOR_WRONG_CHANNEL_SCOPE` error. Credentials issued to remote or
+  delegated agents are unchanged and still reach only the channels they are
+  scoped to (#1476)
+
 ### Hub-authoritative channel membership
 
 #### Added

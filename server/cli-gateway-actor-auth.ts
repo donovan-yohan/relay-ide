@@ -528,14 +528,69 @@ export function defaultCliGatewayActorScope(
   };
 }
 
+/**
+ * True when `token` NAMES the boot-minted host-local credential (#1467).
+ *
+ * IDENTIFICATION ONLY. It resolves the record by the token's public id and does
+ * NOT check the secret, so it must never be used to admit a request — its only
+ * job is deciding which scope dimensions narrow the request. Every caller runs
+ * `registry.validate` immediately afterwards, which authenticates the secret;
+ * a forged token that merely names the local credential's id is rejected there
+ * as `malformed_credential` and gains nothing from this returning true.
+ */
+function tokenNamesLocalHubCliActorCredential(
+  registry: ScopedActorCredentialRegistry,
+  token: unknown
+): boolean {
+  if (typeof token !== 'string') return false;
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return false;
+  const id = parts[1];
+  if (!id) return false;
+  return isLocalHubCliActorCredential(registry.getCredential(id) ?? undefined);
+}
+
+/** Drop the channel dimension from a requested validation scope (#1476). */
+function withoutRequestedChannelScope<
+  T extends { channelId?: string; channelIds?: string[] },
+>(scope: T): T {
+  const { channelId: _channelId, channelIds: _channelIds, ...rest } = scope;
+  return rest as T;
+}
+
 export function validateCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorValidationInput
 ): ScopedActorCredentialValidationResult {
-  const validationScope = scopeForValidation(input.scope, {
+  const requestedScope = scopeForValidation(input.scope, {
     ...(input.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     multiWorkContext: true,
   });
+  // #1476: the host-local credential (#1467) is the operator on the hub host,
+  // not a delegated actor, so the channel dimension does not narrow it. It is
+  // minted with no `channelIds`, and channel scope is deliberately fail-closed
+  // (`requiredWhenRequested` in `validateCredentialScope`) — so without this,
+  // every channel verb that NAMES a channel (`channels.get|history|roster|
+  // subscribe|post`) 403s with `CLI_ACTOR_WRONG_CHANNEL_SCOPE` while
+  // `channels.list`, which names none, works. This is the same exemption
+  // `denyOutOfScopeChannel`, `denyChannelReadWithoutScope`, and `actorMemberRef`
+  // already carry, applied at the validator the middleware and the per-frame
+  // stream recheck share.
+  //
+  // Narrow on purpose: ONLY the channel dimension is dropped, and only for this
+  // one in-process-minted marker. Capabilities, expiry, revocation, audience,
+  // and every other scope dimension (node, session, work-context, repo, path,
+  // task) are enforced unchanged, for this credential and every other one.
+  //
+  // The credential lookup is gated on a channel actually being requested, so
+  // no other verb pays for it — including on the per-frame streaming path,
+  // where only `channels.subscribe` reaches it.
+  const validationScope =
+    (requestedScope.channelId !== undefined ||
+      requestedScope.channelIds !== undefined) &&
+    tokenNamesLocalHubCliActorCredential(registry, input.token)
+      ? withoutRequestedChannelScope(requestedScope)
+      : requestedScope;
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
@@ -712,9 +767,11 @@ export function issueChannelRuntimeReadCliGatewayActorCredential(
  * Unlike a delegated actor credential, this one represents the operator on the
  * hub host itself: possession of the 0600 config-dir file it is written to
  * already implies filesystem access as the hub's uid. It is therefore exempt
- * from the channel-scope narrowing (`denyChannelReadWithoutScope` /
- * `denyOutOfScopeChannel`) that stops a delegated agent credential from
- * enumerating channels it was not scoped to. The marker is stamped here and
+ * from the channel-scope narrowing (`validateCliGatewayActorCredential`,
+ * `denyChannelReadWithoutScope`, `denyOutOfScopeChannel`, `actorMayReadChannel`)
+ * that stops a delegated agent credential from enumerating or reading channels
+ * it was not scoped to, and from the #1455 membership gate (`actorMemberRef`
+ * returns undefined for it). The marker is stamped here and
  * nowhere else — `credentialIssueMetadata` strips it from every caller-supplied
  * metadata blob, so the issue/grant HTTP surface cannot mint one.
  */
