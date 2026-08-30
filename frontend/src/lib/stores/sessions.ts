@@ -292,6 +292,43 @@ type SessionsGet = StoreApi<SessionsState>['getState'];
  */
 const inFlightRepoEnrichments = new Map<string, Promise<void>>();
 
+/**
+ * Monotonic per-repo run counter. A batch lands at the slowest repo's latency,
+ * which is a wider window than the old per-repo request had, so a webhook
+ * `forceRefresh` or a `PrTopBar` refresh that starts mid-batch could be
+ * clobbered by the batch's older data — and then stamped fresh for the full
+ * TTL. A run only writes the repos whose generation it still owns.
+ */
+const repoEnrichmentGenerations = new Map<string, number>();
+
+function claimRepoEnrichmentGenerations(
+  repoPaths: string[]
+): Map<string, number> {
+  const claimed = new Map<string, number>();
+  for (const repoPath of repoPaths) {
+    const next = (repoEnrichmentGenerations.get(repoPath) ?? 0) + 1;
+    repoEnrichmentGenerations.set(repoPath, next);
+    claimed.set(repoPath, next);
+  }
+  return claimed;
+}
+
+/** Repos this run still owns — a newer run has not started for them since. */
+function ownedRepoPaths(claimed: Map<string, number>): string[] {
+  return [...claimed.entries()]
+    .filter(
+      ([repoPath, generation]) =>
+        repoEnrichmentGenerations.get(repoPath) === generation
+    )
+    .map(([repoPath]) => repoPath);
+}
+
+/** Test seam: module state outlives `useSessionsStore.setState`. */
+export function resetRepoEnrichmentRuntime(): void {
+  inFlightRepoEnrichments.clear();
+  repoEnrichmentGenerations.clear();
+}
+
 function repoEnrichmentStamps(
   repoPaths: string[],
   source: RepoEnrichmentSource
@@ -314,38 +351,62 @@ async function runRepoEnrichment(
   set: SessionsSet,
   get: SessionsGet,
   repoPaths: string[],
-  source: RepoEnrichmentSource
+  source: RepoEnrichmentSource,
+  claimed: Map<string, number>
 ): Promise<void> {
-  if (repoPaths.length === 0) return;
-
-  const state = get();
-  const branches = repoPaths.flatMap((repoPath) =>
-    repoBranchEntriesFor(state, repoPath)
-  );
-
-  // Repos with nothing to enrich still count as refreshed, so a webhook for a
-  // repo with no local branches does not retry on every subsequent pass.
-  if (branches.length === 0) {
-    const stamps = repoEnrichmentStamps(repoPaths, source);
-    set((current) => ({
-      repoEnrichmentMeta: { ...current.repoEnrichmentMeta, ...stamps },
-    }));
-    return;
-  }
-
+  // Never rejects: joined callers and the fire-and-forget mount call must not
+  // see an unhandled rejection.
   try {
+    if (repoPaths.length === 0) return;
+
+    const state = get();
+    const requested = new Map<
+      string,
+      ReturnType<typeof repoBranchEntriesFor>
+    >();
+    for (const repoPath of repoPaths) {
+      requested.set(repoPath, repoBranchEntriesFor(state, repoPath));
+    }
+    const branches = [...requested.values()].flat();
+
+    // Repos with nothing to enrich still count as refreshed, so a webhook for a
+    // repo with no local branches does not retry on every subsequent pass.
+    if (branches.length === 0) {
+      const stamps = repoEnrichmentStamps(ownedRepoPaths(claimed), source);
+      set((current) => ({
+        repoEnrichmentMeta: { ...current.repoEnrichmentMeta, ...stamps },
+      }));
+      return;
+    }
+
     const data = await api.enrichBranches(branches);
-    const stamps = repoEnrichmentStamps(repoPaths, source);
+
+    // Drop the repos a newer run took over while this request was in flight.
+    const owned = ownedRepoPaths(claimed);
+    if (owned.length === 0) return;
+    const stamps = repoEnrichmentStamps(owned, source);
+    // Only repos that actually contributed branches have their previous
+    // results replaced; a repo with none keeps whatever it had, exactly as the
+    // per-repo path did.
+    const prunable = owned
+      .filter((repoPath) => (requested.get(repoPath)?.length ?? 0) > 0)
+      .map((repoPath) => `${repoPath}::`);
+    const ownedPrefixes = owned.map((repoPath) => `${repoPath}::`);
+
     set((current) => {
-      const prefixes = repoPaths.map((repoPath) => `${repoPath}::`);
       const nextResults: Record<string, BranchEnrichment> = {};
       for (const [key, value] of Object.entries(current.enrichmentResults)) {
-        if (!prefixes.some((prefix) => key.startsWith(prefix))) {
+        if (!prunable.some((prefix) => key.startsWith(prefix))) {
+          nextResults[key] = value;
+        }
+      }
+      for (const [key, value] of Object.entries(data.results)) {
+        if (ownedPrefixes.some((prefix) => key.startsWith(prefix))) {
           nextResults[key] = value;
         }
       }
       return {
-        enrichmentResults: { ...nextResults, ...data.results },
+        enrichmentResults: nextResults,
         repoEnrichmentMeta: { ...current.repoEnrichmentMeta, ...stamps },
       };
     });
@@ -364,17 +425,20 @@ function enrichRepos(
 ): Promise<void> {
   if (repoPaths.length === 0) return Promise.resolve();
 
-  const run = runRepoEnrichment(set, get, repoPaths, source);
+  const claimed = claimRepoEnrichmentGenerations(repoPaths);
+  const run = runRepoEnrichment(set, get, repoPaths, source, claimed);
   for (const repoPath of repoPaths) {
     inFlightRepoEnrichments.set(repoPath, run);
   }
-  void run.finally(() => {
-    for (const repoPath of repoPaths) {
-      if (inFlightRepoEnrichments.get(repoPath) === run) {
-        inFlightRepoEnrichments.delete(repoPath);
+  void run
+    .finally(() => {
+      for (const repoPath of repoPaths) {
+        if (inFlightRepoEnrichments.get(repoPath) === run) {
+          inFlightRepoEnrichments.delete(repoPath);
+        }
       }
-    }
-  });
+    })
+    .catch(() => {});
   return run;
 }
 
