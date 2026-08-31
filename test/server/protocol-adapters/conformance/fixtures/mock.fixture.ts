@@ -6,9 +6,8 @@
  * self-scripted by the adapter, so `feed()` is never called — a feed step here
  * would mean the harness drifted away from the mock's contract.
  *
- * Note the registry has exactly one mock key (`mock` → `MockProtocolAdapterV2`).
- * The v1 `mock-adapter.ts` is not in `v2Adapters`, so discovery correctly
- * ignores it and no exemption list is needed.
+ * Note the registry has exactly one mock key (`mock` → `MockProtocolAdapterV2`),
+ * so discovery needs no exemption list.
  */
 import { MockProtocolAdapterV2 } from '../../../../../server/protocol-adapters/mock-v2-adapter.js';
 import type { AdapterConformanceFixture } from '../fixture-types.js';

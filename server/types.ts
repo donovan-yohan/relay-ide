@@ -48,7 +48,6 @@ export type BackendDisplayState =
  * registry or its REST/node-link contracts.
  */
 export type SessionType = 'terminal';
-export type AgentType = string;
 export type BuiltinFrameworkId =
   | 'claude'
   | 'codex'
@@ -57,7 +56,6 @@ export type BuiltinFrameworkId =
   | 'prime-agent'
   | 'pi';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
-export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionRestoreState = 'restoring' | 'reattach-failed';
@@ -707,12 +705,6 @@ export interface SessionMeta {
   fetchedAt: string;
 }
 
-export interface GitStatus {
-  prState: 'open' | 'merged' | 'closed' | null;
-  additions: number;
-  deletions: number;
-}
-
 export interface PullRequest {
   number: number;
   title: string;
@@ -848,14 +840,6 @@ export interface PrInfo {
   updatedAt: string;
 }
 
-export interface DashboardData {
-  prs: PullRequest[];
-  activity: ActivityEntry[];
-  isGitRepo: boolean;
-  defaultBranch: string | null;
-  hasGhCli: boolean;
-}
-
 export type RepoWebhookStatus = 'live' | 'manual' | 'limited' | 'error';
 export type WebhookStatus = RepoWebhookStatus;
 
@@ -945,18 +929,6 @@ export interface ChangedFile {
   deletions: number;
   directory: string; // parent directory for DataTable groupBy
   summary?: string; // rule-based summary (v1)
-}
-
-export interface ChangedFilesResponse {
-  files: ChangedFile[];
-  aggregate: { additions: number; deletions: number; fileCount: number };
-  error?: string;
-}
-
-export interface FileDiffResponse {
-  diff: string;
-  summary?: string;
-  error?: string;
 }
 
 export type BranchDivergenceState =

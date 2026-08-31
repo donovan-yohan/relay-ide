@@ -48,11 +48,13 @@ knip's `project` globs, so they are never analysed and need no entry.
    string literals. knip cannot see that edge, so it reports several
    `frontend/src/components/*.tsx` files as unused when a ledger test still
    asserts against them. Deleting the component means updating the ledger.
-2. **Registered by import side effect.** `server/adapters/*-telemetry.ts` call
-   `registerTelemetryAdapter()` at module scope. A registry entry is invisible
-   to the import graph in one direction and _fake_ in the other — see the
-   telemetry finding in the dead-code inventory issue, where the whole registry
-   turned out to have no production importer at all.
+2. **Registered by import side effect.** A module that calls a
+   `register*()` at module scope is invisible to the import graph in one
+   direction and _fake_ in the other. The worked example was the per-framework
+   telemetry registry (`server/telemetry-adapter.ts` plus
+   `server/adapters/*-telemetry.ts`): the registration edge looked live, but the
+   whole registry had no production importer at all, and it was deleted as
+   obsolete under #1483. Check the other direction before trusting a registry.
 3. **Named in the shared command manifest.** `shared/relay-command-manifest.ts`
    carries command-name inventories (`sessions.kill`, `worktrees.create`, …) as
    strings. A knip hit on a frontend `…CommandDefinition()` factory does _not_

@@ -1,7 +1,8 @@
 // Frontend visual mapping for #614 durability states. Keeps the shared
 // `SessionDurabilityState` enum decoupled from React/UI rendering decisions —
 // the enum lives in `shared/session-durability.ts`; this module owns the
-// label/colour mapping consumed by `SessionItem`, mobile cards, and tests.
+// label/colour mapping consumed by `TopicSidebarShell`, mobile cards, and
+// tests.
 
 import type { SessionDurabilityState } from '../../../shared/session-durability.js';
 import type { StatusDotStatus } from '../components/StatusDot.js';

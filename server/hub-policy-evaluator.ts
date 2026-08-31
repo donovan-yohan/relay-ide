@@ -110,12 +110,6 @@ export interface HubPolicyDecision {
 
 export type SessionCreateType = 'terminal';
 
-export function isSessionCreateType(
-  value: unknown
-): value is SessionCreateType {
-  return value === 'terminal';
-}
-
 export function sessionCreateCapability(
   _sessionType: SessionCreateType
 ): RelayCapabilityBit {

@@ -403,11 +403,6 @@ export function registerFileRangeContentFetcher(
   registeredContentFetcher = fetcher;
 }
 
-/** Retrieve the registered content fetcher, or `null` if the hub has not wired it. */
-export function getFileRangeContentFetcher(): FileRangeContentFetcher | null {
-  return registeredContentFetcher;
-}
-
 /**
  * Expand a `file-anchor` packet using the hub-registered content fetcher and
  * anchor-state resolver. Returns `null` when no content fetcher is registered

@@ -156,13 +156,6 @@ export function normalizeNodePairingDeviceCode(input: string): string {
   return input.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 }
 
-export function isNodePairingDeviceCode(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    normalizeNodePairingDeviceCode(value).length >= 6
-  );
-}
-
 /**
  * The public, redaction-safe summary of a pending pairing request. Both the
  * authenticated operator surface and the waiting node read this shape; it

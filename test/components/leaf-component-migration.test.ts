@@ -42,15 +42,6 @@ const expectedComponents: ExpectedComponent[] = [
     ],
   },
   {
-    name: 'FilterChipBar',
-    componentPath: 'frontend/src/components/FilterChipBar.tsx',
-    cssPath: 'frontend/src/components/FilterChipBar.css',
-    expectedExports: [
-      'export interface FilterChip',
-      'export function FilterChipBar',
-    ],
-  },
-  {
     name: 'MobileHeader',
     componentPath: 'frontend/src/components/MobileHeader.tsx',
     cssPath: 'frontend/src/components/MobileHeader.css',
@@ -85,12 +76,6 @@ const expectedComponents: ExpectedComponent[] = [
       'export interface TuiProgressProps',
       'export function TuiProgress',
     ],
-  },
-  {
-    name: 'TuiRow',
-    componentPath: 'frontend/src/components/TuiRow.tsx',
-    cssPath: 'frontend/src/components/TuiRow.css',
-    expectedExports: ['export interface TuiRowProps', 'export function TuiRow'],
   },
   {
     name: 'DialogShell',
