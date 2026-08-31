@@ -135,7 +135,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(17);
+    ).toBe(18);
     expect(
       (
         inspect
@@ -605,7 +605,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(17);
+    ).toBe(18);
     expect(
       (
         inspect.prepare('PRAGMA table_info(channel_messages)').all() as Array<{
@@ -793,7 +793,7 @@ describe('channel-message-store schema migration', () => {
           version: number;
         }
       ).version
-    ).toBe(17);
+    ).toBe(18);
     expect(
       inspect
         .prepare('SELECT heal_id, candidates, healed FROM channel_heal_state')
@@ -1037,7 +1037,7 @@ describe('channel-message-store async-run migration (#1391)', () => {
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
     expect(inspect.prepare('SELECT version FROM schema_version').get()).toEqual(
-      { version: 17 }
+      { version: 18 }
     );
     expect(
       inspect
@@ -3720,7 +3720,7 @@ describe('channel-message-store full-text search (#1308 slice 2 item 1)', () => 
       .get() as { version: number };
     counted.close();
     expect(rows.count).toBe(1);
-    expect(version.version).toBe(17);
+    expect(version.version).toBe(18);
   });
 
   it('backfills across more than one batch without dropping or duplicating rows', () => {
@@ -4918,5 +4918,232 @@ describe('channel-message-store membership (#1455 slice 1)', () => {
     });
     s.sweepOrphans(new Set());
     expect(s.isMember('topic:swept', 'agent', 'agent:claude')).toBe(false);
+  });
+});
+
+describe('channel-message-store invite and removal (#1455 slice 2)', () => {
+  it('records the inviter once and keeps first-writer attribution on re-invite', () => {
+    const s = store();
+    const first = s.inviteMember({
+      channelId: 'topic:m',
+      kind: 'agent',
+      id: 'agent-profile:codex:default',
+      invitedBy: 'agent:claude',
+    });
+    expect(first).toMatchObject({ invitedBy: 'agent:claude' });
+    const again = s.inviteMember({
+      channelId: 'topic:m',
+      kind: 'agent',
+      id: 'agent-profile:codex:default',
+      invitedBy: 'human:operator',
+    });
+    expect(again).toEqual(first);
+    expect(s.listMembers('topic:m')).toHaveLength(1);
+  });
+
+  it('removes every stored spelling of one folded participant', () => {
+    const s = store();
+    // The same participant reaches the table twice: `agent:<vendor>` from a
+    // gateway post and the vendor's DEFAULT profile id from a bound writer.
+    s.inviteMember({
+      channelId: 'topic:fold',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    s.upsertMember({
+      channelId: 'topic:fold',
+      kind: 'agent',
+      id: 'agent-profile:claude:default',
+      invitedBy: 'binding',
+    });
+    expect(s.listMembers('topic:fold')).toHaveLength(2);
+    const removed = s.removeMember({
+      channelId: 'topic:fold',
+      kind: 'agent',
+      id: 'agent-profile:claude:default',
+      removedBy: 'human:operator',
+    });
+    expect(removed).not.toBeNull();
+    // Removing under either spelling must not leave the other one live, or the
+    // member is still in the room under its other name.
+    expect(s.isMember('topic:fold', 'agent', 'agent:claude')).toBe(false);
+    expect(
+      s.isMember('topic:fold', 'agent', 'agent-profile:claude:default')
+    ).toBe(false);
+    expect(s.listMembers('topic:fold')).toEqual([]);
+    expect(s.getMember('topic:fold', 'agent', 'agent:claude')).toBeNull();
+  });
+
+  it('returns null rather than tombstoning twice', () => {
+    const s = store();
+    s.inviteMember({
+      channelId: 'topic:m',
+      kind: 'agent',
+      id: 'agent:codex',
+      invitedBy: 'human:operator',
+    });
+    expect(
+      s.removeMember({
+        channelId: 'topic:m',
+        kind: 'agent',
+        id: 'agent:codex',
+        removedBy: 'human:operator',
+      })
+    ).not.toBeNull();
+    expect(
+      s.removeMember({
+        channelId: 'topic:m',
+        kind: 'agent',
+        id: 'agent:codex',
+        removedBy: 'human:operator',
+      })
+    ).toBeNull();
+  });
+
+  it('keeps an agent removed against the writers that would resurrect a deleted row', () => {
+    const file = dbPath();
+    const s = store(file);
+    s.appendComplete({
+      channelId: 'topic:tomb',
+      sender: AGENT,
+      text: 'a durable message from this agent',
+    });
+    s.upsertBinding({
+      channelId: 'topic:tomb',
+      profileActorId: 'agent:claude',
+      agentFramework: 'claude',
+    });
+    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(true);
+    s.removeMember({
+      channelId: 'topic:tomb',
+      kind: 'agent',
+      id: 'agent:claude',
+      removedBy: 'human:operator',
+    });
+
+    // 1. The idempotent boot/migration backfill derives membership from the
+    //    message log and the bindings table. Both still name this agent.
+    s.backfillMembership();
+    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(false);
+
+    // 2. The bridge re-upserts on every durable reply (`self`).
+    s.upsertMember({
+      channelId: 'topic:tomb',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'self',
+    });
+    expect(s.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(false);
+
+    // 3. Re-opening the database re-runs migrations and the schema DDL.
+    s.close();
+    const reopened = store(file);
+    expect(reopened.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(
+      false
+    );
+
+    // Only an explicit invite re-admits — with the NEW inviter, because the
+    // invite that was revoked is not the invite now in force.
+    const readmitted = reopened.inviteMember({
+      channelId: 'topic:tomb',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    expect(readmitted.invitedBy).toBe('human:operator');
+    expect(reopened.isMember('topic:tomb', 'agent', 'agent:claude')).toBe(true);
+  });
+
+  it('lets a human writer clear its own tombstone but never an agent', () => {
+    const s = store();
+    for (const [kind, id] of [
+      ['human', 'human:operator'],
+      ['agent', 'agent:codex'],
+    ] as const) {
+      s.inviteMember({
+        channelId: 'topic:h',
+        kind,
+        id,
+        invitedBy: 'human:operator',
+      });
+      s.removeMember({
+        channelId: 'topic:h',
+        kind,
+        id,
+        removedBy: 'human:operator',
+      });
+      s.upsertMember({ channelId: 'topic:h', kind, id, invitedBy: 'self' });
+    }
+    // A human is never membership-gated, so a stale tombstone could only make
+    // the member list lie; an agent's removal is an authorization fact.
+    expect(s.isMember('topic:h', 'human', 'human:operator')).toBe(true);
+    expect(s.isMember('topic:h', 'agent', 'agent:codex')).toBe(false);
+  });
+
+  it('stops resolving a DM whose participant was removed', () => {
+    const s = store();
+    for (const id of ['human:operator', 'agent:claude']) {
+      s.inviteMember({
+        channelId: 'topic:dm',
+        kind: id.startsWith('human:') ? 'human' : 'agent',
+        id,
+        invitedBy: 'human:operator',
+      });
+    }
+    expect(s.findDmChannel('human:operator', 'agent:claude')).toBe('topic:dm');
+    s.removeMember({
+      channelId: 'topic:dm',
+      kind: 'agent',
+      id: 'agent:claude',
+      removedBy: 'human:operator',
+    });
+    expect(s.findDmChannel('human:operator', 'agent:claude')).toBeNull();
+  });
+
+  it('upgrades a pre-removal database to v18 with every member still live', () => {
+    const file = dbPath();
+    const seeded = store(file);
+    seeded.inviteMember({
+      channelId: 'topic:v17',
+      kind: 'agent',
+      id: 'agent:claude',
+      invitedBy: 'human:operator',
+    });
+    seeded.close();
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE channel_members_v17 (
+        channel_id TEXT NOT NULL, member_kind TEXT NOT NULL,
+        member_id TEXT NOT NULL, joined_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}', invited_by TEXT,
+        PRIMARY KEY (channel_id, member_kind, member_id)
+      );
+      INSERT INTO channel_members_v17
+        SELECT channel_id, member_kind, member_id, joined_at, metadata_json,
+               invited_by FROM channel_members;
+      DROP TABLE channel_members;
+      ALTER TABLE channel_members_v17 RENAME TO channel_members;
+      UPDATE schema_version SET version = 17;
+    `);
+    legacy.close();
+
+    const upgraded = store(file);
+    expect(upgraded.isMember('topic:v17', 'agent', 'agent:claude')).toBe(true);
+    const inspect = new Database(file);
+    cleanup.push(() => inspect.close());
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(18);
+    expect(upgraded.listMembers('topic:v17')).toEqual([
+      expect.objectContaining({
+        id: 'agent:claude',
+        invitedBy: 'human:operator',
+      }),
+    ]);
   });
 });

@@ -251,9 +251,13 @@ import { createChannelHub, type ChannelHub } from './channel-hub.js';
 import {
   channelSearchRequestedChannelId,
   actorMemberRef,
+  channelParticipantRef,
   createChannelChatRouter,
 } from './channel-chat-router.js';
-import { CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER } from '../shared/channel-chat-protocol.js';
+import {
+  CHANNEL_MEMBERSHIP_CREATOR_INVITER,
+  CHANNEL_MEMBERSHIP_CREDENTIAL_INVITER,
+} from '../shared/channel-chat-protocol.js';
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 import { createChannelSubscriptionRouter } from './channel-subscription-router.js';
 import {
@@ -3155,6 +3159,32 @@ async function main(): Promise<void> {
       channelArchiveActivity: channelAgentBinder
         ? (channelId) => channelAgentBinder.archiveActivityForChannel(channelId)
         : null,
+      // #1455 slice 2: a channel IS a workspace topic, so `channels.create`
+      // lands on this route. Without enrolling the creator, an agent that
+      // created a channel would be refused by the slice-1 membership gate on
+      // its very next request — it could open a room it may not enter. Best
+      // effort on purpose: the channel is already durable, and the boot
+      // reconciliation plus the creator's first post both repair a lost row.
+      onChannelCreated: (req, topic) => {
+        if (!channelMessageStore) return;
+        const creator = channelParticipantRef(req);
+        if (!creator) return;
+        try {
+          channelMessageStore.inviteMember({
+            channelId: topic.id,
+            kind: creator.kind,
+            id: creator.id,
+            invitedBy: CHANNEL_MEMBERSHIP_CREATOR_INVITER,
+          });
+        } catch (err) {
+          logger.warn(
+            'channel creator enrollment failed for %s in %s: %s',
+            creator.id,
+            topic.id,
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+      },
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
@@ -3251,14 +3281,17 @@ async function main(): Promise<void> {
                   command === 'channels.history' ||
                   command === 'channels.receipts' ||
                   command === 'channels.threads.history' ||
-                  command === 'channels.roster'
+                  command === 'channels.roster' ||
+                  command === 'channels.members'
                 ? { scopeForRequest: channelScopeFromParams }
                 : {}),
           ...(options ?? {}),
         }),
       requireWriteActorAuth: (command, options) =>
         requireChannelGatewayAuthForCommand(command, {
-          ...(command === 'channels.post'
+          ...(command === 'channels.post' ||
+          command === 'channels.invite' ||
+          command === 'channels.remove-member'
             ? { scopeForRequest: channelScopeFromParams }
             : {}),
           ...(options ?? {}),

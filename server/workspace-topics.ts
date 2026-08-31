@@ -1299,6 +1299,15 @@ export interface WorkspaceTopicsRouterOptions {
         reasons: readonly string[];
       })
     | null;
+  /**
+   * Called once a channel has been durably created (#1455 slice 2). A channel
+   * IS a workspace topic, so `channels.create` lands here — and its creator has
+   * to become the channel's first member or it would be locked out of the
+   * conversation it just opened by the slice-1 membership gate. Membership
+   * belongs to the channel store, which this router deliberately does not know
+   * about, so the embedding supplies the enrollment.
+   */
+  onChannelCreated?: (req: Request, topic: WorkspaceTopic) => void;
   requireAuth?: RequestHandler;
   requireReadAuth?: RequestHandler;
   requireReadActorAuth?: (
@@ -1510,6 +1519,7 @@ export function createWorkspaceTopicsRouter(
           })
         );
         const topic = options.store.create(parsed);
+        options.onChannelCreated?.(req, topic);
         res
           .status(201)
           .json({ topic, mutationPolicy: mutationPolicy('create') });

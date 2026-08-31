@@ -222,6 +222,9 @@ const GATEWAY_USAGE_GROUPS: ReadonlyArray<
       'history',
       'threads history',
       'roster',
+      'members',
+      'invite',
+      'remove-member',
       'search',
       'subscribe',
       'post',
@@ -1838,6 +1841,9 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'channels.subscribe',
   'channels.threads.history',
   'channels.roster',
+  'channels.members',
+  'channels.invite',
+  'channels.remove-member',
   'channels.search',
   'channels.post',
   'cockpit.list',
@@ -6474,6 +6480,8 @@ type ChannelCliValueFlag =
   | '--message-id'
   | '--sender-id'
   | '--mention-target-id'
+  | '--member-id'
+  | '--kind'
   | '--status'
   | '--terminal-only'
   | '--principal-only'
@@ -6528,7 +6536,7 @@ function parseChannelCliFlags(
 function requiredChannelCliString(
   commandName: RelayCliGatewayCommand,
   values: ReadonlyMap<ChannelCliValueFlag, string>,
-  flag: '--channel-id' | '--thread-id' | '--run-id'
+  flag: '--channel-id' | '--thread-id' | '--run-id' | '--member-id'
 ): string {
   const value = values.get(flag)?.trim() ?? '';
   if (!value) {
@@ -6538,7 +6546,9 @@ function requiredChannelCliString(
           ? 'channelId'
           : flag === '--thread-id'
             ? 'threadId'
-            : 'runId',
+            : flag === '--member-id'
+              ? 'id'
+              : 'runId',
     });
   }
   return value;
@@ -6818,6 +6828,72 @@ async function runGatewayChannelsCreate(channelArgs: string[]): Promise<void> {
   printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
 }
 
+/** `channels members` (#1455 slice 2): the durable membership + invite audit. */
+async function runGatewayChannelsMembers(
+  channelArgs: string[]
+): Promise<void> {
+  const values = parseChannelCliFlags('channels.members', channelArgs, [
+    '--channel-id',
+  ]);
+  const channelId = requiredChannelCliString(
+    'channels.members',
+    values,
+    '--channel-id'
+  );
+  const result = await gatewayHttpJson({
+    commandName: 'channels.members',
+    pathName: `/channels/${encodeURIComponent(channelId)}/members`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('channels.members', result), 0);
+}
+
+/**
+ * `channels invite` / `channels remove-member` (#1455 slice 2).
+ *
+ * There is deliberately no `--invited-by` / `--removed-by` flag: the hub
+ * derives the acting member from the credential, so a flag for it could only
+ * ever be a lie the CLI passed along. Same rule #1473 set for secrets — the
+ * accepted source is the one the server can verify.
+ */
+async function runGatewayChannelsMembership(
+  subcommand: 'invite' | 'remove-member',
+  channelArgs: string[]
+): Promise<void> {
+  const commandName =
+    subcommand === 'invite'
+      ? ('channels.invite' as const)
+      : ('channels.remove-member' as const);
+  const values = parseChannelCliFlags(commandName, channelArgs, [
+    '--channel-id',
+    '--member-id',
+    '--kind',
+  ]);
+  const channelId = requiredChannelCliString(
+    commandName,
+    values,
+    '--channel-id'
+  );
+  const memberId = requiredChannelCliString(commandName, values, '--member-id');
+  const kind = values.get('--kind')?.trim();
+  if (kind !== undefined && kind !== 'human' && kind !== 'agent') {
+    gatewayInvalid(commandName, '--kind must be human or agent', {
+      field: 'kind',
+    });
+  }
+  const result = await gatewayHttpJson({
+    commandName,
+    pathName:
+      subcommand === 'invite'
+        ? `/channels/${encodeURIComponent(channelId)}/members`
+        : `/channels/${encodeURIComponent(channelId)}/members/remove`,
+    method: 'POST',
+    body: { id: memberId, ...(kind ? { kind } : {}) },
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk(commandName, result), 0);
+}
+
 async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
   const subcommand = gatewayArgs[1];
   const channelArgs = gatewayArgs.slice(2);
@@ -7019,6 +7095,11 @@ async function runGatewayChannels(gatewayArgs: string[]): Promise<void> {
       capabilities: ['context:read'],
     });
     printGatewayEnvelope(gatewayOk('channels.roster', result), 0);
+  }
+
+  if (subcommand === 'members') return runGatewayChannelsMembers(channelArgs);
+  if (subcommand === 'invite' || subcommand === 'remove-member') {
+    return runGatewayChannelsMembership(subcommand, channelArgs);
   }
 
   if (subcommand === 'search') await runGatewayChannelsSearch(channelArgs);

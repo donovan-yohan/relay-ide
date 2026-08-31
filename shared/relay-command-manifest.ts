@@ -179,6 +179,9 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'channels.subscribe': 'subscribe to channel messages',
   'channels.threads.history': 'channel thread history',
   'channels.roster': 'channel roster',
+  'channels.members': 'channel membership list',
+  'channels.invite': 'invite channel member',
+  'channels.remove-member': 'remove channel member',
   'channels.search': 'search channel messages',
   'channels.post': 'post channel message',
   'cockpit.list': 'terminal attention cockpit',
@@ -221,6 +224,11 @@ const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'worktrees.delete',
   'worktrees.archive',
   'workspace-topics.archive',
+  // Revoking a channel membership takes reach away from a participant, so it
+  // is classified with `nodes.revoke` rather than with ordinary writes. It is
+  // reversible — an invite re-admits — but a surface that confirms destructive
+  // commands should confirm this one.
+  'channels.remove-member',
 ]);
 
 const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
@@ -259,6 +267,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.create',
   'workspace-topics.update',
   'channels.post',
+  'channels.invite',
   'agent-profiles.create',
   'agent-profiles.update',
   'repos.add',

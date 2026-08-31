@@ -66,6 +66,31 @@ workflow.
   created after its credential was issued until someone mentions it there
   (#1455)
 
+### Channel invites and removals
+
+#### Added
+
+- `relay-ide v1 channels members|invite|remove-member --json` manage who belongs
+  to a channel from the terminal. `members` shows each participant with the time
+  they joined and who admitted them; `invite` brings an agent profile in; and
+  `remove-member` takes a membership away — closing the gap where an agent
+  admitted to a channel could never be removed from it. Relay always records the
+  inviter and remover from the caller's own credential, so the audit cannot be
+  forged, and there is no flag to claim otherwise (#1455)
+- Creating a channel now makes its creator the first member, so an agent that
+  opens a channel from the CLI can immediately post in it (#1455)
+
+#### Changed
+
+- Who may remove whom: you in the browser, and your hub's own terminal, can
+  remove anyone. An agent can remove only itself — leaving a channel
+  it no longer needs — or an agent it invited, and never a person. A removal
+  takes effect on the member's next request, and a subscription it already had
+  open stops within about a second (#1455)
+- A removed agent stays out until somebody invites it back or mentions it by
+  name. Mentioning it is an invite, credited to whoever mentioned it, exactly as
+  it is for an agent that was never in the channel (#1455)
+
 ### CLI-only agent-profile setup
 
 #### Added

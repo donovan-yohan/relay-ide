@@ -52,7 +52,9 @@ import {
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
 import type { IaStore } from '../server/ia-store.js';
+import { OPERATOR_CLIENT_CHANNEL_COMMANDS } from '../server/operator-client-auth.js';
 import {
+  CHANNEL_MEMBERSHIP_SELF_INVITER,
   CHANNEL_SEARCH_HIGHLIGHT_CLOSE,
   CHANNEL_SEARCH_HIGHLIGHT_OPEN,
   CHANNEL_SEARCH_MAX_RESULTS,
@@ -4573,5 +4575,422 @@ describe('channel routes — hub-authoritative membership (#1455 slice 1)', () =
       headers: scoped(h.channelId, 'context:read'),
     });
     expect(res.status).toBe(503);
+  });
+});
+
+describe('channel routes — membership verbs (#1455 slice 2)', () => {
+  const scoped = (channelId: string, capability: string, actor = 'claude') => ({
+    'x-test-actor-id': actor,
+    'x-test-actor-scope': JSON.stringify({ channelIds: [channelId] }),
+    'x-relay-capabilities': capability,
+  });
+
+  type MemberRefBody = {
+    kind: string;
+    id: string;
+    joinedAt: string;
+    invitedBy?: string;
+  };
+
+  const members = (h: Harness, headers?: Record<string, string>) =>
+    req<{ channelId: string; members: MemberRefBody[] }>({
+      port: h.port,
+      method: 'GET',
+      url: `/channels/${encodeURIComponent(h.channelId)}/members`,
+      ...(headers ? { headers } : {}),
+    });
+
+  const invite = (
+    h: Harness,
+    body: Record<string, unknown>,
+    headers?: Record<string, string>
+  ) =>
+    req<{
+      channelId: string;
+      member: MemberRefBody;
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/members`,
+      body,
+      ...(headers ? { headers } : {}),
+    });
+
+  const removeMember = (
+    h: Harness,
+    body: Record<string, unknown>,
+    headers?: Record<string, string>
+  ) =>
+    req<{
+      channelId: string;
+      removed: MemberRefBody;
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/members/remove`,
+      body,
+      ...(headers ? { headers } : {}),
+    });
+
+  it('refuses invite, remove, and members list from a scoped non-member', async () => {
+    const h = await harness();
+    const read = scoped(h.channelId, 'context:read');
+    const write = scoped(h.channelId, 'context:write');
+    for (const res of [
+      await members(h, read),
+      await invite(h, { id: 'agent-profile:codex:default' }, write),
+      await removeMember(h, { id: 'agent-profile:codex:default' }, write),
+    ]) {
+      expect(res.status).toBe(403);
+      expect(
+        (res.body as { error: { details?: Record<string, unknown> } }).error
+          .details?.['reasonCode']
+      ).toBe('CHANNEL_NOT_MEMBER');
+    }
+    // The refused invite admitted nobody.
+    expect(h.store.listMembers(h.channelId)).toHaveLength(0);
+  });
+
+  it('records the server-derived inviter and ignores a body-supplied one', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    const write = scoped(h.channelId, 'context:write');
+    const invited = await invite(
+      h,
+      {
+        id: 'agent-profile:codex:default',
+        // Not a declared input property; a forged inviter must never survive.
+        invitedBy: 'human:operator',
+      },
+      write
+    );
+    expect(invited.status).toBe(201);
+    expect(invited.body.member).toMatchObject({
+      kind: 'agent',
+      id: 'agent-profile:codex:default',
+      invitedBy: 'agent:claude',
+    });
+    const listed = await members(h, scoped(h.channelId, 'context:read'));
+    expect(listed.status).toBe(200);
+    expect(
+      listed.body.members.map((member) => [member.id, member.invitedBy])
+    ).toEqual([
+      ['agent:claude', 'human:operator'],
+      ['agent-profile:codex:default', 'agent:claude'],
+    ]);
+  });
+
+  it('produces the same audit row for the invite verb and the mention path', async () => {
+    const viaVerb = await harness();
+    enrollActor(viaVerb, 'claude');
+    const invited = await invite(
+      viaVerb,
+      { id: 'agent-profile:codex:default' },
+      scoped(viaVerb.channelId, 'context:write')
+    );
+    expect(invited.status).toBe(201);
+
+    // The mention path (`routeOne`) calls the same store verb with the
+    // mentioning sender's id — modelled here at the store boundary the binder
+    // uses, so the two admissions are compared as durable rows.
+    const viaMention = await harness();
+    enrollActor(viaMention, 'claude');
+    viaMention.store.inviteMember({
+      channelId: viaMention.channelId,
+      kind: 'agent',
+      id: 'agent-profile:codex:default',
+      invitedBy: 'agent:claude',
+    });
+
+    // `joinedAt` is wall-clock and orders the list, so compare the audit
+    // FIELDS on a stable key: what must match is who is in the room and who
+    // put them there, not the millisecond either harness happened to run at.
+    const audit = (h: Harness) =>
+      h.store
+        .listMembers(h.channelId)
+        .map(({ joinedAt: _joinedAt, ...rest }) => rest)
+        .sort((a, b) => a.id.localeCompare(b.id));
+    expect(audit(viaVerb)).toEqual(audit(viaMention));
+  });
+
+  it('keeps the original inviter when a live member is invited again', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    enrollActor(h, 'codex');
+    const first = await invite(
+      h,
+      { id: 'agent-profile:hermes:default' },
+      scoped(h.channelId, 'context:write')
+    );
+    expect(first.body.member.invitedBy).toBe('agent:claude');
+    const second = await invite(
+      h,
+      { id: 'agent-profile:hermes:default' },
+      scoped(h.channelId, 'context:write', 'codex')
+    );
+    expect(second.status).toBe(201);
+    expect(second.body.member).toMatchObject({
+      invitedBy: 'agent:claude',
+      joinedAt: first.body.member.joinedAt,
+    });
+  });
+
+  it('lets an agent remove itself and the members it invited, but no others', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    enrollActor(h, 'codex');
+    const write = scoped(h.channelId, 'context:write');
+    expect(
+      (await invite(h, { id: 'agent-profile:hermes:default' }, write)).status
+    ).toBe(201);
+
+    // Not the inviter, and not itself.
+    const refused = await removeMember(
+      h,
+      { id: 'agent-profile:hermes:default' },
+      scoped(h.channelId, 'context:write', 'codex')
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MEMBER_REMOVE_FORBIDDEN'
+    );
+    expect(refused.body.error.details?.['reason']).toBe('not-the-inviter');
+
+    // The inviter may.
+    const removed = await removeMember(
+      h,
+      { id: 'agent-profile:hermes:default' },
+      write
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.body.removed).toMatchObject({
+      id: 'agent-profile:hermes:default',
+      invitedBy: 'agent:claude',
+    });
+    expect(
+      h.store.isMember(h.channelId, 'agent', 'agent-profile:hermes:default')
+    ).toBe(false);
+
+    // Leaving is always allowed, and it takes effect immediately.
+    const left = await removeMember(h, { id: 'agent:codex' }, {
+      ...scoped(h.channelId, 'context:write', 'codex'),
+    });
+    expect(left.status).toBe(200);
+    const afterLeaving = await members(
+      h,
+      scoped(h.channelId, 'context:read', 'codex')
+    );
+    expect(afterLeaving.status).toBe(403);
+    expect(afterLeaving.body.error?.details?.['reasonCode']).toBe(
+      'CHANNEL_NOT_MEMBER'
+    );
+  });
+
+  it('never lets a delegated actor invite or evict a human', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'human',
+      id: 'human:operator',
+      invitedBy: 'self',
+    });
+    const write = scoped(h.channelId, 'context:write');
+    const invited = await invite(h, { kind: 'human', id: 'human:sam' }, write);
+    expect(invited.status).toBe(403);
+    expect(invited.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_INVITE_TARGET_INVALID'
+    );
+    const evicted = await removeMember(
+      h,
+      { kind: 'human', id: 'human:operator' },
+      write
+    );
+    expect(evicted.status).toBe(403);
+    expect(evicted.body.error.details?.['reason']).toBe('target-human');
+    expect(h.store.isMember(h.channelId, 'human', 'human:operator')).toBe(true);
+  });
+
+  it('gives the browser/operator lane unrestricted membership authority', async () => {
+    const h = await harness();
+    const invited = await invite(h, { id: 'agent-profile:codex:default' });
+    expect(invited.status).toBe(201);
+    expect(invited.body.member.invitedBy).toBe('human:operator');
+    const humanInvite = await invite(h, { kind: 'human', id: 'human:sam' });
+    expect(humanInvite.status).toBe(201);
+    const removed = await removeMember(h, { id: 'agent-profile:codex:default' });
+    expect(removed.status).toBe(200);
+    expect(h.store.listMembers(h.channelId).map((m) => m.id)).toEqual([
+      'human:sam',
+    ]);
+  });
+
+  it('keeps the host-local CLI credential unaffected by membership', async () => {
+    const h = await harness();
+    const localOperator = {
+      'x-test-actor-id': 'local-cli',
+      'x-test-actor-reason': 'hub-local-cli',
+      'x-relay-capabilities': 'context:write',
+    };
+    const invited = await invite(
+      h,
+      { id: 'agent-profile:codex:default' },
+      localOperator
+    );
+    expect(invited.status).toBe(201);
+    // #1467: the host-local credential is the operator, so it invites as an
+    // agent sender but is never itself membership-gated or auto-enrolled.
+    expect(invited.body.member.invitedBy).toBe('agent:local-cli');
+    expect(h.store.isMember(h.channelId, 'agent', 'agent:local-cli')).toBe(
+      false
+    );
+    const listed = await members(h, {
+      ...localOperator,
+      'x-relay-capabilities': 'context:read',
+    });
+    expect(listed.status).toBe(200);
+    // It may evict a member it did not invite, exactly like the browser lane.
+    const removed = await removeMember(
+      h,
+      { id: 'agent-profile:codex:default' },
+      localOperator
+    );
+    expect(removed.status).toBe(200);
+  });
+
+  it('refuses a malformed member id before it reaches the durable table', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    const write = scoped(h.channelId, 'context:write');
+    for (const body of [
+      { id: '' },
+      { id: 'agent:has space' },
+      { id: 'a'.repeat(201) },
+      { id: 'agent:codex', kind: 'robot' },
+      { id: 42 },
+    ]) {
+      const res = await invite(h, body, write);
+      expect([JSON.stringify(body), res.status]).toEqual([
+        JSON.stringify(body),
+        400,
+      ]);
+    }
+    expect(h.store.listMembers(h.channelId).map((m) => m.id)).toEqual([
+      'agent:claude',
+    ]);
+  });
+
+  it('keeps the membership verbs off the operator-client lane', () => {
+    // Not an authorization judgement made in the route: the verbs are simply
+    // absent from the operator-client command list, so a paired client is
+    // refused `unsupported_command` before membership is ever consulted.
+    for (const command of [
+      'channels.members',
+      'channels.invite',
+      'channels.remove-member',
+    ]) {
+      expect(OPERATOR_CLIENT_CHANNEL_COMMANDS as readonly string[]).not.toContain(
+        command
+      );
+    }
+  });
+
+  it('never resolves a reserved invited_by marker as the inviter', async () => {
+    const h = await harness();
+    // An actor whose own id folds onto the `self` marker. Without the reserved
+    // -marker rule it would inherit removal rights over every row credited
+    // `self` — every participant that wrote its own way in.
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: 'agent:self',
+      invitedBy: 'human:operator',
+    });
+    h.store.upsertMember({
+      channelId: h.channelId,
+      kind: 'agent',
+      id: 'agent-profile:codex:default',
+      invitedBy: CHANNEL_MEMBERSHIP_SELF_INVITER,
+    });
+    const refused = await removeMember(
+      h,
+      { id: 'agent-profile:codex:default' },
+      scoped(h.channelId, 'context:write', 'self')
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.details?.['reason']).toBe('not-the-inviter');
+    expect(
+      h.store.isMember(h.channelId, 'agent', 'agent-profile:codex:default')
+    ).toBe(true);
+    // The same id is refused as an invite target, so the collision cannot be
+    // created through the verb either.
+    const invited = await invite(
+      h,
+      { id: 'agent-profile:self:default' },
+      scoped(h.channelId, 'context:write', 'self')
+    );
+    expect(invited.status).toBe(400);
+    expect(invited.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_INVITE_TARGET_INVALID'
+    );
+  });
+
+  it('answers 404 for a member id nobody in this channel resolves to', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    const res = await removeMember(
+      h,
+      { id: 'agent-profile:codex:default' },
+      scoped(h.channelId, 'context:write')
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.details?.['reasonCode']).toBe(
+      'CHANNEL_MEMBER_NOT_FOUND'
+    );
+  });
+
+  it('still enforces credential channel scope on every membership verb', async () => {
+    const h = await harness();
+    enrollActor(h, 'claude');
+    const otherScope = {
+      'x-test-actor-id': 'claude',
+      'x-test-actor-scope': JSON.stringify({ channelIds: ['chan:other'] }),
+      'x-relay-capabilities': 'context:write',
+    };
+    for (const res of [
+      await members(h, { ...otherScope, 'x-relay-capabilities': 'context:read' }),
+      await invite(h, { id: 'agent-profile:codex:default' }, otherScope),
+      await removeMember(h, { id: 'agent:claude' }, otherScope),
+    ]) {
+      expect(res.status).toBe(403);
+      expect(
+        (res.body as { error: { details?: Record<string, unknown> } }).error
+          .details?.['reasonCode']
+      ).toBe('CHANNEL_OUT_OF_SCOPE');
+    }
+  });
+
+  it('404s the membership verbs on a channel that does not exist', async () => {
+    const h = await harness();
+    const missing = 'topic:absent';
+    for (const [method, url, body] of [
+      ['GET', `/channels/${missing}/members`, undefined],
+      ['POST', `/channels/${missing}/members`, { id: 'agent:codex' }],
+      [
+        'POST',
+        `/channels/${missing}/members/remove`,
+        { id: 'agent:codex' },
+      ],
+    ] as const) {
+      const res = await req<{ error: { code: string } }>({
+        port: h.port,
+        method,
+        url,
+        ...(body ? { body } : {}),
+      });
+      expect([url, res.status]).toEqual([url, 404]);
+    }
   });
 });
