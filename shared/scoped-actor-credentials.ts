@@ -31,6 +31,19 @@ export type ScopedActorCredentialAudience =
 
 export const DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * Cap on the registry's in-memory audit ring (#1485).
+ *
+ * The audit log is a process-local diagnostic buffer — nothing persists or
+ * serves it — but the channel subscribe stream re-validates the actor
+ * credential before EVERY frame, so the allow path used to append one entry
+ * per frame and retain it for the hub's whole lifetime. That is the retained-
+ * allocation shape that took the daily hub to ~15 GB RSS in #1249. A thousand
+ * entries keeps enough recent history to explain an authorization decision
+ * while pinning the buffer to a few hundred KB.
+ */
+export const DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS = 1000;
+
 export type ScopedActorCredentialValidationFailureReason =
   | 'malformed_credential'
   | 'unsupported_actor_type'
@@ -173,6 +186,13 @@ export interface ScopedActorCredentialAuditEvent {
   grantedBits: RelayCapabilityBit[];
   deniedBits: string[];
   correlationId: string;
+  /**
+   * How many identical consecutive events this entry stands for (#1485).
+   * Absent when the entry stands for exactly one event. Only entries recorded
+   * without a caller-supplied `correlationId` are ever coalesced, so no
+   * request-correlated audit event is ever folded into another.
+   */
+  repeatedCount?: number;
 }
 
 export interface CreateScopedActorCredentialAuditEntryInput {
@@ -219,7 +239,22 @@ export class ScopedActorCredentialRegistry {
     string,
     InternalScopedActorCredentialRecord
   >();
+  /**
+   * Bounded drop-oldest ring of audit events (#1485). Invariant: its length is
+   * never greater than `maxAuditEvents` after any push. While it is shorter
+   * than the cap it is a plain in-order array and `auditRingNext` is 0; once
+   * full, `auditRingNext` is both the oldest entry and the next slot to
+   * overwrite.
+   */
   private readonly auditEvents: ScopedActorCredentialAuditEvent[] = [];
+  private auditRingNext = 0;
+  private auditDropped = 0;
+  /**
+   * Whether the newest ring entry was recorded with a caller-supplied
+   * correlation id, and so must never be coalesced into.
+   */
+  private lastAuditCorrelated = false;
+  private readonly maxAuditEvents: number;
   private readonly maxTtlMs: number;
   private readonly now: () => Date;
   private readonly secretBytes: () => Buffer;
@@ -231,12 +266,19 @@ export class ScopedActorCredentialRegistry {
   constructor(
     options: {
       maxTtlMs?: number;
+      maxAuditEvents?: number;
       now?: () => Date;
       secretBytes?: () => Buffer;
     } = {}
   ) {
     this.maxTtlMs =
       options.maxTtlMs ?? DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_TTL_MS;
+    const requestedAuditCap =
+      options.maxAuditEvents ??
+      DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS;
+    this.maxAuditEvents = Number.isFinite(requestedAuditCap)
+      ? Math.max(1, Math.floor(requestedAuditCap))
+      : DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS;
     this.now = options.now ?? (() => new Date());
     this.secretBytes = options.secretBytes ?? (() => crypto.randomBytes(32));
   }
@@ -491,8 +533,16 @@ export class ScopedActorCredentialRegistry {
     return credential ? publicCredential(credential) : null;
   }
 
+  /** Retained audit events, oldest first. Bounded by `maxAuditEvents` (#1485). */
   listAuditEvents(): ScopedActorCredentialAuditEvent[] {
-    return this.auditEvents.map((event) => ({
+    const ordered =
+      this.auditEvents.length < this.maxAuditEvents
+        ? this.auditEvents
+        : [
+            ...this.auditEvents.slice(this.auditRingNext),
+            ...this.auditEvents.slice(0, this.auditRingNext),
+          ];
+    return ordered.map((event) => ({
       ...event,
       requiredBits: [...event.requiredBits],
       grantedBits: [...event.grantedBits],
@@ -500,6 +550,15 @@ export class ScopedActorCredentialRegistry {
       ...(event.actor ? { actor: { ...event.actor } } : {}),
       ...(event.issuer ? { issuer: { ...event.issuer } } : {}),
     }));
+  }
+
+  /**
+   * Audit events evicted by the ring bound since this registry was created
+   * (#1485). `listAuditEvents()` plus this count is the full history that ever
+   * existed; a non-zero value says the retained window is not the whole story.
+   */
+  droppedAuditEventCount(): number {
+    return this.auditDropped;
   }
 
   private resolveExpiry(
@@ -621,7 +680,7 @@ export class ScopedActorCredentialRegistry {
       input.material?.scope ?? credential?.scope ?? null
     );
     const materialParams = redactAuditValue(input.material?.params ?? null);
-    this.auditEvents.push({
+    const event: ScopedActorCredentialAuditEvent = {
       action: input.action,
       decision: input.decision,
       reasonCode: input.reasonCode,
@@ -635,8 +694,88 @@ export class ScopedActorCredentialRegistry {
       grantedBits: [...(input.grantedCapabilities ?? [])],
       deniedBits: [...(input.deniedCapabilities ?? [])],
       correlationId: input.correlationId ?? crypto.randomUUID(),
-    });
+    };
+    this.appendAuditEvent(event, input.correlationId !== undefined);
   }
+
+  /**
+   * Coalesce-then-ring-append (#1485).
+   *
+   * The channel subscribe stream re-validates the credential before every
+   * frame with an identical request and no correlation id, so the allow path
+   * would otherwise append one indistinguishable entry per frame — enough, at
+   * a few hundred frames a second, to both retain hundreds of KB/s forever and
+   * (once bounded) flush every genuinely interesting deny, revoke, and expiry
+   * out of the window within seconds. A recheck of an already-audited grant is
+   * not a new authorization, so an event identical to the newest retained one
+   * bumps its `repeatedCount` instead of taking a slot. Only uncorrelated
+   * events coalesce: an event the caller correlated to a specific request
+   * always gets its own entry, in both directions.
+   *
+   * Node runs this synchronously with no await between the read of the newest
+   * entry and the write, so there is no interleaving to guard against.
+   */
+  private appendAuditEvent(
+    event: ScopedActorCredentialAuditEvent,
+    correlated: boolean
+  ): void {
+    const newest = this.newestAuditEvent();
+    if (
+      !correlated &&
+      !this.lastAuditCorrelated &&
+      newest &&
+      isRepeatedAuditEvent(newest, event)
+    ) {
+      newest.repeatedCount = (newest.repeatedCount ?? 1) + 1;
+      return;
+    }
+    if (this.auditEvents.length < this.maxAuditEvents) {
+      this.auditEvents.push(event);
+    } else {
+      this.auditEvents[this.auditRingNext] = event;
+      this.auditRingNext = (this.auditRingNext + 1) % this.maxAuditEvents;
+      this.auditDropped += 1;
+    }
+    this.lastAuditCorrelated = correlated;
+  }
+
+  private newestAuditEvent(): ScopedActorCredentialAuditEvent | undefined {
+    if (this.auditEvents.length === 0) return undefined;
+    if (this.auditEvents.length < this.maxAuditEvents) {
+      return this.auditEvents[this.auditEvents.length - 1];
+    }
+    return this.auditEvents[
+      (this.auditRingNext + this.maxAuditEvents - 1) % this.maxAuditEvents
+    ];
+  }
+}
+
+function sameAuditBits(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((bit, index) => bit === b[index]);
+}
+
+/** Every audited field but `correlationId` and `repeatedCount` matches. */
+function isRepeatedAuditEvent(
+  previous: ScopedActorCredentialAuditEvent,
+  candidate: ScopedActorCredentialAuditEvent
+): boolean {
+  return (
+    previous.action === candidate.action &&
+    previous.decision === candidate.decision &&
+    previous.reasonCode === candidate.reasonCode &&
+    previous.credentialId === candidate.credentialId &&
+    previous.audience === candidate.audience &&
+    previous.actor?.type === candidate.actor?.type &&
+    previous.actor?.id === candidate.actor?.id &&
+    previous.actor?.displayName === candidate.actor?.displayName &&
+    previous.issuer?.id === candidate.issuer?.id &&
+    previous.issuer?.displayName === candidate.issuer?.displayName &&
+    previous.scopeHash === candidate.scopeHash &&
+    previous.paramsHash === candidate.paramsHash &&
+    sameAuditBits(previous.requiredBits, candidate.requiredBits) &&
+    sameAuditBits(previous.grantedBits, candidate.grantedBits) &&
+    sameAuditBits(previous.deniedBits, candidate.deniedBits)
+  );
 }
 
 export function isScopedActorCredentialType(
