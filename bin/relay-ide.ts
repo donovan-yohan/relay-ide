@@ -1978,15 +1978,27 @@ async function resolveGatewayActorToken(
     if (renewed) {
       saveStoredActorCredential(actorTokenConfigDir(), renewed);
       credential = renewed;
+    } else {
+      logger.warn(
+        'Failed to renew stored relay-ide login credential against hub.'
+      );
     }
   }
   if (Date.parse(credential.expiresAt) <= Date.now()) {
+    if (deleteStoredActorCredential(actorTokenConfigDir())) {
+      logger.warn(
+        'Stored login credential expired beyond renewal window; removed stale credential file.'
+      );
+    }
     // #1467: an old login file must not shadow a perfectly good hub-minted
     // token sitting right next to it — prefer the local lane before failing.
     const local = localHubActorToken(commandName);
     if (local) return { token: local, source: 'local-hub' };
+    if (process.env['RELAY_IDE_BROWSER_TOKEN']) {
+      return { token: '', source: 'file' };
+    }
     printGatewayEnvelope(
-      gatewayError('sessions.list', {
+      gatewayError(commandName ?? 'sessions.list', {
         code: 'UNAUTHORIZED',
         message:
           'The stored relay-ide login credential has expired. Run `relay-ide login` to authorize again.',
@@ -2098,6 +2110,13 @@ function gatewayActorTokenSync(commandName?: RelayCliGatewayCommand): string {
   // pre-#1467 result. An expired login file falls through too, mirroring
   // resolveGatewayActorToken.
   if (!stored || Date.parse(stored.expiresAt) <= Date.now()) {
+    if (stored && Date.parse(stored.expiresAt) <= Date.now()) {
+      if (deleteStoredActorCredential(actorTokenConfigDir())) {
+        logger.warn(
+          'Stored login credential expired beyond renewal window; removed stale credential file.'
+        );
+      }
+    }
     return localHubActorToken(commandName);
   }
   return stored.token;
