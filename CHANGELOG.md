@@ -79,6 +79,19 @@ workflow.
   require host-local operator authority, so an agent's own delegated credential
   cannot mint or rebind a profile (#1473)
 
+### Long-running hub memory
+
+#### Fixed
+
+- A hub with an open channel stream no longer accumulates security audit
+  entries for the life of the process. Relay re-checks the agent credential
+  behind a channel subscription before every frame, and every successful check
+  used to be recorded and kept forever — hundreds of KB a second on a busy
+  stream, the same shape as the leak that once pushed a hub past 15 GB of
+  memory. The audit log is now a bounded window of the most recent entries, and
+  an unchanged repeated check updates the entry it repeats instead of adding a
+  new one, so revocations and denials stay visible in it (#1485)
+
 ### Startup performance
 
 #### Fixed

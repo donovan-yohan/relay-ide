@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTOR_CREDENTIAL_AUDIENCES,
   ACTOR_CREDENTIAL_TYPES,
+  DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS,
   ScopedActorCredentialRegistry,
   createScopedActorCredentialAuditEntry,
   redactScopedActorCredentialForAudit,
@@ -12,12 +13,35 @@ const NOW = new Date('2026-05-29T00:00:00.000Z');
 const LATER = new Date('2026-05-29T00:05:00.000Z');
 const EXPIRED = new Date('2026-05-28T23:59:59.000Z');
 
-function registry(): ScopedActorCredentialRegistry {
+function registry(
+  options: { maxAuditEvents?: number } = {}
+): ScopedActorCredentialRegistry {
   return new ScopedActorCredentialRegistry({
+    ...(options.maxAuditEvents === undefined
+      ? {}
+      : { maxAuditEvents: options.maxAuditEvents }),
     now: () => NOW,
     secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
   });
 }
+
+function issueAuditFixture(store: ScopedActorCredentialRegistry): string {
+  return store.issue({
+    actor: { type: 'cli', id: 'cli-1' },
+    issuer: { id: 'operator-1' },
+    audience: 'relay:registry-test',
+    capabilities: ['context:read'],
+    scope: { nodeIds: ['node-a'] },
+    expiresAt: LATER,
+    correlationId: 'corr-issue-audit-bound',
+  }).token;
+}
+
+const AUDIT_FIXTURE_VALIDATION = {
+  audience: 'relay:registry-test',
+  requiredCapabilities: ['context:read'],
+  scope: { nodeId: 'node-a' },
+} as const;
 
 describe('scoped actor credential registry', () => {
   it('defines closed actor types and audiences for this MVP', () => {
@@ -430,5 +454,156 @@ describe('scoped actor credential registry', () => {
     expect(serialized).not.toContain(
       'Bearer relay-sac-v1.custom.raw-secret-token-material'
     );
+  });
+  // #1485: the channel subscribe stream re-validates before EVERY frame, so an
+  // unbounded audit array retained one entry per frame for the hub's lifetime.
+  it('bounds retained audit events under sustained correlated validation', () => {
+    const store = registry({ maxAuditEvents: 8 });
+    const token = issueAuditFixture(store);
+
+    for (let index = 0; index < 200; index += 1) {
+      const result = store.validate(token, {
+        ...AUDIT_FIXTURE_VALIDATION,
+        requiredCapabilities: ['context:read'],
+        correlationId: `corr-frame-${index}`,
+      });
+      expect(result.ok).toBe(true);
+      // The invariant that matters: the ring never exceeds its cap, at any
+      // point during the run, not only at the end.
+      expect(store.listAuditEvents().length).toBeLessThanOrEqual(8);
+    }
+
+    const events = store.listAuditEvents();
+    expect(events).toHaveLength(8);
+    // 1 issue + 200 validates recorded, 8 retained.
+    expect(store.droppedAuditEventCount()).toBe(193);
+    // Oldest first, and the retained window is the newest 8 events.
+    expect(events.map((event) => event.correlationId)).toEqual([
+      'corr-frame-192',
+      'corr-frame-193',
+      'corr-frame-194',
+      'corr-frame-195',
+      'corr-frame-196',
+      'corr-frame-197',
+      'corr-frame-198',
+      'corr-frame-199',
+    ]);
+    // The evicted issue event is gone rather than silently duplicated.
+    expect(events.some((event) => event.action === 'issue')).toBe(false);
+  });
+
+  it('bounds retained audit events at the default cap', () => {
+    const store = registry();
+    const token = issueAuditFixture(store);
+    const pushes = DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS * 2;
+
+    for (let index = 0; index < pushes; index += 1) {
+      store.validate(token, {
+        ...AUDIT_FIXTURE_VALIDATION,
+        requiredCapabilities: ['context:read'],
+        correlationId: `corr-default-${index}`,
+      });
+    }
+
+    expect(store.listAuditEvents()).toHaveLength(
+      DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS
+    );
+    expect(store.droppedAuditEventCount()).toBe(
+      pushes + 1 - DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_AUDIT_EVENTS
+    );
+  });
+
+  it('coalesces the uncorrelated per-frame recheck instead of one entry per frame', () => {
+    const store = registry({ maxAuditEvents: 8 });
+    const token = issueAuditFixture(store);
+
+    for (let index = 0; index < 500; index += 1) {
+      expect(
+        store.validate(token, {
+          ...AUDIT_FIXTURE_VALIDATION,
+          requiredCapabilities: ['context:read'],
+        }).ok
+      ).toBe(true);
+    }
+
+    const events = store.listAuditEvents();
+    // Issue + one coalesced allow: 500 identical rechecks of an already
+    // audited grant do not evict the interesting history behind them.
+    expect(events).toHaveLength(2);
+    expect(store.droppedAuditEventCount()).toBe(0);
+    expect(events[0]).toMatchObject({ action: 'issue' });
+    expect(events[1]).toMatchObject({
+      action: 'validate',
+      decision: 'allow',
+      repeatedCount: 500,
+    });
+
+    // A state change still lands its own entry, behind the retained issue.
+    store.revoke(store.listCredentials()[0]!.id, { revokedBy: 'operator-1' });
+    const denied = store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+    });
+    expect(denied).toMatchObject({ ok: false, reason: 'revoked' });
+    const after = store.listAuditEvents();
+    expect(after.map((event) => event.action)).toEqual([
+      'issue',
+      'validate',
+      'revoke',
+      'validate',
+    ]);
+    expect(after[3]).toMatchObject({ decision: 'revoked' });
+    expect(after[3]).not.toHaveProperty('repeatedCount');
+  });
+
+  it('never folds a caller-correlated audit event into another entry', () => {
+    const store = registry();
+    const token = issueAuditFixture(store);
+
+    store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+    });
+    // Correlated repeats of an identical validation each keep their own id...
+    store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+      correlationId: 'corr-request-a',
+    });
+    store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+      correlationId: 'corr-request-b',
+    });
+    // ...and an uncorrelated recheck does not fold into a correlated entry.
+    store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+    });
+
+    const events = store.listAuditEvents();
+    expect(events).toHaveLength(5);
+    expect(events.map((event) => event.correlationId).slice(2, 4)).toEqual([
+      'corr-request-a',
+      'corr-request-b',
+    ]);
+    expect(events.every((event) => event.repeatedCount === undefined)).toBe(
+      true
+    );
+  });
+
+  it('keeps the audit ring immutable to callers of listAuditEvents', () => {
+    const store = registry();
+    const token = issueAuditFixture(store);
+    store.validate(token, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      requiredCapabilities: ['context:read'],
+    });
+
+    const events = store.listAuditEvents();
+    events[1]!.repeatedCount = 99;
+    events[1]!.grantedBits.push('session:read');
+    expect(store.listAuditEvents()[1]).not.toHaveProperty('repeatedCount');
+    expect(store.listAuditEvents()[1]?.grantedBits).toEqual(['context:read']);
   });
 });
