@@ -170,7 +170,7 @@ describe('isChatEvent', () => {
         source: 'unknown',
       })
     ).toBe(false);
-    // 'mock' is a valid source (used by MockProtocolAdapter)
+    // 'mock' is a valid source (used by MockProtocolAdapterV2)
     expect(
       isChatEvent({
         type: 'chat:text-delta',

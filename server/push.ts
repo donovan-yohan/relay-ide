@@ -15,8 +15,6 @@ let vapidPublicKey: string | null = null;
 
 const subscriptions = new Map<string, SubscriptionEntry>();
 
-const MAX_PAYLOAD_SIZE = 4 * 1024; // 4KB
-
 export function ensureVapidKeys(
   config: Config,
   configPath: string,
@@ -73,53 +71,5 @@ export function unsubscribe(endpoint: string): void {
 export function removeSession(sessionId: string): void {
   for (const entry of subscriptions.values()) {
     entry.sessionIds.delete(sessionId);
-  }
-}
-
-function truncatePayload(payload: string): string {
-  if (payload.length <= MAX_PAYLOAD_SIZE) return payload;
-  // Try to parse, truncate text fields, and re-serialize
-  try {
-    const obj = JSON.parse(payload) as Record<string, unknown>;
-    if (
-      typeof obj.enrichedMessage === 'string' &&
-      obj.enrichedMessage.length > 100
-    ) {
-      obj.enrichedMessage =
-        (obj.enrichedMessage as string).slice(0, 100) + '...';
-    }
-    const truncated = JSON.stringify(obj);
-    if (truncated.length <= MAX_PAYLOAD_SIZE) return truncated;
-  } catch {
-    // fall through
-  }
-  return payload.slice(0, MAX_PAYLOAD_SIZE);
-}
-
-export function notifySessionAttention(
-  sessionId: string,
-  session: { displayName: string; type: string }
-): void {
-  if (!vapidPublicKey) return;
-
-  const payloadObj: Record<string, unknown> = {
-    type: 'session-attention',
-    sessionId,
-    displayName: session.displayName,
-    sessionType: session.type,
-  };
-
-  const payload = truncatePayload(JSON.stringify(payloadObj));
-
-  for (const [endpoint, entry] of subscriptions) {
-    if (!entry.sessionIds.has(sessionId)) continue;
-
-    webpush
-      .sendNotification(entry.subscription, payload)
-      .catch((err: { statusCode?: number }) => {
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          subscriptions.delete(endpoint);
-        }
-      });
   }
 }

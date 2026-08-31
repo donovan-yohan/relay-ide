@@ -281,17 +281,6 @@ export function dropTerminalStreamPrefixBytes(
     .filter((frame): frame is TerminalStreamDataEnvelope => frame !== null);
 }
 
-export function terminalStreamMetadata(
-  state: TerminalStreamState,
-  replay = false,
-  cursor = state.cursor
-): TerminalStreamMetadataEnvelope {
-  return {
-    ...nextEnvelopeBase(state, 'metadata', cursor, replay),
-    payload: terminalStreamMetadataPayload(state),
-  };
-}
-
 function terminalStreamMetadataPayload(
   state: TerminalStreamState
 ): TerminalStreamMetadataPayload {

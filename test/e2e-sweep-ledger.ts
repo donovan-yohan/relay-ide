@@ -61,7 +61,7 @@ export const SWEPT_SPECS: readonly SweptSpec[] = [
   {
     component: 'ChangedFiles',
     group: 'dead-surface',
-    module: 'frontend/src/components/ChangedFiles.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'FileTreeSidebar',
@@ -71,7 +71,7 @@ export const SWEPT_SPECS: readonly SweptSpec[] = [
   {
     component: 'FilterChipBar',
     group: 'dead-surface',
-    module: 'frontend/src/components/FilterChipBar.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'MobileInput',
@@ -82,12 +82,12 @@ export const SWEPT_SPECS: readonly SweptSpec[] = [
   {
     component: 'PickerResultRow',
     group: 'dead-surface',
-    module: 'frontend/src/components/PickerResultRow.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'PrGlyph',
     group: 'dead-surface',
-    module: 'frontend/src/components/PrGlyph.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'SessionIndicator',
@@ -97,22 +97,22 @@ export const SWEPT_SPECS: readonly SweptSpec[] = [
   {
     component: 'SessionItem',
     group: 'dead-surface',
-    module: 'frontend/src/components/SessionItem.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'ShortcutHint',
     group: 'dead-surface',
-    module: 'frontend/src/components/ShortcutHint.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'StatusMappingModal',
     group: 'dead-surface',
-    module: 'frontend/src/components/StatusMappingModal.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'TuiRow',
     group: 'dead-surface',
-    module: 'frontend/src/components/TuiRow.tsx',
+    note: 'module deleted from the tree',
   },
   {
     component: 'WorkspaceItem',

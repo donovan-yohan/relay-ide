@@ -5,7 +5,6 @@ import type {
 import {
   relayCommandDefinitionsForSurface,
   type RelayCommandControlRequirement,
-  type RelayCommandDefinition,
   type RelayCommandScopeKind,
   type RelayCommandSideEffect,
 } from './relay-command-manifest.js';
@@ -295,14 +294,6 @@ export function buildCommandCenterResolverCatalog(
   >();
   entries.forEach((entry) => byCommandId.set(entry.commandId, entry));
   return { entries, byCommandId };
-}
-
-export function commandCenterDescriptorFromCommandDefinition(
-  definition: RelayCommandDefinition
-): RelayActionDescriptor {
-  return relayActionDescriptorFromCommandDefinition(definition, {
-    surfaces: [...definition.surfaces, 'command-center'],
-  });
 }
 
 export const COMMAND_CENTER_RESOLVER_CATALOG: CommandCenterResolverCatalog =

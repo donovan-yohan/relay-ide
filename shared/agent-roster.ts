@@ -9,14 +9,6 @@ export type AgentRole =
   | 'context'
   | 'collaborator';
 
-export const AGENT_ROLES: readonly AgentRole[] = [
-  'implementer',
-  'reviewer',
-  'orchestrator',
-  'context',
-  'collaborator',
-] as const;
-
 /**
  * Channel-participant system-prompt appendix.
  *

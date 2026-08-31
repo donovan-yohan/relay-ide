@@ -49,61 +49,6 @@ export interface SessionEventScope {
   globalSessionId?: GlobalSessionId;
 }
 
-export type NodeSessionOperation =
-  | 'sessions.list'
-  | 'sessions.get'
-  | 'sessions.create'
-  | 'sessions.kill'
-  | 'sessions.write'
-  | 'sessions.resize';
-
-export type NodeFileOperation =
-  | 'files.read'
-  | 'files.write'
-  | 'files.list'
-  | 'files.watch';
-
-export type NodeGitOperation =
-  | 'git.status'
-  | 'git.diff'
-  | 'git.branch'
-  | 'git.worktree';
-
-export interface NodeScopedRequest<
-  TPayload = unknown,
-> extends NodeEventAuthority {
-  requestId?: string;
-  payload?: TPayload;
-}
-
-export interface NodeSessionRequest<
-  TPayload = unknown,
-> extends NodeScopedRequest<TPayload> {
-  operation: NodeSessionOperation;
-  sessionId?: LocalSessionId;
-  globalSessionId?: GlobalSessionId;
-}
-
-export interface NodeFileRequest<
-  TPayload = unknown,
-> extends NodeScopedRequest<TPayload> {
-  operation: NodeFileOperation;
-  workspacePath: string;
-  repoInstanceId?: RepoInstanceId;
-  worktreePath?: string;
-  worktreeInstanceId?: WorktreeInstanceId;
-}
-
-export interface NodeGitRequest<
-  TPayload = unknown,
-> extends NodeScopedRequest<TPayload> {
-  operation: NodeGitOperation;
-  workspacePath: string;
-  repoInstanceId?: RepoInstanceId;
-  worktreePath?: string;
-  worktreeInstanceId?: WorktreeInstanceId;
-}
-
 export function nodeSessionWebSocketPath(
   nodeId: NodeId,
   sessionId: LocalSessionId

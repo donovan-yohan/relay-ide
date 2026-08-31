@@ -150,14 +150,6 @@ export function nodePublicKeyFingerprint(publicKeyPem: string): string {
   return `${NODE_PUBLIC_KEY_FINGERPRINT_PREFIX}${digest}`;
 }
 
-export function isNodePublicKeyFingerprint(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.startsWith(NODE_PUBLIC_KEY_FINGERPRINT_PREFIX) &&
-    value.length > NODE_PUBLIC_KEY_FINGERPRINT_PREFIX.length
-  );
-}
-
 /** Validate a PEM and return its canonical fingerprint, or null if unusable. */
 export function safeNodePublicKeyFingerprint(
   publicKeyPem: unknown

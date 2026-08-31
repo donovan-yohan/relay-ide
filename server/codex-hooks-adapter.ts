@@ -119,23 +119,5 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
   return tmpDir;
 }
 
-/**
- * Remove the codex hooks adapter temp directory for a session.
- * Called when the session ends to avoid leaking temp files.
- */
-export function cleanupCodexHooksAdapter(sessionId: string): void {
-  const tmpDir = path.join(
-    os.tmpdir(),
-    'relay-ide',
-    `codex-hooks-${sessionId}`
-  );
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    logger.debug('Cleaned up Codex hooks adapter', tmpDir);
-  } catch {
-    // Non-fatal — temp dir may not exist or already be cleaned up
-  }
-}
-
 /** Exported for testing */
 export { CODEX_EVENTS, EVENT_MAP };

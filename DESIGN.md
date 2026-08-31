@@ -297,7 +297,7 @@ codebase-wide application passes, not components.
 - [x] Implement block cursor for focused inputs — `TuiInput.tsx` (`.tui-cursor`, blinks only when idle)
 - [x] Add `>` cursor to ContextMenu and dropdown components — `TuiMenuItem.tsx` (`.fzf-cursor`)
 - [x] Implement ASCII progress bar and spinner components — `TuiProgress.tsx`
-- [x] Apply cipher-decode to status text transitions — `SessionItem.tsx`, `PrTopBar.tsx`, `BootScreen.tsx`
+- [x] Apply cipher-decode to status text transitions — `PrTopBar.tsx`, `BootScreen.tsx`
 - [x] Add scanline CRT overlay to sidebar — `Sidebar.css` (`.sidebar-scanline-overlay`)
 - [ ] Apply alignment architecture tokens and rules across all components
 - [ ] Fix SettingsDialog layout — TOC must attach flush to content, no floating panel

@@ -1,29 +1,17 @@
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type {
-  ControlActor,
   InterventionKind,
   InterventionRecord,
   InterventionSource,
 } from '../shared/control-state.js';
 import { createLogger } from './logger.js';
 
-export interface InterventionSessionScope {
-  sessionId: string;
-  nodeId?: string;
-  globalSessionId?: string;
-}
-
-export type InterventionSessionScopeInput = string | InterventionSessionScope;
-
 const logger = createLogger('intervention-log');
 
 let db: Database.Database | null = null;
 let appendStmt: Database.Statement | null = null;
-let updateStmt: Database.Statement | null = null;
 let listBySessionStmt: Database.Statement | null = null;
-let listUnackedBySessionStmt: Database.Statement | null = null;
-let ackBySessionStmt: Database.Statement | null = null;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS interventions (
@@ -66,22 +54,6 @@ INSERT INTO interventions (
 )
 `;
 
-const UPDATE_SQL = `
-UPDATE interventions SET
-  occurred_at = @occurredAt,
-  author_json = @authorJson,
-  source = @source,
-  kind = @kind,
-  payload_preview = @payloadPreview,
-  redaction_json = @redactionJson,
-  mode_before = @modeBefore,
-  mode_after = @modeAfter,
-  acked_by_json = @ackedByJson,
-  acked_at = @ackedAt,
-  record_json = @recordJson
-WHERE id = @id
-`;
-
 export function initInterventionLog(configDir: string): void {
   if (db) closeInterventionLog();
   const dbPath = path.join(configDir, 'interventions.db');
@@ -90,7 +62,6 @@ export function initInterventionLog(configDir: string): void {
   db.pragma('synchronous = NORMAL');
   db.exec(SCHEMA);
   appendStmt = db.prepare(APPEND_SQL);
-  updateStmt = db.prepare(UPDATE_SQL);
   listBySessionStmt = db.prepare(
     `SELECT record_json FROM interventions
      WHERE session_id = @sessionId
@@ -98,36 +69,13 @@ export function initInterventionLog(configDir: string): void {
      ORDER BY occurred_at DESC, id DESC
      LIMIT @limit`
   );
-  listUnackedBySessionStmt = db.prepare(
-    `SELECT record_json FROM interventions
-     WHERE session_id = @sessionId
-       AND (@globalSessionId IS NULL OR global_session_id = @globalSessionId)
-       AND (@nodeId IS NULL OR node_id = @nodeId)
-       AND kind = 'human-input'
-       AND acked_at IS NULL
-     ORDER BY occurred_at ASC, id ASC`
-  );
-  ackBySessionStmt = db.prepare(
-    `UPDATE interventions
-     SET acked_by_json = @ackedByJson,
-         acked_at = @ackedAt,
-         record_json = json_set(record_json, '$.ackedBy', json(@ackedByJson), '$.ackedAt', @ackedAt)
-     WHERE session_id = @sessionId
-       AND (@globalSessionId IS NULL OR global_session_id = @globalSessionId)
-       AND (@nodeId IS NULL OR node_id = @nodeId)
-       AND kind = 'human-input'
-       AND acked_at IS NULL`
-  );
 }
 
 export function closeInterventionLog(): void {
   if (db) db.close();
   db = null;
   appendStmt = null;
-  updateStmt = null;
   listBySessionStmt = null;
-  listUnackedBySessionStmt = null;
-  ackBySessionStmt = null;
 }
 
 function params(record: InterventionRecord): Record<string, unknown> {
@@ -160,15 +108,6 @@ export function appendIntervention(record: InterventionRecord): void {
   }
 }
 
-export function updateIntervention(record: InterventionRecord): void {
-  if (!updateStmt) return;
-  try {
-    updateStmt.run(params(record));
-  } catch (err) {
-    logger.warn('update failed for %s: %s', record.id, err);
-  }
-}
-
 function parseRecord(value: unknown): InterventionRecord | null {
   if (typeof value !== 'string') return null;
   try {
@@ -176,23 +115,6 @@ function parseRecord(value: unknown): InterventionRecord | null {
   } catch {
     return null;
   }
-}
-
-function normalizeScope(scope: InterventionSessionScopeInput): InterventionSessionScope {
-  return typeof scope === 'string' ? { sessionId: scope } : scope;
-}
-
-function scopeParams(scope: InterventionSessionScopeInput): {
-  sessionId: string;
-  nodeId: string | null;
-  globalSessionId: string | null;
-} {
-  const normalized = normalizeScope(scope);
-  return {
-    sessionId: normalized.sessionId,
-    nodeId: normalized.nodeId ?? null,
-    globalSessionId: normalized.globalSessionId ?? null,
-  };
 }
 
 export function listInterventions(input: {
@@ -209,44 +131,6 @@ export function listInterventions(input: {
   return rows
     .map((row) => parseRecord(row.record_json))
     .filter((record): record is InterventionRecord => record !== null);
-}
-
-export function listUnackedHumanInput(
-  scope: InterventionSessionScopeInput
-): InterventionRecord[] {
-  if (!listUnackedBySessionStmt) return [];
-  const rows = listUnackedBySessionStmt.all(scopeParams(scope)) as Array<{
-    record_json: string;
-  }>;
-  return rows
-    .map((row) => parseRecord(row.record_json))
-    .filter((record): record is InterventionRecord => record !== null);
-}
-
-export function hasUnackedHumanInput(scope: InterventionSessionScopeInput): boolean {
-  return listUnackedHumanInput(scope).length > 0;
-}
-
-export function ackSessionHumanInput(input: {
-  sessionId: string;
-  nodeId?: string;
-  globalSessionId?: string;
-  actor: ControlActor;
-  ackedAt?: string;
-}): number {
-  if (!ackBySessionStmt) return 0;
-  const ackedAt = input.ackedAt ?? new Date().toISOString();
-  try {
-    const info = ackBySessionStmt.run({
-      ...scopeParams(input),
-      ackedByJson: JSON.stringify(input.actor),
-      ackedAt,
-    });
-    return info.changes;
-  } catch (err) {
-    logger.warn('ack failed for %s: %s', input.sessionId, err);
-    return 0;
-  }
 }
 
 export type { InterventionKind, InterventionRecord, InterventionSource };

@@ -1,7 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
-  RELAY_LOG_EVENT_SCHEMA_VERSION,
   logEventMatchesFilter,
   parseLogEvent,
   serializeLogEvent,
@@ -158,7 +157,6 @@ function splitLines(text: string): string[] {
 }
 
 export {
-  RELAY_LOG_EVENT_SCHEMA_VERSION,
   type LogEventFilter,
   type StructuredLogEvent,
 };

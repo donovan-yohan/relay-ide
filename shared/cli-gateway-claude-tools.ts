@@ -14,9 +14,6 @@ export const CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS = [
   'sessions.detach',
 ] as const satisfies readonly RelayCliGatewayCommand[];
 
-export type RelayClaudeGatewaySmokeCommand =
-  (typeof CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS)[number];
-
 export interface RelayClaudeGatewayToolDefinition {
   name: string;
   description: string;

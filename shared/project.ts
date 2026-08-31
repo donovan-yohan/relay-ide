@@ -1,6 +1,5 @@
-// View-spine Project + Instance scaffold (#444 Lane B). Pure types + identity
-// helpers. Instance lives alongside Project because an Instance is a Project
-// realized on a host — same identity equivalence, different layer.
+// View-spine project identity helpers (#444 Lane B). Pure types + id
+// encode/decode for projects and their per-host instances.
 
 import type { NodeId, RepoIdentity } from './identity.js';
 
@@ -13,31 +12,6 @@ export type ProjectIdentity =
   | { kind: 'node'; nodeId: NodeId }
   | { kind: 'agent'; providerId: string }
   | { kind: 'playbook'; playbookId: string };
-
-export type ProjectIdentityKind = ProjectIdentity['kind'];
-
-export interface Project {
-  id: ProjectId;
-  identity: ProjectIdentity;
-  // User-facing display name. Falls back to derived label when blank; the
-  // derivation rule lives at the UI layer, not here.
-  name: string;
-  workspaceId: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Instance {
-  id: InstanceId;
-  projectId: ProjectId;
-  // The host this instance lives on. For a `node` project this equals the
-  // identity's nodeId. For other kinds, host is the materialization site.
-  host: NodeId;
-  // Optional anchor path for repo-kind instances; null for agent/node/playbook.
-  localPath: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
 
 function hasValue(value: string): boolean {
   return value.trim().length > 0;
@@ -184,16 +158,4 @@ export function createDirectoryProjectId(
   localPath: string
 ): ProjectId {
   return createProjectId({ kind: 'directory', nodeId, localPath });
-}
-
-/**
- * Parses a directory-kind ProjectId back to its components, or returns null
- * if the id is not a valid directory project id.
- */
-export function parseDirectoryProjectId(
-  id: ProjectId
-): { nodeId: NodeId; localPath: string } | null {
-  const identity = parseProjectId(id);
-  if (!identity || identity.kind !== 'directory') return null;
-  return { nodeId: identity.nodeId, localPath: identity.localPath };
 }

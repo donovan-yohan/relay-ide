@@ -28,24 +28,6 @@ export function getSessionCategory(
   return nonEmptyString(session.worktreePath) ? 'worktree' : 'repo';
 }
 
-/**
- * A concrete repo binding means git operations can safely use the session cwd.
- * `worktreePath === null` is an intentional repo-root session; `undefined`
- * means the tab is not repo-bound at all.
- */
-export function hasConcreteRepoBinding(
-  session: Pick<SessionAttributionSource, 'repoPath' | 'worktreePath'> & {
-    cwd?: string | null;
-  }
-): boolean {
-  return (
-    nonEmptyString(session.repoPath) &&
-    session.worktreePath !== undefined &&
-    (session.worktreePath === null || nonEmptyString(session.worktreePath)) &&
-    nonEmptyString(session.cwd)
-  );
-}
-
 export function buildSessionEvent(
   session: SessionAttributionSource,
   options: BuildSessionEventOptions

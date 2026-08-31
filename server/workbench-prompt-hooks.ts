@@ -4,9 +4,9 @@
  * Provides two surfaces:
  *
  * a) Layout → agent context (read-only)
- *    Re-exports `summarizeWorkbenchBlocks` from shared/ and wires it to the
- *    layout store so callers can call `getWorkbenchContextSummary(workspaceId)`
- *    without directly importing both modules.
+ *    Wires the shared `summarizeWorkbenchBlocks` summarizer to the layout store
+ *    so callers can call `getWorkbenchContextSummary(workspaceId)` without
+ *    directly importing both modules.
  *
  * b) Agent → block proposal API
  *    REST router at `/workbench/propose-block`:
@@ -66,8 +66,6 @@ import type { WorkbenchBlockDescriptor } from '../shared/workbench-block-types.j
 import type { ActorRef } from '../shared/workbench-block-types.js';
 import { createLogger } from './logger.js';
 
-// Re-export the pure summarizer for server consumers
-export { summarizeWorkbenchBlocks } from '../shared/workbench-prompt-hooks.js';
 export type { WorkbenchContextSummary } from '../shared/workbench-prompt-hooks.js';
 
 const logger = createLogger('workbench-prompt-hooks');

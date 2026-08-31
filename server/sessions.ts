@@ -717,13 +717,6 @@ function get(id: string): Session | undefined {
   return sessions.get(id);
 }
 
-/**
- * Ids of every PTY session currently in the in-memory map.
- */
-function liveSessionIds(): string[] {
-  return [...sessions.keys()];
-}
-
 function sessionScrollbackCapacityMetadata(session: PtySession): {
   bytesDropped: number;
   capacityBytes: number;
@@ -2108,7 +2101,6 @@ export {
   create,
   renew,
   get,
-  liveSessionIds,
   list,
   kill,
   detachForRestart,

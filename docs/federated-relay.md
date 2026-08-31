@@ -675,7 +675,7 @@ Helpers `createFileResourceRef`, `parseFileResourceRef`, `fileResourceRefEquals`
 > `shared/agent-chat-protocol-v2.ts`, and `shared/context-packet.ts`, and
 > parsed at runtime by `server/ws.ts`.
 
-The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes `FileResourceRef` and fetches file contents through the hub-routed file RPC surface. When a `FileBlockDescriptor` carries a `FileResourceRef` in `meta.fileRef` (distinguished from the legacy `FileRef` via the `isFileResourceRef` type guard in `shared/workbench-block-types.ts`), the renderer:
+The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes `FileResourceRef` and fetches file contents through the hub-routed file RPC surface. When a `FileBlockDescriptor` carries a `FileResourceRef` in `meta.fileRef` (distinguished from the legacy `FileRef` via an `isFileResourceRef` type guard that lived in `shared/workbench-block-types.ts` and was removed once the renderer went), the renderer:
 
 1. Calls `GET /hub/nodes/:nodeId/sessions/:sessionId/files/stat` (via `fetchNodeFsStat`) with `staleTime: 30 000 ms` and `refetchOnWindowFocus: true` — no polling interval.
 2. On stat success, inspects `stat.size` and the file extension: files larger than `FILE_RPC_MAX_READ_BYTES` (64 KB) render a "too large" fallback with size + cap copy; files whose extension matches the binary list (`.png`, `.jpg`, `.pdf`, `.zip`, etc.) render a "binary content" fallback — both without issuing a read call.

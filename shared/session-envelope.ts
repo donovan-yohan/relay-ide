@@ -89,15 +89,6 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function nullableString(value: unknown): string | null | undefined {
-  if (value === null) return null;
-  return stringValue(value);
-}
-
 function isIntent(value: unknown): value is SessionIntent {
   const candidate = record(value);
   return (
@@ -254,16 +245,4 @@ export function normalizeSessionEnvelope(
 
 export function sessionEnvelopeKey(envelope: Pick<SessionEnvelope, 'globalSessionId'>): string {
   return envelope.globalSessionId;
-}
-
-export function sessionEnvelopeFromUnknown(value: unknown): SessionEnvelope | null {
-  return isSessionEnvelope(value) ? value : null;
-}
-
-export function envelopeStringField(value: unknown): string | undefined {
-  return stringValue(value);
-}
-
-export function envelopeNullableStringField(value: unknown): string | null | undefined {
-  return nullableString(value);
 }

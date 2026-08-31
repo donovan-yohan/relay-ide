@@ -111,8 +111,8 @@ This contract keeps browser rendering, permission checks, and the supported
 ## Frontend reconnect UX
 
 `frontend/src/lib/session-durability.ts` maps each `SessionDurabilityState`
-to a `{ statusDot, label, severity }` badge consumed by `SessionItem` and
-mobile surfaces. `durabilityDisabledReason(state)` returns a typed string
+to a `{ statusDot, label, severity }` badge consumed by `TopicSidebarShell`
+and mobile surfaces. `durabilityDisabledReason(state)` returns a typed string
 when controls should be disabled (`stale-node`, `ended`, `error`) and
 `null` otherwise. `permission-needed` deliberately does NOT disable
 controls — the operator is supposed to answer prompts.

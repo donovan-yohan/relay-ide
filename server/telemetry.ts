@@ -3,10 +3,27 @@ import path from 'node:path';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { AccountTelemetry, TelemetryData } from './types.js';
-import type { TelemetryDeps } from './telemetry-adapter.js';
+import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+import type { GlobalSessionId, NodeId } from '../shared/identity.js';
 import { createLogger } from './logger.js';
 import { createGlobalSessionId } from '../shared/identity.js';
+
+/**
+ * The subset of a session the telemetry poller needs to key its snapshots.
+ * Inlined here when the unwired per-framework telemetry adapter registry
+ * (`server/telemetry-adapter.ts`) was removed as obsolete (#1483); this module
+ * was its only surviving consumer.
+ */
+export type TelemetrySession = Pick<Session, 'id'> & {
+  nodeId?: NodeId;
+  globalSessionId?: GlobalSessionId;
+};
+
+export interface TelemetryDeps {
+  getActiveSessions: () => TelemetrySession[];
+  broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
+  configDir: string;
+}
 
 const logger = createLogger('telemetry');
 

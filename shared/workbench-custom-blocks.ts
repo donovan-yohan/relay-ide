@@ -53,27 +53,17 @@
  *
  * # Sandbox boundary (non-negotiable)
  *
- * Template renderers receive ONLY:
- *   - `descriptor` — the CustomBlockDescriptor for this block
- *   - `context.workContextId` and `context.workContextStatus` — id + status only,
- *     never full transcripts, never raw session bytes
- *   - `context.capabilityGrants` — list of granted bit names (strings), read-only
- *   - `api` — a whitelisted, typed side-effect API (see TemplateRendererApi)
- *
- * Template renderers CANNOT access:
- *   - `process.env` or any Node.js globals
- *   - `window.fetch` / `fetch` (network calls)
- *   - `localStorage` / `sessionStorage`
- *   - Raw session transcripts or terminal output
- *   - Secrets, credentials, or ungranted node/file operations
- *
- * The api object is the ONLY channel for side effects. It is passed as a
- * typed parameter — renderers cannot import modules.
+ * A template renderer must receive ONLY its `CustomBlockDescriptor`, the work
+ * context id + status (never transcripts or raw session bytes), the granted
+ * capability bit names, and a whitelisted typed side-effect API — never
+ * `process.env`, `fetch`, storage, transcripts, secrets, or ungranted
+ * node/file operations. The renderer host that carried those typed shapes was
+ * the pre-channel `BlockHost`, deleted in epic #1287 slice 0; a channel-era
+ * host must re-declare them under the same boundary.
  *
  * Refs: #622, epic #612 (workbench blocks), ADR-017 (brain-as-peer).
  */
 
-import type { RelayCapabilityBit } from './security-policy.js';
 import type {
   ActorRef,
   CustomBlockDescriptor,
@@ -121,54 +111,6 @@ export function isKnownTemplateName(
     (KNOWN_TEMPLATE_NAMES as readonly string[]).includes(value)
   );
 }
-
-// ---------------------------------------------------------------------------
-// Template prop schemas
-// ---------------------------------------------------------------------------
-
-/**
- * Props schema for the `status-card` template.
- *
- * Renders a card with a title, a coloured status badge, and an optional
- * description paragraph.
- */
-export interface StatusCardProps {
-  title: string;
-  status: 'active' | 'idle' | 'error' | 'done' | 'pending';
-  description?: string | undefined;
-}
-
-/**
- * Props schema for the `kv-grid` template.
- *
- * Renders a two-column table of key/value pairs. Values are plain strings;
- * the renderer does NOT eval them or treat them as markup.
- */
-export interface KvGridProps {
-  rows: Array<{ key: string; value: string }>;
-  heading?: string | undefined;
-}
-
-/**
- * Props schema for the `link-list` template.
- *
- * Renders an ordered list of labelled links. URLs must be absolute HTTPS
- * links or relative paths — the renderer validates this at render time.
- */
-export interface LinkListProps {
-  links: Array<{ label: string; url: string }>;
-  heading?: string | undefined;
-}
-
-/**
- * Union of all known template prop shapes, keyed by template name.
- * Used for type-safe prop validation in the server proposal handler.
- */
-export type TemplatePropsMap = {
-  'status-card': StatusCardProps;
-  'kv-grid': KvGridProps;
-  'link-list': LinkListProps;
-};
 
 // ---------------------------------------------------------------------------
 // CustomRendererSource
@@ -252,64 +194,6 @@ export interface CustomBlockProposalInput {
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox API surface (whitelisted side-effect channel for template renderers)
-// ---------------------------------------------------------------------------
-
-/**
- * The ONLY side-effect API available to template renderers.
- *
- * Renderers are pure functions of (descriptor, context, api). They cannot
- * import modules, access global objects, or call unlisted APIs.
- *
- * The api object is constructed by the block host and passed as a parameter.
- * (The pre-channel `BlockHost` that used to construct it was deleted in epic
- * #1287 slice 0; a channel-era host would build the same shape.)
- * Any attempt to access `process`, `fetch`, `localStorage`, etc. from inside
- * a renderer is blocked because renderers are typed functions that only
- * receive this typed object — they do not have import access.
- *
- * ALLOWED:
- *   - getWorkContextStatus(workContextId) — returns the status string only
- *   - listGrantedCapabilities() — returns the list of granted capability bit names
- *
- * NOT ALLOWED (and not present on this type):
- *   - fetch / XMLHttpRequest / network access
- *   - process.env / Node globals
- *   - localStorage / sessionStorage
- *   - readFile / writeFile / exec
- *   - raw session transcripts or terminal bytes
- */
-export interface TemplateRendererApi {
-  /**
-   * Returns the status string of the given work context, or null if unknown.
-   * The resolver is injected by the host from its own (validated) state.
-   * Only `id` and `status` are exposed — never full transcripts.
-   */
-  getWorkContextStatus(workContextId: string): string | null;
-
-  /**
-   * Returns the list of granted RelayCapabilityBit names for this block.
-   * Read-only; cannot be used to request new capabilities.
-   */
-  listGrantedCapabilities(): RelayCapabilityBit[];
-}
-
-/**
- * Sandboxed context passed to template renderers.
- *
- * Exposes only the minimum information needed for rendering — no raw
- * transcripts, no secrets, no ungranted capability data.
- */
-export interface TemplateRendererContext {
-  /** Opaque work context id — never the full WorkContext object. */
-  workContextId?: string | undefined;
-  /** Status string from the work context, if known. */
-  workContextStatus?: string | undefined;
-  /** Granted capability bit names for this block. */
-  capabilityGrants: readonly RelayCapabilityBit[];
-}
-
-// ---------------------------------------------------------------------------
 // Proposal validation error codes
 // ---------------------------------------------------------------------------
 
@@ -332,6 +216,3 @@ export const CUSTOM_BLOCK_PROPOSAL_ERRORS = {
   proposal_not_pending: 'proposal is not in pending status',
   proposal_not_approved: 'proposal is not in approved status',
 } as const;
-
-export type CustomBlockProposalErrorCode =
-  keyof typeof CUSTOM_BLOCK_PROPOSAL_ERRORS;

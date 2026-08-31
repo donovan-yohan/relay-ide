@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Router } from 'express';
@@ -1989,8 +1989,4 @@ export function createWorkContextArtifactRouter(
   );
 
   return router;
-}
-
-export function writeArtifactExport(path: string, payload: unknown): void {
-  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }

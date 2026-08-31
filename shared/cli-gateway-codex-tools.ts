@@ -23,8 +23,6 @@ const CODEX_SMOKE_DEFAULT_STREAM_MAX_BYTES = 65536;
 const CODEX_SMOKE_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 1000;
 const CODEX_SMOKE_EXEC_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
-export type RelayCodexGatewaySmokeCommand = (typeof CLI_GATEWAY_CODEX_SMOKE_COMMANDS)[number];
-
 export interface RelayCodexGatewayMcpDescriptor {
   name: string;
   description: string;

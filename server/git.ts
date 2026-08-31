@@ -197,30 +197,6 @@ async function switchBranch(
   }
 }
 
-async function getCommitsAhead(
-  repoPath: string,
-  branch: string,
-  baseBranch: string,
-  options: {
-    exec?: ExecFileAsyncLike;
-  } = {}
-): Promise<number> {
-  const run: ExecFileAsyncLike =
-    options.exec || (execFileAsync as ExecFileAsyncLike);
-
-  try {
-    const { stdout } = await run(
-      'git',
-      ['rev-list', '--count', `${baseBranch}..${branch}`],
-      { cwd: repoPath, timeout: 5000 }
-    );
-    const count = parseInt(stdout.trim(), 10);
-    return Number.isFinite(count) ? count : 0;
-  } catch {
-    return 0;
-  }
-}
-
 async function getWorkingTreeDiff(
   repoPath: string,
   exec: ExecFileAsyncLike = execFileAsync
@@ -1562,7 +1538,6 @@ export {
   normalizeBranchNames,
   getActivityFeed,
   switchBranch,
-  getCommitsAhead,
   getCurrentBranch,
   getWorkingTreeDiff,
   phraseToBranchName,
