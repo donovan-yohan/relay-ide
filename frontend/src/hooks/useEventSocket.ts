@@ -330,12 +330,6 @@ async function resyncHubNodesAfterReconnect(
   }
 }
 
-function forceRefreshRepos(repoPaths: string[], source: 'webhook' | 'manual') {
-  for (const repoPath of repoPaths) {
-    void useSessionsStore.getState().forceRefresh(repoPath, source);
-  }
-}
-
 export function useEventSocket({
   authAuthenticated,
   queryClient,
@@ -357,12 +351,19 @@ export function useEventSocket({
     /** Channel id → timestamp of the last refresh that failed to produce its row. */
     const unresolvedChannelAttempts = new Map<string, number>();
 
+    /**
+     * #1457: enrich every repo the event named in ONE `POST
+     * /gh/enrich-branches`. A webhook burst used to fan out one request per
+     * repo; the store's batched force path bypasses the TTL and never joins a
+     * pending batch, so the webhook still wins over older in-flight data.
+     */
     function invalidateScopedPrData(
       repoPaths: string[],
       source: 'webhook' | 'manual'
     ): void {
       invalidatePrQueries(queryClient);
-      forceRefreshRepos(repoPaths, source);
+      if (repoPaths.length === 0) return;
+      void useSessionsStore.getState().forceRefreshRepos(repoPaths, source);
     }
 
     async function refreshAfterReconnect(): Promise<void> {

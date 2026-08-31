@@ -166,6 +166,15 @@ workflow.
   instead of starting a second one — noticeably faster first load on hubs
   tracking many repos (#1456)
 
+### Pull-request badge refresh
+
+#### Fixed
+
+- A burst of GitHub webhook activity no longer fires a separate pull-request
+  lookup for every repository it touches. All of them are refreshed in one
+  batched request, so PR and CI badges settle faster when several repositories
+  update at once (#1457)
+
 ### Native session listing performance
 
 #### Changed

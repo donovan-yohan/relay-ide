@@ -31,7 +31,7 @@ const apiMock = vi.hoisted(() => ({
 const storeMock = vi.hoisted(() => ({
   refreshAll: vi.fn(),
   ensureFreshAll: vi.fn(),
-  forceRefresh: vi.fn(),
+  forceRefreshRepos: vi.fn(),
   handleBackendStateChanged: vi.fn(),
   renameSession: vi.fn(),
   handleBranchChanged: vi.fn(),
@@ -54,6 +54,7 @@ const storeMock = vi.hoisted(() => ({
   repos: [
     { path: '/repos/relay-ide', name: 'relay-ide' },
     { path: '/repos/hermes-agent', name: 'hermes-agent' },
+    { path: '/repos/ath', name: 'ath' },
   ],
 }));
 
@@ -310,7 +311,7 @@ describe('useEventSocket repo-scoped refresh', () => {
     );
   });
 
-  it('throttles pr-updated events but force-refreshes only repos listed in the payload', () => {
+  it('throttles pr-updated events into one batched refresh for the repos listed in the payload', () => {
     mount();
 
     wsMock.onMessage?.({
@@ -320,18 +321,50 @@ describe('useEventSocket repo-scoped refresh', () => {
     });
     vi.advanceTimersByTime(500);
 
-    expect(storeMock.forceRefresh).toHaveBeenCalledTimes(2);
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
-      1,
-      '/repos/relay-ide',
-      'webhook'
-    );
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
-      2,
-      '/repos/hermes-agent',
+    // #1457: two repos, one request — not one request per repo.
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledTimes(1);
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledWith(
+      ['/repos/relay-ide', '/repos/hermes-agent'],
       'webhook'
     );
     expect(storeMock.ensureFreshAll).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a webhook burst across events into a single batched refresh', () => {
+    mount();
+
+    // Three repos named across two event types inside one throttle window.
+    wsMock.onMessage?.({
+      type: 'pr-updated',
+      workspacePaths: ['/repos/relay-ide'],
+    });
+    wsMock.onMessage?.({
+      type: 'ci-updated',
+      repos: ['donovan-yohan/hermes-agent'],
+    });
+    wsMock.onMessage?.({ type: 'pr-updated', workspacePaths: ['/repos/ath'] });
+    // A repeat of a repo already queued must not add a second entry.
+    wsMock.onMessage?.({
+      type: 'ci-updated',
+      workspacePaths: ['/repos/relay-ide'],
+    });
+    expect(storeMock.forceRefreshRepos).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(500);
+
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledTimes(1);
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledWith(
+      ['/repos/relay-ide', '/repos/hermes-agent', '/repos/ath'],
+      'webhook'
+    );
+  });
+
+  it('skips the enrichment call entirely when an event names no repo path', () => {
+    mount();
+
+    wsMock.onMessage?.({ type: 'ref-changed', cwdPath: '' });
+
+    expect(storeMock.forceRefreshRepos).not.toHaveBeenCalled();
   });
 
   it('force-refreshes the affected repo for session end, branch change, and ref change without a debounce timer', () => {
@@ -347,12 +380,13 @@ describe('useEventSocket repo-scoped refresh', () => {
     });
     wsMock.onMessage?.({ type: 'ref-changed', cwdPath: '/repos/hermes-agent' });
 
-    expect(storeMock.forceRefresh).toHaveBeenCalledWith(
-      '/repos/relay-ide',
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledTimes(3);
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledWith(
+      ['/repos/relay-ide'],
       'manual'
     );
-    expect(storeMock.forceRefresh).toHaveBeenCalledWith(
-      '/repos/hermes-agent',
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledWith(
+      ['/repos/hermes-agent'],
       'manual'
     );
     expect(vi.getTimerCount()).toBe(0);
@@ -391,24 +425,16 @@ describe('useEventSocket repo-scoped refresh', () => {
       cwdPath: '/repos/relay-ide/.worktrees/feature-a',
     });
 
-    expect(storeMock.forceRefresh).toHaveBeenCalledTimes(3);
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
-      1,
-      '/repos/relay-ide',
-      'manual'
-    );
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
-      2,
-      '/repos/relay-ide',
-      'manual'
-    );
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
-      3,
-      '/repos/relay-ide',
-      'manual'
-    );
-    expect(storeMock.forceRefresh).not.toHaveBeenCalledWith(
-      '/repos/relay-ide/.worktrees/feature-a',
+    expect(storeMock.forceRefreshRepos).toHaveBeenCalledTimes(3);
+    for (const nth of [1, 2, 3]) {
+      expect(storeMock.forceRefreshRepos).toHaveBeenNthCalledWith(
+        nth,
+        ['/repos/relay-ide'],
+        'manual'
+      );
+    }
+    expect(storeMock.forceRefreshRepos).not.toHaveBeenCalledWith(
+      ['/repos/relay-ide/.worktrees/feature-a'],
       'manual'
     );
   });
