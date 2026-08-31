@@ -44,7 +44,7 @@ function extractRelayCliGatewayCommandUnion(source: string): string[] {
     );
   }
   const commandMatches = match[1].matchAll(/'([^']+)'/g);
-  return Array.from(commandMatches, (m) => m[1]);
+  return Array.from(commandMatches, (m) => m[1]).filter((s): s is string => s !== undefined);
 }
 
 function extractCommandLabelsKeys(source: string): string[] {
@@ -57,7 +57,7 @@ function extractCommandLabelsKeys(source: string): string[] {
     );
   }
   const keyMatches = match[1].matchAll(/'([^']+)':/g);
-  return Array.from(keyMatches, (m) => m[1]);
+  return Array.from(keyMatches, (m) => m[1]).filter((s): s is string => s !== undefined);
 }
 
 function collectAllStrings(value: unknown, path: string = ''): { path: string; text: string }[] {
