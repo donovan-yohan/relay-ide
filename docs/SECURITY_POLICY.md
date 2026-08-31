@@ -229,6 +229,76 @@ The `relay-ide v1 agent-profiles create|update` CLI refuses to read the key from
 
 Related open gap: agent-profile `envVars` are still persisted and returned raw (#1464).
 
+## Agent-profile actor credentials (#1455 slice 3)
+
+Separate from the gateway secret above, an agent profile may hold one **durable
+Relay actor credential**: a scoped actor credential bound to that profile's own
+Actor id, which the profile's host (a Hermes `.env`, say) uses to call back into
+Relay as itself. The gateway secret authenticates Relay _outbound_; this one
+authenticates the agent _inbound_.
+
+**Authentication is the credential; authorization is channel membership.** The
+credential is minted with the fixed capability set `session:read` +
+`context:read` + `context:write` and **no `channelIds`**. Its channel reach is
+decided entirely by hub-owned membership (§ Channel membership authority): any
+channel id may be requested, and a non-member is refused `CHANNEL_NOT_MEMBER` on
+read, on write, and per-frame on the subscribe stream. This is the one place the
+fail-closed channel-scope rule is relaxed, and it is relaxed only for a
+credential carrying the in-process `agent-profile-credential` marker that holds
+no channel scope of its own — an ordinary delegated credential naming no
+channels is still refused `CHANNEL_OUT_OF_SCOPE`. The alternative, pinning
+`channelIds` at mint, would freeze an agent's reach to the rooms that existed
+that day and make every new channel require re-minting a token that lives on
+another host. Unlike the #1467 host-local token, this marker grants **no**
+membership exemption.
+
+Storage is hash-only. The token is returned exactly once, on the mint response;
+`agent_profile_credentials` persists `sha256(secret)` and metadata, never the
+token, and the digest is selected by one statement (the boot rehydrate) in the
+same way `getGatewaySecret` is the sole reader of the gateway key. A stolen copy
+of `agent-profiles.db` replays nothing. Nothing in Relay can reproduce a token
+after the mint response: a status read returns state, times, and a coarse
+last-used stamp only.
+
+Persistence exists so a **restart does not silently invalidate** a credential an
+operator planted on another host — the scoped-actor registry is otherwise
+memory-only. Rows are restored into the registry at boot, revoked rows included,
+so a replayed token is refused as `revoked` rather than as an unknown id.
+Expired rows are pruned rather than retained.
+
+Lifecycle is host-local operator authority. `agent-profiles.credential.mint`,
+`.revoke`, and `.status` all run behind the same gate as
+`agent-profiles.create`/`.update` — a delegated scoped actor is refused
+`AGENT_PROFILE_HOST_LOCAL_REQUIRED` (403), **including on the status read**,
+because status is the reconnaissance half of the surface and an agent holding a
+profile credential must not be able to inspect or rotate it. Attribution is
+server-derived: the credential's actor id is read from the stored profile, and
+`issuedBy`/`revokedBy` come from the authenticated lane, never from a body
+field. A profile holds at most one live credential, enforced by a partial unique
+index; rotation is revoke-then-mint in one transaction, so the old token dies as
+the new one is issued. Deleting a profile revokes its credential, durably.
+
+**Membership bounds the CHANNEL verbs, and only those.** The credential carries
+`context:write`, and that bit reaches non-channel write verbs that membership
+does not gate at all: `workspace-topics.create|update|archive|restore` (so a
+profile credential can archive any channel in the hub, member or not),
+`workspace-surfaces.publish`, `context.create|pin|unpin`,
+`work-context-messages.append`, `work-context-artifacts.publish|pin|unpin`,
+`handoff-artifacts.attach`, and the `workflow-runs.*` / `automation-runs.*` /
+`pr-overseer.*` registries. This is not new — any `context:write` actor could
+always do it — but this credential is the first one that is long-lived, remote,
+and routine, so it is stated here rather than left to be discovered. Treat a
+profile credential as trusted with hub-wide `context:write`, and channel
+_content_ as the part membership actually protects. Narrowing that surface for
+this marker is an open follow-up, not a property of this slice.
+
+Known limit: the credential's lifetime is capped by the hub's configured actor
+ceiling (`cliGatewayActorCredentialMaxTtlMs`, default 30 days). Renewal is
+revoke + mint, which means replanting the new token on the agent's host; there
+is no in-place extension. Self-renewal through
+`POST /cli-gateway/actor-credentials/renew` is refused: the successor would lose
+the marker and, worse, exist with no durable row for the operator to revoke.
+
 ## Channel membership authority (#1455)
 
 Channel authorization for the scoped-actor lane is hub-owned membership, not

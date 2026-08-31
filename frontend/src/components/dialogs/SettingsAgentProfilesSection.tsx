@@ -15,10 +15,14 @@ import {
   type AgentProfileRespondTo,
 } from '../../../../shared/agent-profile.js';
 import type { FrameworkInfo } from '../../lib/types.js';
+import type { AgentProfileCredentialStatus } from '../../../../shared/agent-profile-credential.js';
 import {
   createAgentProfile,
   deleteAgentProfile,
+  fetchAgentProfileCredential,
   fetchAgentProfiles,
+  mintAgentProfileCredential,
+  revokeAgentProfileCredential,
   setDefaultAgentProfile,
   updateAgentProfile,
   type AgentProfileWriteInput,
@@ -55,6 +59,12 @@ const SEARCH_TERMS = [
   'hermes profile',
   'hermes api key',
   'api key',
+  'credential',
+  'relay credential',
+  'token',
+  'mint',
+  'rotate',
+  'revoke',
 ];
 
 export interface AgentProfileDraft {
@@ -795,6 +805,216 @@ export function AgentProfileEditor({
   );
 }
 
+// ── Relay credential (#1455 slice 3) ────────────────────────────────────────
+
+const AGENT_PROFILE_CREDENTIAL_QUERY = 'agent-profile-credential';
+
+/** Stable, locale-independent stamp; `null` reads as "never". */
+export function formatCredentialMoment(value: string | null): string {
+  if (!value) return 'never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    ` ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
+/** The one-word lifecycle label, including the never-minted case. */
+export function credentialStateLabel(
+  credential: AgentProfileCredentialStatus | null | undefined
+): string {
+  return credential ? credential.state : 'not minted';
+}
+
+function credentialErrorText(error: unknown): string | null {
+  if (!error) return null;
+  return error instanceof Error && error.message
+    ? error.message
+    : 'credential request failed.';
+}
+
+function CredentialFact({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </>
+  );
+}
+
+/**
+ * The profile's long-lived Relay credential: status, mint/rotate, revoke, and
+ * the ONE rendering the token ever gets.
+ *
+ * The token is never queried, never cached and never persisted — it exists only
+ * in this component's state, tagged with the profile it was minted for, so a
+ * profile switch or a close drops it. The hub keeps a hash, so nothing can
+ * bring it back; the operator copies it now or mints again.
+ */
+export function AgentProfileCredentialPanel({
+  profileId,
+}: {
+  profileId: string;
+}) {
+  const queryClient = useQueryClient();
+  const queryKey = [AGENT_PROFILE_CREDENTIAL_QUERY, profileId] as const;
+  const [minted, setMinted] = useState<{
+    profileId: string;
+    token: string;
+  } | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>(
+    'idle'
+  );
+  const credentialQuery = useQuery({
+    queryKey,
+    queryFn: () => fetchAgentProfileCredential(profileId),
+  });
+  const mintMutation = useMutation({
+    mutationFn: () => mintAgentProfileCredential(profileId),
+    onSuccess: (result) => {
+      setCopyState('idle');
+      setMinted({ profileId, token: result.token });
+      queryClient.setQueryData(queryKey, result.credential);
+    },
+  });
+  const revokeMutation = useMutation({
+    mutationFn: () => revokeAgentProfileCredential(profileId),
+    onSuccess: (credential) => {
+      setMinted(null);
+      queryClient.setQueryData(queryKey, credential);
+    },
+  });
+
+  // Belt and braces with the caller's remount key: even re-pointed in place at
+  // another profile, this panel must not keep showing the previous profile's
+  // secret.
+  useEffect(() => {
+    setMinted(null);
+    setCopyState('idle');
+  }, [profileId]);
+
+  const credential = credentialQuery.data ?? null;
+  const isActive = credential?.state === 'active';
+  const busy = mintMutation.isPending || revokeMutation.isPending;
+  // Tagged with its profile: a token from another row can never render here.
+  const token = minted?.profileId === profileId ? minted.token : null;
+  const error =
+    credentialErrorText(mintMutation.error) ??
+    credentialErrorText(revokeMutation.error) ??
+    (credentialQuery.isError ? 'unable to load credential state.' : null);
+
+  return (
+    <section
+      className="agent-profiles-credential"
+      aria-label="relay credential"
+    >
+      <div className="agent-profiles-credential__heading">
+        <h4>relay credential</h4>
+        <span
+          className="agent-profiles-credential__state"
+          data-state={credential?.state ?? 'none'}
+        >
+          {credentialQuery.isPending
+            ? 'checking…'
+            : credentialStateLabel(credential)}
+        </span>
+      </div>
+      <p>
+        one durable, revocable token this profile uses to post as itself.
+        channel access stays with channel membership.
+      </p>
+      {credential ? (
+        <dl className="agent-profiles-credential__facts">
+          <CredentialFact
+            label="issued"
+            value={formatCredentialMoment(credential.issuedAt)}
+          />
+          <CredentialFact
+            label="expires"
+            value={formatCredentialMoment(credential.expiresAt)}
+          />
+          {credential.revokedAt ? (
+            <CredentialFact
+              label="revoked"
+              value={formatCredentialMoment(credential.revokedAt)}
+            />
+          ) : null}
+          {credential.lastUsedAt ? (
+            <CredentialFact
+              label="last used"
+              value={formatCredentialMoment(credential.lastUsedAt)}
+            />
+          ) : null}
+        </dl>
+      ) : null}
+      <div className="agent-profiles-credential__actions">
+        <TuiButton
+          variant="primary"
+          size="sm"
+          disabled={busy || credentialQuery.isPending}
+          onClick={() => mintMutation.mutate()}
+        >
+          {mintMutation.isPending
+            ? 'minting…'
+            : isActive
+              ? 'rotate credential'
+              : 'mint credential'}
+        </TuiButton>
+        <TuiButton
+          variant="danger"
+          size="sm"
+          disabled={busy || !isActive}
+          onClick={() => revokeMutation.mutate()}
+        >
+          {revokeMutation.isPending ? 'revoking…' : 'revoke'}
+        </TuiButton>
+      </div>
+      {token ? (
+        <div className="agent-profiles-credential__token" role="status">
+          <p className="agent-profiles-credential__token-warning">
+            copy this token now. relay keeps only a hash of it and will never
+            show it again — a lost token means minting a new one.
+          </p>
+          <div className="agent-profiles-credential__token-row">
+            <code
+              className="agent-profiles-credential__token-value"
+              data-testid="agent-profile-credential-token"
+            >
+              {token}
+            </code>
+            <TuiButton
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                // No clipboard on an insecure-context hub (plain http on a
+                // LAN), and a denied permission rejects. Say so rather than
+                // claiming a copy the operator did not get.
+                void navigator.clipboard
+                  ?.writeText(token)
+                  .then(() => setCopyState('copied'))
+                  .catch(() => setCopyState('failed'));
+              }}
+            >
+              {copyState === 'copied'
+                ? 'copied'
+                : copyState === 'failed'
+                  ? 'copy failed'
+                  : 'copy'}
+            </TuiButton>
+          </div>
+        </div>
+      ) : null}
+      {error ? (
+        <p className="agent-profiles-credential__error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function AgentProfileGallery({
   profiles,
   frameworks,
@@ -914,27 +1134,41 @@ export function SettingsAgentProfilesSection({
           ) : null}
         </div>
         {editing !== undefined ? (
-          <AgentProfileEditor
-            /*
-             * The editor seeds its draft ONCE from `profile`, and the gallery
-             * stays mounted while it is open — so every card's edit/duplicate
-             * button is live. Without a key, clicking edit on a second profile
-             * re-renders the same instance, leaving the first profile's draft
-             * in place while the submit handler addresses the second profile's
-             * id: one profile's `hermesProfile` would be written onto another
-             * row, or cleared off it. Remounting per edited row is what makes
-             * `profileDraftFrom` re-run.
-             */
-            key={editing?.id || 'new'}
-            {...(editing ? { profile: editing } : {})}
-            frameworks={frameworks}
-            submitting={createMutation.isPending || updateMutation.isPending}
-            onCancel={() => setEditing(undefined)}
-            onSubmit={(input) => {
-              if (editing?.id) updateMutation.mutate({ id: editing.id, input });
-              else createMutation.mutate(input);
-            }}
-          />
+          <>
+            <AgentProfileEditor
+              /*
+               * The editor seeds its draft ONCE from `profile`, and the gallery
+               * stays mounted while it is open — so every card's edit/duplicate
+               * button is live. Without a key, clicking edit on a second profile
+               * re-renders the same instance, leaving the first profile's draft
+               * in place while the submit handler addresses the second profile's
+               * id: one profile's `hermesProfile` would be written onto another
+               * row, or cleared off it. Remounting per edited row is what makes
+               * `profileDraftFrom` re-run.
+               */
+              key={editing?.id || 'new'}
+              {...(editing ? { profile: editing } : {})}
+              frameworks={frameworks}
+              submitting={createMutation.isPending || updateMutation.isPending}
+              onCancel={() => setEditing(undefined)}
+              onSubmit={(input) => {
+                if (editing?.id)
+                  updateMutation.mutate({ id: editing.id, input });
+                else createMutation.mutate(input);
+              }}
+            />
+            {/*
+             * Saved profiles only: an unsaved draft (add, or duplicate) has no
+             * actor id to bind a credential to. Keyed like the editor so the
+             * show-once token cannot survive a switch to another profile.
+             */}
+            {editing?.id ? (
+              <AgentProfileCredentialPanel
+                key={`credential-${editing.id}`}
+                profileId={editing.id}
+              />
+            ) : null}
+          </>
         ) : null}
         {profilesQuery.isPending ? (
           <p className="agent-profiles-section__state">loading profiles…</p>

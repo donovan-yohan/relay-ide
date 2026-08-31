@@ -11,6 +11,7 @@ import { isDmChannel } from '../shared/dm-channels.js';
 import {
   authenticatedCliGatewayActorCredential,
   isLocalHubCliActorCredential,
+  credentialDefersChannelScopeToMembership,
   type CliGatewayActorReadCommand,
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
@@ -313,6 +314,11 @@ function denyOutOfScopeChannel(
     // keeps browser/operator authority instead of being narrowed to a channel
     // list it never had.
     if (isLocalHubCliActorCredential(credential)) return false;
+    // #1455 slice 3: a durable per-profile credential names no channels; its
+    // reach is hub-owned MEMBERSHIP, checked immediately after this by
+    // `denyNonMemberChannel` on every route that calls both. Scope stops being
+    // the question here; it does not stop being asked.
+    if (credentialDefersChannelScopeToMembership(credential)) return false;
     if (credential.scope?.channelIds?.includes(channelId)) return false;
   } else {
     const operatorClient = authenticatedOperatorClientCredential(req);
@@ -433,6 +439,10 @@ function denyChannelReadWithoutScope(req: Request, res: Response): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
   if (!credential) return false; // browser/operator lane: existing authority
   if (isLocalHubCliActorCredential(credential)) return false; // #1467 host-local operator
+  // #1455 slice 3: a profile-bound credential enumerates its MEMBERSHIPS.
+  // `filterChannelListToScope` narrows the result to exactly those, so this is
+  // not "see everything" — a profile in no channels lists nothing.
+  if (credentialDefersChannelScopeToMembership(credential)) return false;
   const allowed = credential.scope?.channelIds;
   if (allowed && allowed.length > 0) return false;
   sendGatewayError(

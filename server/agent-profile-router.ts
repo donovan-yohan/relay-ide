@@ -22,6 +22,10 @@ import {
   type AgentProfileUpdateInput,
   type SeedFramework,
 } from './agent-profile-store.js';
+import {
+  AgentProfileCredentialError,
+  type AgentProfileCredentialService,
+} from './agent-profile-credentials.js';
 
 /**
  * Builds the auth middleware for one gateway verb. `server/index.ts` passes
@@ -44,6 +48,12 @@ export interface AgentProfileRouterDeps {
    * unit fixtures, where the routes fall back to `requireAuth`.
    */
   requireGatewayAuthForCommand?: AgentProfileActorAuthFactory;
+  /**
+   * #1455 slice 3: durable per-profile credential lifecycle. Omitted in unit
+   * fixtures that do not exercise it; the routes then answer 503 rather than
+   * pretending a credential surface exists.
+   */
+  credentials?: AgentProfileCredentialService;
 }
 
 const RESPOND_TO_VALUES: readonly AgentProfileRespondTo[] = [
@@ -702,6 +712,11 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
       );
     }
     store.delete(profile.id);
+    // #1455 slice 3: the store tombstoned the profile's credential rows inside
+    // the same transaction as the delete; this cuts the same ids off in the
+    // live registry so a deleted profile's token stops working NOW rather than
+    // at the next restart.
+    deps.credentials?.revokeForDeletedProfile(profile.id);
     res.status(204).end();
   });
 
@@ -715,5 +730,159 @@ export function createAgentProfileRouter(deps: AgentProfileRouterDeps): Router {
     }
   });
 
+  // ── Durable per-profile actor credentials (#1455 slice 3) ─────────────────
+  //
+  // All three verbs sit behind `denyDelegatedActorWrite`, INCLUDING the read.
+  // Credential lifecycle is host-local operator authority: an agent holding a
+  // profile credential must not be able to enumerate, rotate, or revoke its own
+  // (or another profile's) credential, and `status` is the reconnaissance half
+  // of that surface. The read lane exists so the #1467 host-local token can
+  // answer `credential status` without a browser session, nothing more.
+
+  router.post(
+    '/agent-profiles/:id/credential',
+    gatewayAuth('agent-profiles.credential.mint'),
+    (req, res) => {
+      if (denyDelegatedActorWrite(req, res)) return;
+      const profile = profileOr404(res, deps.store, req.params['id'] ?? '');
+      if (!profile) return;
+      const credentials = credentialsOr503(res, deps.credentials);
+      if (!credentials) return;
+      const body = bodyRecord(req) ?? {};
+      const ttlMs = body['ttlMs'];
+      if (ttlMs !== undefined && !isPositiveFiniteNumber(ttlMs)) {
+        return void sendError(
+          res,
+          400,
+          'AGENT_PROFILE_CREDENTIAL_TTL_INVALID',
+          'ttlMs must be a positive number of milliseconds',
+          { field: 'ttlMs' }
+        );
+      }
+      try {
+        // Every identity field is read from the STORED profile or derived from
+        // the authenticated lane. Nothing about who this credential speaks as
+        // comes from the request body — that is the attribution promise, and a
+        // body-supplied actor id is how it would be broken.
+        const result = credentials.mint({
+          profileId: profile.id,
+          ...(profile.displayName ? { displayName: profile.displayName } : {}),
+          issuerId: operatorRef(req),
+          ...(ttlMs !== undefined ? { ttlMs: ttlMs as number } : {}),
+        });
+        // The ONLY response in Relay that carries this token.
+        res.json(result);
+      } catch (error) {
+        mapCredentialError(res, error);
+      }
+    }
+  );
+
+  router.post(
+    '/agent-profiles/:id/credential/revoke',
+    gatewayAuth('agent-profiles.credential.revoke'),
+    (req, res) => {
+      if (denyDelegatedActorWrite(req, res)) return;
+      const profile = profileOr404(res, deps.store, req.params['id'] ?? '');
+      if (!profile) return;
+      const credentials = credentialsOr503(res, deps.credentials);
+      if (!credentials) return;
+      const reason = trimString(bodyRecord(req)?.['reason']);
+      try {
+        res.json({
+          credential: credentials.revoke({
+            profileId: profile.id,
+            revokedBy: operatorRef(req),
+            ...(reason ? { reason } : {}),
+          }),
+        });
+      } catch (error) {
+        mapCredentialError(res, error);
+      }
+    }
+  );
+
+  router.get(
+    '/agent-profiles/:id/credential',
+    gatewayAuth('agent-profiles.credential.status'),
+    (req, res) => {
+      if (denyDelegatedActorWrite(req, res)) return;
+      const profile = profileOr404(res, deps.store, req.params['id'] ?? '');
+      if (!profile) return;
+      const credentials = credentialsOr503(res, deps.credentials);
+      if (!credentials) return;
+      try {
+        res.json({ credential: credentials.status(profile.id) });
+      } catch (error) {
+        mapCredentialError(res, error);
+      }
+    }
+  );
+
   return router;
+}
+
+/** The stored profile, or `null` once the 404 has been answered. */
+function profileOr404(
+  res: Response,
+  store: AgentProfileStore | null,
+  id: string
+): ReturnType<AgentProfileStore['get']> | null {
+  const resolved = storeOr503(res, store);
+  if (!resolved) return null;
+  const profile = resolved.get(id);
+  if (!profile) {
+    sendError(res, 404, 'AGENT_PROFILE_NOT_FOUND', 'agent profile not found');
+    return null;
+  }
+  return profile;
+}
+
+function credentialsOr503(
+  res: Response,
+  credentials: AgentProfileCredentialService | undefined
+): AgentProfileCredentialService | null {
+  if (credentials) return credentials;
+  sendError(
+    res,
+    503,
+    'AGENT_PROFILE_CREDENTIAL_SERVICE_UNAVAILABLE',
+    'agent profile credential lifecycle is unavailable'
+  );
+  return null;
+}
+
+function isPositiveFiniteNumber(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * The operator this request acts as, for `issuedBy` / `revokedBy`.
+ *
+ * `denyDelegatedActorWrite` has already run on every caller that reaches this,
+ * so the only actor credential possible here is the #1467 host-local token;
+ * everything else is the browser/operator lane. The two spellings match what
+ * `deriveSender` would stamp for the same request, so an audit row written here
+ * names the same principal a channel message would.
+ */
+function operatorRef(req: Request): string {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  return credential ? `agent:${credential.actor.id}` : 'human:operator';
+}
+
+function mapCredentialError(res: Response, error: unknown): void {
+  if (error instanceof AgentProfileCredentialError) {
+    sendError(res, error.status, error.code, error.message);
+    return;
+  }
+  if (error instanceof AgentProfileStoreError) {
+    sendError(res, error.status, error.code.toUpperCase(), error.message);
+    return;
+  }
+  sendError(
+    res,
+    500,
+    'AGENT_PROFILE_CREDENTIAL_FAILED',
+    error instanceof Error ? error.message : String(error)
+  );
 }

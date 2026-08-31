@@ -190,6 +190,9 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'agent-profiles.get': 'agent profile details',
   'agent-profiles.create': 'create agent profile',
   'agent-profiles.update': 'update agent profile',
+  'agent-profiles.credential.mint': 'mint agent profile credential',
+  'agent-profiles.credential.revoke': 'revoke agent profile credential',
+  'agent-profiles.credential.status': 'agent profile credential status',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -229,6 +232,10 @@ const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   // reversible — an invite re-admits — but a surface that confirms destructive
   // commands should confirm this one.
   'channels.remove-member',
+  // #1455 slice 3: revoking a profile credential cuts a live agent's whole
+  // reach into Relay, and there is no undo — rotation mints a NEW token that
+  // has to be replanted on the agent's host. Same class as `nodes.revoke`.
+  'agent-profiles.credential.revoke',
 ]);
 
 const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
@@ -270,6 +277,11 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'channels.invite',
   'agent-profiles.create',
   'agent-profiles.update',
+  // Minting revokes the profile's previous credential as its first act, but it
+  // is classified as a write rather than as destructive: the operator's intent
+  // is to hand the agent a working credential, and the surface that would
+  // confirm it already confirms the revoke it implies.
+  'agent-profiles.credential.mint',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -359,6 +371,11 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'worktrees.archive' ||
     spec.name === 'workspace-topics.archive' ||
     spec.name === 'channels.remove-member' ||
+    // #1455 slice 3: irreversible in the way that matters — recovery is minting
+    // a NEW token and replanting it on the agent's host. Every other member of
+    // DESTRUCTIVE_GATEWAY_COMMANDS confirms, and a surface reading the manifest
+    // must not fire this one without asking.
+    spec.name === 'agent-profiles.credential.revoke' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||
     spec.capabilityHints.includes('rpc:fs:write')
   );

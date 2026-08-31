@@ -238,6 +238,10 @@ import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAutomationRunRouter } from './features/automation-run-router.js';
 import { createPrOverseerRouter } from './features/pr-overseer-router.js';
 import { createAgentProfileRouter } from './agent-profile-router.js';
+import {
+  createAgentProfileCredentialService,
+  type AgentProfileCredentialService,
+} from './agent-profile-credentials.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initChannelMessageStore,
@@ -402,6 +406,7 @@ import {
   cliGatewayCorrelationId,
   cliGatewayActorCommandCapabilities,
   createCliGatewayActorRegistry,
+  isAgentProfileActorCredential,
   createCliGatewayHandshakeGrantRegistry,
   DEFAULT_CLI_LOGIN_ACTOR_TTL_MS,
   isCliGatewayActorTokenRequest,
@@ -1643,6 +1648,25 @@ async function main(): Promise<void> {
     persistenceState.get<ContextPacketStore>('context-packets');
   const agentProfileStore =
     persistenceState.get<AgentProfileStore>('agent-profiles');
+  // #1455 slice 3: the durable per-profile credential lifecycle. Created before
+  // any route can mint, and rehydrated immediately so a token an operator
+  // planted on a Hermes host keeps working across this restart — the whole
+  // point of the slice, and the one behaviour the memory-only registry could
+  // never provide.
+  const agentProfileCredentials: AgentProfileCredentialService =
+    createAgentProfileCredentialService({
+      registry: () => cliGatewayActorRegistry,
+      store: () => agentProfileStore ?? null,
+      maxTtlMs: () => cliGatewayActorMaxTtlMs,
+    });
+  {
+    const restored = agentProfileCredentials.rehydrate();
+    if (restored.restored > 0 || restored.pruned > 0) {
+      logger.info(
+        `Agent profile credentials restored: ${restored.restored} (${restored.revoked} revoked), ${restored.pruned} expired rows pruned`
+      );
+    }
+  }
   const workContextArtifactStore =
     persistenceState.get<WorkContextArtifactStore>('work-context-artifacts');
   const workflowRunStore =
@@ -2117,6 +2141,14 @@ async function main(): Promise<void> {
         return;
       }
       attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
+      // #1455 slice 3: coarse last-used stamp for the durable per-profile
+      // credential, so an operator can see whether the token they planted is
+      // actually being used. Debounced inside the service to one write per
+      // credential per minute — the subscribe stream re-validates per FRAME
+      // (#1485), and a durable write on that path is the #1249 shape.
+      if (isAgentProfileActorCredential(validation.credential)) {
+        agentProfileCredentials.noteUsed(validation.credential.id);
+      }
       next();
     };
   };
@@ -3114,6 +3146,7 @@ async function main(): Promise<void> {
   app.use(
     createAgentProfileRouter({
       store: agentProfileStore,
+      credentials: agentProfileCredentials,
       listConfiguredFrameworks: () =>
         listConfiguredFrameworks(getConfig().frameworks),
       requireAuth,

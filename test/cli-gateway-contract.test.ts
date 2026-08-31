@@ -283,6 +283,9 @@ describe('CLI gateway contract', () => {
       'agent-profiles.get',
       'agent-profiles.create',
       'agent-profiles.update',
+      'agent-profiles.credential.mint',
+      'agent-profiles.credential.revoke',
+      'agent-profiles.credential.status',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -791,6 +794,16 @@ describe('CLI gateway contract', () => {
         storesRawPtyInput: false,
         storesRawProviderState: false,
       });
+      // #1455 slice 3: every destructive command confirms. A surface reading
+      // this manifest fires an irreversible verb without asking otherwise, and
+      // the correlation held for every member of the set until it was not
+      // asserted anywhere and a new one slipped in without a confirmation.
+      if (command.sideEffect === 'destructive') {
+        expect([command.name, command.requiresConfirmation]).toEqual([
+          command.name,
+          true,
+        ]);
+      }
     }
 
     expect(relayCommandDefinition('files.write')).toMatchObject({

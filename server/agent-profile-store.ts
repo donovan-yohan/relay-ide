@@ -71,10 +71,102 @@ const SCHEMA_V2 = `
 ALTER TABLE agent_profiles ADD COLUMN hermes_api_key TEXT;
 `;
 
+// Durable per-profile actor credentials (#1455 slice 3). The scoped-actor
+// registry is memory-only, so before this table a restart silently invalidated
+// every token an operator had planted on another host. This is the persistence
+// that makes a profile credential outlive the process that minted it.
+//
+// NEVER the token. `secret_hash` is the sha256 the registry itself computes at
+// issue time, compared exactly like the profile gateway key: a stolen copy of
+// this file replays nothing. The column is selected by ONE statement in this
+// file (`selectRestorableCredentials`), for the boot rehydrate and nothing else.
+//
+// A profile holds at most one LIVE credential; the partial unique index is the
+// DB-layer statement of that, so even a raced mint cannot leave two. Rotation
+// is revoke-then-mint inside one transaction.
+const SCHEMA_V3 = `
+CREATE TABLE IF NOT EXISTS agent_profile_credentials (
+  credential_id TEXT PRIMARY KEY,
+  profile_id    TEXT NOT NULL,
+  actor_id      TEXT NOT NULL,
+  display_name  TEXT,
+  issuer_id     TEXT NOT NULL,
+  secret_hash   TEXT NOT NULL,
+  capabilities  TEXT NOT NULL,
+  issued_at     TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  revoked_by    TEXT,
+  last_used_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_profile_credentials_profile
+  ON agent_profile_credentials(profile_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_profile_credentials_one_live
+  ON agent_profile_credentials(profile_id) WHERE revoked_at IS NULL;
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ];
+
+/**
+ * Column list every credential read uses. `secret_hash` is deliberately absent
+ * — the same redaction strategy as `PROFILE_COLUMNS`, so a future read path
+ * added by someone who never saw this comment still cannot return the digest.
+ */
+const CREDENTIAL_COLUMNS = `credential_id, profile_id, actor_id, display_name,
+   issuer_id, capabilities, issued_at, expires_at, revoked_at, revoked_by,
+   last_used_at`;
+
+interface AgentProfileCredentialDbRow {
+  credential_id: string;
+  profile_id: string;
+  actor_id: string;
+  display_name: string | null;
+  issuer_id: string;
+  capabilities: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  last_used_at: string | null;
+}
+
+/** Stored credential metadata. Carries no secret and no digest. */
+export interface AgentProfileCredentialRow {
+  credentialId: string;
+  profileId: string;
+  actorId: string;
+  displayName: string | null;
+  issuerId: string;
+  capabilities: string[];
+  issuedAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  lastUsedAt: string | null;
+}
+
+/** A stored credential plus its digest — the boot-rehydrate shape ONLY. */
+export interface AgentProfileCredentialRestoreRow extends AgentProfileCredentialRow {
+  secretHash: string;
+}
+
+/** Write input for `recordCredential`. */
+export interface AgentProfileCredentialWriteInput {
+  credentialId: string;
+  profileId: string;
+  actorId: string;
+  displayName?: string | null;
+  issuerId: string;
+  /** `scopedActorCredentialSecretHash(token)` — never the token. */
+  secretHash: string;
+  capabilities: readonly string[];
+  issuedAt: string;
+  expiresAt: string;
+}
 
 /**
  * Column list every profile read uses. `has_hermes_api_key` is deliberately a
@@ -195,6 +287,56 @@ export interface AgentProfileStore {
    * in-place promotions/repairs are not counted.
    */
   seedBuiltIns(frameworks: readonly SeedFramework[]): number;
+
+  // ── Durable per-profile actor credentials (#1455 slice 3) ─────────────────
+
+  /**
+   * Persist a freshly minted credential, revoking whatever live credential the
+   * profile already held IN THE SAME TRANSACTION. Rotation is revoke + mint, so
+   * the window in which a profile has two usable credentials is zero: either
+   * both writes land or neither does.
+   *
+   * Returns the rows revoked on the way in, so the caller can revoke the same
+   * ids in the in-memory registry and the two views cannot diverge.
+   */
+  recordCredential(input: AgentProfileCredentialWriteInput): {
+    stored: AgentProfileCredentialRow;
+    revoked: AgentProfileCredentialRow[];
+  };
+  /**
+   * Revoke the profile's live credential. `null` when it holds none — a
+   * revoke with nothing to revoke is a 404, not a silent success.
+   */
+  revokeCredential(
+    profileId: string,
+    revokedBy: string
+  ): AgentProfileCredentialRow | null;
+  /**
+   * Revoke every live credential for `profileId`, e.g. because the profile is
+   * being deleted. The unique index means this is at most one row today; it is
+   * written as a sweep so a future multi-credential profile cannot leak one.
+   */
+  revokeCredentialsForProfile(
+    profileId: string,
+    revokedBy: string
+  ): AgentProfileCredentialRow[];
+  /**
+   * The credential a status read should show: the profile's live one, else its
+   * most recently issued row (so a revoked credential still explains itself).
+   */
+  getCredentialStatus(profileId: string): AgentProfileCredentialRow | null;
+  /** Credential by id, for the request-path last-used stamp. */
+  getCredentialById(credentialId: string): AgentProfileCredentialRow | null;
+  /**
+   * Every credential still worth restoring into the registry at boot: rows that
+   * have not expired, revoked ones included, so a replayed token is denied as
+   * `revoked` rather than as an unknown id. THE ONLY read path for the digest.
+   */
+  listRestorableCredentials(now?: Date): AgentProfileCredentialRestoreRow[];
+  /** Drop rows past their expiry — dead material either way. Returns the count. */
+  pruneExpiredCredentials(now?: Date): number;
+  /** Stamp last-used. Callers debounce; this store does not. */
+  touchCredential(credentialId: string, at: string): void;
 }
 
 export class AgentProfileStoreError extends Error {
@@ -275,6 +417,48 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
      WHERE id = ?`
   );
   const deleteById = db.prepare('DELETE FROM agent_profiles WHERE id = ?');
+
+  // ── Credential statements (#1455 slice 3) ─────────────────────────────────
+  const insertCredential = db.prepare(
+    `INSERT INTO agent_profile_credentials (
+       credential_id, profile_id, actor_id, display_name, issuer_id,
+       secret_hash, capabilities, issued_at, expires_at, revoked_at,
+       revoked_by, last_used_at
+     ) VALUES (
+       @credentialId, @profileId, @actorId, @displayName, @issuerId,
+       @secretHash, @capabilities, @issuedAt, @expiresAt, NULL, NULL, NULL
+     )`
+  );
+  const selectLiveCredentials = db.prepare(
+    `SELECT ${CREDENTIAL_COLUMNS} FROM agent_profile_credentials
+     WHERE profile_id = ? AND revoked_at IS NULL`
+  );
+  const selectNewestCredential = db.prepare(
+    `SELECT ${CREDENTIAL_COLUMNS} FROM agent_profile_credentials
+     WHERE profile_id = ? ORDER BY revoked_at IS NULL DESC, issued_at DESC
+     LIMIT 1`
+  );
+  const selectCredentialById = db.prepare(
+    `SELECT ${CREDENTIAL_COLUMNS} FROM agent_profile_credentials
+     WHERE credential_id = ?`
+  );
+  const revokeCredentialById = db.prepare(
+    `UPDATE agent_profile_credentials
+     SET revoked_at = @revokedAt, revoked_by = @revokedBy
+     WHERE credential_id = @credentialId AND revoked_at IS NULL`
+  );
+  // The one statement in this file that selects a credential digest's value.
+  const selectRestorableCredentials = db.prepare(
+    `SELECT ${CREDENTIAL_COLUMNS}, secret_hash FROM agent_profile_credentials
+     WHERE expires_at > ?`
+  );
+  const deleteExpiredCredentials = db.prepare(
+    'DELETE FROM agent_profile_credentials WHERE expires_at <= ?'
+  );
+  const touchCredentialStmt = db.prepare(
+    `UPDATE agent_profile_credentials SET last_used_at = @at
+     WHERE credential_id = @credentialId`
+  );
 
   function persist(row: {
     id: string;
@@ -546,7 +730,109 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
           'The built-in default profile cannot be deleted.'
         );
       }
-      return deleteById.run(id).changes > 0;
+      // #1455 slice 3: a deleted profile must not leave a usable credential
+      // behind. The row is REVOKED rather than deleted, in the same
+      // transaction as the profile: the boot rehydrate then restores it as
+      // revoked, so a token planted on a Hermes host is answered with a typed
+      // `revoked` refusal instead of an unexplained unknown-credential 401.
+      const removeProfile = db.transaction((profileId: string): boolean => {
+        revokeLiveCredentials(profileId, 'agent-profile-deleted');
+        return deleteById.run(profileId).changes > 0;
+      });
+      return removeProfile(id);
+    },
+
+    // ── Durable per-profile actor credentials (#1455 slice 3) ───────────────
+
+    recordCredential(input: AgentProfileCredentialWriteInput): {
+      stored: AgentProfileCredentialRow;
+      revoked: AgentProfileCredentialRow[];
+    } {
+      const profileId = requireNonEmpty(input.profileId, 'profileId');
+      const credentialId = requireNonEmpty(input.credentialId, 'credentialId');
+      const secretHash = requireNonEmpty(input.secretHash, 'secretHash');
+      if (!/^[0-9a-f]{64}$/.test(secretHash)) {
+        throw new AgentProfileStoreError(
+          400,
+          'agent_profile_credential_secret_hash_invalid',
+          'credential secret hash must be a sha256 hex digest'
+        );
+      }
+      const mint = db.transaction(() => {
+        const revoked = revokeLiveCredentials(profileId, 'rotated');
+        insertCredential.run({
+          credentialId,
+          profileId,
+          actorId: requireNonEmpty(input.actorId, 'actorId'),
+          displayName: readTrimmed(input.displayName) ?? null,
+          issuerId: requireNonEmpty(input.issuerId, 'issuerId'),
+          secretHash,
+          capabilities: JSON.stringify([...input.capabilities]),
+          issuedAt: requireNonEmpty(input.issuedAt, 'issuedAt'),
+          expiresAt: requireNonEmpty(input.expiresAt, 'expiresAt'),
+        });
+        const stored = selectCredentialById.get(credentialId) as
+          | AgentProfileCredentialDbRow
+          | undefined;
+        if (!stored) {
+          throw new AgentProfileStoreError(
+            500,
+            'agent_profile_credential_write_failed',
+            'credential row disappeared immediately after insert'
+          );
+        }
+        return { stored: toCredentialRow(stored), revoked };
+      });
+      return mint();
+    },
+
+    revokeCredential(
+      profileId: string,
+      revokedBy: string
+    ): AgentProfileCredentialRow | null {
+      const revoked = revokeLiveCredentials(profileId, revokedBy);
+      return revoked[0] ?? null;
+    },
+
+    revokeCredentialsForProfile(
+      profileId: string,
+      revokedBy: string
+    ): AgentProfileCredentialRow[] {
+      return revokeLiveCredentials(profileId, revokedBy);
+    },
+
+    getCredentialStatus(profileId: string): AgentProfileCredentialRow | null {
+      const row = selectNewestCredential.get(profileId) as
+        | AgentProfileCredentialDbRow
+        | undefined;
+      return row ? toCredentialRow(row) : null;
+    },
+
+    getCredentialById(credentialId: string): AgentProfileCredentialRow | null {
+      const row = selectCredentialById.get(credentialId) as
+        | AgentProfileCredentialDbRow
+        | undefined;
+      return row ? toCredentialRow(row) : null;
+    },
+
+    listRestorableCredentials(
+      now: Date = new Date()
+    ): AgentProfileCredentialRestoreRow[] {
+      const rows = selectRestorableCredentials.all(now.toISOString()) as Array<
+        AgentProfileCredentialDbRow & { secret_hash: string }
+      >;
+      return rows.map((row) => ({
+        ...toCredentialRow(row),
+        secretHash: row.secret_hash,
+      }));
+    },
+
+    pruneExpiredCredentials(now: Date = new Date()): number {
+      return deleteExpiredCredentials.run(now.toISOString()).changes;
+    },
+
+    touchCredential(credentialId: string, at: string): void {
+      touchCredentialStmt.run({ credentialId, at });
     },
 
     seedBuiltIns(frameworks: readonly SeedFramework[]): number {
@@ -621,9 +907,78 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
     const row = selectById.get(id) as AgentProfileRow | undefined;
     return row ? rowToProfileSafe(row) : null;
   }
+
+  /**
+   * Tombstone every live credential a profile holds and return what was
+   * revoked. Shared by explicit revoke, rotation, and profile deletion so all
+   * three write the same row shape and none can forget the `revoked_by` audit.
+   */
+  function revokeLiveCredentials(
+    profileId: string,
+    revokedBy: string
+  ): AgentProfileCredentialRow[] {
+    const live = selectLiveCredentials.all(
+      profileId
+    ) as AgentProfileCredentialDbRow[];
+    if (live.length === 0) return [];
+    const revokedAt = new Date().toISOString();
+    const revoked: AgentProfileCredentialRow[] = [];
+    for (const row of live) {
+      const changed = revokeCredentialById.run({
+        credentialId: row.credential_id,
+        revokedAt,
+        revokedBy,
+      }).changes;
+      if (changed === 0) continue;
+      revoked.push(
+        toCredentialRow({
+          ...row,
+          revoked_at: revokedAt,
+          revoked_by: revokedBy,
+        })
+      );
+    }
+    return revoked;
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Map a credential DB row to its public shape. Never reads `secret_hash`. */
+function toCredentialRow(
+  row: AgentProfileCredentialDbRow
+): AgentProfileCredentialRow {
+  let capabilities: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row.capabilities);
+    if (Array.isArray(parsed)) {
+      capabilities = parsed.filter(
+        (value): value is string => typeof value === 'string'
+      );
+    }
+  } catch {
+    // A corrupt capability blob must not take the whole store down: the row
+    // still authenticates through the registry, whose own copy is the one that
+    // authorizes. Report an empty list rather than throwing on a status read.
+    logger.warn(
+      'agent profile credential %s has an unreadable capability list',
+      row.credential_id
+    );
+  }
+  return {
+    credentialId: row.credential_id,
+    profileId: row.profile_id,
+    actorId: row.actor_id,
+    displayName: row.display_name,
+    issuerId: row.issuer_id,
+    capabilities,
+    issuedAt: row.issued_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    revokedBy: row.revoked_by,
+    lastUsedAt: row.last_used_at,
+  };
+}
 
 /**
  * Serialize a profile for the `profile_json` blob. Strips the derived
