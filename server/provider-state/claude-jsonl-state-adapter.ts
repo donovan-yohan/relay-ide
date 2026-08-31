@@ -31,6 +31,10 @@ import {
   stampFromStats,
   type FileDerivedCacheStats,
 } from './file-summary-cache.js';
+import {
+  nativeSummaryCachePersistence,
+  type NativeSummaryCacheStore,
+} from './summary-cache-store.js';
 
 const CLAUDE_STATE_CAPABILITIES: AgentHarnessStateCapabilities = {
   canImportTranscript: true,
@@ -56,6 +60,14 @@ const MAX_IMPORT_TRANSCRIPT_BYTES = 256_000;
 // the in-flight reads so a cold walk overlaps I/O without exhausting handles.
 const LIST_READ_CONCURRENCY = 8;
 const SUMMARY_CACHE_ENTRIES = 4_000;
+/**
+ * #1459: bump when a change to this adapter alters the *shape or content* of a
+ * summary in a way the fingerprint inputs below do not already cover, so a hub
+ * upgrade retires the persisted rows instead of serving summaries this build
+ * would never produce. `test/server/provider-state/summary-cache-persistence.test.ts`
+ * pins the summary field set and fails when a field is added or removed.
+ */
+const SUMMARY_CACHE_FORMAT_VERSION = 1;
 
 interface ParsedJsonlLine {
   lineNumber: number;
@@ -81,6 +93,11 @@ interface ClaudeAdapterOptions {
   maxFiles?: number;
   /** #1449: bound on the per-file summary cache (tests use small values). */
   summaryCacheEntries?: number;
+  /**
+   * #1459: durable backing for the summary cache. Without it the cache is
+   * memory-only and a fresh process re-reads the whole store once, as before.
+   */
+  summaryCacheStore?: NativeSummaryCacheStore;
 }
 
 export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
@@ -106,7 +123,26 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     this.now = options.now ?? (() => new Date());
     this.maxFiles = options.maxFiles ?? MAX_LIST_FILES;
     this.summaryCache = new FileDerivedCache<NativeSessionSummary>(
-      options.summaryCacheEntries ?? SUMMARY_CACHE_ENTRIES
+      options.summaryCacheEntries ?? SUMMARY_CACHE_ENTRIES,
+      options.summaryCacheStore
+        ? nativeSummaryCachePersistence({
+            provider: this.provider,
+            store: options.summaryCacheStore,
+            // Everything outside the transcript's own bytes that changes a
+            // summary. Tuning any of these retires the persisted rows.
+            fingerprintInput: {
+              version: SUMMARY_CACHE_FORMAT_VERSION,
+              capabilities: CLAUDE_STATE_CAPABILITIES,
+              limits: {
+                previewLimit: PREVIEW_LIMIT,
+                textLimit: TEXT_LIMIT,
+                maxBytes: MAX_JSONL_BYTES,
+                maxLines: MAX_JSONL_LINES,
+                maxEvents: MAX_JSONL_EVENTS,
+              },
+            },
+          })
+        : undefined
     );
   }
 
@@ -182,6 +218,15 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
           return undefined;
         }
       }
+    );
+
+    // #1459: durably record what this walk derived, and prune rows for files the
+    // walk no longer sees. Pruning is only safe when the walk was not truncated
+    // by `maxFiles` — a capped walk would evict rows for transcripts it never
+    // reached. `files` is the raw walk, independent of `scope`, so a scoped
+    // request prunes exactly as an unscoped one would.
+    this.summaryCache.persistWalk(
+      files.length < this.maxFiles ? new Set(files) : undefined
     );
 
     const summaries: NativeSessionSummary[] = [];

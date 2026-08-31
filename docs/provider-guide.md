@@ -240,6 +240,42 @@ and `antigravity` still re-read their whole store per request. Those stores are
 small enough that the concurrent registry hides the cost (~75 ms combined on a
 real machine), but a new adapter should follow the contract from the start.
 
+#### Restart-surviving layer (#1459)
+
+The in-memory cache above only helps a warm process. A summary carries
+`hashSha256`, `lineCount` and `eventTypes`, which all need the whole file, so a
+fresh process paid the entire walk once (~730 MB / 4.9 s at 989 sessions).
+`FileDerivedCache` therefore takes an optional durable backing —
+`server/provider-state/summary-cache-store.ts`, a SQLite table in the **hub
+config directory** (`native-session-summaries.db`; never the checkout, see
+`server/runtime-state-paths.ts`). Rules for an adapter that opts in:
+
+- Persistence changes _where_ the cache lives, never _what_ it may answer. A
+  rehydrated row is served only through the same `get(filePath, stamp)`
+  comparison, so all four stamp fields still have to match a fresh `stat`. There
+  is no separate staleness policy to keep in sync.
+- Pass a `fingerprintInput` covering everything outside the file's bytes that
+  shapes a summary: a format version, the adapter's `capabilities`, and its
+  parse limits. Rows under a different fingerprint are deleted, not served, so
+  tuning a limit or changing capabilities self-invalidates. Bump
+  `SUMMARY_CACHE_FORMAT_VERSION` for a change the fingerprint inputs do not
+  already cover;
+  `test/server/provider-state/summary-cache-persistence.test.ts` pins the
+  `NativeSessionSummary` field set and fails when it drifts.
+- Call `persistWalk(seenPaths)` at the end of the list walk to write what was
+  derived and prune rows for files that are gone. Pass `undefined` whenever the
+  walk hit its `maxFiles` budget — pruning against a partial walk would evict
+  rows for transcripts the walk simply never reached.
+- One adapter owns one namespace in the store; the namespace is the provider id.
+- The store is a cache and nothing else: it opens best effort, discards and
+  rebuilds a corrupt file, contains every error rather than throwing into the
+  request path, and is bounded by both a row count and a byte budget so it can
+  never grow without limit.
+
+Cold `GET /sessions/native` at 989 sessions: **4.94 s → 0.28 s**, byte-identical
+payload. The very first list on a machine with no cache file still pays the full
+walk; only restarts are free.
+
 ### Antigravity CLI (`agy`) state adapter
 
 The Antigravity CLI is wired as a native-session provider only (`#1439`): no

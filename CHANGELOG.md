@@ -192,6 +192,12 @@ workflow.
   sessions returns in about 0.1 s instead of ~5 s and a single session read in
   under 50 ms instead of ~2.5 s. A transcript that has been appended to is
   re-read on the next listing, so results stay live (#1449)
+- That speed now survives a hub restart. Relay keeps the transcript summaries in
+  a small cache file beside its other data and re-checks each transcript's size
+  and timestamps before trusting one, so the first `sessions native list` after a
+  restart answers in about 0.3 s instead of ~5 s while a transcript that changed
+  while the hub was down is still re-read. The cache is rebuildable and capped,
+  and deleting it only costs one slow listing (#1459)
 
 ### Faster repo, project, and workspace-tree reads
 

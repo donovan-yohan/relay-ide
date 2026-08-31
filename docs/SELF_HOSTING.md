@@ -98,7 +98,9 @@ beside it — in the _config directory_, i.e. `dirname(<the config path above>)`
 The stores include `work-contexts.db`, `context-packets.db`, `workflow-runs.db`,
 `work-context-artifacts.db`, `work-context-messages.db`, `automation-runs.db`,
 `analytics.db`, `channel-chat.db`, `ia.db`, `interventions.db`,
-`security-audit.db`, and their `*-wal` / `*-shm` siblings, plus `logs/`,
+`security-audit.db`, `native-session-summaries.db` (a rebuildable cache of
+native-session summaries — safe to delete, it just makes the next
+`/sessions/native` slow once), and their `*-wal` / `*-shm` siblings, plus `logs/`,
 `telemetry/`, and `worktree-meta/`.
 
 Older config directories may still contain `relay-state.db` from the removed
