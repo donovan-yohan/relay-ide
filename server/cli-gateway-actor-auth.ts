@@ -529,25 +529,26 @@ export function defaultCliGatewayActorScope(
 }
 
 /**
- * True when `token` NAMES the boot-minted host-local credential (#1467).
+ * The boot-minted host-local credential `token` NAMES (#1467), or undefined.
  *
  * IDENTIFICATION ONLY. It resolves the record by the token's public id and does
  * NOT check the secret, so it must never be used to admit a request — its only
  * job is deciding which scope dimensions narrow the request. Every caller runs
  * `registry.validate` immediately afterwards, which authenticates the secret;
  * a forged token that merely names the local credential's id is rejected there
- * as `malformed_credential` and gains nothing from this returning true.
+ * as `malformed_credential` and gains nothing from this returning a record.
  */
-function tokenNamesLocalHubCliActorCredential(
+function localHubCliCredentialNamedBy(
   registry: ScopedActorCredentialRegistry,
   token: unknown
-): boolean {
-  if (typeof token !== 'string') return false;
+): ScopedActorCredentialRecord | undefined {
+  if (typeof token !== 'string') return undefined;
   const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return false;
+  if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return undefined;
   const id = parts[1];
-  if (!id) return false;
-  return isLocalHubCliActorCredential(registry.getCredential(id) ?? undefined);
+  if (!id) return undefined;
+  const credential = registry.getCredential(id) ?? undefined;
+  return isLocalHubCliActorCredential(credential) ? credential : undefined;
 }
 
 /** Drop the channel dimension from a requested validation scope (#1476). */
@@ -582,13 +583,23 @@ export function validateCliGatewayActorCredential(
   // and every other scope dimension (node, session, work-context, repo, path,
   // task) are enforced unchanged, for this credential and every other one.
   //
-  // The credential lookup is gated on a channel actually being requested, so
-  // no other verb pays for it — including on the per-frame streaming path,
-  // where only `channels.subscribe` reaches it.
+  // The credential lookup runs only when a channel is actually requested, so
+  // every non-channel verb (and the renew route) skips it entirely.
+  //
+  // It applies only while the credential holds NO `channelIds` of its own —
+  // the shape the boot mint produces today. Should that mint ever name
+  // channels, dropping the request would leave the credential's own values
+  // unrequested and trip the trailing `missing_scope` rule in
+  // `validateCredentialScope`, turning this exemption into a total channel
+  // outage. An explicitly channel-scoped credential is narrowed normally.
+  const requestsChannel =
+    requestedScope.channelId !== undefined ||
+    requestedScope.channelIds !== undefined;
+  const localCredential = requestsChannel
+    ? localHubCliCredentialNamedBy(registry, input.token)
+    : undefined;
   const validationScope =
-    (requestedScope.channelId !== undefined ||
-      requestedScope.channelIds !== undefined) &&
-    tokenNamesLocalHubCliActorCredential(registry, input.token)
+    localCredential && !localCredential.scope?.channelIds?.length
       ? withoutRequestedChannelScope(requestedScope)
       : requestedScope;
   return registry.validate(input.token, {

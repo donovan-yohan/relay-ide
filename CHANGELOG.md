@@ -27,6 +27,13 @@ workflow.
   root page. `relay-ide login --help` documents the device-code flow and
   `relay-ide v1 --help` prints the full grouped gateway verb list with the
   `--json` requirement and the credential-resolution order (#1471)
+- `relay-ide v1 channels get|history|roster|subscribe|post` now work on the
+  hub's own machine without `relay-ide login`. Previously only `channels list`
+  did: every command naming a channel was refused with a
+  `CLI_ACTOR_WRONG_CHANNEL_SCOPE` error. On that machine the CLI can now read
+  and post in any channel, matching the rest of the local-terminal trust
+  boundary. Credentials issued to remote or delegated agents are unchanged and
+  still reach only the channels they are scoped to (#1476)
 
 #### Added
 
@@ -35,15 +42,6 @@ workflow.
   now advertises every wired channels verb — `list`, `get`, `history`,
   `threads history`, `roster`, `search`, `subscribe`, `run get`, and `post` —
   which were dispatchable but undiscoverable (#1472)
-
-#### Fixed
-
-- `relay-ide v1 channels get|history|roster|subscribe|post` now work on the hub's
-  own machine without `relay-ide login`. Previously only `channels list` did:
-  every command that names a channel was refused with a
-  `CLI_ACTOR_WRONG_CHANNEL_SCOPE` error. Credentials issued to remote or
-  delegated agents are unchanged and still reach only the channels they are
-  scoped to (#1476)
 
 ### Hub-authoritative channel membership
 
