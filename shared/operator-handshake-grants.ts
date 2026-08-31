@@ -42,6 +42,22 @@ export type HandshakeGrantAudience = (typeof HANDSHAKE_GRANT_AUDIENCES)[number];
 export const DEFAULT_HANDSHAKE_GRANT_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_HANDSHAKE_GRANT_MAX_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * Cap on the registry's in-memory audit ring (#1487).
+ *
+ * The twin of #1485: this audit log is the same process-local diagnostic
+ * buffer — nothing persists or serves it — and it was the same unbounded array
+ * that nothing ever trimmed. Grant lifecycle is not on the per-frame path the
+ * scoped-actor credential recheck is, so the growth rate is far lower, but the
+ * shape is identical: every request, approve, issue, validate, deny, expiry,
+ * revoke, and replay appended one entry — three arrays, two sha256 hashes, a
+ * uuid — retained for the hub's whole lifetime. That is the retained-allocation
+ * shape that took the daily hub to ~15 GB RSS in #1249. A thousand entries
+ * keeps enough recent history to explain an authorization decision while
+ * pinning the buffer to a few hundred KB.
+ */
+export const DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS = 1000;
+
 const HIGH_RISK_CAPABILITY_SET = new Set<RelayCapabilityBit>(
   HIGH_RISK_CAPABILITIES
 );
@@ -274,6 +290,15 @@ export interface HandshakeGrantAuditEvent {
   grantedBits: RelayCapabilityBit[];
   deniedBits: string[];
   correlationId: string;
+  /**
+   * How many identical consecutive events this entry stands for (#1487).
+   * Absent when the entry stands for exactly one event. Only entries recorded
+   * without a caller-supplied `correlationId` are ever coalesced, so no
+   * request-correlated audit event is ever folded into another. The retained
+   * entry keeps its own `correlationId`; the repeats it stands for were
+   * uncorrelated and never had one of their own.
+   */
+  repeatedCount?: number;
 }
 
 export interface CreateHandshakeGrantAuditEntryInput {
@@ -310,7 +335,22 @@ export class HandshakeGrantRegistryError extends Error {
 
 export class HandshakeGrantRegistry {
   private readonly grants = new Map<string, InternalHandshakeGrantRecord>();
+  /**
+   * Bounded drop-oldest ring of audit events (#1487). Invariant: its length is
+   * never greater than `maxAuditEvents` after any push. While it is shorter
+   * than the cap it is a plain in-order array and `auditRingNext` is 0; once
+   * full, `auditRingNext` is both the oldest entry and the next slot to
+   * overwrite.
+   */
   private readonly auditEvents: HandshakeGrantAuditEvent[] = [];
+  private auditRingNext = 0;
+  private auditDropped = 0;
+  /**
+   * Whether the newest ring entry was recorded with a caller-supplied
+   * correlation id, and so must never be coalesced into.
+   */
+  private lastAuditCorrelated = false;
+  private readonly maxAuditEvents: number;
   private readonly maxTtlMs: number;
   private readonly now: () => Date;
   private readonly secretBytes: () => Buffer;
@@ -318,11 +358,17 @@ export class HandshakeGrantRegistry {
   constructor(
     options: {
       maxTtlMs?: number;
+      maxAuditEvents?: number;
       now?: () => Date;
       secretBytes?: () => Buffer;
     } = {}
   ) {
     this.maxTtlMs = options.maxTtlMs ?? DEFAULT_HANDSHAKE_GRANT_MAX_TTL_MS;
+    const requestedAuditCap =
+      options.maxAuditEvents ?? DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS;
+    this.maxAuditEvents = Number.isFinite(requestedAuditCap)
+      ? Math.max(1, Math.floor(requestedAuditCap))
+      : DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS;
     this.now = options.now ?? (() => new Date());
     this.secretBytes = options.secretBytes ?? (() => crypto.randomBytes(32));
   }
@@ -666,8 +712,16 @@ export class HandshakeGrantRegistry {
     return grant ? publicGrant(grant) : null;
   }
 
+  /** Retained audit events, oldest first. Bounded by `maxAuditEvents` (#1487). */
   listAuditEvents(): HandshakeGrantAuditEvent[] {
-    return this.auditEvents.map((event) => ({
+    const ordered =
+      this.auditEvents.length < this.maxAuditEvents
+        ? this.auditEvents
+        : [
+            ...this.auditEvents.slice(this.auditRingNext),
+            ...this.auditEvents.slice(0, this.auditRingNext),
+          ];
+    return ordered.map((event) => ({
       ...event,
       ...(event.actor ? { actor: { ...event.actor } } : {}),
       ...(event.issuer ? { issuer: { ...event.issuer } } : {}),
@@ -675,6 +729,15 @@ export class HandshakeGrantRegistry {
       grantedBits: [...event.grantedBits],
       deniedBits: [...event.deniedBits],
     }));
+  }
+
+  /**
+   * Audit events evicted by the ring bound since this registry was created
+   * (#1487). `listAuditEvents()` plus this count is the full history that ever
+   * existed; a non-zero value says the retained window is not the whole story.
+   */
+  droppedAuditEventCount(): number {
+    return this.auditDropped;
   }
 
   private resolveExpiry(
@@ -754,7 +817,7 @@ export class HandshakeGrantRegistry {
     const materialParams = redactHandshakeGrantValue(
       input.material?.params ?? null
     );
-    this.auditEvents.push({
+    const draft: Omit<HandshakeGrantAuditEvent, 'correlationId'> = {
       action: input.action,
       decision: input.decision,
       reasonCode: input.reasonCode,
@@ -767,9 +830,100 @@ export class HandshakeGrantRegistry {
       requiredBits: [...(input.requiredCapabilities ?? [])],
       grantedBits: [...(input.grantedCapabilities ?? [])],
       deniedBits: [...(input.deniedCapabilities ?? [])],
-      correlationId: input.correlationId ?? crypto.randomUUID(),
-    });
+    };
+    this.appendAuditEvent(draft, input.correlationId);
   }
+
+  /**
+   * Coalesce-then-ring-append (#1487).
+   *
+   * Nothing here reads back the audit log, so an entry only ever costs memory.
+   * A caller that retries the same lifecycle check — a preflight validation
+   * loop, a client replaying an invalid handle — would otherwise append one
+   * indistinguishable entry per attempt and, once bounded, flush every
+   * genuinely interesting deny, revoke, and expiry out of the window. A recheck
+   * of an already-audited grant is not a new authorization, so an event
+   * identical to the newest retained one bumps its `repeatedCount` instead of
+   * taking a slot. Only uncorrelated events coalesce: an event the caller
+   * correlated to a specific request always gets its own entry, in both
+   * directions.
+   *
+   * The correlation id is minted only for an entry that is actually retained.
+   * Unlike the scoped-actor twin (#1485) this event type always carries a
+   * `correlationId`, so a synthetic uuid stands in when the caller supplies
+   * none; minting it before the coalesce check would draw entropy per repeat
+   * for an id that never reaches any reader.
+   *
+   * Node runs this synchronously with no await between the read of the newest
+   * entry and the write, so there is no interleaving to guard against.
+   */
+  private appendAuditEvent(
+    draft: Omit<HandshakeGrantAuditEvent, 'correlationId'>,
+    correlationId: string | undefined
+  ): void {
+    const correlated = correlationId !== undefined;
+    const newest = this.newestAuditEvent();
+    if (
+      !correlated &&
+      !this.lastAuditCorrelated &&
+      newest &&
+      isRepeatedAuditEvent(newest, draft)
+    ) {
+      newest.repeatedCount = (newest.repeatedCount ?? 1) + 1;
+      return;
+    }
+    const event: HandshakeGrantAuditEvent = {
+      ...draft,
+      correlationId: correlationId ?? crypto.randomUUID(),
+    };
+    if (this.auditEvents.length < this.maxAuditEvents) {
+      this.auditEvents.push(event);
+    } else {
+      this.auditEvents[this.auditRingNext] = event;
+      this.auditRingNext = (this.auditRingNext + 1) % this.maxAuditEvents;
+      this.auditDropped += 1;
+    }
+    this.lastAuditCorrelated = correlated;
+  }
+
+  private newestAuditEvent(): HandshakeGrantAuditEvent | undefined {
+    if (this.auditEvents.length === 0) return undefined;
+    if (this.auditEvents.length < this.maxAuditEvents) {
+      return this.auditEvents[this.auditEvents.length - 1];
+    }
+    return this.auditEvents[
+      (this.auditRingNext + this.maxAuditEvents - 1) % this.maxAuditEvents
+    ];
+  }
+}
+
+function sameAuditBits(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((bit, index) => bit === b[index]);
+}
+
+/** Every audited field but `correlationId` and `repeatedCount` matches. */
+function isRepeatedAuditEvent(
+  previous: HandshakeGrantAuditEvent,
+  candidate: Omit<HandshakeGrantAuditEvent, 'correlationId'>
+): boolean {
+  return (
+    previous.action === candidate.action &&
+    previous.decision === candidate.decision &&
+    previous.reasonCode === candidate.reasonCode &&
+    previous.grantId === candidate.grantId &&
+    previous.jti === candidate.jti &&
+    previous.audience === candidate.audience &&
+    previous.actor?.type === candidate.actor?.type &&
+    previous.actor?.id === candidate.actor?.id &&
+    previous.actor?.displayName === candidate.actor?.displayName &&
+    previous.issuer?.idHash === candidate.issuer?.idHash &&
+    previous.issuer?.displayName === candidate.issuer?.displayName &&
+    previous.scopeHash === candidate.scopeHash &&
+    previous.paramsHash === candidate.paramsHash &&
+    sameAuditBits(previous.requiredBits, candidate.requiredBits) &&
+    sameAuditBits(previous.grantedBits, candidate.grantedBits) &&
+    sameAuditBits(previous.deniedBits, candidate.deniedBits)
+  );
 }
 
 export function isHandshakeGrantActorType(

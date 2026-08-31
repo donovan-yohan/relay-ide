@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS,
   HANDSHAKE_GRANT_AUDIENCES,
   HANDSHAKE_GRANT_ACTOR_TYPES,
   HandshakeGrantRegistry,
@@ -14,11 +15,51 @@ const NOW = new Date('2026-05-29T00:00:00.000Z');
 const LATER = new Date('2026-05-29T00:05:00.000Z');
 const EXPIRED = new Date('2026-05-28T23:59:59.000Z');
 
-function registry(): HandshakeGrantRegistry {
+function registry(
+  options: { maxAuditEvents?: number } = {}
+): HandshakeGrantRegistry {
   return new HandshakeGrantRegistry({
+    ...(options.maxAuditEvents === undefined
+      ? {}
+      : { maxAuditEvents: options.maxAuditEvents }),
     now: () => NOW,
     secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
   });
+}
+
+const AUDIT_FIXTURE_GRANT_ID = 'grant-audit';
+
+const AUDIT_FIXTURE_VALIDATION = {
+  audience: 'relay:registry-test',
+  requiredCapabilities: ['session:read'],
+  scope: { nodeId: 'node-a' },
+  consume: false,
+} as const;
+
+function requestAuditFixture(
+  store: HandshakeGrantRegistry,
+  id: string,
+  correlationId?: string
+): void {
+  store.request({
+    id,
+    actor: { type: 'cli', id: 'cli-1' },
+    issuer: { id: 'operator-1' },
+    audience: 'relay:registry-test',
+    capabilities: ['session:read'],
+    scope: { nodeIds: ['node-a'] },
+    expiresAt: LATER,
+    ...(correlationId === undefined ? {} : { correlationId }),
+  });
+}
+
+/** request + approve + issue: three audit entries, all caller-correlated. */
+function approvedAuditFixture(store: HandshakeGrantRegistry): string {
+  requestAuditFixture(store, AUDIT_FIXTURE_GRANT_ID, 'corr-audit-request');
+  return store.approve(AUDIT_FIXTURE_GRANT_ID, {
+    approvedBy: { id: 'operator-1' },
+    correlationId: 'corr-audit-approve',
+  }).handle;
 }
 
 function requestedGrant(store = registry()) {
@@ -573,5 +614,173 @@ describe('operator handshake grant registry', () => {
       'Revoke: DELETE /operator/handshake-grants/grant-1'
     );
     expect(copy.revokePath).toBe('/operator/handshake-grants/grant-1');
+  });
+
+  // #1487: the twin of #1485. This audit log was the same unbounded array that
+  // nothing ever trimmed, so every grant lifecycle event was retained for the
+  // hub's whole process lifetime.
+  it('bounds retained audit events under sustained grant requests', () => {
+    const store = registry({ maxAuditEvents: 8 });
+
+    for (let index = 0; index < 200; index += 1) {
+      requestAuditFixture(store, `grant-bound-${index}`, `corr-bound-${index}`);
+      // The invariant that matters: the ring never exceeds its cap at any
+      // point during the run, not only at the end.
+      expect(store.listAuditEvents().length).toBeLessThanOrEqual(8);
+    }
+
+    const events = store.listAuditEvents();
+    expect(events).toHaveLength(8);
+    expect(store.droppedAuditEventCount()).toBe(192);
+    // Oldest first, and the retained window is the newest eight events.
+    expect(events.map((event) => event.correlationId)).toEqual(
+      Array.from({ length: 8 }, (_, offset) => `corr-bound-${192 + offset}`)
+    );
+  });
+
+  it('bounds retained audit events at the default cap', () => {
+    const store = registry();
+    const pushes = DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS + 25;
+
+    for (let index = 0; index < pushes; index += 1) {
+      requestAuditFixture(
+        store,
+        `grant-default-${index}`,
+        `corr-default-${index}`
+      );
+    }
+
+    expect(store.listAuditEvents()).toHaveLength(
+      DEFAULT_HANDSHAKE_GRANT_MAX_AUDIT_EVENTS
+    );
+    expect(store.droppedAuditEventCount()).toBe(25);
+  });
+
+  it('retains only the newest audit event at a cap of one', () => {
+    const store = registry({ maxAuditEvents: 1 });
+
+    requestAuditFixture(store, 'grant-cap-a', 'corr-cap-a');
+    expect(store.listAuditEvents().map((event) => event.correlationId)).toEqual(
+      ['corr-cap-a']
+    );
+    expect(store.droppedAuditEventCount()).toBe(0);
+
+    requestAuditFixture(store, 'grant-cap-b', 'corr-cap-b');
+    expect(store.listAuditEvents().map((event) => event.correlationId)).toEqual(
+      ['corr-cap-b']
+    );
+    expect(store.droppedAuditEventCount()).toBe(1);
+
+    requestAuditFixture(store, 'grant-cap-c', 'corr-cap-c');
+    expect(store.listAuditEvents().map((event) => event.correlationId)).toEqual(
+      ['corr-cap-c']
+    );
+    expect(store.droppedAuditEventCount()).toBe(2);
+  });
+
+  it('clamps a non-positive audit cap to one retained event', () => {
+    const store = registry({ maxAuditEvents: 0 });
+
+    requestAuditFixture(store, 'grant-clamp-a', 'corr-clamp-a');
+    requestAuditFixture(store, 'grant-clamp-b', 'corr-clamp-b');
+
+    expect(store.listAuditEvents().map((event) => event.correlationId)).toEqual(
+      ['corr-clamp-b']
+    );
+    expect(store.droppedAuditEventCount()).toBe(1);
+  });
+
+  it('coalesces uncorrelated repeated preflight validations into one entry', () => {
+    const store = registry({ maxAuditEvents: 8 });
+    const handle = approvedAuditFixture(store);
+
+    for (let index = 0; index < 500; index += 1) {
+      expect(store.validate(handle, AUDIT_FIXTURE_VALIDATION).ok).toBe(true);
+    }
+
+    const events = store.listAuditEvents();
+    // 500 identical rechecks of an already-audited grant do not evict the
+    // request/approve/issue history behind them.
+    expect(events.map((event) => event.action)).toEqual([
+      'request',
+      'approve',
+      'issue',
+      'validate',
+    ]);
+    expect(store.droppedAuditEventCount()).toBe(0);
+    expect(events[3]).toMatchObject({
+      action: 'validate',
+      decision: 'allow',
+      reasonCode: 'HANDSHAKE_GRANT_VALIDATED',
+      repeatedCount: 500,
+    });
+
+    // A state change still lands its own entry rather than folding in.
+    store.revoke(AUDIT_FIXTURE_GRANT_ID, { revokedBy: { id: 'operator-1' } });
+    expect(store.validate(handle, AUDIT_FIXTURE_VALIDATION)).toMatchObject({
+      ok: false,
+      reason: 'revoked',
+    });
+
+    const after = store.listAuditEvents();
+    expect(after.map((event) => event.reasonCode)).toEqual([
+      'HANDSHAKE_GRANT_REQUESTED',
+      'HANDSHAKE_GRANT_APPROVED',
+      'HANDSHAKE_GRANT_ISSUED',
+      'HANDSHAKE_GRANT_VALIDATED',
+      'HANDSHAKE_GRANT_REVOKED',
+      'HANDSHAKE_GRANT_REVOKED',
+    ]);
+    expect(after[5]).not.toHaveProperty('repeatedCount');
+  });
+
+  it('never folds a caller-correlated audit event into another entry', () => {
+    const store = registry();
+    const handle = approvedAuditFixture(store);
+
+    store.validate(handle, AUDIT_FIXTURE_VALIDATION);
+    // Correlated repeats of an identical validation each keep their own id...
+    store.validate(handle, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      correlationId: 'corr-request-a',
+    });
+    store.validate(handle, {
+      ...AUDIT_FIXTURE_VALIDATION,
+      correlationId: 'corr-request-b',
+    });
+    // ...and an uncorrelated recheck does not fold into a correlated entry.
+    store.validate(handle, AUDIT_FIXTURE_VALIDATION);
+
+    const events = store.listAuditEvents();
+    expect(events).toHaveLength(7);
+    expect(events.map((event) => event.correlationId).slice(4, 6)).toEqual([
+      'corr-request-a',
+      'corr-request-b',
+    ]);
+    expect(events.every((event) => event.repeatedCount === undefined)).toBe(
+      true
+    );
+  });
+
+  it('keeps the audit ring immutable to callers of listAuditEvents', () => {
+    const store = registry();
+    const handle = approvedAuditFixture(store);
+    store.validate(handle, AUDIT_FIXTURE_VALIDATION);
+
+    const events = store.listAuditEvents();
+    events[3]!.repeatedCount = 99;
+    events[3]!.requiredBits.push('logs:read');
+    events[3]!.grantedBits.push('logs:read');
+    events[3]!.deniedBits.push('logs:read');
+    events[3]!.actor!.id = 'mutated-actor';
+    events[3]!.issuer!.idHash = 'mutated-issuer';
+
+    const reread = store.listAuditEvents();
+    expect(reread[3]).not.toHaveProperty('repeatedCount');
+    expect(reread[3]?.requiredBits).toEqual(['session:read']);
+    expect(reread[3]?.grantedBits).toEqual(['session:read']);
+    expect(reread[3]?.deniedBits).toEqual([]);
+    expect(reread[3]?.actor?.id).toBe('cli-1');
+    expect(reread[3]?.issuer?.idHash).not.toBe('mutated-issuer');
   });
 });

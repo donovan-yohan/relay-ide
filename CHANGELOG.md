@@ -124,6 +124,12 @@ workflow.
   memory. The audit log is now a bounded window of the most recent entries, and
   an unchanged repeated check updates the entry it repeats instead of adding a
   new one, so revocations and denials stay visible in it (#1485)
+- The handshake-grant audit log no longer grows for the life of the hub either.
+  Every grant a browser or CLI asks for, approves, redeems, denies, or revokes
+  used to be recorded and kept forever, so a long-lived hub slowly accumulated
+  entries it never read back. It is now the same bounded window of recent
+  entries, with an unchanged repeated check folded into the entry it repeats
+  (#1487)
 
 ### Startup performance
 
