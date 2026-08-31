@@ -175,10 +175,11 @@ describe('handoff destination mapping', () => {
       destination: environmentOption(),
       sourceBranchName: 'feat/689-handoff-destination-mapping',
     });
-    const repoOnly = environmentOption({
-      bench: undefined,
+    const { bench: _unusedBench, ...benchless } = environmentOption();
+    const repoOnly: EnvironmentOption = {
+      ...benchless,
       cwd: destinationRepo,
-    });
+    };
     const create = proposeHandoffDestination({
       source: source(),
       destination: repoOnly,
@@ -369,10 +370,10 @@ describe('handoff destination mapping', () => {
       'DESTINATION_DIRTY',
       'UNTRACKED_COLLISION',
     ]);
-    expect(conflicts[0].message).toContain('destination head');
-    expect(conflicts[1].message).toContain('destination branch');
-    expect(conflicts[2].message).toContain('3 tracked/conflicted');
-    expect(conflicts[3].message).toContain('shared/handoff.ts');
+    expect(conflicts[0]!.message).toContain('destination head');
+    expect(conflicts[1]!.message).toContain('destination branch');
+    expect(conflicts[2]!.message).toContain('3 tracked/conflicted');
+    expect(conflicts[3]!.message).toContain('shared/handoff.ts');
   });
 
   it('resolves untracked collision paths from the destination worktree root, not cwd subdirectories', () => {

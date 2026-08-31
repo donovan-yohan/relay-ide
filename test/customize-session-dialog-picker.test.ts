@@ -71,8 +71,8 @@ vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
   type DialogShellHandle = { open: () => void; close: () => void };
   interface MockDialogShellProps {
     title: string;
-    children: ReactModule.ReactNode;
-    footer?: ReactModule.ReactNode;
+    children: React.ReactNode;
+    footer?: React.ReactNode;
   }
   const DialogShell = ReactModule.forwardRef<
     DialogShellHandle,
@@ -124,6 +124,13 @@ function framework(id: string): FrameworkInfo {
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'local',
+    identity: {
+      nodeId: 'local',
+      displayName: 'local mac',
+      hostname: 'local.local',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      pairedAt: '2026-05-12T00:00:00.000Z',
+    },
     displayName: 'local mac',
     hostname: 'local.local',
     platform: 'darwin',
@@ -132,11 +139,23 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: { state: 'trusted', level: 'privileged-local-user' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-local',
+      issuedAt: '2026-05-12T00:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',

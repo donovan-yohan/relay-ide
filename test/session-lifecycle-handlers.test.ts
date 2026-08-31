@@ -31,7 +31,6 @@ function makeSession(
   overrides: Partial<SessionSummary> & { id: string }
 ): SessionSummary {
   return {
-    id: overrides.id,
     type: 'terminal',
     mode: 'pty',
     repoName: 'relay-ide',
@@ -43,6 +42,7 @@ function makeSession(
     createdAt: '2026-05-14T00:00:00.000Z',
     lastActivity: '2026-05-14T00:00:00.000Z',
     idle: false,
+    activityState: 'idle',
     ...overrides,
   };
 }
@@ -385,7 +385,7 @@ describe('session lifecycle handlers', () => {
     });
     useSessionsStore.setState({
       sessions: [remote],
-      activeSessionId: remote.globalSessionId,
+      activeSessionId: remote.globalSessionId!,
     });
 
     let handlers: SessionHandlers | undefined;
@@ -544,7 +544,7 @@ describe('session lifecycle handlers', () => {
     });
     useSessionsStore.setState({
       sessions: [remote],
-      activeSessionId: remote.globalSessionId,
+      activeSessionId: remote.globalSessionId!,
     });
 
     let handlers: SessionHandlers | undefined;
@@ -706,7 +706,7 @@ describe('session lifecycle handlers', () => {
     });
     useSessionsStore.setState({
       sessions: [remote],
-      activeSessionId: remote.globalSessionId,
+      activeSessionId: remote.globalSessionId!,
     });
 
     await act(async () => {
@@ -719,7 +719,7 @@ describe('session lifecycle handlers', () => {
     await act(async () => {
       await action!.handler({
         view: 'session',
-        sessionId: remote.globalSessionId,
+        sessionId: remote.globalSessionId!,
       });
     });
 

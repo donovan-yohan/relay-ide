@@ -49,7 +49,6 @@ function makeManifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -92,7 +91,7 @@ function withTmpRegistry<T>(
       createHubNodeRegistry({
         storagePath: path.join(tmpDir, 'nodes.json'),
         now: () => new Date('2026-01-02T03:04:05.000Z'),
-        hubVersion,
+        ...(hubVersion !== undefined ? { hubVersion } : {}),
       })
     );
   } finally {

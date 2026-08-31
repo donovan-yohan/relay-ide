@@ -10,14 +10,10 @@ const base: Config = {
   port: 3456,
   cookieTTL: '24h',
   repos: [],
-  claudeArgs: [],
   defaultFramework: 'claude',
-  defaultContinue: true,
-  defaultYolo: false,
   maxPtySessions: 64,
   terminalBackend: 'relay-pty',
   defaultNotifications: true,
-  claudeFullscreen: true,
 };
 
 describe('resolveSessionDurabilityScrollbackBytes precedence', () => {

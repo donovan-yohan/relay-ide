@@ -18,7 +18,7 @@ test('bounds the designation alert without collapsing the 320px channel header',
   await expect(error).toHaveText(DESIGNATION_ERROR);
   await expect(dot).toHaveAccessibleName('connected');
 
-  const metrics = await header.evaluate((element) => {
+  const metrics = await header.evaluate((element: HTMLElement) => {
     const titleElement =
       element.querySelector<HTMLElement>('.ch-header__title');
     const errorElement = element.querySelector<HTMLElement>(

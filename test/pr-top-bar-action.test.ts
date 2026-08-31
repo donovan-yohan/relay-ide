@@ -164,7 +164,7 @@ describe('PrTopBar actions', () => {
     mocks.fetchCiStatusOrNull.mockResolvedValue(passingCi());
 
     await act(async () => {
-      root.render(
+      root!.render(
         React.createElement(PrTopBar, {
           workspacePath: '/repo',
           branchName: 'fix/115-merge-button',
@@ -217,7 +217,7 @@ describe('PrTopBar actions', () => {
     mocks.forceRefresh.mockResolvedValue(undefined);
 
     await act(async () => {
-      root.render(
+      root!.render(
         React.createElement(PrTopBar, {
           workspacePath: '/repo',
           branchName: 'fix/115-merge-button',
@@ -264,7 +264,7 @@ describe('PrTopBar actions', () => {
     mocks.forceRefresh.mockResolvedValue(undefined);
 
     await act(async () => {
-      root.render(
+      root!.render(
         React.createElement(PrTopBar, {
           workspacePath: '/repo',
           branchName: 'fix/115-merge-button',

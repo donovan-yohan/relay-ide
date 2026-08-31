@@ -80,10 +80,12 @@ test('generates Hermes tool, MCP, and function descriptors from the v1 contract'
 test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke over public v1 commands', async () => {
   const tools = generateRelayHermesGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
   const captured: CapturedGatewayRequest[] = [];
+  // Node's request/header accessors legitimately yield `undefined`, so the
+  // recorded shape has to admit it under `exactOptionalPropertyTypes`.
   const upgrades: Array<{
-    url?: string;
-    cookie?: string;
-    marker?: string | string[];
+    url?: string | undefined;
+    cookie?: string | undefined;
+    marker?: string | string[] | undefined;
   }> = [];
   const inputs: string[] = [];
   let sessionAlive = false;

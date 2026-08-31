@@ -63,6 +63,13 @@ function nodeSummary(
   };
   return {
     nodeId: 'node_prod',
+    identity: {
+      nodeId: 'node_prod',
+      displayName: 'prod box',
+      hostname: 'prod.example',
+      createdAt: NOW.toISOString(),
+      pairedAt: NOW.toISOString(),
+    },
     displayName: 'prod box',
     hostname: 'prod.example',
     platform: 'linux',
@@ -78,6 +85,12 @@ function nodeSummary(
       policy: summarizeAcl(acl),
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred_prod',
+      issuedAt: NOW.toISOString(),
+      state: 'active',
+      keyBound: false,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',
@@ -155,6 +168,7 @@ function testAuthenticatedActorCredential(
     },
     issuedAt: NOW.toISOString(),
     expiresAt: new Date(NOW.getTime() + 60_000).toISOString(),
+    correlationId: `corr-${credentialId || actorId}`,
   };
 }
 
@@ -252,7 +266,9 @@ describe('hub confirmation routing', () => {
           randomToken: () => 'raw-confirmation-token',
         }),
         auditSink,
-        workContextStore: options.workContextStore,
+        ...(options.workContextStore
+          ? { workContextStore: options.workContextStore }
+          : {}),
         now: () => NOW,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') {
@@ -856,11 +872,11 @@ describe('hub confirmation routing', () => {
       requiresConfirmation: [],
     });
     const payload = sessionPayload();
-    delete payload.session.repoPath;
-    delete payload.session.worktreePath;
+    delete (payload.session as Partial<typeof payload.session>).repoPath;
+    delete (payload.session as Partial<typeof payload.session>).worktreePath;
     payload.session.cwd = '/home/relay/scratch';
-    delete payload.session.repoName;
-    delete payload.session.branchName;
+    delete (payload.session as Partial<typeof payload.session>).repoName;
+    delete (payload.session as Partial<typeof payload.session>).branchName;
     payload.session.displayName = 'scratch terminal';
     const { base, nodeLinks } = await startHub({
       node,

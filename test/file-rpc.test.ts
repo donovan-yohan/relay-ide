@@ -451,7 +451,7 @@ describe('fs.write executor', () => {
       bytesWritten: buf.length,
       created: true,
     });
-    if (!('code' in result)) {
+    if (!('code' in result) && result.operation === 'write') {
       expect(result.newHash).toBe(sha256Hex(buf));
       expect(new Date(result.newMtime).getTime()).toBeGreaterThan(Date.now() - 5000);
     }
@@ -478,7 +478,7 @@ describe('fs.write executor', () => {
       bytesWritten: newBuf.length,
       created: false,
     });
-    if (!('code' in result)) {
+    if (!('code' in result) && result.operation === 'write') {
       expect(result.newHash).toBe(sha256Hex(newBuf));
       expect(result.newHash).not.toBe(oldHash);
     }
@@ -501,7 +501,7 @@ describe('fs.write executor', () => {
       created: false,
     });
     const finalContent = 'aaa\nbbb\n';
-    if (!('code' in result)) {
+    if (!('code' in result) && result.operation === 'write') {
       expect(result.newHash).toBe(sha256Hex(Buffer.from(finalContent)));
     }
     expect(fs.readFileSync(target, 'utf8')).toBe(finalContent);

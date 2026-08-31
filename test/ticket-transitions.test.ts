@@ -125,8 +125,8 @@ describe('ticket-transitions', () => {
           c.args.includes('in-progress')
       );
       expect(addLabelCall).toBeTruthy();
-      expect(addLabelCall.cwd).toBe(REPO_PATH);
-      expect(addLabelCall.args).toContain('100');
+      expect(addLabelCall!.cwd).toBe(REPO_PATH);
+      expect(addLabelCall!.args).toContain('100');
     });
 
     test('is idempotent — does not re-fire same transition', async () => {
@@ -167,8 +167,8 @@ describe('ticket-transitions', () => {
           c.args.includes('code-review')
       );
       expect(addCodeReview).toBeTruthy();
-      expect(addCodeReview.cwd).toBe(REPO_PATH);
-      expect(addCodeReview.args).toContain('200');
+      expect(addCodeReview!.cwd).toBe(REPO_PATH);
+      expect(addCodeReview!.args).toContain('200');
 
       const removeInProgress = calls.find(
         (c) =>
@@ -199,8 +199,8 @@ describe('ticket-transitions', () => {
           c.args.includes('ready-for-qa')
       );
       expect(addReadyForQa).toBeTruthy();
-      expect(addReadyForQa.cwd).toBe(REPO_PATH);
-      expect(addReadyForQa.args).toContain('300');
+      expect(addReadyForQa!.cwd).toBe(REPO_PATH);
+      expect(addReadyForQa!.args).toContain('300');
 
       const removeCodeReview = calls.find(
         (c) =>
@@ -322,7 +322,7 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('PROJ-123')
     );
     expect(transitionCall).toBeTruthy();
-    expect(transitionCall.args).toContain('In Progress');
+    expect(transitionCall!.args).toContain('In Progress');
   });
 
   test('transitionOnSessionCreate skips when no status mapping configured', async () => {
@@ -415,6 +415,6 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('PROJ-789')
     );
     expect(transitionCall).toBeTruthy();
-    expect(transitionCall.args).toContain('Code Review');
+    expect(transitionCall!.args).toContain('Code Review');
   });
 });

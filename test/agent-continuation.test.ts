@@ -55,7 +55,7 @@ function baseWorkContext(): WorkContext {
         globalSessionId: 'global-session-source-1',
         tabKind: 'agent',
         cwd: sourceCwd,
-        controlMode: 'agent-driven',
+        controlMode: 'human-driven',
       },
       repo: {
         repoIdentity: 'github.com/donovan-yohan/relay-ide',

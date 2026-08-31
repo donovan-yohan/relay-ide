@@ -70,8 +70,8 @@ vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
   type DialogShellHandle = { open: () => void; close: () => void };
   interface MockDialogShellProps {
     title: string;
-    children: ReactModule.ReactNode;
-    footer?: ReactModule.ReactNode;
+    children: React.ReactNode;
+    footer?: React.ReactNode;
   }
   const DialogShell = ReactModule.forwardRef<
     DialogShellHandle,

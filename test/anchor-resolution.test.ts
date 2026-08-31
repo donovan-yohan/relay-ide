@@ -6,6 +6,7 @@ import {
 } from '../shared/context-packet.js';
 import {
   createFileResourceRef,
+  type CreateFileResourceRefArgs,
   type FileResourceRef,
 } from '../shared/file-resource-ref.js';
 import {
@@ -22,19 +23,35 @@ const PATH = '/repo/src/index.ts';
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 
-function ref(overrides: Partial<FileResourceRef> = {}): FileResourceRef {
-  return createFileResourceRef({
+/**
+ * Overrides accept an explicit `undefined` to mean "drop this hint" — the
+ * mint-time freshness fields are what several cases below deliberately
+ * remove. `exactOptionalPropertyTypes` forbids passing the explicit
+ * `undefined` straight through, so the helper deletes those keys instead
+ * (`createFileResourceRef` treats absent and `undefined` identically).
+ */
+type FileResourceRefOverrides = {
+  [K in keyof CreateFileResourceRefArgs]?: CreateFileResourceRefArgs[K] | undefined;
+};
+
+function ref(overrides: FileResourceRefOverrides = {}): FileResourceRef {
+  const args: CreateFileResourceRefArgs = {
     nodeId: NODE,
     path: PATH,
     intent: 'read',
     sha256: SHA_A,
     mtimeMs: 1_000,
     size: 42,
-    ...overrides,
-  });
+  };
+  const mutable = args as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete mutable[key];
+    else mutable[key] = value;
+  }
+  return createFileResourceRef(args);
 }
 
-function anchor(refOverrides: Partial<FileResourceRef> = {}): AnchorRef {
+function anchor(refOverrides: FileResourceRefOverrides = {}): AnchorRef {
   return {
     ref: ref(refOverrides),
     lineRange: { startLine: 10, endLine: 20 },
@@ -195,7 +212,6 @@ describe('resolveAnchor (impure caller via File RPC under capability)', () => {
     const { fn, calls } = fetcherReturning({
       found: true,
       grantedCapability: 'rpc:fs:read',
-      mtimeMs: undefined,
       size: 42,
     });
     const outcome = await resolveAnchor(captured, fn);

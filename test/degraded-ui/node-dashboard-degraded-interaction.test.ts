@@ -15,6 +15,13 @@ const now = new Date('2026-01-02T03:05:00.000Z');
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'node-1',
+    identity: {
+      nodeId: 'node-1',
+      displayName: 'dev mac',
+      hostname: 'dev-mac.local',
+      createdAt: '2026-01-02T03:00:00.000Z',
+      pairedAt: '2026-01-02T03:00:00.000Z',
+    },
     displayName: 'dev mac',
     hostname: 'dev-mac.local',
     platform: 'darwin',
@@ -23,11 +30,23 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'reverse-link', status: 'connected' },
+    trust: { state: 'active', level: 'standard' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-1',
+      issuedAt: '2026-01-02T03:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 11, degraded: 1, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'degraded',
         clipboardImage: 'available',

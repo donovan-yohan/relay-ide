@@ -3,7 +3,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import { WebSocket } from 'ws';
+import { WebSocket, type RawData } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
@@ -27,12 +27,19 @@ class FakeSocket implements NodeLinkWebSocketLike {
   readyState = 0;
   readonly OPEN = 1;
   readonly sent: string[] = [];
-  closed: { code?: number; reason?: string } | null = null;
+  closed: { code: number | undefined; reason: string | undefined } | null = null;
   private readonly listeners = new Map<string, Listener[]>();
 
-  on(event: 'open' | 'message' | 'close' | 'error', listener: Listener): void {
+  on(event: 'open', listener: () => void): void;
+  on(event: 'message', listener: (data: RawData) => void): void;
+  on(event: 'close', listener: (code: number, reason: Buffer) => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  on(
+    event: 'open' | 'message' | 'close' | 'error',
+    listener: (...args: never[]) => void
+  ): void {
     const list = this.listeners.get(event) ?? [];
-    list.push(listener);
+    list.push(listener as Listener);
     this.listeners.set(event, list);
   }
 
@@ -68,8 +75,13 @@ function fakeManifest(): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'node-link-host',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -82,7 +94,14 @@ function fakeManifest(): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'relay-pty',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',

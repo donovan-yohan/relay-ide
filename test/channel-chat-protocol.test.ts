@@ -635,7 +635,7 @@ describe('applyChannelEventV1 reducer', () => {
   });
 
   it('preserves omitted run projections but clears an explicit empty projection', () => {
-    const run = {
+    const run: ChannelAsyncRun = {
       id: 'chrun:retained',
       channelId: CHANNEL,
       threadId: null,
@@ -933,9 +933,15 @@ describe('channel-message-deleted-v1', () => {
 });
 
 describe('channel-delivery-receipt-v1 (#1442)', () => {
-  function receipt(
-    overrides: Partial<ChannelDeliveryReceiptV1> = {}
-  ): ChannelDeliveryReceiptV1 {
+  /**
+   * Deliberately permissive overrides: this suite feeds the validator
+   * malformed receipts on purpose, so a value can be any shape at all.
+   */
+  type ReceiptOverrides = {
+    [K in keyof ChannelDeliveryReceiptV1]?: unknown;
+  } & { [key: string]: unknown };
+
+  function receipt(overrides: ReceiptOverrides = {}): ChannelDeliveryReceiptV1 {
     return {
       messageId: 'chm:1',
       channelId: CHANNEL,
@@ -945,12 +951,10 @@ describe('channel-delivery-receipt-v1 (#1442)', () => {
       state: 'queued',
       ts: '2026-08-25T00:00:00.000Z',
       ...overrides,
-    };
+    } as ChannelDeliveryReceiptV1;
   }
 
-  function receiptEvent(
-    overrides: Partial<ChannelDeliveryReceiptV1> = {}
-  ): ChannelEventV1 {
+  function receiptEvent(overrides: ReceiptOverrides = {}): ChannelEventV1 {
     return {
       type: 'channel-delivery-receipt-v1',
       channelId: CHANNEL,
@@ -982,7 +986,9 @@ describe('channel-delivery-receipt-v1 (#1442)', () => {
       expect(isChannelEventV1(receiptEvent({ state }))).toBe(true);
     }
     expect(isChannelEventV1(receiptEvent())).toBe(true);
-    expect(isChannelEventV1(receiptEvent({ senderProfileId: null }))).toBe(true);
+    expect(isChannelEventV1(receiptEvent({ senderProfileId: null }))).toBe(
+      true
+    );
     expect(isChannelEventV1(receiptEvent({ reasonCode: 'queue_cap' }))).toBe(
       true
     );

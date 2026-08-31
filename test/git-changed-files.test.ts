@@ -32,21 +32,21 @@ describe('getChangedFiles', () => {
 
     const gitTs = files.find((f) => f.path === 'server/git.ts');
     expect(gitTs).toBeTruthy();
-    expect(gitTs.status).toBe('modified');
-    expect(gitTs.additions).toBe(15);
-    expect(gitTs.deletions).toBe(3);
-    expect(gitTs.directory).toBe('server');
+    expect(gitTs!.status).toBe('modified');
+    expect(gitTs!.additions).toBe(15);
+    expect(gitTs!.deletions).toBe(3);
+    expect(gitTs!.directory).toBe('server');
 
     const newFile = files.find((f) => f.path === 'frontend/new.svelte');
     expect(newFile).toBeTruthy();
-    expect(newFile.status).toBe('untracked');
-    expect(newFile.additions).toBe(42);
-    expect(newFile.directory).toBe('frontend');
+    expect(newFile!.status).toBe('untracked');
+    expect(newFile!.additions).toBe(42);
+    expect(newFile!.directory).toBe('frontend');
 
     const deleted = files.find((f) => f.path === 'old-file.js');
     expect(deleted).toBeTruthy();
-    expect(deleted.status).toBe('deleted');
-    expect(deleted.directory).toBe('.');
+    expect(deleted!.status).toBe('deleted');
+    expect(deleted!.directory).toBe('.');
   });
 
   it('parses branch comparison with renames', async () => {
@@ -76,8 +76,8 @@ describe('getChangedFiles', () => {
 
     const renamed = files.find((f) => f.path === 'new-name.ts');
     expect(renamed).toBeTruthy();
-    expect(renamed.status).toBe('renamed');
-    expect(renamed.oldPath).toBe('old-name.ts');
+    expect(renamed!.status).toBe('renamed');
+    expect(renamed!.oldPath).toBe('old-name.ts');
   });
 
   it('throws on git failure', async () => {

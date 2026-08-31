@@ -15,11 +15,15 @@ import {
 // Image delivery and the raw-byte budget are per-provider descriptor fields
 // (`server/protocol-adapters/index.ts`), not local tables in the packet builder.
 import { providerDescriptor } from '../server/protocol-adapters/index.js';
-import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
+import type {
+  ChannelAttachmentRecord,
+  ChannelAttachmentStore,
+} from '../server/channel-attachments.js';
 import type {
   ChannelAttachmentId,
   ChannelImagePart,
   ChannelMessage,
+  ChannelMessageId,
   ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -41,6 +45,8 @@ const CLAUDE: ChannelSenderRef = {
   providerId: 'claude',
   displayName: 'claude',
 };
+
+const ROOT_ID: ChannelMessageId = 'chm:root';
 
 function msg(
   seq: number,
@@ -66,8 +72,8 @@ function msg(
 
 function inThread(
   message: ChannelMessage,
-  rootMessageId: string,
-  parentMessageId: string
+  rootMessageId: ChannelMessageId,
+  parentMessageId: ChannelMessageId
 ): ChannelMessage {
   return {
     ...message,
@@ -191,7 +197,7 @@ describe('buildMentionContextPacket', () => {
         images: [{ part, messageId: 'chm:trigger', trigger: true }],
       },
       {
-        get: () => {
+        get: (_id: string): ChannelAttachmentRecord | null => {
           storeReads += 1;
           return null;
         },
@@ -221,7 +227,7 @@ describe('buildMentionContextPacket', () => {
     };
     let storeReads = 0;
     const store = {
-      get: () => {
+      get: (_id: string): ChannelAttachmentRecord | null => {
         storeReads += 1;
         return {
           part: triggerPart,
@@ -392,7 +398,7 @@ describe('buildMentionContextPacket', () => {
         card: {
           kind: 'thought' as const,
           title: 'Reasoning summary',
-          status: 'complete' as const,
+          status: 'completed' as const,
           content: 'provider-visible reasoning',
         },
       },
@@ -532,7 +538,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('keeps an own-agent root but excludes same-framework reply rows', () => {
-    const root = { ...msg(1, CLAUDE, 'claude-authored root'), id: 'chm:root' };
+    const root = { ...msg(1, CLAUDE, 'claude-authored root'), id: ROOT_ID };
     const ownReply = inThread(
       msg(2, CLAUDE, 'already retained by provider context'),
       root.id,
@@ -573,7 +579,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('excludes a reply row belonging to a different thread', () => {
-    const root = { ...msg(1, OPERATOR, 'target root'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'target root'), id: ROOT_ID };
     const targetReply = inThread(
       msg(2, OPERATOR, 'target detail'),
       root.id,
@@ -602,7 +608,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('keeps an own-agent root on the orientation turn and retains only newest replies', () => {
-    const root = { ...msg(1, CLAUDE, 'load-bearing root'), id: 'chm:root' };
+    const root = { ...msg(1, CLAUDE, 'load-bearing root'), id: ROOT_ID };
     const rows = [root];
     for (let seq = 2; seq <= 25; seq++) {
       rows.push(
@@ -644,7 +650,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('honors the thread delivery cursor: replies-only, no root', () => {
-    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: ROOT_ID };
     const rows = [root];
     for (let seq = 2; seq <= 26; seq++) {
       rows.push(
@@ -694,7 +700,7 @@ describe('buildMentionContextPacket', () => {
   it('swaps the thread scope marker for the rootless follow-up shape', () => {
     const root = {
       ...msg(1, OPERATOR, 'the load-bearing question'),
-      id: 'chm:root',
+      id: ROOT_ID,
     };
     const trigger = inThread(
       msg(9, OPERATOR, '@claude anything yet?'),
@@ -740,7 +746,7 @@ describe('buildMentionContextPacket', () => {
   it('throws when the ORIENTATION window cannot resolve its thread root', () => {
     const root = {
       ...msg(1, OPERATOR, 'root that was not fetched'),
-      id: 'chm:root',
+      id: ROOT_ID,
     };
     const reply = inThread(msg(2, OPERATOR, 'orphan reply'), root.id, root.id);
     const trigger = inThread(
@@ -772,7 +778,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('caps a rootless thread packet at PACKET_MAX_ROWS-1 replies', () => {
-    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: ROOT_ID };
     const rows: ChannelMessage[] = [];
     for (let seq = 2; seq <= 40; seq++) {
       rows.push(
@@ -806,7 +812,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('byte-trims a rootless thread packet from row 0 — nothing is pinned', () => {
-    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'delivered long ago'), id: ROOT_ID };
     const rows: ChannelMessage[] = [];
     for (let seq = 2; seq <= 20; seq++) {
       rows.push(
@@ -844,7 +850,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('drops oldest thread replies to meet the byte cap but never drops the root', () => {
-    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: ROOT_ID };
     const rows = [root];
     for (let seq = 2; seq <= 20; seq++) {
       rows.push(
@@ -1138,7 +1144,7 @@ describe('buildMentionContextPacket', () => {
   });
 
   it('keeps a steer packet envelope-free in thread scope too', () => {
-    const root = { ...msg(1, OPERATOR, 'thread root'), id: 'chm:root' };
+    const root = { ...msg(1, OPERATOR, 'thread root'), id: ROOT_ID };
     const trigger = inThread(
       msg(4, OPERATOR, 'narrow it to the flaky test'),
       root.id,

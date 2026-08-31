@@ -51,6 +51,13 @@ function nodeSummary(
   if (input.scope) acl.scope = input.scope;
   return {
     nodeId,
+    identity: {
+      nodeId,
+      displayName: nodeId,
+      hostname: `${nodeId}.example`,
+      createdAt: NOW.toISOString(),
+      pairedAt: NOW.toISOString(),
+    },
     displayName: nodeId,
     hostname: `${nodeId}.example`,
     platform: 'linux',
@@ -69,6 +76,12 @@ function nodeSummary(
       policy: summarizeAcl(acl),
     },
     credentialState: input.revoked ? 'revoked' : 'active',
+    credential: {
+      credentialId: `${nodeId}_cred`,
+      issuedAt: NOW.toISOString(),
+      state: input.revoked ? 'revoked' : 'active',
+      keyBound: false,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',
@@ -78,7 +91,6 @@ function nodeSummary(
       totals: { available: 2, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'unavailable',
         clipboardImage: 'unavailable',

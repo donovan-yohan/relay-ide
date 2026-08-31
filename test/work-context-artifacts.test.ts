@@ -17,6 +17,7 @@ import {
   PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION,
   validatePublicPipelineHandoffArtifact,
   type PipelineHandoffArtifact,
+  type PipelineHandoffQaStage,
 } from '../shared/pipeline-handoff-artifact.js';
 import {
   AGENT_VIEW_MANIFEST_KIND,
@@ -135,6 +136,34 @@ function artifact(
   };
 }
 
+/**
+ * Builds the QA layer that every append-only fixture below stacks on top of
+ * the implementation layer, reusing the implementation stage's shared base
+ * fields.
+ *
+ * TODO(#1498): these fixtures used to spread the whole implementation
+ * stage and add `decision: 'validated'`. A QA stage carries `verdict`, never
+ * `decision` (implementation-only), so that key — plus the inherited
+ * `changedFiles`/`migrationOrStateRisk` — was dead fixture data the store never
+ * read.
+ */
+function qaStage(predecessor: PipelineHandoffArtifact): PipelineHandoffQaStage {
+  const implementation = predecessor.stages[0]!;
+  return {
+    stage: 'qa',
+    addedAt: '2026-06-08T12:10:00.000Z',
+    actorId: 'agent:kani-validator',
+    summary: 'validated the immutable canonical handoff root',
+    acceptanceEvidence: implementation.acceptanceEvidence,
+    commands: implementation.commands,
+    downstreamFocus: implementation.downstreamFocus,
+    nonGoals: implementation.nonGoals,
+    verdict: 'passed',
+    testedHeadSha: predecessor.head.headSha,
+    findings: [],
+  };
+}
+
 function appendedArtifact(
   predecessor: PipelineHandoffArtifact,
   id: string
@@ -144,20 +173,7 @@ function appendedArtifact(
     id,
     supersedesArtifactId: predecessor.id,
     updatedAt: '2026-06-08T12:10:00.000Z',
-    stages: [
-      ...predecessor.stages,
-      {
-        ...predecessor.stages[0],
-        stage: 'qa',
-        addedAt: '2026-06-08T12:10:00.000Z',
-        actorId: 'agent:kani-validator',
-        summary: 'validated the immutable canonical handoff root',
-        decision: 'validated',
-        verdict: 'passed',
-        testedHeadSha: predecessor.head.headSha,
-        findings: [],
-      },
-    ],
+    stages: [...predecessor.stages, qaStage(predecessor)],
   };
 }
 
@@ -972,20 +988,7 @@ describe('WorkContext artifact store/index', () => {
     const replacementArtifact = artifact({
       id: 'pipeline-handoff:example:bbbbbbbb',
       updatedAt: '2026-06-08T12:10:00.000Z',
-      stages: [
-        ...originalArtifact.stages,
-        {
-          ...originalArtifact.stages[0],
-          stage: 'qa',
-          addedAt: '2026-06-08T12:10:00.000Z',
-          actorId: 'agent:kani-validator',
-          summary: 'validated the immutable canonical handoff root',
-          decision: 'validated',
-          verdict: 'passed',
-          testedHeadSha: originalArtifact.head.headSha,
-          findings: [],
-        },
-      ],
+      stages: [...originalArtifact.stages, qaStage(originalArtifact)],
     });
     const replacement = store.storePipelineHandoffArtifact({
       workContextId: 'wc:append-only',
@@ -1078,7 +1081,10 @@ describe('WorkContext artifact store/index', () => {
             head: { ...valid.head, headSha: nextHeadSha },
             stages: [
               valid.stages[0]!,
-              { ...valid.stages[1]!, testedHeadSha: nextHeadSha },
+              {
+                ...(valid.stages[1] as PipelineHandoffQaStage),
+                testedHeadSha: nextHeadSha,
+              },
             ],
           },
         }),

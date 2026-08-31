@@ -36,8 +36,18 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'node-routes-host',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {
+      binary: '/usr/local/bin/relay-ide',
+      configDir: '/home/node/.config/relay-ide',
+      logDir: '/home/node/.config/relay-ide/logs',
+      socketDir: '/home/node/.config/relay-ide/run',
+    },
+    fileRpc: { available: true, capabilities: ['read', 'write', 'list'] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -2532,9 +2542,10 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     return path.join(dir, 'audit.db');
   }
 
-  function sampleInput(
-    overrides: { eventId?: string; correlationId?: string } = {}
-  ) {
+  function sampleInput(overrides: {
+    eventId: string;
+    correlationId?: string;
+  }) {
     return {
       eventId: overrides.eventId,
       eventType: 'grant' as const,
@@ -2549,7 +2560,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       intent: { action: 'rpc.fs.read', target: '/repo/README.md' },
       requiredBits: ['rpc:fs:read' as const],
       grantedBits: ['rpc:fs:read' as const],
-      deniedBits: [] as const,
+      deniedBits: [],
       correlationId: overrides.correlationId ?? 'corr-1',
     };
   }

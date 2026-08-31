@@ -2,8 +2,22 @@
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    // Vitest runs on Vite, so the suite resolves modules the way the bundler
+    // does -- not the way Node's NodeNext resolver does. Frontend sources use
+    // extensionless relative imports and package "exports" subpaths that only
+    // resolve under Bundler resolution.
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
   },
-  "include": ["../shared/**/*.ts", "./workbench-block-types.test.ts"],
-  "exclude": ["../node_modules/", "../dist/", "../public/", "../frontend/"]
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx",
+    "../shared/**/*.ts",
+    // Ambient shims the frontend sources under test rely on.
+    "../frontend/src/types/**/*.d.ts"
+  ],
+  "exclude": ["../node_modules/", "../dist/", "../public/"]
 }

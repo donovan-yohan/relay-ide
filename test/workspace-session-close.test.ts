@@ -128,6 +128,7 @@ function makeRemoteSession(): SessionSummary {
     createdAt: now,
     lastActivity: now,
     idle: false,
+    activityState: 'idle',
     nodeId: 'node-a',
     globalSessionId: 'node-a:remote-session-1',
   };

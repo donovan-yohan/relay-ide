@@ -72,11 +72,12 @@ async function postJson<T>(port: number, url: string, body: unknown): Promise<{ 
 }
 
 function remoteRoot(nodeId = 'node_remote', remotePath = '/srv/project'): WorkspaceEvidenceRoot {
+  const repoInstanceId = createRepoInstanceId(nodeId, remotePath);
   const ref: WorkspaceEvidenceRootRef = {
     id: createWorkspaceEvidenceRootId(nodeId, remotePath),
     nodeId,
     kind: 'repo',
-    repoInstanceId: createRepoInstanceId(nodeId, remotePath),
+    repoInstanceId,
   };
   return {
     ref,
@@ -87,7 +88,7 @@ function remoteRoot(nodeId = 'node_remote', remotePath = '/srv/project'): Worksp
     backing: 'repo',
     status: 'available',
     capabilities: { list: true, stat: true, read: true, preview: true, write: false },
-    repo: { repoPath: remotePath, repoInstanceId: ref.repoInstanceId, isGitRepo: true },
+    repo: { repoPath: remotePath, repoInstanceId, isGitRepo: true },
   };
 }
 
@@ -197,7 +198,7 @@ describe('workspace evidence router', () => {
       path: 'project',
     });
     expect(list.status).toBe(200);
-    expect(calls[0].payload).toMatchObject({ root: '/home/relay', cwd: '/home/relay', path: '/home/relay/project' });
+    expect(calls[0]!.payload).toMatchObject({ root: '/home/relay', cwd: '/home/relay', path: '/home/relay/project' });
 
     const offlinePort = await listen(
       createWorkspaceEvidenceRouter({
@@ -220,7 +221,7 @@ describe('workspace evidence router', () => {
 
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
     const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
-    const rootRef = roots.body.roots[0].ref;
+    const rootRef = roots.body.roots[0]!.ref;
 
     const list = await postJson<{ entries: Array<{ path: string; contentHash?: string }> }>(port, '/workspace-evidence/list', {
       rootRef,
@@ -228,7 +229,7 @@ describe('workspace evidence router', () => {
     });
     expect(list.status).toBe(200);
     expect(list.body.entries).toMatchObject([{ path: 'README.md' }]);
-    expect(list.body.entries[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(list.body.entries[0]!.contentHash).toMatch(/^[a-f0-9]{64}$/);
 
     const read = await postJson<{ operation: string; content: string; truncated: boolean; contentHash: string }>(
       port,
@@ -262,7 +263,7 @@ describe('workspace evidence router', () => {
 
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
     const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
-    const rootRef = roots.body.roots[0].ref;
+    const rootRef = roots.body.roots[0]!.ref;
 
     const oversized = await postJson<{ preview: { state: string; unsupportedReason: string } }>(port, '/workspace-evidence/preview', {
       rootRef,
@@ -293,7 +294,7 @@ describe('workspace evidence router', () => {
 
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
     const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
-    const rootRef = roots.body.roots[0].ref;
+    const rootRef = roots.body.roots[0]!.ref;
 
     const image = await postJson<{
       preview: { state: string; kind: string; encoding: string; content: string; contentHash?: string };
@@ -325,7 +326,7 @@ describe('workspace evidence router', () => {
     });
 
     const list = await postJson<{ error: { state: string; reason: string } }>(port, '/workspace-evidence/list', {
-      rootRef: roots.body.roots[0].ref,
+      rootRef: roots.body.roots[0]!.ref,
     });
     expect(list.status).toBe(503);
     expect(list.body.error).toMatchObject({ state: 'unavailable', reason: 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND' });
@@ -342,7 +343,7 @@ describe('workspace evidence router', () => {
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
     const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
     const list = await postJson<{ entries: Array<{ path: string; contentHash?: string }> }>(port, '/workspace-evidence/list', {
-      rootRef: roots.body.roots[0].ref,
+      rootRef: roots.body.roots[0]!.ref,
       maxEntries: fileCount,
     });
 
@@ -356,7 +357,7 @@ describe('workspace evidence router', () => {
     fs.writeFileSync(path.join(root, 'bad.txt'), Buffer.from([0xff, 0xfe, 0xfd]));
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
     const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
-    const rootRef = roots.body.roots[0].ref;
+    const rootRef = roots.body.roots[0]!.ref;
 
     const preview = await postJson<{ preview: { state: string; unsupportedReason: string } }>(port, '/workspace-evidence/preview', {
       rootRef,
@@ -445,7 +446,7 @@ describe('workspace evidence router', () => {
     expect(preview.status).toBe(200);
     expect(preview.body.preview).toMatchObject({ state: 'available', kind: 'markdown', content: '# remote\nbody\n' });
     expect(calls.map((call) => call.type)).toEqual(['fs.stat', 'fs.read']);
-    expect(calls[0].payload).toMatchObject({ root: '/srv/project', cwd: '/srv/project', path: '/srv/project/README.md' });
+    expect(calls[0]!.payload).toMatchObject({ root: '/srv/project', cwd: '/srv/project', path: '/srv/project/README.md' });
   });
 
   it('uses remote Windows path semantics when previewing files under dotted directories', async () => {
@@ -502,6 +503,6 @@ describe('workspace evidence router', () => {
     expect(preview.status).toBe(200);
     expect(preview.body.preview).toMatchObject({ state: 'available', kind: 'text', content: 'plain text' });
     expect(calls.map((call) => call.type)).toEqual(['fs.stat', 'fs.read']);
-    expect(calls[0].payload).toMatchObject({ root: 'C:\\srv\\project', cwd: 'C:\\srv\\project', path: 'C:\\srv\\project\\docs.withdot\\README' });
+    expect(calls[0]!.payload).toMatchObject({ root: 'C:\\srv\\project', cwd: 'C:\\srv\\project', path: 'C:\\srv\\project\\docs.withdot\\README' });
   });
 });

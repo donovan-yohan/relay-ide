@@ -684,7 +684,7 @@ describe('standing read-only credential for ordinary bound agents (#1410)', () =
       validateCliGatewayActorCredential(registry, {
         token: token!,
         capabilities: ['session:read'],
-        scope: { sessionId: 'other-runtime' },
+        scope: { sessionIds: ['other-runtime'] },
       })
     ).toMatchObject({ ok: false, reason: 'missing_scope' });
     // Same rule for an unscoped request: no channel named, no access.

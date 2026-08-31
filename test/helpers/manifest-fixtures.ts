@@ -95,8 +95,13 @@ export function buildManifestWithAgents(
     platform: 'darwin',
     arch: 'arm64',
     hostname: 'test-host',
+    helperVersion: '9.9.9',
     relayVersion: '9.9.9',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'launchd',

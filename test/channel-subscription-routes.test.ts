@@ -159,6 +159,7 @@ describe('channel subscription route', () => {
           channelId: 'topic:a',
           timestamp: '2026-08-12T00:00:00.000Z',
           message: {
+            schemaVersion: 1,
             id: 'chm:detail',
             channelId: 'topic:a',
             seq: 5,
@@ -170,7 +171,7 @@ describe('channel subscription route', () => {
             parentMessageId: null,
             agentDetail: {
               itemId: 'item:tool',
-              card: { type: 'tool', name: 'x' },
+              card: { kind: 'tool_call', title: 'x', status: 'completed' },
             },
             createdAt: '2026-08-12T00:00:00.000Z',
             updatedAt: '2026-08-12T00:00:00.000Z',
@@ -189,6 +190,7 @@ describe('channel subscription route', () => {
           channelId: 'topic:a',
           timestamp: '2026-08-12T00:00:00.000Z',
           message: {
+            schemaVersion: 1,
             id: 'chm:reply',
             channelId: 'topic:a',
             seq: 6,
@@ -240,7 +242,11 @@ describe('channel subscription route', () => {
           mode: 'catchup',
           messages: [
             {
+              schemaVersion: 1,
               id: 'chm:unmatched',
+              channelId: 'topic:a',
+              createdAt: '2026-08-12T00:00:00.000Z',
+              updatedAt: '2026-08-12T00:00:00.000Z',
               seq: 5,
               kind: 'message',
               status: 'streaming',
@@ -250,7 +256,11 @@ describe('channel subscription route', () => {
               body: { text: 'intermediate', format: 'markdown' },
             },
             {
+              schemaVersion: 1,
               id: 'chm:matched',
+              channelId: 'topic:a',
+              createdAt: '2026-08-12T00:00:00.000Z',
+              updatedAt: '2026-08-12T00:00:00.000Z',
               seq: 6,
               kind: 'message',
               status: 'complete',
@@ -263,7 +273,11 @@ describe('channel subscription route', () => {
           stateReplacements: [
             {
               message: {
+                schemaVersion: 1,
                 id: 'chm:stale-at-cursor',
+                channelId: 'topic:a',
+                createdAt: '2026-08-12T00:00:00.000Z',
+                updatedAt: '2026-08-12T00:00:00.000Z',
                 seq: 3,
                 kind: 'message',
                 status: 'complete',
@@ -320,7 +334,11 @@ describe('channel subscription route', () => {
     expect(
       frames[1].payload.messages.map((message: ChannelMessage) => message.id)
     ).toEqual(['chm:matched']);
-    expect(frames[1].payload.messages.every((message) => message.seq > 4)).toBe(
+    expect(
+      frames[1].payload.messages.every(
+        (message: ChannelMessage) => message.seq > 4
+      )
+    ).toBe(
       true
     );
   });
@@ -808,10 +826,13 @@ describe('channel subscription route', () => {
           channelId: 'topic:a',
           timestamp: '2026-08-11T00:00:00.000Z',
           mode: 'catchup',
-          messages: [{ id: 'chm:fresh', seq: 5 } as ChannelMessage],
+          // Deliberately minimal rows: the assertion below compares
+          // stateReplacements with an exact `toEqual`, so these fixtures must
+          // not carry extra fields.
+          messages: [{ id: 'chm:fresh', seq: 5 } as unknown as ChannelMessage],
           stateReplacements: [
             {
-              message: { id: 'chm:resync', seq: 3 } as ChannelMessage,
+              message: { id: 'chm:resync', seq: 3 } as unknown as ChannelMessage,
               inFlight: { messageId: 'chm:resync', deltaIndex: 1 },
             },
           ],
@@ -995,7 +1016,7 @@ describe('channel subscription route', () => {
       })
     );
 
-    for (const frames of [omitted, reset]) {
+    for (const frames of [omitted!, reset!]) {
       expect(frames[1]?.payload).toMatchObject({
         type: 'channel-snapshot-v1',
         mode: 'full',

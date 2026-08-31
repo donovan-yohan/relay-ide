@@ -7,7 +7,15 @@
 // allows it, and that the editor hands back exactly what the operator typed.
 
 import React, { act } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { ChannelMessageRow } from '../../frontend/src/components/chat/ChannelMessageRow.js';
@@ -45,7 +53,7 @@ function humanMessage(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
 describe('ChannelMessageRow inline edit', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let onEdit: ReturnType<typeof vi.fn>;
+  let onEdit: Mock<(message: ChannelMessage, text: string) => Promise<unknown>>;
 
   async function renderRow(
     message: ChannelMessage = humanMessage(),

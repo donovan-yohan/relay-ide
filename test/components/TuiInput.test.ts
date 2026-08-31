@@ -341,7 +341,7 @@ describe('TuiInput', () => {
       (
         globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
       ).IS_REACT_ACT_ENVIRONMENT = true;
-      const root = createRoot(container);
+      const root = createRoot(container as unknown as HTMLElement);
       vi.spyOn(domWindow, 'getComputedStyle').mockReturnValue({
         font: 'normal 14px monospace',
         fontKerning: 'auto',
@@ -356,7 +356,7 @@ describe('TuiInput', () => {
         borderLeftWidth: '1px',
         borderTopWidth: '1px',
         textAlign: 'left',
-      } as CSSStyleDeclaration);
+      } as unknown as ReturnType<typeof domWindow.getComputedStyle>);
 
       try {
         await act(async () => {
@@ -390,7 +390,9 @@ describe('TuiInput', () => {
             new domWindow.FocusEvent('focusin', { bubbles: true })
           );
         });
-        const cursor = container.querySelector('.tui-cursor') as HTMLElement;
+        const cursor = container.querySelector(
+          '.tui-cursor'
+        ) as unknown as HTMLElement;
         expect(cursor.style.left).toBe('51px');
 
         input.scrollLeft = 36;
@@ -412,7 +414,7 @@ describe('TuiInput', () => {
           Object.defineProperty(globalThis, 'navigator', originalNavigator);
         }
         (
-          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean | undefined }
         ).IS_REACT_ACT_ENVIRONMENT = originalActEnvironment;
       }
     });

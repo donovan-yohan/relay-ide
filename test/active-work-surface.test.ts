@@ -8,8 +8,18 @@ import {
 } from '../frontend/src/components/ActiveWorkSurface.js';
 import type { Repo, WorkContextActiveGroup, WorkContextSessionSummary } from '../frontend/src/lib/types.js';
 
+/**
+ * Fixture overrides intentionally allow explicit `undefined` so a case can say
+ * "this session has no repo binding" and beat the repo-bound defaults below.
+ */
+type SessionOverrides = {
+  [K in keyof WorkContextSessionSummary]?:
+    | WorkContextSessionSummary[K]
+    | undefined;
+};
+
 function makeSession(
-  overrides: Partial<WorkContextSessionSummary> = {}
+  overrides: SessionOverrides = {}
 ): WorkContextSessionSummary {
   return {
     id: 'sess-1',
@@ -22,7 +32,7 @@ function makeSession(
     associatedAt: '2026-05-12T00:00:00.000Z',
     live: true,
     ...overrides,
-  };
+  } as WorkContextSessionSummary;
 }
 
 function makeGroup(

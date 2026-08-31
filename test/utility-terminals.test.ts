@@ -10,7 +10,6 @@ function session(
   overrides: Partial<SessionSummary> & { id: string }
 ): SessionSummary {
   return {
-    id: overrides.id,
     repoName: 'a',
     repoPath: '/repo/a',
     worktreePath: null,
@@ -23,7 +22,7 @@ function session(
     idle: false,
     type: 'terminal',
     mode: 'pty',
-    useTmux: true,
+    activityState: 'idle',
     ...overrides,
   };
 }

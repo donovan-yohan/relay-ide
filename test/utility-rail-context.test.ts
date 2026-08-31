@@ -13,7 +13,14 @@ function repo(overrides: Partial<Repo> = {}): Repo {
   };
 }
 
-function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
+/**
+ * Overrides deliberately allow explicit `undefined` so cases below can model
+ * wire payloads that omit `repoPath`/`branchName`/`nodeId`, which
+ * `exactOptionalPropertyTypes` forbids on plain `Partial<SessionSummary>`.
+ */
+type SessionOverrides = { [K in keyof SessionSummary]?: SessionSummary[K] | undefined };
+
+function session(overrides: SessionOverrides = {}): SessionSummary {
   return {
     id: 's1',
     type: 'terminal',
@@ -26,8 +33,9 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     createdAt: '2026-05-14T00:00:00.000Z',
     lastActivity: '2026-05-14T00:00:00.000Z',
     idle: false,
+    activityState: 'idle',
     ...overrides,
-  };
+  } as SessionSummary;
 }
 
 describe('deriveUtilityRailContext', () => {

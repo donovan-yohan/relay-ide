@@ -9,7 +9,17 @@ import { LOCAL_WORKSPACE_ID } from '../../shared/workspace.js';
 import { projectWorkspaceId } from '../../server/project-workspace.js';
 import type { WorkspaceTopic } from '../../shared/workspace-topics.js';
 
-function topic(overrides: Partial<WorkspaceTopic>): WorkspaceTopic {
+/**
+ * `privacy` is deliberately looser than `WorkspaceTopic`'s: callers below hand
+ * this a `WorkspaceTopicCreateInput`, whose privacy is a `Partial`. The partial
+ * is merged over the fixture default so the result is still a full topic.
+ */
+function topic(
+  overrides: Partial<Omit<WorkspaceTopic, 'privacy'>> & {
+    privacy?: Partial<WorkspaceTopic['privacy']>;
+  }
+): WorkspaceTopic {
+  const { privacy, ...rest } = overrides;
   return {
     schemaVersion: 1,
     id: 'topic:x',
@@ -23,15 +33,16 @@ function topic(overrides: Partial<WorkspaceTopic>): WorkspaceTopic {
     routingDefaults: {},
     linkedRefs: {},
     state: { pinned: false, muted: false },
+    createdAt: '2026-07-18T00:00:00.000Z',
+    updatedAt: '2026-07-18T00:00:00.000Z',
+    ...rest,
     privacy: {
       classification: 'internal',
       retention: 'project',
       redaction: 'summary',
       rawDefaultsStored: false,
+      ...privacy,
     },
-    createdAt: '2026-07-18T00:00:00.000Z',
-    updatedAt: '2026-07-18T00:00:00.000Z',
-    ...overrides,
   };
 }
 

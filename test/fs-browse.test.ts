@@ -139,9 +139,9 @@ describe('GET /workspaces/browse', () => {
     const visibleDir = data.entries.find((e) => e.name === 'visible-dir');
 
     expect(gitRepo).toBeTruthy();
-    expect(gitRepo.isGitRepo).toBe(true);
+    expect(gitRepo!.isGitRepo).toBe(true);
     expect(visibleDir).toBeTruthy();
-    expect(visibleDir.isGitRepo).toBe(false);
+    expect(visibleDir!.isGitRepo).toBe(false);
   });
 
   test('detects hasChildren correctly', async () => {
@@ -152,9 +152,9 @@ describe('GET /workspaces/browse', () => {
     const emptyDir = data.entries.find((e) => e.name === 'empty-dir');
 
     expect(visibleDir).toBeTruthy();
-    expect(visibleDir.hasChildren).toBe(true);
+    expect(visibleDir!.hasChildren).toBe(true);
     expect(emptyDir).toBeTruthy();
-    expect(emptyDir.hasChildren).toBe(false);
+    expect(emptyDir!.hasChildren).toBe(false);
   });
 
   test('truncates at 100 entries', async () => {
@@ -238,9 +238,9 @@ describe('GET /workspaces/browse', () => {
       | undefined;
 
     expect(fileEntry).toBeTruthy();
-    expect(fileEntry.isDirectory).toBe(false);
-    expect(typeof fileEntry.size).toBe('number');
-    expect(fileEntry.size!).toBeGreaterThan(0);
+    expect(fileEntry!.isDirectory).toBe(false);
+    expect(typeof fileEntry!.size).toBe('number');
+    expect(fileEntry!.size!).toBeGreaterThan(0);
   });
 
   test('excludes files when includeFiles is not set', async () => {

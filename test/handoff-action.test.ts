@@ -108,6 +108,7 @@ function activeSession(
     createdAt: '2026-06-06T18:00:00.000Z',
     lastActivity: '2026-06-06T18:01:00.000Z',
     idle: false,
+    activityState: 'idle',
     workContextId: 'wc:issue-872',
     ...overrides,
   };
@@ -183,8 +184,12 @@ describe('handoff gateway frontend action bridge', () => {
     const result = await executeHandoffsPlanAction(
       {
         request: draft.request,
-        sourceRepoPath: draft.sourceRepoPath,
-        sourceBranchName: draft.sourceBranchName,
+        ...(draft.sourceRepoPath !== undefined
+          ? { sourceRepoPath: draft.sourceRepoPath }
+          : {}),
+        ...(draft.sourceBranchName !== undefined
+          ? { sourceBranchName: draft.sourceBranchName }
+          : {}),
       },
       async (url, init) => {
         expect(url).toBe('/handoffs/plan');

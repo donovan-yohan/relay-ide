@@ -21,6 +21,7 @@ import {
   renewCliGatewayActorCredential,
   rotateCliGatewayActorCredentialWithGrant,
   validateCliGatewayActorCredential,
+  type CliGatewayActorCommand,
 } from '../server/cli-gateway-actor-auth.js';
 import { HandshakeGrantRegistry } from '../shared/operator-handshake-grants.js';
 import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
@@ -294,7 +295,7 @@ test('reserves the channel-runtime-read reason for the internal read-lease issue
 });
 
 test('resolves channel read verbs to context:read for a read-lease credential', () => {
-  for (const command of [
+  const readCommands: CliGatewayActorCommand[] = [
     'channels.list',
     'channels.get',
     'channels.history',
@@ -304,7 +305,8 @@ test('resolves channel read verbs to context:read for a read-lease credential', 
     'channels.roster',
     'channels.subscribe',
     'channels.search',
-  ]) {
+  ];
+  for (const command of readCommands) {
     expect(cliGatewayActorCommandCapabilities(command)).toEqual([
       'context:read',
     ]);
@@ -1510,7 +1512,7 @@ test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts
     [{ actor: { type: 'cli', id: 'other-cli' } }, 'actor_mismatch'],
   ] as const;
   for (let index = 0; index < denialCases.length; index += 1) {
-    const [override, reason] = denialCases[index];
+    const [override, reason] = denialCases[index]!;
     const freshHandle = approveGrant(grants, `grant-deny-${index}-${reason}`);
     try {
       issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {

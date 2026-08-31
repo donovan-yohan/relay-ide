@@ -314,7 +314,7 @@ describe('sessions store pure logic', () => {
     ): PtyReconnectIds {
       return applyPtyReconnectTransition(currentIds, {
         type: 'clear',
-        sessionId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
       });
     }
 

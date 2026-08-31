@@ -32,7 +32,7 @@ describe('sanitizeResponsesMetadata', () => {
     for (let i = 0; i < 40; i++) many[`k${i}`] = i;
     expect(Object.keys(sanitizeResponsesMetadata(many) ?? {})).toHaveLength(16);
     const long = sanitizeResponsesMetadata({ big: 'a'.repeat(1000) });
-    expect(long?.big.length).toBe(512);
+    expect(long?.big!.length).toBe(512);
   });
 });
 

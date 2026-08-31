@@ -22,7 +22,7 @@ import {
 interface FakeWs {
   readyState: number;
   readonly OPEN: number;
-  closes: Array<{ code?: number; reason?: string }>;
+  closes: Array<{ code?: number | undefined; reason?: string | undefined }>;
   close(code?: number, reason?: string): void;
 }
 

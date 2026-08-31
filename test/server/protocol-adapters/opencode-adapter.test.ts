@@ -16,7 +16,7 @@ import {
 } from '../../../server/protocol-adapters/opencode-attached-adapter.js';
 import { openCodeStatusType } from '../../../server/protocol-adapters/opencode-shared.js';
 import { mapChatEventToAgentPatchV2 } from '../../../shared/agent-chat-v1-compat.js';
-import type { ChatEvent } from '../../../shared/agent-chat-protocol.js';
+import type { ChatEvent } from '../../../shared/chat-events.js';
 
 interface OpenCodeEventLike {
   type: string;

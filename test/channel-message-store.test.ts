@@ -1696,7 +1696,7 @@ describe('channel-message-store streaming lifecycle', () => {
       sender: HUMAN,
       text: 'about to go',
     });
-    expect(s.getChannelSummary('topic:c').lastMessage?.preview).toBe(
+    expect(s.getChannelSummary('topic:c')!.lastMessage?.preview).toBe(
       'about to go'
     );
 
@@ -1715,11 +1715,11 @@ describe('channel-message-store streaming lifecycle', () => {
 
     // A body-less newest row must not blank the sidebar, the same rule detail
     // cards already follow.
-    expect(s.getChannelSummary('topic:c').lastMessage?.preview).toBe(
+    expect(s.getChannelSummary('topic:c')!.lastMessage?.preview).toBe(
       'the visible one'
     );
-    expect(s.getChannelSummary('topic:c').lastMessage?.id).toBe(kept.id);
-    expect(s.getChannelSummary('topic:c').latestSeq).toBe(2);
+    expect(s.getChannelSummary('topic:c')!.lastMessage?.id).toBe(kept.id);
+    expect(s.getChannelSummary('topic:c')!.latestSeq).toBe(2);
     expect(
       s.listChannelSummaries().find((c) => c.channelId === 'topic:c')
         ?.lastMessage?.preview

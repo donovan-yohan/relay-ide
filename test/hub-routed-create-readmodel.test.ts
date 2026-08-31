@@ -44,6 +44,13 @@ function nodeSummary(
   acl.grants = { allowed, requiresConfirmation: [] };
   return {
     nodeId: 'node_prod',
+    identity: {
+      nodeId: 'node_prod',
+      displayName: 'prod box',
+      hostname: 'prod.example',
+      createdAt: NOW.toISOString(),
+      pairedAt: NOW.toISOString(),
+    },
     displayName: 'prod box',
     hostname: 'prod.example',
     platform: 'darwin',
@@ -59,6 +66,12 @@ function nodeSummary(
       policy: summarizeAcl(acl),
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred_prod',
+      issuedAt: NOW.toISOString(),
+      state: 'active',
+      keyBound: false,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',
@@ -104,8 +117,6 @@ function remoteSession(
     lastActivity: NOW.toISOString(),
     idle: false,
     customCommand: null,
-    useTmux: true,
-    tmuxSessionName: 'relay-ide-remote-session-1',
     status: 'active',
     needsBranchRename: false,
     activityState: 'idle',

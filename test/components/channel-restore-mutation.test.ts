@@ -296,7 +296,9 @@ describe('ChannelView restore bar call site (#1287)', () => {
     expect(restore?.disabled).toBe(true);
     expect(restore?.textContent).toContain('restoring');
 
-    settle?.();
+    // `settle` is only ever assigned inside the Promise executor, so control
+    // flow analysis narrows it to `null` here; re-widen before calling.
+    (settle as (() => void) | null)?.();
     await flush();
   });
 

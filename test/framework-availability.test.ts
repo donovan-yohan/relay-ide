@@ -32,7 +32,7 @@ import {
  * record it. Gateway and embedded providers spawn nothing and deny nothing.
  */
 const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
-  mock: { kind: 'embedded', command: null, deny: [] },
+  mock: { kind: 'embedded', command: null, deny: [] as string[] },
   claude: {
     kind: 'command',
     command: 'claude',
@@ -63,8 +63,8 @@ const EXPECTED_CHANNEL_LAUNCH_CONTRACT = {
       'OPENCODE_SERVER_USERNAME',
     ],
   },
-  'opencode-attached': { kind: 'gateway', command: null, deny: [] },
-  hermes: { kind: 'gateway', command: null, deny: [] },
+  'opencode-attached': { kind: 'gateway', command: null, deny: [] as string[] },
+  hermes: { kind: 'gateway', command: null, deny: [] as string[] },
 } satisfies Record<
   keyof typeof CHANNEL_ADAPTER_LAUNCH_CONTRACTS,
   {
@@ -358,8 +358,10 @@ describe('framework CLI availability', () => {
       'terminal-only-opencode-command',
       'opencode-attached'
     );
-    const probes: Array<{ extra?: Record<string, unknown>; timeout?: number }> =
-      [];
+    const probes: Array<{
+      extra?: Record<string, unknown> | undefined;
+      timeout?: number | undefined;
+    }> = [];
 
     await expect(
       getFrameworkChannelAvailability(
@@ -383,7 +385,10 @@ describe('framework CLI availability', () => {
 
   it('probes the Hermes HTTP gateway without requiring a local Hermes CLI', async () => {
     const hermes = channelFramework('hermes', 'hermes');
-    const probes: Array<{ endpoint?: string; timeout?: number }> = [];
+    const probes: Array<{
+      endpoint?: string | undefined;
+      timeout?: number | undefined;
+    }> = [];
 
     await expect(
       getFrameworkChannelAvailability(

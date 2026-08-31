@@ -526,7 +526,7 @@ test('workspace session creates only a terminal in the primary repo', async () =
   const result = await req('POST', '/workspace-groups/ws-1/session', {});
   expect(result.status).toBe(201);
   expect(sessionDeps.sessions.create).toHaveBeenCalledTimes(1);
-  const createParams = sessionDeps.sessions.create.mock.calls[0][0];
+  const createParams = sessionDeps.sessions.create.mock.calls[0]![0];
   expect(createParams).toMatchObject({
     type: 'terminal',
     cwd: repoPath,

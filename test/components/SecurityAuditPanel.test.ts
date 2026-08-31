@@ -46,7 +46,9 @@ function render(
     ['security-audit'],
     {
       pages: entriesPages,
-      pageParams: entriesPages.map((_, i) => (i === 0 ? null : entriesPages[i - 1].nextBeforeSequence)),
+      pageParams: entriesPages.map((_, i) =>
+        i === 0 ? null : entriesPages[i - 1]!.nextBeforeSequence
+      ),
     }
   );
 

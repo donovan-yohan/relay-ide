@@ -6,6 +6,7 @@ import {
   PrimeAgentRpcClient,
   PrimeAgentRpcResponseError,
   type PrimeAgentRpcClientOptions,
+  type PrimeAgentRpcMessage,
 } from '../../../server/prime-agent-rpc-client.js';
 import { AgentControlUnavailableError } from '../../../server/protocol-adapter-v2.js';
 import { PrimeAgentProtocolAdapter } from '../../../server/protocol-adapters/prime-agent-adapter.js';
@@ -244,8 +245,8 @@ describe('PrimeAgentProtocolAdapter', () => {
 
   it('keeps the catalog empty until delayed current-runtime discovery completes', async () => {
     const { adapter, call } = harness();
-    let releaseDiscovery!: (value: Record<string, unknown>) => void;
-    const discovery = new Promise<Record<string, unknown>>((resolve) => {
+    let releaseDiscovery!: (value: PrimeAgentRpcMessage) => void;
+    const discovery = new Promise<PrimeAgentRpcMessage>((resolve) => {
       releaseDiscovery = resolve;
     });
     call.mockImplementation(async (type) => {
@@ -361,8 +362,8 @@ describe('PrimeAgentProtocolAdapter', () => {
     vi.spyOn(second, 'start').mockResolvedValue(startResponse);
     vi.spyOn(first, 'stop').mockResolvedValue();
     vi.spyOn(second, 'stop').mockResolvedValue();
-    let releaseFirstDiscovery!: (value: Record<string, unknown>) => void;
-    const firstDiscovery = new Promise<Record<string, unknown>>((resolve) => {
+    let releaseFirstDiscovery!: (value: PrimeAgentRpcMessage) => void;
+    const firstDiscovery = new Promise<PrimeAgentRpcMessage>((resolve) => {
       releaseFirstDiscovery = resolve;
     });
     const firstCall = vi

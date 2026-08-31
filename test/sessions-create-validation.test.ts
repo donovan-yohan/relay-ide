@@ -6,7 +6,7 @@ import {
   validateSessionCreateRequest,
 } from '../server/index.js';
 import { type Config } from '../server/types.js';
-import type { WorkContextStore } from '../server/work-context.js';
+import type { WorkContextStore } from '../server/work-contexts.js';
 
 // Minimal config stub with the two repos we'll test with
 function makeConfig(repos: string[]): Config {
@@ -15,14 +15,10 @@ function makeConfig(repos: string[]): Config {
     port: 3000,
     cookieTTL: '30d',
     repos,
-    claudeArgs: [],
     defaultFramework: 'claude',
-    defaultContinue: false,
-    defaultYolo: false,
     maxPtySessions: 10,
     terminalBackend: 'relay-pty',
     defaultNotifications: false,
-    claudeFullscreen: false,
   };
 }
 
@@ -37,8 +33,8 @@ function makeStore(): WorkContextStore {
     findSessionWorkContextIds() {
       return [];
     },
-    // @ts-expect-error partial stub
-  } as WorkContextStore;
+    // Partial stub: only the members these validation paths touch.
+  } as unknown as WorkContextStore;
 }
 
 // Captures res.status(N).json(body) calls

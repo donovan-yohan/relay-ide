@@ -131,7 +131,6 @@ describe('PTY WebSocket intervention control', () => {
       cwd: configDir,
       command: '/bin/sh',
       args: ['-c', 'while :; do sleep 1; done'],
-      tmuxAttach: true,
       cols: 80,
       rows: 24,
       controlState: {

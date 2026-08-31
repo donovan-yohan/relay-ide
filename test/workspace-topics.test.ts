@@ -21,6 +21,7 @@ import {
   createWorkspaceTopicStore,
   createWorkspaceTopicsRouter,
   type WorkspaceTopicStore,
+  type WorkspaceTopicsRouterOptions,
 } from '../server/workspace-topics.js';
 import type {
   WorkContextListOptions,
@@ -106,40 +107,34 @@ async function listen(input: {
       })
     | null;
   getConfig?: () => Config;
-  requireReadActorAuth?: (
-    expectedCommand:
-      | 'workspace-topics.list'
-      | 'workspace-topics.search'
-      | 'workspace-topics.get',
-    options?: {
-      scopeForRequest?: (
-        req: express.Request
-      ) => { workContextIds?: string[] } | undefined;
-    }
-  ) => RequestHandler;
-  requireWriteActorAuth?: (
-    expectedCommand:
-      | 'workspace-topics.create'
-      | 'workspace-topics.update'
-      | 'workspace-topics.archive',
-    options?: {
-      scopeForRequest?: (
-        req: express.Request
-      ) => { workContextIds?: string[] } | undefined;
-    }
-  ) => RequestHandler;
+  // Mirror the router's own gate signatures. Narrowing `expectedCommand` here
+  // would make the stub contravariantly incompatible with the real option.
+  requireReadActorAuth?: WorkspaceTopicsRouterOptions['requireReadActorAuth'];
+  requireWriteActorAuth?: WorkspaceTopicsRouterOptions['requireWriteActorAuth'];
 }): Promise<{ port: number }> {
   const app = express();
   app.use(express.json());
   app.use(
     createWorkspaceTopicsRouter({
       store: input.store ?? null,
-      surfaceStore: input.surfaceStore,
-      workContextStore: input.workContextStore,
-      channelArchiveActivity: input.channelArchiveActivity,
-      getConfig: input.getConfig,
-      requireReadActorAuth: input.requireReadActorAuth,
-      requireWriteActorAuth: input.requireWriteActorAuth,
+      // `null` is meaningful for surfaceStore/channelArchiveActivity (explicit
+      // "absent" vs "not configured"), so these test on `undefined`, not truth.
+      ...(input.surfaceStore !== undefined
+        ? { surfaceStore: input.surfaceStore }
+        : {}),
+      ...(input.workContextStore !== undefined
+        ? { workContextStore: input.workContextStore }
+        : {}),
+      ...(input.channelArchiveActivity !== undefined
+        ? { channelArchiveActivity: input.channelArchiveActivity }
+        : {}),
+      ...(input.getConfig !== undefined ? { getConfig: input.getConfig } : {}),
+      ...(input.requireReadActorAuth !== undefined
+        ? { requireReadActorAuth: input.requireReadActorAuth }
+        : {}),
+      ...(input.requireWriteActorAuth !== undefined
+        ? { requireWriteActorAuth: input.requireWriteActorAuth }
+        : {}),
     })
   );
   const server = http.createServer(app);
@@ -1160,7 +1155,10 @@ describe('workspace topics foundation', () => {
       requireWriteActorAuth: (expectedCommand, options) => {
         return ((req, res, next) => {
           const scope = options?.scopeForRequest?.(req);
-          requested.push({ command: expectedCommand, scope });
+          requested.push({
+            command: expectedCommand,
+            ...(scope ? { scope } : {}),
+          });
           if (
             scope?.workContextIds?.includes('wc-allowed') &&
             !scope.workContextIds.includes('wc-denied')
@@ -1231,12 +1229,11 @@ describe('workspace topics foundation', () => {
             res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
             return;
           }
+          const requestScope = options?.scopeForRequest?.(req);
           const validation = validateCliGatewayActorCredential(registry, {
             token: bearerActorToken(req),
             capabilities: ['context:write'],
-            ...(options?.scopeForRequest
-              ? { scope: options.scopeForRequest(req) }
-              : {}),
+            ...(requestScope ? { scope: requestScope } : {}),
           });
           if ('reason' in validation) {
             res.status(403).json({ error: { reason: validation.reason } });

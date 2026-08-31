@@ -37,7 +37,7 @@ describe('scorePath', () => {
   test('exact filename match scores highest', () => {
     const result = scorePath('App.svelte', 'frontend/src/App.svelte');
     expect(result).not.toBe(null);
-    expect(result.score).toBeGreaterThan(0);
+    expect(result!.score).toBeGreaterThan(0);
   });
 
   test('filename prefix match gets boost', () => {
@@ -59,13 +59,13 @@ describe('scorePath', () => {
   test('camelCase matching works', () => {
     const result = scorePath('CP', 'CommandPalette.svelte');
     expect(result).not.toBe(null);
-    expect(result.score).toBeGreaterThan(0);
+    expect(result!.score).toBeGreaterThan(0);
   });
 
   test('word boundary matching works', () => {
     const result = scorePath('fs', 'file-scorer.ts');
     expect(result).not.toBe(null);
-    expect(result.score).toBeGreaterThan(0);
+    expect(result!.score).toBeGreaterThan(0);
   });
 
   test('path separator bonus works', () => {
@@ -120,13 +120,13 @@ describe('scorePath', () => {
   test('single character query works', () => {
     const result = scorePath('a', 'App.svelte');
     expect(result).not.toBe(null);
-    expect(result.score).toBeGreaterThan(0);
+    expect(result!.score).toBeGreaterThan(0);
   });
 
   test('case-insensitive matching works', () => {
     const result = scorePath('app', 'App.svelte');
     expect(result).not.toBe(null);
-    expect(result.score).toBeGreaterThan(0);
+    expect(result!.score).toBeGreaterThan(0);
   });
 });
 

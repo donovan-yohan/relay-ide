@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dmChannelTopicId } from '../../shared/dm-channels.js';
+import type { ChannelAgentStatus } from '../../frontend/src/lib/api.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -104,7 +105,7 @@ function rosterEntry(role?: 'orchestrator' | 'implementer') {
     ...(role ? { role } : {}),
     binding: {
       runtimeId: 'runtime:claude-1',
-      status: 'idle' as const,
+      status: 'idle' as ChannelAgentStatus,
     },
   };
 }
@@ -175,9 +176,7 @@ afterEach(async () => {
 
 describe('ChannelView orchestrator control (#1242)', () => {
   it('waits for confirmed topic identity before offering designation', async () => {
-    let resolveTopic:
-      | ((topic: ReturnType<typeof topicFixture>) => void)
-      | null = null;
+    let resolveTopic!: (topic: ReturnType<typeof topicFixture>) => void;
     mocks.fetchWorkspaceTopic.mockReturnValue(
       new Promise<ReturnType<typeof topicFixture>>((resolve) => {
         resolveTopic = resolve;
@@ -198,9 +197,7 @@ describe('ChannelView orchestrator control (#1242)', () => {
   });
 
   it('waits for the roster before offering designation', async () => {
-    let resolveRoster:
-      | ((entries: ReturnType<typeof rosterEntry>[]) => void)
-      | null = null;
+    let resolveRoster!: (entries: ReturnType<typeof rosterEntry>[]) => void;
     mocks.fetchChannelRoster.mockReturnValue(
       new Promise<ReturnType<typeof rosterEntry>[]>((resolve) => {
         resolveRoster = resolve;
@@ -271,7 +268,7 @@ describe('ChannelView orchestrator control (#1242)', () => {
   });
 
   it('uses the braille text-motion state while designation is pending', async () => {
-    let resolveDesignation: (() => void) | null = null;
+    let resolveDesignation!: () => void;
     mocks.fetchChannelRoster.mockResolvedValue([rosterEntry('implementer')]);
     mocks.designateChannelOrchestrator.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -373,7 +370,7 @@ describe('ChannelView orchestrator control (#1242)', () => {
       container.querySelector('.ch-designate-orchestrator__error')?.textContent
     ).toBe('could not designate orchestrator — try again');
 
-    let resolveDesignation: (() => void) | null = null;
+    let resolveDesignation!: () => void;
     mocks.designateChannelOrchestrator.mockReturnValueOnce(
       new Promise<void>((resolve) => {
         resolveDesignation = resolve;

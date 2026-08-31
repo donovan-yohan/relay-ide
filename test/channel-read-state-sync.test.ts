@@ -20,8 +20,8 @@ import {
 /** Shape of a stubbed `fetch` call, narrowed for the assertions below. */
 interface CapturedRequest {
   url: string;
-  method?: string;
-  keepalive?: boolean;
+  method?: string | undefined;
+  keepalive?: boolean | undefined;
   headers: Record<string, string>;
   body: { lastReadSeq?: number };
 }

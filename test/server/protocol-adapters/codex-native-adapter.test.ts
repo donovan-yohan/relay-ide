@@ -23,6 +23,8 @@ import type {
 import {
   applyAgentPatchV2,
   emptyAgentSessionV2,
+  type AgentAssistantMessageItemV2,
+  type AgentItemUpdatedPatchV2,
   type AgentPatchV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
 import { CHANNEL_ADAPTER_LAUNCH_CONTRACTS } from '../../../server/protocol-adapters/index.js';
@@ -1005,7 +1007,11 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       }
 
       const assistantFinals = patches.filter(
-        (patch) =>
+        (
+          patch
+        ): patch is AgentItemUpdatedPatchV2 & {
+          item: AgentAssistantMessageItemV2;
+        } =>
           patch.type === 'agent-item-updated-v2' &&
           patch.item.type === 'assistantMessage'
       );
@@ -3841,7 +3847,7 @@ describe('CodexNativeProtocolAdapter — spawn hygiene', () => {
     expect(opts.spawn).toBe(injectedSpawn);
     // The stray claudeArgs/model keys never become client options.
     expect(opts).not.toHaveProperty('claudeArgs');
-    expect((opts as Record<string, unknown>)['model']).toBeUndefined();
+    expect((opts as unknown as Record<string, unknown>)['model']).toBeUndefined();
 
     await adapter.disconnect();
   });

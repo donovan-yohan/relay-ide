@@ -56,6 +56,13 @@ const { useEnvPickerOptions } =
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'local',
+    identity: {
+      nodeId: 'local',
+      displayName: 'local mac',
+      hostname: 'local.local',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      pairedAt: '2026-05-12T00:00:00.000Z',
+    },
     displayName: 'local mac',
     hostname: 'local.local',
     platform: 'darwin',
@@ -64,11 +71,23 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: { state: 'active', level: 'standard' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-local',
+      issuedAt: '2026-05-12T00:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -77,7 +96,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       },
       terminalBackends: {
         'relay-pty': 'available',
-        'tmux-compat': 'available',
       },
       agents: { claude: 'available', codex: 'available' },
       serviceManager: 'launchd',

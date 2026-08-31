@@ -42,8 +42,10 @@ import type { WorkspaceUtilityRailState } from '../frontend/src/lib/stores/ui.js
 function session(
   overrides: Partial<SessionSummary> & { id: string }
 ): SessionSummary {
+  // TODO(#1498): this fixture also set `useTmux: true`, but
+  // `SessionSummary` has carried no such field since tmux support was removed,
+  // so nothing in the rail ever read it.
   return {
-    id: overrides.id,
     repoName: 'a',
     repoPath: '/repo/a',
     worktreePath: null,
@@ -56,7 +58,7 @@ function session(
     idle: false,
     type: 'terminal',
     mode: 'pty',
-    useTmux: true,
+    activityState: 'idle',
     ...overrides,
   };
 }

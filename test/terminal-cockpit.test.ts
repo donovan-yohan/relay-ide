@@ -60,7 +60,7 @@ function group(
         status: 'active',
         activityState: 'processing',
         durability: 'running-attached',
-        controlMode: 'co-driven',
+        controlMode: 'human-driven',
         controlFreshness: 'fresh',
         activeActors: [{ kind: 'agent', id: 'codex', displayName: 'Codex' }],
         lastActivity: '2026-01-01T00:01:00.000Z',
@@ -210,7 +210,7 @@ describe('terminal cockpit view', () => {
     expect(screen).toContain('why: waiting-for-input');
     expect(screen).toContain('node: local (online; freshness=fresh)');
     expect(screen).toContain('durability=running-attached');
-    expect(screen).toContain('control: mode=co-driven freshness=fresh');
+    expect(screen).toContain('control: mode=human-driven freshness=fresh');
     expect(screen).toContain('task: github-issue:934 (in-progress)');
     expect(screen).toContain('artifacts: 1 latest=status render');
     expect(screen).toContain(

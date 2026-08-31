@@ -112,7 +112,7 @@ describe('sessions', () => {
       revocable: true,
       peerIdentity: { kind: 'local-user', id: 'local-dev' },
     });
-    expect(result.sessionEnvelope.expiresAt).toBeNull();
+    expect(result.sessionEnvelope!.expiresAt).toBeNull();
 
     const list = sessions.list();
     expect(list.length).toBe(1);
@@ -303,8 +303,8 @@ describe('sessions', () => {
       // Treat this session as belonging to a remote node so the resolver
       // is consulted. Without a resolver, the field is null and the
       // session resolves to `running-attached`.
-      const session = sessions.get(result.id);
-      session!.nodeId = 'remote-test' as typeof session.nodeId;
+      const session = sessions.get(result.id)!;
+      session.nodeId = 'remote-test' as NonNullable<typeof session.nodeId>;
 
       let reportedStatus: 'online' | 'offline' = 'online';
       sessions.setSessionNodeStatusResolver(() => reportedStatus);
@@ -673,7 +673,6 @@ describe('sessions', () => {
       args: ['-i'],
       cols: 80,
       rows: 12,
-      useTmux: false,
     });
     createdIds.push(result.id);
 
@@ -683,7 +682,7 @@ describe('sessions', () => {
     let snapshot: Record<string, unknown> | undefined;
     for (let i = 0; i < 20; i++) {
       const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
-        requestedId: result.globalSessionId,
+        requestedId: result.globalSessionId!,
         includeScrollback: true,
         maxScrollbackLines: 5,
       });
@@ -730,7 +729,6 @@ describe('sessions', () => {
       args: [],
       cols: 80,
       rows: 12,
-      useTmux: false,
     });
     createdIds.push(result.id);
 

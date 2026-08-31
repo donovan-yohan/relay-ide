@@ -17,10 +17,12 @@ const GIT_ENV = {
 };
 
 type CapturedRequest = {
-  method?: string;
-  url?: string;
-  authorization?: string;
-  capabilities?: string | string[];
+  // Node's `IncomingMessage` hands these back as `string | undefined`, so the
+  // capture shape has to accept a present-but-undefined value.
+  method?: string | undefined;
+  url?: string | undefined;
+  authorization?: string | undefined;
+  capabilities?: string | string[] | undefined;
   body?: Record<string, unknown>;
 };
 
@@ -205,7 +207,7 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
     authorization: 'Bearer browser-token',
     capabilities: 'session:create:terminal',
   });
-  expect(captured[0].body).toMatchObject({
+  expect(captured[0]!.body).toMatchObject({
     repoPath: repo,
     worktreePath: repo,
     branchName: 'desired-branch',
@@ -213,8 +215,8 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
     mode: 'pty',
     terminalBackend: 'relay-pty',
   });
-  expect(captured[0].body).not.toHaveProperty('cwd');
-  expect(captured[0].body).not.toHaveProperty('initialPrompt');
+  expect(captured[0]!.body).not.toHaveProperty('cwd');
+  expect(captured[0]!.body).not.toHaveProperty('initialPrompt');
 });
 
 test('explicit worktree path checked out on a different branch fails before session creation', async () => {
@@ -403,12 +405,12 @@ test('pr.number create-if-missing fetches the PR head instead of creating from b
       command: 'branches.openSession',
     });
     expect(captured).toHaveLength(1);
-    expect(captured[0].body).toMatchObject({
+    expect(captured[0]!.body).toMatchObject({
       branchName: 'feature-from-fork',
       type: 'terminal',
       mode: 'pty',
     });
-    const worktreePath = captured[0].body?.worktreePath as string;
+    const worktreePath = captured[0]!.body?.worktreePath as string;
     expect(git(worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(prHeadSha);
     expect(git(worktreePath, ['rev-parse', 'HEAD']).trim()).not.toBe(baseSha);
   } finally {

@@ -397,12 +397,11 @@ function scopedActorReadAuth(
         .json({ error: { code: 'UNAUTHORIZED', expectedCommand } });
       return;
     }
+    const requestScope = options.scopeForRequest?.(req);
     const validation = validateCliGatewayActorCredential(registry, {
       token: bearerActorToken(req),
       capabilities: options.capabilities ?? ['session:read'],
-      ...(options.scopeForRequest
-        ? { scope: options.scopeForRequest(req) }
-        : {}),
+      ...(requestScope !== undefined ? { scope: requestScope } : {}),
       ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     });
     if ('reason' in validation) {
@@ -416,7 +415,9 @@ function scopedActorReadAuth(
         .json({
           error: cliGatewayActorFailure({
             reason: validation.reason,
-            credentialId: validation.credentialId,
+            ...(validation.credentialId !== undefined
+              ? { credentialId: validation.credentialId }
+              : {}),
           }),
         });
       return;

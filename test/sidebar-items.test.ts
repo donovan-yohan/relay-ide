@@ -81,8 +81,8 @@ describe('buildSidebarItems', () => {
 
     const wtItem = items.find((i) => i.id === '/repo/wt1');
     expect(wtItem).toBeTruthy();
-    expect(wtItem.displayState).toBe('inactive');
-    expect(wtItem.sessions.length).toBe(0);
+    expect(wtItem!.displayState).toBe('inactive');
+    expect(wtItem!.sessions.length).toBe(0);
   });
 
   it('workspace with no sessions produces repo-kind item with inactive state', () => {
@@ -145,7 +145,7 @@ describe('buildSidebarItems', () => {
 
     const item = items.find((i) => i.id === '/repo');
     expect(item).toBeTruthy();
-    expect(item.displayState).toBe('seen-idle');
+    expect(item!.displayState).toBe('seen-idle');
   });
 
   it('reconciliation: running→idle backend change transitions displayState to unseen-idle', () => {
@@ -168,7 +168,7 @@ describe('buildSidebarItems', () => {
 
     const item = items.find((i) => i.id === '/repo');
     expect(item).toBeTruthy();
-    expect(item.displayState).toBe('unseen-idle');
+    expect(item!.displayState).toBe('unseen-idle');
   });
 
   it('reconciliation: item with sessions that disappears becomes inactive', () => {
@@ -188,7 +188,7 @@ describe('buildSidebarItems', () => {
 
     const item = items.find((i) => i.id === '/repo/wt1');
     expect(item).toBeTruthy();
-    expect(item.displayState).toBe('inactive');
-    expect(item.sessions.length).toBe(0);
+    expect(item!.displayState).toBe('inactive');
+    expect(item!.sessions.length).toBe(0);
   });
 });

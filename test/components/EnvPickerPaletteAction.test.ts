@@ -217,7 +217,7 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
   it('selecting a fresh option invokes the launch hook with typed env IDs', async () => {
     const fresh = freshOption({ id: 'opt-launch' });
     const launch = vi.fn(
-      async (): Promise<LaunchEnvironmentResult> => ({
+      async (_option: EnvironmentOption): Promise<LaunchEnvironmentResult> => ({
         kind: 'launched',
         result: { session: undefined, error: null },
       })
@@ -239,7 +239,7 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
       row.click();
     });
     expect(launch).toHaveBeenCalledTimes(1);
-    const launchArgOption = launch.mock.calls[0]?.[0] as EnvironmentOption;
+    const launchArgOption = launch.mock.calls[0]![0];
     // Typed env identity propagates through the launch call — the contract
     // child issues / agent tasks rely on (#615 acceptance criterion).
     expect(launchArgOption.id).toBe('opt-launch');

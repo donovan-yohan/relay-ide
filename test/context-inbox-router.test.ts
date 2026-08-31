@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createContextInboxRouter,
   isTerminalInboxState,
+  type ContextInboxRouterDeps,
   type ContextInboxStore,
   type CreateContextPacketInput,
   type CreateInboxMessageInput,
@@ -384,16 +385,24 @@ function mount(
   app.use(
     createContextInboxRouter({
       requireAuth: (_req, _res, next) => next(),
-      requireReadActorAuth: actorCredential
-        ? (_expectedCommand: CliGatewayActorReadCommand, options) =>
-            actorAuthMiddleware(options)
-        : undefined,
-      requireWriteActorAuth: actorCredential
-        ? (_expectedCommand: CliGatewayActorWriteCommand, options) =>
-            actorAuthMiddleware(options)
-        : undefined,
+      ...(actorCredential
+        ? {
+            requireReadActorAuth: (
+              _expectedCommand: CliGatewayActorReadCommand,
+              options?: Parameters<
+                NonNullable<ContextInboxRouterDeps['requireReadActorAuth']>
+              >[1]
+            ) => actorAuthMiddleware(options),
+            requireWriteActorAuth: (
+              _expectedCommand: CliGatewayActorWriteCommand,
+              options?: Parameters<
+                NonNullable<ContextInboxRouterDeps['requireWriteActorAuth']>
+              >[1]
+            ) => actorAuthMiddleware(options),
+          }
+        : {}),
       store,
-      workContextStore,
+      ...(workContextStore !== undefined ? { workContextStore } : {}),
       // Default to a resolver that never resolves (null) so existing tests stay
       // undecorated; the #760 decoration tests inject a real resolver.
       resolveAnchorState: resolveAnchorState ?? (async () => null),

@@ -12,7 +12,7 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-const fetchMock = vi.fn(async () =>
+const fetchMock = vi.fn(async (..._args: unknown[]) =>
   new Response(
     JSON.stringify({
       messages: [

@@ -31,7 +31,8 @@ function makeSession(
     nodeId: 'node:test',
     nodeLabel: 'test node',
     cwd: '/repo',
-    controlFreshness: 'fresh',
+    // TODO(#1496): the fixture used to set `controlFreshness`, but
+    // `TopicNavSessionRef` never declared it, so nothing here read it.
     durability: null,
     currentActivity: null,
     lastActivity: null,
@@ -83,6 +84,7 @@ function makeNode(
   return {
     item: makeItem({ id, title: id, ...overrides }),
     unread,
+    summary: null,
     children,
   };
 }
@@ -96,6 +98,7 @@ function makeTree(nodes: ChannelRailNode[]): ChannelRailTree {
         color: null,
         icon: null,
         pinned: false,
+        empty: nodes.length === 0,
         channels: nodes,
         directMessages: [],
         unread: nodes.some((node) => node.unread),

@@ -51,7 +51,11 @@ function makeGitExit128Error(): Error & { code: number; stderr: string } {
 
 function makeExec(gitDir: string): ExecFn {
   // Simulates: git rev-parse --git-dir succeeds for gitDir, fails for others
-  return async (file: string, args: string[], opts?: { cwd?: string }) => {
+  const impl = async (
+    file: string,
+    args: string[],
+    opts?: { cwd?: string }
+  ): Promise<ExecResult> => {
     if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
       if (opts?.cwd === gitDir) {
         return { stdout: '.git', stderr: '' } as ExecResult;
@@ -72,6 +76,9 @@ function makeExec(gitDir: string): ExecFn {
     }
     return { stdout: '', stderr: '' } as ExecResult;
   };
+  // `execFileAsync` is an overloaded promisified signature; this stub only
+  // implements the `(file, args, options)` form the workspace router calls.
+  return impl as unknown as ExecFn;
 }
 
 async function makeApp(exec: ExecFn) {

@@ -220,7 +220,12 @@ function makeMessageHit(
 }
 
 function makeSurface(
-  overrides: Partial<WorkspaceSurface> = {}
+  // Widened past `Partial<>` so a fixture can explicitly clear an optional
+  // field (e.g. `url: undefined` for a copy-only surface) under
+  // exactOptionalPropertyTypes.
+  overrides: {
+    [K in keyof WorkspaceSurface]?: WorkspaceSurface[K] | undefined;
+  } = {}
 ): WorkspaceSurface {
   return {
     id: 'surface:preview',
@@ -235,7 +240,7 @@ function makeSurface(
     openMode: 'direct',
     url: 'http://localhost:5173',
     ...overrides,
-  };
+  } as WorkspaceSurface;
 }
 
 describe('TopicSidebarView', () => {
@@ -2154,7 +2159,7 @@ describe('TopicSidebarView', () => {
     expect(resume.disabled).toBe(false);
     await act(async () => resume.click());
     expect(onSelectSession).toHaveBeenCalledTimes(1);
-    const key = onSelectSession.mock.calls[0][0] as string;
+    const key = onSelectSession.mock.calls[0]![0] as string;
     expect(key).toContain('s-new');
   });
 
@@ -4079,6 +4084,9 @@ describe('TopicSidebarView', () => {
           id: 'workspace:alpha',
           name: 'workspace fallback must not seed',
           order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
           defaultRepoPath: null,
           defaultNodeId: null,
         },

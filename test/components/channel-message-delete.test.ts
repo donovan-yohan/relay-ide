@@ -7,7 +7,15 @@
 // `confirm()`, and that a tombstone still renders as a row.
 
 import React, { act } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { ChannelMessageRow } from '../../frontend/src/components/chat/ChannelMessageRow.js';
@@ -53,7 +61,7 @@ function tombstone(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
 describe('ChannelMessageRow inline delete', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let onDelete: ReturnType<typeof vi.fn>;
+  let onDelete: Mock<(message: ChannelMessage) => Promise<unknown>>;
 
   async function renderRow(
     message: ChannelMessage = humanMessage(),
@@ -90,7 +98,9 @@ describe('ChannelMessageRow inline delete', () => {
   }
 
   beforeEach(() => {
-    onDelete = vi.fn(async () => {});
+    onDelete = vi.fn<(message: ChannelMessage) => Promise<unknown>>(
+      async () => {}
+    );
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);

@@ -140,7 +140,7 @@ describe('JsonlFileTailer', () => {
     });
     const pollB = resumed.poll();
     expect(pollB.events).toHaveLength(1);
-    expect(JSON.parse(pollB.events[0]).message.role).toBe('assistant');
+    expect(JSON.parse(pollB.events[0]!).message.role).toBe('assistant');
 
     // No growth -> no replay.
     expect(resumed.poll().events).toHaveLength(0);

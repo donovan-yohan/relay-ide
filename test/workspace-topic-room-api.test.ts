@@ -143,10 +143,12 @@ describe('workspace topic room API', () => {
 
     await launchWorkspaceTopicRoom({
       room: { topic: topic(), workContext: workContext() },
+      // TODO(#1496): `controlMode` is not part of CreateSessionBody;
+      // it only ever rode along on the verbatim `...input.launch` spread and
+      // was never read by the session-create contract.
       launch: {
         type: 'terminal',
         mode: 'pty',
-        controlMode: 'human-driven',
       },
     });
 
@@ -155,7 +157,6 @@ describe('workspace topic room API', () => {
     expect(calls[0]?.body).toMatchObject({
       type: 'terminal',
       mode: 'pty',
-      controlMode: 'human-driven',
       workspaceTopicId: 'topic:remote-launch',
       workContextId: 'wc-topic',
     });

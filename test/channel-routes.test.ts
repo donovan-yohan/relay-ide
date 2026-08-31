@@ -184,7 +184,7 @@ async function harness(
   if (options.binderFactory) {
     cleanup.push(() => binder?.close?.());
     const unlisten = hub.onMessagePosted((message, mentions, postOptions) =>
-      binder?.handleMessagePosted(message, mentions, postOptions)
+      binder?.handleMessagePosted?.(message, mentions, postOptions)
     );
     cleanup.push(unlisten);
   }
@@ -2506,13 +2506,6 @@ describe('channel routes — agent commands', () => {
       store,
       hub,
       topicStore,
-      sessions: {
-        createWeb: async () => {
-          throw new Error('control messages must not create a binding');
-        },
-        get: () => undefined,
-        onSessionEnd: () => () => {},
-      },
       runtimes: {
         create: async () => {
           throw new Error('control messages must not create a runtime');
@@ -2668,16 +2661,23 @@ describe('channel routes — orchestrator designation (#1259)', () => {
                 hookToken: 'test',
                 configDir: params.configDir,
               });
-              const runtime = {
+              const runtime: ChannelAgentRuntime = {
                 id,
                 providerId: params.providerId,
                 profileActorId: params.profileActorId,
-                role: params.role,
+                ...(params.role !== undefined ? { role: params.role } : {}),
                 status: 'active',
                 adapter,
                 cwd: params.cwd,
                 providerSession: {},
-              } as ChannelAgentRuntime;
+                displayName: params.providerId,
+                hookToken: 'test',
+                hooksActive: false,
+                agentState: 'idle',
+                idle: true,
+                needsBranchRename: false,
+                lastActivity: '2026-01-01T00:00:00.000Z',
+              };
               runtimes.set(id, runtime);
               return runtime;
             },
@@ -4331,7 +4331,7 @@ describe('channel routes — operator read state (#1308 slice 3 item 1)', () => 
       url: `/channels/${h.channelId}/messages`,
       body: { text: 'hello' },
     });
-    h.topicStore.update(h.channelId, { status: 'archived' });
+    h.topicStore.archive(h.channelId);
     const res = await put(h, h.channelId, { lastReadSeq: 1 });
     expect(res.status).toBe(200);
     expect(res.body.readState.lastReadSeq).toBe(1);
@@ -4593,7 +4593,11 @@ describe('channel routes — membership verbs (#1455 slice 2)', () => {
   };
 
   const members = (h: Harness, headers?: Record<string, string>) =>
-    req<{ channelId: string; members: MemberRefBody[] }>({
+    req<{
+      channelId: string;
+      members: MemberRefBody[];
+      error: { code: string; details?: Record<string, unknown> };
+    }>({
       port: h.port,
       method: 'GET',
       url: `/channels/${encodeURIComponent(h.channelId)}/members`,

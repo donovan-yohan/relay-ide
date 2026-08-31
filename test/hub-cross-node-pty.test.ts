@@ -44,7 +44,6 @@ function manifest(hostname: string): NodeManifest {
       hostname,
       relayVersion: '0.1.0-smoke',
       capabilities: {
-        tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
         git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
         clipboard: {
           id: 'clipboard',
@@ -115,8 +114,6 @@ function remoteSession(input: {
     nodeId: input.nodeId,
     globalSessionId: createGlobalSessionId(input.nodeId, input.sessionId),
     repoInstanceId: `${encodeURIComponent(input.nodeId)}:${encodeURIComponent(repoPath)}`,
-    useTmux: true,
-    tmuxSessionName: `relay-ide-${input.sessionId}`,
     status: 'active',
     needsBranchRename: false,
     activityState: 'idle',
@@ -281,7 +278,9 @@ class SimulatedNode {
 
   answerCreate(request: RelayNodeEnvelope, sessionId: string): void {
     sendNodeEnvelope(this.ws, this.nodeId, 'sessions.create.result', 'rpc', {
-      requestId: request.requestId,
+      ...(request.requestId !== undefined
+        ? { requestId: request.requestId }
+        : {}),
       payload: {
         session: {
           ...remoteSession({

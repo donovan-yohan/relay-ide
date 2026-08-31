@@ -41,8 +41,12 @@ function manifest(): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'node-feature-host',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -52,17 +56,56 @@ function manifest(): NodeManifest {
       installHint: 'install',
       uninstallHint: 'uninstall',
       message: 'ok',
+      caveats: [],
     },
     capabilities: {
-      tmux: { status: 'available', message: 'tmux 3.4' },
-      git: { status: 'available', message: 'git 2.45.0' },
-      clipboard: { status: 'available', message: 'pbcopy' },
-      browserAutomation: { status: 'available', message: 'playwright ok' },
-      githubCli: { status: 'available', message: 'gh 2.51' },
-      tailscale: { status: 'available', message: 'tailscale 1.62' },
-      ssh: { status: 'available', message: 'OpenSSH 9.7' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'relay-pty',
+          status: 'available',
+          message: 'relay-pty ready',
+        },
+      },
+      git: {
+        id: 'git',
+        label: 'Git',
+        status: 'available',
+        message: 'git 2.45.0',
+      },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'available',
+        message: 'pbcopy',
+      },
+      browserAutomation: {
+        id: 'browserAutomation',
+        label: 'Browser automation',
+        status: 'available',
+        message: 'playwright ok',
+      },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'gh 2.51',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'available',
+        message: 'tailscale 1.62',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'OpenSSH 9.7',
+      },
       agents: {},
     },
+    degradedReasons: [],
   };
 }
 

@@ -17,6 +17,13 @@ const now = new Date('2026-01-02T03:05:00.000Z');
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'node-1',
+    identity: {
+      nodeId: 'node-1',
+      displayName: 'dev mac',
+      hostname: 'dev-mac.local',
+      createdAt: '2026-01-02T03:00:00.000Z',
+      pairedAt: '2026-01-02T03:00:00.000Z',
+    },
     displayName: 'dev mac',
     hostname: 'dev-mac.local',
     platform: 'darwin',
@@ -25,11 +32,23 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'reverse-link', status: 'connected' },
+    trust: { state: 'active', level: 'standard' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-1',
+      issuedAt: '2026-01-02T03:00:00.000Z',
+      state: 'active',
+      keyBound: false,
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -58,12 +77,12 @@ describe('deriveHubNodeDashboardRows — degraded UI fields (#654)', () => {
       [node({ helperVersion: '0.5.0' })],
       { now }
     );
-    expect(row.helperVersion).toBe('0.5.0');
+    expect(row!.helperVersion).toBe('0.5.0');
   });
 
   it('sets helperVersion to null when absent from summary (pre-#651 node)', () => {
     const [row] = deriveHubNodeDashboardRows([node()], { now });
-    expect(row.helperVersion).toBeNull();
+    expect(row!.helperVersion).toBeNull();
   });
 
   it('exposes fileRpcAvailable=true when the node reports it', () => {
@@ -71,7 +90,7 @@ describe('deriveHubNodeDashboardRows — degraded UI fields (#654)', () => {
       [node({ fileRpcAvailable: true })],
       { now }
     );
-    expect(row.fileRpcAvailable).toBe(true);
+    expect(row!.fileRpcAvailable).toBe(true);
   });
 
   it('exposes fileRpcAvailable=false when the node reports file rpc unavailable', () => {
@@ -79,12 +98,12 @@ describe('deriveHubNodeDashboardRows — degraded UI fields (#654)', () => {
       [node({ fileRpcAvailable: false })],
       { now }
     );
-    expect(row.fileRpcAvailable).toBe(false);
+    expect(row!.fileRpcAvailable).toBe(false);
   });
 
   it('sets fileRpcAvailable to null when the field is absent (pre-#651 node)', () => {
     const [row] = deriveHubNodeDashboardRows([node()], { now });
-    expect(row.fileRpcAvailable).toBeNull();
+    expect(row!.fileRpcAvailable).toBeNull();
   });
 
   it('exposes degradedReasons from the summary', () => {
@@ -104,12 +123,12 @@ describe('deriveHubNodeDashboardRows — degraded UI fields (#654)', () => {
       [node({ degradedReasons: reasons })],
       { now }
     );
-    expect(row.degradedReasons).toEqual(reasons);
+    expect(row!.degradedReasons).toEqual(reasons);
   });
 
   it('defaults degradedReasons to empty array when absent', () => {
     const [row] = deriveHubNodeDashboardRows([node()], { now });
-    expect(row.degradedReasons).toEqual([]);
+    expect(row!.degradedReasons).toEqual([]);
   });
 });
 

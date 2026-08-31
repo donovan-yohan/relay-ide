@@ -37,8 +37,13 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     platform: 'linux',
     arch: 'x64',
     hostname: 'session-route-node',
+    helperVersion: '0.1.0-test',
     relayVersion: '0.1.0-test',
+    protocolVersion: '1.0',
     generatedAt: '2026-01-02T03:04:05.000Z',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     wsl: { detected: false, version: null, systemd: false },
     serviceManager: {
       kind: 'systemd-user',
@@ -58,14 +63,7 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
           status: 'available',
           message: 'ok',
         },
-        'tmux-compat': {
-          id: 'tmux-compat',
-          label: 'tmux compatibility',
-          status: 'available',
-          message: 'ok',
-        },
       },
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -208,7 +206,20 @@ async function pairNode(
   };
 }
 
-function remoteSession(nodeId: string): SessionSummary {
+// TODO(#1498): `customCommand`, `useTmux`, `tmuxSessionName`, and
+// `needsBranchRename` are no longer part of `SessionSummary`. They are kept on
+// the wire fixture so the payload the fake node returns is unchanged, but no
+// production code reads them any more.
+type LegacyNodeSessionWireFields = {
+  customCommand: string | null;
+  useTmux: boolean;
+  tmuxSessionName: string;
+  needsBranchRename: boolean;
+};
+
+function remoteSession(
+  nodeId: string
+): SessionSummary & LegacyNodeSessionWireFields {
   return {
     id: 'remote-session-1',
     type: 'terminal',
@@ -852,22 +863,10 @@ describe('hub-routed node session create and attach', () => {
       manifest({
         capabilities: {
           ...manifest().capabilities,
-          tmux: {
-            id: 'tmux',
-            label: 'tmux',
-            status: 'unavailable',
-            message: 'missing',
-          },
           terminalBackends: {
             'relay-pty': {
               id: 'relay-pty',
               label: 'Relay PTY',
-              status: 'unavailable',
-              message: 'missing',
-            },
-            'tmux-compat': {
-              id: 'tmux-compat',
-              label: 'tmux compatibility',
               status: 'unavailable',
               message: 'missing',
             },

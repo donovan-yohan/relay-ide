@@ -95,9 +95,9 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
   const tools = generateRelayCodexGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
   const captured: CapturedGatewayRequest[] = [];
   const upgrades: Array<{
-    url?: string;
-    cookie?: string;
-    marker?: string | string[];
+    url: string | undefined;
+    cookie: string | undefined;
+    marker: string | string[] | undefined;
   }> = [];
   const inputs: string[] = [];
   let sessionAlive = false;

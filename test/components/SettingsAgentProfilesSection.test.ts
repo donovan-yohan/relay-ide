@@ -29,12 +29,13 @@ import {
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Partial stub: only the members the section reads under test.
 const matchMedia = () =>
   ({
     matches: false,
     addEventListener: () => {},
     removeEventListener: () => {},
-  }) as MediaQueryList;
+  }) as unknown as MediaQueryList;
 
 const frameworks: FrameworkInfo[] = [
   {

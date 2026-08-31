@@ -29,6 +29,7 @@ const session = (overrides: Partial<SessionSummary>): SessionSummary => ({
   createdAt: '',
   lastActivity: '',
   idle: false,
+  activityState: 'idle',
   ...overrides,
 });
 
@@ -93,7 +94,16 @@ describe('summaryForTab — session kind', () => {
 
   it('returns terminal icon regardless of shell label', () => {
     const s = summaryForTab(sessionTab('s1'), {
-      findSession: () => session({ id: 's1', type: 'terminal', agent: 'bash' }),
+      findSession: () =>
+        session({
+          id: 's1',
+          type: 'terminal',
+          // TODO(#1498): `agent` is no longer a `SessionSummary`
+          // field and nothing in the product reads it, so this case is now
+          // identical to the plain-terminal case above. The fixture is kept
+          // byte-for-byte; the guard it was written for is gone.
+          agent: 'bash',
+        } as Partial<SessionSummary>),
     });
     expect(s.icon).toBe('session-terminal');
   });

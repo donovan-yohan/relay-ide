@@ -4,7 +4,10 @@ import {
   OPERATOR_CLIENT_CREDENTIAL_AUDIENCE,
   OperatorClientCredentialRegistry,
 } from '../shared/operator-client-credentials.js';
-import { HandshakeGrantRegistry } from '../shared/operator-handshake-grants.js';
+import {
+  HandshakeGrantRegistry,
+  type HandshakeGrantScope,
+} from '../shared/operator-handshake-grants.js';
 import {
   issueOperatorClientCredentialWithGrant,
   revokeOperatorClientCredentialWithGrant,
@@ -170,10 +173,11 @@ describe('operator client credential registry', () => {
     const registry = credentials(() => NOW);
     const grantRegistry = grants(() => NOW);
     const input = issueInput();
-    for (const [id, scope] of [
+    const cases: [string, HandshakeGrantScope][] = [
       ['repo-only', { repoIds: ['repo-a'] }],
       ['wildcard-channel', { channelIds: ['*'] }],
-    ]) {
+    ];
+    for (const [id, scope] of cases) {
       const requested = grantRegistry.request({
         id,
         actor: { type: 'cli', id: input.client.id },

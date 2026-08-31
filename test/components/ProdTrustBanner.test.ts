@@ -21,6 +21,13 @@ function policy(nodeId: string, trustTier: RelayTrustTier = 'dev') {
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'node-1',
+    identity: {
+      nodeId: 'node-1',
+      displayName: 'dev mac',
+      hostname: 'dev-mac.local',
+      createdAt,
+      pairedAt: createdAt,
+    },
     displayName: 'dev mac',
     hostname: 'dev-mac.local',
     platform: 'darwin',
@@ -31,9 +38,11 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     connection: { route: 'reverse-link', status: 'connected' },
     capabilities: {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
+      // TODO(#1498): this fixture also set `tmux: 'available'`, but
+      // `HubNodeCoreCapability` dropped that key when tmux support was removed,
+      // so the banner never read it.
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -51,6 +60,12 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       policy: policy('node-1'),
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred-1',
+      issuedAt: createdAt,
+      state: 'active',
+      keyBound: true,
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',

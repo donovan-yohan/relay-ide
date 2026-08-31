@@ -18,7 +18,15 @@
 // exercises the pure function cannot catch that regression.
 
 import React, { act } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -148,7 +156,7 @@ function hubNode(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
-let onWorkspacesAdded: ReturnType<typeof vi.fn>;
+let onWorkspacesAdded: Mock<(paths: string[]) => void>;
 let dialogRef: React.RefObject<AddWorkspaceDialogHandle | null>;
 
 async function flush(): Promise<void> {

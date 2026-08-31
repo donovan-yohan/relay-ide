@@ -310,9 +310,9 @@ describe('handoff shared contract', () => {
     const badRelativePath = basePlan({
       pathMappings: [
         {
-          ...basePlan().pathMappings[0],
+          ...basePlan().pathMappings[0]!,
           destination: {
-            ...basePlan().pathMappings[0].destination,
+            ...basePlan().pathMappings[0]!.destination,
             path: 'relative/path.diff',
           },
         },
@@ -321,9 +321,9 @@ describe('handoff shared contract', () => {
     const badHash = basePlan({
       pathMappings: [
         {
-          ...basePlan().pathMappings[0],
+          ...basePlan().pathMappings[0]!,
           source: {
-            ...basePlan().pathMappings[0].source,
+            ...basePlan().pathMappings[0]!.source,
             pathHashSha256: 'not-a-hash',
           },
         },
